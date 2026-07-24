@@ -121,6 +121,8 @@ Commands appear as windows in the session (visible in iTerm like everything else
 
 Other CLI commands: `hive status` prints every project's running agents, commands, open todos, and timers in one shot; `hive doctor` checks the environment (node, tmux, claude, database, hooks) and sweeps stale state. The sweep also runs continuously: agents whose windows died get closed automatically, and timers pointing at dead panes get cancelled.
 
+Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --edit` exports it to a temp markdown file and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit, save, then `hive pad <name> --save` writes it back. The export encodes the pad revision, so if a session changed the pad while you edited, the save fails with merge instructions instead of clobbering; your edits stay in the temp file. Temp exports live in the system temp dir and clean themselves up on save (macOS purges strays automatically).
+
 ### Workers
 
 A lead session spawns workers with `agent_spawn`; each worker is an agent CLI (default `claude`) in a tmux window under the session `hive-<project_id>`, started with its own actor identity and `HIVE_PROJECT_LOCK=1`. The lead types into workers with `agent_send` and reads their terminals with `agent_output`. For parallel file edits, spawn each worker in its own git worktree (`cwd` parameter); worktrees resolve to the same project, so everyone shares one plan.

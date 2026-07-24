@@ -5,7 +5,7 @@ import { currentActor, effectiveProjectId, resolveProject } from "../context.js"
 import { matchesAnyTag, parseTags, run } from "../result.js";
 import { projectIdParam } from "./params.js";
 
-interface PadRow {
+export interface PadRow {
   id: number;
   project_id: number;
   name: string;
@@ -59,6 +59,41 @@ function bumpPad(padId: number, set: string, ...params: unknown[]): void {
     `UPDATE scratchpads SET ${set}, revision = revision + 1,
      updated_by = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(...params, currentActor(), padId);
+}
+
+// Shared with the CLI (hive pad): exact-name lookup among active pads.
+export function getActivePadByName(projectId: number, name: string): PadRow | undefined {
+  return db
+    .prepare("SELECT * FROM scratchpads WHERE project_id = ? AND name = ? AND archived = 0")
+    .get(projectId, name) as PadRow | undefined;
+}
+
+// Shared with the CLI (hive pads).
+export type PadListRow = Pick<PadRow, "name" | "revision" | "updated_by" | "updated_at"> & {
+  content_length: number;
+};
+
+export function listActivePads(projectId: number): PadListRow[] {
+  return db
+    .prepare(
+      `SELECT name, revision, length(content) AS content_length, updated_by, updated_at
+       FROM scratchpads WHERE project_id = ? AND archived = 0 ORDER BY name`,
+    )
+    .all(projectId) as PadListRow[];
+}
+
+// Shared with the CLI (hive pad --save): revision-guarded overwrite.
+// Returns the new revision.
+export function overwritePadContent(
+  projectId: number,
+  padId: number,
+  content: string,
+  expectedRevision: number,
+): number {
+  const pad = getPadMeta(projectId, padId);
+  checkRevision(pad, expectedRevision, true);
+  bumpPad(padId, "content = ?", content);
+  return pad.revision + 1;
 }
 
 // Shared with the CLI (hive init). Returns null when an active pad already

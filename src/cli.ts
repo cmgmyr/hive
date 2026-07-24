@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // hive CLI: open a project's orchestration session and manage its commands.
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { dataDir, db, migrate } from "./db.js";
@@ -20,7 +21,12 @@ import {
   windowTitle,
 } from "./tmux.js";
 import { configHash, loadProjectYml, resolveCommandDir, type YmlProcess } from "./projectYml.js";
-import { createPad } from "./tools/pads.js";
+import {
+  createPad,
+  getActivePadByName,
+  listActivePads,
+  overwritePadContent,
+} from "./tools/pads.js";
 
 function usage(): never {
   console.log(`hive — shared memory and coordination for Claude Code sessions
@@ -33,6 +39,10 @@ Usage:
   hive start <process> [path] start one hive.yml process by name
   hive status                overview of agents, todos, and wake-ups everywhere
   hive doctor                check the environment and clean up stale state
+  hive pads                  list the current project's pads
+  hive pad <name>            print a pad's content
+  hive pad <name> --edit     export to a temp file and open your markdown editor
+  hive pad <name> --save     write the edited export back (revision-guarded)
 
 hive lead reads hive.yml from the project root when present; hive init
 writes this starter file (uncomment what you need):
@@ -389,11 +399,113 @@ function cmdDoctor(): void {
   process.exit(failures === 0 ? 0 : 1);
 }
 
+function padSlug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "pad";
+}
+
+const padExportPrefix = (projectId: number, name: string) =>
+  `hive-pad-${projectId}-${padSlug(name)}.r`;
+
+function findPadExports(projectId: number, name: string): string[] {
+  const prefix = padExportPrefix(projectId, name);
+  return readdirSync(tmpdir())
+    .filter((f) => f.startsWith(prefix) && f.endsWith(".md"))
+    .map((f) => join(tmpdir(), f));
+}
+
+function cmdPads(): void {
+  const project = resolveProject();
+  const pads = listActivePads(project.id);
+  if (pads.length === 0) {
+    console.log(`No pads in project "${project.name}".`);
+    return;
+  }
+  const width = Math.max(...pads.map((p) => p.name.length));
+  for (const p of pads) {
+    console.log(
+      `${p.name.padEnd(width)}  rev ${String(p.revision).padStart(3)}  ${String(p.content_length).padStart(6)} chars  ${p.updated_by ?? "?"} @ ${p.updated_at}`,
+    );
+  }
+}
+
+function cmdPad(argv: string[]): void {
+  const positional = argv.filter((a) => !a.startsWith("--"));
+  const name = positional[0];
+  if (!name) {
+    console.log("Usage: hive pad <name> [--edit | --save [file]]  (run inside the project)");
+    process.exit(1);
+  }
+  const project = resolveProject();
+  const pad = getActivePadByName(project.id, name);
+  if (!pad) {
+    console.log(`No pad named "${name}" in project "${project.name}". List them with: hive pads`);
+    process.exit(1);
+  }
+
+  if (argv.includes("--edit")) {
+    const existing = findPadExports(project.id, name);
+    if (existing.length > 0) {
+      console.log(`An unsaved export already exists:\n  ${existing.join("\n  ")}`);
+      console.log(`Save it with: hive pad "${name}" --save   (or delete the file to discard)`);
+      process.exit(1);
+    }
+    const file = join(tmpdir(), `${padExportPrefix(project.id, name)}${pad.revision}.md`);
+    writeFileSync(file, pad.content);
+    // "open" launches the system's default app for .md files; HIVE_EDITOR
+    // overrides with an explicit command (e.g. HIVE_EDITOR=zed).
+    const editor = process.env.HIVE_EDITOR || "open";
+    const [cmd, ...cmdArgs] = editor.split(/\s+/);
+    spawn(cmd, [...cmdArgs, file], { detached: true, stdio: "ignore" }).unref();
+    console.log(file);
+    console.log(`Opened "${name}" (rev ${pad.revision}) with ${cmd}. After saving your edits, write back with:`);
+    console.log(`  hive pad "${name}" --save`);
+    return;
+  }
+
+  if (argv.includes("--save")) {
+    let file = positional[1];
+    if (!file) {
+      const matches = findPadExports(project.id, name);
+      if (matches.length === 0) {
+        console.log(`No exported file for "${name}" in ${tmpdir()}. Export one with: hive pad "${name}" --edit`);
+        process.exit(1);
+      }
+      if (matches.length > 1) {
+        console.log(`Multiple exports found; pass one explicitly:\n  ${matches.join("\n  ")}`);
+        process.exit(1);
+      }
+      file = matches[0];
+    }
+    const content = readFileSync(file, "utf8");
+    const marker = /\.r(\d+)\.md$/.exec(file);
+    const expected = marker ? Number(marker[1]) : pad.revision;
+    if (content === pad.content) {
+      unlinkSync(file);
+      console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);
+      return;
+    }
+    try {
+      const newRevision = overwritePadContent(project.id, pad.id, content, expected);
+      unlinkSync(file);
+      console.log(`Saved "${name}": rev ${expected} -> ${newRevision}. Removed ${file}.`);
+    } catch (e) {
+      console.log(errorMessage(e));
+      console.log(`Your edits are untouched in ${file}.`);
+      console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${file}`);
+      process.exit(1);
+    }
+    return;
+  }
+
+  process.stdout.write(pad.content.endsWith("\n") || pad.content === "" ? pad.content : `${pad.content}\n`);
+}
+
 const args = process.argv.slice(2);
 let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
-if (!["lead", "init", "attach", "start", "status", "doctor"].includes(command)) {
+if (!["lead", "init", "attach", "start", "status", "doctor", "pads", "pad"].includes(command)) {
   // `hive <path>` opens that project's session; lead is the default command.
   if (existsSync(command)) {
     rest = [command, ...rest];
@@ -421,5 +533,11 @@ switch (command) {
     break;
   case "doctor":
     cmdDoctor();
+    break;
+  case "pads":
+    cmdPads();
+    break;
+  case "pad":
+    cmdPad(rest);
     break;
 }
