@@ -450,7 +450,17 @@ function cmdPad(argv: string[]): void {
       process.exit(1);
     }
     const file = join(tmpdir(), `${padExportPrefix(project.id, name)}${pad.revision}.md`);
-    writeFileSync(file, pad.content);
+    try {
+      // wx: atomic fail-if-exists (also refuses a pre-planted symlink);
+      // 0600: pad content stays private to the user.
+      writeFileSync(file, pad.content, { flag: "wx", mode: 0o600 });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+        console.log(`A file already exists at ${file}; refusing to overwrite it. Save or delete it first.`);
+        process.exit(1);
+      }
+      throw e;
+    }
     // "open" launches the system's default app for .md files; HIVE_EDITOR
     // overrides with an explicit command (e.g. HIVE_EDITOR=zed).
     const editor = process.env.HIVE_EDITOR || "open";
