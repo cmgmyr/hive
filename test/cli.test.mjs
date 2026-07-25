@@ -69,6 +69,23 @@ describe("hive CLI pads", () => {
     assert.equal(outside.stdout, "");
   });
 
+  it("statusline stays silent in a registered project with no live state", async () => {
+    // A single tool call is enough to register a directory as a project.
+    const emptyDir = dirs.tmp;
+    const mcp = new McpClient({ cwd: emptyDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      const who = await mcp.call("whoami");
+      assert.equal(who.project.path, emptyDir);
+    } finally {
+      await mcp.close();
+    }
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd: emptyDir });
+    assert.equal(code, 0);
+    assert.equal(stdout, "");
+  });
+
   it("fails cleanly when the pad changed since the export", async () => {
     const edit = await runCli(["pad", "runbook", "--edit"], cliOpts);
     assert.equal(edit.code, 0);

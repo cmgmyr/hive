@@ -460,6 +460,10 @@ function cmdStatusline(): void {
   const pads = count("SELECT COUNT(*) AS n FROM scratchpads WHERE project_id = ? AND archived = 0");
   const wakes = count(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
 
+  // A project can get registered by a single passing tool call; an all-zero
+  // row is noise, so only projects with live state get a status line.
+  if (agents + commands + todos + pads + wakes === 0) return;
+
   const s = (n: number) => (n === 1 ? "" : "s");
   const parts = [
     `${agents} agent${s(agents)}`,
