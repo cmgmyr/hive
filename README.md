@@ -171,6 +171,26 @@ One-time iTerm settings (Settings > General > tmux), per machine:
 - Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
 - Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server, not the display.
 
+Optional: show the store in Claude Code's status line. `hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing outside a hive-enabled project, so it is safe to run everywhere. If you use a custom status line script, append:
+
+```bash
+# Hive store summary (second line, only inside hive-enabled projects)
+if command -v hive >/dev/null 2>&1; then
+  hive_line=$(hive statusline 2>/dev/null)
+  [ -n "$hive_line" ] && printf '\n%s' "$hive_line"
+fi
+```
+
+The status line only re-renders on session activity by default. Add `"refreshInterval": 10` to the `statusLine` block in `~/.claude/settings.json` so the counts stay current while the session sits idle:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "~/.claude/statusline.sh",
+  "refreshInterval": 10
+}
+```
+
 Notes on MCP scope: `--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: this repo ships a `.mcp.json` you can copy (use an absolute path in `args`), or run `claude mcp add hive -- node /absolute/path/to/hive/dist/index.js` from that project's directory. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
 
 ## Updating
