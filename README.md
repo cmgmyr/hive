@@ -96,9 +96,11 @@ If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) 
 
 ### Runbook (`hive init`)
 
-`hive init` sets a project up for orchestration. It writes a starter `hive.yml` (one active key, the rest commented examples) and seeds a `runbook` pad: the lead's standing instructions, kept in the shared store rather than the repo. The starter runbook opens with a first-run section that has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite the pad to fit the project.
+`hive init` sets a project up for orchestration. It writes a starter `hive.yml` (one active key, the rest commented examples) and seeds two pads in the shared store rather than the repo: `runbook`, the lead's standing instructions, and `board`, the live picture of the work. The starter runbook opens with a first-run section that has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite the pad to fit the project.
 
-After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the runbook before orchestrating. The server also exposes three playbook prompts, which Claude Code surfaces as slash commands: `/mcp__hive__triage` runs the morning ritual, `/mcp__hive__orchestrate` loads the lead/worker pattern, and `/mcp__hive__wrapup` closes the day (handoffs, worker close-out, board rotation). Pair it with a `board` pad for live state: keep the board small, and at day end `pad_archive` it and write a fresh one under the same name. Archiving frees the name and keeps history readable via `pad_list(include_archived=true)`.
+After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the runbook before orchestrating. The server also exposes three playbook prompts, which Claude Code surfaces as slash commands: `/mcp__hive__triage` runs the morning ritual, `/mcp__hive__orchestrate` loads the lead/worker pattern, and `/mcp__hive__wrapup` closes the day (handoffs, worker close-out, board rotation).
+
+The board holds today's lanes, what's waiting on you, and what's next up. The runbook instructs the lead to update it the moment tasks change (todos created, re-scoped, blocked, completed; lanes started or finished), keep it small, and at day end `pad_archive` it and write a fresh one under the same name. Archiving frees the name and keeps history readable via `pad_list(include_archived=true)`.
 
 ### Project commands (hive.yml)
 

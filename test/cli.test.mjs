@@ -22,10 +22,11 @@ describe("hive CLI pads", () => {
     assert.equal(init.code, 0, init.stderr);
   });
 
-  it("lists the seeded runbook", async () => {
+  it("lists the seeded runbook and board", async () => {
     const { code, stdout } = await runCli(["pads"], cliOpts);
     assert.equal(code, 0);
     assert.match(stdout, /runbook\s+rev\s+1/);
+    assert.match(stdout, /board\s+rev\s+1/);
   });
 
   it("prints pad content", async () => {

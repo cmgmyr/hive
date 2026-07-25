@@ -250,10 +250,13 @@ MORNING TRIAGE
    per help(topic="workflow").
 
 BOARD DISCIPLINE
-Keep the "board" pad small: active work-streams and their worktree, todo,
-and worker ids. At day end, pad_archive the old board and write a fresh
-"board" carrying forward only what is still live. History stays readable
-with pad_list(include_archived=true).
+The "board" pad is the live picture of the work. Update it the moment
+tasks change: a todo is created, re-scoped, blocked, or completed; a
+worker starts or finishes a lane; something lands in "waiting on human".
+A stale board is worse than no board. Keep it small: active work-streams
+and their worktree, todo, and worker ids. At day end, pad_archive the old
+board and write a fresh "board" carrying forward only what is still live.
+History stays readable with pad_list(include_archived=true).
 
 STANDING RULES
 - Do not poll workers. Use wake_when_idle and go quiet.
@@ -261,6 +264,22 @@ STANDING RULES
 - Record decisions in pads or todo comments; sessions die, the store lives.
 - Anything outward-facing (pushes, published PRs, posted reviews) waits
   for explicit human approval.
+`;
+
+const BOARD_TEMPLATE = `BOARD — live state for this project. Keep it small and current.
+
+Update this pad whenever tasks change: todos created, re-scoped, blocked,
+or completed; lanes started or finished. At day end, archive it and write
+a fresh "board" carrying forward only what is still live.
+
+TODAY
+<the day's agreed lanes, one line each: worker, worktree, todo ids, status>
+
+WAITING ON HUMAN
+<approvals, answers, or reviews the crew is blocked on>
+
+NEXT UP
+<dispatchable todos worth starting when a lane frees>
 `;
 
 function cmdInit(path?: string): void {
@@ -280,6 +299,13 @@ function cmdInit(path?: string): void {
     console.log("- runbook pad: already exists, left untouched");
   } else {
     console.log(`- runbook pad: seeded starter template (pad ${padId})`);
+  }
+
+  const boardId = createPad(project.id, "board", BOARD_TEMPLATE, []);
+  if (boardId == null) {
+    console.log("- board pad: already exists, left untouched");
+  } else {
+    console.log(`- board pad: seeded starter template (pad ${boardId})`);
   }
 
   console.log(`\nNext: run \`hive\` here and tell the lead "good morning, let's triage".
