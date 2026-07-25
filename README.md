@@ -174,10 +174,15 @@ One-time iTerm settings (Settings > General > tmux), per machine:
 Optional: show the store in Claude Code's status line. `hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing when a project has no live state (no agents, todos, pads, or wake-ups) or is not registered at all, so it is safe to run everywhere. If you use a custom status line script, append:
 
 ```bash
-# Hive store summary (second line, only inside hive-enabled projects)
+# Hive store summary (second line, only inside hive-enabled projects).
+# Use a plain if, not `[ ... ] && printf`: as the last command in the
+# script, that pattern exits 1 when the line is empty and a failing
+# status line command renders nothing at all.
 if command -v hive >/dev/null 2>&1; then
   hive_line=$(hive statusline 2>/dev/null)
-  [ -n "$hive_line" ] && printf '\n%s' "$hive_line"
+  if [ -n "$hive_line" ]; then
+    printf '\n%s' "$hive_line"
+  fi
 fi
 ```
 
