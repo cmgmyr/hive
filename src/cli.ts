@@ -6,7 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { dataDir, db, migrate } from "./db.js";
-import { currentActor, effectiveProjectId, getProject, listProjects, type Project } from "./context.js";
+import {
+  currentActor,
+  effectiveProjectId,
+  findProjectForCwd,
+  getProject,
+  listProjects,
+  type Project,
+} from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage } from "./result.js";
 import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
@@ -43,6 +50,7 @@ Usage:
   hive pad <name>            print a pad's content
   hive pad <name> --edit     export to a temp file and open your markdown editor
   hive pad <name> --save     write the edited export back (revision-guarded)
+  hive statusline            one-line store summary; silent outside hive projects
 
 hive lead reads hive.yml from the project root when present; hive init
 writes this starter file (uncomment what you need):
@@ -425,6 +433,44 @@ function cmdDoctor(): void {
   process.exit(failures === 0 ? 0 : 1);
 }
 
+// One-line store summary for embedding in a shell prompt or Claude Code
+// status line. Prints nothing outside a registered project, and never
+// registers one; status lines run in every directory a session opens.
+function cmdStatusline(): void {
+  const project = findProjectForCwd();
+  if (!project) return;
+  const count = (sql: string) => (db.prepare(sql).get(project.id) as { n: number }).n;
+  const agents = count(
+    "SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent'",
+  );
+  const commands = count(
+    "SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'command'",
+  );
+  const todos = count(
+    "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress')",
+  );
+  const ready = count(
+    `SELECT COUNT(*) AS n FROM todos t
+     WHERE t.project_id = ? AND t.status IN ('open', 'in_progress')
+       AND NOT EXISTS (
+         SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
+         WHERE b.todo_id = t.id AND bt.status != 'completed'
+       )`,
+  );
+  const pads = count("SELECT COUNT(*) AS n FROM scratchpads WHERE project_id = ? AND archived = 0");
+  const wakes = count(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
+
+  const s = (n: number) => (n === 1 ? "" : "s");
+  const parts = [
+    `${agents} agent${s(agents)}`,
+    `${todos} todo${s(todos)}${todos > 0 ? ` (${ready} ready)` : ""}`,
+    `${pads} pad${s(pads)}`,
+  ];
+  if (commands > 0) parts.push(`${commands} cmd${s(commands)}`);
+  if (wakes > 0) parts.push(`${wakes} wake${s(wakes)}`);
+  console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
+}
+
 function padSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "pad";
 }
@@ -541,7 +587,7 @@ const args = process.argv.slice(2);
 let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
-if (!["lead", "init", "attach", "start", "status", "doctor", "pads", "pad"].includes(command)) {
+if (!["lead", "init", "attach", "start", "status", "doctor", "pads", "pad", "statusline"].includes(command)) {
   // `hive <path>` opens that project's session; lead is the default command.
   if (existsSync(command)) {
     rest = [command, ...rest];
@@ -575,5 +621,8 @@ switch (command) {
     break;
   case "pad":
     cmdPad(rest);
+    break;
+  case "statusline":
+    cmdStatusline();
     break;
 }

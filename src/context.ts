@@ -124,6 +124,14 @@ function detectFromCwd(): number | null {
   return root ? matchRegistered(root) : null;
 }
 
+// Non-registering lookup for read-only callers (hive statusline): resolves
+// the cwd to an already-registered project or null. Unlike
+// effectiveProjectId, an unknown directory is never registered.
+export function findProjectForCwd(): Project | null {
+  const id = detectFromCwd();
+  return id == null ? null : (getProject(id) ?? null);
+}
+
 const projectLock = process.env.HIVE_PROJECT_LOCK === "1";
 
 function resolveHomeProject(): number {

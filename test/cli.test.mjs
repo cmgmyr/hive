@@ -58,6 +58,17 @@ describe("hive CLI pads", () => {
     assert.equal(readdirSync(dirs.tmp).length, 0, "export should be cleaned up");
   });
 
+  it("statusline reports counts inside a project and stays silent outside", async () => {
+    const inside = await runCli(["statusline"], cliOpts);
+    assert.equal(inside.code, 0);
+    assert.match(inside.stdout, /hive:/);
+    assert.match(inside.stdout, /2 pads/);
+
+    const outside = await runCli(["statusline"], { ...cliOpts, cwd: dirs.tmp });
+    assert.equal(outside.code, 0);
+    assert.equal(outside.stdout, "");
+  });
+
   it("fails cleanly when the pad changed since the export", async () => {
     const edit = await runCli(["pad", "runbook", "--edit"], cliOpts);
     assert.equal(edit.code, 0);
