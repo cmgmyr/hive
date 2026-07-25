@@ -285,7 +285,10 @@ Conventions borrowed from tools that got this right:
 ```bash
 npm run build    # compile to dist/
 npm run watch    # compile on change
+npm test         # run the suite against dist/ (build first)
 ```
+
+Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on macOS for every push and pull request.
 
 Smoke test without touching your real data:
 

@@ -12,7 +12,7 @@ npm run watch     # compile on change
 hive doctor      # environment check + stale-state sweep
 ```
 
-There is no test suite yet. Smoke test by piping JSON-RPC lines to `node dist/index.js` with `HIVE_DATA_DIR` pointed at a scratch directory so real data stays untouched. MCP handles piped requests concurrently, so drive dependent calls sequentially (wait for each response before sending the next).
+`npm test` runs the suite (`test/*.test.mjs`, node:test) against the built `dist/`, so build first. Tests spawn real MCP server and CLI processes with `HIVE_DATA_DIR` pointed at scratch directories; real data stays untouched. CI runs the same on macOS (`.github/workflows/ci.yml`). For ad-hoc poking, pipe JSON-RPC lines to `node dist/index.js` the same way; MCP handles piped requests concurrently, so drive dependent calls sequentially (wait for each response before sending the next).
 
 ## Architecture
 
