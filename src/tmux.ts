@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { dataDirTag } from "./dataDir.js";
 
 export function tmux(...args: string[]): string {
   try {
@@ -54,7 +55,10 @@ export function claimInitialWindow(
 }
 
 export const SESSION_PREFIX = "hive-";
-export const sessionName = (projectId: number) => `${SESSION_PREFIX}${projectId}`;
+// dataDirTag is empty for the default store, so the everyday name stays the
+// documented hive-<project_id>. A scratch store gets its own namespace; see
+// src/dataDir.ts for why sharing one is dangerous.
+export const sessionName = (projectId: number) => `${SESSION_PREFIX}${dataDirTag}${projectId}`;
 
 // Window names double as iTerm tab titles (and notification labels), so they
 // carry the project name: "hive - lead", "hive - worker-1".

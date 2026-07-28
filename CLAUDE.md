@@ -39,6 +39,7 @@ Key mechanics: workers are CLI agents in tmux panes/windows; `agent_send` types 
 - **Concurrency is guarded, not assumed.** Pad writes take `expected_revision`; leases and kv TTLs expire on their own; wake-up claims are atomic conditional updates so concurrent scheduler instances never double-fire.
 - **The scheduler must never throw and must stay `unref()`'d**, or orphaned server processes linger after their session closes.
 - **tmux aliveness checks use `list-panes`.** `display-message -t` silently falls back to a default target when the given one is dead.
+- **tmux session names are namespaced by data store.** Project ids are SQLite row ids, unique only within one store, but tmux session names share one machine-wide namespace. So `sessionName()` tags the name when `HIVE_DATA_DIR` is not the default (`src/dataDir.ts`), and the default store keeps the documented `hive-<project_id>`. Never derive a session name from a project id alone: a scratch store numbers its first project 1 too, and would resolve to the live session of whatever real project is id 1.
 - **Wake-up bodies are delivered verbatim** into a terminal as a user turn. Keep them plain English and self-contained (ids, context, next action).
 
 ## Gotchas
@@ -47,3 +48,4 @@ Key mechanics: workers are CLI agents in tmux panes/windows; `agent_send` types 
 - iTerm profile commands (used by auto-attach) run with no shell and a minimal PATH: embed absolute binary paths in AppleScript strings.
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings.
 - All process execution goes through `execFileSync` with argument arrays (see `tmux()` in `src/tmux.ts`); never build shell command strings from data.
+- **Never run `tmux kill-server` from tests or scripts.** It takes down whatever server the ambient env points at, which during development is the session the lead and workers are running in. Tear down with `kill-session -t =<name>` instead. Code under test resolves its server from the env, so a test cannot pin one with `-L`; isolate with `TMUX_TMPDIR` and clear `TMUX`/`TMUX_PANE` (see `test/layout.test.mjs`).

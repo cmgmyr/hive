@@ -1,9 +1,9 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { dataDir } from "./dataDir.js";
 
-export const dataDir = process.env.HIVE_DATA_DIR ?? join(homedir(), ".hive");
+export { dataDir };
 mkdirSync(dataDir, { recursive: true });
 
 export const db = new Database(join(dataDir, "hive.db"));
