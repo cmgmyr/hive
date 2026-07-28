@@ -15,7 +15,6 @@ import { currentActor, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
-import { renderableVars } from "../trust.js";
 import { closeAgentRow, launchAgent } from "../spawn.js";
 import {
   applyLayout,
@@ -193,9 +192,10 @@ export function registerAgents(server: McpServer): void {
           projectPath: project.path,
           cwd,
           profile: activeProfile(projectConfig),
-          // Repo-controlled text that would land in a worker's system prompt.
-          // Approved once by `hive lead`; unapproved values render as unset.
-          vars: renderableVars(project.id, projectConfig?.vars).vars,
+          // Repo-controlled text, rendered into this worker's system prompt.
+          // See the hive.yml note in CLAUDE.md: a cloned hive.yml deserves the
+          // same read as the repo's own CLAUDE.md.
+          vars: projectConfig?.vars ?? {},
         });
         const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
           const briefPath = isClaude

@@ -54,7 +54,6 @@ import {
   type ProfileFile,
 } from "./profiles.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
-import { renderableVars, trustVars, UNTRUSTED_VARS_NOTE, varsAreTrusted } from "./trust.js";
 import {
   createPad,
   getActivePadByName,
@@ -130,29 +129,6 @@ async function ensureTrusted(
   db.prepare(
     "INSERT OR IGNORE INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)",
   ).run(projectId, name, hash);
-  return true;
-}
-
-// The same one-time review as ensureTrusted, for the values hive substitutes
-// into system prompts instead of executing. Interactive only: a non-TTY run
-// renders without them rather than blocking or silently accepting them.
-async function ensureVarsTrusted(projectId: number, vars: Record<string, string>): Promise<boolean> {
-  if (varsAreTrusted(projectId, vars)) return true;
-  if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    console.log(`! ${UNTRUSTED_VARS_NOTE}`);
-    return false;
-  }
-  console.log(`\nhive.yml defines vars that hive substitutes into this project's posture and worker briefs:`);
-  for (const [key, value] of Object.entries(vars)) console.log(`  ${key}: ${value}`);
-  console.log("Those become part of a system prompt, so read them the way you would read a command.");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question("Trust these values from now on? [y/N] ");
-  rl.close();
-  if (!/^y(es)?$/i.test(answer.trim())) {
-    console.log("Skipped; rendering without them.");
-    return false;
-  }
-  trustVars(projectId, vars);
   return true;
 }
 
@@ -244,11 +220,7 @@ async function cmdLead(path?: string): Promise<void> {
     } else {
       // The flag takes a path, so the vars are resolved into a generated file
       // rather than into the profile. `hive posture` prints the same text.
-      // This is the one place a human is present to approve them; everywhere
-      // else reads the decision recorded here.
-      const declared = config?.vars ?? {};
-      const vars = (await ensureVarsTrusted(project.id, declared)) ? declared : {};
-      const rendered = renderProfileFile(profile, "posture.md", vars) ?? "";
+      const rendered = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
       const path = writeProjectPosture(project.id, rendered);
       leadCommand += ` --append-system-prompt-file ${shellQuote(path)}`;
       console.log(`- profile: ${profile} (${posture.source} posture; see it with: hive posture)`);
@@ -580,8 +552,7 @@ function cmdRunbook(path?: string): void {
     process.exit(1);
   }
 
-  const { vars, trusted } = renderableVars(project.id, config?.vars);
-  if (!trusted) console.log(`! ${UNTRUSTED_VARS_NOTE}`);
+  const vars = config?.vars ?? {};
   const rendered = renderProfileFile(profile, "runbook.md", vars);
   if (rendered == null) {
     console.log(`Profile "${profile}" has no runbook.md on this machine. Profiles hive can see: ${profileNames().join(", ") || "none"}`);
@@ -605,8 +576,7 @@ function cmdPosture(path?: string): void {
     );
     process.exit(1);
   }
-  const { vars, trusted } = renderableVars(project.id, config?.vars);
-  if (!trusted) console.log(`! ${UNTRUSTED_VARS_NOTE}`);
+  const vars = config?.vars ?? {};
   const rendered = renderProfileFile(profile, "posture.md", vars);
   if (rendered == null) {
     console.log(`Profile "${profile}" has no posture.md on this machine, so the lead starts without one.`);
@@ -819,9 +789,6 @@ function cmdDoctor(): void {
       const defined = Object.keys(config?.vars ?? {});
       const missing = referenced.filter((v) => !defined.includes(v));
       const unused = defined.filter((v) => !referenced.includes(v));
-      if (!varsAreTrusted(here.id, config?.vars ?? {})) {
-        console.log(`  warn  profile vars: not approved yet, so they render as unset (run hive here to review them)`);
-      }
       if (referenced.length > 0) {
         console.log(`  info  profile vars: runbook and posture reference ${referenced.join(", ")}`);
         if (missing.length > 0) console.log(`  info  profile vars: not set here (sections drop): ${missing.join(", ")}`);

@@ -199,7 +199,7 @@ describe("hive runbook and hive profile", () => {
   const dirs = scratchDirs();
   const cliOpts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 
-  it("prints the profile runbook, holding back vars nobody has approved", async () => {
+  it("prints the profile runbook with the project's vars resolved", async () => {
     writeFileSync(
       join(dirs.projectDir, "hive.yml"),
       "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n  ticket_prefix: DEVX\n",
@@ -208,12 +208,12 @@ describe("hive runbook and hive profile", () => {
     assert.equal(code, 0);
     assert.match(stdout, /RUNBOOK/);
     assert.doesNotMatch(stdout, /<!--/);
-    // hive.yml is repo-controlled and this text reaches a system prompt, so
-    // unapproved vars render as unset: sections drop, braces stay visible.
-    // test/vars-trust.test.mjs covers the approved path.
-    assert.match(stdout, /vars are not approved yet/);
-    assert.doesNotMatch(stdout, /DEVX-NNN/);
-    assert.doesNotMatch(stdout, /cmgmyr\/hive/, "no repo-controlled value reaches the output unapproved");
+    // vars declared in hive.yml render with no approval step. They reach a
+    // system prompt, which is a deliberate trade recorded in CLAUDE.md: hive
+    // gates what it EXECUTES, not what it quotes into a prompt.
+    assert.match(stdout, /DEVX-NNN/, "a declared var substitutes and opens its section");
+    assert.match(stdout, /cmgmyr\/hive/);
+    assert.doesNotMatch(stdout, /not approved/, "there is no approval step any more");
   });
 
   it("falls back to the runbook pad when the project chose profile: none", async () => {
@@ -268,7 +268,7 @@ describe("hive runbook and hive profile", () => {
 
     const { code, stdout } = await runCli(["posture"], cliOpts);
     assert.equal(code, 0);
-    assert.match(stdout, /Lead for \{\{repo\}\}\./, "unapproved vars stay unsubstituted here too");
+    assert.match(stdout, /Lead for cmgmyr\/hive\./, "a declared var substitutes, same as the runbook");
     assert.doesNotMatch(stdout, /Ticket work/, "an unset var drops its section, same as the runbook");
     assert.match(stdout, /\{\{nothing\}\}/, "an undefined var stays visible, same as the runbook");
     assert.doesNotMatch(stdout, /<!--/);

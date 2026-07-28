@@ -12,8 +12,12 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 const kickoff = (args = [], o = opts) => runNode(KICKOFF, args, o);
 
+// -c commit.gpgsign=false: these scratch commits exist only to give the repo a
+// branch to read. Inheriting the developer's signing config makes the suite
+// fail whenever their signing agent is locked, which has nothing to do with
+// what is under test.
 const git = (cwd, ...args) =>
-  execFileSync("git", args, {
+  execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "gpg.format=openpgp", ...args], {
     cwd,
     encoding: "utf8",
     env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
