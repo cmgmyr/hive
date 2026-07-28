@@ -2,12 +2,17 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 
 // hive.yml: minimal repo-controlled project config.
 //
 //   lead: claude --model opus      # optional command for the lead window
+//   profile: orchestration         # standing instructions this project runs under
+//   lead_branches: [main, master]  # branches where a lead gets the kickoff
+//   vars:                          # substituted into the profile runbook
+//     repo: owner/name
 //   processes:
 //     npm:dev: npm run dev         # shorthand form
 //     queue:                       # expanded form
@@ -30,7 +35,26 @@ export interface ProjectYml {
   lead: string | null;
   placement: "split" | "window" | null;
   layout: WindowLayout | null;
+  // The profile whose standing instructions this project runs under.
+  // null means the key is absent ("never asked", so `hive init` may offer it);
+  // "none" means the human decided this project is runbook-pad only.
+  profile: string | null;
+  // Branches where a lead session gets the kickoff. null means unset, and
+  // callers apply DEFAULT_LEAD_BRANCHES.
+  lead_branches: string[] | null;
+  vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
+}
+
+export const DEFAULT_LEAD_BRANCHES = ["main", "master"];
+export const NO_PROFILE = "none";
+
+// The profile a project actually runs under, or null. Decoding the sentinel
+// belongs next to it: every consumer that reads config.profile raw is one
+// that can forget "none" is not a profile name.
+export function activeProfile(config: ProjectYml | null): string | null {
+  const name = config?.profile;
+  return name == null || name === NO_PROFILE ? null : name;
 }
 
 export function loadProjectYml(projectPath: string): {
@@ -73,6 +97,48 @@ export function loadProjectYml(projectPath: string): {
       );
     }
   }
+  let profile: string | null = null;
+  if (root.profile != null) {
+    const value = String(root.profile).trim();
+    if (value === "") {
+      warnings.push("profile is empty; ignoring it.");
+    } else if (value !== NO_PROFILE && !isValidProfileName(value)) {
+      warnings.push(
+        `profile "${value}" is not a valid profile name (letters, digits, dot, dash, underscore); ignoring it.`,
+      );
+    } else {
+      profile = value;
+    }
+  }
+
+  let lead_branches: string[] | null = null;
+  if (root.lead_branches != null) {
+    const raw = Array.isArray(root.lead_branches) ? root.lead_branches : null;
+    const branches = raw
+      ?.filter((b) => typeof b === "string" && b.trim() !== "")
+      .map((b) => (b as string).trim());
+    if (branches && branches.length === raw!.length) {
+      lead_branches = branches;
+    } else {
+      warnings.push("lead_branches must be a list of branch names; ignoring it.");
+    }
+  }
+
+  const vars: Record<string, string> = {};
+  if (root.vars != null) {
+    if (typeof root.vars !== "object" || Array.isArray(root.vars)) {
+      warnings.push("vars must be a mapping of name to value; ignoring it.");
+    } else {
+      for (const [key, value] of Object.entries(root.vars as Record<string, unknown>)) {
+        if (value == null || typeof value === "object") {
+          warnings.push(`var "${key}" must be a scalar; skipped.`);
+          continue;
+        }
+        vars[key] = String(value);
+      }
+    }
+  }
+
   const processes: Record<string, YmlProcess> = {};
 
   const rawProcesses = root.processes;
@@ -111,7 +177,7 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
-  return { config: { lead, placement, layout, processes }, warnings };
+  return { config: { lead, placement, layout, profile, lead_branches, vars, processes }, warnings };
 }
 
 // A command's trust is tied to everything that affects what it executes.

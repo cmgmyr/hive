@@ -229,6 +229,40 @@ export function ensureAttached(session: string): void {
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+// A TUI is not ready for input the instant its pane exists: keystrokes sent
+// before it puts the terminal in raw mode sit in the pty buffer and can be
+// swallowed. Poll the rendered screen for claude's input box instead of
+// guessing a sleep. Returns false on timeout (or a dead pane); the caller
+// decides whether to type anyway.
+export async function waitForPaneInput(target: string, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  const deadline = start + timeoutMs;
+  // Each poll forks a tmux process. Claude is usually up within a second, so
+  // poll tightly at first and back off after that rather than paying 40 forks
+  // to wait out a timeout.
+  const interval = () => (Date.now() - start < 1000 ? 200 : 500);
+  while (Date.now() < deadline) {
+    let screen: string;
+    try {
+      screen = capturePane(target, 30);
+    } catch {
+      return false;
+    }
+    // The prompt box border and the shortcuts hint both only appear once the
+    // TUI has taken over the pane. This is claude's chrome, so it is coupled
+    // to its version: if a redesign drops both markers, this returns false at
+    // the timeout and the caller falls back to typing anyway, which is the
+    // behavior that shipped before this function existed. It degrades, it
+    // does not hang.
+    if (/╰|for shortcuts/.test(screen)) {
+      await sleep(250);
+      return true;
+    }
+    await sleep(interval());
+  }
+  return false;
+}
+
 export async function sendText(target: string, text: string, submit = true): Promise<void> {
   if (text.includes("\n")) {
     tmux("set-buffer", "-b", "hive-input", "--", text);

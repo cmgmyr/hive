@@ -34,7 +34,7 @@ Key mechanics: workers are CLI agents in tmux panes/windows; `agent_send` types 
 
 - **Strict project scoping.** State resolves from the working directory; git worktrees and subdirectories resolve to the primary checkout's project. Never fall back to an unrelated project. Cross-project access happens only when the user explicitly asks; `HIVE_PROJECT_LOCK=1` disables it entirely and every spawned worker gets it.
 - **Migrations are append-only.** Never edit an existing entry in `MIGRATIONS`; add a new one.
-- **Untrusted `hive.yml` commands never run.** Trust is recorded per config hash; any change to a command re-requires interactive approval. `dir` cannot escape the project root.
+- **Untrusted `hive.yml` content never runs and never reaches a system prompt.** Trust is recorded per config hash; any change re-requires interactive approval. `dir` cannot escape the project root, `profile` cannot escape the profile directories, and `vars` are held back from posture and worker briefs until approved (`src/trust.ts`). The rule is the delivery, not the key: anything repo-controlled that steers a shell or a model gets the same gate.
 - **Write tools return slim receipts.** Keep responses minimal; token cost is a design input.
 - **Concurrency is guarded, not assumed.** Pad writes take `expected_revision`; leases and kv TTLs expire on their own; wake-up claims are atomic conditional updates so concurrent scheduler instances never double-fire.
 - **The scheduler must never throw and must stay `unref()`'d**, or orphaned server processes linger after their session closes.

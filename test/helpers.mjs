@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 export const SERVER = new URL("../dist/index.js", import.meta.url).pathname;
 export const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+// The SessionStart hook runs this file directly, not through cli.js.
+export const KICKOFF = new URL("../dist/kickoff.js", import.meta.url).pathname;
 
 // The suite is normally run from inside a hive worker pane, whose env carries
 // HIVE_AGENT_ID, HIVE_PROJECT_LOCK and friends. Inheriting those makes a
@@ -106,9 +108,13 @@ export class McpClient {
   }
 }
 
-export function runCli(args, { cwd, dataDir, tmp, env = {} } = {}) {
+export function runCli(args, opts = {}) {
+  return runNode(CLI, args, opts);
+}
+
+export function runNode(script, args, { cwd, dataDir, tmp, env = {} } = {}) {
   return new Promise((resolve) => {
-    const child = spawn("node", [CLI, ...args], {
+    const child = spawn("node", [script, ...args], {
       cwd,
       env: {
         ...baseEnv(),

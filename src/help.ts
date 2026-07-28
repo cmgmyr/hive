@@ -53,9 +53,10 @@ One session acts as the lead. It spawns and drives workers with the agent
 tools; each worker is its own agent CLI session in a tmux window, locked to
 this project.
 
-If a pad named "runbook" exists, read it first. It is this project's
-tailored version of this pattern and takes precedence. hive init seeds a
-starter runbook.
+Read the standing process first: run \`hive runbook\` in a shell. It prints
+the project's profile runbook, or its runbook pad when the project has no
+profile, with hive.yml vars resolved. Whatever it says takes precedence over
+this generic pattern.
 
 The operating pattern:
   1. Interview the human until you can write a real plan.
@@ -68,8 +69,10 @@ The operating pattern:
      pick up work with todo_list(is_blocked=false, status="open").
   5. Spawn one worker per unblocked lane: agent_spawn(name="api-worker").
      For parallel file edits, give each worker its own git worktree via cwd.
-     PREPEND the returned instructions to the first agent_send prompt, then
-     state the lane's objective, its pad/todo ids, and file ownership.
+     A claude worker briefs itself: hive loads the brief into its system
+     prompt and types a visible [hive] line into its pane. Send the lane's
+     objective, its pad/todo ids, and file ownership directly. Only a
+     non-claude worker needs the returned instructions prepended.
   6. Workers set status="in_progress", do the work, then todo_comment the
      handoff: changed files, tests run, remaining risk. Then todo_complete.
      Completing returns newly_unblocked todo ids.
@@ -92,6 +95,32 @@ Rules that keep this sane:
   - Take a lease (lease_acquire) before editing a shared file area; leases
     expire so a dead session never wedges anyone.`,
 
+  profiles: `PROFILES — standing instructions shared across projects
+
+A profile is a named set of instructions this project runs under, named by
+"profile:" in hive.yml. hive resolves each file from ~/.hive/profiles first,
+then its own defaults, so a file the human forked is theirs and the rest
+track hive.
+
+  posture.md   already in your system prompt if the session started with
+               hive lead, with this project's vars resolved. You do not need
+               to read it; \`hive posture\` shows the human what you were given.
+  runbook.md   the project's process. Read it with \`hive runbook\` (a shell
+               command, not a tool). It has hive.yml vars substituted.
+  worker.md    what agent_spawn puts in a worker's system prompt.
+
+  hive runbook               the process, ready to read
+  hive posture               the posture text you were started with
+  hive profile list          what exists and where each file comes from
+  hive profile fork <name>   copy a default into ~/.hive so the human can edit
+
+A project with a profile usually has NO "runbook" pad; the profile replaced
+it. A project on "profile: none" keeps the pad, and \`hive runbook\` prints
+that instead, so the one command is right either way.
+
+If the human asks to change how work runs here, that is an edit to the
+runbook (fork it first), not a pad write.`,
+
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
   agent_spawn(name?, model?, command?, extra_args?, cwd?, placement?, layout?) —
@@ -104,13 +133,17 @@ Rules that keep this sane:
     even-vertical. hive re-applies it when a worker closes, so the
     arrangement survives crew changes. Projects can set a default placement
     and layout in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
-    a git worktree path to isolate parallel file edits. Returns instructions
-    to PREPEND to the first prompt. Workers run with HIVE_PROJECT_LOCK=1.
+    a git worktree path to isolate parallel file edits. A claude worker gets
+    its brief in the system prompt plus a visible [hive] line in its pane;
+    other commands return instructions to PREPEND to the first prompt.
+    Workers run with HIVE_PROJECT_LOCK=1.
   agent_send(agent_id|name, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
   agent_output(agent_id|name, lines?) — read the rendered terminal.
-  agent_status(agent_id|name) — liveness, current command, short tail.
+  agent_status(agent_id|name, include_brief?) — liveness, current command,
+    short tail, and the path to the brief this worker was given
+    (include_brief=true returns its text; no transcript records it).
   agent_list(include_closed?) — all agents with live status.
   agent_close(agent_id|name) — kill the window and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.

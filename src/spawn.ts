@@ -20,7 +20,10 @@ export interface LaunchSpec {
   projectPath: string;
   name: string;
   kind: "agent" | "command";
-  commandString: string;
+  // A callback runs once the row exists, so a caller can build the command
+  // from the agent id and actor id (agent_spawn names the worker's brief file
+  // after them). Its result is what gets recorded and launched.
+  commandString: string | ((ids: { agentId: number; actorId: string }) => string);
   cwd: string;
   env: Record<string, string>;
   placement: "split" | "window";
@@ -56,11 +59,24 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     .prepare(
       "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .run(spec.projectId, spec.name, spec.commandString, spec.cwd, spec.kind, spec.parentActor);
+    .run(
+      spec.projectId,
+      spec.name,
+      // A callback cannot run until the row has an id, so the command lands
+      // in the UPDATE below instead. The empty write is never observable: it
+      // is inside the try that deletes the row on any failure, and the row is
+      // not reachable until tmux_target is set.
+      typeof spec.commandString === "string" ? spec.commandString : "",
+      spec.cwd,
+      spec.kind,
+      spec.parentActor,
+    );
   const agentId = Number(info.lastInsertRowid);
   const actorId = `${spec.kind}:${agentId}`;
   try {
-    db.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run(actorId, agentId);
+    const commandString =
+      typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
+    db.prepare("UPDATE agents SET actor_id = ?, command = ? WHERE id = ?").run(actorId, commandString, agentId);
     db.prepare(
       `INSERT INTO actors (id, name, kind) VALUES (?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, last_seen_at = datetime('now')`,
@@ -83,19 +99,19 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     const title = windowTitle(spec.projectName, spec.name);
     let target: string;
     if (createdSession) {
-      const { pane, window } = claimInitialWindow(session, title, spec.cwd, envFlags, spec.commandString);
+      const { pane, window } = claimInitialWindow(session, title, spec.cwd, envFlags, commandString);
       target = spec.placement === "split" ? pane : window;
     } else if (spec.placement === "split") {
       const win = splitTargetWindow(session, windowTitle(spec.projectName, "lead"));
       target = tmux(
         "split-window", "-P", "-F", "#{pane_id}",
-        "-t", win, "-c", spec.cwd, ...envFlags, spec.commandString,
+        "-t", win, "-c", spec.cwd, ...envFlags, commandString,
       );
       applyLayout(win, spec.layout ?? DEFAULT_LAYOUT);
     } else {
       target = tmux(
         "new-window", "-P", "-F", "#{session_name}:#{window_id}",
-        "-t", session, "-n", title, "-c", spec.cwd, ...envFlags, spec.commandString,
+        "-t", session, "-n", title, "-c", spec.cwd, ...envFlags, commandString,
       );
     }
     db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(target, agentId);

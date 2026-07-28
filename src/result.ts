@@ -31,3 +31,10 @@ export function matchesAnyTag(rowTags: string, wanted: string[] | undefined): bo
   const tags = parseTags(rowTags);
   return wanted.some((t) => tags.includes(t));
 }
+
+// Terminal output and files both want exactly one trailing newline, and an
+// empty string wants none: `hive pad` on an empty pad should print nothing,
+// not a blank line.
+export function withTrailingNewline(text: string): string {
+  return text === "" || text.endsWith("\n") ? text : `${text}\n`;
+}

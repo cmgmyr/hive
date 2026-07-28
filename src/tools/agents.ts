@@ -1,11 +1,21 @@
-import { statSync, realpathSync } from "node:fs";
+import { existsSync, statSync, realpathSync } from "node:fs";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
-import { currentActor, resolveProject, type Project } from "../context.js";
+import {
+  agentBriefPath,
+  isClaudeCommand,
+  paneAnnouncement,
+  readAgentBrief,
+  workerBrief,
+  workerCommandString,
+  writeAgentBrief,
+} from "../brief.js";
+import { currentActor, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
-import { loadProjectYml } from "../projectYml.js";
+import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
+import { renderableVars } from "../trust.js";
 import { closeAgentRow, launchAgent } from "../spawn.js";
 import {
   applyLayout,
@@ -18,10 +28,10 @@ import {
   paneWindow,
   sendText,
   sessionName,
-  shellQuote,
   sleep,
   targetAlive,
   tmux,
+  waitForPaneInput,
   WINDOW_LAYOUTS,
   windowAlive,
   windowLayout,
@@ -86,19 +96,16 @@ function requireLive(agent: AgentRow): void {
   }
 }
 
-function bootstrapInstructions(agent: AgentRow, project: Project): string {
-  return `[HIVE CONTEXT]
-You are agent "${agent.name}" (actor id: ${agent.actor_id}) in project "${project.name}" (${project.path}).
-This session is locked to this project (HIVE_PROJECT_LOCK=1); do not try to access other projects.
-Coordinate through the hive MCP tools:
-- whoami confirms your identity and scope.
-- pad_list / pad_read for the shared plan and findings. Record decisions there.
-- todo_list(is_blocked=false, status="open") for dispatchable work; set status to in_progress while working.
-- todo_comment for handoffs (changed files, tests run, remaining risk), then todo_complete.
-- lease_acquire before editing shared file areas; leases expire on their own.
-If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
-[END HIVE CONTEXT]`;
+function nextWorkerName(projectId: number): string {
+  const count = (
+    db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ?").get(projectId) as { n: number }
+  ).n;
+  return `worker-${count + 1}`;
 }
+
+// How long agent_spawn waits for claude's prompt box before typing the
+// visible first turn into the pane.
+const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 8000);
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot) {
   const alive =
@@ -126,7 +133,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent in a tmux window (default command: claude). Returns bootstrap instructions to PREPEND to the first agent_send prompt. The worker is locked to this project. Humans can watch with: tmux attach -t hive-<project_id>.",
+        "Spawn a worker agent in a tmux window (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt and a short [hive] line is typed into its pane as the visible first turn, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-<project_id>.",
       inputSchema: {
         name: z.string().optional().describe("Display name; defaults to worker-N."),
         model: z.string().optional().describe("Passed as --model to the agent command."),
@@ -152,7 +159,7 @@ export function registerAgents(server: McpServer): void {
       },
     },
     (args) =>
-      run(() => {
+      run(async () => {
         const project = resolveProject(args.project_id);
         const parent = currentActor();
 
@@ -162,15 +169,7 @@ export function registerAgents(server: McpServer): void {
           if (!statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${args.cwd}`);
         }
 
-        let name = args.name;
-        if (!name) {
-          const count = (
-            db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ?").get(project.id) as {
-              n: number;
-            }
-          ).n;
-          name = `worker-${count + 1}`;
-        }
+        const name = args.name ?? nextWorkerName(project.id);
         const clash = db
           .prepare(
             "SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND name = ? AND status = 'running'",
@@ -179,16 +178,33 @@ export function registerAgents(server: McpServer): void {
         if (clash.n > 0) throw new Error(`A running agent named "${name}" already exists. Pick another name.`);
 
         const baseCommand = args.command ?? "claude";
-        const commandString = [
-          baseCommand,
-          ...(args.model ? ["--model", args.model] : []),
-          // State hooks (working/idle/waiting) ride along via --settings.
-          ...(baseCommand === "claude" ? ["--settings", ensureHooksFile()] : []),
-          ...(args.extra_args ?? []),
-        ]
-          .map(shellQuote)
-          .join(" ");
+        const isClaude = isClaudeCommand(baseCommand);
+        // The brief names the agent, so it can only be written once the row
+        // exists; launchAgent calls this back with the ids it just allocated.
         const projectConfig = loadProjectYml(project.path).config;
+        const briefFor = (actorId: string) => ({
+          name,
+          actorId,
+          projectName: project.name,
+          projectPath: project.path,
+          cwd,
+          profile: activeProfile(projectConfig),
+          // Repo-controlled text that would land in a worker's system prompt.
+          // Approved once by `hive lead`; unapproved values render as unset.
+          vars: renderableVars(project.id, projectConfig?.vars).vars,
+        });
+        const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
+          const briefPath = isClaude
+            ? writeAgentBrief(agentId, workerBrief(briefFor(actorId)))
+            : undefined;
+          return workerCommandString({
+            command: baseCommand,
+            model: args.model,
+            extraArgs: args.extra_args,
+            settingsPath: isClaude ? ensureHooksFile() : undefined,
+            briefPath,
+          });
+        };
         const placement =
           args.placement ??
           projectConfig?.placement ??
@@ -201,7 +217,7 @@ export function registerAgents(server: McpServer): void {
           projectPath: project.path,
           name,
           kind: "agent",
-          commandString,
+          commandString: buildCommand,
           cwd,
           env: {},
           placement,
@@ -210,13 +226,44 @@ export function registerAgents(server: McpServer): void {
         });
         ensureAttached(sessionName(project.id));
 
-        const row = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId) as AgentRow;
+        // The appended system prompt is invisible in the TUI and absent from
+        // the transcript, so the pane gets a short line naming the worker: the
+        // human watching sees exactly who this session thinks it is. Never let
+        // a failure here fail a worker that is already running.
+        // announced is true only when the pane was READY before the line went
+        // in. On a timeout hive types anyway -- the keystrokes usually still
+        // land in the pty buffer -- but it must not claim a delivery it cannot
+        // vouch for: a lead trusting announced=true will never re-send a brief
+        // the worker never saw.
+        let announced = false;
+        if (isClaude) {
+          try {
+            announced = await waitForPaneInput(target, PANE_READY_MS);
+            await sendText(target, paneAnnouncement(briefFor(actorId)));
+          } catch {
+            // Pane died or tmux refused; the receipt reports it below.
+            announced = false;
+          }
+        }
+
         return {
           agent_id: agentId,
           actor_id: actorId,
           name,
           tmux_target: target,
-          instructions: bootstrapInstructions(row, project),
+          ...(isClaude
+            ? {
+                brief_path: agentBriefPath(agentId),
+                announced,
+                ...(announced
+                  ? {}
+                  : {
+                      note: "The pane was not confirmed ready, so the [hive] line may not have registered. Check agent_output before assuming this worker was briefed.",
+                    }),
+              }
+            : {
+                instructions: workerBrief(briefFor(actorId)),
+              }),
         };
       }),
   );
@@ -248,10 +295,15 @@ export function registerAgents(server: McpServer): void {
   server.registerTool(
     "agent_status",
     {
-      description: "Detailed status for one agent, including a short tail of its terminal.",
+      description:
+        "Detailed status for one agent, including a short tail of its terminal. include_brief=true returns the exact brief this worker was given; hive keeps that copy because an appended system prompt appears in no transcript.",
       inputSchema: {
         agent_id: z.number().int().optional(),
         name: z.string().optional(),
+        include_brief: z
+          .boolean()
+          .optional()
+          .describe("Return the full injected brief, not just its path. Defaults to false."),
         project_id: projectIdParam,
       },
     },
@@ -260,10 +312,16 @@ export function registerAgents(server: McpServer): void {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
         const summary = agentSummary(agent);
+        const briefPath = agentBriefPath(agent.id);
         return {
           ...summary,
           closed_at: agent.closed_at,
           current_command: summary.alive ? paneCurrentCommand(agent.tmux_target) : null,
+          // The path, not the text, by default: status is polled and the
+          // brief is a kilobyte the caller usually already knows. Stat it
+          // rather than reading it to find out whether it is there.
+          brief_path: existsSync(briefPath) ? briefPath : null,
+          ...(args.include_brief ? { brief: readAgentBrief(agent.id) } : {}),
           tail: summary.alive ? capturePane(agent.tmux_target, 15) : "",
         };
       }),
@@ -273,7 +331,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal. text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. PREPEND the spawn instructions to the FIRST prompt you send a new agent.",
+        "Type into an agent's terminal. text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
       inputSchema: {
         agent_id: z.number().int().optional(),
         name: z.string().optional(),

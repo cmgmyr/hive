@@ -24,6 +24,14 @@ interface TodoRow {
 const priorityParam = z.enum(["high", "medium", "low"]);
 const statusParam = z.enum(["open", "in_progress", "backlog", "completed"]);
 
+// What "blocked" means, in one place. Correlates on t.id, so every caller
+// spells its own status filter and reads dispatchability the same way:
+// todo_list(is_blocked=false), hive statusline, and the kickoff digest all
+// have to agree or the lead is reconciling numbers hive disagrees with itself
+// about. Same shape as ACTIVE_TIMER_WHERE in scheduler.ts.
+export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
+   WHERE b.todo_id = t.id AND bt.status != 'completed'`;
+
 const SUMMARY_SQL = `
   SELECT t.*,
     (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id

@@ -9,8 +9,9 @@ const PLAYBOOKS: { name: string; description: string; text: string }[] = [
     name: "triage",
     description: "Morning ritual: load the runbook and board, report state, plan the day's lanes.",
     text: `Morning triage for this project.
-1. Read the "runbook" pad if one exists (pad_read(name="runbook")). It is
-   the human's standing instructions and overrides the generic steps below.
+1. Read the standing process: run \`hive runbook\` in a shell. It prints the
+   project's profile runbook, or its runbook pad when there is no profile.
+   It overrides the generic steps below.
 2. Read the "board" pad if one exists, then todo_list(status="in_progress")
    and todo_list(status="open").
 3. Check agent_list() for workers still running and wake_list() for
@@ -31,7 +32,7 @@ const PLAYBOOKS: { name: string; description: string; text: string }[] = [
     name: "wrapup",
     description: "End of day: capture handoffs, close workers, rotate the board, report.",
     text: `End-of-day wrap-up for this project.
-1. Read the "runbook" pad if one exists; its close-out rules override
+1. Read the standing process (\`hive runbook\`); its close-out rules override
    these generic steps.
 2. For every lane finished today, make sure the handoff is captured: a
    todo comment with changed files, tests run, and remaining risk, then

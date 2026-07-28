@@ -96,11 +96,70 @@ Want the lead to have a prominent pane instead of an even grid? Set `layout: mai
 
 If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers are always visible. macOS will ask once to allow controlling iTerm; approve it. Set `HIVE_AUTO_ATTACH=0` to turn the auto-open behavior off.
 
-### Runbook (`hive init`)
+### Profiles (standing instructions across projects)
 
-`hive init` sets a project up for orchestration. It writes a starter `hive.yml` (one active key, the rest commented examples) and seeds two pads in the shared store rather than the repo: `runbook`, the lead's standing instructions, and `board`, the live picture of the work. The starter runbook opens with a first-run section that has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite the pad to fit the project.
+A profile is a named set of standing instructions shared across projects. It is how a lead knows how you work before you tell it anything.
 
-After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the runbook before orchestrating. The server also exposes three playbook prompts, which Claude Code surfaces as slash commands: `/mcp__hive__triage` runs the morning ritual, `/mcp__hive__orchestrate` loads the lead/worker pattern, and `/mcp__hive__wrapup` closes the day (handoffs, worker close-out, board rotation).
+```
+<checkout>/profiles/<name>/     hive's defaults, updated by git pull
+~/.hive/profiles/<name>/        your overrides, copy-on-write
+```
+
+Resolution is per file, not per profile, so a file you never forked keeps tracking hive's default while the ones you did are yours. Three files make up a profile:
+
+| File | How it reaches the model | What hive ships |
+|---|---|---|
+| `posture.md` | Appended to the lead's system prompt by `hive lead`; `hive posture` shows it | Real content: lead-not-IC, name the lane, ask on ambiguity, don't poll |
+| `runbook.md` | On demand, `hive runbook` | A skeleton. Headers plus facts true of any hive project. Your process is yours to write |
+| `worker.md` | Appended to each worker's system prompt by `agent_spawn` | The worker brief: identity, project lock, tool contract, lane discipline |
+
+Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only).
+
+```bash
+hive profile list                      # what exists, where each file resolves, what drifted
+hive profile fork orchestration        # copy hive's defaults into ~/.hive to edit
+hive profile fork orchestration runbook.md   # or just one file
+hive profile create mine --from simple
+hive runbook                           # this project's process, vars resolved
+hive posture                           # what your lead is actually running with
+```
+
+Pick one per project in `hive.yml`:
+
+```yaml
+profile: orchestration
+lead_branches: [main, master]   # where the session-start kickoff fires
+vars:
+  repo: owner/name
+  ticket_prefix: DEVX
+  install: pnpm install
+```
+
+All three files take `{{repo}}` and friends from `vars`, and drop whole sections whose var is unset, so one profile serves a repo with a ticket tracker and one without. `posture.md` is delivered as a path, so `hive lead` renders it into a generated file under `~/.hive/postures/` (one per project, overwritten each run) and points the flag at that; `hive posture` prints the same text, which is the only way to see what your lead actually started with. An undefined var stays visible as `{{name}}` rather than silently emptying, and `hive doctor` reports which vars a runbook references and which the project defines.
+
+`vars` are repo-controlled and land in system prompts, so hive treats them like the commands in `hive.yml`: the first `hive lead` in a project shows the values and asks once, and any edit asks again. Until then they render as unset, which is visible in `hive runbook` and `hive posture`. This is not a reason to open a checkout you do not trust: Claude Code loads a repo's own `CLAUDE.md` as context whatever hive does. It only keeps hive from being the thing that promotes repo text into a system prompt unasked.
+
+Your forks are never overwritten. hive records the hash of what it shipped at fork time, so `hive profile list` and `hive doctor` can tell you when upstream moved and leave the decision to you.
+
+### Session-start kickoff (optional plugin)
+
+Symlink the plugin once per machine (not per project) and a session opened in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, pending wake-ups, and an instruction to run triage.
+
+```bash
+ln -s <checkout>/claude-plugin ~/.claude/skills/hive
+```
+
+One symlink covers every project on the machine, so there is nothing to repeat when you add the next one. `hive init` checks for it and tells you which of the three states you are in: not installed, already installed, or pointing at a different hive checkout.
+
+A folder under a skills directory holding `.claude-plugin/plugin.json` loads as a plugin on the next session, discovered in place rather than copied, so it upgrades with `git pull && npm run build` like everything else. It stays silent everywhere else: in a worker session, in a directory with no `hive.yml`, on a feature branch, below the project root, or when the profile named in a committed `hive.yml` is not on this machine. Run `hive kickoff --explain` anywhere to see which gate stopped it.
+
+### Runbook and board (`hive init`)
+
+`hive init` sets a project up. It writes a starter `hive.yml`, asks which profile the project should use (or takes `--profile <name>` / `--no-profile`), and seeds the `board` pad, the live picture of the work.
+
+A project **with** a profile reads its process from `hive runbook` and gets no runbook pad; a second copy in the store would only go stale. A project on `profile: none` gets the `runbook` pad instead, seeded with a starter template whose first-run section has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite it to fit. Either way `hive runbook` prints the right one.
+
+After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the standing process before orchestrating. The server also exposes three playbook prompts, which Claude Code surfaces as slash commands: `/mcp__hive__triage` runs the morning ritual, `/mcp__hive__orchestrate` loads the lead/worker pattern, and `/mcp__hive__wrapup` closes the day (handoffs, worker close-out, board rotation).
 
 The board holds today's lanes, what's waiting on you, and what's next up. The runbook instructs the lead to update it the moment tasks change (todos created, re-scoped, blocked, completed; lanes started or finished), keep it small, and at day end `pad_archive` it and write a fresh one under the same name. Archiving frees the name and keeps history readable via `pad_list(include_archived=true)`.
 
@@ -125,7 +184,7 @@ processes:
 
 Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output`. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
 
-Other CLI commands: `hive status` prints every project's running agents, commands, open todos, and timers in one shot; `hive doctor` checks the environment (node, tmux, claude, database, hooks) and sweeps stale state. The sweep also runs continuously: agents whose windows died get closed automatically, and timers pointing at dead panes get cancelled.
+Other CLI commands: `hive status` prints every project's running agents, commands, open todos, and timers in one shot; `hive runbook` prints this project's standing process; `hive posture` prints the posture its lead runs with; `hive profile list` shows the profiles hive can see; `hive kickoff --explain` says whether a session here would get the session-start injection and why; `hive doctor` checks the environment (node, tmux, claude, database, hooks, and the active profile) and sweeps stale state. The sweep also runs continuously: agents whose windows died get closed automatically, and timers pointing at dead panes get cancelled.
 
 Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --edit` exports it to a temp markdown file and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit, save, then `hive pad <name> --save` writes it back. The export encodes the pad revision, so if a session changed the pad while you edited, the save fails with merge instructions instead of clobbering; your edits stay in the temp file. Temp exports live in the system temp dir and clean themselves up on save (macOS purges strays automatically).
 
@@ -157,6 +216,7 @@ npm run build
 npm link             # puts the hive command on your PATH
 brew install tmux
 claude mcp add --scope user hive -- node "$(pwd)/dist/index.js"
+ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
 hive doctor         # verify: node, tmux, claude, database, hooks all green
 ```
 
@@ -213,6 +273,8 @@ npm install             # only matters when dependencies changed; harmless other
 npm run build
 ```
 
+The plugin symlink is a live pointer too, so the session-start hook and the shipped profile defaults update with the same pull. Files you forked into `~/.hive/profiles/` are yours and are never touched; `hive doctor` tells you when hive's version of one moved.
+
 The new code reaches each entry point at a different time:
 
 - The `hive` CLI picks it up immediately; every invocation is a fresh process.
@@ -223,13 +285,14 @@ When developing hive itself, this project's `hive.yml` auto-starts `npm run watc
 
 ## Uninstall
 
-Hive touches four things on a machine; remove them in any order:
+Hive touches five things on a machine; remove them in any order:
 
 ```bash
 tmux kill-server                # stop any running hive sessions first
 claude mcp remove hive          # the MCP registration (add --scope user if registered there)
 npm rm -g hive                  # the linked hive command
-rm -rf ~/.hive                  # database, hooks file, and ALL shared state
+rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made it
+rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
 
 Then revoke the automation permission under System Settings > Privacy & Security > Automation (the entry allowing your terminal to control iTerm), and delete the checkout.
@@ -256,7 +319,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `project_add` | Registers a directory as its own project | To split a worktree or subdirectory off from its parent repo's state |
 | `project_select` | Points this session at another project | Cross-project work you asked for by name; workers with `HIVE_PROJECT_LOCK=1` can't |
 | **agents** | | |
-| `agent_spawn` | Starts a worker (default `claude`) in a tmux pane or window, locked to the project | One worker per parallel work stream; prepend the returned instructions to your first `agent_send` |
+| `agent_spawn` | Starts a worker (default `claude`) in a tmux pane or window, locked to the project | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |
 | `agent_status` | One agent in detail, with a short terminal tail | To check on a specific worker |
 | `agent_send` | Types text or key presses into a worker's terminal | To give a worker its task, answer a prompt, or press Enter/Escape for it |
@@ -310,6 +373,7 @@ Conventions borrowed from tools that got this right:
 | `HIVE_PROJECT_LOCK` | Set to `1` to reject all cross-project access in this session (good for workers) | off |
 | `HIVE_AUTO_ATTACH` | Set to `0` to stop spawns from popping open a terminal when nothing is attached | on |
 | `HIVE_SPAWN_PLACEMENT` | `split` (workers tile as panes in the lead's window) or `window` (tab per worker) | `split` |
+| `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt before typing its `[hive]` line | `8000` |
 
 ## Development
 

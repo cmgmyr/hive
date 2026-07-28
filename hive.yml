@@ -11,6 +11,12 @@ layout: main-vertical           # pane arrangement for placement: split.
 
 lead: claude --model opus       # custom command for the lead window (default: claude)
 
+profile: orchestration          # standing instructions (hive profile list)
+lead_branches: [main]           # where the session-start kickoff fires
+vars:
+  repo: cmgmyr/hive
+  install: npm install && npm run build
+
 processes:
 #  watch: npm run watch         # recompile dist/ on every save
 
