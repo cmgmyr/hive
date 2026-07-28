@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { errorMessage } from "./result.js";
+import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 
 // hive.yml: minimal repo-controlled project config.
 //
@@ -28,6 +29,7 @@ export interface YmlProcess {
 export interface ProjectYml {
   lead: string | null;
   placement: "split" | "window" | null;
+  layout: WindowLayout | null;
   processes: Record<string, YmlProcess>;
 }
 
@@ -59,6 +61,16 @@ export function loadProjectYml(projectPath: string): {
       placement = root.placement;
     } else {
       warnings.push(`placement must be "split" or "window"; ignoring "${String(root.placement)}".`);
+    }
+  }
+  let layout: WindowLayout | null = null;
+  if (root.layout != null) {
+    if (isWindowLayout(root.layout)) {
+      layout = root.layout;
+    } else {
+      warnings.push(
+        `layout must be one of ${WINDOW_LAYOUTS.join(", ")}; ignoring "${String(root.layout)}".`,
+      );
     }
   }
   const processes: Record<string, YmlProcess> = {};
@@ -99,7 +111,7 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
-  return { config: { lead, placement, processes }, warnings };
+  return { config: { lead, placement, layout, processes }, warnings };
 }
 
 // A command's trust is tied to everything that affects what it executes.

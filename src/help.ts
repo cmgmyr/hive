@@ -94,12 +94,16 @@ Rules that keep this sane:
 
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
-  agent_spawn(name?, model?, command?, extra_args?, cwd?, placement?) —
+  agent_spawn(name?, model?, command?, extra_args?, cwd?, placement?, layout?) —
     start a worker (default command: claude) in session hive-<project_id>.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
-    its own tmux window (iTerm tab). Projects can set a default placement
-    in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
+    its own tmux window (iTerm tab). layout picks how split panes are
+    arranged: tiled (default), main-vertical (lead takes the left half,
+    workers stack on the right), main-horizontal, even-horizontal,
+    even-vertical. hive re-applies it when a worker closes, so the
+    arrangement survives crew changes. Projects can set a default placement
+    and layout in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
     a git worktree path to isolate parallel file edits. Returns instructions
     to PREPEND to the first prompt. Workers run with HIVE_PROJECT_LOCK=1.
   agent_send(agent_id|name, text?, keys?, submit?, wait_ms?) — type into the

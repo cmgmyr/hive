@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { dataDirTag } from "./dataDir.js";
 
 export function tmux(...args: string[]): string {
   try {
@@ -54,7 +55,10 @@ export function claimInitialWindow(
 }
 
 export const SESSION_PREFIX = "hive-";
-export const sessionName = (projectId: number) => `${SESSION_PREFIX}${projectId}`;
+// dataDirTag is empty for the default store, so the everyday name stays the
+// documented hive-<project_id>. A scratch store gets its own namespace; see
+// src/dataDir.ts for why sharing one is dangerous.
+export const sessionName = (projectId: number) => `${SESSION_PREFIX}${dataDirTag}${projectId}`;
 
 // Window names double as iTerm tab titles (and notification labels), so they
 // carry the project name: "hive - lead", "hive - worker-1".
@@ -93,6 +97,80 @@ export function liveTargets(): AliveSnapshot {
 
 export function targetAlive(target: string, snapshot: AliveSnapshot): boolean {
   return isPaneTarget(target) ? snapshot.panes.has(target) : snapshot.windows.has(target);
+}
+
+// tmux layout presets hive can apply to a window of split-placed workers.
+export const WINDOW_LAYOUTS = [
+  "tiled",
+  "main-vertical",
+  "main-horizontal",
+  "even-horizontal",
+  "even-vertical",
+] as const;
+export type WindowLayout = (typeof WINDOW_LAYOUTS)[number];
+export const DEFAULT_LAYOUT: WindowLayout = "tiled";
+
+export const isWindowLayout = (value: unknown): value is WindowLayout =>
+  typeof value === "string" && (WINDOW_LAYOUTS as readonly string[]).includes(value);
+
+// The main-* layouts give one pane the lead role. tmux picks it by position
+// (the first pane in the window), not by name; the lead holds that spot
+// because splits always append after it.
+const MAIN_PANE_OPTION: Partial<Record<WindowLayout, { option: string; dimension: string }>> = {
+  "main-vertical": { option: "main-pane-width", dimension: "#{window_width}" },
+  "main-horizontal": { option: "main-pane-height", dimension: "#{window_height}" },
+};
+
+// Percentages for main-pane-width/height need tmux 3.4+; older versions type
+// the option as a number and reject "50%". Fall back to half the window in
+// cells so an old tmux still gets a lead-prominent layout.
+function sizeMainPane(window: string, spec: { option: string; dimension: string }): void {
+  try {
+    tmux("set-window-option", "-t", window, spec.option, "50%");
+    return;
+  } catch {
+    // Pre-3.4 tmux; fall through to cells.
+  }
+  // list-panes errors on a dead window instead of reporting another one's size.
+  const cells = Math.floor(Number(tmux("list-panes", "-t", window, "-F", spec.dimension).split("\n")[0]) / 2);
+  if (Number.isFinite(cells) && cells > 0) {
+    tmux("set-window-option", "-t", window, spec.option, String(cells));
+  }
+}
+
+// Arranging panes is cosmetic: a worker is already running by the time we get
+// here, so a tmux that cannot do what we asked must not fail the spawn. The
+// applied layout is stashed on the window so a later re-tile (agent_close)
+// can restore it, including a per-spawn override that is not in hive.yml.
+export function applyLayout(window: string, layout: WindowLayout): void {
+  try {
+    const main = MAIN_PANE_OPTION[layout];
+    if (main) sizeMainPane(window, main);
+    tmux("select-layout", "-t", window, layout);
+    tmux("set-window-option", "-t", window, "@hive-layout", layout);
+  } catch {
+    // Leave tmux's own arrangement in place.
+  }
+}
+
+// The layout hive last applied to this window, if any.
+export function windowLayout(window: string): WindowLayout | null {
+  try {
+    const value = tmux("list-panes", "-t", window, "-F", "#{@hive-layout}").split("\n")[0];
+    return isWindowLayout(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// The window a live pane belongs to. list-panes errors on a dead pane;
+// display-message would answer for some other window instead.
+export function paneWindow(pane: string): string | null {
+  try {
+    return tmux("list-panes", "-t", pane, "-F", "#{session_name}:#{window_id}").split("\n")[0] || null;
+  } catch {
+    return null;
+  }
 }
 
 export function paneCurrentCommand(target: string): string | null {

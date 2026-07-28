@@ -6,6 +6,14 @@ import { join } from "node:path";
 export const SERVER = new URL("../dist/index.js", import.meta.url).pathname;
 export const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 
+// The suite is normally run from inside a hive worker pane, whose env carries
+// HIVE_AGENT_ID, HIVE_PROJECT_LOCK and friends. Inheriting those makes a
+// spawned server think it is that worker, so drop the whole namespace and let
+// each helper set back only what it means to. Explicit per-call env still wins.
+function baseEnv() {
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HIVE_")));
+}
+
 export function scratchDirs() {
   // realpath because macOS tmpdir is a symlink (/var -> /private/var) and
   // hive resolves project paths to their real location.
@@ -24,7 +32,7 @@ export class McpClient {
     this.child = spawn("node", [SERVER], {
       cwd,
       env: {
-        ...process.env,
+        ...baseEnv(),
         HIVE_DATA_DIR: dataDir,
         HIVE_AUTO_ATTACH: "0",
         ...env,
@@ -103,7 +111,7 @@ export function runCli(args, { cwd, dataDir, tmp, env = {} } = {}) {
     const child = spawn("node", [CLI, ...args], {
       cwd,
       env: {
-        ...process.env,
+        ...baseEnv(),
         HIVE_DATA_DIR: dataDir,
         HIVE_AUTO_ATTACH: "0",
         HIVE_EDITOR: "true",

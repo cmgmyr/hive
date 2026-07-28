@@ -206,7 +206,12 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # Commands defined here run only after a one-time interactive approval,
 # and re-require it whenever they change.
 
-placement: split                # worker layout: split (panes) or window (tabs)
+placement: split                # worker placement: split (panes) or window (tabs)
+
+# layout: main-vertical         # pane arrangement for placement: split.
+                                # tiled (default) | main-vertical | main-horizontal
+                                # | even-horizontal | even-vertical.
+                                # main-* gives the lead half the window.
 
 # lead: claude --model opus     # custom command for the lead window (default: claude)
 

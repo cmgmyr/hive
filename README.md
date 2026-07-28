@@ -92,6 +92,8 @@ hive
 
 Layout: by default workers spawn as panes in the lead's window, auto-tiled, which iTerm renders as native split panes. Full-screen the project window and the whole crew (lead plus workers) shares one screen; iTerm's normal pane navigation and resizing work. Each project is its own window, so drag project windows together as tabs if you like tabs. Prefer a tab per worker instead? Set `placement: window` in the project's `hive.yml`, pass `placement: "window"` on a single spawn, or set `HIVE_SPAWN_PLACEMENT=window` machine-wide. Spawn argument beats project config beats env.
 
+Want the lead to have a prominent pane instead of an even grid? Set `layout: main-vertical` in `hive.yml` (or pass `layout: "main-vertical"` on a single spawn) and the lead fills the left half with workers stacked on the right. The options are `tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, and `even-vertical`; the `main-*` ones give the lead half the window. hive re-applies the layout when a worker closes as well as when one spawns, so it survives crew changes.
+
 If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers are always visible. macOS will ask once to allow controlling iTerm; approve it. Set `HIVE_AUTO_ATTACH=0` to turn the auto-open behavior off.
 
 ### Runbook (`hive init`)
@@ -108,7 +110,9 @@ Define a project's dev processes and lead in a `hive.yml` at the project root; `
 
 ```yaml
 lead: claude --model opus     # optional command for the lead window
-placement: split              # optional worker layout: split (panes, default) or window (tabs)
+placement: split              # optional worker placement: split (panes, default) or window (tabs)
+layout: main-vertical         # optional pane arrangement for split: tiled (default),
+                              # main-vertical, main-horizontal, even-horizontal, even-vertical
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
   typecheck:                  # expanded form
