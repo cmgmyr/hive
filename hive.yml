@@ -4,10 +4,15 @@
 
 placement: split                # worker layout: split (panes) or window (tabs)
 
-lead: claude --model opus     # custom command for the lead window (default: claude)
+layout: main-vertical           # pane arrangement for placement: split.
+                                # tiled (default) | main-vertical | main-horizontal
+                                # | even-horizontal | even-vertical.
+                                # main-* gives the lead half the window.
+
+lead: claude --model opus       # custom command for the lead window (default: claude)
 
 processes:
-  watch: npm run watch          # recompile dist/ on every save
+#  watch: npm run watch         # recompile dist/ on every save
 
 # Expanded process form:
 #   typecheck:
