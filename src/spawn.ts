@@ -1,5 +1,14 @@
 import { dataDir, db } from "./db.js";
-import { claimInitialWindow, ensureSession, sessionName, tmux, windowTitle } from "./tmux.js";
+import {
+  applyLayout,
+  claimInitialWindow,
+  DEFAULT_LAYOUT,
+  ensureSession,
+  sessionName,
+  tmux,
+  windowTitle,
+  type WindowLayout,
+} from "./tmux.js";
 
 // The one place that knows the launch protocol shared by MCP agent_spawn and
 // the CLI's hive.yml commands: insert the row, derive the actor id, create
@@ -15,6 +24,8 @@ export interface LaunchSpec {
   cwd: string;
   env: Record<string, string>;
   placement: "split" | "window";
+  // How the lead's window is arranged when placement is "split".
+  layout?: WindowLayout;
   parentActor: string;
 }
 
@@ -80,7 +91,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
         "split-window", "-P", "-F", "#{pane_id}",
         "-t", win, "-c", spec.cwd, ...envFlags, spec.commandString,
       );
-      tmux("select-layout", "-t", win, "tiled");
+      applyLayout(win, spec.layout ?? DEFAULT_LAYOUT);
     } else {
       target = tmux(
         "new-window", "-P", "-F", "#{session_name}:#{window_id}",

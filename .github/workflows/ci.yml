@@ -14,6 +14,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # The layout tests drive a real tmux server; without this they skip.
+      - run: brew install tmux
+      - run: tmux -V
       - run: npm ci
       - run: npm run build
       - run: npm test

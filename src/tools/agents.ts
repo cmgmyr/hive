@@ -8,18 +8,23 @@ import { loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
 import { closeAgentRow, launchAgent } from "../spawn.js";
 import {
+  applyLayout,
   capturePane,
+  DEFAULT_LAYOUT,
   ensureAttached,
   isPaneTarget,
   liveTargets,
   paneCurrentCommand,
+  paneWindow,
   sendText,
   sessionName,
   shellQuote,
   sleep,
   targetAlive,
   tmux,
+  WINDOW_LAYOUTS,
   windowAlive,
+  windowLayout,
   type AliveSnapshot,
 } from "../tmux.js";
 import { projectIdParam } from "./params.js";
@@ -137,6 +142,12 @@ export function registerAgents(server: McpServer): void {
           .describe(
             "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (iTerm tab).",
           ),
+        layout: z
+          .enum(WINDOW_LAYOUTS)
+          .optional()
+          .describe(
+            "How to arrange the lead's window when placement is split. main-vertical gives the lead the left half with workers stacked on the right; tiled (default) splits evenly. Projects can set a default in hive.yml.",
+          ),
         project_id: projectIdParam,
       },
     },
@@ -177,10 +188,12 @@ export function registerAgents(server: McpServer): void {
         ]
           .map(shellQuote)
           .join(" ");
+        const projectConfig = loadProjectYml(project.path).config;
         const placement =
           args.placement ??
-          loadProjectYml(project.path).config?.placement ??
+          projectConfig?.placement ??
           (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
         const { agentId, actorId, target } = launchAgent({
           projectId: project.id,
@@ -192,6 +205,7 @@ export function registerAgents(server: McpServer): void {
           cwd,
           env: {},
           placement,
+          layout,
           parentActor: parent,
         });
         ensureAttached(sessionName(project.id));
@@ -343,7 +357,18 @@ export function registerAgents(server: McpServer): void {
           );
         }
         if (isLive(agent)) {
-          tmux(isPaneTarget(agent.tmux_target) ? "kill-pane" : "kill-window", "-t", agent.tmux_target);
+          const pane = isPaneTarget(agent.tmux_target);
+          // Resolve the window before the pane dies, then re-tile the
+          // survivors: tmux's own redistribution otherwise wipes the
+          // arrangement hive applied on spawn.
+          const window = pane ? paneWindow(agent.tmux_target) : null;
+          tmux(pane ? "kill-pane" : "kill-window", "-t", agent.tmux_target);
+          if (window) {
+            applyLayout(
+              window,
+              windowLayout(window) ?? loadProjectYml(project.path).config?.layout ?? DEFAULT_LAYOUT,
+            );
+          }
         }
         closeAgentRow(agent.id);
         return { agent_id: agent.id, name: agent.name, closed: true };
