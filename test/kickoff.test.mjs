@@ -147,6 +147,83 @@ describe("hive kickoff gates", () => {
   });
 });
 
+describe("hive kickoff hive.yml warnings", () => {
+  const warned = scratchDirs();
+  const warnedOpts = { cwd: warned.projectDir, dataDir: warned.dataDir, tmp: warned.tmp };
+  const warnedYml = (body) => writeFileSync(join(warned.projectDir, "hive.yml"), body);
+  // A profile that exists plus a key that does not parse: the kickoff fires
+  // and the warning has somewhere to land.
+  const BROKEN = "profile: orchestration\nlayout: main-verticle\n";
+
+  before(async () => {
+    warnedYml(BROKEN);
+    const init = await runCli(["init"], warnedOpts);
+    assert.equal(init.code, 0, init.stderr);
+  });
+
+  it("puts them in the digest, above the board", async () => {
+    const { additionalContext } = fired((await runNode(KICKOFF, [], warnedOpts)).stdout);
+    assert.match(additionalContext, /^! hive\.yml: layout must be one of/m);
+    assert.ok(
+      additionalContext.indexOf("! hive.yml:") < additionalContext.indexOf("BOARD"),
+      "a warning below the board is the first thing a long board truncates away",
+    );
+  });
+
+  it("keeps them when a long board fills the budget", async () => {
+    const mcp = new McpClient({ cwd: warned.projectDir, dataDir: warned.dataDir });
+    await mcp.start();
+    try {
+      const board = await mcp.call("pad_read", { name: "board" });
+      await mcp.call("pad_write", {
+        name: "board",
+        pad_id: board.pad_id,
+        content: `TODAY\n${"lane detail that nobody trimmed. ".repeat(2000)}`,
+        expected_revision: board.revision,
+      });
+    } finally {
+      await mcp.close();
+    }
+
+    const { stdout } = await runNode(KICKOFF, [], warnedOpts);
+    const { additionalContext } = fired(stdout);
+    assert.match(additionalContext, /\[truncated\]/, "the board must actually be hitting the cap");
+    assert.match(additionalContext, /! hive\.yml: layout must be one of/);
+  });
+
+  it("still says the store is empty when a warning sits above it", async () => {
+    const empty = scratchDirs();
+    const emptyOpts = { cwd: empty.projectDir, dataDir: empty.dataDir, tmp: empty.tmp };
+    writeFileSync(join(empty.projectDir, "hive.yml"), BROKEN);
+    // Registered without `hive init`, so the project has no board or runbook
+    // pad and the digest has nothing but the warning to report.
+    const mcp = new McpClient({ cwd: empty.projectDir, dataDir: empty.dataDir });
+    await mcp.start();
+    await mcp.call("whoami");
+    await mcp.close();
+
+    const { additionalContext } = fired((await runNode(KICKOFF, [], emptyOpts)).stdout);
+    assert.match(additionalContext, /! hive\.yml: layout must be one of/);
+    assert.match(additionalContext, /The store is empty for this project/);
+  });
+
+  it("reports them on --explain even when the kickoff declines", async () => {
+    // The gate that matters: no profile means silence, and silence is the one
+    // state where nothing else in the session would ever mention hive.yml.
+    warnedYml("layout: main-verticle\n");
+    const { code, stdout } = await runNode(KICKOFF, ["--explain"], warnedOpts);
+    assert.equal(code, 0);
+    assert.match(stdout, /! hive\.yml: layout must be one of/);
+    assert.match(stdout, /silent \(no profile in hive\.yml\)/);
+  });
+
+  it("stays silent about a hive.yml it never parsed", async () => {
+    const { stdout } = await runNode(KICKOFF, ["--explain"], { ...warnedOpts, cwd: warned.tmp });
+    assert.match(stdout, /silent \(no hive\.yml here\)/);
+    assert.doesNotMatch(stdout, /hive\.yml:/);
+  });
+});
+
 describe("hive kickoff branch gate", () => {
   const repo = scratchDirs();
   const repoOpts = { cwd: repo.projectDir, dataDir: repo.dataDir, tmp: repo.tmp };

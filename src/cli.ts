@@ -762,11 +762,15 @@ function cmdDoctor(): void {
     return `${dataDir} (schema v${n})`;
   });
   check("hooks file", () => ensureHooksFile());
-  // Reported, never failed: hive cannot tell a deliberately omitted var from
-  // a forgotten one, and a hive.yml naming a profile a teammate does not have
-  // is a normal state, not a broken install.
+  // Everything below is reported, never failed. A parse warning already has a
+  // fallback, hive cannot tell a deliberately omitted var from a forgotten one,
+  // and a hive.yml naming a profile a teammate does not have is a normal state,
+  // not a broken install. Doctor read the profile out of hive.yml but never
+  // looked at the parse, so a malformed one used to pass a clean run.
   const here = findProjectForCwd();
-  const config = here ? loadProjectYml(here.path).config : null;
+  const loaded = here ? loadProjectYml(here.path) : null;
+  for (const w of loaded?.warnings ?? []) console.log(`  warn  hive.yml: ${w}`);
+  const config = loaded?.config ?? null;
   const profile = activeProfile(config);
   if (here && profile) {
     const files = profileStatus(profile).files;

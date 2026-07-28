@@ -184,7 +184,7 @@ export function registerAgents(server: McpServer): void {
         const isClaude = isClaudeCommand(baseCommand);
         // The brief names the agent, so it can only be written once the row
         // exists; launchAgent calls this back with the ids it just allocated.
-        const projectConfig = loadProjectYml(project.path).config;
+        const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
         const briefFor = (actorId: string) => ({
           name,
           actorId,
@@ -257,6 +257,11 @@ export function registerAgents(server: McpServer): void {
           actor_id: actorId,
           name,
           tmux_target: target,
+          // The lead has no other channel to learn its hive.yml is malformed:
+          // loadProjectYml already fell back to a default, so the spawn looks
+          // clean. Reported, never fatal, and omitted when there is nothing to
+          // say (slim receipts).
+          ...(configWarnings.length > 0 ? { config_warnings: configWarnings } : {}),
           ...(isClaude
             ? {
                 brief_path: agentBriefPath(agentId),

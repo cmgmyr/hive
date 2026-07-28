@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,55 @@ export function scratchDirs() {
     projectDir: mkdtempSync(join(root, "project-")),
     tmp: mkdtempSync(join(root, "tmp-")),
   };
+}
+
+// Puts this process, and every child that inherits its env, on a private tmux
+// server. Call it at module top level, before anything spawns tmux.
+//
+// Every tmux call in the suite, including the ones inside dist/tmux.js,
+// inherits this env. Pointing TMUX_TMPDIR at a private socket dir keeps the
+// suite off the developer's own server, so a hard crash cannot strand a
+// session there; clearing TMUX/TMUX_PANE stops tmux from treating the pane
+// running the tests as a target. Short dir: unix socket paths cap out around
+// 104 bytes.
+//
+// This lives here because it encodes a stated invariant (see CLAUDE.md), and a
+// second hand-rolled copy that drifts fails open: it talks to the real server
+// and can act on the session the developer is working in.
+//
+// Returns { hasTmux, cleanup }. cleanup(...sessionNames) kills only the named
+// sessions and removes the socket dir. Never kill-server: the code under test
+// resolves its server from the ambient env, so the suite cannot pin one with
+// -L, and a bare kill-server takes down whatever that env points at.
+export function isolateTmux(suite) {
+  const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
+  process.env.TMUX_TMPDIR = tmuxTmp;
+  delete process.env.TMUX;
+  delete process.env.TMUX_PANE;
+
+  let hasTmux = true;
+  try {
+    execFileSync("tmux", ["-V"], { stdio: "ignore" });
+  } catch {
+    hasTmux = false;
+  }
+  // CI installs tmux, so a skip there means the workflow lost that step and
+  // these tests are quietly covering nothing. Fail instead of skipping.
+  if (!hasTmux && process.env.CI) {
+    throw new Error(`tmux is missing on CI; ${suite} cannot run. Restore the install step in ci.yml.`);
+  }
+
+  const cleanup = (...sessions) => {
+    for (const session of sessions) {
+      try {
+        execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
+      } catch {
+        // Never started, or already gone.
+      }
+    }
+    rmSync(tmuxTmp, { recursive: true, force: true });
+  };
+  return { hasTmux, cleanup };
 }
 
 // Minimal MCP stdio client. Requests are sent sequentially; the server

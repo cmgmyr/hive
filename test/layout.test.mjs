@@ -1,42 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { loadProjectYml } from "../dist/projectYml.js";
 import { applyLayout, paneWindow, windowLayout } from "../dist/tmux.js";
+import { isolateTmux } from "./helpers.mjs";
 
-// Every tmux call below, including the ones inside dist/tmux.js, inherits this
-// process's env. Pointing TMUX_TMPDIR at a private socket dir keeps the suite
-// off the developer's own tmux server, so a hard crash cannot strand a session
-// there; clearing TMUX/TMUX_PANE stops tmux from treating the pane running the
-// tests as a target. Short dir: unix socket paths cap out around 104 bytes.
-const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
-process.env.TMUX_TMPDIR = tmuxTmp;
-delete process.env.TMUX;
-delete process.env.TMUX_PANE;
+const { hasTmux, cleanup } = isolateTmux("the layout tests");
 
 function ymlProject(body) {
   const dir = mkdtempSync(join(tmpdir(), "hive-yml-"));
   writeFileSync(join(dir, "hive.yml"), body);
   return dir;
-}
-
-const hasTmux = (() => {
-  try {
-    execFileSync("tmux", ["-V"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-})();
-
-// CI installs tmux, so a skip there means the workflow lost that step and these
-// tests are quietly covering nothing. Fail instead of skipping.
-if (!hasTmux && process.env.CI) {
-  throw new Error("tmux is missing on CI; the layout tests cannot run. Restore the install step in ci.yml.");
 }
 
 describe("hive.yml layout", () => {
@@ -66,19 +44,7 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
   const session = `hive-layout-test-${process.pid}`;
   const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
 
-  after(() => {
-    try {
-      // Never kill-server here. The code under test resolves its server from
-      // the ambient env, so the suite cannot pin one with -L, and a bare
-      // kill-server takes down whatever server that env happens to point at --
-      // including the developer's own if the isolation above ever fails to
-      // apply. Killing this one session caps the blast radius at our own.
-      execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
-    } catch {
-      // Never started, or already gone.
-    }
-    rmSync(tmuxTmp, { recursive: true, force: true });
-  });
+  after(() => cleanup(session));
 
   const panes = (window) =>
     tmux("list-panes", "-t", window, "-F", "#{pane_id} #{pane_width} #{pane_height} #{pane_left} #{pane_top}")

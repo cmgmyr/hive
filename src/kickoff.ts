@@ -25,6 +25,11 @@ export interface KickoffResult {
   // printed during a real session start.
   reason?: string;
   payload?: string;
+  // hive.yml parse warnings, present once the file has been read. Absent for
+  // the gates that decline before that (worker session, no hive.yml here):
+  // nothing was parsed, so there is nothing to report. hive doctor is the
+  // check that looks at a project's config from anywhere.
+  warnings?: string[];
 }
 
 function currentBranch(dir: string): string | null {
@@ -47,7 +52,7 @@ function truncate(text: string, limit: number): string {
 
 // The live digest. Imported lazily by run() so a directory that fails an
 // earlier gate never opens the store.
-async function digest(projectPath: string, profile: string): Promise<string | null> {
+async function digest(projectPath: string, profile: string, warnings: string[]): Promise<string | null> {
   const { migrate, db } = await import("./db.js");
   const { findProjectForCwd } = await import("./context.js");
   const { ACTIVE_TIMER_WHERE } = await import("./scheduler.js");
@@ -62,6 +67,16 @@ async function digest(projectPath: string, profile: string): Promise<string | nu
   if (!project || project.path !== projectPath) return null;
 
   const lines: string[] = [`[hive] Project "${project.name}" (profile: ${profile}).`];
+
+  // Directly under the header, above everything that can grow. truncate cuts
+  // from the end, so a warning placed here survives a board that fills the
+  // whole budget; below the board it would be the first thing lost, and a
+  // warning the lead never sees is no warning. `! ` matches what `hive lead`
+  // and `hive start` print for the same messages.
+  for (const w of warnings) lines.push(`! hive.yml: ${w}`);
+  // Where the state sections start. "Nothing is in flight" is about the store,
+  // so it must not be silenced by a warning having been pushed above it.
+  const headerLines = lines.length;
 
   const board = getActivePadByName(project.id, "board");
   if (board) {
@@ -119,7 +134,9 @@ async function digest(projectPath: string, profile: string): Promise<string | nu
     .get(project.id) as { n: number };
   if (wakes.n > 0) lines.push("", `WAKE-UPS: ${wakes.n} pending (wake_list for detail).`);
 
-  if (lines.length === 1) lines.push("", "The store is empty for this project. Nothing is in flight.");
+  if (lines.length === headerLines) {
+    lines.push("", "The store is empty for this project. Nothing is in flight.");
+  }
   lines.push("", "Standing process for this project: run `hive runbook`.");
 
   return truncate(lines.join("\n"), CONTEXT_BUDGET);
@@ -155,22 +172,32 @@ export async function evaluate(cwd: string): Promise<KickoffResult> {
   // decision the two checks above already made.
   const { activeProfile, DEFAULT_LEAD_BRANCHES, loadProjectYml } = await import("./projectYml.js");
   const { profileExists } = await import("./profiles.js");
-  const { config } = loadProjectYml(dir);
+  const { config, warnings } = loadProjectYml(dir);
+  // Every gate from here on carries the warnings out, so `hive kickoff
+  // --explain` can report a malformed hive.yml even for a session start that
+  // declined.
+  const silent = (reason: string): KickoffResult => ({ fired: false, reason, warnings });
   const profile = activeProfile(config);
-  if (!profile) return { fired: false, reason: "no profile in hive.yml" };
-  if (!profileExists(profile)) return { fired: false, reason: `profile "${profile}" is not on this machine` };
+  // Still silence, even when `warnings` is non-empty. A hive.yml broken badly
+  // enough to lose its `profile` key is exactly the case where hive does not
+  // know whether this directory is a lead checkout at all, and firing to
+  // announce that would break the contract at the top of this file: a
+  // teammate without the profile, on the wrong branch, or in an unrelated repo
+  // must get nothing. `hive doctor` reports this one instead, from anywhere.
+  if (!profile) return silent("no profile in hive.yml");
+  if (!profileExists(profile)) return silent(`profile "${profile}" is not on this machine`);
 
   // 4. A lead branch. A worktree on a feature branch is a worker's, not a
   // lead's. A project outside git has no branch to be wrong about.
   const branch = currentBranch(dir);
   const leadBranches = config?.lead_branches ?? DEFAULT_LEAD_BRANCHES;
   if (branch != null && !leadBranches.includes(branch)) {
-    return { fired: false, reason: `branch "${branch}" is not a lead branch (${leadBranches.join(", ")})` };
+    return silent(`branch "${branch}" is not a lead branch (${leadBranches.join(", ")})`);
   }
 
   // 5. Registered, and this is its root. First gate that needs the store.
-  const context = await digest(dir, profile);
-  if (context == null) return { fired: false, reason: "not a registered hive project root" };
+  const context = await digest(dir, profile, warnings);
+  if (context == null) return silent("not a registered hive project root");
 
   const build = (text: string) =>
     JSON.stringify({
@@ -188,7 +215,7 @@ export async function evaluate(cwd: string): Promise<KickoffResult> {
     const overflow = payload.length - OUTPUT_BUDGET;
     payload = build(truncate(context, Math.max(0, context.length - overflow - 32)));
   }
-  return { fired: true, payload };
+  return { fired: true, payload, warnings };
 }
 
 export async function runKickoff(argv: string[] = []): Promise<void> {
@@ -203,6 +230,12 @@ export async function runKickoff(argv: string[] = []): Promise<void> {
     if (explain) console.log(`hive kickoff: silent (${e instanceof Error ? e.message : String(e)}).`);
     return;
   }
+  // --explain is the human's only window into a hook that is silent by design,
+  // so it reports a malformed hive.yml whether or not the kickoff fired. The
+  // declined case is the one that matters: nothing else in that session says
+  // anything at all. Printed above the payload rather than folded into it,
+  // because the reader of --explain is a person, not Claude Code.
+  if (explain) for (const w of result.warnings ?? []) console.log(`! hive.yml: ${w}`);
   if (result.fired && result.payload) {
     process.stdout.write(result.payload);
     if (explain) process.stdout.write("\n");
