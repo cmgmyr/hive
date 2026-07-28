@@ -78,6 +78,39 @@ describe("hive init profile selection", () => {
     assert.match(stdout, /rm ~\/\.claude\/skills\/hive && ln -s/);
   });
 
+  it("follows CLAUDE_CONFIG_DIR when claude's state lives outside ~/.claude", async () => {
+    // Claude Code relocates its whole state tree, plugins included, when
+    // CLAUDE_CONFIG_DIR is set. Reading ~/.claude regardless would report "not
+    // installed" to someone who has installed it, and hand them a command that
+    // links it where their claude never looks.
+    const { dirs, cli } = optsFor();
+    const configDir = join(dirs.tmp, "elsewhere-config");
+    mkdirSync(join(configDir, "skills"), { recursive: true });
+    symlinkSync(pluginDir, join(configDir, "skills", "hive"));
+    // ~/.claude stays empty, so a homedir()-only implementation says "missing".
+    skillsDir(dirs);
+
+    const env = { ...withHome(cli, join(dirs.tmp, "home")).env, CLAUDE_CONFIG_DIR: configDir };
+    const { code, stdout } = await runCli(["init", "--profile", "simple"], { ...cli, env });
+    assert.equal(code, 0);
+    assert.match(stdout, /already installed for this machine/);
+    assert.doesNotMatch(stdout, /ln -s/);
+  });
+
+  it("prints the real path, not ~, when the config dir is relocated", async () => {
+    // The install line has to be pasteable. "~/.claude/skills/hive" is a lie
+    // when claude is reading somewhere else.
+    const { dirs, cli } = optsFor();
+    const configDir = join(dirs.tmp, "elsewhere-config-2");
+    mkdirSync(join(configDir, "skills"), { recursive: true });
+    skillsDir(dirs);
+
+    const env = { ...withHome(cli, join(dirs.tmp, "home")).env, CLAUDE_CONFIG_DIR: configDir };
+    const { stdout } = await runCli(["init", "--profile", "simple"], { ...cli, env });
+    assert.match(stdout, new RegExp(`ln -s \\S+/claude-plugin ${configDir}/skills/hive`));
+    assert.doesNotMatch(stdout, /~\/\.claude\/skills\/hive/);
+  });
+
   it("records a decision against profiles and seeds the runbook pad", async () => {
     const { dirs, cli } = optsFor();
     const { code, stdout } = await runCli(["init", "--no-profile"], cli);

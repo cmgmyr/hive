@@ -3,7 +3,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { dataDir, db, migrate } from "./db.js";
 import {
@@ -382,13 +382,31 @@ NEXT UP
 <dispatchable todos worth starting when a lane frees>
 `;
 
+// Claude Code relocates its whole state tree, plugins included, when
+// CLAUDE_CONFIG_DIR is set. Keying off homedir() alone reports "not installed"
+// to anyone using a custom config dir, and prints them an install command that
+// puts the symlink where their claude will never look.
+export const claudeConfigDir = () =>
+  process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR) : join(homedir(), ".claude");
+
+const pluginLinkPath = () => join(claudeConfigDir(), "skills", "hive");
+
+// Printed paths keep the ~ shorthand only when that is where it actually
+// resolves; a custom config dir gets the real path, since the reader has to be
+// able to paste it.
+const displayLinkPath = () => {
+  const path = pluginLinkPath();
+  const fromHome = join(homedir(), ".claude", "skills", "hive");
+  return path === fromHome ? "~/.claude/skills/hive" : path;
+};
+
 // The session-start plugin is one symlink per MACHINE, not per project, so
 // `hive init` in the second project should not advertise something already
 // installed. hive never creates or removes it; it only reports what it finds.
 function pluginInstallState(): { state: "missing" | "linked" | "elsewhere"; target?: string } {
   let target: string;
   try {
-    target = realpathSync(join(homedir(), ".claude", "skills", "hive"));
+    target = realpathSync(pluginLinkPath());
   } catch {
     return { state: "missing" };
   }
@@ -521,13 +539,13 @@ or decide against it with: hive init --no-profile`);
       console.log(`\nSession-start kickoff: already installed for this machine, nothing to do.
 Check what a session here would get with: hive kickoff --explain`);
     } else if (plugin.state === "elsewhere") {
-      console.log(`\n! ~/.claude/skills/hive resolves to ${plugin.target}, not this checkout.
+      console.log(`\n! ${displayLinkPath()} resolves to ${plugin.target}, not this checkout.
 Sessions here run THAT hive's kickoff. Repoint it if this checkout is the one you use:
-  rm ~/.claude/skills/hive && ln -s ${join(checkoutRoot, "claude-plugin")} ~/.claude/skills/hive`);
+  rm ${displayLinkPath()} && ln -s ${join(checkoutRoot, "claude-plugin")} ${displayLinkPath()}`);
     } else {
       console.log(`\nOptional, once per machine (not per project): let a session in this project
 start with hive's live state already loaded.
-  ln -s ${join(checkoutRoot, "claude-plugin")} ~/.claude/skills/hive`);
+  ln -s ${join(checkoutRoot, "claude-plugin")} ${displayLinkPath()}`);
     }
     console.log(`\nNext: run \`hive\` here. The lead starts with the "${chosen}" posture in its
 system prompt; \`hive runbook\` is the process it follows. Fork the runbook to

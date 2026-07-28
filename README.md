@@ -373,7 +373,7 @@ Conventions borrowed from tools that got this right:
 | `HIVE_PROJECT_LOCK` | Set to `1` to reject all cross-project access in this session (good for workers) | off |
 | `HIVE_AUTO_ATTACH` | Set to `0` to stop spawns from popping open a terminal when nothing is attached | on |
 | `HIVE_SPAWN_PLACEMENT` | `split` (workers tile as panes in the lead's window) or `window` (tab per worker) | `split` |
-| `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt before typing its `[hive]` line | `8000` |
+| `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box before typing its `[hive]` line. On timeout the line is skipped, not sent blindly; the worker's brief is unaffected either way | `45000` |
 
 ## Development
 

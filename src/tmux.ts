@@ -232,8 +232,9 @@ export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // A TUI is not ready for input the instant its pane exists: keystrokes sent
 // before it puts the terminal in raw mode sit in the pty buffer and can be
 // swallowed. Poll the rendered screen for claude's input box instead of
-// guessing a sleep. Returns false on timeout (or a dead pane); the caller
-// decides whether to type anyway.
+// guessing a sleep. Returns false on timeout (or a dead pane), and callers
+// must NOT type on a false: sending into a pane that has not taken the
+// terminal loses the text silently and reports success.
 export async function waitForPaneInput(target: string, timeoutMs: number): Promise<boolean> {
   const start = Date.now();
   const deadline = start + timeoutMs;
@@ -250,10 +251,13 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
     }
     // The prompt box border and the shortcuts hint both only appear once the
     // TUI has taken over the pane. This is claude's chrome, so it is coupled
-    // to its version: if a redesign drops both markers, this returns false at
-    // the timeout and the caller falls back to typing anyway, which is the
-    // behavior that shipped before this function existed. It degrades, it
-    // does not hang.
+    // to its version: if a redesign drops both markers, every spawn returns
+    // false at the timeout and no worker gets its visible [hive] line. That
+    // is loud rather than silent -- agent_spawn reports announced: false with
+    // a note every time -- and the system-prompt brief still lands, so the
+    // crew keeps working. It degrades, it does not hang, and it does not
+    // pretend. If you are here because announced is always false, check this
+    // regex against a current claude before changing the caller.
     if (/╰|for shortcuts/.test(screen)) {
       await sleep(250);
       return true;

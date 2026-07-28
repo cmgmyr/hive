@@ -104,8 +104,12 @@ function nextWorkerName(projectId: number): string {
 }
 
 // How long agent_spawn waits for claude's prompt box before typing the
-// visible first turn into the pane.
-const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 8000);
+// visible first turn into the pane. A cold claude loading plugins and MCP
+// servers routinely needs more than ten seconds, and an observed 8s default
+// missed the prompt box outright. Waiting costs one tmux fork per 500ms, so
+// the ceiling is generous on purpose: a slow start should delay the line, not
+// lose it.
+const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot) {
   const alive =
@@ -230,16 +234,18 @@ export function registerAgents(server: McpServer): void {
         // the transcript, so the pane gets a short line naming the worker: the
         // human watching sees exactly who this session thinks it is. Never let
         // a failure here fail a worker that is already running.
-        // announced is true only when the pane was READY before the line went
-        // in. On a timeout hive types anyway -- the keystrokes usually still
-        // land in the pty buffer -- but it must not claim a delivery it cannot
-        // vouch for: a lead trusting announced=true will never re-send a brief
-        // the worker never saw.
+        // Only type once the pane is confirmed ready. Typing into a TUI that
+        // has not taken the terminal yet was observed to swallow the line
+        // silently, which is strictly worse than not sending: the lead sees a
+        // spawn, the worker sees nothing, and nothing says so. Skipping makes
+        // announced=false mean "not sent", which a lead can act on.
+        // The brief itself rides in the system prompt and is unaffected either
+        // way, so a missed line costs visibility, not instructions.
         let announced = false;
         if (isClaude) {
           try {
             announced = await waitForPaneInput(target, PANE_READY_MS);
-            await sendText(target, paneAnnouncement(briefFor(actorId)));
+            if (announced) await sendText(target, paneAnnouncement(briefFor(actorId)));
           } catch {
             // Pane died or tmux refused; the receipt reports it below.
             announced = false;
@@ -258,7 +264,7 @@ export function registerAgents(server: McpServer): void {
                 ...(announced
                   ? {}
                   : {
-                      note: "The pane was not confirmed ready, so the [hive] line may not have registered. Check agent_output before assuming this worker was briefed.",
+                      note: "The pane never became ready, so the [hive] line was NOT sent. The system-prompt brief is loaded regardless; send the worker its assignment as usual, or check agent_output first.",
                     }),
               }
             : {
