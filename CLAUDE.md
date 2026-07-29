@@ -9,7 +9,8 @@ hive is an MCP server plus CLI that gives multiple Claude Code sessions one shar
 ```bash
 npm run build     # compile to dist/ (required before anything runs)
 npm run watch     # compile on change
-hive doctor      # environment check + stale-state sweep
+hive setup        # re-pin the hive command to the interpreter that built dist/
+hive doctor       # environment check + stale-state sweep
 ```
 
 `npm test` runs the suite (`test/*.test.mjs`, node:test) against the built `dist/`, so build first. Tests spawn real MCP server and CLI processes with `HIVE_DATA_DIR` pointed at scratch directories; real data stays untouched. CI runs the same on macOS (`.github/workflows/ci.yml`). For ad-hoc poking, pipe JSON-RPC lines to `node dist/index.js` the same way; MCP handles piped requests concurrently, so drive dependent calls sequentially (wait for each response before sending the next).
@@ -19,8 +20,11 @@ hive doctor      # environment check + stale-state sweep
 | Path | Role |
 |---|---|
 | `src/index.ts` | MCP server entry: registers tools, starts the scheduler |
-| `src/cli.ts` | `hive` CLI: lead, attach, start, status, doctor |
+| `src/cli.ts` | `hive` CLI: lead, attach, start, status, setup, doctor |
 | `src/db.ts` | SQLite open + append-only `MIGRATIONS` array |
+| `src/abi.ts` | Loads the native addon before the store opens; names an interpreter mismatch |
+| `src/dispatcher.ts` | Writes and reads the pinned `hive` shim; PATH resolution |
+| `src/mcpConfig.ts` | Reads Claude Code's MCP registrations (`~/.claude.json`, `.mcp.json`) |
 | `src/context.ts` | Actor identity and project scope resolution |
 | `src/tools/*.ts` | MCP tools by group: meta, pads, todos, kv, leases, agents, wakes |
 | `src/scheduler.ts` | Wake-up firer + janitor; runs unref'd inside every instance |
@@ -46,6 +50,8 @@ Key mechanics: workers are CLI agents in tmux panes/windows; `agent_send` types 
 ## Gotchas
 
 - `better-sqlite3` needs its native build approved once: `npm approve-scripts better-sqlite3`.
+- **The `better-sqlite3` addon is ABI-locked to the interpreter that built it**, and `require("better-sqlite3")` does NOT load it: the binding loads lazily inside `new Database()`. A passing require proves nothing about whether hive can run, which is how an interpreter that could not open the store once got recommended as a fix. To test an interpreter, open a database or call `checkAbi()` in `src/abi.ts`, which loads the addon itself. `db.ts` calls `guardAbi()` on the line above `new Database`, so a mismatch is a sentence naming both `NODE_MODULE_VERSION`s instead of an `ERR_DLOPEN_FAILED` stack trace thrown out of an import, where nothing downstream can catch it. Keep that call there.
+- **hive pins its interpreter on purpose.** `hive setup` writes a dispatcher that execs the CLI under `process.execPath` as it stood at setup time, which is the Node that built the addon, so the pin and the ABI cannot disagree. Never write a literal path. Anything that rebuilds must re-pin: `npm install && npm run build && hive setup`.
 - iTerm profile commands (used by auto-attach) run with no shell and a minimal PATH: embed absolute binary paths in AppleScript strings.
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings.
 - All process execution goes through `execFileSync` with argument arrays (see `tmux()` in `src/tmux.ts`); never build shell command strings from data.

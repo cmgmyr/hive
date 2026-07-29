@@ -81,7 +81,7 @@ Four primitives hold all coordination state. Each is project-scoped, lives in SQ
 
 ### Daily driver
 
-Link the CLI once (`npm link` in this repo), then start any project's session with one command:
+Install the CLI once (`npm link && hive setup` in this repo), then start any project's session with one command:
 
 ```bash
 cd ~/Code/your-project
@@ -184,7 +184,7 @@ processes:
 
 Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output`. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
 
-Other CLI commands: `hive status` prints every project's running agents, commands, open todos, and timers in one shot; `hive runbook` prints this project's standing process; `hive posture` prints the posture its lead runs with; `hive profile list` shows the profiles hive can see; `hive kickoff --explain` says whether a session here would get the session-start injection and why; `hive doctor` checks the environment (node, tmux, claude, database, hooks, and the active profile) and sweeps stale state. The sweep also runs continuously: agents whose windows died get closed automatically, and timers pointing at dead panes get cancelled.
+Other CLI commands: `hive status` prints every project's running agents, commands, open todos, and timers in one shot; `hive runbook` prints this project's standing process; `hive posture` prints the posture its lead runs with; `hive profile list` shows the profiles hive can see; `hive kickoff --explain` says whether a session here would get the session-start injection and why; `hive setup` re-pins the `hive` command to the interpreter this checkout was built with; `hive doctor` checks the environment (node and its ABI, the dispatcher, the MCP registration, tmux, claude, database, hooks, and the active profile) and sweeps stale state. The sweep also runs continuously: agents whose windows died get closed automatically, and timers pointing at dead panes get cancelled.
 
 Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --edit` exports it to a temp markdown file and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit, save, then `hive pad <name> --save` writes it back. The export encodes the pad revision, so if a session changed the pad while you edited, the save fails with merge instructions instead of clobbering; your edits stay in the temp file. Temp exports live in the system temp dir and clean themselves up on save (macOS purges strays automatically).
 
@@ -214,11 +214,22 @@ git clone <repo-url> hive && cd hive
 npm install          # if npm blocks the better-sqlite3 build script, run: npm approve-scripts better-sqlite3
 npm run build
 npm link             # puts the hive command on your PATH
+hive setup           # pins that command to the Node you just built with
 brew install tmux
 claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
 ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
-hive doctor         # verify: node, tmux, claude, database, hooks all green
+hive doctor         # verify: node, ABI, tmux, claude, database, hooks all green
 ```
+
+Both `hive setup` and the `mcp add` line exist for the same reason: hive must not let the working directory pick its interpreter. `better-sqlite3` ships a native addon that only loads under the Node that compiled it, and a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory. A `cd` is then enough to break hive.
+
+`hive setup` writes a two-line dispatcher to `~/.local/bin/hive` that execs hive's CLI under an absolute interpreter, taken from the Node running setup, which is the Node that just built the addon. Put that directory ahead of your version manager's shims, since those usually prepend themselves:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"     # in ~/.zshrc, above the version manager's block
+```
+
+Setup prints which interpreter it pinned and whether a version manager can remove it later; `hive doctor` reports the ordering and warns when something else on PATH shadows the dispatcher. Use `--dir` to write it somewhere else. Without setup you keep `npm link`'s shim, which lives in the active Node version's global directory and disappears in any directory pinning another version.
 
 Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then the line above.
 
@@ -268,14 +279,17 @@ Register hive in one scope only. A project-scoped registration shadows the user-
 
 ## Updating
 
-Both entry points are live pointers into this checkout: `npm link` points the `hive` command at `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`. Updates need no reinstall and no re-registration, on any machine:
+Both entry points are live pointers into this checkout: the `hive` command runs `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`. Code updates need no reinstall and no re-registration:
 
 ```bash
 cd <this checkout>
 git pull
 npm install             # only matters when dependencies changed; harmless otherwise
 npm run build
+hive setup              # re-pin: the build may have been made by a different Node
 ```
+
+The pin is the part that can drift. `npm install` rebuilds `better-sqlite3` against whatever Node is active in that shell, and if that is not the Node your dispatcher and MCP registration name, the addon and the interpreters no longer agree. Re-running `hive setup` costs nothing when nothing changed, and `hive doctor` says so either way: it warns when the dispatcher points at a different build than the one running, and fails outright on an ABI mismatch. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
 
 The plugin symlink is a live pointer too, so the session-start hook and the shipped profile defaults update with the same pull. Files you forked into `~/.hive/profiles/` are yours and are never touched; `hive doctor` tells you when hive's version of one moved.
 
@@ -289,13 +303,14 @@ When developing hive itself, this project's `hive.yml` auto-starts `npm run watc
 
 ## Uninstall
 
-Hive touches five things on a machine; remove them in any order:
+Hive touches six things on a machine; remove them in any order:
 
 ```bash
 hive status                     # list running sessions, then end each one:
 tmux kill-session -t =hive-1    # one per project id shown above
 claude mcp remove hive          # the MCP registration (add --scope user if registered there)
 npm rm -g hive                  # the linked hive command
+rm ~/.local/bin/hive            # the dispatcher hive setup wrote, if you ran it
 rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made it
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
@@ -306,7 +321,9 @@ Then revoke the automation permission under System Settings > Privacy & Security
 
 ## Troubleshooting
 
-- `hive doctor` is the first stop. It checks node, tmux, claude, the database, and the hooks file, sweeps dead agents and undeliverable wake-ups, and prints one ok/fail line per check with the reason.
+- `hive doctor` is the first stop. It checks node and its ABI, the dispatcher and its place on PATH, the MCP registration, tmux, claude, the database, and the hooks file, sweeps dead agents and undeliverable wake-ups, and prints one ok/warn/fail line per check with the reason.
+- `ERR_DLOPEN_FAILED`, or `NODE_MODULE_VERSION 137 ... requires 147`: hive is running under a different Node than the one that built it. `hive doctor` names both numbers. Fix it by running hive through its dispatcher (`hive setup`), or rebuild for the Node you are on (`npm install && npm run build`). Rebuilding per Node treats the symptom; pinning treats the cause.
+- `No version is set for command hive`, or `hive: command not found` in one repo but not another: you are getting `npm link`'s shim, which only exists under the Node version that was active when you linked. Run `hive setup` and put `~/.local/bin` ahead of your version manager's shims.
 - "This session cannot receive wake-ups: it is not running inside tmux": the lead was started with bare `claude` instead of `hive`. Start it with `hive` (or inside tmux) and wake-ups deliver.
 - An idle background iTerm window after attaching: enable the gateway bury setting from Setup. Don't close that window by hand; it detaches the session.
 - `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.

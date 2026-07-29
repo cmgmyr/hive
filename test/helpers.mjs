@@ -232,9 +232,12 @@ export function runCli(args, opts = {}) {
   return runNode(CLI, args, opts);
 }
 
-export function runNode(script, args, { cwd, dataDir, tmp, env = {} } = {}) {
+// node defaults to whatever the suite is running under. Pass another
+// interpreter to test what happens when hive is run by one it was not built
+// for; everything else about the call stays identical.
+export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "node" } = {}) {
   return new Promise((resolve) => {
-    const child = spawn("node", [script, ...args], {
+    const child = spawn(node, [script, ...args], {
       cwd,
       env: {
         ...baseEnv(),

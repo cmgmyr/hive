@@ -1,10 +1,36 @@
 #!/usr/bin/env node
 // hive CLI: open a project's orchestration session and manage its commands.
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { checkAbi, describeAbi, describeInterpreter } from "./abi.js";
+import {
+  cliPath,
+  dispatcherDir,
+  dispatcherPath,
+  dispatcherScript,
+  durabilityLines,
+  firstHiveOnPath,
+  pathAdvice,
+  readDispatcher,
+} from "./dispatcher.js";
+import {
+  hiveRegistrations,
+  registrationOffer,
+  registrationProblem,
+  type McpRegistration,
+} from "./mcpConfig.js";
 import { dataDir, db, migrate } from "./db.js";
 import {
   currentActor,
@@ -72,6 +98,8 @@ Usage:
   hive attach [path]         attach without adding windows
   hive start <process> [path] start one hive.yml process by name
   hive status                overview of agents, todos, and wake-ups everywhere
+  hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
+                             was compiled for; re-run after every update
   hive doctor                check the environment and clean up stale state
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
@@ -749,6 +777,162 @@ function cmdStatus(): void {
   if (!anyOutput) console.log("Nothing running and no open work in any project.");
 }
 
+// doctor's two non-failing levels, beside check()'s ok/FAIL. The prefix width
+// and the continuation indent are load-bearing (the suite asserts on the
+// spacing), so they live in one place rather than being retyped per line.
+const report = (level: string, label: string, lines: string[]) => {
+  console.log(`  ${level}  ${label}: ${lines[0]}`);
+  for (const line of lines.slice(1)) console.log(`        ${line}`);
+};
+const info = (label: string, ...lines: string[]) => report("info", label, lines);
+const warn = (label: string, ...lines: string[]) => report("warn", label, lines);
+
+function cmdSetup(argv: string[]): void {
+  const dirFlag = argv.indexOf("--dir");
+  const dir = dirFlag >= 0 ? resolve(argv[dirFlag + 1] ?? "") : dispatcherDir();
+  const file = join(dir, "hive");
+  const node = process.execPath;
+  const cli = cliPath();
+
+  const existing = readDispatcher(file);
+  if (existing && !existing.mine && !argv.includes("--force")) {
+    // Almost always npm link's shim, and overwriting someone else's `hive`
+    // without being asked is not hive's call to make. A file hive wrote is
+    // always repairable, even when an older version wrote it in a shape this
+    // one cannot parse: repairing it is what setup is for.
+    console.log(`${file} exists and was not written by hive setup; refusing to overwrite it.`);
+    console.log("Move it aside, pick another directory with --dir, or overwrite it with --force.");
+    process.exit(1);
+  }
+
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(file, dispatcherScript(node, cli));
+  chmodSync(file, 0o755);
+
+  const rewritten = existing?.mine && (existing.node !== node || existing.cli !== cli);
+  console.log(`${existing?.mine ? (rewritten ? "Re-pinned" : "Refreshed") : "Wrote"} ${file}`);
+  if (rewritten) console.log(`  was          ${existing.node ?? "an unrecognized exec line"} ${existing.cli ?? ""}`.trimEnd());
+  console.log(`  interpreter  ${node}`);
+  console.log(`               ${process.version}, NODE_MODULE_VERSION ${process.versions.modules}`);
+  console.log(`  runs         ${cli}`);
+  console.log("\nThat is the interpreter that built better-sqlite3 here, so the dispatcher");
+  console.log("and the addon cannot disagree about the ABI.");
+
+  console.log("");
+  for (const line of durabilityLines(node)) console.log(line);
+
+  console.log("\nA rebuild does not re-pin anything on its own. After every update:");
+  console.log("  npm install && npm run build && hive setup");
+  console.log(`\nPATH: ${pathAdvice(dir, file).join("\n")}`);
+  reportSetupRegistrations(node);
+}
+
+// The half setup does not fix. Pinning the `hive` command says nothing about
+// the MCP server: Claude Code starts that from its own registration, and the
+// issue calls it the invisible failure precisely because fixing the command
+// looks like fixing everything. Setup is the moment a user is already acting
+// on instructions, so a registration that disagrees with the pin gets named
+// here rather than waiting for them to run doctor.
+//
+// Conditional on purpose. A correct registration prints nothing: handing
+// someone a command to run when they have nothing to fix trains them to
+// ignore the ones that matter.
+//
+// Silent when nothing is registered, which is the case worth explaining.
+// Setup cannot tell "not registered" from "registered somewhere I cannot
+// see": it looks at one config dir and, at best, one project's .mcp.json,
+// while a registration can live in any project on the machine or under
+// another CLAUDE_CONFIG_DIR. Announcing an absence hive cannot establish
+// would be wrong on every update for anyone who registered elsewhere. A fresh
+// install gets that line from the README, one step below this command, and
+// `hive doctor` reports it as info from inside a project.
+function reportSetupRegistrations(pinned: string): void {
+  const found = hiveRegistrations(findProjectForCwd()?.path ?? null);
+  const problems = found
+    .map((r) => ({ r, lines: registrationProblem(r, pinned) }))
+    .filter((p): p is { r: McpRegistration; lines: string[] } => p.lines !== null);
+  if (problems.length > 0) {
+    console.log("\n! hive setup pins the `hive` command, not the MCP server. Claude Code starts");
+    console.log("  hive's server from its own registration, and this one disagrees:");
+    for (const { r, lines } of problems) {
+      console.log(`  mcp registration (${r.scope} scope): ${lines[0]}`);
+      for (const line of lines.slice(1)) console.log(`  ${line}`);
+    }
+    return;
+  }
+  // No "!" here: nothing is wrong. A config that lists MCP servers without
+  // hive is a fresh install partway through the README, so this reads as the
+  // next step rather than a fault. registrationOffer decides when that claim
+  // can be made at all.
+  const offer = registrationOffer(pinned, found);
+  if (offer) {
+    console.log("");
+    for (const line of offer) console.log(`  ${line}`);
+  }
+}
+
+// doctor's half of the same question, asked the way a human asks it: what does
+// typing `hive` actually run. Warn, never fail: hive works without a
+// dispatcher on a machine with one Node, and the dispatcher is worth having
+// only where the working directory can change the answer.
+function reportDispatcher(): void {
+  const onPath = firstHiveOnPath();
+  // Whatever wins on PATH is the honest answer, including a dispatcher written
+  // somewhere else with --dir. The default location is the fallback, so a
+  // dispatcher that exists but loses to a shim still gets reported.
+  const winner = onPath ? readDispatcher(onPath) : null;
+  const dispatcher = winner?.mine ? winner : readDispatcher(dispatcherPath());
+  if (!dispatcher?.mine) {
+    info(
+      "dispatcher",
+      `none at ${dispatcherPath()}; \`hive setup\` writes one pinned to this build`,
+      ...(onPath ? [`\`hive\` on PATH is ${onPath}`] : []),
+    );
+    return;
+  }
+  info("dispatcher", `${dispatcher.file} -> ${dispatcher.node ?? "an exec line hive cannot parse"}`);
+  if (!dispatcher.node || !dispatcher.cli) {
+    warn("dispatcher", "written by another version of hive; re-run `hive setup` to refresh it.");
+  } else if (!existsSync(dispatcher.node)) {
+    warn(
+      "dispatcher",
+      "that interpreter is gone (a version manager can remove one).",
+      "Rebuild and re-pin: npm install && npm run build && hive setup",
+    );
+  } else if (dispatcher.node !== process.execPath || dispatcher.cli !== cliPath()) {
+    warn(
+      "dispatcher",
+      "pinned to a different build than this CLI is running.",
+      `this run: ${process.execPath} ${cliPath()}`,
+      "Re-pin after a rebuild: npm run build && hive setup",
+    );
+  }
+  if (onPath !== dispatcher.file) warn("dispatcher", ...pathAdvice(dispatcherDir(), dispatcher.file));
+}
+
+// Warn, never fail. A machine with no version manager is fine with a bare
+// `node`, and doctor must not fail over a registration it cannot see: hive
+// can be perfectly installed and never registered from this directory.
+function reportMcpRegistrations(project: Project | null): void {
+  const registrations = hiveRegistrations(project?.path ?? null);
+  if (registrations.length === 0) {
+    info(
+      "mcp registration",
+      "none found for hive (checked ~/.claude.json and .mcp.json)",
+      // Same helper as setup, so the fresh-install offer reads identically
+      // wherever a user meets it, and stays silent in the same three states.
+      ...(registrationOffer(process.execPath, registrations) ?? []),
+    );
+    return;
+  }
+  for (const r of registrations) {
+    const where = `mcp registration (${r.scope} scope)`;
+    info(where, [r.command, ...r.args].join(" "));
+    const problem = registrationProblem(r, process.execPath);
+    if (problem) warn(where, ...problem);
+  }
+}
+
 function cmdDoctor(): void {
   let failures = 0;
   const check = (label: string, fn: () => string) => {
@@ -760,7 +944,16 @@ function cmdDoctor(): void {
     }
   };
   console.log("hive doctor\n");
-  check("node", () => process.versions.node);
+  check("node", () => describeInterpreter());
+  // Unfailable in practice, and printed anyway: db.ts already guarded this
+  // before main() got here, so a mismatch never reaches doctor's body. The
+  // line is here so a working install still says which ABI it is pinned to,
+  // which is the number a human needs when comparing two interpreters.
+  check("better-sqlite3", () => {
+    const status = checkAbi();
+    if (!status.ok) throw new Error(describeAbi(status));
+    return [describeAbi(status), status.addon].join("\n        ");
+  });
   check("tmux", () => execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim());
   check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
   check("database", () => {
@@ -774,18 +967,20 @@ function cmdDoctor(): void {
   // not a broken install. Doctor read the profile out of hive.yml but never
   // looked at the parse, so a malformed one used to pass a clean run.
   const here = findProjectForCwd();
+  reportDispatcher();
+  reportMcpRegistrations(here);
   const loaded = here ? loadProjectYml(here.path) : null;
-  for (const w of loaded?.warnings ?? []) console.log(`  warn  hive.yml: ${w}`);
+  for (const w of loaded?.warnings ?? []) warn("hive.yml", w);
   const config = loaded?.config ?? null;
   const profile = activeProfile(config);
   if (here && profile) {
     const files = profileStatus(profile).files;
     if (files.length === 0) {
-      console.log(`  warn  profile: "${profile}" is named in hive.yml but is not on this machine`);
+      warn("profile", `"${profile}" is named in hive.yml but is not on this machine`);
     } else {
-      console.log(`  info  profile: ${profile} (${files.map((f) => `${f.file}: ${f.source}`).join(", ")})`);
+      info("profile", `${profile} (${files.map((f) => `${f.file}: ${f.source}`).join(", ")})`);
       for (const f of files) {
-        if (f.upstreamMoved) console.log(`  warn  profile: hive's default ${f.file} changed since you forked it`);
+        if (f.upstreamMoved) warn("profile", `hive's default ${f.file} changed since you forked it`);
       }
       // Both files the project supplies vars to. worker.md is left out on
       // purpose: its vars include the agent identity hive fills in per spawn,
@@ -800,9 +995,9 @@ function cmdDoctor(): void {
       const missing = referenced.filter((v) => !defined.includes(v));
       const unused = defined.filter((v) => !referenced.includes(v));
       if (referenced.length > 0) {
-        console.log(`  info  profile vars: runbook and posture reference ${referenced.join(", ")}`);
-        if (missing.length > 0) console.log(`  info  profile vars: not set here (sections drop): ${missing.join(", ")}`);
-        if (unused.length > 0) console.log(`  info  profile vars: defined but unreferenced: ${unused.join(", ")}`);
+        info("profile vars", `runbook and posture reference ${referenced.join(", ")}`);
+        if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);
+        if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
       }
     }
   }
@@ -830,9 +1025,7 @@ function cmdDoctor(): void {
       return "none running";
     }
   });
-  console.log(
-    `  info  auto-attach: ${process.env.HIVE_AUTO_ATTACH === "0" ? "off (HIVE_AUTO_ATTACH=0)" : "on"}`,
-  );
+  info("auto-attach", process.env.HIVE_AUTO_ATTACH === "0" ? "off (HIVE_AUTO_ATTACH=0)" : "on");
   console.log(failures === 0 ? "\nAll good." : `\n${failures} problem(s) found.`);
   process.exit(failures === 0 ? 0 : 1);
 }
@@ -993,7 +1186,7 @@ let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
 const COMMANDS = [
-  "lead", "init", "attach", "start", "status", "doctor",
+  "lead", "init", "attach", "start", "status", "setup", "doctor",
   "pads", "pad", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
@@ -1021,6 +1214,9 @@ switch (command) {
     break;
   case "status":
     cmdStatus();
+    break;
+  case "setup":
+    cmdSetup(rest);
     break;
   case "doctor":
     cmdDoctor();

@@ -1,11 +1,17 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { guardAbi } from "./abi.js";
 import { dataDir } from "./dataDir.js";
 
 export { dataDir };
 mkdirSync(dataDir, { recursive: true });
 
+// The import above does not load better-sqlite3's native addon; `new
+// Database` does. This is the last point where a mismatched interpreter can
+// be named instead of surfacing as an ERR_DLOPEN_FAILED stack trace. See
+// abi.ts.
+guardAbi();
 export const db = new Database(join(dataDir, "hive.db"));
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
