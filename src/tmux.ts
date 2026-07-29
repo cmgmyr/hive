@@ -1,6 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { dataDirTag } from "./dataDir.js";
 
+// tmux's stderr is the only thing that says whether tmux answered at all, and
+// callers have to tell "tmux told me the target is gone" from "tmux never
+// answered". Carry the text on the error instead of flattening it into a
+// message string.
+export class TmuxError extends Error {
+  constructor(
+    message: string,
+    readonly stderr: string,
+    readonly notInstalled = false,
+  ) {
+    super(message);
+    this.name = "TmuxError";
+  }
+}
+
 export function tmux(...args: string[]): string {
   try {
     return execFileSync("tmux", args, {
@@ -10,13 +25,53 @@ export function tmux(...args: string[]): string {
   } catch (e) {
     const err = e as { code?: string; stderr?: Buffer | string; message?: string };
     if (err.code === "ENOENT") {
-      throw new Error("tmux is not installed. Install it (brew install tmux) to use agent tools.");
+      throw new TmuxError(
+        "tmux is not installed. Install it (brew install tmux) to use agent tools.",
+        "",
+        true,
+      );
     }
     const detail = typeof err.stderr === "string" ? err.stderr.trim() : err.stderr?.toString().trim();
-    throw new Error(`tmux ${args[0]} failed${detail ? `: ${detail}` : ""}`);
+    throw new TmuxError(`tmux ${args[0]} failed${detail ? `: ${detail}` : ""}`, detail ?? "");
   }
 }
 
+// tmux failed, but its answer says "there is nothing there". That is a fact
+// about the world, not an unanswered probe, and callers act on it exactly as
+// they act on a server that lists nothing.
+//
+// The distinction is load-bearing. tmux ships `exit-empty on`, so the server
+// exits with its last session, which is precisely when stale rows need
+// sweeping. Reading that as "unknown" leaves the janitor permanently disabled
+// from the moment a hive session ends. See issue #14.
+//
+// Every string here was checked against a real tmux (3.7b) rather than
+// assumed, since a wording this does not know reverts to "unknown" and stops
+// the sweep:
+//   no server running on <socket>   classic wording, still emitted
+//   error connecting to <socket>    3.x: absent socket, stale socket, or a
+//                                   socket path over the length limit
+//   no current target               list-panes -a on a server with no
+//                                   sessions (only reachable with
+//                                   `exit-empty off`, which is exactly the
+//                                   reachable-but-empty case issue #14 says
+//                                   must keep sweeping)
+//   can't find pane|window|session  a specific target the server looked for
+//                                   and does not have
+// tmux is not localized, so matching its English is stable.
+const NOTHING_THERE = /no server running|error connecting to|no current target|can't find (pane|window|session)/;
+
+export function tmuxSaysNothingThere(e: unknown): boolean {
+  if (!(e instanceof TmuxError)) return false;
+  // No tmux binary: nothing tmux manages can be alive either.
+  if (e.notInstalled) return true;
+  return NOTHING_THERE.test(e.stderr);
+}
+
+// Stays a plain boolean, unlike targetLive: its one caller asks "does this
+// session exist" and falls through to new-session on false, which throws its
+// own TmuxError if tmux is genuinely unreachable. Nothing is destroyed by
+// guessing wrong here.
 function quietTmux(...args: string[]): boolean {
   try {
     execFileSync("tmux", args, { stdio: "ignore" });
@@ -67,21 +122,36 @@ export const windowTitle = (projectName: string, name: string) => `${projectName
 // Pane targets are tmux pane ids (%N); everything else is session:window.
 export const isPaneTarget = (target: string) => target.startsWith("%");
 
+// Liveness that can say "I do not know". false means tmux answered and the
+// target is not there; null means tmux never answered, and a caller that
+// treats those the same destroys live state. That is issue #14, and it is why
+// this is not a boolean.
+export type Liveness = boolean | null;
+
 // list-panes errors on a dead target; display-message would silently fall
 // back to a default target and report success.
-export function windowAlive(target: string): boolean {
-  return quietTmux("list-panes", "-t", target);
+export function targetLive(target: string): Liveness {
+  try {
+    tmux("list-panes", "-t", target);
+    return true;
+  } catch (e) {
+    return tmuxSaysNothingThere(e) ? false : null;
+  }
 }
 
 // One subprocess for the aliveness of every target at once; use this when
 // checking many targets (the scheduler tick, agent_list) instead of one
-// windowAlive spawn per row.
+// targetLive spawn per row.
 export interface AliveSnapshot {
   panes: Set<string>;
   windows: Set<string>;
 }
 
-export function liveTargets(): AliveSnapshot {
+// An empty snapshot means tmux answered and nothing is alive; callers may act
+// on it. null means tmux did not answer, liveness is unknown, and callers must
+// not. No server is the first kind, not the second (see tmuxSaysNothingThere).
+// Never throws: the scheduler is load-bearing (CLAUDE.md).
+export function liveTargets(): AliveSnapshot | null {
   const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set() };
   try {
     for (const line of tmux("list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_id}").split("\n")) {
@@ -89,8 +159,8 @@ export function liveTargets(): AliveSnapshot {
       if (pane) snapshot.panes.add(pane);
       if (window) snapshot.windows.add(window);
     }
-  } catch {
-    // No tmux server: everything is dead.
+  } catch (e) {
+    return tmuxSaysNothingThere(e) ? snapshot : null;
   }
   return snapshot;
 }

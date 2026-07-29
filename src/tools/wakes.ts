@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
-import { findAgent, isLive, type AgentRow } from "./agents.js";
+import { findAgent, isLive, probeFailed, type AgentRow } from "./agents.js";
 import { ACTIVE_TIMER_WHERE, type TimerRow } from "../scheduler.js";
 import { projectIdParam } from "./params.js";
 
@@ -26,7 +26,9 @@ function resolveDelivery(
 ): { actor: string; pane: string } {
   if (deliverTo != null) {
     const agent = resolveAgentRef(projectId, deliverTo);
-    if (!isLive(agent)) {
+    const live = isLive(agent);
+    if (live === null) throw probeFailed(agent);
+    if (!live) {
       throw new Error(`Agent "${agent.name}" has no live tmux window to deliver to.`);
     }
     return { actor: agent.actor_id, pane: agent.tmux_target };
@@ -35,7 +37,7 @@ function resolveDelivery(
   const own = db
     .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running'")
     .get(actor) as AgentRow | undefined;
-  if (own && isLive(own)) return { actor, pane: own.tmux_target };
+  if (own && isLive(own) === true) return { actor, pane: own.tmux_target };
   const pane = process.env.TMUX_PANE;
   if (pane) return { actor, pane };
   throw new Error(
@@ -113,7 +115,14 @@ export function registerWakes(server: McpServer): void {
         const delivery = resolveDelivery(projectId, args.deliver_to);
 
         if (mode === "all") {
-          const allIdle = watched.every((a) => !isLive(a) || a.agent_state === "idle");
+          // An agent tmux says is gone counts as nothing left to wait for. An
+          // agent tmux could not answer about does NOT: reading unknown as
+          // satisfied returns "Act now" while every worker is mid-task, and
+          // the lead proceeds on a completion that never happened.
+          const allIdle = watched.every((a) => {
+            const live = isLive(a);
+            return live === false || (live === true && a.agent_state === "idle");
+          });
           if (allIdle) {
             return {
               status: "already_satisfied",

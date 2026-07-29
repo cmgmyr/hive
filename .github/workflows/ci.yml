@@ -14,7 +14,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # The layout tests drive a real tmux server; without this they skip.
+      # Required, not a nicety. The layout tests drive a real tmux server, and
+      # the probe tests assert hive's classification of tmux's own error text
+      # (src/tmux.ts NOTHING_THERE) against a real tmux. Both skip silently
+      # without it, and a skipped classification test is how a tmux wording
+      # change would reach main: hive would read the new wording as "unknown"
+      # and stop sweeping, which is issue #14 all over again. Keep this step,
+      # and keep `npm test` reporting `skipped 0`.
       - run: brew install tmux
       - run: tmux -V
       - run: npm ci

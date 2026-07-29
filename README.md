@@ -215,10 +215,12 @@ npm install          # if npm blocks the better-sqlite3 build script, run: npm a
 npm run build
 npm link             # puts the hive command on your PATH
 brew install tmux
-claude mcp add --scope user hive -- node "$(pwd)/dist/index.js"
+claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
 ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
 hive doctor         # verify: node, tmux, claude, database, hooks all green
 ```
+
+Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then the line above.
 
 Then start your first session:
 
@@ -260,11 +262,13 @@ The status line only re-renders on session activity by default. Add `"refreshInt
 }
 ```
 
-Notes on MCP scope: `--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: this repo ships a `.mcp.json` you can copy (use an absolute path in `args`), or run `claude mcp add hive -- node /absolute/path/to/hive/dist/index.js` from that project's directory. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
+Notes on MCP scope: `--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: run `claude mcp add hive -- "$(command -v node)" /absolute/path/to/hive/dist/index.js` from that project's directory. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
+
+Register hive in one scope only. A project-scoped registration shadows the user-scoped one, and `claude mcp list` is the way to catch it: two entries named hive means the project one is what your session is actually running.
 
 ## Updating
 
-Both entry points are live pointers into this checkout: `npm link` points the `hive` command at `dist/cli.js`, and the MCP registration runs `node <checkout>/dist/index.js`. Updates need no reinstall and no re-registration, on any machine:
+Both entry points are live pointers into this checkout: `npm link` points the `hive` command at `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`. Updates need no reinstall and no re-registration, on any machine:
 
 ```bash
 cd <this checkout>
@@ -288,12 +292,15 @@ When developing hive itself, this project's `hive.yml` auto-starts `npm run watc
 Hive touches five things on a machine; remove them in any order:
 
 ```bash
-tmux kill-server                # stop any running hive sessions first
+hive status                     # list running sessions, then end each one:
+tmux kill-session -t =hive-1    # one per project id shown above
 claude mcp remove hive          # the MCP registration (add --scope user if registered there)
 npm rm -g hive                  # the linked hive command
 rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made it
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
+
+Kill hive's sessions by name, one at a time. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
 
 Then revoke the automation permission under System Settings > Privacy & Security > Automation (the entry allowing your terminal to control iTerm), and delete the checkout.
 

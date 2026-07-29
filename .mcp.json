@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "hive": {
-      "command": "node",
-      "args": ["dist/index.js"]
-    }
-  }
-}

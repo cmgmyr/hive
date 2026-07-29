@@ -32,9 +32,10 @@ import {
   tmux,
   waitForPaneInput,
   WINDOW_LAYOUTS,
-  windowAlive,
+  targetLive,
   windowLayout,
   type AliveSnapshot,
+  type Liveness,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
 
@@ -120,16 +121,31 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
 }
 
 // The core liveness rule of the agent model: a row is live only while it is
-// open in the store AND its tmux target still exists.
-export function isLive(agent: AgentRow): boolean {
-  return agent.status === "running" && windowAlive(agent.tmux_target);
+// open in the store AND its tmux target still exists. Returns null when tmux
+// could not be asked, which every caller must handle as its own case: reading
+// unknown as dead is what closed live workers (issue #14).
+export function isLive(agent: AgentRow): Liveness {
+  if (agent.status !== "running") return false;
+  return targetLive(agent.tmux_target);
 }
+
+// The message matters as much as the refusal. Told a worker has no window, a
+// model follows the instruction and closes it; told the probe failed, it
+// retries. Never hand out the first when we mean the second, and say it the
+// same way everywhere it is said.
+export const PROBE_FAILED_NOTE =
+  "tmux could not be probed, so liveness is unknown. Nothing was changed. Retry in a few seconds.";
+
+export const probeFailed = (agent: AgentRow) =>
+  new Error(`Agent ${agent.id} ("${agent.name}"): ${PROBE_FAILED_NOTE}`);
 
 function requireLive(agent: AgentRow): void {
   if (agent.status !== "running") {
     throw new Error(`Agent ${agent.id} ("${agent.name}") is closed.`);
   }
-  if (!windowAlive(agent.tmux_target)) {
+  const live = isLive(agent);
+  if (live === null) throw probeFailed(agent);
+  if (!live) {
     throw new Error(
       `Agent ${agent.id} ("${agent.name}") has no live tmux window (its process exited or the window was killed). Close it with agent_close and spawn a new one.`,
     );
@@ -197,18 +213,32 @@ function nextWorkerName(projectId: number): string {
 // lose it.
 const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 
-function agentSummary(row: AgentRow, snapshot?: AliveSnapshot) {
-  const alive =
-    row.status === "running" &&
-    (snapshot ? targetAlive(row.tmux_target, snapshot) : windowAlive(row.tmux_target));
+// Two of the three ways in can end in unknown: an omitted snapshot probes
+// this row on its own and may get no answer, and a null snapshot means the
+// batch probe already failed. A snapshot that was passed always answers.
+// Unknown is reported as alive: null with the row exactly as the store has
+// it, rather than inventing "exited" for a worker that is very likely still
+// running (issue #14).
+function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
+  // A closed row needs no probe: the store already answered, and reporting it
+  // as unknown during a hiccup would make a definitely-dead worker look like
+  // it might still be there.
+  if (row.status !== "running") return false;
+  if (snapshot === undefined) return targetLive(row.tmux_target);
+  if (snapshot === null) return null;
+  return targetAlive(row.tmux_target, snapshot);
+}
+
+function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
+  const alive = summaryLiveness(row, snapshot);
   return {
     agent_id: row.id,
     kind: row.kind,
     name: row.name,
     actor_id: row.actor_id,
-    status: row.status === "running" && !alive ? "exited" : row.status,
+    status: alive === false && row.status === "running" ? "exited" : row.status,
     alive,
-    agent_state: alive ? row.agent_state : "gone",
+    agent_state: alive === false ? "gone" : row.agent_state,
     state_changed_at: row.state_changed_at,
     tmux_target: row.tmux_target,
     command: row.command,
@@ -394,7 +424,11 @@ export function registerAgents(server: McpServer): void {
         const newName = normalizeAgentName(args.new_name, "new_name");
         requireNameFree(project.id, newName, agent.id);
 
-        const live = isLive(agent);
+        // Unknown counts as not-live here, and that is safe: everything it
+        // gates is cosmetic (the tmux window title, claude's own /rename), so
+        // the worst case is a pane label that lags the store until the next
+        // rename. The row itself is renamed either way.
+        const live = isLive(agent) === true;
         // A window-placed worker carries its name in the tmux window too,
         // which is hive's own to set.
         const ownWindow = live && !isPaneTarget(agent.tmux_target);
@@ -444,6 +478,13 @@ export function registerAgents(server: McpServer): void {
         return {
           project_id: project.id,
           project_name: project.name,
+          // Only present when the probe failed, so an empty list from a
+          // reachable tmux still reads as the plain "no agents" it is.
+          ...(snapshot === null
+            ? {
+                note: `${PROBE_FAILED_NOTE} These rows are what the store holds; do not conclude a worker died.`,
+              }
+            : {}),
           agents: rows.map((r) => agentSummary(r, snapshot)),
         };
       }),
@@ -472,6 +513,9 @@ export function registerAgents(server: McpServer): void {
         const briefPath = agentBriefPath(agent.id);
         return {
           ...summary,
+          // agent_status is the tool a lead polls before acting on one worker,
+          // so it must not answer "exited" when it means "I could not ask".
+          ...(summary.alive === null ? { note: PROBE_FAILED_NOTE } : {}),
           closed_at: agent.closed_at,
           current_command: summary.alive ? paneCurrentCommand(agent.tmux_target) : null,
           // The path, not the text, by default: status is polled and the
@@ -547,7 +591,14 @@ export function registerAgents(server: McpServer): void {
           name: agent.name,
           alive,
           output: alive ? capturePane(agent.tmux_target, lines) : "",
-          ...(alive ? {} : { note: "No live tmux window; output is not retained after exit." }),
+          ...(alive === true
+            ? {}
+            : {
+                note:
+                  alive === null
+                    ? PROBE_FAILED_NOTE
+                    : "No live tmux window; output is not retained after exit.",
+              }),
         };
       }),
   );
@@ -573,7 +624,12 @@ export function registerAgents(server: McpServer): void {
             "This would close your own session. Pass confirm_self=true only if the user explicitly asked you to close yourself.",
           );
         }
-        if (isLive(agent)) {
+        const live = isLive(agent);
+        // Refuse rather than half-close. Closing the row while the pane may
+        // still be up leaks a running worker nothing tracks, and the kill
+        // would not land anyway while tmux is unreachable.
+        if (live === null) throw probeFailed(agent);
+        if (live) {
           const pane = isPaneTarget(agent.tmux_target);
           // Resolve the window before the pane dies, then re-tile the
           // survivors: tmux's own redistribution otherwise wipes the

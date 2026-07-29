@@ -25,7 +25,7 @@ import {
   sessionName,
   shellQuote,
   tmux,
-  windowAlive,
+  targetLive,
   windowTitle,
 } from "./tmux.js";
 import {
@@ -137,7 +137,13 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
     .prepare("SELECT id, tmux_target FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
     .get(project.id, name) as { id: number; tmux_target: string } | undefined;
   if (existing) {
-    if (windowAlive(existing.tmux_target)) return "already running";
+    const live = targetLive(existing.tmux_target);
+    if (live) return "already running";
+    // Unknown liveness must not start a second copy. These are hive.yml
+    // processes, so a duplicate is a second dev server fighting for the port
+    // while the first one's row is closed and nothing tracks it any more.
+    // That is a write to the world, not just to the store.
+    if (live === null) return "skipped: tmux could not be probed, so hive cannot tell whether it is already running";
     closeAgentRow(existing.id);
   }
   let dir: string;
@@ -802,6 +808,12 @@ function cmdDoctor(): void {
   }
   check("stale state", () => {
     const r = janitor();
+    // "0 closed" reads as a clean bill of health, so an unanswered probe must
+    // not print it. Doctor is the tool a human runs BECAUSE tmux is
+    // misbehaving; saying nothing is the one thing it must not do.
+    if (!r.probed) {
+      throw new Error("tmux did not answer, so nothing was swept. Re-run when tmux responds.");
+    }
     return `${r.closed_agents} dead agents closed, ${r.cancelled_timers} undeliverable wake-ups cancelled`;
   });
   check("sessions", () => {

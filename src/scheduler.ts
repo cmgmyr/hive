@@ -1,7 +1,7 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { closeAgentRow } from "./spawn.js";
-import { liveTargets, sendText, targetAlive, windowAlive, type AliveSnapshot } from "./tmux.js";
+import { liveTargets, sendText, targetAlive, targetLive, type AliveSnapshot } from "./tmux.js";
 
 // Every hive MCP server instance runs this scheduler; SQLite conditional
 // updates make timer claims atomic, so concurrent instances never
@@ -29,6 +29,12 @@ export interface TimerRow {
 // repeating and not cancelled). Shared with wake_list and hive status.
 export const ACTIVE_TIMER_WHERE =
   "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
+
+// How long a just-inserted agent row is protected from liveness decisions: a
+// spawn writes the row before its tmux window exists, and until the window is
+// there "not in the snapshot" means "not born yet", not "gone". One window,
+// three readers (janitor's two sweeps and the idle watcher), so one constant.
+const SETTLE_WINDOW = "-15 seconds";
 
 interface WatchedState {
   idle: boolean;
@@ -58,18 +64,28 @@ export function startScheduler(intervalMs = 3000): void {
 }
 
 // Keep the store truthful: close agents whose tmux windows died and cancel
-// timers whose delivery pane is gone. The age guard avoids racing a spawn
+// timers whose delivery pane is gone. SETTLE_WINDOW avoids racing a spawn
 // that has inserted its row but not yet created its window.
-export function janitor(snapshot: AliveSnapshot = liveTargets()): {
+//
+// A null snapshot means the probe failed and liveness is unknown, so sweep
+// nothing. The costs are asymmetric: a missed sweep is corrected three
+// seconds later by the next tick, while a wrong sweep closes live workers and
+// destroys state nothing rebuilds. A reachable but empty server still returns
+// an empty snapshot and still sweeps, which is the whole distinction.
+export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   closed_agents: number;
   cancelled_timers: number;
+  probed: boolean;
 } {
+  // probed distinguishes "swept, nothing to do" from "could not look", which
+  // are otherwise the same two zeros. hive doctor reports the difference.
+  if (snapshot === null) return { closed_agents: 0, cancelled_timers: 0, probed: false };
   let closedAgents = 0;
   let cancelledTimers = 0;
   const agents = stmt(
     `SELECT id, tmux_target FROM agents WHERE status = 'running' AND tmux_target != ''
-     AND created_at < datetime('now', '-15 seconds')`,
-  ).all() as { id: number; tmux_target: string }[];
+     AND created_at < datetime('now', ?)`,
+  ).all(SETTLE_WINDOW) as { id: number; tmux_target: string }[];
   for (const agent of agents) {
     if (!targetAlive(agent.tmux_target, snapshot)) {
       closeAgentRow(agent.id);
@@ -78,26 +94,28 @@ export function janitor(snapshot: AliveSnapshot = liveTargets()): {
   }
   const timers = stmt(
     `SELECT id, deliver_pane FROM timers WHERE ${ACTIVE_TIMER_WHERE}
-     AND created_at < datetime('now', '-15 seconds')`,
-  ).all() as { id: number; deliver_pane: string }[];
+     AND created_at < datetime('now', ?)`,
+  ).all(SETTLE_WINDOW) as { id: number; deliver_pane: string }[];
   for (const timer of timers) {
     if (!targetAlive(timer.deliver_pane, snapshot)) {
       cancelTimer(timer.id);
       cancelledTimers += 1;
     }
   }
-  return { closed_agents: closedAgents, cancelled_timers: cancelledTimers };
+  return { closed_agents: closedAgents, cancelled_timers: cancelledTimers, probed: true };
 }
 
 function cancelTimer(timerId: number): void {
   stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(timerId);
 }
 
-async function tick(): Promise<void> {
+// One sweep-and-fire pass. The snapshot is a parameter for the same reason
+// janitor's is: it is the one input that decides everything here, and handing
+// it in is the difference between driving a tick and simulating a tmux.
+export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    const snapshot = liveTargets();
     janitor(snapshot);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
     const candidates = stmt(
@@ -108,7 +126,7 @@ async function tick(): Promise<void> {
        )`,
     ).all() as TimerRow[];
     for (const timer of candidates) {
-      if (timer.kind === "delay") await fireDelay(timer);
+      if (timer.kind === "delay") await fireDelay(timer, snapshot);
       else await maybeFireIdle(timer, snapshot, now);
     }
   } catch {
@@ -118,7 +136,31 @@ async function tick(): Promise<void> {
   }
 }
 
-async function fireDelay(timer: TimerRow): Promise<void> {
+// Liveness of the delivery pane, resolved BEFORE the timer is claimed.
+//
+// Claiming is atomic and one-way: it sets fired_at and bumps fire_count so no
+// other scheduler instance retries. Asking about the pane afterwards means an
+// unanswered probe destroys a wake-up that was already spent, and for a
+// repeating timer it destroys the whole schedule. Ask first: unknown leaves
+// the row untouched for the next tick, and a pane tmux says is gone is
+// cancelled as it always was.
+//
+// The tick's snapshot already answers this for every pane at once, so use it
+// and only fall back to a single-target probe when there is no snapshot to
+// read. A max-wait wake still has to fire when the batch probe failed, and
+// that is the one path that needs its own fork.
+function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null): boolean {
+  const live = snapshot ? targetAlive(timer.deliver_pane, snapshot) : targetLive(timer.deliver_pane);
+  if (live === null) return false;
+  if (!live) {
+    cancelTimer(timer.id);
+    return false;
+  }
+  return true;
+}
+
+async function fireDelay(timer: TimerRow, snapshot: AliveSnapshot | null): Promise<void> {
+  if (!deliverable(timer, snapshot)) return;
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
@@ -146,22 +188,45 @@ function claimOneShot(timerId: number): boolean {
 function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[] {
   const ids = JSON.parse(timer.watch) as number[];
   return ids.map((id) => {
-    const agent = stmt("SELECT * FROM agents WHERE id = ?").get(id) as
-      | { status: string; tmux_target: string; agent_state: string; state_changed_at: string | null }
+    const agent = stmt(
+      `SELECT *, created_at < datetime('now', ?) AS settled FROM agents WHERE id = ?`,
+    ).get(SETTLE_WINDOW, id) as
+      | {
+          status: string;
+          tmux_target: string;
+          agent_state: string;
+          state_changed_at: string | null;
+          settled: number;
+        }
       | undefined;
-    if (!agent || agent.status !== "running" || !targetAlive(agent.tmux_target, snapshot)) {
+    if (!agent || agent.status !== "running") return { idle: true, gone: true, since: null };
+    if (!targetAlive(agent.tmux_target, snapshot)) {
+      // The same spawn race the janitor guards against: a row inserted before
+      // its window exists is not gone, it is not born yet. Without this an
+      // idle_any wake set during another session's spawn fires immediately.
+      if (!agent.settled) return { idle: false, gone: false, since: null };
       return { idle: true, gone: true, since: null };
     }
     return { idle: agent.agent_state === "idle", gone: false, since: agent.state_changed_at };
   });
 }
 
-async function maybeFireIdle(timer: TimerRow, snapshot: AliveSnapshot, now: string): Promise<void> {
+async function maybeFireIdle(
+  timer: TimerRow,
+  snapshot: AliveSnapshot | null,
+  now: string,
+): Promise<void> {
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
   let ready = false;
   if (timedOut) {
     ready = true;
   } else {
+    // A null snapshot means liveness is unknown, and every question this
+    // branch asks is a liveness question: an unknown target used to read as
+    // gone, which fired an idle_any wake the instant a probe hiccuped. Wait
+    // for the next tick instead. Max-wait above is a clock decision and does
+    // not consult tmux, so it still fires on time.
+    if (snapshot === null) return;
     const states = watchedStates(timer, snapshot);
     if (timer.kind === "idle_any") {
       // Agents already idle when the timer was set do not count; wait for a
@@ -173,16 +238,12 @@ async function maybeFireIdle(timer: TimerRow, snapshot: AliveSnapshot, now: stri
       ready = states.length > 0 && states.every((s) => s.idle);
     }
   }
-  if (ready && claimOneShot(timer.id)) {
+  if (ready && deliverable(timer, snapshot) && claimOneShot(timer.id)) {
     await deliver(timer, timedOut ? "max wait reached" : "");
   }
 }
 
 async function deliver(timer: TimerRow, note: string): Promise<void> {
-  if (!windowAlive(timer.deliver_pane)) {
-    cancelTimer(timer.id);
-    return;
-  }
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
   await sendText(timer.deliver_pane, prefix + timer.body, true);
 }
