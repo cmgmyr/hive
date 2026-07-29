@@ -186,7 +186,20 @@ describe("interpreter and ABI", () => {
 describe("hive setup writes a dispatcher", () => {
   const binDir = join(dirs.tmp, "bin");
   const dispatcher = join(binDir, "hive");
-  const setupOpts = { ...doctorOpts, env: { ...doctorOpts.env, HIVE_BIN_DIR: binDir } };
+  // doctor answers "what does typing `hive` actually run" from PATH, not from
+  // HIVE_BIN_DIR (reportDispatcher -> firstHiveOnPath). So HIVE_BIN_DIR alone
+  // does not isolate these tests: an inherited PATH carrying a real
+  // ~/.local/bin/hive wins over the scratch one, and doctor then reports the
+  // developer's own dispatcher. That made two of the tests below pass only on
+  // a machine that had never run `hive setup`, which is to say green on CI and
+  // on any checkout whose owner had not yet followed hive's own README.
+  // PATH is an input to what is under test here, so every case states it.
+  // node comes from PATH too: runCli spawns a bare "node".
+  const hivelessPath = `${dirname(process.execPath)}:/usr/bin:/bin`;
+  const setupOpts = {
+    ...doctorOpts,
+    env: { ...doctorOpts.env, HIVE_BIN_DIR: binDir, PATH: `${binDir}:${hivelessPath}` },
+  };
 
   it("pins the interpreter that built this checkout", async () => {
     const { code, stdout } = await runCli(["setup"], setupOpts);
@@ -359,9 +372,12 @@ describe("hive setup writes a dispatcher", () => {
   });
 
   it("doctor points at setup when there is no dispatcher", async () => {
+    // binDir comes off PATH as well as out of HIVE_BIN_DIR: the earlier cases
+    // left a real dispatcher there, and doctor would report that one rather
+    // than the absence this asserts.
     const { stdout } = await runCli(["doctor"], {
       ...setupOpts,
-      env: { ...setupOpts.env, HIVE_BIN_DIR: join(dirs.tmp, "absent") },
+      env: { ...setupOpts.env, HIVE_BIN_DIR: join(dirs.tmp, "absent"), PATH: hivelessPath },
     });
     assert.match(stdout, /info {2}dispatcher: none at .*absent\/hive; `hive setup` writes one/);
   });
