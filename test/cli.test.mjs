@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { before, describe, it } from "node:test";
-import { McpClient, runCli, scratchDirs } from "./helpers.mjs";
+import { after, before, describe, it } from "node:test";
+import { McpClient, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+
+// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
+const { cleanup: cleanupTmux } = isolateTmux("the CLI tests");
+after(() => cleanupTmux());
 
 // End to end through the built CLI: init seeds the runbook pad, then the
 // pads/pad commands cover print, edit export, save, and conflict handling.

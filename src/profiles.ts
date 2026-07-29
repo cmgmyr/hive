@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dataDir } from "./dataDir.js";
+import { storeDir } from "./dataDir.js";
 
 // Profiles: a named set of standing instructions shared across projects.
 //
@@ -23,7 +23,9 @@ export type ProfileFile = (typeof PROFILE_FILES)[number];
 // encodes that layout; `hive init` prints a path under it too.
 export const checkoutRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const shippedProfilesDir = join(checkoutRoot, "profiles");
-export const userProfilesDir = join(dataDir, "profiles");
+// A function, not a const: the store is chosen when someone asks, not when
+// this module happens to load. See src/dataDir.ts.
+export const userProfilesDir = (): string => join(storeDir(), "profiles");
 
 // hive.yml is repo-controlled and the resolved posture file is fed to claude
 // as a system prompt, so a profile name must never be able to walk out of
@@ -45,7 +47,7 @@ function candidate(dir: string, name: string, file: ProfileFile): string {
 
 export function resolveProfileFile(name: string, file: ProfileFile): ResolvedFile | null {
   if (!isValidProfileName(name)) return null;
-  const user = candidate(userProfilesDir, name, file);
+  const user = candidate(userProfilesDir(), name, file);
   if (existsSync(user)) return { file, path: user, source: "user" };
   const shipped = candidate(shippedProfilesDir, name, file);
   if (existsSync(shipped)) return { file, path: shipped, source: "shipped" };
@@ -79,7 +81,7 @@ export function renderProfileFile(
 // resolve to hive's defaults.
 export function profileExists(name: string): boolean {
   if (!isValidProfileName(name)) return false;
-  return existsSync(join(userProfilesDir, name)) || existsSync(join(shippedProfilesDir, name));
+  return existsSync(join(userProfilesDir(), name)) || existsSync(join(shippedProfilesDir, name));
 }
 
 function namesIn(dir: string): string[] {
@@ -93,7 +95,7 @@ function namesIn(dir: string): string[] {
 }
 
 export function profileNames(): string[] {
-  return [...new Set([...namesIn(shippedProfilesDir), ...namesIn(userProfilesDir)])].sort();
+  return [...new Set([...namesIn(shippedProfilesDir), ...namesIn(userProfilesDir())])].sort();
 }
 
 // What a fork was copied from, so `hive profile list` and `hive doctor` can
@@ -110,7 +112,7 @@ function contentHash(path: string): string | null {
 
 function readOrigins(name: string): Record<string, string> {
   try {
-    const raw = JSON.parse(readFileSync(join(userProfilesDir, name, ORIGIN_FILE), "utf8"));
+    const raw = JSON.parse(readFileSync(join(userProfilesDir(), name, ORIGIN_FILE), "utf8"));
     return raw && typeof raw === "object" ? (raw as Record<string, string>) : {};
   } catch {
     return {};
@@ -121,7 +123,7 @@ function writeOrigin(name: string, file: string, hash: string | null): void {
   if (hash == null) return;
   const origins = readOrigins(name);
   origins[file] = hash;
-  writeFileSync(join(userProfilesDir, name, ORIGIN_FILE), `${JSON.stringify(origins, null, 2)}\n`);
+  writeFileSync(join(userProfilesDir(), name, ORIGIN_FILE), `${JSON.stringify(origins, null, 2)}\n`);
 }
 
 export interface ProfileFileStatus extends ResolvedFile {
@@ -161,7 +163,7 @@ function requireName(name: string): void {
 export function forkProfile(name: string, only?: ProfileFile): { copied: string[]; skipped: string[] } {
   requireName(name);
   if (!profileExists(name)) throw new ProfileError(`No profile named "${name}". List them with: hive profile list`);
-  const targetDir = join(userProfilesDir, name);
+  const targetDir = join(userProfilesDir(), name);
   mkdirSync(targetDir, { recursive: true });
   const copied: string[] = [];
   const skipped: string[] = [];
@@ -171,7 +173,7 @@ export function forkProfile(name: string, only?: ProfileFile): { copied: string[
       if (only) throw new ProfileError(`Profile "${name}" ships no ${file}.`);
       continue;
     }
-    const target = candidate(userProfilesDir, name, file);
+    const target = candidate(userProfilesDir(), name, file);
     if (existsSync(target)) {
       skipped.push(file);
       continue;
@@ -185,13 +187,14 @@ export function forkProfile(name: string, only?: ProfileFile): { copied: string[
 
 export function createProfile(name: string, from?: string): string {
   requireName(name);
-  if (existsSync(join(userProfilesDir, name))) {
-    throw new ProfileError(`You already have a profile named "${name}" at ${join(userProfilesDir, name)}.`);
+  const existing = join(userProfilesDir(), name);
+  if (existsSync(existing)) {
+    throw new ProfileError(`You already have a profile named "${name}" at ${existing}.`);
   }
   if (from != null && !profileExists(from)) {
     throw new ProfileError(`No profile named "${from}" to copy from.`);
   }
-  const targetDir = join(userProfilesDir, name);
+  const targetDir = join(userProfilesDir(), name);
   mkdirSync(targetDir, { recursive: true });
   if (from != null) {
     for (const file of PROFILE_FILES) {

@@ -4,10 +4,12 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export const SERVER = new URL("../dist/index.js", import.meta.url).pathname;
-export const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
+export const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+export const DIST = join(REPO, "dist");
+export const SERVER = join(DIST, "index.js");
+export const CLI = join(DIST, "cli.js");
 // The SessionStart hook runs this file directly, not through cli.js.
-export const KICKOFF = new URL("../dist/kickoff.js", import.meta.url).pathname;
+export const KICKOFF = join(DIST, "kickoff.js");
 
 // The suite is normally run from inside a hive worker pane, whose env carries
 // HIVE_AGENT_ID, HIVE_PROJECT_LOCK and friends. Inheriting those makes a
@@ -39,15 +41,11 @@ export function clearHiveEnv() {
 // hive's own configHash rather than a copy. A drift between the two would
 // otherwise show up as a test that mysteriously stopped reaching the command.
 //
-// db is passed in, and configHash is imported INSIDE the function, for the
-// same reason: nothing in this file may pull a dist/ module in at load time.
-// Static imports are hoisted above the test file's body, so a dist import
-// here resolves dist/dataDir.js before the test has set HIVE_DATA_DIR, and
-// dataDir is computed once at module load. Everything imported afterwards,
-// dist/db.js included, then shares that cached module and opens the
-// developer's real ~/.hive store. That happened: it cost a live store its
-// agents and timers rows. Keep dist imports lazy here, and see
-// assertScratchStore.
+// db is passed in and configHash is imported INSIDE the function so that
+// nothing here pulls dist/ in at hoist time. That is no longer what stands
+// between the suite and a live store (see test/store-isolation.test.mjs), but
+// a static dist import at the top of this file is the literal line that
+// destroyed one, and every test file imports this one.
 export async function seedTrustedYml({ db, projectId, projectDir, processes }) {
   const { configHash } = await import("../dist/projectYml.js");
   const lines = Object.entries(processes).map(([name, command]) => `  ${name}: ${command}`);
@@ -62,18 +60,24 @@ export async function seedTrustedYml({ db, projectId, projectDir, processes }) {
 // Call this after setting HIVE_DATA_DIR and BEFORE importing dist/db.js, in
 // any test file that imports dist/ directly instead of spawning it.
 //
-// dataDir is resolved once, at the first load of dist/dataDir.js, from the
-// env as it stood at that instant. If anything pulled that module in earlier,
-// the store is already pointed somewhere else and every later import silently
-// agrees with it. Reading the resolved value back is the only way to know
-// which store the code under test will actually open, and a suite that runs
-// destructive statements has to know before it runs them, not after.
+// Two structural guards now stand behind this, and it is worth being precise
+// about what is left for it to do. dist/dataDir.js reads HIVE_DATA_DIR when
+// asked rather than caching it at module load, so import order no longer
+// decides the store; and storeDir() refuses the real ~/.hive outright when a
+// test runner is the entry point, so a file that never sets HIVE_DATA_DIR
+// fails loudly instead of running its DELETEs on a live store. Neither can
+// tell one scratch directory from another: HIVE_DATA_DIR inherited from the
+// worker pane this suite usually runs in points somewhere real enough to
+// satisfy both and wrong enough to ruin the run. That is this function's
+// remaining job, plus giving a destructive file its error at the top instead
+// of at the first statement. See test/store-isolation.test.mjs.
 export async function assertScratchStore() {
-  const { dataDir, DEFAULT_DATA_DIR } = await import("../dist/dataDir.js");
-  if (dataDir === DEFAULT_DATA_DIR || dataDir !== process.env.HIVE_DATA_DIR) {
+  const { storeDir, DEFAULT_DATA_DIR } = await import("../dist/dataDir.js");
+  const resolved = storeDir();
+  if (resolved === DEFAULT_DATA_DIR || resolved !== process.env.HIVE_DATA_DIR) {
     throw new Error(
-      `Test store is not isolated: dist resolved dataDir to ${dataDir}, expected ${process.env.HIVE_DATA_DIR}. ` +
-        "Something imported a dist/ module before HIVE_DATA_DIR was set. Refusing to run against a real store.",
+      `Test store is not isolated: dist resolved the store to ${resolved}, expected ${process.env.HIVE_DATA_DIR}. ` +
+        "Refusing to run against a store this test does not own.",
     );
   }
 }

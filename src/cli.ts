@@ -623,7 +623,7 @@ function profileUsage(): never {
   console.log(`Usage:
   hive profile list                            profiles hive can see, and where each file comes from
   hive profile path <name> [file]              where a profile's files resolve to
-  hive profile fork <name> [file]              copy hive's default into ${userProfilesDir} to edit
+  hive profile fork <name> [file]              copy hive's default into ${userProfilesDir()} to edit
   hive profile create <name> [--from <other>]  start a new profile
 
 Files in a profile: ${PROFILE_FILES.join(", ")}`);
@@ -683,7 +683,7 @@ function cmdProfile(argv: string[]): void {
       case "fork": {
         if (!name) profileUsage();
         const { copied, skipped } = forkProfile(name, asProfileFile(positional[1]));
-        for (const file of copied) console.log(`forked ${file} -> ${join(userProfilesDir, name, file)}`);
+        for (const file of copied) console.log(`forked ${file} -> ${join(userProfilesDir(), name, file)}`);
         for (const file of skipped) console.log(`kept your ${file} (already forked)`);
         if (copied.length === 0 && skipped.length === 0) console.log(`Profile "${name}" ships no files to fork.`);
         return;

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { McpClient, scratchDirs, sleep } from "./helpers.mjs";
+import { McpClient, isolateTmux, scratchDirs, sleep } from "./helpers.mjs";
+
+// The MCP server drives tmux for the agent tools; isolate first.
+const { cleanup: cleanupTmux } = isolateTmux("the store tests");
+after(() => cleanupTmux());
 
 // One server instance drives the whole file; a second instance with its own
 // actor id joins for the lease-contention case. Both share one database.

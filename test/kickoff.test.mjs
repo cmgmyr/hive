@@ -2,8 +2,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { before, describe, it } from "node:test";
-import { KICKOFF, McpClient, runCli, runNode, scratchDirs } from "./helpers.mjs";
+import { after, before, describe, it } from "node:test";
+import { KICKOFF, McpClient, isolateTmux, runCli, runNode, scratchDirs } from "./helpers.mjs";
+
+// The hook and the CLI both start hive, which probes tmux; isolate first.
+const { cleanup: cleanupTmux } = isolateTmux("the kickoff tests");
+after(() => cleanupTmux());
 
 // The SessionStart hook fires in every directory on the machine, so most of
 // what it does is decline. Each gate is tested rejecting on its own, with

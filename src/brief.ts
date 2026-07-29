@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dataDir } from "./dataDir.js";
+import { storeDir } from "./dataDir.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
@@ -73,7 +73,7 @@ export function paneAnnouncement(ctx: BriefContext): string {
   return `[hive] You are "${ctx.name}" (${ctx.actorId}) in project "${ctx.projectName}", cwd ${ctx.cwd}. Your full brief is loaded in the system prompt. Run whoami to confirm scope, then wait for your assignment.`;
 }
 
-const briefsDir = () => join(dataDir, "briefs");
+const briefsDir = () => join(storeDir(), "briefs");
 
 export const agentBriefPath = (agentId: number) => join(briefsDir(), `agent-${agentId}.md`);
 
@@ -102,7 +102,7 @@ export function readAgentBrief(agentId: number): string | null {
 // project, overwritten on every `hive lead`: the set is bounded by how many
 // projects you have, the content is derived, and a stale copy from a deleted
 // project costs a few hundred bytes. Nothing sweeps them, deliberately.
-const posturesDir = () => join(dataDir, "postures");
+const posturesDir = () => join(storeDir(), "postures");
 
 export const projectPosturePath = (projectId: number) =>
   join(posturesDir(), `project-${projectId}.md`);

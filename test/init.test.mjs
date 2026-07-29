@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, it } from "node:test";
-import { runCli, scratchDirs } from "./helpers.mjs";
+import { after, describe, it } from "node:test";
+import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+
+// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
+const { cleanup: cleanupTmux } = isolateTmux("the init tests");
+after(() => cleanupTmux());
 
 // runCli never has a TTY, which is also the non-interactive path hive init
 // has to handle without prompting and without failing.

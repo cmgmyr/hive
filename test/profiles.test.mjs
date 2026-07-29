@@ -3,9 +3,16 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { runCli, scratchDirs } from "./helpers.mjs";
+import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
-// profiles.js resolves ~/.hive/profiles from HIVE_DATA_DIR at import time.
+// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
+const { cleanup: cleanupTmux } = isolateTmux("the profile tests");
+after(() => cleanupTmux());
+
+// profiles.js reads HIVE_DATA_DIR when asked rather than at import time, so
+// this only has to be set before a profile path is resolved. Set here anyway:
+// storeDir() refuses the real store under a test runner, and every case below
+// wants this scratch one.
 const scratch = mkdtempSync(join(tmpdir(), "hive-profiles-"));
 process.env.HIVE_DATA_DIR = scratch;
 const {

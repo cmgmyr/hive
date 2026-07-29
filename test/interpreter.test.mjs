@@ -2,8 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { before, describe, it } from "node:test";
-import { assertScratchStore, CLI, runCli, scratchDirs, SERVER } from "./helpers.mjs";
+import { after, before, describe, it } from "node:test";
+import { assertScratchStore, CLI, isolateTmux, runCli, scratchDirs, SERVER } from "./helpers.mjs";
+
+// doctor and status both run the janitor, which probes the tmux server; isolate
+// first, or these read the one the lead and its workers are running in.
+const { hasTmux, cleanup: cleanupTmux } = isolateTmux("the interpreter and doctor tests");
+after(() => cleanupTmux());
 
 // hive lets the working directory pick its interpreter unless something stops
 // it, and better-sqlite3's addon only loads under the Node that compiled it.
@@ -76,6 +81,32 @@ describe("interpreter and ABI", () => {
     assert.ok(addon, `doctor should report the addon's ABI:\n${stdout}`);
     assert.equal(node[2], addon[1], "a passing run must agree on one NODE_MODULE_VERSION");
     assert.match(stdout, /better_sqlite3\.node/, "name the file, so two checkouts can be compared");
+  });
+
+  it("reads the isolated tmux server, not whatever the ambient env points at", {
+    skip: hasTmux ? false : "tmux is not installed",
+  }, async () => {
+    // Issue #21. Doctor is not a passive reader of the environment: its stale
+    // state check runs the janitor, which probes the server, and its sessions
+    // check runs `tmux ls`. Both went to whatever server the ambient env named,
+    // which during development is the one the lead and its workers run in.
+    //
+    // One session on the isolated server, and doctor must report that one and
+    // nothing else. Listing it at all proves doctor read the isolated server,
+    // since it exists nowhere else. Listing ONLY it is the half that catches a
+    // regression, and it is worth being honest that its power depends on the
+    // developer having live hive sessions, which is exactly when this matters
+    // and never on a CI runner. suite-isolation.test.mjs is what carries CI.
+    const probe = `hive-doctor-probe-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", probe, "sleep 600"], { stdio: "ignore" });
+    try {
+      const { stdout } = await runCli(["doctor"], doctorOpts);
+      const line = /^ *(?:ok|info|warn) +sessions: (.*)$/m.exec(stdout);
+      assert.ok(line, `doctor should report sessions:\n${stdout}`);
+      assert.deepEqual(line[1].split(", "), [probe], `doctor reached another tmux server:\n${stdout}`);
+    } finally {
+      execFileSync("tmux", ["kill-session", "-t", `=${probe}`], { stdio: "ignore" });
+    }
   });
 
   it("checks the ABI by loading the addon, which require() alone does not do", async () => {

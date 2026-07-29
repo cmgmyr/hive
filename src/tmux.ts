@@ -113,7 +113,12 @@ export const SESSION_PREFIX = "hive-";
 // dataDirTag is empty for the default store, so the everyday name stays the
 // documented hive-<project_id>. A scratch store gets its own namespace; see
 // src/dataDir.ts for why sharing one is dangerous.
-export const sessionName = (projectId: number) => `${SESSION_PREFIX}${dataDirTag}${projectId}`;
+//
+// The name this returns is the target argument for kill-session and
+// respawn-pane, so it is guarded exactly like opening the store: under a test
+// runner with no HIVE_DATA_DIR this refuses rather than handing back "hive-1",
+// which names a live session.
+export const sessionName = (projectId: number) => `${SESSION_PREFIX}${dataDirTag()}${projectId}`;
 
 // Window names double as iTerm tab titles (and notification labels), so they
 // carry the project name: "hive - lead", "hive - worker-1".

@@ -2,9 +2,21 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { guardAbi } from "./abi.js";
-import { dataDir } from "./dataDir.js";
+import { guardStoreDir } from "./dataDir.js";
 
-export { dataDir };
+// This module is the only one allowed to touch the store at load time, and
+// that is the invariant to keep, not the const. Line 25 opens the database in
+// the module body, so importing db.js IS choosing a store; the const below
+// only writes down a commitment the module has already made. dataDir.ts
+// holding one was different in kind: it decided the store for every process
+// that imported anything in the graph, including the ones that never opened
+// a store at all.
+//
+// Because the commitment is made during an import, the failure has to be
+// reported the way abi.ts reports its own: printed and exited, not thrown.
+// A throw out of an ESM module body reaches the user as a stack trace with
+// hive's sentence buried in it, which is the shape CLAUDE.md says to avoid.
+export const dataDir = guardStoreDir();
 mkdirSync(dataDir, { recursive: true });
 
 // The import above does not load better-sqlite3's native addon; `new
