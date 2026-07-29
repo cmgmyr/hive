@@ -324,6 +324,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_status` | One agent in detail, with a short terminal tail | To check on a specific worker |
 | `agent_send` | Types text or key presses into a worker's terminal | To give a worker its task, answer a prompt, or press Enter/Escape for it |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
+| `agent_rename` | Changes a worker's display name; `actor_id` stays the same | When a worker's job becomes clear after you started it |
 | `agent_close` | Kills the worker's window and marks it closed | After capturing handoffs; terminal output is not retained |
 | **wake-ups** | | |
 | `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action) |

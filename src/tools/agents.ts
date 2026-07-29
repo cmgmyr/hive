@@ -15,7 +15,7 @@ import { currentActor, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
-import { closeAgentRow, launchAgent } from "../spawn.js";
+import { closeAgentRow, launchAgent, renameAgent } from "../spawn.js";
 import {
   applyLayout,
   capturePane,
@@ -36,7 +36,7 @@ import {
   windowLayout,
   type AliveSnapshot,
 } from "../tmux.js";
-import { projectIdParam } from "./params.js";
+import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
 
 export interface AgentRow {
   id: number;
@@ -55,6 +55,17 @@ export interface AgentRow {
   kind: string;
 }
 
+// The most recently closed agent whose name matches, folded the same way the
+// running passes fold. Only reached when no running agent answered, so the
+// scan over a project's dead agents stays off the hot path.
+function closedAgentNamed(projectId: number, needle: string): { id: number; name: string } | undefined {
+  return (
+    db
+      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status != 'running' ORDER BY id DESC")
+      .all(projectId) as { id: number; name: string }[]
+  ).find((r) => r.name.toLowerCase() === needle);
+}
+
 export function findAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
   if (ref.agent_id != null) {
     const row = db
@@ -65,15 +76,45 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
   }
   if (ref.name) {
     const rows = db
-      .prepare("SELECT * FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
-      .all(projectId, ref.name) as AgentRow[];
-    if (rows.length === 0) {
-      throw new Error(`No running agent named "${ref.name}" in project ${projectId}. Call agent_list.`);
-    }
-    if (rows.length > 1) {
+      .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+      .all(projectId) as AgentRow[];
+
+    // Strict precedence, strongest signal first, so a shorter name can never
+    // be shadowed by a longer one that happens to contain it: "impl" resolves
+    // to impl even while impl-followup is running.
+    const exact = rows.filter((r) => r.name === ref.name);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) {
       throw new Error(`Multiple running agents named "${ref.name}". Target by agent_id instead.`);
     }
-    return rows[0];
+
+    const needle = ref.name.toLowerCase();
+    const sameName = rows.filter((r) => r.name.toLowerCase() === needle);
+    if (sameName.length === 1) return sameName[0];
+
+    // A name the caller typed in full must never resolve to a DIFFERENT
+    // worker. Closing "impl" while "impl-followup" runs would otherwise make
+    // agent_close(name="impl") kill the wrong pane, because the running-only
+    // filter above turns the exact match into a miss and the substring pass
+    // happily takes the sibling. Report the closed worker instead. Checked
+    // after the running passes so that reusing a closed worker's name still
+    // resolves to the live one.
+    const closed = closedAgentNamed(projectId, needle);
+    if (closed) {
+      throw new Error(
+        `Agent ${closed.id} ("${closed.name}") is closed. Spawn a new worker, or target a running one by name or agent_id.`,
+      );
+    }
+
+    const partial = rows.filter((r) => r.name.toLowerCase().includes(needle));
+    if (partial.length === 1) return partial[0];
+    if (partial.length > 1) {
+      const candidates = partial.map((r) => `${r.name} (agent_id ${r.id})`).join(", ");
+      throw new Error(
+        `"${ref.name}" matches ${partial.length} running agents: ${candidates}. Use the full name or agent_id.`,
+      );
+    }
+    throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
   }
   throw new Error("Pass agent_id or name.");
 }
@@ -93,6 +134,52 @@ function requireLive(agent: AgentRow): void {
       `Agent ${agent.id} ("${agent.name}") has no live tmux window (its process exited or the window was killed). Close it with agent_close and spawn a new one.`,
     );
   }
+}
+
+// Names are the handle leads address workers by, so two running agents may
+// never share one: findAgent would go ambiguous and every name-addressed call
+// would need an id instead. Enforced at both doors, spawn and rename.
+//
+// Compared case-insensitively, because that is how partial resolution matches.
+// "impl" and "Impl" are not two handles: every partial match finds both and
+// reports them as ambiguous, so allowing the pair would hand a lead two
+// workers it can only ever address by id.
+//
+// Folded in JS with the same toLowerCase findAgent uses, deliberately, rather
+// than in SQL. SQLite's NOCASE folds ASCII only, so the two engines disagreed
+// outside ASCII: "café" and "CAFÉ" passed this check as different names and
+// then collided at resolution, producing the exact pair this exists to
+// prevent. One rule needs one implementation.
+function requireNameFree(projectId: number, name: string, exceptAgentId?: number): void {
+  const needle = name.toLowerCase();
+  const taken = (
+    db
+      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+      .all(projectId) as { id: number; name: string }[]
+  ).find((r) => r.id !== exceptAgentId && r.name.toLowerCase() === needle);
+  if (taken) {
+    throw new Error(`A running agent named "${taken.name}" already exists. Pick another name.`);
+  }
+}
+
+// A name is not just a label: it gets typed into a terminal, as the pane
+// announcement at spawn and as /rename on a live worker. `tmux send-keys -l`
+// stops tmux interpreting key NAMES, but it passes a raw control byte
+// straight through to the TUI, so a name carrying 0x03 sends Ctrl-C into a
+// worker mid-task. Verified directly against tmux rather than reasoned about:
+// send-keys -l -- with a literal 0x03 interrupts a running foreground
+// process. Both doors validate, because both doors type.
+const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+
+function normalizeAgentName(raw: string, field: "name" | "new_name"): string {
+  const name = raw.trim();
+  if (!name) throw new Error(`${field} cannot be empty.`);
+  if (CONTROL_CHARS.test(name)) {
+    throw new Error(
+      `${field} cannot contain control characters, including newlines: it is typed into the worker's terminal.`,
+    );
+  }
+  return name;
 }
 
 function nextWorkerName(projectId: number): string {
@@ -138,7 +225,10 @@ export function registerAgents(server: McpServer): void {
       description:
         "Spawn a worker agent in a tmux window (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt and a short [hive] line is typed into its pane as the visible first turn, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-<project_id>.",
       inputSchema: {
-        name: z.string().optional().describe("Display name; defaults to worker-N."),
+        name: z
+          .string()
+          .optional()
+          .describe("Display name; defaults to worker-N. This is how you address the worker later."),
         model: z.string().optional().describe("Passed as --model to the agent command."),
         command: z.string().optional().describe("Agent command to run. Defaults to claude."),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
@@ -172,13 +262,10 @@ export function registerAgents(server: McpServer): void {
           if (!statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${args.cwd}`);
         }
 
-        const name = args.name ?? nextWorkerName(project.id);
-        const clash = db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND name = ? AND status = 'running'",
-          )
-          .get(project.id, name) as { n: number };
-        if (clash.n > 0) throw new Error(`A running agent named "${name}" already exists. Pick another name.`);
+        const name = args.name != null
+          ? normalizeAgentName(args.name, "name")
+          : nextWorkerName(project.id);
+        requireNameFree(project.id, name);
 
         const baseCommand = args.command ?? "claude";
         const isClaude = isClaudeCommand(baseCommand);
@@ -203,6 +290,7 @@ export function registerAgents(server: McpServer): void {
             : undefined;
           return workerCommandString({
             command: baseCommand,
+            displayName: name,
             model: args.model,
             extraArgs: args.extra_args,
             settingsPath: isClaude ? ensureHooksFile() : undefined,
@@ -280,6 +368,64 @@ export function registerAgents(server: McpServer): void {
   );
 
   server.registerTool(
+    "agent_rename",
+    {
+      description:
+        "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task.",
+      inputSchema: {
+        name: agentNameParam,
+        agent_id: agentIdParam,
+        new_name: z
+          .string()
+          .describe("The new display name. No other running worker may have it, case aside."),
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(async () => {
+        const project = resolveProject(args.project_id);
+        const agent = findAgent(project.id, args);
+        // Reachable only by id: name lookups already filter to running agents.
+        // Renaming a closed one changes a label nothing can address and
+        // rewrites the actors row for a worker that is gone.
+        if (agent.status !== "running") {
+          throw new Error(`Agent ${agent.id} ("${agent.name}") is closed and cannot be renamed.`);
+        }
+        const newName = normalizeAgentName(args.new_name, "new_name");
+        requireNameFree(project.id, newName, agent.id);
+
+        const live = isLive(agent);
+        // A window-placed worker carries its name in the tmux window too,
+        // which is hive's own to set.
+        const ownWindow = live && !isPaneTarget(agent.tmux_target);
+        renameAgent(agent, newName, ownWindow ? { projectName: project.name } : null);
+
+        // claude owns its pane title and rewrites it as the session moves, so
+        // hive cannot set it directly and make it stick. /rename is claude's
+        // own way of pinning it, and typing into the pane is the channel hive
+        // already drives workers through.
+        let retitled = false;
+        if (live && isClaudeCommand(agent.command)) {
+          try {
+            await sendText(agent.tmux_target, `/rename ${newName}`);
+            retitled = true;
+          } catch {
+            // Pane died between the liveness check and the keystrokes; the
+            // rename itself already landed in the store.
+          }
+        }
+
+        return {
+          agent_id: agent.id,
+          actor_id: agent.actor_id,
+          name: newName,
+          previous_name: agent.name,
+          retitled,
+        };
+      }),
+  );
+
+  server.registerTool(
     "agent_list",
     {
       description: "List this project's agents with live status.",
@@ -307,10 +453,10 @@ export function registerAgents(server: McpServer): void {
     "agent_status",
     {
       description:
-        "Detailed status for one agent, including a short tail of its terminal. include_brief=true returns the exact brief this worker was given; hive keeps that copy because an appended system prompt appears in no transcript.",
+        "Detailed status for one agent, addressed by name (or agent_id), including a short tail of its terminal. include_brief=true returns the exact brief this worker was given; hive keeps that copy because an appended system prompt appears in no transcript.",
       inputSchema: {
-        agent_id: z.number().int().optional(),
-        name: z.string().optional(),
+        name: agentNameParam,
+        agent_id: agentIdParam,
         include_brief: z
           .boolean()
           .optional()
@@ -342,10 +488,10 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal. text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
       inputSchema: {
-        agent_id: z.number().int().optional(),
-        name: z.string().optional(),
+        name: agentNameParam,
+        agent_id: agentIdParam,
         text: z.string().optional(),
         keys: z.array(z.string()).optional().describe("tmux key names, e.g. [\"Escape\"] or [\"C-c\"]."),
         submit: z.boolean().optional().describe("Append Enter after text. Defaults to true."),
@@ -370,9 +516,11 @@ export function registerAgents(server: McpServer): void {
 
         if (args.wait_ms != null) {
           await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
-          return { agent_id: agent.id, sent: true, tail: capturePane(target, 15) };
+          return { agent_id: agent.id, name: agent.name, sent: true, tail: capturePane(target, 15) };
         }
-        return { agent_id: agent.id, sent: true };
+        // The resolved name, not the one the caller typed: a partial name that
+        // found the wrong worker is invisible otherwise.
+        return { agent_id: agent.id, name: agent.name, sent: true };
       }),
   );
 
@@ -380,10 +528,10 @@ export function registerAgents(server: McpServer): void {
     "agent_output",
     {
       description:
-        "Read the rendered terminal of an agent (default 50 lines, max 200). Read REAL output before declaring a worker done.",
+        "Read the rendered terminal of an agent (default 50 lines, max 200), addressed by name or agent_id. Read REAL output before declaring a worker done.",
       inputSchema: {
-        agent_id: z.number().int().optional(),
-        name: z.string().optional(),
+        name: agentNameParam,
+        agent_id: agentIdParam,
         lines: z.number().int().optional(),
         project_id: projectIdParam,
       },
@@ -408,10 +556,10 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true.",
       inputSchema: {
-        agent_id: z.number().int().optional(),
-        name: z.string().optional(),
+        name: agentNameParam,
+        agent_id: agentIdParam,
         confirm_self: z.boolean().optional(),
         project_id: projectIdParam,
       },

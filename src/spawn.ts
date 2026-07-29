@@ -54,23 +54,48 @@ function splitTargetWindow(session: string, leadTitle: string): string {
   return (rows.find(([name]) => name === leadTitle) ?? rows[0])[1];
 }
 
+// idx_agents_running_name only fires on the path requireNameFree cannot see:
+// two sessions that both passed the application check and both write. A raw
+// SQLITE_CONSTRAINT reaching a lead tells it nothing it can act on, so it
+// becomes the sentence requireNameFree would have thrown. The index reports
+// the columns rather than its own name on current SQLite; match either, since
+// which one you get is a detail of the engine and not of this rule.
+export function asNameClash(e: unknown, name: string): unknown {
+  const err = e as { code?: string; message?: string };
+  const message = err.message ?? "";
+  if (
+    err.code === "SQLITE_CONSTRAINT_UNIQUE" &&
+    (message.includes("agents.name") || message.includes("idx_agents_running_name"))
+  ) {
+    return new Error(`A running agent named "${name}" already exists. Pick another name.`);
+  }
+  return e;
+}
+
 export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: string; target: string } {
-  const info = db
-    .prepare(
-      "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id) VALUES (?, ?, ?, ?, ?, ?)",
-    )
-    .run(
-      spec.projectId,
-      spec.name,
-      // A callback cannot run until the row has an id, so the command lands
-      // in the UPDATE below instead. The empty write is never observable: it
-      // is inside the try that deletes the row on any failure, and the row is
-      // not reachable until tmux_target is set.
-      typeof spec.commandString === "string" ? spec.commandString : "",
-      spec.cwd,
-      spec.kind,
-      spec.parentActor,
-    );
+  let info;
+  try {
+    info = db
+      .prepare(
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        spec.projectId,
+        spec.name,
+        // A callback cannot run until the row has an id, so the command lands
+        // in the UPDATE below instead. The empty write is never observable: it
+        // is inside the try that deletes the row on any failure, and the row is
+        // not reachable until tmux_target is set.
+        typeof spec.commandString === "string" ? spec.commandString : "",
+        spec.cwd,
+        spec.kind,
+        spec.parentActor,
+      );
+  } catch (e) {
+    // The very first statement, before any tmux work, so losing the race
+    // costs a rejected call and never a half-built pane.
+    throw asNameClash(e, spec.name);
+  }
   const agentId = Number(info.lastInsertRowid);
   const actorId = `${spec.kind}:${agentId}`;
   try {
@@ -119,6 +144,39 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
   } catch (e) {
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
     throw e;
+  }
+}
+
+// The other half of naming an agent, next to launchAgent because that is what
+// establishes a name in the first place: the agents row, the actors row (the
+// display name for the same actor_id), and the tmux window when the worker
+// has one of its own. The actor_id itself is deliberately untouched; it is
+// stamped on everything the worker has already written.
+//
+// The window rename is best-effort: the store write has landed, and a window
+// killed since the caller's liveness check must not fail the rename.
+export function renameAgent(
+  agent: { id: number; actor_id: string; tmux_target: string },
+  newName: string,
+  window: { projectName: string } | null,
+): void {
+  try {
+    db.transaction(() => {
+      db.prepare("UPDATE agents SET name = ? WHERE id = ?").run(newName, agent.id);
+      db.prepare("UPDATE actors SET name = ? WHERE id = ?").run(newName, agent.actor_id);
+    })();
+  } catch (e) {
+    // Same race as a spawn, one tool over: another session took the name
+    // between this caller's check and this write. The transaction rolled both
+    // updates back, so nothing tmux-side has happened yet.
+    throw asNameClash(e, newName);
+  }
+  if (window) {
+    try {
+      tmux("rename-window", "-t", agent.tmux_target, windowTitle(window.projectName, newName));
+    } catch {
+      // Window gone; the label stays stale and the row is already correct.
+    }
   }
 }
 

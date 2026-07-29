@@ -3,7 +3,7 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, McpClient, runCli, scratchDirs } from "./helpers.mjs";
+import { isolateTmux, liveAgentRow, McpClient, runCli, scratchDirs } from "./helpers.mjs";
 
 // A malformed hive.yml must reach the caller that can act on it. `hive lead`
 // and `hive start` already print loadProjectYml's warnings; these cover the two
@@ -48,20 +48,11 @@ describe("agent_spawn config warnings", { skip: hasTmux ? false : "tmux is not i
   // dies with "command not found" before it has drawn anything.
   const spawn = (name) => mcp.call("agent_spawn", { name, command: "sleep", extra_args: ["600"] });
 
-  // A receipt is not proof of a worker. A pane that exits immediately still
-  // returns a tmux_target, and killing the session out from under the spawn is
-  // how this suite failed on CI while passing locally: rename-window raced the
-  // dying server and only lost on the slower machine.
-  async function assertRunning(name) {
-    const row = (await mcp.call("agent_list")).agents.find((a) => a.name === name);
-    assert.ok(row?.alive, `worker "${name}" should still be running, got ${JSON.stringify(row)}`);
-  }
-
   it("reports a bad layout in the receipt and still spawns", async () => {
     writeFileSync(ymlPath, BAD_LAYOUT);
     const receipt = await spawn("warned");
     assert.ok(receipt.agent_id > 0, "the spawn must not fail on a recoverable config problem");
-    await assertRunning("warned");
+    await liveAgentRow(mcp, "warned");
     assert.equal(receipt.config_warnings.length, 1);
     assert.match(receipt.config_warnings[0], /layout must be one of/);
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
@@ -70,7 +61,7 @@ describe("agent_spawn config warnings", { skip: hasTmux ? false : "tmux is not i
   it("omits config_warnings when hive.yml parses clean", async () => {
     writeFileSync(ymlPath, "layout: main-vertical\n");
     const receipt = await spawn("clean");
-    await assertRunning("clean");
+    await liveAgentRow(mcp, "clean");
     assert.ok(
       !("config_warnings" in receipt),
       `slim receipts: the key must be absent, got ${JSON.stringify(receipt.config_warnings)}`,
@@ -81,7 +72,7 @@ describe("agent_spawn config warnings", { skip: hasTmux ? false : "tmux is not i
   it("omits config_warnings when there is no hive.yml at all", async () => {
     unlinkSync(ymlPath);
     const receipt = await spawn("bare");
-    await assertRunning("bare");
+    await liveAgentRow(mcp, "bare");
     assert.ok(!("config_warnings" in receipt));
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
   });

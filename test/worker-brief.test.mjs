@@ -86,6 +86,61 @@ describe("worker command string", () => {
     assert.doesNotMatch(cmd, /--append-system-prompt-file|--settings/);
   });
 
+  it("titles a claude worker with its hive name", () => {
+    const cmd = workerCommandString({
+      command: "claude",
+      displayName: "api-worker",
+      settingsPath: "/data/hooks.json",
+    });
+    assert.match(cmd, /--name api-worker/);
+  });
+
+  it("does not pass --name to a non-claude command", () => {
+    const cmd = workerCommandString({ command: "codex", displayName: "api-worker" });
+    assert.equal(cmd, "codex");
+  });
+
+  it("quotes a name with spaces, since the string is handed to a shell", () => {
+    const cmd = workerCommandString({ command: "claude", displayName: "api worker" });
+    assert.match(cmd, /--name 'api worker'/);
+  });
+
+  // Whoever typed the flag meant it, and claude would otherwise see --name
+  // twice. extra_args is the caller's escape hatch, so it wins.
+  it("yields to an explicit --name in extra args rather than passing two", () => {
+    for (const flag of ["--name", "-n"]) {
+      const cmd = workerCommandString({
+        command: "claude",
+        displayName: "api-worker",
+        extraArgs: [flag, "chosen"],
+      });
+      assert.equal(cmd, `claude ${flag} chosen`, flag);
+    }
+  });
+
+  // Every form claude's own parser accepts, checked against 2.1.220 rather
+  // than assumed: all four of these set the name, so all four have to count
+  // as the caller having named the worker.
+  it("yields to the joined and attached forms too", () => {
+    for (const arg of ["--name=chosen", "-n=chosen", "-nchosen"]) {
+      const cmd = workerCommandString({
+        command: "claude",
+        displayName: "api-worker",
+        extraArgs: [arg],
+      });
+      assert.equal(cmd, `claude ${arg}`, arg);
+    }
+  });
+
+  it("does not mistake an unrelated long flag for a name", () => {
+    const cmd = workerCommandString({
+      command: "claude",
+      displayName: "api-worker",
+      extraArgs: ["--no-color"],
+    });
+    assert.equal(cmd, "claude --name api-worker --no-color");
+  });
+
   it("quotes paths that need it, since the string is handed to a shell", () => {
     const cmd = workerCommandString({
       command: "claude",

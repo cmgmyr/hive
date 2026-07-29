@@ -24,7 +24,8 @@ PLAYBOOKS — invokable prompts (slash commands in MCP clients)
   wrapup — end of day
 
 AGENTS — spawn and drive worker sessions in tmux
-  agent_spawn, agent_list, agent_status, agent_send, agent_output, agent_close
+  agent_spawn, agent_list, agent_status, agent_send, agent_output,
+  agent_rename, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
   wake_set, wake_when_idle, wake_cancel, wake_list
@@ -137,16 +138,24 @@ runbook (fork it first), not a pad write.`,
     its brief in the system prompt plus a visible [hive] line in its pane;
     other commands return instructions to PREPEND to the first prompt.
     Workers run with HIVE_PROJECT_LOCK=1.
-  agent_send(agent_id|name, text?, keys?, submit?, wait_ms?) — type into the
+  agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
-  agent_output(agent_id|name, lines?) — read the rendered terminal.
-  agent_status(agent_id|name, include_brief?) — liveness, current command,
+  agent_output(name|agent_id, lines?) — read the rendered terminal.
+  agent_status(name|agent_id, include_brief?) — liveness, current command,
     short tail, and the path to the brief this worker was given
     (include_brief=true returns its text; no transcript records it).
   agent_list(include_closed?) — all agents with live status.
-  agent_close(agent_id|name) — kill the window and mark closed. Capture
+  agent_rename(name|agent_id, new_name) — change the display name. actor_id
+    stays agent:N, so older pad writes and todo comments still point here.
+    A live claude worker is told to retitle its own session, which arrives as
+    a user turn: rename between assignments, not mid-task.
+  agent_close(name|agent_id) — kill the window and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
+
+Address a worker by its name, not its id: agent_send(name="impl", ...). A
+partial name works when it matches one running worker, so name="123" finds
+DEVX-123. The name is the handle you chose and the one shown in its pane.
 
 Visibility is automatic: if nothing is attached to the project session when
 a worker spawns, hive pops open iTerm (control mode) or Terminal attached

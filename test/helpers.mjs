@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,6 +156,15 @@ export class McpClient {
     await Promise.race([exited, timeout]);
     if (this.child.exitCode == null) this.child.kill("SIGKILL");
   }
+}
+
+// A receipt is not proof of a worker. A pane whose command exits immediately
+// still returns a tmux_target, so a spawn test that trusts the receipt passes
+// while nothing is running. Read the row back and require it alive.
+export async function liveAgentRow(mcp, name) {
+  const row = (await mcp.call("agent_list")).agents.find((a) => a.name === name);
+  assert.ok(row?.alive, `worker "${name}" should be running, got ${JSON.stringify(row)}`);
+  return row;
 }
 
 export function runCli(args, opts = {}) {

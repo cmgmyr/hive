@@ -145,6 +145,41 @@ CREATE TABLE command_trust (
   PRIMARY KEY (project_id, name, config_hash)
 );
 `,
+  // A worker's name is how a lead addresses it, so two running agents in a
+  // project may never share one. requireNameFree is the primary rule and
+  // stays; this is the backstop for the one thing it cannot see. Every
+  // session runs its own server against one shared WAL store, so two leads
+  // spawning the same name can both pass the check and both insert. Only the
+  // store can refuse that.
+  //
+  // The fold here is SQLite's NOCASE, which covers ASCII only, while
+  // requireNameFree folds with JS toLowerCase, which is Unicode-aware. They
+  // deliberately do not agree. The index sits BEHIND the application check,
+  // so everything it catches is a subset of what the app already rejects and
+  // it can never refuse a name the app would allow. The residual gap is
+  // narrow: two sessions racing to spawn a non-ASCII case pair ("café" and
+  // "CAFÉ") would both get through. Closing it needs a JS-written folded
+  // column and a backfill, which buys very little for a real schema change.
+  //
+  // Rows that already violate the rule are renamed rather than closed, since
+  // closing a row whose pane is alive makes hive forget a running worker,
+  // while renaming keeps it addressable. The loser keeps its pane and gains
+  // its id as a suffix; the lowest id keeps the original name.
+  `
+UPDATE agents
+   SET name = name || '-' || id
+ WHERE status = 'running'
+   AND EXISTS (
+     SELECT 1 FROM agents AS other
+      WHERE other.project_id = agents.project_id
+        AND other.status = 'running'
+        AND other.name = agents.name COLLATE NOCASE
+        AND other.id < agents.id
+   );
+
+CREATE UNIQUE INDEX idx_agents_running_name
+  ON agents(project_id, name COLLATE NOCASE) WHERE status = 'running';
+`,
 ];
 
 export function migrate(): void {

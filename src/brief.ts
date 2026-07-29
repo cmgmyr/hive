@@ -118,9 +118,14 @@ export interface WorkerCommandSpec {
   command: string;
   model?: string;
   extraArgs?: string[];
-  // Both flags are claude's; other agent commands get the bare command.
+  // All three are claude's; other agent commands get the bare command.
   settingsPath?: string;
   briefPath?: string;
+  // The hive name, passed as claude's --name. claude otherwise writes a
+  // summary of what the session is doing into the terminal title and keeps
+  // updating it, so a worker's pane says everything except who it is. An
+  // explicitly set name is sticky for the life of the session.
+  displayName?: string;
 }
 
 // --settings and --append-system-prompt-file are claude's alone, so every
@@ -134,9 +139,24 @@ export function isClaudeCommand(command: string): boolean {
 
 export function workerCommandString(spec: WorkerCommandSpec): string {
   const isClaude = isClaudeCommand(spec.command);
+  // --name is the one flag here a caller can also express directly, since it
+  // carries a value hive derived rather than a path hive owns. Whoever typed
+  // it meant it, and claude would otherwise be handed the flag twice.
+  //
+  // Every form claude's parser accepts has to count, or the check misses the
+  // duplicate it exists to prevent. Confirmed against 2.1.220: `--name x`,
+  // `--name=x`, `-n x`, `-n=x` and `-nx` all set the name. A single-dash
+  // token starting with -n is therefore always this flag; -n is a short flag,
+  // so anything after it in that token is its value, not another flag.
+  const namedByCaller = (spec.extraArgs ?? []).some(
+    (arg) =>
+      arg === "--name" || arg.startsWith("--name=") || (arg.startsWith("-n") && !arg.startsWith("--")),
+  );
+  const name = isClaude && !namedByCaller ? spec.displayName : undefined;
   return [
     spec.command,
     ...(spec.model ? ["--model", spec.model] : []),
+    ...(name ? ["--name", name] : []),
     // State hooks (working/idle/waiting) ride along via --settings; the brief
     // rides along as an appended system prompt.
     ...(isClaude && spec.settingsPath ? ["--settings", spec.settingsPath] : []),

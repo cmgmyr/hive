@@ -9,7 +9,7 @@ import { projectIdParam } from "./params.js";
 
 const agentRefParam = z
   .union([z.number().int(), z.string()])
-  .describe("Agent id or running agent name.");
+  .describe("Running agent's name (preferred), or its numeric agent id.");
 
 function resolveAgentRef(projectId: number, ref: number | string): AgentRow {
   return typeof ref === "number"
