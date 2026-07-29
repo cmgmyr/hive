@@ -4,8 +4,10 @@ import {
   claimInitialWindow,
   DEFAULT_LAYOUT,
   ensureSession,
+  crossServerRefusal,
   sessionName,
   tmux,
+  untrustedTmuxServer,
   windowTitle,
   type WindowLayout,
 } from "./tmux.js";
@@ -73,6 +75,23 @@ export function asNameClash(e: unknown, name: string): unknown {
 }
 
 export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: string; target: string } {
+  // The write half of the guard in tmux.ts. Refusing to READ liveness off a
+  // tmux server this store does not live on is only half a fix while the write
+  // path keeps putting that server's pane ids into the store.
+  //
+  // What a spawn under the bad pair does: sessionName() returns the untagged
+  // hive-1 for the default store, ensureSession does not find it on the private
+  // server and creates a second one there, and the pane id from that fresh
+  // server (numbered from zero, so %0 or %1) is written into the SHARED store.
+  // A lead on the shared server then holds a row naming a pane id that very
+  // likely exists there belonging to someone else. agent_send types into a
+  // stranger's pane; agent_close runs kill-pane on it. Same damage class as the
+  // read path, arriving through the other door.
+  //
+  // Above the INSERT deliberately, not below it: the row is the first statement
+  // precisely so a rejection never leaves a half-built pane, and a refusal
+  // after it would leave an orphan row instead.
+  if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
   let info;
   try {
     info = db

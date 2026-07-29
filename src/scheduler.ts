@@ -1,7 +1,16 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { closeAgentRow } from "./spawn.js";
-import { liveTargets, sendText, targetAlive, targetLive, type AliveSnapshot } from "./tmux.js";
+import {
+  capturePane,
+  liveTargets,
+  sanitizeTail,
+  sendText,
+  tailCaptureLines,
+  targetAlive,
+  targetLive,
+  type AliveSnapshot,
+} from "./tmux.js";
 
 // Every hive MCP server instance runs this scheduler; SQLite conditional
 // updates make timer claims atomic, so concurrent instances never
@@ -243,7 +252,88 @@ async function maybeFireIdle(
   }
 }
 
+// How many watched workers a wake reports on. Each costs one capture-pane
+// fork and a handful of lines in the delivered body, and a lead watching more
+// than three needs a summary rather than three screens.
+const TAIL_AGENTS = 3;
+
+// Issue #24: what hive saw on the watched workers, carried in the wake itself.
+//
+// This is not the fix. hook.ts is: an agent waiting on its own background
+// subagents now records "working", so the idle signal means what a lead reads
+// it to mean. This is what makes a regression in that signal loud instead of
+// silent. The signal rests on an undocumented field in Claude Code's Stop
+// payload; if that field is renamed or its status vocabulary changes, hive
+// quietly goes back to reporting a worker as finished while its subagents run,
+// and a lead holding nothing but "Act now" has no way to catch it. The pane
+// tail is the same evidence agent_output would give, delivered without having
+// to know to ask.
+//
+// Read at DELIVERY, not at the moment the wake was decided. capture-pane is
+// live by nature, so the screen below is the current one, and the agent_state
+// printed beside it is re-read to match rather than carried from the decision.
+// Those are seconds apart at most, but they can disagree with the transition
+// that fired the wake, and a note claiming to show the deciding moment while
+// showing the delivering one is the kind of small lie this codebase keeps
+// paying for. Hence "as this wake is delivered", and "state now".
+//
+// Never throws and never blocks delivery. This runs after the timer is claimed,
+// so an exception escaping here would burn a wake that is already spent and
+// deliver nothing in its place. Every read is individually optional: a pane
+// that died between the decision and this call costs its own line, not the
+// wake.
+function watchedTail(timer: TimerRow): string {
+  try {
+    const ids = JSON.parse(timer.watch) as number[];
+    if (ids.length === 0) return "";
+    const shown: string[] = [];
+    for (const id of ids.slice(0, TAIL_AGENTS)) {
+      const agent = stmt(
+        "SELECT name, tmux_target, agent_state, status FROM agents WHERE id = ?",
+      ).get(id) as
+        | { name: string; tmux_target: string; agent_state: string; status: string }
+        | undefined;
+      if (!agent) continue;
+      if (agent.status !== "running") {
+        shown.push(`${agent.name}: closed, so there is no terminal left to read.`);
+        continue;
+      }
+      let tail = "";
+      try {
+        tail = sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines()));
+      } catch {
+        // Pane gone or tmux unreachable; say so rather than dropping the agent.
+      }
+      shown.push(
+        tail
+          ? `${agent.name} (hive state now: ${agent.agent_state}), last lines of its terminal:\n${tail}`
+          : `${agent.name} (hive state now: ${agent.agent_state}): its terminal could not be read.`,
+      );
+    }
+    if (shown.length === 0) return "";
+    const lines = ["--- what hive sees on the watched agents as this wake is delivered ---", ...shown];
+    if (ids.length > TAIL_AGENTS) {
+      lines.push(`(${ids.length - TAIL_AGENTS} more watched agent(s) not shown)`);
+    }
+    lines.push(
+      "hive fires this on each worker's own hook state. If a terminal above shows work still running, that worker is not finished: read agent_output before acting on it.",
+    );
+    // Blank line first: the body is a sentence and this is a block under it.
+    // Built by pushing rather than by filtering a sparse array, because the
+    // filter that used to drop the optional line also silently ate this
+    // separator and the two ran together in the delivered wake.
+    return `\n\n${lines.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
+// The tail is a pure function of the timer, and watchedTail answers "" for a
+// timer that watches nothing (delay wakes leave watch at its '[]' default),
+// so this is not a per-call-site decision. A future wake kind that watches
+// agents gets the evidence without having to remember to ask for it.
 async function deliver(timer: TimerRow, note: string): Promise<void> {
+  const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
-  await sendText(timer.deliver_pane, prefix + timer.body, true);
+  await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
 }

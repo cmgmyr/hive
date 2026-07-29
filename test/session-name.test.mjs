@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -45,6 +45,57 @@ describe("tmux session naming", () => {
     // name. tagFor takes the directory, so a caller that genuinely means the
     // default store can say so without being handed one it may not use.
     assert.equal(tagFor(DEFAULT_DATA_DIR), "");
+  });
+
+  it("treats a symlink to the default store as the default store", () => {
+    // The gap e0d6be5 left. isDefaultStore() taught storeDir/guardStoreDir and
+    // untrustedTmuxServer to follow symlinks, but tagFor kept comparing
+    // strings, and sessionName reaches tagFor through dataDirTag. So
+    // HIVE_DATA_DIR symlinked at ~/.hive produced a hash-tagged name for the
+    // same project that hive-1 names under the literal path.
+    //
+    // That is not cosmetic. A session name is the target argument for
+    // kill-session and respawn-pane, which is the whole reason dataDirTag was
+    // pulled behind the guard in the first place. One project answering to two
+    // names means agent_close aims at hive-1 while the workers live under
+    // <hash>-1: workers you cannot reach and a session you cannot kill.
+    //
+    // Safe to run: dist/tmux.js imports dist/dataDir.js and nothing else, so
+    // resolving a NAME opens no database. If tmux.ts ever gains a db import,
+    // this case has to be rethought.
+    if (!existsSync(DEFAULT_DATA_DIR)) return;
+
+    const dir = mkdtempSync(join(tmpdir(), "hive-session-symlink-"));
+    const link = join(dir, "aliased-hive");
+    symlinkSync(DEFAULT_DATA_DIR, link);
+    try {
+      assert.equal(nameUnder(asHuman(link)), "hive-1", "an alias of the default store is untagged");
+      // The pure half, in this process. tagFor still takes a directory, so a
+      // caller naming one gets an answer about that directory; it just answers
+      // about where the directory IS rather than how it is spelled.
+      assert.equal(tagFor(link), "");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gives two aliases of one scratch store the same tag", () => {
+    // The half the default-store case cannot show. The hash takes the
+    // canonical path, not just the comparison, so the rule is one rule: two
+    // spellings of one store share a namespace wherever that store is. Without
+    // it the identical split happens one store further out, and the failure is
+    // the same one - a project answering to two session names.
+    const root = mkdtempSync(join(tmpdir(), "hive-alias-"));
+    const real = join(root, "store");
+    const link = join(root, "alias");
+    mkdirSync(real);
+    symlinkSync(real, link);
+    try {
+      assert.equal(tagFor(link), tagFor(real), "an alias is the same store");
+      assert.notEqual(tagFor(real), "", "and neither of them is the default one");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses to name the default store under a test runner", () => {

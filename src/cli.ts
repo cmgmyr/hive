@@ -31,6 +31,7 @@ import {
   registrationProblem,
   type McpRegistration,
 } from "./mcpConfig.js";
+import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate } from "./db.js";
 import {
   currentActor,
@@ -52,6 +53,7 @@ import {
   shellQuote,
   tmux,
   targetLive,
+  untrustedTmuxServer,
   windowTitle,
 } from "./tmux.js";
 import {
@@ -1007,6 +1009,20 @@ function cmdDoctor(): void {
     // not print it. Doctor is the tool a human runs BECAUSE tmux is
     // misbehaving; saying nothing is the one thing it must not do.
     if (!r.probed) {
+      // "Re-run when tmux responds" is useless advice when the sweep was
+      // refused rather than unanswered: retrying never helps, because tmux is
+      // answering fine and hive is declining to believe it about this store.
+      // Doctor is the tool a human runs to find out why, so it has to be able
+      // to tell the two apart.
+      if (untrustedTmuxServer()) {
+        throw new Error(
+          `TMUX_TMPDIR points at a private tmux server (${process.env.TMUX_TMPDIR}) while hive is ` +
+            `using its default store at ${DEFAULT_DATA_DIR}. Nothing was swept, deliberately: the ` +
+            "agents in that store live on the shared tmux server, so this one would report every " +
+            "single one of them as dead. Unset TMUX_TMPDIR, or set HIVE_DATA_DIR to a scratch store " +
+            "to go with the private server.",
+        );
+      }
       throw new Error("tmux did not answer, so nothing was swept. Re-run when tmux responds.");
     }
     return `${r.closed_agents} dead agents closed, ${r.cancelled_timers} undeliverable wake-ups cancelled`;

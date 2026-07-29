@@ -107,6 +107,16 @@ export function scratchDirs() {
 // second hand-rolled copy that drifts fails open: it talks to the real server
 // and can act on the session the developer is working in.
 //
+// ALWAYS PAIR THIS WITH A SCRATCH HIVE_DATA_DIR. Isolating tmux on its own is
+// the more dangerous half-measure, not the safe subset: a hive process on a
+// private tmux server while still using the default store asks that server
+// about panes that live on the shared one, gets a correct "no such pane", and
+// sweeps every agent in the real store as dead. That happened on 2026-07-29.
+// hive refuses that pair outright now (see untrustedTmuxServer in src/tmux.ts),
+// so a caller who sets only this one gets a hive that answers "unknown" to
+// every liveness question rather than a hive that destroys state. Setting both
+// is what a test actually wants.
+//
 // Returns { hasTmux, cleanup }. cleanup(...sessionNames) kills only the named
 // sessions and removes the socket dir. Never kill-server: the code under test
 // resolves its server from the ambient env, so the suite cannot pin one with
@@ -239,7 +249,10 @@ export function runCli(args, opts = {}) {
 // node defaults to whatever the suite is running under. Pass another
 // interpreter to test what happens when hive is run by one it was not built
 // for; everything else about the call stays identical.
-export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "node" } = {}) {
+// stdin: a string to write to the child, for an entry point that reads fd 0
+// (dist/hook.js takes its Claude Code payload that way). Opened as a pipe only
+// when asked, so every existing caller keeps the "ignore" it relies on.
+export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "node", stdin } = {}) {
   return new Promise((resolve) => {
     const child = spawn(node, [script, ...args], {
       cwd,
@@ -251,8 +264,9 @@ export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "nod
         ...(tmp ? { TMPDIR: tmp } : {}),
         ...env,
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+    if (stdin !== undefined) child.stdin.end(stdin);
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (c) => (stdout += c));
@@ -262,3 +276,40 @@ export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "nod
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Wait for a condition instead of guessing how long it takes. A fixed sleep
+// pays its full cost on every run and still flakes on a loaded CI, because the
+// number that is comfortable locally is the ceiling everywhere. Polling exits
+// on the first true and can afford a generous deadline, so it is both faster
+// and more tolerant than the sleep it replaces. Returns whether the condition
+// held, so a caller can assert on it rather than on a timeout.
+export async function until(predicate, timeoutMs = 3000, stepMs = 25) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(stepMs);
+  }
+}
+
+// Set env vars for the duration of fn, then put back exactly what was there.
+// undefined means DELETE the variable, which is the case the suite actually
+// needs and the one a plain Object.assign restore gets wrong: assigning
+// undefined to a process.env key stores the string "undefined" rather than
+// unsetting it. Synchronous on purpose, so the restore cannot interleave with
+// another test's env.
+export function withEnv(vars, fn) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -26,6 +27,38 @@ export const DEFAULT_DATA_DIR = join(homedir(), ".hive");
 // correct. Both consumers are in this file.
 function resolveDataDir(): string {
   return process.env.HIVE_DATA_DIR ? resolve(process.env.HIVE_DATA_DIR) : DEFAULT_DATA_DIR;
+}
+
+// Whether a resolved path names the real store, following symlinks.
+//
+// resolve() makes a path absolute and collapses "..", but it does NOT follow
+// symlinks, so two names for the SAME directory compared as different stores.
+// Concretely: /tmp/live-hive symlinked to ~/.hive, with HIVE_DATA_DIR set to
+// the symlink, read as a scratch store everywhere in hive while SQLite opened
+// the real one. That defeats both guards at once. storeDir() would not refuse
+// it under a test runner, so a suite could run its DELETEs against the live
+// store; and untrustedTmuxServer() would see "scratch store" and let a private
+// tmux server write its pane ids into it.
+//
+// Only the COMPARISON canonicalises. resolveDataDir keeps returning the path as
+// the caller named it, because that string is also what brief and posture files
+// are built from, and rewriting it to /private/var on macOS changes paths that
+// callers hand back to hive. The question here is "is this the real store",
+// which is about identity on disk, not about spelling.
+//
+// A path that does not exist cannot be a symlink to anything, so the lexical
+// answer stands. That is the ordinary first run: hive creates its data dir on
+// demand.
+const canonical = (path: string): string => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+export function isDefaultStore(dir: string): boolean {
+  return dir === DEFAULT_DATA_DIR || canonical(dir) === canonical(DEFAULT_DATA_DIR);
 }
 
 // True when a test runner is the entry point of this process, or of the one
@@ -71,7 +104,7 @@ export function underTestRunner(): boolean {
 // import and needs the other treatment: see guardStoreDir below.
 export function storeDir(): string {
   const dir = resolveDataDir();
-  if (dir === DEFAULT_DATA_DIR && underTestRunner()) {
+  if (isDefaultStore(dir) && underTestRunner()) {
     throw new Error(refusal());
   }
   return dir;
@@ -88,7 +121,7 @@ export function storeDir(): string {
 // a protocol stream.
 export function guardStoreDir(): string {
   const dir = resolveDataDir();
-  if (dir === DEFAULT_DATA_DIR && underTestRunner()) {
+  if (isDefaultStore(dir) && underTestRunner()) {
     console.error(`hive: ${refusal()}`);
     process.exit(1);
   }
@@ -115,13 +148,35 @@ function refusal(): string {
 // name with the store keeps the default case readable (hive-1) and puts every
 // other store somewhere it cannot collide.
 //
-// Pure, and takes the directory rather than resolving one, so a caller that
-// means a specific store says which. Everything that means "this process's
-// store" wants dataDirTag, which is guarded.
+// Takes the directory rather than resolving one, so a caller that means a
+// specific store says which. Everything that means "this process's store"
+// wants dataDirTag, which is guarded.
+//
+// Canonicalised first, and this was the third place that had to learn it. A tag
+// identifies a STORE, and a store is identified by where it is on disk, not by
+// how the path is spelled. e0d6be5 taught storeDir, guardStoreDir and
+// untrustedTmuxServer to follow symlinks and left this one comparing strings,
+// so HIVE_DATA_DIR symlinked at ~/.hive produced a hash tag here while
+// isDefaultStore said it was the default store, and sessionName handed back a
+// tagged name for the very project hive-1 names under the literal path.
+//
+// Not cosmetic, whatever the narrow trigger suggests. A session name is the
+// target argument for kill-session and respawn-pane, which is exactly why
+// dataDirTag was pulled behind the guard to begin with (see the store isolation
+// invariant in CLAUDE.md). One project answering to two session names means a
+// lead calling agent_close on hive-1 while its workers live under <hash>-1:
+// workers nothing can reach and a session nothing can kill.
+//
+// The hash takes the canonical path too, not just the comparison, so the rule
+// is one rule rather than two. Two aliases of a SCRATCH store would otherwise
+// split into two namespaces for the same reason, which is the identical defect
+// one store further out. A path that does not exist canonicalises to itself, so
+// naming a store before it is created still answers.
 export function tagFor(dir: string): string {
-  return dir === DEFAULT_DATA_DIR
+  const resolved = canonical(dir);
+  return isDefaultStore(resolved)
     ? ""
-    : `${createHash("sha256").update(dir).digest("hex").slice(0, 8)}-`;
+    : `${createHash("sha256").update(resolved).digest("hex").slice(0, 8)}-`;
 }
 
 // The tag for the store this process may use. Guarded, because the name it

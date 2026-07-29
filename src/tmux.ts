@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { dataDirTag } from "./dataDir.js";
+import { realpathSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
 
 // tmux's stderr is the only thing that says whether tmux answered at all, and
 // callers have to tell "tmux told me the target is gone" from "tmux never
@@ -81,9 +83,35 @@ function quietTmux(...args: string[]): boolean {
   }
 }
 
+// One wording for every write refused because this process is talking to a
+// tmux server the store does not live on. Names both halves of the pairing and
+// both ways out, the same shape as doctor's message: a refusal that says only
+// "refused" sends someone hunting through source for the variable to change.
+export function crossServerRefusal(action: string): Error {
+  return new Error(
+    `Refusing to ${action}: this process is talking to the tmux server at ` +
+      `${tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR)}, but hive is using its default ` +
+      `store at ${DEFAULT_DATA_DIR}, whose sessions and panes live on ${defaultTmuxSocketPath()}. ` +
+      "Anything written here records a pane id from the wrong server, where it can name an " +
+      "unrelated live pane that agent_send would type into and agent_close would kill. Unset TMUX " +
+      "and TMUX_TMPDIR to use the shared server, or set HIVE_DATA_DIR to a scratch store to go " +
+      "with this one.",
+  );
+}
+
 // Returns true when the session was created by this call.
+//
+// The refusal lives HERE, not at the callers, because this is the one function
+// that creates a session on whatever server this process happens to reach.
+// launchAgent has its own gate above its INSERT (so a refusal cannot strand a
+// row), but hive lead and hive attach call this directly, and gating them
+// individually would be two copies of a rule that belongs to the act of
+// creating a session. hive attach was the visible half: under the bad pair it
+// created a SECOND hive-1 on the private server and attached the user to an
+// empty session while the real lead and its workers sat on the shared one.
 export function ensureSession(name: string, cwd: string): boolean {
   if (quietTmux("has-session", "-t", `=${name}`)) return false;
+  if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   tmux("new-session", "-d", "-s", name, "-c", cwd);
   return true;
 }
@@ -133,9 +161,128 @@ export const isPaneTarget = (target: string) => target.startsWith("%");
 // this is not a boolean.
 export type Liveness = boolean | null;
 
+// The question is which socket tmux will ACTUALLY use. Every earlier version
+// of this answered a proxy question instead and was wrong in a new way each
+// time, so it now computes the socket path outright and compares that.
+//
+// THREE INPUTS, IN TMUX'S OWN ORDER OF PRECEDENCE:
+//
+// 1. TMUX. Inside a pane tmux exports "<socket>,<pid>,<session>", and a tmux
+//    client started there talks to THAT socket. It overrides TMUX_TMPDIR
+//    completely. Measured, because this is the hole that shipped: inside a
+//    `tmux -L hivespike` pane, bare tmux resolved to
+//    /private/tmp/tmux-501/hivespike, and re-running it with TMUX_TMPDIR
+//    pointed at a private directory STILL resolved to hivespike.
+// 2. TMUX_TMPDIR, when tmux can reach it. tmux does not create it; handed one
+//    it cannot reach it falls back. Measured: with TMUX_TMPDIR naming a missing
+//    directory, `display-message -p '#{socket_path}'` answers the default
+//    socket and the directory is still absent afterwards.
+// 3. Otherwise /tmp, tmux's own default.
+//
+// Reading only input 2 was wrong in BOTH directions, and the tests could not
+// see either because isolateTmux clears TMUX:
+//   - Blind to `tmux -L spike`: TMUX_TMPDIR is unset there, so the guard read
+//     "shared", and the janitor closed live ~/.hive rows whose panes are on the
+//     shared server. That is the original bug through a different door.
+//   - Refused a healthy setup: a pane on the SHARED server with a stray
+//     TMUX_TMPDIR exported read "private", so hive would refuse to sweep a
+//     machine where tmux is on the shared socket after all.
+const DEFAULT_TMUX_TMPDIR = "/tmp";
+
+const realpathOr = (path: string, fallback: string | null): string | null => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return fallback;
+  }
+};
+
+const canonical = (path: string): string => realpathOr(path, path) ?? path;
+
+// tmux keeps its sockets in <base>/tmux-<uid>/, and names the default one
+// "default". hive never passes -L or -S, so the socket it would create or
+// connect to is always <base>/tmux-<uid>/default.
+const socketUnder = (base: string): string =>
+  join(canonical(base), `tmux-${process.getuid?.() ?? 0}`, "default");
+
+// The socket a tmux client started by THIS process would talk to. Pure in its
+// inputs so it can be tested without touching the environment.
+export function tmuxSocketPath(tmux: string | undefined, tmuxTmpDir: string | undefined): string {
+  // Input 1: already an absolute path, written by tmux itself.
+  const inherited = tmux?.split(",")[0];
+  if (inherited) return canonical(inherited);
+  // Input 2, but only when it is reachable; otherwise input 3.
+  const reachable = tmuxTmpDir ? realpathOr(tmuxTmpDir, null) : null;
+  return socketUnder(reachable ?? DEFAULT_TMUX_TMPDIR);
+}
+
+export const defaultTmuxSocketPath = (): string => socketUnder(DEFAULT_TMUX_TMPDIR);
+
+export function privateTmuxSocket(tmux: string | undefined, tmuxTmpDir: string | undefined): boolean {
+  return tmuxSocketPath(tmux, tmuxTmpDir) !== defaultTmuxSocketPath();
+}
+
+// Found 2026-07-29 during the #24 lane, by it happening to that lane's own
+// worker: agent 40's row read "closed" while its pane was alive and working.
+//
+// A worker isolating tmux for a spike set TMUX_TMPDIR to a private dir and
+// started a nested claude there, which inherited HIVE_DATA_DIR=~/.hive. Every
+// claude session starts its own hive MCP server and every server runs the
+// janitor, so that server probed the PRIVATE tmux for pane %3 and got an
+// authoritative "no such pane". It then closed a live worker in the real store.
+//
+// This is not issue #14 and #14's fix cannot catch it. There, a probe FAILED
+// and the fix was to tell "tmux did not answer" from "tmux says nothing is
+// there". Here the probe SUCCEEDS: it reaches a real server and returns a
+// correct answer to the wrong question. targetAlive("%3", snapshotOfSomeOther
+// server) is false for exactly the same reason a genuinely dead pane is false,
+// and there is nothing in the snapshot to tell them apart.
+//
+// Nor does the existing invariant cover it. "tmux session names are namespaced
+// by data store" protects one tmux server reached from two stores, because
+// project ids collide across stores. This is the inverse, one store reached by
+// servers pointing at different tmux servers, and nothing namespaced it.
+//
+// So refuse. The unsafe pair is a PRIVATE tmux server plus the DEFAULT store,
+// which has no legitimate use: hive's own sessions for the default store live
+// on the shared server. Legitimate isolation sets both halves, a private tmux
+// AND a scratch HIVE_DATA_DIR, and that keeps working untouched, which is what
+// the whole test suite depends on. Enforced rather than documented, the same
+// shape as storeDir() refusing the real store under a test runner.
+//
+// Refusing means answering "unknown", not "dead". Everything downstream
+// already handles unknown conservatively because issue #14 made it: the
+// janitor sweeps nothing, idle wakes do not fire on a watched agent looking
+// gone, agent_close refuses instead of half-closing, and agent_send says the
+// probe failed rather than telling a lead to destroy a live worker. One guard,
+// carried everywhere by plumbing that already exists.
+//
+// Reads are only half of it. launchAgent in src/spawn.ts calls this too, and
+// refuses, because the write path is what seeds the store with pane ids from
+// the wrong server in the first place: an ungated spawn writes a private
+// server's %0 into the shared store, where it can name an unrelated live pane.
+// The first version of this comment called that "untidy but destroys nothing",
+// which was wrong. See the note on launchAgent for the full trace.
+export function untrustedTmuxServer(): boolean {
+  if (!privateTmuxSocket(process.env.TMUX, process.env.TMUX_TMPDIR)) return false;
+  try {
+    // isDefaultStore, not ===: a symlink to ~/.hive is the real store, and
+    // reading it as scratch would let this write pane ids from the wrong
+    // server straight into the live database.
+    return isDefaultStore(storeDir());
+  } catch {
+    // storeDir() refuses the real store outright when a test runner is the
+    // entry point. A process that is not allowed to NAME this store is
+    // certainly not allowed to decide its agents are dead, so treat the
+    // refusal as untrusted rather than as permission to sweep.
+    return true;
+  }
+}
+
 // list-panes errors on a dead target; display-message would silently fall
 // back to a default target and report success.
 export function targetLive(target: string): Liveness {
+  if (untrustedTmuxServer()) return null;
   try {
     tmux("list-panes", "-t", target);
     return true;
@@ -157,6 +304,9 @@ export interface AliveSnapshot {
 // not. No server is the first kind, not the second (see tmuxSaysNothingThere).
 // Never throws: the scheduler is load-bearing (CLAUDE.md).
 export function liveTargets(): AliveSnapshot | null {
+  // A server this process must not draw conclusions from is the same answer as
+  // a server that did not answer: unknown. See untrustedTmuxServer.
+  if (untrustedTmuxServer()) return null;
   const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set() };
   try {
     for (const line of tmux("list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_id}").split("\n")) {
@@ -263,6 +413,50 @@ export function capturePane(target: string, lines: number): string {
   return rows.slice(-lines).join("\n");
 }
 
+// Typing is what makes a control byte dangerous, so the rule lives here, next
+// to sendText and capturePane, rather than in whichever caller happened to
+// need it first. src/tools/agents.ts encodes the same hazard for agent names
+// and should read from here too; it is left alone for now only because it
+// REJECTS rather than strips and sits outside this branch's diff.
+//
+// send-keys -l stops tmux interpreting key NAMES but passes a raw control byte
+// straight through to the TUI, so a literal 0x03 arrives as Ctrl-C. And an ESC
+// terminates the bracketed paste sendText wraps multi-line text in, so
+// everything after it lands as keys rather than text. Newlines are kept: they
+// are the one C0 byte a multi-line message needs, and paste-buffer carries
+// them as text.
+const TERMINAL_CONTROL_BYTES = /[\u0000-\u0009\u000B-\u001F\u007F]/g;
+
+export const stripControlBytes = (s: string): string => s.replace(TERMINAL_CONTROL_BYTES, "");
+
+// How much of a captured pane is worth carrying somewhere it will be typed.
+// Six lines reaches the status line claude keeps at the bottom of its pane and
+// the line above it, which is where "waiting for N background agents" appears.
+const TAIL_LINES = 6;
+const TAIL_LINE_CHARS = 160;
+
+// A pane tail, made safe to type into another terminal. This is the one thing
+// hive sends that hive did not write: it is whatever the worker's screen
+// happens to render. tmux renders a pane to a screen, so capture-pane output is
+// normally already clean, which is exactly why this needs pinning by its own
+// test - nothing reachable through a real pane would notice if it stopped
+// working.
+//
+// Blank rows are dropped BEFORE the cap, so six lines is six lines of content
+// rather than six rows of a mostly empty screen.
+export function sanitizeTail(raw: string): string {
+  return raw
+    .split("\n")
+    .map((line) => stripControlBytes(line).trimEnd().slice(0, TAIL_LINE_CHARS))
+    .filter((line) => line !== "")
+    .slice(-TAIL_LINES)
+    .join("\n");
+}
+
+// Capture enough rows that sanitizeTail still has TAIL_LINES of content after
+// dropping the blank ones a TUI leaves around its prompt box.
+export const tailCaptureLines = (): number => TAIL_LINES * 3;
+
 export function shellQuote(s: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
   return `'${s.replaceAll("'", `'\\''`)}'`;
@@ -342,10 +536,32 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
   return false;
 }
 
+// tmux buffers are SERVER-GLOBAL, so a fixed buffer name is shared by every
+// hive process talking to that server, and every claude session runs its own
+// scheduler against one database.
+//
+// The interleaving: timers #7 and #8 come due in the same 3-second window in
+// two different server processes. A claims #7 and B claims #8, both atomically
+// and both correctly. Both call set-buffer with the same name; B's write lands
+// second; A's paste-buffer -d types #8's body into A's pane and deletes the
+// buffer; B's paste-buffer then fails with "no buffer", throws out of deliver,
+// and is swallowed by tick's catch-all. Wake #8 is already fired_at, so no
+// scheduler retries it: its text went to the wrong lead and its own delivery is
+// gone for good.
+//
+// The race predates this branch. What the branch changed is how often it
+// happens: watchedTail makes every wake with watched agents multi-line, so this
+// path went from the rare case to the common one, which is why it is fixed here
+// rather than left as a pre-existing bug. Unique per send, so two of them
+// cannot collide even within one process.
+let bufferSeq = 0;
+const nextBufferName = () => `hive-input-${process.pid}-${++bufferSeq}`;
+
 export async function sendText(target: string, text: string, submit = true): Promise<void> {
   if (text.includes("\n")) {
-    tmux("set-buffer", "-b", "hive-input", "--", text);
-    tmux("paste-buffer", "-d", "-p", "-b", "hive-input", "-t", target);
+    const buffer = nextBufferName();
+    tmux("set-buffer", "-b", buffer, "--", text);
+    tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
   } else {
     tmux("send-keys", "-t", target, "-l", "--", text);
   }

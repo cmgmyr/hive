@@ -204,3 +204,42 @@ describe("naming a store is not opening one", () => {
     assert.match(seen.session, /refused to use its real store/);
   });
 });
+
+// A symlink pointing AT the real store must be recognised as the real store.
+//
+// SAFETY, because this file names ~/.hive on purpose: everything here is
+// in-process and side-effect free. dist/dataDir.js opens no database (its own
+// header says so), isDefaultStore only calls realpathSync, and storeDir throws
+// before returning. Nothing spawns a CLI with this symlink, because `hive
+// status` runs the janitor and that IS the destructive path. If the guard were
+// broken these assertions would fail; they would not write anything.
+describe("a symlink to the real store is the real store", () => {
+  it("follows the link rather than comparing spellings", async () => {
+    const { DEFAULT_DATA_DIR, isDefaultStore, storeDir } = await import("../dist/dataDir.js");
+    const { mkdtempSync, rmSync, symlinkSync, existsSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+
+    if (!existsSync(DEFAULT_DATA_DIR)) return; // nothing to link at on a clean machine
+
+    const dir = mkdtempSync(join(tmpdir(), "hive-symlink-"));
+    const link = join(dir, "live-hive");
+    symlinkSync(DEFAULT_DATA_DIR, link);
+    const saved = process.env.HIVE_DATA_DIR;
+    try {
+      // resolve() collapses ".." but does not follow symlinks, so this used to
+      // read as a scratch store while SQLite opened the real one. Both guards
+      // fell at once: the test-runner refusal below, and untrustedTmuxServer,
+      // which would have let a private tmux server write pane ids into the
+      // live database.
+      assert.equal(isDefaultStore(link), true, "the link names the real store");
+      assert.equal(isDefaultStore(dir), false, "an ordinary scratch dir still does not");
+
+      process.env.HIVE_DATA_DIR = link;
+      assert.throws(() => storeDir(), /refused to use its real store/, "and it is refused");
+    } finally {
+      if (saved === undefined) delete process.env.HIVE_DATA_DIR;
+      else process.env.HIVE_DATA_DIR = saved;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
