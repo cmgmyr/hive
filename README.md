@@ -223,10 +223,10 @@ hive doctor         # verify: node, ABI, tmux, claude, database, hooks all green
 
 Both `hive setup` and the `mcp add` line exist for the same reason: hive must not let the working directory pick its interpreter. `better-sqlite3` ships a native addon that only loads under the Node that compiled it, and a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory. A `cd` is then enough to break hive.
 
-`hive setup` writes a two-line dispatcher to `~/.local/bin/hive` that execs hive's CLI under an absolute interpreter, taken from the Node running setup, which is the Node that just built the addon. Put that directory ahead of your version manager's shims, since those usually prepend themselves:
+`hive setup` writes a two-line dispatcher to `~/.local/bin/hive` that execs hive's CLI under an absolute interpreter, taken from the Node running setup, which is the Node that just built the addon. Put that directory ahead of your version manager's shims, since those usually prepend themselves. Both lines prepend, so whichever runs last ends up first, and hive's has to sit below the version manager's block in the file:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"     # in ~/.zshrc, above the version manager's block
+export PATH="$HOME/.local/bin:$PATH"     # in ~/.zshrc, below the version manager's block
 ```
 
 Setup prints which interpreter it pinned and whether a version manager can remove it later; `hive doctor` reports the ordering and warns when something else on PATH shadows the dispatcher. Use `--dir` to write it somewhere else. Without setup you keep `npm link`'s shim, which lives in the active Node version's global directory and disappears in any directory pinning another version.
