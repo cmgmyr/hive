@@ -22,7 +22,11 @@ interface TodoRow {
 }
 
 const priorityParam = z.enum(["high", "medium", "low"]);
-const statusParam = z.enum(["open", "in_progress", "backlog", "completed"]);
+// Shared with the CLI (hive todos --status): one list of valid statuses, so
+// a status the MCP schema would reject can't slip past the CLI's own check
+// and read as "you have no todos" instead of "that isn't a status".
+export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
+const statusParam = z.enum(TODO_STATUSES);
 
 // What "blocked" means, in one place. Correlates on t.id, so every caller
 // spells its own status filter and reads dispatchability the same way:
@@ -47,7 +51,21 @@ function getTodo(projectId: number, todoId: number): TodoRow {
   return row;
 }
 
-function summarize(row: TodoRow) {
+// Shared with the CLI: the list-row shape both `hive todos` and `hive todo
+// <id>` build on.
+export interface TodoSummary {
+  todo_id: number;
+  title: string;
+  status: string;
+  priority: string;
+  tags: string[];
+  is_blocked: boolean;
+  open_blockers: number;
+  comment_count: number;
+  updated_at: string;
+}
+
+function summarize(row: TodoRow): TodoSummary {
   return {
     todo_id: row.id,
     title: row.title,
@@ -59,6 +77,111 @@ function summarize(row: TodoRow) {
     comment_count: row.comment_count ?? 0,
     updated_at: row.updated_at,
   };
+}
+
+export interface TodoListFilter {
+  statuses?: string[];
+  priority?: string;
+  query?: string;
+  tags?: string[];
+  isBlocked?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+// Shared with the CLI (hive todos): the same status/priority/query/tag/blocked
+// filtering todo_list uses, so the two surfaces cannot disagree about what
+// "dispatchable" or "matches" means. `statuses` is a set, not todo_list's
+// single `status` param: the CLI's default view is "open or in_progress"
+// together, which an exact-match `status` cannot express, so the MCP handler
+// below passes a one-element array to stay behaviour-identical.
+export function listTodoSummaries(projectId: number, filter: TodoListFilter = {}) {
+  const limit = Math.min(filter.limit ?? 50, 200);
+  const offset = filter.offset ?? 0;
+  let sql = `${SUMMARY_SQL} WHERE t.project_id = ?`;
+  const params: unknown[] = [projectId];
+  if (filter.statuses && filter.statuses.length > 0) {
+    sql += ` AND t.status IN (${filter.statuses.map(() => "?").join(",")})`;
+    params.push(...filter.statuses);
+  }
+  if (filter.priority) {
+    sql += " AND t.priority = ?";
+    params.push(filter.priority);
+  }
+  if (filter.query) {
+    sql += " AND (t.title LIKE ? OR t.body LIKE ?)";
+    params.push(`%${filter.query}%`, `%${filter.query}%`);
+  }
+  sql += " ORDER BY t.updated_at DESC";
+  let rows = (db.prepare(sql).all(...params) as TodoRow[]).filter((r) =>
+    matchesAnyTag(r.tags, filter.tags),
+  );
+  if (filter.isBlocked != null) {
+    rows = rows.filter((r) => ((r.open_blockers ?? 0) > 0) === filter.isBlocked);
+  }
+  return {
+    total_count: rows.length,
+    offset,
+    limit,
+    todos: rows.slice(offset, offset + limit).map(summarize),
+  };
+}
+
+interface TodoRef {
+  id: number;
+  title: string;
+  status: string;
+}
+
+interface TodoComment {
+  id: number;
+  author: string;
+  body: string;
+  created_at: string;
+}
+
+export interface TodoDetail extends TodoSummary {
+  body: string;
+  created_at: string;
+  completed_at: string | null;
+  blockers: TodoRef[];
+  blocking: TodoRef[];
+  comments?: TodoComment[];
+}
+
+// Shared with the CLI (hive todo <id>): full detail, comments included when
+// asked. Throws when the id is unknown in this project; the CLI catches that
+// to print its own usage line rather than a stack trace.
+export function getTodoDetail(projectId: number, todoId: number, includeComments: boolean): TodoDetail {
+  const todo = getTodo(projectId, todoId);
+  const blockers = db
+    .prepare(
+      `SELECT t.id, t.title, t.status FROM todo_blockers b
+       JOIN todos t ON t.id = b.blocker_id WHERE b.todo_id = ?`,
+    )
+    .all(todo.id) as TodoRef[];
+  const blocking = db
+    .prepare(
+      `SELECT t.id, t.title, t.status FROM todo_blockers b
+       JOIN todos t ON t.id = b.todo_id WHERE b.blocker_id = ?`,
+    )
+    .all(todo.id) as TodoRef[];
+  const result: TodoDetail = {
+    ...summarize(todo),
+    body: todo.body,
+    created_at: todo.created_at,
+    completed_at: todo.completed_at,
+    blockers,
+    blocking,
+  };
+  if (includeComments) {
+    result.comments = db
+      .prepare(
+        "SELECT id, author, body, created_at FROM todo_comments WHERE todo_id = ? ORDER BY created_at",
+      )
+      .all(todo.id) as TodoComment[];
+  }
+  return result;
 }
 
 function transitiveBlockers(startId: number): Set<number> {
@@ -152,36 +275,19 @@ export function registerTodos(server: McpServer): void {
     (args) =>
       run(() => {
         const project = resolveProject(args.project_id);
-        const limit = Math.min(args.limit ?? 50, 200);
-        const offset = args.offset ?? 0;
-        let sql = `${SUMMARY_SQL} WHERE t.project_id = ?`;
-        const params: unknown[] = [project.id];
-        if (args.status) {
-          sql += " AND t.status = ?";
-          params.push(args.status);
-        }
-        if (args.priority) {
-          sql += " AND t.priority = ?";
-          params.push(args.priority);
-        }
-        if (args.query) {
-          sql += " AND (t.title LIKE ? OR t.body LIKE ?)";
-          params.push(`%${args.query}%`, `%${args.query}%`);
-        }
-        sql += " ORDER BY t.updated_at DESC";
-        let rows = (db.prepare(sql).all(...params) as TodoRow[]).filter((r) =>
-          matchesAnyTag(r.tags, args.tags),
-        );
-        if (args.is_blocked != null) {
-          rows = rows.filter((r) => ((r.open_blockers ?? 0) > 0) === args.is_blocked);
-        }
+        const result = listTodoSummaries(project.id, {
+          statuses: args.status ? [args.status] : undefined,
+          priority: args.priority,
+          query: args.query,
+          tags: args.tags,
+          isBlocked: args.is_blocked,
+          limit: args.limit,
+          offset: args.offset,
+        });
         return {
           project_id: project.id,
           project_name: project.name,
-          total_count: rows.length,
-          offset,
-          limit,
-          todos: rows.slice(offset, offset + limit).map(summarize),
+          ...result,
         };
       }),
   );
@@ -199,35 +305,7 @@ export function registerTodos(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        const todo = getTodo(projectId, args.todo_id);
-        const blockers = db
-          .prepare(
-            `SELECT t.id, t.title, t.status FROM todo_blockers b
-             JOIN todos t ON t.id = b.blocker_id WHERE b.todo_id = ?`,
-          )
-          .all(todo.id);
-        const blocking = db
-          .prepare(
-            `SELECT t.id, t.title, t.status FROM todo_blockers b
-             JOIN todos t ON t.id = b.todo_id WHERE b.blocker_id = ?`,
-          )
-          .all(todo.id);
-        const result: Record<string, unknown> = {
-          ...summarize(todo),
-          body: todo.body,
-          created_at: todo.created_at,
-          completed_at: todo.completed_at,
-          blockers,
-          blocking,
-        };
-        if (args.include_comments) {
-          result.comments = db
-            .prepare(
-              "SELECT id, author, body, created_at FROM todo_comments WHERE todo_id = ? ORDER BY created_at",
-            )
-            .all(todo.id);
-        }
-        return result;
+        return getTodoDetail(projectId, args.todo_id, args.include_comments ?? false);
       }),
   );
 

@@ -91,7 +91,13 @@ import {
   userProfilesDir,
   type ProfileFile,
 } from "./profiles.js";
-import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
+import {
+  getTodoDetail,
+  listTodoSummaries,
+  OPEN_BLOCKERS_SQL,
+  TODO_STATUSES,
+  type TodoDetail,
+} from "./tools/todos.js";
 import {
   createPad,
   getActivePadByName,
@@ -117,6 +123,9 @@ Usage:
   hive pad <name>            print a pad's content
   hive pad <name> --edit     export to a temp file and open your markdown editor
   hive pad <name> --save     write the edited export back (revision-guarded)
+  hive todos [--all] [--status <s>] [--tag <t>]
+                             list this project's todos; open work by default
+  hive todo <id>             print one todo in full, comments included
   hive backups               list automatic store snapshots
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive runbook               this project's standing process, vars resolved
@@ -1269,6 +1278,137 @@ async function cmdRestore(argv: string[]): Promise<void> {
   console.log(`Restored hive.db from "${name}"${restoredProfiles ? " (and profiles/)" : ""}.`);
 }
 
+function flagValue(argv: string[], flag: string): string | undefined {
+  const i = argv.indexOf(flag);
+  return i !== -1 ? argv[i + 1] : undefined;
+}
+
+// Silent outside a hive project (D5): matches cmdStatusline exactly, via
+// findProjectForCwd rather than resolveProject, so a bare `hive todos` never
+// registers a project as a side effect the way cmdPads does.
+function cmdTodos(argv: string[]): void {
+  const project = findProjectForCwd();
+  if (!project) return;
+
+  const all = argv.includes("--all");
+  const statusIdx = argv.indexOf("--status");
+  const status = flagValue(argv, "--status");
+  // A missing or unrecognized --status value is a usage error, not a filter
+  // that happens to match nothing: without this check, a typo'd status reads
+  // as "you have no todos" instead of "that isn't a status" (same failure
+  // shape the MCP tool's zod enum already rejects for todo_list).
+  if (statusIdx !== -1 && (status === undefined || status.startsWith("--"))) {
+    console.log(`Usage: hive todos --status <s>  where <s> is one of: ${TODO_STATUSES.join(", ")}`);
+    process.exit(1);
+  }
+  if (status !== undefined && !(TODO_STATUSES as readonly string[]).includes(status)) {
+    console.log(`Unknown status "${status}". Valid: ${TODO_STATUSES.join(", ")}`);
+    process.exit(1);
+  }
+  const tagIdx = argv.indexOf("--tag");
+  const tag = flagValue(argv, "--tag");
+  // Missing is a usage error the same way it is for --status; UNKNOWN is not,
+  // since any string is a legitimate tag and "no todos carry it" is a real,
+  // valid empty result rather than a typo.
+  if (tagIdx !== -1 && (tag === undefined || tag.startsWith("--"))) {
+    console.log("Usage: hive todos --tag <t>");
+    process.exit(1);
+  }
+
+  // --all and --status share one axis (which statuses to include). Rather
+  // than let argv order decide when both are passed, --all wins: it is the
+  // more expansive ask, and a result that depends on flag order is a result
+  // nobody will remember to check.
+  const statuses = all ? undefined : status ? [status] : ["open", "in_progress"];
+
+  const { todos, total_count } = listTodoSummaries(project.id, {
+    statuses,
+    tags: tag ? [tag] : undefined,
+  });
+  if (todos.length === 0) {
+    // F4: naming the project alone reads as "there are none", which is false
+    // whenever the default open/in_progress filter is hiding a completed
+    // lane's todos — exactly the case a finished lane's own `issue-<N>` tag
+    // (runbook step 13) hits every time. Name the filters that produced this
+    // empty result instead, since that holds whether the project is truly
+    // empty or just empty under this filter.
+    // Same --all-wins-over---status precedence as the real query above
+    // (line computing `statuses`): checking `status` first here would
+    // describe a narrower filter than the one that actually ran whenever
+    // both flags were passed together.
+    const statusDesc = all ? "" : status ? `${status} ` : "open ";
+    const tagDesc = tag ? ` with tag "${tag}"` : "";
+    const hint = all ? "" : " Try --all.";
+    console.log(`No ${statusDesc}todos in project "${project.name}"${tagDesc}.${hint}`);
+    return;
+  }
+
+  const width = Math.max(...todos.map((t) => String(t.todo_id).length));
+  for (const t of todos) {
+    // One column, not a paragraph (D3): blank when dispatchable, a marker
+    // when something else must complete first. Same predicate cmdStatusline
+    // uses for its "ready" count, so the two can't disagree.
+    const blocked = t.is_blocked ? "blocked" : "";
+    console.log(
+      `#${String(t.todo_id).padEnd(width)}  ${t.status.padEnd(11)} ${blocked.padEnd(8)} ${t.title}`,
+    );
+  }
+  // No silent caps: listTodoSummaries defaults to 50 rows, and a list this
+  // command exists to make readable must say so when it isn't showing all of
+  // it, rather than reading as "that's everything".
+  if (total_count > todos.length) {
+    console.log(`\n...and ${total_count - todos.length} more not shown. Narrow with --status or --tag.`);
+  }
+}
+
+// Silent outside a hive project (D5), same as cmdTodos and cmdStatusline:
+// checked before validating argv, so `hive todo` with no id run outside any
+// project stays silent rather than printing a usage line for a project that
+// was never going to be registered.
+function cmdTodo(argv: string[]): void {
+  const project = findProjectForCwd();
+  if (!project) return;
+
+  const id = Number(argv.find((a) => !a.startsWith("--")));
+  if (!Number.isInteger(id)) {
+    console.log("Usage: hive todo <id>  (run inside the project)");
+    process.exit(1);
+  }
+  let d: TodoDetail;
+  try {
+    d = getTodoDetail(project.id, id, true);
+  } catch {
+    console.log(`No todo with id ${id} in project "${project.name}". List them with: hive todos --all`);
+    process.exit(1);
+  }
+
+  console.log(`#${d.todo_id} ${d.title}`);
+  console.log(`status ${d.status}   priority ${d.priority}${d.is_blocked ? "   blocked" : ""}`);
+  if (d.tags.length > 0) console.log(`tags ${d.tags.join(", ")}`);
+  if (d.body) console.log(`\n${d.body}`);
+
+  if (d.blockers.length > 0) {
+    console.log(`\nblocked by:`);
+    for (const b of d.blockers) console.log(`  #${b.id} [${b.status}] ${b.title}`);
+  }
+  if (d.blocking.length > 0) {
+    console.log(`\nblocks:`);
+    for (const b of d.blocking) console.log(`  #${b.id} [${b.status}] ${b.title}`);
+  }
+
+  // The comments are the payload (D4/D6): full text, actor attribution, never
+  // truncated. A worker's handoff comment cut at 200 chars is the bug this
+  // command exists to fix.
+  const comments = d.comments ?? [];
+  if (comments.length > 0) {
+    console.log(`\ncomments:`);
+    for (const c of comments) {
+      console.log(`\n[${c.author} @ ${c.created_at}]`);
+      console.log(c.body);
+    }
+  }
+}
+
 function cmdPads(): void {
   const project = resolveProject();
   const pads = listActivePads(project.id);
@@ -1373,7 +1513,7 @@ let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
 const COMMANDS = [
   "lead", "init", "attach", "start", "status", "setup", "doctor",
-  "pads", "pad", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
+  "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
   // `hive <path>` opens that project's session; lead is the default command.
@@ -1412,6 +1552,12 @@ switch (command) {
     break;
   case "pad":
     cmdPad(rest);
+    break;
+  case "todos":
+    cmdTodos(rest);
+    break;
+  case "todo":
+    cmdTodo(rest);
     break;
   case "backups":
     cmdBackups();
