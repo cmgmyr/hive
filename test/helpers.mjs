@@ -117,10 +117,25 @@ export function scratchDirs() {
 // every liveness question rather than a hive that destroys state. Setting both
 // is what a test actually wants.
 //
-// Returns { hasTmux, cleanup }. cleanup(...sessionNames) kills only the named
-// sessions and removes the socket dir. Never kill-server: the code under test
-// resolves its server from the ambient env, so the suite cannot pin one with
-// -L, and a bare kill-server takes down whatever that env points at.
+// Returns { hasTmux, cleanup }. cleanup(...sessionNames) kills ONLY the named
+// sessions. Never kill-server: the code under test resolves its server from the
+// ambient env, so the suite cannot pin one with -L, and a bare kill-server takes
+// down whatever that env points at.
+//
+// cleanup deliberately does NOT remove the socket directory, and that is the
+// whole reason this comment exists. It used to, and a file with more than one
+// tmux describe then destroyed its own isolation halfway through: the first
+// after() hook removed the dir, TMUX_TMPDIR went on naming a path that no longer
+// existed, and tmux DOES NOT CREATE IT. Per CLAUDE.md that resolves to the
+// SHARED socket, so every later describe in the file quietly created its
+// sessions on the developer's own tmux server. On 2026-07-29 that put a
+// list-panes -a in a test face to face with the developer's real panes and typed
+// five wake bodies into a live claude session. Nothing was lost, and nothing
+// about it was loud.
+//
+// So the directory is removed once, on process exit, when no more tmux calls can
+// happen. Registered once per isolateTmux call; a file that calls it twice gets
+// two handlers for two directories, which is correct.
 export function isolateTmux(suite) {
   const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
   process.env.TMUX_TMPDIR = tmuxTmp;
@@ -139,6 +154,14 @@ export function isolateTmux(suite) {
     throw new Error(`tmux is missing on CI; ${suite} cannot run. Restore the install step in ci.yml.`);
   }
 
+  process.on("exit", () => {
+    try {
+      rmSync(tmuxTmp, { recursive: true, force: true });
+    } catch {
+      // A scratch dir left in the system temp dir is not worth a failed run.
+    }
+  });
+
   const cleanup = (...sessions) => {
     for (const session of sessions) {
       try {
@@ -147,7 +170,6 @@ export function isolateTmux(suite) {
         // Never started, or already gone.
       }
     }
-    rmSync(tmuxTmp, { recursive: true, force: true });
   };
   return { hasTmux, cleanup };
 }

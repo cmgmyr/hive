@@ -413,6 +413,47 @@ export function capturePane(target: string, lines: number): string {
   return rows.slice(-lines).join("\n");
 }
 
+// Todo 65. A pane showing a modal choice is not a pane you can deliver a
+// message into, and typing into one anyway does something worse than losing the
+// message: it answers the dialog.
+//
+// What happens, reproduced against claude 2.1.220 in a real pane. sendText
+// pastes the body, which a dialog has nowhere to put and silently drops, then
+// sends Enter, which a dialog reads as "choose the highlighted option". The
+// input box is left EMPTY, no user turn is created, and the highlighted option
+// is taken. In the reproduction that option was "1. Yes, I trust this folder";
+// against a permission prompt it is whatever claude has highlighted, normally
+// the one that says yes. hive would be approving things on the lead's behalf
+// with the text of a wake-up.
+//
+// This is NOT the busy-pane case, which was the standing hypothesis and does
+// not reproduce: a pane mid-turn queues the paste and delivers it as a user
+// turn when the turn ends. Verified twice against the transcript on disk. Busy
+// is fine. Modal is not.
+//
+// Matched on "Esc to cancel", which is the footer claude renders under every
+// choice it is waiting on: the folder-trust prompt, the bypass-permissions
+// confirmation and the tool permission prompt all carry it, and no ordinary
+// prompt-box state captured during this work does. This is claude's chrome, so
+// it is coupled to its version the same way awaitPrompt's markers are. Both
+// ways of being wrong were weighed and they are not symmetric. A false positive
+// holds a wake for another tick, and a lead can see it still pending in
+// wake_list. A false negative answers a dialog nobody read. So the loose
+// pattern is the deliberate choice.
+const CHOICE_DIALOG = /Esc to cancel/;
+
+// null means the pane could not be read, which is not the same as "no dialog".
+// Callers decide; the scheduler treats it as go-ahead, because its liveness
+// probe has already answered for this pane and holding a wake on a question
+// nothing can answer is how issue #14 stranded every timer it touched.
+export function paneAwaitingChoice(target: string): boolean | null {
+  try {
+    return CHOICE_DIALOG.test(capturePane(target, 12));
+  } catch {
+    return null;
+  }
+}
+
 // Typing is what makes a control byte dangerous, so the rule lives here, next
 // to sendText and capturePane, rather than in whichever caller happened to
 // need it first. src/tools/agents.ts encodes the same hazard for agent names

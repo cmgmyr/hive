@@ -134,7 +134,8 @@ export function registerWakes(server: McpServer): void {
         const maxWait = args.max_wait_seconds ?? 900;
         const info = db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at)
+            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+               max_wait_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))`,
           )
           .run(

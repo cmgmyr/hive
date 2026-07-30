@@ -198,6 +198,47 @@ UPDATE agents
 CREATE UNIQUE INDEX idx_agents_running_name
   ON agents(project_id, name COLLATE NOCASE) WHERE status = 'running';
 `,
+  // Issue #24, twice. agents.agent_state is one row overwritten in place, so a
+  // wrong value that corrects itself leaves no trace at all. On 2026-07-29 a
+  // false "idle" was written at 13:27:39 and overwritten with "working" at
+  // 13:27:41, the lead sampled at 13:28, saw "working", and recorded a PASS on
+  // a lane that had already failed. No polling frequency anyone would really
+  // run catches a two-second transition. What caught it was timers.fired_at, a
+  // record of an event rather than a reading of a state.
+  //
+  // So: every hook invocation appends a row here and nothing ever updates one.
+  // The payload sits next to the state it decided, which is the part that
+  // matters. Both #24 lanes reasoned from "an idle was written" to
+  // "stateFor(\"stop\") wrote it" without checking, and the truth was that the
+  // notify branch wrote it. One column, `event`, answers that in a glance.
+  //
+  // No foreign key to agents, deliberately. The hook knows an actor_id and
+  // nothing else, foreign_keys is ON, and a hook must never fail; a reference
+  // to a row that has been closed and swept must not cost the log its evidence.
+  // Join on actor_id when a query needs the agent or its project.
+  //
+  // created_at carries milliseconds while every other timestamp in this schema
+  // is whole seconds. That is on purpose and it is this table's whole reason to
+  // exist: the transitions worth reading here are the ones that happen inside
+  // one second. The format is the same otherwise, so ordering and range
+  // comparisons against datetime('now', ...) still work as plain string
+  // comparisons. Ties break on id, which is monotonic.
+  `
+CREATE TABLE agent_state_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id TEXT NOT NULL,
+  event TEXT NOT NULL,
+  state TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+-- (actor_id, id) is for the human forensic query, which is this table's whole
+-- purpose: "show me every state this worker was recorded in, in order, with the
+-- event and payload that decided it". Nothing in src/ reads it, deliberately.
+-- Named here so it does not read as an index nobody uses.
+CREATE INDEX idx_agent_state_log_actor ON agent_state_log(actor_id, id);
+CREATE INDEX idx_agent_state_log_created ON agent_state_log(created_at);
+`,
 ];
 
 export function migrate(): void {

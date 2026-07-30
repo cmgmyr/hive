@@ -76,7 +76,14 @@ describe("every test file that can reach tmux isolates its server first", () => 
       // tab-indented call as top level, which is exactly the not-top-level case
       // this exists to reject. `[^\s/]` because a column-zero COMMENT naming
       // isolateTmux would otherwise satisfy the guard without calling anything.
-      const topLevelCall = /^[^\s/].*\bisolateTmux\(/;
+      //
+      // The negative lookahead consumes nothing, which matters: `^[^\s/].*`
+      // spent a character before `.*` could start, so a file whose line IS the
+      // bare call, `isolateTmux("...")` at column zero with no assignment in
+      // front of it, read as "never calls isolateTmux". A file that does not
+      // need the returned handle is the normal shape for a test that spawns
+      // hive but creates no tmux session of its own.
+      const topLevelCall = /^(?![\s/]).*\bisolateTmux\(/;
       const at = lines.findIndex((line) => topLevelCall.test(line));
       assert.notEqual(
         at,
@@ -117,6 +124,30 @@ describe("the isolation helpers say what they are for", () => {
       assert.ok(
         !/["']kill-server["']/.test(source),
         `${file} must tear down with kill-session -t =<name>, never kill-server`,
+      );
+    }
+  });
+
+  it("never asks the server for every pane it has", () => {
+    // list-panes -a lists every pane on the SERVER and ignores -t, so a test
+    // written as `list-panes -a -s -t =mysession` reads as scoped and is not.
+    // On a correctly isolated server that is harmless, which is exactly why it
+    // survived: it is only wrong on the day isolation is already broken, and
+    // then it hands the test the developer's own panes to type into.
+    //
+    // That day was 2026-07-29. cleanup() removed the socket dir, TMUX_TMPDIR
+    // went on naming a path tmux does not create, tmux fell back to the shared
+    // socket, and a `list-panes -a` picked up two live claude panes as the
+    // watched and delivery targets for a wake test. Both halves are fixed; this
+    // is the half a future test file can reintroduce on its own.
+    //
+    // Scope with -s -t =<session> instead: all panes in that session, across
+    // its windows, and nothing else.
+    for (const file of [...files, "helpers.mjs"]) {
+      const source = sources.get(file);
+      assert.ok(
+        !/["']list-panes["']\s*,\s*["']-a["']/.test(source),
+        `${file} must scope list-panes to its own session (-s -t =<name>), never -a`,
       );
     }
   });

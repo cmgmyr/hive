@@ -4,6 +4,7 @@ import { closeAgentRow } from "./spawn.js";
 import {
   capturePane,
   liveTargets,
+  paneAwaitingChoice,
   sanitizeTail,
   sendText,
   tailCaptureLines,
@@ -50,6 +51,7 @@ interface WatchedState {
   gone: boolean;
   since: string | null;
 }
+
 
 // Statements are prepared lazily because this module loads before migrate().
 const prepared = new Map<string, Statement>();
@@ -118,6 +120,64 @@ function cancelTimer(timerId: number): void {
   stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(timerId);
 }
 
+// Retention for agent_state_log, which nothing else bounds because nothing ever
+// updates or deletes a row in it.
+//
+// Seven days because the question this table answers is always "what happened
+// during that lane", and a lane is hours. Twenty thousand rows as the second
+// bound because time alone does not cap a busy week: a worker writes two to
+// four rows per turn, so the cap is roughly a week of heavy use and the payload
+// cap in hook.ts keeps the worst case near 200MB rather than unbounded. Those
+// two constants multiply, so moving either one moves that figure: see
+// PAYLOAD_LIMIT in src/hook.ts.
+const LOG_RETENTION = "-7 days";
+const LOG_MAX_ROWS = 20_000;
+
+// In tick() rather than in janitor(), and that is not tidiness. janitor answers
+// a tmux-liveness question and returns early when the probe fails, so retention
+// living inside it would stop happening exactly when tmux is unreachable, which
+// is the state a machine can sit in for days. This sweep touches no tmux and
+// has no reason to care.
+//
+// Each bound is checked with a read before it writes. A DELETE that matches
+// nothing still opens a write transaction, and every hive session ticks against
+// one shared store, so the common case must not take the write lock at all.
+//
+// Runs every tick, with no interval gate. Both bounds are days and tens of
+// thousands of rows, so a gate was considered and dropped: with the three reads
+// below all resolving as index seeks, the idle cost is microseconds, and a
+// counter that makes "did retention run" depend on how many ticks happened
+// earlier in the process is a worse thing to own than the cost it saves.
+function pruneStateLog(): void {
+  try {
+    const stale = stmt(
+      "SELECT 1 AS hit FROM agent_state_log WHERE created_at < datetime('now', ?) LIMIT 1",
+    ).get(LOG_RETENTION);
+    if (stale) {
+      stmt("DELETE FROM agent_state_log WHERE created_at < datetime('now', ?)").run(LOG_RETENTION);
+    }
+    // MAX - MIN over-counts once rows have been deleted, so the cap can prune
+    // early. That is the safe direction for a bound whose job is to stop the
+    // table growing.
+    //
+    // Two statements rather than one SELECT MAX(id), MIN(id), and this is
+    // measured rather than assumed. SQLite's min/max optimisation applies only
+    // when the single result column is min(X) or max(X); two aggregates in one
+    // SELECT disables it and the plan becomes a full covering-index scan, which
+    // is the SAME plan as the COUNT(*) an earlier version of this comment
+    // claimed to be avoiding. Split, each one is a SEARCH. Both stay in the
+    // stmt() cache.
+    const hi = (stmt("SELECT MAX(id) AS v FROM agent_state_log").get() as { v: number | null }).v;
+    const lo = (stmt("SELECT MIN(id) AS v FROM agent_state_log").get() as { v: number | null }).v;
+    if (hi != null && lo != null && hi - lo >= LOG_MAX_ROWS) {
+      stmt("DELETE FROM agent_state_log WHERE id <= ?").run(hi - LOG_MAX_ROWS);
+    }
+  } catch {
+    // Housekeeping. It must never take a tick down, and a store that has not
+    // run this migration yet is one of the ways it can throw.
+  }
+}
+
 // One sweep-and-fire pass. The snapshot is a parameter for the same reason
 // janitor's is: it is the one input that decides everything here, and handing
 // it in is the difference between driving a tick and simulating a tmux.
@@ -126,6 +186,7 @@ export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Prom
   ticking = true;
   try {
     janitor(snapshot);
+    pruneStateLog();
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
     const candidates = stmt(
       `SELECT * FROM timers WHERE cancelled_at IS NULL AND (
@@ -134,9 +195,11 @@ export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Prom
          OR (kind != 'delay' AND fired_at IS NULL)
        )`,
     ).all() as TimerRow[];
+    // Scoped to this tick: a dialog that clears between ticks must be seen.
+    const choices: ChoiceCache = new Map();
     for (const timer of candidates) {
-      if (timer.kind === "delay") await fireDelay(timer, snapshot);
-      else await maybeFireIdle(timer, snapshot, now);
+      if (timer.kind === "delay") await fireDelay(timer, snapshot, choices);
+      else await maybeFireIdle(timer, snapshot, now, choices);
     }
   } catch {
     // The scheduler must never take the server down.
@@ -158,18 +221,58 @@ export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Prom
 // and only fall back to a single-target probe when there is no snapshot to
 // read. A max-wait wake still has to fire when the batch probe failed, and
 // that is the one path that needs its own fork.
-function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null): boolean {
+// One capture-pane answer per pane per tick. Liveness on the line above is
+// already resolved from a single batched snapshot for exactly this reason, and
+// forking tmux per timer would have thrown that away: a lead's wakes all target
+// the lead's own pane, so N ready timers meant N identical captures, and a timer
+// held by a dialog re-forks every three seconds for as long as the dialog is up.
+//
+// INVALIDATED BY OUR OWN DELIVERIES, which the first version of this cache was
+// not, and that made it manufacture the exact false negative the guard exists to
+// prevent. Deliveries in a tick are serial and each one costs a claim, up to
+// three capture-pane forks, a paste and a hard 300ms sleep. So wake #7 delivers,
+// the lead's session takes that turn and raises a permission prompt, and wake
+// #11 is then judged against a screen read seconds earlier and types its Enter
+// into the dialog. Typing into a pane is the one thing inside a tick that can
+// change that pane's answer, so forgetting the answer after typing is the exact
+// scope of the repair: the batching still holds for panes nothing was delivered
+// to, and for a timer held by a dialog, which is where it was worth having.
+type ChoiceCache = Map<string, boolean | null>;
+
+function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
+  let answer = cache.get(pane);
+  if (answer === undefined) {
+    answer = paneAwaitingChoice(pane);
+    cache.set(pane, answer);
+  }
+  return answer;
+}
+
+function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
   const live = snapshot ? targetAlive(timer.deliver_pane, snapshot) : targetLive(timer.deliver_pane);
   if (live === null) return false;
   if (!live) {
     cancelTimer(timer.id);
     return false;
   }
+  // Todo 65. A pane sitting on a modal choice eats the paste and reads the
+  // Enter as an answer, so delivering into one loses the wake AND approves
+  // whatever claude has highlighted. Wait instead: not cancelled, not claimed,
+  // just still pending, so the next tick tries again once the dialog is gone
+  // and a lead can see it outstanding in wake_list meanwhile.
+  //
+  // Above claimOneShot for the same reason the liveness check is: after the
+  // claim, "not now" and "never" are the same thing.
+  if (awaitingChoice(timer.deliver_pane, choices) === true) return false;
   return true;
 }
 
-async function fireDelay(timer: TimerRow, snapshot: AliveSnapshot | null): Promise<void> {
-  if (!deliverable(timer, snapshot)) return;
+async function fireDelay(
+  timer: TimerRow,
+  snapshot: AliveSnapshot | null,
+  choices: ChoiceCache,
+): Promise<void> {
+  if (!deliverable(timer, snapshot, choices)) return;
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
@@ -182,7 +285,7 @@ async function fireDelay(timer: TimerRow, snapshot: AliveSnapshot | null): Promi
   } else {
     claimed = claimOneShot(timer.id);
   }
-  if (claimed) await deliver(timer, "");
+  if (claimed) await deliver(timer, "", choices);
 }
 
 function claimOneShot(timerId: number): boolean {
@@ -193,6 +296,10 @@ function claimOneShot(timerId: number): boolean {
     ).run(timerId).changes === 1
   );
 }
+
+// A watched agent that is not there any more. Nothing left to wait for, so the
+// two ways of reaching it share one value.
+const GONE: WatchedState = { idle: true, gone: true, since: null };
 
 function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[] {
   const ids = JSON.parse(timer.watch) as number[];
@@ -208,13 +315,13 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
           settled: number;
         }
       | undefined;
-    if (!agent || agent.status !== "running") return { idle: true, gone: true, since: null };
+    if (!agent || agent.status !== "running") return GONE;
     if (!targetAlive(agent.tmux_target, snapshot)) {
       // The same spawn race the janitor guards against: a row inserted before
       // its window exists is not gone, it is not born yet. Without this an
       // idle_any wake set during another session's spawn fires immediately.
       if (!agent.settled) return { idle: false, gone: false, since: null };
-      return { idle: true, gone: true, since: null };
+      return GONE;
     }
     return { idle: agent.agent_state === "idle", gone: false, since: agent.state_changed_at };
   });
@@ -224,6 +331,7 @@ async function maybeFireIdle(
   timer: TimerRow,
   snapshot: AliveSnapshot | null,
   now: string,
+  choices: ChoiceCache,
 ): Promise<void> {
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
   let ready = false;
@@ -237,18 +345,17 @@ async function maybeFireIdle(
     // not consult tmux, so it still fires on time.
     if (snapshot === null) return;
     const states = watchedStates(timer, snapshot);
-    if (timer.kind === "idle_any") {
-      // Agents already idle when the timer was set do not count; wait for a
-      // fresh transition (or a watched agent going away entirely). >= not >:
-      // timestamps have one-second granularity, and a transition in the same
-      // second as timer creation must fire rather than hang until max-wait.
-      ready = states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at));
-    } else {
-      ready = states.length > 0 && states.every((s) => s.idle);
-    }
+    // idle_any: agents already idle when the timer was set do not count; wait
+    // for a fresh transition (or a watched agent going away entirely). >= not >:
+    // timestamps have one-second granularity, and a transition in the same
+    // second as timer creation must fire rather than hang until max-wait.
+    ready =
+      timer.kind === "idle_any"
+        ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
+        : states.length > 0 && states.every((s) => s.idle);
   }
-  if (ready && deliverable(timer, snapshot) && claimOneShot(timer.id)) {
-    await deliver(timer, timedOut ? "max wait reached" : "");
+  if (ready && deliverable(timer, snapshot, choices) && claimOneShot(timer.id)) {
+    await deliver(timer, timedOut ? "max wait reached" : "", choices);
   }
 }
 
@@ -332,8 +439,24 @@ function watchedTail(timer: TimerRow): string {
 // timer that watches nothing (delay wakes leave watch at its '[]' default),
 // so this is not a per-call-site decision. A future wake kind that watches
 // agents gets the evidence without having to remember to ask for it.
-async function deliver(timer: TimerRow, note: string): Promise<void> {
+//
+// Forgets what this pane looked like, because it does not look like that any
+// more: a user turn was just submitted into it and whatever that turn does next
+// is unknown to this process. Any later timer in the same tick re-reads.
+//
+// THIS NARROWS THE WINDOW, IT DOES NOT CLOSE IT, and saying so is the point.
+// The check sits above claimOneShot, so between deciding and the Enter that
+// sendText sends 300ms after its paste there is a gap nothing here can hold
+// shut. Reading a terminal to decide whether typing at it is safe is
+// check-then-act against a program that does not answer, and closing it needs
+// delivery to stop meaning "typed at a terminal" (issue #27). What is fixed is
+// the part hive causes itself.
+async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
-  await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
+  try {
+    await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
+  } finally {
+    choices.delete(timer.deliver_pane);
+  }
 }

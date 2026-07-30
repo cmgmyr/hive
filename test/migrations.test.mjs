@@ -18,14 +18,27 @@ const { db, migrate } = await import("../dist/db.js");
 
 const INDEX = "idx_agents_running_name";
 
-// Rewind to the state a store was in before this migration existed. The
-// migration adds exactly one index and mutates data, so dropping the index and
-// forgetting the version reproduces the old store faithfully. Rewinding beats
-// hand-writing the old schema, which would silently drift from db.ts.
+// The version in MIGRATIONS that creates INDEX. Pinned by number rather than
+// found with MAX(version), which is what this used to do and which quietly
+// meant "whatever migration was added most recently". The next migration to
+// land broke all three tests here: the rewind forgot THAT version instead,
+// migrate() replayed its CREATE TABLE against a table that was still there, and
+// the index this file exists to test was never recreated. Migrations are
+// append-only, so a version number is a stable handle and MAX is not.
+const NAME_INDEX_VERSION = 5;
+
+// Rewind to the state a store was in before that migration existed. It adds
+// exactly one index and mutates data, so dropping the index and forgetting the
+// version reproduces the old store faithfully. Rewinding beats hand-writing the
+// old schema, which would silently drift from db.ts.
 function rewindOneMigration() {
   migrate();
+  assert.ok(
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?").get(INDEX),
+    `${INDEX} must exist before the rewind, or NAME_INDEX_VERSION names the wrong migration`,
+  );
   db.exec(`DROP INDEX IF EXISTS ${INDEX}`);
-  db.prepare("DELETE FROM migrations WHERE version = (SELECT MAX(version) FROM migrations)").run();
+  db.prepare("DELETE FROM migrations WHERE version = ?").run(NAME_INDEX_VERSION);
 }
 
 function seedProject(path) {

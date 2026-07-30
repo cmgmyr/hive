@@ -36,7 +36,7 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { sanitizeTail, sendText } = await import("../dist/tmux.js");
+const { paneAwaitingChoice, sanitizeTail, sendText } = await import("../dist/tmux.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -70,8 +70,18 @@ function agentRow(name, target, state = "idle") {
 const stateOf = (id) => db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(id).agent_state;
 
 function reset() {
-  db.exec("DELETE FROM timers; DELETE FROM agents;");
+  db.exec("DELETE FROM timers; DELETE FROM agents; DELETE FROM agent_state_log;");
 }
+
+// What hive recorded, in order, rather than what the row happens to say now.
+// The whole reason #24 survived its own fix and its own smoke test is that
+// agents.agent_state is overwritten in place; asserting on a reading of it
+// reproduces the blind spot rather than testing for it.
+const sequenceFor = (actorId) =>
+  db
+    .prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id")
+    .all(actorId)
+    .map((r) => [r.event, r.state]);
 
 // Runs the real hook binary the way Claude Code runs it: a separate process,
 // the event as argv[2], the payload as JSON on stdin. Nothing here is stubbed,
@@ -225,24 +235,163 @@ describe("the Stop hook tells a finished turn from finished work", () => {
     assert.equal(stateOf(empty), "idle");
   });
 
-  it("still maps the other events the way it always has", async () => {
+  it("still maps prompt and a permission notification the way it always has", async () => {
     // The Stop branch now reads stdin, and stdin is a one-shot read. A
     // regression that drained it in the wrong branch would show up here.
+    //
+    // The third case this used to cover, an idle prompt writing "idle", moved
+    // to the notify describe below. It was pinning the bug.
     const working = agentRow("prompted", "%9508", "idle");
     const waiting = agentRow("notified", "%9509", "idle");
-    const asking = agentRow("needs-input", "%9510", "working");
 
     await runHook("prompt", JSON.stringify({ prompt: "go" }), "agent:prompted");
     await runHook("notify", JSON.stringify({ message: "Permission needed" }), "agent:notified");
-    await runHook(
-      "notify",
-      JSON.stringify({ message: "Claude is waiting for your input" }),
-      "agent:needs-input",
-    );
 
     assert.equal(stateOf(working), "working");
     assert.equal(stateOf(waiting), "waiting");
-    assert.equal(stateOf(asking), "idle");
+  });
+});
+
+// Issue #24, the second door. The branch above was fixed and shipped as 2565164
+// and the bug reproduced the same morning, because the idle that fired the wake
+// was never written by the Stop hook at all. Claude Code emits a Notification
+// sixty seconds after a Stop with no user input, hive matched its message text
+// and wrote "idle", and a worker blocked on four live subagents was recorded
+// finished. The captured payloads are on todo 61 comment 82.
+//
+// Every assertion here is over the SEQUENCE in agent_state_log, never over a
+// reading of agents.agent_state. The original lane passed its smoke test by
+// sampling two seconds late.
+describe("a notification can never write idle", () => {
+  beforeEach(reset);
+
+  // Verbatim from the capture, trimmed to the fields hive reads.
+  const notification = (extra) =>
+    JSON.stringify({ session_id: "ea2dc8a9", hook_event_name: "Notification", ...extra });
+
+  const IDLE_PROMPT = notification({
+    message: "Claude is waiting for your input",
+    notification_type: "idle_prompt",
+  });
+  const PERMISSION_PROMPT = notification({
+    message: "Claude needs your permission",
+    notification_type: "permission_prompt",
+  });
+
+  it("leaves a worker blocked on live subagents exactly where the Stop hook left it", async () => {
+    // THE regression. Seeded "idle" so "working" can only come from the hook,
+    // then driven through the real sequence: a Stop with a subagent still
+    // running, then the sixty-second notification that used to undo it.
+    const agent = agentRow("blocked-then-notified", "%9530", "idle");
+
+    await runHook("stop", stopPayload([RUNNING_SUBAGENT]), "agent:blocked-then-notified");
+    await runHook("notify", IDLE_PROMPT, "agent:blocked-then-notified");
+
+    assert.deepEqual(
+      sequenceFor("agent:blocked-then-notified"),
+      [
+        ["stop", "working"],
+        ["notify", "unchanged"],
+      ],
+      "the notification must decide nothing; it cannot see whether subagents are live",
+    );
+    assert.equal(
+      stateOf(agent),
+      "working",
+      "scheduler.ts fires idle_any only on agent_state = 'idle', so this is the wake not firing",
+    );
+  });
+
+  it("records the no-op instead of passing over it in silence", async () => {
+    // A branch that deliberately does nothing is invisible unless it says so.
+    // Both #24 lanes lost a day to not knowing which branch wrote an idle.
+    const agent = agentRow("noop-logged", "%9531", "waiting");
+
+    await runHook("notify", IDLE_PROMPT, "agent:noop-logged");
+
+    const rows = db
+      .prepare("SELECT event, state, payload FROM agent_state_log WHERE actor_id = ?")
+      .all("agent:noop-logged");
+    assert.equal(rows.length, 1, "the event still happened and still gets a row");
+    assert.equal(rows[0].state, "unchanged");
+    assert.match(rows[0].payload, /idle_prompt/, "with the payload that decided it");
+    assert.equal(stateOf(agent), "waiting", "and a worker stuck on a dialog is not idle either");
+  });
+
+  it("still reports a worker blocked on a permission prompt", async () => {
+    // The half of this branch that was always right. If it stops working a lead
+    // loses the one signal that says a worker needs a human.
+    const agent = agentRow("needs-human", "%9532", "working");
+
+    await runHook("notify", PERMISSION_PROMPT, "agent:needs-human");
+
+    assert.deepEqual(sequenceFor("agent:needs-human"), [["notify", "waiting"]]);
+    assert.equal(stateOf(agent), "waiting");
+  });
+
+  it("writes waiting, never idle, for a notification type hive does not know", async () => {
+    // Statuses and vocabularies grow. "waiting" is not idle, so an unrecognised
+    // notification can cost a wake its promptness and can never fire one early.
+    const agent = agentRow("unknown-type", "%9533", "working");
+
+    await runHook("notify", notification({ message: "?", notification_type: "some_new_thing" }), "agent:unknown-type");
+
+    assert.equal(stateOf(agent), "waiting");
+  });
+
+  it("falls back to the message text only when notification_type is absent", async () => {
+    // An older Claude Code sends no notification_type. hive pins no version, so
+    // that payload is real, and its answer is inverted along with everything
+    // else: the idle prose decides nothing rather than deciding idle.
+    const old = agentRow("old-claude-idle", "%9534", "working");
+    const older = agentRow("old-claude-permission", "%9535", "working");
+
+    await runHook("notify", JSON.stringify({ message: "Claude is waiting for your input" }), "agent:old-claude-idle");
+    await runHook("notify", JSON.stringify({ message: "Permission needed" }), "agent:old-claude-permission");
+
+    assert.deepEqual(sequenceFor("agent:old-claude-idle"), [["notify", "unchanged"]]);
+    assert.equal(stateOf(old), "working", "the fallback path cannot re-open this either");
+    assert.equal(stateOf(older), "waiting");
+  });
+
+  it("prefers notification_type over the prose when they disagree", async () => {
+    // The wording is Claude Code's to change and the field is the contract. A
+    // reworded idle prompt must not be able to reach the "waiting" branch, and a
+    // permission prompt that happens to quote the old sentence must not be able
+    // to reach the no-op.
+    const reworded = agentRow("reworded", "%9536", "working");
+    const quoting = agentRow("quoting", "%9537", "working");
+
+    await runHook("notify", notification({ message: "Claude is idle", notification_type: "idle_prompt" }), "agent:reworded");
+    await runHook(
+      "notify",
+      notification({ message: "Claude is waiting for your input to a permission prompt", notification_type: "permission_prompt" }),
+      "agent:quoting",
+    );
+
+    assert.deepEqual(sequenceFor("agent:reworded"), [["notify", "unchanged"]]);
+    assert.deepEqual(sequenceFor("agent:quoting"), [["notify", "waiting"]]);
+  });
+
+  it("lets the next real event move the worker on, so nothing gets stuck", async () => {
+    // The failure mode of "do not downgrade a working state" is a state machine
+    // that can never leave it. This one has no memory to get stuck in: the
+    // notification writes nothing and the next Stop decides with the payload in
+    // hand, which is the same self-healing the stop branch rests on.
+    const agent = agentRow("unsticks", "%9538", "idle");
+
+    await runHook("stop", stopPayload([RUNNING_SUBAGENT]), "agent:unsticks");
+    await runHook("notify", IDLE_PROMPT, "agent:unsticks");
+    await runHook("prompt", JSON.stringify({ prompt: "<task-notification>" }), "agent:unsticks");
+    await runHook("stop", stopPayload([]), "agent:unsticks");
+
+    assert.deepEqual(sequenceFor("agent:unsticks"), [
+      ["stop", "working"],
+      ["notify", "unchanged"],
+      ["prompt", "working"],
+      ["stop", "idle"],
+    ]);
+    assert.equal(stateOf(agent), "idle", "the wake fires here, which is where it always should have");
   });
 });
 
@@ -323,7 +472,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, `cat > ${outFile}`], {
       stdio: "ignore",
     });
-    const panes = execFileSync("tmux", ["list-panes", "-a", "-s", "-t", `=${session}`, "-F", "#{pane_id}"], {
+    const panes = execFileSync("tmux", ["list-panes", "-s", "-t", `=${session}`, "-F", "#{pane_id}"], {
       encoding: "utf8",
     })
       .trim()
@@ -341,25 +490,42 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
   const delivered = () => readFileSync(outFile, "utf8");
 
+  // created_at is REAL, not backdated, and every caller sets the wake BEFORE the
+  // transition it is waiting for. That is production ordering and it used to be
+  // inverted here: the timer was aged sixty seconds, so a transition that
+  // happened before the wake was set still satisfied
+  // `state_changed_at >= timer.created_at` and every test read as passing
+  // whichever way round it was written. Counselors found it by way of a feature
+  // whose whole failure mode was an agent that never transitions again, and no
+  // test in this file could see it.
+  //
+  // Note this is specific to idle_any, where created_at is part of the FIRING
+  // decision. The delay wakes below still age their rows, because there
+  // created_at only clears the janitor's spawn-race settle window and has no
+  // part in whether the timer fires.
   function idleWake(agentId) {
     return db
       .prepare(
         `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            max_wait_at, created_at)
          VALUES (?, 'user:test', 'lane check', 'idle_any', ?, 'user:test', ?,
-           datetime('now', '+1 hour'), datetime('now', '-60 seconds'))
+           datetime('now', '+1 hour'), datetime('now'))
          RETURNING id`,
       )
       .get(project, JSON.stringify([agentId]), deliveryPane).id;
   }
 
+  // The transition idle_any is waiting for, written after the wake exists.
+  const goIdle = (agentId) =>
+    db
+      .prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?")
+      .run(agentId);
+
   it("delivers the watched worker's terminal alongside the body", async () => {
     const agent = agentRow("tailed", watchedPane, "working");
-    // A fresh idle transition, which is what idle_any waits for.
-    db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(
-      agent,
-    );
+    // Wake first, then the transition: the order a lead actually produces.
     const wake = idleWake(agent);
+    goIdle(agent);
 
     await tick();
     await until(() => delivered().includes(MARKER));
@@ -385,10 +551,8 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
   it("names the worker and the state hive reports for it now", async () => {
     const agent = agentRow("named-in-tail", watchedPane, "working");
-    db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(
-      agent,
-    );
     idleWake(agent);
+    goIdle(agent);
 
     await tick();
     await until(() => delivered().includes("named-in-tail"));
@@ -396,6 +560,47 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(text, /named-in-tail/, "a lead watching several workers needs to know which one");
     assert.match(text, /hive state now: idle/);
+  });
+
+  it("does not fire on a transition that happened before the wake was set", async () => {
+    // The documented half of idle_any, and until now nothing exercised it: a
+    // worker that was ALREADY idle when the lead set the wake does not count,
+    // because the lead is waiting for the NEXT thing to finish, not for the
+    // state it could already see. The wake rides to max_wait instead.
+    //
+    // This is also the shape that hid a real bug: a watched agent that never
+    // transitions again can never satisfy an idle_any wake. That is correct for
+    // "idle", which a worker leaves and re-enters every turn. It is fatal for
+    // any state nothing writes back, which is why also_when_stuck was dropped.
+    const agent = agentRow("idle-before-the-wake", watchedPane, "working");
+    goIdle(agent);
+    // Strictly before the wake, since these timestamps have one-second
+    // granularity and `>=` is deliberate.
+    db.prepare("UPDATE agents SET state_changed_at = datetime('now', '-5 seconds') WHERE id = ?").run(agent);
+    const wake = idleWake(agent);
+
+    await tick();
+    await tick();
+
+    const row = db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(wake);
+    assert.equal(row.fired_at, null, "an idle the lead could already see is not a fresh transition");
+    assert.ok(!delivered().includes("lane check"), "and nothing was typed at the lead");
+  });
+
+  it("fires once the worker goes idle after that", async () => {
+    // The other side of the same pair, so neither ordering is covered only by
+    // accident. Same agent shape, same wake, only the ordering differs.
+    const agent = agentRow("idle-after-the-wake", watchedPane, "working");
+    const wake = idleWake(agent);
+    goIdle(agent);
+
+    await tick();
+    await until(() => delivered().includes("lane check"));
+
+    assert.notEqual(
+      db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(wake).fired_at,
+      null,
+    );
   });
 
   it("never types through a buffer name another hive process could be using", async () => {
@@ -447,3 +652,170 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     assert.doesNotMatch(text, /read agent_output before acting/, "and no tail footer either");
   });
 });
+
+// Todo 65. A wake fired, the store recorded it delivered, and the lead never
+// saw it. The standing hypothesis was that a busy lead pane loses the message;
+// it does not, which was established before this was written by driving a real
+// claude session mid-turn and reading its transcript off disk. A pane sitting
+// on a MODAL CHOICE loses it, and does something worse on the way: the paste
+// has nowhere to go and is dropped, and the Enter that follows is read as
+// "choose the highlighted option". Reproduced against claude 2.1.220, where it
+// accepted a folder-trust prompt using the text of a wake-up.
+//
+// The screens here are printed by a shell rather than driven out of a real
+// claude. What is under test is hive's decision not to type into a pane whose
+// SCREEN shows a dialog, and a printf reproduces that screen exactly. The claude
+// coupling is one regex, pinned separately below.
+describe("a wake is never typed into a pane that is waiting on a choice", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  const session = `hive-choice-${process.pid}`;
+  const outFile = join(tmp, "choice-delivered.txt");
+  // The footer claude renders under a permission prompt, verbatim.
+  const DIALOG = "Do you want to proceed?\\n 1. Yes\\n 2. No\\n\\n Esc to cancel";
+  let dialogPane;
+
+  before(() => {
+    if (!hasTmux) return;
+    writeFileSync(outFile, "");
+    execFileSync(
+      "tmux",
+      [
+        "new-session", "-d", "-s", session, "-x", "200", "-y", "50",
+        `printf '${DIALOG}\\n'; sleep 600`,
+      ],
+      { stdio: "ignore" },
+    );
+    dialogPane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+  });
+
+  after(() => cleanup(session));
+
+  beforeEach(reset);
+
+  const delivered = () => readFileSync(outFile, "utf8");
+
+  // Clears the dialog by replacing what the pane is RUNNING, keeping the pane
+  // id. A wake names a pane, so the second half of this has to be the same
+  // pane; a new one would prove nothing about the timer that was held. tmux
+  // wipes the screen on respawn, which is the state change under test.
+  const clearDialog = () =>
+    execFileSync("tmux", ["respawn-pane", "-k", "-t", dialogPane, `cat > ${outFile}`], {
+      stdio: "ignore",
+    });
+
+  function wakeInto(pane, body) {
+    return db
+      .prepare(
+        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+           due_at, created_at)
+         VALUES (?, 'user:test', ?, 'delay', '[]', 'user:test', ?,
+           datetime('now', '-1 second'), datetime('now', '-60 seconds'))
+         RETURNING id`,
+      )
+      .get(project, body, pane).id;
+  }
+
+  const timerRow = (id) =>
+    db.prepare("SELECT fired_at, cancelled_at, fire_count FROM timers WHERE id = ?").get(id);
+
+  it("sees a dialog on the screen", async () => {
+    // The regex is claude's chrome, so it gets its own assertion rather than
+    // being implied by the behaviour tests. If claude restyles its prompts this
+    // fails first and names the reason.
+    await until(() => paneAwaitingChoice(dialogPane) === true);
+
+    assert.equal(paneAwaitingChoice(dialogPane), true);
+  });
+
+  it("answers null rather than false for a pane it cannot read", () => {
+    // A dead target is not a pane with no dialog on it. Reading a capture
+    // failure as "no dialog, go ahead" would be defensible for the scheduler,
+    // which has already probed liveness, but only because the scheduler decides
+    // that; the reader must not decide it here.
+    assert.equal(paneAwaitingChoice("%99999"), null);
+  });
+
+  it("re-reads the pane after each delivery, so one tick cannot type into a dialog it raised", async () => {
+    // Counselors finding 5, and a regression the /simplify pane cache
+    // introduced: deliveries within a tick are serial, so a later timer was
+    // judged against a screen read before the earlier ones typed into it. Wake
+    // #7 delivers, the session takes that turn and raises a permission prompt,
+    // wake #11 is delivered against the cached "no dialog" and its Enter answers
+    // it.
+    //
+    // Staged with a pane that raises a dialog the moment it is written to, which
+    // is what a claude session does when the turn it was just handed asks for
+    // permission. Both timers are due in the SAME tick, so the second one can
+    // only be held if the cache was invalidated by the first delivery.
+    const session2 = `${session}-raise`;
+    const out = join(tmp, "raise-delivered.txt");
+    writeFileSync(out, "");
+    execFileSync(
+      "tmux",
+      [
+        "new-session", "-d", "-s", session2, "-x", "200", "-y", "50",
+        `read line; printf '%s\\n' "$line" > ${out}; printf '${DIALOG}\\n'; sleep 600`,
+      ],
+      { stdio: "ignore" },
+    );
+    try {
+      const pane = execFileSync("tmux", ["list-panes", "-s", "-t", `=${session2}`, "-F", "#{pane_id}"], {
+        encoding: "utf8",
+      }).trim();
+      await until(() => paneAwaitingChoice(pane) === false);
+      const first = wakeInto(pane, "FIRSTWAKE");
+      const second = wakeInto(pane, "SECONDWAKE");
+
+      await tick();
+
+      assert.notEqual(timerRow(first).fired_at, null, "the first wake delivers as it always did");
+      await until(() => paneAwaitingChoice(pane) === true);
+      assert.equal(
+        timerRow(second).fired_at,
+        null,
+        "the second must be held: the pane it targets is now asking a question",
+      );
+      const text = readFileSync(out, "utf8");
+      assert.match(text, /FIRSTWAKE/);
+      assert.ok(!text.includes("SECONDWAKE"), "and its body must not have been typed at the dialog");
+    } finally {
+      cleanup(session2);
+    }
+  });
+
+  it("holds the wake, then delivers it once the choice is gone", async () => {
+    // Both halves in one test, because they are one claim about one timer: held
+    // rather than lost. Split in two, the first half alone would also pass under
+    // a guard that never delivers anything, which is its own silent loss.
+    await until(() => paneAwaitingChoice(dialogPane) === true);
+    const wake = wakeInto(dialogPane, "MUSTNOTLAND lane check");
+
+    await tick();
+    await tick();
+
+    const held = timerRow(wake);
+    assert.equal(held.fired_at, null, "an unanswerable pane must not consume the wake");
+    assert.equal(held.cancelled_at, null, "and must not destroy it either; the pane is alive");
+    assert.equal(held.fire_count, 0);
+    assert.ok(
+      !delivered().includes("MUSTNOTLAND"),
+      "nothing may be typed at a pane whose Enter key means yes",
+    );
+
+    clearDialog();
+    await until(() => paneAwaitingChoice(dialogPane) === false);
+
+    await tick();
+    await until(() => delivered().includes("MUSTNOTLAND"));
+
+    assert.match(
+      delivered(),
+      new RegExp(`\\[hive wake #${wake}\\] MUSTNOTLAND`),
+      "the same wake, still whole, delivered late rather than lost",
+    );
+    assert.notEqual(timerRow(wake).fired_at, null);
+    assert.equal(timerRow(wake).fire_count, 1, "and delivered exactly once");
+  });
+});
+

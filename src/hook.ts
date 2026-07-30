@@ -7,17 +7,80 @@ import { db } from "./db.js";
 
 interface HookPayload {
   message?: unknown;
+  notification_type?: unknown;
   background_tasks?: unknown;
 }
 
-// stdin is a one-shot read, so both consumers below share this rather than
-// each reaching for fd 0.
+// stdin is a one-shot read, so every consumer below shares this one read.
+// Memoised rather than read per caller: the transition log stores the raw bytes
+// for every event, including the ones whose state decision never parses them,
+// and a second read of fd 0 returns nothing.
+// undefined means "not read yet"; null means "read and there was nothing". The
+// type already had a slot for unset, so a second boolean tracking the same fact
+// was one more thing that had to agree.
+let raw: string | null | undefined;
+function readRaw(): string | null {
+  if (raw === undefined) {
+    try {
+      raw = readFileSync(0, "utf8");
+    } catch {
+      raw = null;
+    }
+  }
+  return raw;
+}
+
 function readPayload(): HookPayload {
   try {
-    return JSON.parse(readFileSync(0, "utf8")) as HookPayload;
+    return JSON.parse(readRaw() ?? "") as HookPayload;
   } catch {
     // stdin unavailable or not JSON.
     return {};
+  }
+}
+
+// How much of a payload is kept. Stop and Notification payloads are one or two
+// kilobytes; UserPromptSubmit carries the whole prompt, which has no bound at
+// all, and a pasted file must not put a megabyte in a row that exists to be
+// read. Truncation is marked so a reader is never left wondering whether a
+// field is missing from the payload or from the row.
+//
+// This multiplies with LOG_MAX_ROWS in src/scheduler.ts to give the table's
+// worst-case size; moving either one moves a figure the other's comment quotes.
+const PAYLOAD_LIMIT = 10_000;
+
+// What the log stores for an event that deliberately left agent_state alone.
+// Not a state, and not one agent_state can hold, so a reader is never left
+// wondering whether hive wrote this or found it.
+const UNCHANGED = "unchanged";
+
+// Issue #24. The state above is one row overwritten in place; this is the
+// record that it happened. Raw and unredacted, deliberately: today's bug turned
+// on notification_type, a field nothing in hive read and no redaction rule
+// would have thought to keep, and a projection can only preserve fields someone
+// already knew mattered. The store is local-only and already holds the same
+// prompt text in pads, todo bodies and Claude Code's own transcripts, so this
+// adds no class of data the machine did not already have.
+//
+// Deliberately AFTER the state write and in its own try/catch. The state write
+// is what wakes, agent_status and hive status depend on; the log is how you
+// find out afterwards why one of them was wrong. A log that cannot be written
+// must cost the diagnosis, never the behaviour, and sharing a transaction would
+// let a full disk here strand a worker as permanently non-idle.
+function record(actorId: string, event: string, state: string): void {
+  try {
+    // Coalesced once: an unreadable payload and an empty one are stored the
+    // same way, so there is no reason to carry the null past this line.
+    const payload = readRaw() ?? "";
+    const stored =
+      payload.length > PAYLOAD_LIMIT
+        ? payload.slice(0, PAYLOAD_LIMIT) + `\n[hive: truncated at ${PAYLOAD_LIMIT} bytes]`
+        : payload;
+    db.prepare(
+      "INSERT INTO agent_state_log (actor_id, event, state, payload) VALUES (?, ?, ?, ?)",
+    ).run(actorId, event, state, stored);
+  } catch {
+    // Never at the session's expense.
   }
 }
 
@@ -73,12 +136,104 @@ function waitingOnSubagents(payload: HookPayload): boolean {
   });
 }
 
+// Issue #24, the second door, and the one the fix for it missed entirely.
+//
+// Claude Code emits a Notification 60 seconds after a Stop with no user input:
+//
+//   {"hook_event_name":"Notification",
+//    "message":"Claude is waiting for your input",
+//    "notification_type":"idle_prompt"}
+//
+// hive read that message and wrote "idle". So a worker blocked on four live
+// subagents was recorded idle 60 seconds after its turn ended, every time, and
+// the lead's wake fired on a lane with subagents still running. The full
+// capture is on todo 61. The stop branch above was correct throughout; it was
+// never the branch that wrote the idle.
+//
+// THE FIX IS TO DELETE AN INFERENCE, NOT TO PROP IT UP. That notification says
+// the input box has been quiet for sixty seconds. That is equally true of a
+// worker that has finished, a worker blocked on a permission dialog, and a
+// worker waiting on subagents, so it carries no information about which one you
+// have. The other two shapes considered were to stop it downgrading a "working"
+// set by a Stop, and to look the last Stop's decision up in agent_state_log.
+// Both keep a branch that decides worker liveness while structurally unable to
+// see it, and both need a source of truth outside the payload to do it. There
+// is nothing to decide here: Stop already made this call with the evidence in
+// hand, so the answer is to leave that decision standing.
+//
+// Which makes the rule one sentence. A NOTIFICATION MAY ONLY EVER MOVE A WORKER
+// TO "waiting". It can never write idle, so it can never fire a wake, and the
+// idle prompt writes nothing at all.
+//
+// Nothing gets stuck as a result. Stop fires at the end of every turn and
+// UserPromptSubmit at the start of the next, so the state is rewritten within
+// one turn either way; a subagent finishing re-prompts its parent, which is the
+// same self-healing property the stop branch rests on.
+//
+// notification_type is the discriminator, not the prose. The regex predates the
+// field and reads English out of a message string; a wording change would flip
+// hive back to the bug. The regex STAYS as a fallback, for exactly one case: a
+// payload with no notification_type at all, which is what an older Claude Code
+// would send. hive pins no version (2.1.220 today) so that case is real. Its
+// answer is inverted along with everything else, from "idle" to "leave it
+// alone", so the fallback path cannot re-open this either.
+//
+// A notification hive does not recognise still writes "waiting", which is what
+// it has always done. "waiting" is not idle, so an unrecognised notification can
+// never fire a wake; the cost of getting it wrong is a wake that rides to
+// max_wait, and this branch has just spent a day proving which of those two
+// costs is the one to avoid.
+//
+// THAT SAFETY ARGUMENT DEPENDS ON "waiting" NEVER FIRING A WAKE. Read this
+// before you make it a firing state, because a version of this branch did and
+// it had to be removed.
+//
+// "waiting" is LATCHED. Nothing clears it. It is written by a Notification, and
+// the END of the condition it describes emits nothing at all: hive wires Stop,
+// UserPromptSubmit and Notification (src/hooks.ts), and answering a permission
+// prompt is none of those. The worker resumes mid-turn and the row still says
+// "waiting" until its turn ends, which is however long the approved tool runs.
+//
+// Two consequences, and they point in opposite directions, which is what makes
+// this worth a paragraph rather than a line. A stale "waiting" cannot be told
+// from a live one, so a wake on it reports a worker that needs a human when the
+// human answered ten minutes ago. And a worker that was ALREADY waiting when a
+// wake was set never transitions again, so the freshness test that idle_any
+// rests on (state_changed_at >= timer.created_at) is false forever, and the wake
+// never fires for exactly the worker it was set for.
+//
+// A dwell does not rescue it. "stuck for fifteen seconds" and "unblocked three
+// seconds in and busy since" are byte-identical in the store. Waiting longer to
+// look at a value nothing refreshes is not observing, it is inferring from an
+// absence of evidence, which is issue #24's own shape.
+//
+// Making "waiting" trustworthy means something has to write it back, which means
+// a hook hive does not currently wire. That is a lane with its own capture step,
+// not a condition to add to a scheduler comparison.
+function stateForNotification(payload: HookPayload): string | null {
+  const type = payload.notification_type;
+  // Which notification this is, then one mapping. Written as one return
+  // deliberately: the rule above is that a notification may only ever move a
+  // worker to "waiting", and a second discriminator must not be able to arrive
+  // with a second answer.
+  const idlePrompt =
+    typeof type === "string"
+      ? type === "idle_prompt"
+      : /waiting for your input/i.test(String(payload.message ?? ""));
+  return idlePrompt ? null : "waiting";
+}
+
 // One dispatch, so each event's whole answer is in one place. The previous
 // shape picked a default in a ternary chain and then overrode it in an if/else
 // nine lines below, which meant "notify defaults to waiting" and "notify
 // becomes idle when Claude is asking" were written far apart and a fourth
 // event would have to be added to both.
-function stateFor(event: string): string {
+//
+// null means hive learned nothing about this worker's state and leaves the row
+// alone. It is a third answer, distinct from every value agent_state can hold,
+// and having it is what lets the notify branch stop guessing rather than guess
+// more carefully.
+function stateFor(event: string): string | null {
   switch (event) {
     case "prompt":
       return "working";
@@ -88,7 +243,7 @@ function stateFor(event: string): string {
       // flight", which is what a turn ending has always meant here.
       return waitingOnSubagents(readPayload()) ? "working" : "idle";
     case "notify":
-      return /waiting for your input/i.test(String(readPayload().message ?? "")) ? "idle" : "waiting";
+      return stateForNotification(readPayload());
     default:
       return "waiting";
   }
@@ -97,11 +252,20 @@ function stateFor(event: string): string {
 try {
   const actorId = process.env.HIVE_AGENT_ID;
   if (actorId) {
-    const state = stateFor(process.argv[2] ?? "");
-    db.prepare(
-      "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ?",
-    ).run(state, actorId);
+    const event = process.argv[2] ?? "";
+    const state = stateFor(event);
+    if (state !== null) {
+      db.prepare(
+        "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ?",
+      ).run(state, actorId);
+    }
+    // Outside the branch above: the event proves the session is alive whether or
+    // not it said anything about what the session is doing.
     db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
+    // Logged either way, and a deliberate no-op is the row a future lane most
+    // needs to see. UNCHANGED is not a value agent_state can hold, so the log
+    // never reads as if hive had written one.
+    record(actorId, event, state ?? UNCHANGED);
   }
 } catch {
   // A hook must never break the agent session.
