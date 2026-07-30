@@ -1,5 +1,6 @@
 import type { Statement } from "better-sqlite3";
-import { db } from "./db.js";
+import { dataDir, db } from "./db.js";
+import { maybeBackupHourly } from "./backup.js";
 import { closeAgentRow } from "./spawn.js";
 import {
   capturePane,
@@ -188,6 +189,21 @@ export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Prom
   try {
     janitor(snapshot);
     pruneStateLog();
+    // Issue #23: hourly, rate-limited across every concurrent instance by an
+    // atomic claim inside maybeBackupHourly itself. Placed beside the other
+    // per-tick housekeeping for the same reason pruneStateLog is: it must
+    // run regardless of whether tmux answered this tick.
+    //
+    // NOTE (PR #36, counselors N1, not fixed here - deliberately out of
+    // scope for this lane, flagged for a follow-up issue): this call is
+    // synchronous and runs BEFORE timer delivery below. A slow VACUUM INTO
+    // (a large store, a slow disk) blocks this tick's event loop turn and
+    // delays every due wake-up behind it, even though the try/catch below
+    // still prevents it from ever swallowing a tick permanently. Making the
+    // backup path non-blocking relative to timer delivery is an
+    // architectural change - reordering, or moving the vacuum off this
+    // synchronous path entirely - not a fix that belongs in this diff.
+    maybeBackupHourly(db, dataDir);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
     const candidates = stmt(
       `SELECT * FROM timers WHERE cancelled_at IS NULL AND (

@@ -353,3 +353,74 @@ export function withEnv(vars, fn) {
     }
   }
 }
+
+// Runs `scriptSource` (an ESM module body) in N real, separately-scheduled
+// OS processes launched together, and returns each one's stdout parsed as
+// JSON. Use this, not sequential calls on one connection, to test a
+// check-then-act claim: two calls on one process cannot interleave, because
+// the first always fully completes before the second's code runs at all,
+// so a naive SELECT-then-UPDATE would pass a "call it twice" test just as
+// well as a genuinely atomic UPDATE. Only real concurrent processes can
+// reproduce the interleaving a race like that depends on.
+//
+// The script receives its own argv (after the script path) via `argv`, and
+// should end by writing one JSON value to stdout. Absolute paths (e.g. to
+// dist/*.js) are the caller's job: the script runs from a scratch tmp
+// directory, not from test/, so relative imports would not resolve.
+//
+// Second counselors pass, C7: launching children "together" via Promise.all
+// is not the same as forcing them to reach their critical operation at the
+// same instant - Node's own startup cost (module resolution, native addon
+// load) varies per process, so in principle every race test built on this
+// could pass against an implementation it is meant to reject, if one child
+// simply finished before the next one started. Empirically that was not
+// happening - the pre-fix migrate(), takeSnapshot(), and hourly-claim
+// implementations failed 10/10, 8/10, and reliably respectively when raced
+// this way - which is evidence real OS scheduling gives enough jitter on its
+// own, not proof it always will. A barrier makes it deterministic instead of
+// lucky: every child writes a marker keyed by its own pid, then spins
+// (synchronously - yielding here could let a fast child's own later code run
+// before a slow peer has even started) until every expected marker exists,
+// so all N reach `scriptSource` at close to the same instant regardless of
+// how long each one took to get there.
+export function raceProcesses(scriptSource, argvList, { env = {} } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "hive-race-"));
+  const barrierDir = join(dir, "barrier");
+  mkdirSync(barrierDir, { recursive: true });
+  const expected = argvList.length;
+  const barrier = `
+import { mkdirSync as __hiveBarrierMkdir, readdirSync as __hiveBarrierList, writeFileSync as __hiveBarrierWrite } from "node:fs";
+__hiveBarrierMkdir(${JSON.stringify(barrierDir)}, { recursive: true });
+__hiveBarrierWrite(${JSON.stringify(barrierDir)} + "/" + process.pid, "");
+{
+  const __hiveBarrierDeadline = Date.now() + 10000;
+  while (__hiveBarrierList(${JSON.stringify(barrierDir)}).length < ${expected} && Date.now() < __hiveBarrierDeadline) {
+    // Synchronous spin, deliberately: see raceProcesses' own comment in
+    // test/helpers.mjs for why this must not yield.
+  }
+}
+`;
+  const script = join(dir, "race.mjs");
+  writeFileSync(script, `${barrier}\n${scriptSource}`);
+  return Promise.all(
+    argvList.map(
+      (argv) =>
+        new Promise((resolve, reject) => {
+          const child = spawn(process.execPath, [script, ...argv], {
+            env: { ...baseEnv(), HIVE_AUTO_ATTACH: "0", ...env },
+            stdio: ["ignore", "pipe", "inherit"],
+          });
+          let out = "";
+          child.stdout.on("data", (c) => (out += c));
+          child.on("exit", (code) => {
+            if (code !== 0) return reject(new Error(`race child exited ${code}, stdout: ${out}`));
+            try {
+              resolve(JSON.parse(out));
+            } catch {
+              reject(new Error(`race child produced non-JSON stdout: ${out}`));
+            }
+          });
+        }),
+    ),
+  );
+}

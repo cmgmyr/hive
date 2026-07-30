@@ -44,6 +44,16 @@ import {
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, withTrailingNewline } from "./result.js";
 import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
+import {
+  backupHealth,
+  backupNow,
+  backupsDir,
+  formatBytes,
+  listSnapshots,
+  previewRestore,
+  restoreSnapshot,
+  totalSizeBytes,
+} from "./backup.js";
 import { closeAgentRow, launchAgent } from "./spawn.js";
 import {
   claimInitialWindow,
@@ -107,6 +117,8 @@ Usage:
   hive pad <name>            print a pad's content
   hive pad <name> --edit     export to a temp file and open your markdown editor
   hive pad <name> --save     write the edited export back (revision-guarded)
+  hive backups               list automatic store snapshots
+  hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
@@ -129,6 +141,20 @@ function resolveProject(path?: string): Project {
   return getProject(effectiveProjectId())!;
 }
 
+// A yes/no prompt that never hangs on a stream nothing will answer: readline's
+// question() does not resolve on its own against an already-closed/non-TTY
+// stdin (see cmdRestore below for what that costs), so every confirm in this
+// file checks isTTY before ever constructing a readline interface. Returns
+// null, not false, when there is no TTY to ask on, so a caller can print its
+// own contextual refusal instead of a generic one.
+async function confirmYesNo(question: string): Promise<boolean | null> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(question);
+  rl.close();
+  return /^y(es)?$/i.test(answer.trim());
+}
+
 async function ensureTrusted(
   projectId: number,
   name: string,
@@ -149,10 +175,7 @@ async function ensureTrusted(
   console.log(`  command: ${command}`);
   if (dir) console.log(`  dir: ${dir}`);
   if (Object.keys(env).length > 0) console.log(`  env: ${JSON.stringify(env)}`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = await rl.question("Trust and run this command from now on? [y/N] ");
-  rl.close();
-  if (!/^y(es)?$/i.test(answer.trim())) {
+  if (!(await confirmYesNo("Trust and run this command from now on? [y/N] "))) {
     console.log(`Skipped "${name}".`);
     return false;
   }
@@ -1041,6 +1064,11 @@ function cmdDoctor(): void {
       return "none running";
     }
   });
+  check("backups", () => {
+    const health = backupHealth(db, dataDir);
+    if (!health.ok) throw new Error(health.message);
+    return health.message;
+  });
   info("auto-attach", process.env.HIVE_AUTO_ATTACH === "0" ? "off (HIVE_AUTO_ATTACH=0)" : "on");
   console.log(failures === 0 ? "\nAll good." : `\n${failures} problem(s) found.`);
   process.exit(failures === 0 ? 0 : 1);
@@ -1097,6 +1125,148 @@ function findPadExports(projectId: number, name: string): string[] {
   return readdirSync(tmpdir())
     .filter((f) => f.startsWith(prefix) && f.endsWith(".md"))
     .map((f) => join(tmpdir(), f));
+}
+
+function cmdBackups(): void {
+  const snapshots = listSnapshots(dataDir);
+  if (snapshots.length === 0) {
+    console.log(`No backups yet in ${backupsDir(dataDir)}.`);
+    console.log("They are taken automatically before migrations and hourly while any hive session is open.");
+    return;
+  }
+  for (const s of snapshots) {
+    console.log(
+      `${s.name}  ${s.reason.padEnd(9)} ${formatBytes(s.sizeBytes).padStart(7)}  ${s.createdAt.toISOString()}`,
+    );
+  }
+  console.log(`\n${snapshots.length} backup(s), ${formatBytes(totalSizeBytes(snapshots))} total, in ${backupsDir(dataDir)}`);
+  console.log(`Restore one with: hive restore <name>`);
+}
+
+// Whether anything hive can SEE looks like it is using this store right now
+// (PR #36, S1). Two independent signals, because either alone misses a real
+// case hive itself created: `agents` only tracks SPAWNED workers and
+// hive.yml commands, not the lead session itself (which is never a row in
+// that table), while a running tmux session catches the lead but says
+// nothing about a worker whose row is stale. Store-wide, not scoped to the
+// current project: hive.db is one file shared across every project in it,
+// and a restore replaces all of it, so a running worker in an unrelated
+// project is just as much a reason to refuse as one in this one.
+//
+// This is not, and cannot be, a complete answer to "is anything using this
+// store" (C6): a claude session started directly rather than through hive
+// holds the same hive.db open with neither signal present, and nothing
+// checked here or anywhere else would see it. Name only what this function
+// actually establishes at its call site; do not let the comment there claim
+// more than this one does.
+function activeHiveUsage(): string[] {
+  const reasons: string[] = [];
+  const runningAgents = (
+    db.prepare("SELECT COUNT(*) AS c FROM agents WHERE status = 'running'").get() as { c: number }
+  ).c;
+  if (runningAgents > 0) reasons.push(`${runningAgents} agent(s)/command(s) recorded as running`);
+  try {
+    const sessions = execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .trim()
+      .split("\n")
+      .filter((s) => s.startsWith(SESSION_PREFIX));
+    if (sessions.length > 0) reasons.push(`tmux session(s) still running: ${sessions.join(", ")}`);
+  } catch {
+    // tmux not installed or unreachable; the agents check above still stands.
+  }
+  return reasons;
+}
+
+async function cmdRestore(argv: string[]): Promise<void> {
+  const yes = argv.includes("--yes") || argv.includes("-y");
+  const force = argv.includes("--force");
+  const name = argv.find((a) => !a.startsWith("-"));
+  if (!name) {
+    console.log("Usage: hive restore <name> [--yes] [--force]");
+    console.log("List available snapshots with: hive backups");
+    process.exit(1);
+  }
+
+  let preview;
+  try {
+    preview = previewRestore(dataDir, name);
+  } catch (e) {
+    console.log(errorMessage(e));
+    process.exit(1);
+  }
+
+  // Refused, not merely warned about, for the cases this CAN see: renaming a
+  // fresh inode over a database another connection still has open, and
+  // unlinking its shared -wal, is undefined behaviour per SQLite's own
+  // documentation, not just risky UX. Second counselors pass, C6: this is
+  // not a guarantee that nothing is using the store, and the comment must
+  // not read as one. A claude session started directly rather than through
+  // hive holds hive.db open with no agents row and no hive-* tmux session,
+  // and this cannot see it. Nor can it see a session that starts in the
+  // window between this check and the overwrite below - that gap is real
+  // and not closeable by checking earlier or more often. What this line
+  // does provide: the common case (a hive-spawned worker, or a live hive
+  // session) is caught and stopped rather than merely advised against.
+  const activity = activeHiveUsage();
+  if (activity.length > 0 && !force) {
+    console.log("Refusing to restore: this store looks like it is still in use.");
+    for (const reason of activity) console.log(`  ${reason}`);
+    console.log("Close those sessions first, or pass --force if you are certain nothing is using this store.");
+    process.exit(1);
+  }
+
+  console.log("This will overwrite:");
+  console.log(
+    `  ${preview.currentDbPath}` +
+      (preview.currentDbExists ? ` (${formatBytes(preview.currentDbSizeBytes)})` : " (does not exist yet)"),
+  );
+  if (preview.hasProfiles) console.log(`  ${join(dataDir, "profiles")}`);
+  console.log(
+    `with the snapshot "${preview.snapshot.name}" (${formatBytes(preview.snapshot.sizeBytes)}, ` +
+      `${preview.snapshot.reason}, taken ${preview.snapshot.createdAt.toISOString()}).`,
+  );
+  console.log("\nRestart every other hive session using this store once this completes.");
+
+  if (!yes) {
+    const confirmed = await confirmYesNo("Overwrite the live store with this snapshot? [y/N] ");
+    if (confirmed === null) {
+      console.log("Not restored: run hive interactively to confirm, or pass --yes.");
+      return;
+    }
+    if (!confirmed) {
+      console.log("Not restored.");
+      return;
+    }
+  }
+
+  // One more snapshot of the store as it stands right now, before this
+  // destroys it (PR #36, S2): restore is itself the kind of operation this
+  // whole feature exists to have a way back from, and until this line
+  // nothing did. Logged, not gated on: a failure here must not block a
+  // restore the operator already confirmed, so it is reported and then
+  // proceeded past rather than thrown.
+  //
+  // preview.snapshot.name is passed as `protect` (PR #36, C2): without it,
+  // this call's own retention pass could prune the RESTORE TARGET itself
+  // (ten same-day snapshots plus the default keepLast=10 means this
+  // eleventh backup evicts the oldest), and restoreSnapshot would then
+  // report the snapshot the operator just confirmed as not existing.
+  const preRestoreBackup = backupNow(db, dataDir, "manual", new Set([preview.snapshot.name]));
+  if (preRestoreBackup.ok) {
+    console.log(`Snapshotted the current store first: ${preRestoreBackup.path}`);
+  } else {
+    console.log(`Warning: could not snapshot the current store before restoring: ${preRestoreBackup.error}`);
+  }
+
+  // The file is about to be replaced out from under this process's own
+  // connection; close it first so nothing here races better-sqlite3's own
+  // -wal/-shm state against the files restoreSnapshot removes.
+  db.close();
+  const { restoredProfiles } = restoreSnapshot(dataDir, name);
+  console.log(`Restored hive.db from "${name}"${restoredProfiles ? " (and profiles/)" : ""}.`);
 }
 
 function cmdPads(): void {
@@ -1203,7 +1373,7 @@ let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
 const COMMANDS = [
   "lead", "init", "attach", "start", "status", "setup", "doctor",
-  "pads", "pad", "runbook", "posture", "profile", "kickoff", "statusline",
+  "pads", "pad", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
   // `hive <path>` opens that project's session; lead is the default command.
@@ -1242,6 +1412,12 @@ switch (command) {
     break;
   case "pad":
     cmdPad(rest);
+    break;
+  case "backups":
+    cmdBackups();
+    break;
+  case "restore":
+    await cmdRestore(rest);
     break;
   case "runbook":
     cmdRunbook(rest[0]);
