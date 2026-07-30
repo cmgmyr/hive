@@ -21,6 +21,7 @@ import {
   capturePane,
   DEFAULT_LAYOUT,
   ensureAttached,
+  inputBoxState,
   isPaneTarget,
   liveTargets,
   paneChoiceCheck,
@@ -36,6 +37,7 @@ import {
   targetLive,
   windowLayout,
   type AliveSnapshot,
+  type InputBoxState,
   type Liveness,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
@@ -228,6 +230,30 @@ function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Livene
   if (snapshot === undefined) return targetLive(row.tmux_target);
   if (snapshot === null) return null;
   return targetAlive(row.tmux_target, snapshot);
+}
+
+// Issue #34. A SEPARATE capture from the tail/output, not derived from it:
+// counselors review on PR #37 overturned an earlier fused single-capture
+// version of this (see git history) after two independent findings. First,
+// capturePane's plain "-p" tail and a "-e" capture are not just differently
+// formatted, they can DISAGREE on which rows are blank: tmux's "-e"
+// serializer also emits OSC 8 hyperlinks and SO/SI charset controls that
+// stripSgr's SGR-only regex does not strip, so a visually-blank row carrying
+// one of those reads as non-empty under the fused function's trimming and
+// gets kept, while capturePane's plain-text trim on the same row correctly
+// drops it -- the two "same screen" contracts silently diverge by a row.
+// Second, agent_output's capped lines can reach 200, and "-e" widens every
+// attributed cell, which can push a single capture past execFileSync's
+// default maxBuffer and throw ENOBUFS -- for agent_send's wait_ms path,
+// AFTER the text was already sent, turning a successful send into a
+// reported error. Two forks is the correct cost here, not one.
+//
+// Present only when a recognisable input-box line was found: an absent
+// field is a plain "nothing to say" (slim receipts), not a claim that the
+// box is empty.
+function inputBoxField(target: string): { input_box: InputBoxState } | Record<string, never> {
+  const box = inputBoxState(target);
+  return box ? { input_box: box } : {};
 }
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
@@ -568,6 +594,7 @@ export function registerAgents(server: McpServer): void {
           brief_path: existsSync(briefPath) ? briefPath : null,
           ...(args.include_brief ? { brief: readAgentBrief(agent.id) } : {}),
           tail: summary.alive ? capturePane(agent.tmux_target, 15) : "",
+          ...(summary.alive ? inputBoxField(agent.tmux_target) : {}),
         };
       }),
   );
@@ -631,7 +658,13 @@ export function registerAgents(server: McpServer): void {
 
         if (args.wait_ms != null) {
           await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
-          return { agent_id: agent.id, name: agent.name, sent: true, tail: capturePane(target, 15) };
+          return {
+            agent_id: agent.id,
+            name: agent.name,
+            sent: true,
+            tail: capturePane(target, 15),
+            ...inputBoxField(target),
+          };
         }
         // The resolved name, not the one the caller typed: a partial name that
         // found the wrong worker is invisible otherwise.
@@ -662,6 +695,7 @@ export function registerAgents(server: McpServer): void {
           name: agent.name,
           alive,
           output: alive ? capturePane(agent.tmux_target, lines) : "",
+          ...(alive ? inputBoxField(agent.tmux_target) : {}),
           ...(alive === true
             ? {}
             : {

@@ -1,0 +1,50 @@
+  │ [38;5;105msrc/abi.ts[39m                │ Loads native addon before the store opens; names interpreter mismatch │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/dispatcher.ts[39m         │ Writes/reads the pinned [38;5;105mhive[39m shim; PATH resolution                    │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/mcpConfig.ts[39m          │ Reads Claude Code MCP registrations                                   │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/context.ts[39m            │ Actor identity and project scope                                      │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/tools/*.ts[39m            │ Tools by group: meta, pads, todos, kv, leases, agents, wakes          │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/scheduler.ts[39m          │ Wake firer + janitor, unref'd in every instance                       │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/tmux.ts[39m               │ tmux wrapper; the PTY is the message bus                              │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/hook.ts[39m, [38;5;105msrc/hooks.ts[39m │ Claude Code hooks reporting worker state                              │
+  ├───────────────────────────┼───────────────────────────────────────────────────────────────────────┤
+  │ [38;5;105msrc/projectYml.ts[39m         │ [38;5;105mhive.yml[39m parsing, validation, trust hashing                           │
+  └───────────────────────────┴───────────────────────────────────────────────────────────────────────┘
+
+  Mechanics: workers are CLI agents in tmux panes. [38;5;105magent_send[39m types into their terminal, [38;5;105magent_output[39m reads the rendered screen. Wake-ups type their body into the pane as a fresh user turn. Worker state
+  (working/idle/waiting) is written to the database directly by Claude Code hooks, keyed on [38;5;105mHIVE_AGENT_ID[39m.
+
+  [1mInvariants, with the reasoning[0m
+
+  [1m1. Strict project scoping.[0m State resolves from the working directory; worktrees and subdirectories resolve to the primary checkout. Never fall back to an unrelated project. Cross-project access only on explicit user
+  request; [38;5;105mHIVE_PROJECT_LOCK=1[39m kills it entirely and every spawned worker inherits it. Reasoning: silent fallback means a worker writes into a stranger's project state, and the worker cannot tell.
+
+  [1m2. Migrations are append-only.[0m Never edit an existing [38;5;105mMIGRATIONS[39m entry, add a new one. Existing stores have already applied the old text.
+
+  [1m3. Untrusted [38;5;105mhive.yml[39m commands never run.[0m Trust is recorded per config hash, so any command change re-requires interactive approval. [38;5;105mdir[39m cannot escape the project root, [38;5;105mprofile[39m cannot escape the profile directories.
+  Scope note that matters: the gate covers what hive [3mexecutes[0m, not everything hive reads.
+
+  [1m4. [38;5;105mhive.yml[39m [38;5;105mvars[39m reach system prompts with no gate, on purpose.[0m They land in the lead's posture and every worker's brief, so repo-controlled text gets system-prompt authority, a real escalation over [38;5;105mCLAUDE.md[39m, which is
+  only a user message. It was gated for one release, then removed as friction not worth its value in a single-user tool. Two conditions keep that defensible and both must hold: Claude Code's own workspace trust governs
+  the wider channel, and hive is not claiming to defend against opening a hostile checkout. If hive ever ships to people who clone each other's repos, reinstate the gate; the prior reasoning is in [38;5;105mgit log -- [39m
+  [38;5;105msrc/trust.ts[39m. Until then, treat a cloned [38;5;105mhive.yml[39m like that repo's [38;5;105mCLAUDE.md[39m.
+
+  [1m5. Write tools return slim receipts.[0m Token cost is a design input, not an afterthought.
+
+  [1mThe pattern across the whole document[0m
+
+
+  [38;5;248m[48;5;255m❯ [38;5;16mNow read tmux-src.ts and agents-src.ts in this directory in full. Give me an exhaustive, section-by-section breakdown of every exported function in tmux-src.ts, what it guards against, and every place [39m             [49m
+  [48;5;255m  [38;5;16magents-src.ts calls into it, with file:line references. Do not skip anything, including the smaller helper functions.[39m                                                                                                 [49m
+
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[38;5;241m❯ [2m[39mPress up to edit queued messages[0m
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36mghost-capture-34[38;5;241m | ctx: [1m[32m47k (5%)[0m[38;5;241m | 5h: [1m[33m66%[0m[38;5;241m [2m[37m(3h 15m)[0m[38;5;241m 7d: [1m[33m57%[0m[38;5;241m | [32m$0.18[38;5;241m | [32m+0[38;5;241m/[31m-0[38;5;241m [90m[Opus 5 (1M context)][39m                                                                                                                     [38;5;65m]8;id=1cmvmg2;https://claude.ai/code/session_01QYrHTrM8yFrTy1HwXWPrXv\/rc[39m]8;;\
+  [38;5;137m⏵⏵ auto mode on[38;5;241m (shift+tab to cycle) · ← for agents[39m

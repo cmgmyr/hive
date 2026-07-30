@@ -18,11 +18,20 @@ export class TmuxError extends Error {
   }
 }
 
+// execFileSync's default maxBuffer is 1MB, which a dense capture-pane (many
+// columns, heavy color/attribute use, "-e" widening every cell) can exceed.
+// The failure mode without this is an uncaught ENOBUFS: tmuxSaysNothingThere
+// does not match it, so it surfaces as an opaque tool error on a pane that
+// was perfectly readable, rather than the TmuxError callers already know how
+// to handle. 16MB comfortably covers even a wide, fully-attributed pane.
+const TMUX_MAX_BUFFER = 16 * 1024 * 1024;
+
 export function tmux(...args: string[]): string {
   try {
     return execFileSync("tmux", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: TMUX_MAX_BUFFER,
     }).replace(/\n$/, "");
   } catch (e) {
     const err = e as { code?: string; stderr?: Buffer | string; message?: string };
@@ -411,6 +420,188 @@ export function capturePane(target: string, lines: number): string {
   const rows = raw.split("\n");
   while (rows.length > 0 && rows[rows.length - 1].trim() === "") rows.pop();
   return rows.slice(-lines).join("\n");
+}
+
+// The glyph claude draws at the start of its input box, followed by NBSP
+// (U+00A0) rather than an ordinary space -- confirmed against a real capture
+// (test/fixtures/panes/ready-idle.txt), not assumed. Matching the pair, not
+// the glyph alone, keeps this off any unrelated "❯" a worker's own output
+// might render.
+const PROMPT_GLYPH_NBSP = "❯ ";
+
+const SGR_ESCAPE = /\x1b\[[0-9;]*m/g;
+
+const stripSgr = (s: string): string => s.replace(SGR_ESCAPE, "");
+
+// True when the leading run of SGR escapes -- the attributes claude applied
+// to whatever comes right after the prompt, before any visible character --
+// leaves faint (SGR 2) SET at the first visible cell. Counselors review on
+// PR #37 (B1) caught the bug the first version of this had: it asked "does a
+// '2' appear anywhere in the run", which fires even when a LATER escape in
+// the same run cancels it. `\x1b[2m\x1b[22m` -- dim, then normal-intensity,
+// which ink and chalk both emit to close a dim span -- renders as ordinary
+// text, and queued-hint.txt already proves claude emits multi-escape leading
+// runs, so a zero-width cancelled-dim marker ahead of real typed text is a
+// realistic producer, not a hypothetical. Misreading that as "ghost" is the
+// destructive direction: it would tell a lead a worker's real pending input
+// is safe to overwrite.
+// So this folds the run IN ORDER instead: 22, a bare 0 parameter, and the
+// empty-parameter form ESC[m (SGR's default, also a full reset) all clear
+// faint; 2 sets it. Parameters are read in the order they appear, including
+// multiple parameters packed into one escape ("0;2").
+function leadingRunIsFaint(s: string): boolean {
+  const leadingRun = /^(?:\x1b\[[0-9;]*m)*/.exec(s)?.[0] ?? "";
+  let faint = false;
+  for (const seq of leadingRun.match(SGR_ESCAPE) ?? []) {
+    const params = seq.slice(2, -1).split(";").filter((p) => p !== "");
+    if (params.length === 0) {
+      faint = false; // ESC[m: SGR's own default parameter is 0, a full reset.
+      continue;
+    }
+    for (const p of params) {
+      if (p === "0") faint = false;
+      else if (p === "2") faint = true;
+      else if (p === "22") faint = false;
+    }
+  }
+  return faint;
+}
+
+export interface InputBoxState {
+  state: "empty" | "pending" | "ghost" | "unknown";
+  text: string;
+}
+
+// The horizontal rule claude draws as the input box's own top and bottom
+// edge (see e.g. test/fixtures/panes/ready-idle.txt lines 45 and 47). A
+// multi-line box grows DOWNWARD, pushing this rule further down the screen
+// rather than adding a marker of its own, so it is the stop condition
+// classifyInputBox scans for below.
+const BOX_BORDER = /^─+$/;
+
+// Issue #34's discriminator, and ONLY that: on the input-box's first row,
+// text whose leading SGR run includes parameter 2 (faint) is not something
+// anyone typed. A cursor-position rule was tried first and rejected -- it
+// held for two cases and broke on a third, a dim hint whose cursor sat at
+// neither the empty-box column nor the text's length. See the issue for the
+// measurements; do not re-derive a different discriminator here.
+//
+// SGR 2 is common elsewhere on screen (the status line uses it for
+// "[3h ago]" and for separators), which is why this only ever looks at the
+// leading run of a row already scoped to the input box, never at "any dim
+// text in the tail".
+//
+// Ghost suggestions and the queued-messages hint both render this way and
+// both mean the same thing to a reader -- "not user input" -- so this does
+// not try to tell them apart; both come back "ghost".
+//
+// MULTI-LINE (should-fix, counselors PR #37 S2). A wrapped or genuinely
+// multi-line pending message grows the box past one row, and the first
+// version of this only ever looked at the prompt row itself: a wrapped
+// sentence was silently truncated to its first physical line with no
+// marker, and -- the dangerous direction -- a multi-line message whose
+// first LOGICAL line is empty (Enter pressed once before typing more) made
+// the prompt row textless and reported "empty" while real text sat in the
+// rows below it. Now scans forward from the prompt row, collecting
+// continuation rows until BOX_BORDER (the box's own closing edge) or a
+// genuinely blank row ends it, and only reports "empty" if NONE of them
+// carry text either. The join is space-separated and does not reconstruct
+// the original line breaks; this is a presence/content signal for a
+// reader, not a byte-exact transcript.
+//
+// Control-stripped and length-capped (stripControlBytes, TAIL_LINE_CHARS)
+// like every other pane-derived string that leaves this file, which the
+// first version of this also skipped.
+function classifyInputBox(rows: string[], promptRowIndex: number): InputBoxState {
+  const promptRow = rows[promptRowIndex];
+  const after = promptRow.slice(promptRow.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
+  const dim = leadingRunIsFaint(after);
+  const firstLine = stripControlBytes(stripSgr(after)).trim();
+
+  const continuation: string[] = [];
+  for (let i = promptRowIndex + 1; i < rows.length; i++) {
+    const stripped = stripControlBytes(stripSgr(rows[i])).trim();
+    if (stripped === "" || BOX_BORDER.test(stripped)) break;
+    continuation.push(stripped);
+  }
+
+  const text = [firstLine, ...continuation]
+    .filter((line) => line !== "")
+    .join(" ")
+    .slice(0, TAIL_LINE_CHARS);
+  return { state: text === "" ? "empty" : dim ? "ghost" : "pending", text };
+}
+
+// Bottom-up: the input box sits near the status line, not in scrollback, and
+// only the LAST matching row reflects the pane's current state.
+function findInputBoxRow(rows: string[]): number | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].includes(PROMPT_GLYPH_NBSP)) return i;
+  }
+  return null;
+}
+
+// Issue #34. Claude Code renders a dim, context-derived suggestion (and,
+// separately, a "press up to edit queued messages" hint) inside an otherwise
+// EMPTY input box. capturePane's plain "-p" throws away the one signal that
+// tells either apart from real unsubmitted input: both render in SGR 2
+// (faint), confirmed against a real pane. This reads with "-e" instead of
+// adding it to capturePane itself, because capturePane's output rides into
+// other panes verbatim (sanitizeTail feeds wake bodies and receipt tails),
+// and raw escape bytes have no business riding along there. This capture is
+// read, never typed anywhere.
+//
+// The current state of a pane's input box: real unsubmitted text, claude's
+// own ghost/hint suggestion, empty, or unknown (below). null when the pane
+// cannot be read, or when INPUT_BOX_PRESENT itself answers false, e.g.
+// mid-turn or a modal dialog -- there is legitimately no box to report on.
+//
+// state: "unknown" (should-fix, counselors PR #37 S1) is a DIFFERENT
+// failure from null, and collapsing them was itself a bug: INPUT_BOX_PRESENT
+// true means claude has control and is not showing a modal, i.e. an input
+// box IS on screen, so failing to find its prompt row (PROMPT_GLYPH_NBSP)
+// means the chrome drifted -- claude changed how it draws the glyph or the
+// NBSP -- not that there is nothing to report. Issue #30 is this exact
+// failure shape for a different marker: a chrome change made every spawn's
+// readiness check silently return false forever, indistinguishable from a
+// slow pane, until someone went looking. Returning plain null here would
+// repeat it: a caller cannot tell "box confirmed empty, nothing pending"
+// from "the detector stopped working", and both currently read as absent
+// from the receipt (inputBoxField omits a null the same as it would omit
+// nothing at all). "unknown" is truthy and gets included, so drift is loud.
+//
+// GATED ON INPUT_BOX_PRESENT (counselors review on PR #37, B3): this used to
+// trust the LAST row anywhere in the window containing the prompt pair, with
+// no check that an input box is actually showing right now. That is
+// findable, and hive is a source. watchedTail embeds a worker's tail into a
+// wake body typed into the LEAD's pane; sanitizeTail only collapses a
+// trailing EMPTY box, so a non-empty (ghost or real) row can land in the
+// lead's own scrollback. If the lead's pane later shows a genuine permission
+// dialog -- input box genuinely gone -- that stale row could still sit
+// within this capture's window and get misread as the CURRENT box. It is
+// also the D4 wedge repeating: `cat test/fixtures/panes/real-input.txt`
+// renders this project's own fixture bytes into a worker's ordinary
+// transcript, with nothing pending at all. D5 closed the same class for
+// CHOICE_DIALOG by requiring the input box ABSENT; this closes it for the
+// input box's own contents by requiring it PRESENT first.
+//
+// LABEL, DO NOT DELETE (decided on the plan pad): this is additive DATA
+// alongside the ordinary tail, never a rewrite of it. agent_output's
+// contract is "the rendered screen", and pending unsubmitted input is
+// exactly what a reader needs to SEE when diagnosing a stuck pane; stripping
+// it would make hive lie about the screen to fix a labeling problem. It
+// fails soft: a misclassification is a wrong label sitting next to text the
+// reader can still read for themselves, never a hidden line.
+export function inputBoxState(target: string): InputBoxState | null {
+  try {
+    const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
+    if (!INPUT_BOX_PRESENT.test(raw)) return null;
+    const rows = raw.split("\n");
+    const promptRowIndex = findInputBoxRow(rows);
+    return promptRowIndex === null ? { state: "unknown", text: "" } : classifyInputBox(rows, promptRowIndex);
+  } catch {
+    return null;
+  }
 }
 
 // Todo 65. A pane showing a modal choice is not a pane you can deliver a

@@ -1,0 +1,50 @@
+
+[38;5;241m✻[39m [38;5;241mBrewed for 4m 9s[39m
+
+[38;5;248m[48;5;255m❯ [38;5;16mBased on everything you just read in tmux-src.ts and agents-src.ts, what is the single most important next action I should take on this codebase? Be specific and imperative, as if you were telling me exactly what to [39m
+  [38;5;16mtype next.[39m
+
+[38;5;16m[49m⏺[39m Write the failing test for the scratch-store half of the socket guard first, then close it with a migration. In the real checkout:
+
+  $EDITOR test/server-store-mismatch.test.mjs
+
+  Add a case that reproduces the unprotected path CONTEXT.md names as the known residual: spawn a worker with [38;5;105mHIVE_DATA_DIR=<scratch>[39m plus a private [38;5;105mTMUX_TMPDIR[39m, then run a second hive process that sets only
+  [38;5;105mHIVE_DATA_DIR=<same scratch>[39m (no [38;5;105mTMUX_TMPDIR[39m, so it resolves to the shared socket) and let its janitor sweep. Assert the spawned row is still [38;5;105mrunning[39m. It will fail today, because [38;5;105muntrustedTmuxServer()[39m
+  ([38;5;105mtmux-src.ts:275-289[39m) requires [38;5;105misDefaultStore(storeDir())[39m, so a scratch store skips the refusal entirely and [38;5;105mliveTargets()[39m returns a real snapshot from the wrong server.
+
+  Why this over anything else in these two files: it is the only documented gap left that still destroys live state. Everything else fails soft. The dialog residuals hold a wake or refuse a call, [38;5;105minputBoxState[39m returns
+  null and drops a label, [38;5;105mapplyLayout[39m swallows. This one closes a live, working worker and marks the row [38;5;105mclosed[39m, which is the exact 2026-07-29 failure with [38;5;105m~/.hive[39m swapped for a scratch dir. It also outranks polishing
+  the #34 label lane you are sitting in, and yes, that means pausing #34.
+
+  Test first, not fix first, for a reason the file itself documents: three versions of this guard asked a proxy question instead of the real one, and the [38;5;105mlaunchAgent[39m write-path half was written off as "untidy but
+  destroys nothing" before someone traced it ([38;5;105mtmux-src.ts:270-274[39m). Every correct version of this guard came after a reproduction.
+
+  Then the fix, in this order:
+  1. Append a migration to [38;5;105mMIGRATIONS[39m in [38;5;105msrc/db.ts[39m adding [38;5;105magents.tmux_socket TEXT[39m. Append only, never edit an entry.
+  2. In [38;5;105mlaunchAgent[39m ([38;5;105msrc/spawn.ts[39m), write [38;5;105mtmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR)[39m into that column in the same INSERT that already sits above the existing refusal.
+  3. Gate the sweep on the row, not the env: refuse to conclude anything about a row whose [38;5;105mtmux_socket[39m differs from this process's resolved socket, and answer [38;5;105mnull[39m so the existing [38;5;105mLiveness[39m plumbing carries it. Do not add
+  a new failure mode; [38;5;105magent_close[39m, [38;5;105magent_list[39m, [38;5;105magent_send[39m and the janitor already handle null conservatively.
+  4. Leave [38;5;105muntrustedTmuxServer()[39m in place. It still catches the default-store pair before a row exists, and legacy rows have a null socket.
+
+  Backfill decision you will hit in step 3: treat [38;5;105mtmux_socket IS NULL[39m as "sweepable" or the janitor stops working on every pre-migration row. Say so in the migration comment.
+
+  Separately, one line: [38;5;105mcapturePane[39m at [38;5;105magents-src.ts:665[39m is not wrapped, so a pane dying inside [38;5;105magent_send[39m's [38;5;105mwait_ms[39m window throws after the text already landed and reports a successful send as an error, which invites a
+  double-send; that is the same class as the ENOBUFS concern at [38;5;105magents-src.ts:246-249[39m, only half-fixed.
+
+[38;5;241m✻[39m [38;5;241mBrewed for 1m 21s[39m
+
+[38;5;248m[48;5;255m❯ [38;5;16mOne more thing: given the maxBuffer fix you just told me about, what should my literal next terminal command be? Just tell me directly, no preamble.[39m
+
+[38;5;16m[49m⏺[39m There's no maxBuffer fix pending. [38;5;105mTMUX_MAX_BUFFER[39m ([38;5;105mtmux-src.ts:27[39m) is already 16MB in the committed code; I cited it as an existing guard, not as work to do. So nothing changes:
+
+  $EDITOR test/server-store-mismatch.test.mjs
+
+  If you meant the [38;5;105mcapturePane[39m item at [38;5;105magents-src.ts:665[39m, that's an unwrapped throw on a dead pane, not a buffer limit, and it's still second behind the socket migration.
+
+[38;5;241m✻[39m [38;5;241mBrewed for 15s[39m
+
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ REAL UNSUBMITTED INPUT
+[38;5;246m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36mghost-capture-34[38;5;241m | ctx: [1m[32m114k (11%)[0m[38;5;241m | 5h: [1m[33m69%[0m[38;5;241m [2m[37m(3h 5m)[0m[38;5;241m 7d: [1m[33m59%[0m[38;5;241m | [32m$2.21[38;5;241m | [32m+0[38;5;241m/[31m-0[38;5;241m [90m[Opus 5 (1M context)][39m                                                                                                                    [38;5;65m]8;id=1cmvmg2;https://claude.ai/code/session_01QYrHTrM8yFrTy1HwXWPrXv\/rc[39m]8;;\
+  [38;5;137m⏵⏵ auto mode on[38;5;241m (shift+tab to cycle)[39m

@@ -1,0 +1,50 @@
+
+ ▐▛███▜▌   Claude Code v2.1.220
+▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max
+  ▘▘ ▝▝    ~/Code/cmgmyr/hive/.claude/worktrees/issue-27-guard-typing-paths
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                       tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  issue-27-guard-typing-paths git:(issue-27-guard-typing-paths) [2h ago] | ctx: 0k (0%) | 5h: 30% (2h 13m) 7d: 49% | $0.00 | +0/-0 [Opus 5 (1M context)]                                                                /rc
+  ⬡ hive: 1 agent · 5 todos (2 ready) · 4 pads · 1 wake
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
