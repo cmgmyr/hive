@@ -16,6 +16,7 @@ import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
 import { closeAgentRow, launchAgent, renameAgent } from "../spawn.js";
+import { resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
   capturePane,
@@ -254,6 +255,19 @@ function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Livene
 function inputBoxField(target: string): { input_box: InputBoxState } | Record<string, never> {
   const box = inputBoxState(target);
   return box ? { input_box: box } : {};
+}
+
+// Issue #5. Resolution is purely a function of the stored cwd string (D7):
+// recreating a removed worktree at the same path makes `claude --resume`
+// work there again, since Claude Code keys its transcript directory on cwd
+// alone. Gated on the same predicate --settings hooks already uses (D4), so
+// codex or aider -- which have no such directory -- never get a confidently
+// wrong path. One policy, like inputBoxField above: present (possibly null)
+// for a claude worker, absent for anything else. Callers decide WHEN to call
+// it, the same way they already decide when to call inputBoxField, rather
+// than this function carrying two inclusion policies itself.
+function transcriptDirField(row: AgentRow): { transcript_dir: string | null } | Record<string, never> {
+  return isClaudeCommand(row.command) ? { transcript_dir: resolveTranscriptDir(row.cwd) } : {};
 }
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
@@ -555,7 +569,19 @@ export function registerAgents(server: McpServer): void {
                 note: `${PROBE_FAILED_NOTE} These rows are what the store holds; do not conclude a worker died.`,
               }
             : {}),
-          agents: rows.map((r) => agentSummary(r, snapshot)),
+          // D3: only for a row that is not confirmed alive -- a closed row, a
+          // running row whose pane is gone, or one tmux could not be asked
+          // about (alive === null). Omitted entirely for a live worker: the
+          // common call here is against running workers, and that response
+          // must not grow a long path per row for a worker whose terminal is
+          // one agent_output away. The unknown case counts as "not confirmed
+          // alive" on purpose -- a failed tmux probe is exactly the moment
+          // agent_output stops answering, so it is where the transcript is
+          // what is left, not a case to withhold it from.
+          agents: rows.map((r) => {
+            const summary = agentSummary(r, snapshot);
+            return { ...summary, ...(summary.alive !== true ? transcriptDirField(r) : {}) };
+          }),
         };
       }),
   );
@@ -595,6 +621,10 @@ export function registerAgents(server: McpServer): void {
           ...(args.include_brief ? { brief: readAgentBrief(agent.id) } : {}),
           tail: summary.alive ? capturePane(agent.tmux_target, 15) : "",
           ...(summary.alive ? inputBoxField(agent.tmux_target) : {}),
+          // D2: always present for a claude worker here, unlike agent_list's
+          // D3 gating -- this is the single-agent query a lead reaches for
+          // once a pane is already gone.
+          ...transcriptDirField(agent),
         };
       }),
   );

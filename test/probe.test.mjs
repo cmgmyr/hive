@@ -435,6 +435,13 @@ describe("agent_list reports unknown liveness, not a dead worker", { skip: hasTm
     assert.equal(row.alive, null, "unknown liveness is null, not false");
     assert.equal(row.agent_state, "working", "the state the hooks wrote survives an unanswered probe");
     assert.match(out.note, /could not be probed/, "the response says liveness is unknown");
+    // Issue #5, D3: unknown liveness is treated as "not confirmed alive", the
+    // same as a dead row, so agent_list still offers the transcript path here
+    // -- a failed probe is exactly the moment agent_output stops answering.
+    assert.ok(
+      "transcript_dir" in row,
+      `unknown liveness should still report transcript_dir: ${JSON.stringify(row)}`,
+    );
   });
 
   it("still says exited when a reachable server does not have the pane", async () => {
@@ -449,6 +456,7 @@ describe("agent_list reports unknown liveness, not a dead worker", { skip: hasTm
     assert.equal(row.alive, false);
     assert.equal(row.agent_state, "gone");
     assert.equal(out.note, undefined, "no note when the probe answered");
+    assert.ok("transcript_dir" in row, "a confirmed-dead row should report transcript_dir too");
   });
 
   it("agent_status says unknown instead of exited", async () => {
@@ -463,6 +471,10 @@ describe("agent_list reports unknown liveness, not a dead worker", { skip: hasTm
     assert.equal(out.alive, null);
     assert.equal(out.agent_state, "working");
     assert.match(out.note, /could not be probed/);
+    // D2: agent_status always carries transcript_dir for a claude worker,
+    // unknown liveness included -- it is the tool a lead reaches for once a
+    // pane may already be unreachable.
+    assert.ok("transcript_dir" in out, "agent_status should still carry transcript_dir here");
   });
 
   it("wake_when_idle mode=all schedules instead of claiming everyone is idle", async () => {
