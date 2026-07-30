@@ -36,7 +36,7 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { paneAwaitingChoice, sanitizeTail, sendText } = await import("../dist/tmux.js");
+const { maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText } = await import("../dist/tmux.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -443,6 +443,29 @@ describe("sanitizeTail keeps a worker's screen from typing into a lead's prompt"
     const out = sanitizeTail("x".repeat(500));
 
     assert.equal(out.length, 160);
+  });
+});
+
+// Round 2, D5. watchedTail embeds a captured worker screen into a wake body
+// that hive itself types into the LEAD's pane. A worker sitting on a real
+// dialog carries "Esc to cancel" in its tail, so without masking it, hive
+// would type its own detector's trigger into the lead's terminal, and
+// deliver()'s cache invalidation guarantees the next timer re-reads it. D5
+// mostly closes this already (the lead's pane also carries the input-box
+// marker, so it no longer reads as a dialog either way), but the mask is
+// cheap and does not depend on that holding: hive should not be able to
+// trigger itself.
+describe("maskChoiceMarker keeps a wake body from becoming its own trigger", () => {
+  it("removes the exact substring paneAwaitingChoice matches on", () => {
+    const out = maskChoiceMarker("some transcript\n Enter to confirm · Esc to cancel\nmore text");
+
+    assert.ok(!out.includes("Esc to cancel"), "the marker must not survive into a wake body");
+    assert.match(out, /some transcript/);
+    assert.match(out, /more text/);
+  });
+
+  it("leaves ordinary text with no marker untouched", () => {
+    assert.equal(maskChoiceMarker("nothing to see here"), "nothing to see here");
   });
 });
 

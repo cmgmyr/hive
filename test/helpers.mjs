@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,6 +90,24 @@ export function scratchDirs() {
     dataDir: join(root, "data"),
     projectDir: mkdtempSync(join(root, "project-")),
     tmp: mkdtempSync(join(root, "tmp-")),
+  };
+}
+
+// A stand-in `claude` binary: isClaudeCommand matches on basename, so
+// spawning it exercises the same brief-writing and pane-announcement code
+// paths a real claude would, without an API turn per test. Each call gets its
+// own directory because the basename is what's matched, not the path.
+// `exec sh -c` rather than `exec runs` directly so a caller can pass more than
+// one shell command (e.g. "cat fixture; sleep 600"), not just a single one.
+export function makeFakeClaude(tmp) {
+  let count = 0;
+  return function fakeClaude(runs = "sleep 600") {
+    const bin = join(tmp, `claude-${count++}`);
+    mkdirSync(bin, { recursive: true });
+    const path = join(bin, "claude");
+    writeFileSync(path, `#!/bin/sh\nexec sh -c ${JSON.stringify(runs)}\n`);
+    chmodSync(path, 0o755);
+    return path;
   };
 }
 

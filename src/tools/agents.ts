@@ -23,6 +23,7 @@ import {
   ensureAttached,
   isPaneTarget,
   liveTargets,
+  paneChoiceCheck,
   paneCurrentCommand,
   paneWindow,
   sendText,
@@ -359,11 +360,33 @@ export function registerAgents(server: McpServer): void {
         // announced=false mean "not sent", which a lead can act on.
         // The brief itself rides in the system prompt and is unaffected either
         // way, so a missed line costs visibility, not instructions.
+        //
+        // Issue #27. A spawn is exactly when claude raises the folder-trust
+        // prompt, so this is the sharpest edge in the lane: typing requires
+        // BOTH ready and not-a-dialog, checked independently (see todo 73's
+        // comment just below for why the dialog half runs unconditionally).
         let announced = false;
+        let dialogTail: string | undefined;
         if (isClaude) {
           try {
-            announced = await waitForPaneInput(target, PANE_READY_MS);
-            if (announced) await sendText(target, paneAnnouncement(briefFor(actorId)));
+            const ready = await waitForPaneInput(target, PANE_READY_MS);
+            // Todo 73. The dialog check used to run only when ready, which
+            // meant it could never fire for the case that motivated it: a
+            // real folder-trust or /model-picker screen carries no readiness
+            // marker at all (that absence is #30's own fix), so `ready` was
+            // always false for them and this whole branch was dead against
+            // every real fixture, catchable only by a synthetic screen. Run
+            // it unconditionally instead, so a genuine dialog is reported as
+            // one even while the pane also reads as not-yet-ready. One extra
+            // capture-pane fork on a path that already burned PANE_READY_MS
+            // if it gets here, so the cost is noise.
+            const { awaitingChoice, tail } = paneChoiceCheck(target);
+            if (awaitingChoice === true) {
+              dialogTail = tail;
+            } else if (ready) {
+              await sendText(target, paneAnnouncement(briefFor(actorId)));
+              announced = true;
+            }
           } catch {
             // Pane died or tmux refused; the receipt reports it below.
             announced = false;
@@ -386,9 +409,14 @@ export function registerAgents(server: McpServer): void {
                 announced,
                 ...(announced
                   ? {}
-                  : {
-                      note: "The pane never became ready, so the [hive] line was NOT sent. The system-prompt brief is loaded regardless; send the worker its assignment as usual, or check agent_output first.",
-                    }),
+                  : dialogTail !== undefined
+                    ? {
+                        note: "The pane is waiting on a choice (e.g. a folder-trust or permission prompt), so the [hive] line was NOT sent: typing into it would answer the prompt instead. Clear the prompt with agent_send keys, then send the worker its assignment.",
+                        tail: dialogTail,
+                      }
+                    : {
+                        note: "The pane never became ready, so the [hive] line was NOT sent. The system-prompt brief is loaded regardless; send the worker its assignment as usual, or check agent_output first.",
+                      }),
               }
             : {
                 instructions: workerBrief(briefFor(actorId)),
@@ -438,14 +466,29 @@ export function registerAgents(server: McpServer): void {
         // hive cannot set it directly and make it stick. /rename is claude's
         // own way of pinning it, and typing into the pane is the channel hive
         // already drives workers through.
+        //
+        // Issue #27, decision D1. This is a synchronous tool call with a caller
+        // standing right there, not the scheduler, so it refuses rather than
+        // holds: a modal pane gets a receipt saying so, not a retry loop. The
+        // row is renamed either way; only the /rename keystroke is skipped,
+        // since /rename typed at a dialog would answer the dialog instead.
         let retitled = false;
+        let heldNote: string | undefined;
+        let heldTail: string | undefined;
         if (live && isClaudeCommand(agent.command)) {
-          try {
-            await sendText(agent.tmux_target, `/rename ${newName}`);
-            retitled = true;
-          } catch {
-            // Pane died between the liveness check and the keystrokes; the
-            // rename itself already landed in the store.
+          const { awaitingChoice, tail } = paneChoiceCheck(agent.tmux_target);
+          if (awaitingChoice === true) {
+            heldNote =
+              "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
+            heldTail = tail;
+          } else {
+            try {
+              await sendText(agent.tmux_target, `/rename ${newName}`);
+              retitled = true;
+            } catch {
+              // Pane died between the liveness check and the keystrokes; the
+              // rename itself already landed in the store.
+            }
           }
         }
 
@@ -455,6 +498,7 @@ export function registerAgents(server: McpServer): void {
           name: newName,
           previous_name: agent.name,
           retitled,
+          ...(heldNote ? { note: heldNote, tail: heldTail } : {}),
         };
       }),
   );
@@ -550,9 +594,36 @@ export function registerAgents(server: McpServer): void {
         requireLive(agent);
         const target = agent.tmux_target;
 
-        if (args.keys && args.keys.length > 0) {
+        // Issue #27, decision D2. text and keys are guarded asymmetrically ON
+        // PURPOSE, not by oversight. text means "inject a user turn": a modal
+        // pane has nowhere to put the paste and drops it, then reads the
+        // trailing Enter as picking the highlighted option, so hive would be
+        // answering the dialog with the wake's own text. keys means "drive
+        // this TUI deliberately", and pressing Escape or an arrow key to
+        // answer or dismiss a dialog IS the legitimate use of it: the lead
+        // used exactly this to clear a folder-trust prompt and unstick a
+        // worker on 2026-07-29. Guarding keys would remove the only supported
+        // way to get a pane like that moving again.
+        // Pre-existing, found by this lane's review rather than introduced by
+        // it: passing both used to silently send keys and drop text, still
+        // reporting sent: true. "keys won, text vanished" is not a thing any
+        // caller can have meant, so this is a caller error, the same way
+        // passing neither already is below.
+        if (args.keys && args.keys.length > 0 && args.text != null) {
+          throw new Error("Pass text or keys, not both.");
+        } else if (args.keys && args.keys.length > 0) {
           tmux("send-keys", "-t", target, "--", ...args.keys);
         } else if (args.text != null) {
+          const { awaitingChoice, tail } = paneChoiceCheck(target);
+          if (awaitingChoice === true) {
+            return {
+              agent_id: agent.id,
+              name: agent.name,
+              sent: false,
+              note: "The pane is waiting on a choice (e.g. a permission or trust prompt), so text was NOT sent: typing here would answer the prompt instead of reaching the worker. Use keys to answer or dismiss it deliberately (e.g. [\"Escape\"], or the option's number plus Enter), then retry.",
+              tail,
+            };
+          }
           await sendText(target, args.text, args.submit !== false);
         } else {
           throw new Error("Pass text or keys.");

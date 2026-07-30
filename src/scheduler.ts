@@ -4,6 +4,7 @@ import { closeAgentRow } from "./spawn.js";
 import {
   capturePane,
   liveTargets,
+  maskChoiceMarker,
   paneAwaitingChoice,
   sanitizeTail,
   sendText,
@@ -407,7 +408,15 @@ function watchedTail(timer: TimerRow): string {
       }
       let tail = "";
       try {
-        tail = sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines()));
+        // Round 2, D5. This embeds a worker's screen into a wake body that
+        // hive itself types into the LEAD's pane next. A worker sitting on a
+        // real dialog carries "Esc to cancel" in its tail, so without the
+        // mask the lead's own pane would end up showing hive's own dialog
+        // marker, and deliver()'s cache invalidation guarantees the very
+        // next tick re-reads it. D5 already stops that pane from being
+        // misread as a dialog (the lead's input box is on screen too), but
+        // masking it here is one line and does not depend on that holding.
+        tail = maskChoiceMarker(sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines())));
       } catch {
         // Pane gone or tmux unreachable; say so rather than dropping the agent.
       }

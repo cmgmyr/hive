@@ -435,20 +435,76 @@ export function capturePane(target: string, lines: number): string {
 // choice it is waiting on: the folder-trust prompt, the bypass-permissions
 // confirmation and the tool permission prompt all carry it, and no ordinary
 // prompt-box state captured during this work does. This is claude's chrome, so
-// it is coupled to its version the same way awaitPrompt's markers are. Both
-// ways of being wrong were weighed and they are not symmetric. A false positive
-// holds a wake for another tick, and a lead can see it still pending in
-// wake_list. A false negative answers a dialog nobody read. So the loose
-// pattern is the deliberate choice.
+// it is coupled to its version the same way awaitPrompt's markers are.
+//
+// Round 2, decision D5, superseding D4. This regex alone used to BE the
+// answer to "is a dialog up"; it no longer is, because it is a bare substring
+// match over a window that (since todo 72) holds up to 18 rows of
+// WORKER-CONTROLLED transcript. A worker that greps for "Esc to cancel", or
+// simply opens test/fixtures/panes/folder-trust-dialog.txt, renders that
+// string in its own scrollback -- no dialog, just text -- and the old rule
+// read it as one forever: agent_send would refuse indefinitely, telling the
+// lead to clear a prompt that does not exist, since nothing about ordinary
+// output ever scrolls a static screen away.
+//
+// The question was never "is this substring on screen". It is "is there an
+// input box that would receive this paste". A modal REPLACES claude's input
+// affordance rather than sitting beside it, so the two markers are mutually
+// informative: INPUT_BOX_PRESENT (below) is what waitForPaneInput polls for
+// as "claude has control and is not showing a modal", and CHOICE_DIALOG on
+// its own only means "this text is somewhere on screen". A dialog is
+// therefore CHOICE_DIALOG present AND INPUT_BOX_PRESENT absent -- see
+// paneAwaitingChoice and paneChoiceCheck. Fixture-verified both ways:
+// INPUT_BOX_PRESENT is absent from folder-trust-dialog.txt and
+// model-picker-dialog.txt, present in ready-idle.txt and busy-mid-turn.txt.
+//
+// Both ways of being wrong were weighed and they are not symmetric. A false
+// positive holds a wake (or refuses a tool call) for another tick/retry; a
+// lead can see it pending. A false negative answers a dialog nobody read. So
+// CHOICE_DIALOG stays the loose half of the pair on purpose -- narrowing IT
+// would risk missing a real dialog whose wording drifts. INPUT_BOX_PRESENT is
+// what carries the precision now, since a modal's defining property is what
+// it replaces, not what footer text it happens to render.
 const CHOICE_DIALOG = /Esc to cancel/;
+
+// The marker claude renders under its own input box, and only there: present
+// whenever claude has control of the terminal and is NOT showing a modal
+// choice, absent from every modal screen captured for this project. Shared
+// with waitForPaneInput's readiness probe below deliberately -- same chrome,
+// one detector -- and reused here as D5's discriminator.
+const INPUT_BOX_PRESENT = /╰|for shortcuts|shift\+tab to cycle/;
+
+// D5: a screen is awaiting a choice when the dialog footer is present AND the
+// input box is not -- see the comment above CHOICE_DIALOG for why the pair,
+// not the footer alone, is the answer. One function so paneAwaitingChoice and
+// paneChoiceCheck cannot drift onto two different definitions of "dialog".
+const isAwaitingChoiceScreen = (screen: string): boolean =>
+  CHOICE_DIALOG.test(screen) && !INPUT_BOX_PRESENT.test(screen);
 
 // null means the pane could not be read, which is not the same as "no dialog".
 // Callers decide; the scheduler treats it as go-ahead, because its liveness
 // probe has already answered for this pane and holding a wake on a question
 // nothing can answer is how issue #14 stranded every timer it touched.
+//
+// Todo 72. Captures tailCaptureLines() rows (18), not a smaller number of its
+// own: this used to read 12, and the #27 lane's dialog-refusal call sites
+// (agent_rename, agent_send) read 18 for their own reasons (see
+// paneChoiceCheck below), which left two windows answering "is a dialog up"
+// with no stated reason for the difference. Widening this one to match is
+// safe on its own terms, not just for consistency: a bigger capture is a
+// strict superset of a smaller one read at the same instant, so every screen
+// the 12-line window used to catch it still catches, and the production
+// verification this function already has -- a wake held 50 seconds against a
+// real trust prompt on 2026-07-29 -- exercised a footer well within 12 lines,
+// which is still well within 18. The D5 rewrite (round 2) is what makes the
+// wider window safe to keep rather than just consistent: the false-positive
+// cost that made "bigger is strictly safer" wrong for a bare CHOICE_DIALOG
+// match evaporates once INPUT_BOX_PRESENT has to be absent too, since 18 rows
+// of ordinary transcript containing "Esc to cancel" still has the input box
+// on it.
 export function paneAwaitingChoice(target: string): boolean | null {
   try {
-    return CHOICE_DIALOG.test(capturePane(target, 12));
+    return isAwaitingChoiceScreen(capturePane(target, tailCaptureLines()));
   } catch {
     return null;
   }
@@ -497,6 +553,36 @@ export function sanitizeTail(raw: string): string {
 // Capture enough rows that sanitizeTail still has TAIL_LINES of content after
 // dropping the blank ones a TUI leaves around its prompt box.
 export const tailCaptureLines = (): number => TAIL_LINES * 3;
+
+// Issue #27. A synchronous caller that refuses to type into a dialog (D1)
+// needs both the yes/no answer and the tail for its receipt, and (since todo
+// 72) both paneAwaitingChoice and this one read the same tailCaptureLines()
+// window, so one capture correctly serves both instead of forking tmux twice
+// for the same pane in the same call. null keeps paneAwaitingChoice's
+// meaning: the pane could not be read, so callers proceed (D3) rather than
+// reading it as "no dialog".
+export function paneChoiceCheck(target: string): { awaitingChoice: boolean | null; tail: string } {
+  try {
+    const raw = capturePane(target, tailCaptureLines());
+    return { awaitingChoice: isAwaitingChoiceScreen(raw), tail: sanitizeTail(raw) };
+  } catch {
+    return { awaitingChoice: null, tail: "" };
+  }
+}
+
+// Round 2, D5. watchedTail (src/scheduler.ts) embeds a captured pane tail
+// into a wake body, which is then typed into the LEAD's pane as a user turn.
+// A worker sitting on a real dialog carries "Esc to cancel" in its tail, so
+// without this the lead's own screen would end up containing the exact
+// substring CHOICE_DIALOG matches, and the next tick's re-read of that pane
+// (deliver() invalidates the choice cache on every delivery) would see it.
+// D5 mostly closes this on its own, since the lead's pane also carries
+// INPUT_BOX_PRESENT and so no longer reads as a dialog either way, but
+// masking here is one line and removes the dependency on that holding
+// forever: hive should not be able to trigger its own detector.
+export function maskChoiceMarker(text: string): string {
+  return text.replace(CHOICE_DIALOG, "[dialog marker masked]");
+}
 
 export function shellQuote(s: string): string {
   if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s)) return s;
@@ -561,14 +647,28 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
     }
     // The prompt box border and the shortcuts hint both only appear once the
     // TUI has taken over the pane. This is claude's chrome, so it is coupled
-    // to its version: if a redesign drops both markers, every spawn returns
+    // to its version: if a redesign drops every marker, every spawn returns
     // false at the timeout and no worker gets its visible [hive] line. That
     // is loud rather than silent -- agent_spawn reports announced: false with
     // a note every time -- and the system-prompt brief still lands, so the
     // crew keeps working. It degrades, it does not hang, and it does not
     // pretend. If you are here because announced is always false, check this
     // regex against a current claude before changing the caller.
-    if (/╰|for shortcuts/.test(screen)) {
+    //
+    // Issue #30. claude 2.1.220 dropped both original markers: the input box
+    // is now drawn with a straight rule rather than rounded corners, and the
+    // hint line reads "... shift+tab to cycle ... for agents" rather than
+    // "for shortcuts". Neither appears anywhere in a captured 2.1.220 ready
+    // screen (test/fixtures/panes/ready-idle.txt), which is why every spawn
+    // was timing out. INPUT_BOX_PRESENT (declared above, next to
+    // CHOICE_DIALOG) is this same regex: shared rather than duplicated,
+    // because round 2's D5 promoted it from a readiness hint to the thing
+    // that tells a dialog from ordinary transcript, and one drifting out of
+    // sync with the other would quietly break that pairing. The old markers
+    // are kept alongside the current one in case an older claude on someone's
+    // machine still renders them; they cost nothing since they never match
+    // here.
+    if (INPUT_BOX_PRESENT.test(screen)) {
       await sleep(250);
       return true;
     }

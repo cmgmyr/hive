@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { isolateTmux, liveAgentRow, McpClient, scratchDirs, sleep } from "./helpers.mjs";
+import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, scratchDirs, sleep } from "./helpers.mjs";
 
 // Addressing a worker by name (issue #10): the schemas a lead reads, the
 // resolution rules underneath them, and the name a spawned worker is given.
@@ -41,19 +40,9 @@ after(async () => {
   cleanup(sessionName(projectId));
 });
 
-// isClaudeCommand keys on the basename, so a script called `claude` gets every
-// flag a real one would while costing a fork of sleep. A real claude here
-// would mean an API turn per test. Pass "cat" when the test needs to see what
-// hive typed into the pane: cat echoes it back into the rendered terminal.
-let fakeClaudes = 0;
-function fakeClaude(runs = "sleep 600") {
-  const bin = join(dirs.tmp, `claude-${fakeClaudes++}`);
-  mkdirSync(bin, { recursive: true });
-  const path = join(bin, "claude");
-  writeFileSync(path, `#!/bin/sh\nexec ${runs}\n`);
-  chmodSync(path, 0o755);
-  return path;
-}
+// Pass "cat" when the test needs to see what hive typed into the pane: cat
+// echoes it back into the rendered terminal.
+const fakeClaude = makeFakeClaude(dirs.tmp);
 
 // The tools that take "which agent?" as an argument. agent_spawn names a new
 // worker rather than resolving an existing one, and agent_list takes no ref.
