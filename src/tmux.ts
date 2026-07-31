@@ -889,6 +889,11 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
 let bufferSeq = 0;
 const nextBufferName = () => `hive-input-${process.pid}-${++bufferSeq}`;
 
+// Named and exported so a change here fails loudly in
+// test/false-idle.test.mjs's dialog-ordering fixture instead of quietly
+// shrinking the margin that fixture depends on (issue #55, todo 126 item 3).
+export const ENTER_DELAY_MS = 300;
+
 export async function sendText(target: string, text: string, submit = true): Promise<void> {
   if (text.includes("\n")) {
     const buffer = nextBufferName();
@@ -898,7 +903,7 @@ export async function sendText(target: string, text: string, submit = true): Pro
     tmux("send-keys", "-t", target, "-l", "--", text);
   }
   if (submit) {
-    await sleep(300);
+    await sleep(ENTER_DELAY_MS);
     tmux("send-keys", "-t", target, "Enter");
   }
 }

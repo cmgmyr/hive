@@ -36,7 +36,9 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText } = await import("../dist/tmux.js");
+const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText } = await import(
+  "../dist/tmux.js"
+);
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -771,6 +773,27 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
     // is what a claude session does when the turn it was just handed asks for
     // permission. Both timers are due in the SAME tick, so the second one can
     // only be held if the cache was invalidated by the first delivery.
+    //
+    // The dialog is raised on the PASTE, not on the Enter that follows it.
+    // Issue #55: raising it on a completed line (`read line`) made the test
+    // depend on an unforced race between this fixture's shell round-trip and
+    // the scheduler's fresh capture-pane for the second timer, with a ~2-3ms
+    // margin on a quiet machine (see todo 125's table) - enough to pass
+    // locally almost every time and lose under CI contention. Delivery
+    // (src/tmux.ts sendText) already waits ENTER_DELAY_MS between the paste
+    // and the Enter, so a fixture that reacts to the FIRST character of the
+    // paste has the dialog on screen for the rest of that gap before the
+    // Enter even lands, let alone before the second timer's capture. The
+    // ordering stops being a race and becomes a consequence of the real
+    // delivery timing - a 100x margin, not a happens-before, and asserted on
+    // below so a shrinking ENTER_DELAY_MS fails loudly here instead of
+    // quietly turning this back into a flake. The first character is
+    // consumed separately by the -n1 read, so it is reassembled with `rest`
+    // below rather than dropped.
+    assert.ok(
+      ENTER_DELAY_MS >= 250,
+      "this fixture's ordering margin comes from ENTER_DELAY_MS (src/tmux.ts); it dropped, so this test is a race again",
+    );
     const session2 = `${session}-raise`;
     const out = join(tmp, "raise-delivered.txt");
     writeFileSync(out, "");
@@ -778,7 +801,19 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
       "tmux",
       [
         "new-session", "-d", "-s", session2, "-x", "200", "-y", "50",
-        `read line; printf '%s\\n' "$line" > ${out}; printf '${DIALOG}\\n'; sleep 600`,
+        // Explicit bash: the pane's default shell tracks $SHELL, which is not
+        // always bash (zsh has no `-n1` on its `read` builtin), and `read -n1`
+        // is exactly the mechanism the ordering depends on.
+        //
+        // `cat -u >> out` replaces the old `sleep 600`: it keeps the pane
+        // alive the same way, but if the cache-invalidation guard this test
+        // covers ever regresses and SECONDWAKE's Enter reaches this pane, it
+        // is appended to `out` instead of vanishing into a sleeping shell.
+        // Without this, the "must not have been typed" assertion below could
+        // never fail no matter how broken the guard was: the old fixture was
+        // parked in `sleep 600` reading nothing by the time a leaked delivery
+        // could arrive.
+        `bash -c 'IFS= read -r -n1 c; printf "${DIALOG}\\n"; IFS= read -r rest; printf "%s%s\\n" "$c" "$rest" > ${out}; cat -u >> ${out}'`,
       ],
       { stdio: "ignore" },
     );
@@ -799,6 +834,11 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
         null,
         "the second must be held: the pane it targets is now asking a question",
       );
+      // This fixture now raises the dialog BEFORE writing `out` (the printf
+      // to `out` happens after the dialog printf), so the dialog wait above
+      // is no longer an accidental guarantee that `out` has been written.
+      // Poll for the content instead of reading once.
+      await until(() => readFileSync(out, "utf8").includes("FIRSTWAKE"));
       const text = readFileSync(out, "utf8");
       assert.match(text, /FIRSTWAKE/);
       assert.ok(!text.includes("SECONDWAKE"), "and its body must not have been typed at the dialog");
