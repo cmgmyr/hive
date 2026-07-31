@@ -5,3 +5,7 @@ dist/
 *.db-wal
 .DS_Store
 !CLAUDE.md
+
+!/.claude/
+/.claude/*
+!/.claude/rules/
