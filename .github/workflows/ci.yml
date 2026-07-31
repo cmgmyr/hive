@@ -10,6 +10,18 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+      # A second, older Node -- deliberately a different NODE_MODULE_VERSION
+      # than the one below, which is what the addon gets built against.
+      # test/kickoff-reexec.test.mjs's alternateInterpreter() needs one of
+      # these to exercise the re-exec/ABI-mismatch paths at all; without this,
+      # it depends on whatever second Node the runner image happens to carry,
+      # which is exactly the "skipped 0" guarantee the comment below exists
+      # for. Captured into GITHUB_ENV before the next step's PATH prepend
+      # would otherwise bury it.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - run: echo "HIVE_TEST_ALT_NODE=$(command -v node)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
           node-version: 22

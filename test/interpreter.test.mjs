@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { assertScratchStore, CLI, isolateTmux, runCli, scratchDirs, SERVER } from "./helpers.mjs";
+import { alternateInterpreter, assertScratchStore, CLI, isolateTmux, runCli, scratchDirs, SERVER } from "./helpers.mjs";
 
 // doctor and status both run the janitor, which probes the tmux server; isolate
 // first, or these read the one the lead and its workers are running in.
@@ -40,29 +40,6 @@ function writeUserConfig(config) {
 // process.execPath and every "pins a different interpreter" assertion would
 // invert. Derived from execPath, so it cannot collide with it.
 const OTHER_NODE = `${process.execPath}-some-other-build`;
-
-// A second interpreter whose ABI differs from the one that built the addon.
-// Nothing guarantees a machine has one, so the test that needs it says why it
-// skipped rather than passing quietly.
-function alternateInterpreter() {
-  const candidates = [
-    process.env.HIVE_TEST_ALT_NODE,
-    "/opt/homebrew/bin/node",
-    "/usr/local/bin/node",
-    "/usr/bin/node",
-  ].filter((c) => c && existsSync(c));
-  for (const candidate of candidates) {
-    try {
-      const modules = execFileSync(candidate, ["-p", "process.versions.modules"], {
-        encoding: "utf8",
-      }).trim();
-      if (modules !== process.versions.modules) return { path: candidate, modules };
-    } catch {
-      // Not a working interpreter; try the next.
-    }
-  }
-  return null;
-}
 
 describe("interpreter and ABI", () => {
   const alt = alternateInterpreter();

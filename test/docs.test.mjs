@@ -41,7 +41,15 @@ describe("docs keep up with the CLI", () => {
     // The Updating section used to promise no reinstall and no
     // re-registration "on any machine". True until npm install rebuilds the
     // addon under a different Node than the one the dispatcher names.
-    assert.match(readme, /## Updating[\s\S]*?hive setup\s+# re-pin/);
+    //
+    // The recipe invokes setup as `node dist/cli.js setup`, not bare `hive
+    // setup`: typing `hive setup` runs through the dispatcher, which execs
+    // the OLD pinned interpreter, and that interpreter may no longer be able
+    // to load the addon this same recipe just rebuilt -- src/cli.ts imports
+    // db.js at module scope, so guardAbi() would exit before cmdSetup ever
+    // ran. Verified by hand: reproduced that exact failure, then confirmed
+    // `node dist/cli.js setup` bypasses it and re-pins correctly.
+    assert.match(readme, /## Updating[\s\S]*?node dist\/cli\.js setup\s+# not `hive setup`/);
     assert.doesNotMatch(readme, /no re-registration, on any machine/);
     assert.match(readme, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   });

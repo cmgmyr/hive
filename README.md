@@ -287,13 +287,18 @@ Both entry points are live pointers into this checkout: the `hive` command runs 
 
 ```bash
 cd <this checkout>
-git pull
-npm install             # only matters when dependencies changed; harmless otherwise
+git pull --ff-only            # refuses instead of merging or rebasing over local changes it should not touch
+npm install                   # only matters when dependencies changed; harmless otherwise
+npm rebuild better-sqlite3    # npm install can report "up to date" without checking the addon still exists
 npm run build
-hive setup              # re-pin: the build may have been made by a different Node
+node dist/cli.js setup        # not `hive setup`: that runs through the OLD dispatcher, which may no
+                               # longer be able to load the addon this just rebuilt
+hive doctor                   # required: confirms the addon, the pin, and the registration all agree
 ```
 
 The pin is the part that can drift. `npm install` rebuilds `better-sqlite3` against whatever Node is active in that shell, and if that is not the Node your dispatcher and MCP registration name, the addon and the interpreters no longer agree. Re-running `hive setup` costs nothing when nothing changed, and `hive doctor` says so either way: it warns when the dispatcher points at a different build than the one running, and fails outright on an ABI mismatch. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
+
+`npm install` deciding a package is up to date is not proof its native build artifact still exists: delete `node_modules/better-sqlite3/build/Release/better_sqlite3.node` and run a plain `npm install` and it reports `up to date` without recreating the file. `npm rebuild better-sqlite3` catches that gap explicitly, and costs nothing when the addon was already fine. Run `hive doctor` last, every time: it is the step that actually verifies the addon, the pin, and the registration agree, rather than assuming the steps above got there.
 
 The plugin symlink is a live pointer too, so the session-start hook and the shipped profile defaults update with the same pull. Files you forked into `~/.hive/profiles/` are yours and are never touched; `hive doctor` tells you when hive's version of one moved.
 

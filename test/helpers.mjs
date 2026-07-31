@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -313,6 +313,48 @@ export function runNode(script, args, { cwd, dataDir, tmp, env = {}, node = "nod
     child.stderr.on("data", (c) => (stderr += c));
     child.on("exit", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+// An interpreter whose ABI differs from the one that built the addon, i.e.
+// the one this suite runs under. Nothing guarantees a machine has a second
+// Node installed, so a caller that needs one should skip with a reason rather
+// than pass quietly when this returns null.
+export function alternateInterpreter() {
+  const candidates = [
+    process.env.HIVE_TEST_ALT_NODE,
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+    "/usr/bin/node",
+  ].filter((c) => c && existsSync(c));
+  for (const candidate of candidates) {
+    try {
+      const modules = execFileSync(candidate, ["-p", "process.versions.modules"], { encoding: "utf8" }).trim();
+      if (modules !== process.versions.modules) return { path: candidate, modules };
+    } catch {
+      // Not a working interpreter; try the next.
+    }
+  }
+  return null;
+}
+
+// git, usable in a throwaway scratch repo. -c commit.gpgsign=false plus a
+// fake author/committer identity, so a suite run under a developer's own
+// signing config (which may be locked) never blocks on a commit that exists
+// only to give a scratch repo a branch to read.
+export function scratchGit(cwd, ...args) {
+  return execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "gpg.format=openpgp", ...args], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+  });
+}
+
+// Parses a SessionStart hook's JSON stdout and returns hookSpecificOutput,
+// asserting the envelope kickoff writes whenever it actually fires.
+export function firedSessionStart(stdout) {
+  const payload = JSON.parse(stdout);
+  assert.equal(payload.hookSpecificOutput.hookEventName, "SessionStart");
+  return payload.hookSpecificOutput;
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { KICKOFF, McpClient, isolateTmux, runCli, runNode, scratchDirs } from "./helpers.mjs";
+import { firedSessionStart as fired, KICKOFF, McpClient, isolateTmux, runCli, runNode, scratchDirs } from "./helpers.mjs";
 
 // The hook and the CLI both start hive, which probes tmux; isolate first.
 const { cleanup: cleanupTmux } = isolateTmux("the kickoff tests");
@@ -28,12 +28,6 @@ const git = (cwd, ...args) =>
   });
 
 const yml = (body, dir = dirs.projectDir) => writeFileSync(join(dir, "hive.yml"), body);
-
-function fired(stdout) {
-  const payload = JSON.parse(stdout);
-  assert.equal(payload.hookSpecificOutput.hookEventName, "SessionStart");
-  return payload.hookSpecificOutput;
-}
 
 describe("hive kickoff gates", () => {
   before(async () => {

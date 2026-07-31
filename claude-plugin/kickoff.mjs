@@ -15,5 +15,83 @@
 // the real dist/. That keeps the live-pointer property: git pull && npm run
 // build upgrades the hook with everything else, and no absolute path is ever
 // written into a committed file.
+//
+// hooks.json registers this file under a bare `node`, which a version manager
+// resolves from the working directory -- the directory the session is
+// starting in, not the one hive was built in. So before importing
+// dist/kickoff.js, which imports dist/db.js, which calls guardAbi() and
+// process.exit(1)s on a mismatch from inside an import nothing downstream can
+// catch, check whether THIS interpreter can actually load the addon; if it
+// cannot, read the interpreter `hive setup` already pinned for this checkout
+// and re-exec under it. abi.js and dispatcher.js are both deliberately
+// store-free (see their own headers), so this cannot itself trip the ABI guard.
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+async function reexecUnderPinnedInterpreter() {
+  // Set only by the re-exec below, on the child. Without this a pinned
+  // interpreter that also cannot load the addon would re-exec into itself
+  // forever, hanging every session start -- worse than the bug it fixes.
+  if (process.env.HIVE_KICKOFF_REEXEC) return;
+  // This hook fires in every directory on the machine on every session
+  // start, and the ABI risk above can only ever be reached once dist/kickoff.js
+  // has cleared its own worker-session and hive.yml gates (see its header: "the
+  // cheap file and git checks come first"). Mirror the cheapest of those two
+  // here, so a directory with no hive.yml pays for neither a dispatcher import
+  // nor a file read.
+  if (process.env.HIVE_AGENT_ID) return;
+  if (!existsSync(join(process.cwd(), "hive.yml"))) return;
+
+  // Re-exec is a fix for an ABI mismatch, not for a path difference: this
+  // interpreter may already be able to load the addon fine even if it is not
+  // the one the dispatcher happens to name (a rebuild that has not been
+  // re-pinned yet, for instance). checkAbi() really dlopens the addon rather
+  // than trusting a require(), same reasoning as .claude/rules/native-addon.md.
+  // When it IS ok, this returns and dist/kickoff.js goes on to run in this
+  // same process; if it later reaches db.js, that require() hits the cache
+  // entry checkAbi() just created, so this costs nothing extra there.
+  const { checkAbi } = await import("../dist/abi.js");
+  if (checkAbi().ok) return;
+
+  const { dispatcherPath, readDispatcher } = await import("../dist/dispatcher.js");
+  const dispatcher = readDispatcher(dispatcherPath());
+  // mine: false always carries node: null already (readDispatcher's own
+  // contract), so reading .node directly matches how abi.ts's
+  // workingInterpreterFromDispatcher reads this same struct.
+  const node = dispatcher?.node ?? null;
+  // No dispatcher (`hive setup` never run), or a dispatcher written by
+  // another version with no exec line this one recognizes: nothing to re-exec
+  // under, so fall through to the current interpreter unchanged.
+  if (!node) return;
+  // Already running under it, or the pinned interpreter no longer exists on
+  // disk (a version manager removed it): nothing to gain from re-execing.
+  if (node === process.execPath || !existsSync(node)) return;
+
+  const result = spawnSync(node, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
+    stdio: "inherit",
+    env: { ...process.env, HIVE_KICKOFF_REEXEC: "1" },
+  });
+  // spawnSync itself failed (e.g. the file exists but is not executable):
+  // fall through rather than crash a session start over it.
+  if (result.error) return;
+  process.exit(result.status ?? 1);
+}
+
+try {
+  await reexecUnderPinnedInterpreter();
+} catch {
+  // process.cwd() throws if the working directory was deleted before this
+  // hook ran; that used to be caught inside runKickoff's own try/catch
+  // (evaluate(process.cwd()) is called from inside it) and produce the
+  // required silence. This function now calls process.cwd() first, outside
+  // that try/catch, so the same throw would otherwise escape as a stack
+  // trace and a nonzero exit at session start -- silence is the contract
+  // this hook exists under (see dist/kickoff.js's own header), so fall
+  // through to runKickoff() the same as any other re-exec decision this
+  // function declines to make.
+}
+
 const { runKickoff } = await import("../dist/kickoff.js");
 await runKickoff(process.argv.slice(2));
