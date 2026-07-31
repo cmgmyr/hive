@@ -633,6 +633,22 @@ describe("issue #39/#41 half C: millisecond resolution orders events inside the 
   // completedAt landed past the injected .900 boundary and flipped one of
   // these from failed to resolved. Poisoning the row directly removes that
   // dependency on real timing.
+  //
+  // Todo 102(a), 2026-07-30: pinning the row closed only HALF of it, and the
+  // other half made the second test below flake at ~7% (4 failures in 60
+  // full-suite runs; 3 in 25 the day before). MAX(directory name, own row)
+  // has two uncontrolled inputs, not one. Pinning the row LOW - which the
+  // second test must do, since it needs the failure to be the later event -
+  // means the row loses the MAX and the DIRECTORY NAME becomes the
+  // comparison value. That name comes from takeSnapshot's `now`, which
+  // defaults to the real clock (src/backup.ts:199, formatted at :26), read
+  // after recentSecond() has already fixed `sec`. Under load the gap grows
+  // past the leftover milliseconds before the hardcoded .900 and the failure
+  // reads as resolved. So `now` IS injected below, and both inputs to the
+  // MAX are controlled. The first test never flaked because a late name only
+  // pushes it further toward its expected true; that asymmetry is why this
+  // survived the fix above. Product code is correct in every observed run.
+  const pinnedNow = (sec) => new Date(`${sec.replace(" ", "T")}.000Z`);
   it("a snapshot's own row, later in the SAME second than a recorded failure, resolves it - not tied", () => {
     rmSync(backupsDir(dataDir), { recursive: true, force: true });
     const localDb = new Database(join(dataDir, "hive.db"));
@@ -664,7 +680,9 @@ describe("issue #39/#41 half C: millisecond resolution orders events inside the 
     rmSync(backupsDir(dataDir), { recursive: true, force: true });
     const localDb = new Database(join(dataDir, "hive.db"));
     const sec = recentSecond();
-    const result = takeSnapshot(localDb, dataDir, "manual");
+    // The .000 name loses the MAX to the .100 row below, so the comparison
+    // value is pinned at .100 regardless of how long this takes to run.
+    const result = takeSnapshot(localDb, dataDir, "manual", pinnedNow(sec));
     assert.ok(result.ok, result.error);
     const snapDb = new Database(join(result.path, "hive.db"));
     snapDb.prepare("UPDATE backup_meta SET last_success_at = ? WHERE id = 1").run(`${sec}.100`);
