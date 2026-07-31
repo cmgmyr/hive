@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,6 +92,45 @@ export function scratchDirs() {
     tmp: mkdtempSync(join(root, "tmp-")),
   };
 }
+
+// Writes `source` as its own .mjs file under `tmp` and runs it as a fresh
+// process, so latched or module-load-time state (storeReplaced()'s latch,
+// storeDir()'s module-body side effects) cannot leak between scenarios the
+// way it would on one shared process. Asserts a clean exit before parsing
+// stdout as JSON, so a fixture that threw fails with its stderr attached
+// rather than a confusing JSON.parse error.
+export function runFixture(tmp, name, source, env) {
+  const file = join(tmp, `${name}.mjs`);
+  writeFileSync(file, source);
+  const result = spawnSync(process.execPath, [file], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, ...env },
+  });
+  assert.equal(result.status, 0, `fixture ${name} failed: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+// Source text for a runFixture() script that reproduces restoreSnapshot's
+// exact on-disk sequence (src/backup.ts): copy a decoy to a `.restoring`
+// temp path, rename it over the live db (an atomic swap onto a different
+// inode, the same way a restore orphans an open connection), then drop the
+// stale sidecars. dbPathExpr must be a JS expression, as source text,
+// evaluating to the db path - typically JSON.stringify(join(dataDir,
+// "hive.db")) from the caller. Requires cpSync, renameSync, rmSync, and
+// writeFileSync imported in the fixture script.
+export function storeReplaceScript(dbPathExpr) {
+  return (
+    `const decoyPath = ${dbPathExpr} + ".decoy";\n` +
+    `writeFileSync(decoyPath, "not a real sqlite file, only the inode matters here");\n` +
+    `const tmpPath = ${dbPathExpr} + ".restoring";\n` +
+    `cpSync(decoyPath, tmpPath);\n` +
+    `renameSync(tmpPath, ${dbPathExpr});\n` +
+    `for (const suffix of ["-wal", "-shm"]) rmSync(${dbPathExpr} + suffix, { force: true });\n`
+  );
+}
+
+// The import line every storeReplaceScript() caller needs.
+export const FS_SWAP_IMPORT = `import { cpSync, renameSync, rmSync, writeFileSync } from "node:fs";\n`;
 
 // A stand-in `claude` binary: isClaudeCommand matches on basename, so
 // spawning it exercises the same brief-writing and pane-announcement code

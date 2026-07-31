@@ -78,6 +78,16 @@ describe("hive restore refuses while the store looks active (PR #36, S1)", () =>
     assert.equal(refused.code, 1);
     assert.match(refused.stdout, /Refusing to restore/);
     assert.match(refused.stdout, /agent\(s\)\/command\(s\) recorded as running/);
+    // Issue #49: --force is weak protection on its own (it cannot see a
+    // session that started outside hive, or one that starts in the gap
+    // between this check and the overwrite), so the message has to name what
+    // choosing it actually costs. Two different servers pay differently: a
+    // same-version one refuses at its next tool call once storeReplaced()
+    // trips; an older one has no such guard and keeps writing until it exits.
+    assert.match(refused.stdout, /will refuse every hive tool once it notices/);
+    assert.match(refused.stdout, /older server/);
+    assert.match(refused.stdout, /no longer exists/);
+    assert.match(refused.stdout, /losing that work silently/);
 
     const forced = await runCli(["restore", name, "--yes", "--force"], cli);
     assert.equal(forced.code, 0);

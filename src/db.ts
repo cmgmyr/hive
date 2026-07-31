@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { guardAbi } from "./abi.js";
 import { guardStoreDir } from "./dataDir.js";
@@ -33,7 +33,48 @@ function sleepSync(ms: number): void {
 // be named instead of surfacing as an ERR_DLOPEN_FAILED stack trace. See
 // abi.ts.
 guardAbi();
-export const db = new Database(join(dataDir, "hive.db"));
+const storePath = join(dataDir, "hive.db");
+export const db = new Database(storePath);
+
+// Issue #49: restoreSnapshot renames a new file into place, which orphans
+// any process that already opened the old one - same path, different inode,
+// no error either side. The inode recorded here is the one this process
+// actually committed to; a later mismatch means the file at storePath is no
+// longer the file `db` is writing to.
+const openedInode = statSync(storePath).ino;
+let storeReplacedLatch = false;
+
+// Latched: once true, stays true without re-stat'ing. The answer cannot
+// change back (a second replacement is still a replacement), and a cheap
+// failure path matters here since callers check this on every tool call and
+// every scheduler tick. A missing file (statSync throws ENOENT, or ENOTDIR
+// if a path segment stopped being a directory) counts as changed, not as an
+// error to propagate - restoreSnapshot's rename-then-unlink-sidecars
+// sequence can observe the old inode already gone.
+//
+// Every OTHER errno fails OPEN rather than latching. ENOENT/ENOTDIR are the
+// only codes a genuine replace or delete can produce: a rename always
+// leaves a file at storePath, and a delete is exactly ENOENT. Anything else
+// (EIO, ESTALE, EACCES - a flaky disk, a network home, something chmod'ing
+// the store) is a transient failure to answer, not evidence the store was
+// replaced. Latching on it would permanently brick an otherwise-healthy
+// session with no way to recheck, which is a worse outcome than the rare
+// tick that reads a transient error as "unreplaced" and simply asks again.
+export function storeReplaced(): boolean {
+  if (storeReplacedLatch) return true;
+  let current: number;
+  try {
+    current = statSync(storePath).ino;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") return false;
+    storeReplacedLatch = true;
+    return true;
+  }
+  if (current !== openedInode) storeReplacedLatch = true;
+  return storeReplacedLatch;
+}
+
 // busy_timeout FIRST: it has no effect on the pragma call that sets it, only
 // on the ones after. Setting journal_mode first left a real window with
 // zero lock tolerance - found while building a test that opens two brand

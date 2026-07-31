@@ -1,5 +1,5 @@
 import type { Statement } from "better-sqlite3";
-import { dataDir, db } from "./db.js";
+import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
 import { closeAgentRow } from "./spawn.js";
 import {
@@ -67,11 +67,12 @@ function stmt(sql: string): Statement {
 }
 
 let ticking = false;
+let schedulerInterval: NodeJS.Timeout | undefined;
 
 export function startScheduler(intervalMs = 3000): void {
   // unref: the scheduler must never keep an orphaned server process alive
   // after its Claude session closes stdin.
-  setInterval(() => {
+  schedulerInterval = setInterval(() => {
     void tick();
   }, intervalMs).unref();
 }
@@ -183,10 +184,28 @@ function pruneStateLog(): void {
 // One sweep-and-fire pass. The snapshot is a parameter for the same reason
 // janitor's is: it is the one input that decides everything here, and handing
 // it in is the difference between driving a tick and simulating a tmux.
-export async function tick(snapshot: AliveSnapshot | null = liveTargets()): Promise<void> {
+export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
+    // Issue #49: once the store on disk was replaced (a restore landed while
+    // this session had it open), a wake fired from here would be derived
+    // from state nobody is reading any more, typed into a live tmux pane as
+    // a real user turn, and recorded as fired where no one will see it. Stop
+    // ticking rather than throwing, per CLAUDE.md's "the scheduler must
+    // never throw and must stay unref()'d" - clear the interval so it stops
+    // permanently instead of raising. Checked BEFORE liveTargets() below,
+    // which forks a real tmux subprocess: no reason to pay for a probe whose
+    // result is about to be thrown away.
+    if (storeReplaced()) {
+      clearInterval(schedulerInterval);
+      schedulerInterval = undefined;
+      return;
+    }
+    // undefined (the argument omitted) means "ask tmux"; an explicit null
+    // means "the caller already knows liveness is unknown", and must stay
+    // null rather than be resolved here.
+    if (snapshot === undefined) snapshot = liveTargets();
     janitor(snapshot);
     pruneStateLog();
     // Issue #23: hourly, rate-limited across every concurrent instance by an

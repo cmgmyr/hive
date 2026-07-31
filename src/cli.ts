@@ -1300,7 +1300,12 @@ async function cmdRestore(argv: string[]): Promise<void> {
   if (activity.length > 0 && !force) {
     console.log("Refusing to restore: this store looks like it is still in use.");
     for (const reason of activity) console.log(`  ${reason}`);
-    console.log("Close those sessions first, or pass --force if you are certain nothing is using this store.");
+    console.log(
+      "Close those sessions first, or pass --force: a server on this version will refuse every " +
+        "hive tool once it notices (up to one tick of writes lost first); an older server has no " +
+        "such guard and will keep writing to a file that no longer exists until it exits, losing " +
+        "that work silently.",
+    );
     process.exit(1);
   }
 
