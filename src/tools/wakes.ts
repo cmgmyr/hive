@@ -3,9 +3,11 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
-import { findAgent, isLive, probeFailed, type AgentRow } from "./agents.js";
+import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
 import { ACTIVE_TIMER_WHERE, type TimerRow } from "../scheduler.js";
 import { projectIdParam } from "./params.js";
+import { deriveProvenance } from "../stateProvenance.js";
+import { liveTargets } from "../tmux.js";
 
 const agentRefParam = z
   .union([z.number().int(), z.string()])
@@ -113,6 +115,12 @@ export function registerWakes(server: McpServer): void {
         const mode = args.mode ?? "any";
         const watched = args.agents.map((ref) => resolveAgentRef(projectId, ref));
         const delivery = resolveDelivery(projectId, args.deliver_to);
+        // One subprocess for every watched agent's liveness, not one per
+        // agent: the mode=all check below and the watching decoration
+        // further down both need it, and src/tmux.ts's own comment on
+        // liveTargets names this exact "many targets" shape as what it is
+        // for (agent_list's own snapshot uses the same pattern).
+        const snapshot = liveTargets();
 
         if (mode === "all") {
           // An agent tmux says is gone counts as nothing left to wait for. An
@@ -120,7 +128,7 @@ export function registerWakes(server: McpServer): void {
           // satisfied returns "Act now" while every worker is mid-task, and
           // the lead proceeds on a completion that never happened.
           const allIdle = watched.every((a) => {
-            const live = isLive(a);
+            const live = summaryLiveness(a, snapshot);
             return live === false || (live === true && a.agent_state === "idle");
           });
           if (allIdle) {
@@ -151,7 +159,21 @@ export function registerWakes(server: McpServer): void {
         return {
           wake_id: Number(info.lastInsertRowid),
           mode,
-          watching: watched.map((a) => ({ agent_id: a.id, name: a.name, state: a.agent_state })),
+          // provenance is decoration only: it does not change what this call
+          // schedules or what already_satisfied above fired on (that stays a
+          // bare liveness + agent_state check, deliberately -- see
+          // src/tools/wakes.ts's design pad note on why a freshness check
+          // there is out of scope for this lane).
+          watching: watched.map((a) => {
+            // `state` replaces the sibling field below rather than duplicating
+            // it: deriveProvenance already applies the "gone" override when
+            // the snapshot says the pane is dead, so using it here (instead of
+            // the raw a.agent_state agentSummary would have shown "gone" for)
+            // keeps this surface consistent with agent_list for the exact
+            // same worker.
+            const { state, ...provenance } = deriveProvenance(a, summaryLiveness(a, snapshot));
+            return { agent_id: a.id, name: a.name, state, provenance };
+          }),
           max_wait_seconds: maxWait,
           deliver_to: delivery.actor,
           note:

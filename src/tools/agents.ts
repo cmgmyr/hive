@@ -42,6 +42,7 @@ import {
   type Liveness,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
+import { deriveProvenance } from "../stateProvenance.js";
 
 export interface AgentRow {
   id: number;
@@ -223,7 +224,7 @@ const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 // Unknown is reported as alive: null with the row exactly as the store has
 // it, rather than inventing "exited" for a worker that is very likely still
 // running (issue #14).
-function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
+export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
   // A closed row needs no probe: the store already answered, and reporting it
   // as unknown during a hiccup would make a definitely-dead worker look like
   // it might still be there.
@@ -272,6 +273,12 @@ function transcriptDirField(row: AgentRow): { transcript_dir: string | null } | 
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
   const alive = summaryLiveness(row, snapshot);
+  // `state` is dropped from the nested object below and used directly as
+  // agent_state instead: deriveProvenance already applies the "gone" override
+  // when alive is false, so re-deriving it here with a second ternary would
+  // be the exact kind of duplicated special case this module exists to kill
+  // (a caller must trust the derivation's own answer, not recompute it).
+  const { state, ...provenance } = deriveProvenance(row, alive);
   return {
     agent_id: row.id,
     kind: row.kind,
@@ -279,8 +286,9 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     actor_id: row.actor_id,
     status: alive === false && row.status === "running" ? "exited" : row.status,
     alive,
-    agent_state: alive === false ? "gone" : row.agent_state,
+    agent_state: state,
     state_changed_at: row.state_changed_at,
+    provenance,
     tmux_target: row.tmux_target,
     command: row.command,
     cwd: row.cwd,

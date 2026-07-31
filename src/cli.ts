@@ -76,6 +76,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { isClaudeCommand, writeProjectPosture } from "./brief.js";
+import { deriveProvenance, describeForHuman, type ProvenanceRow } from "./stateProvenance.js";
 import {
   checkoutRoot,
   createProfile,
@@ -777,13 +778,12 @@ function cmdStatus(): void {
   for (const project of listProjects()) {
     const agents = db
       .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY kind DESC, id")
-      .all(project.id) as {
+      .all(project.id) as (ProvenanceRow & {
       kind: string;
       name: string;
-      agent_state: string;
       tmux_target: string;
       cwd: string;
-    }[];
+    })[];
     const todos = (
       db
         .prepare(
@@ -800,7 +800,12 @@ function cmdStatus(): void {
     anyOutput = true;
     console.log(`\n${project.name}  (${project.path})  session: ${sessionName(project.id)}`);
     for (const a of agents) {
-      const state = a.kind === "agent" ? a.agent_state : "running";
+      // Not probed: this is display over rows already in hand, the same
+      // choice kickoff makes and for the same reason (see its own comment) --
+      // a status line should not cost a tmux fork per worker to print. A
+      // command row (a dev server, not a hook-tracked worker) has no
+      // provenance to report at all; "running" is the whole fact.
+      const state = a.kind === "agent" ? describeForHuman(deriveProvenance(a, null)) : "running";
       console.log(`  ${a.kind === "command" ? "cmd  " : "agent"}  ${a.name.padEnd(20)} ${state}`);
     }
     if (agents.length === 0) console.log("  no running agents or commands");
@@ -1112,6 +1117,16 @@ function cmdDoctor(): void {
     // that is a legitimate, quiet default, not this state.
     fail("profile", `this project ${NO_RUNBOOK_PAD_MESSAGE}`);
   }
+  // L1 (design-l1, issue #38) deliberately does not add a per-worker
+  // provenance/age listing here. Doctor has never had one -- this check
+  // reports the SWEEP's own outcome (counts of what it closed or cancelled),
+  // not a per-agent line -- and `hive status` is already that surface, freshly
+  // decorated with provenance in the same lane. Duplicating it here would be a
+  // surface touched for symmetry rather than because a reader needs it there,
+  // and doctor must not gain a check that passes or fails on how old a state
+  // is: that is lane L2, and it was redesigned away from a bound after a query
+  // against the live store, so building one here would ship the discarded
+  // design a second time.
   check("stale state", () => {
     const r = janitor();
     // "0 closed" reads as a clean bill of health, so an unanswered probe must

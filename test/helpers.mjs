@@ -396,6 +396,17 @@ export function firedSessionStart(stdout) {
   return payload.hookSpecificOutput;
 }
 
+// One row in agent_state_log, backdated by agoSeconds so a test can seed a
+// sequence without waiting on the real clock. Takes an already-open `db`
+// rather than opening its own: callers already picked their store via
+// HIVE_DATA_DIR before importing dist/db.js, and this must not become a
+// second way to choose one.
+export function insertStateLogRow(db, actorId, event, state, agoSeconds) {
+  db.prepare(
+    "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, ?, ?, '{}', datetime('now', ?))",
+  ).run(actorId, event, state, `-${agoSeconds} seconds`);
+}
+
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Wait for a condition instead of guessing how long it takes. A fixed sleep

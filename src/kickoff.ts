@@ -2,6 +2,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+// Type-only: erased at compile time, so this costs nothing on the cold path
+// every session start pays (unlike a value import of stateProvenance.js,
+// which stays inside digest() below for that reason).
+import type { ProvenanceRow } from "./stateProvenance.js";
 
 // SessionStart entry point. This runs on EVERY session start in EVERY
 // directory on the machine, so it is built to say nothing as fast as
@@ -119,14 +123,18 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   const agents = db
     .prepare(
-      "SELECT name, agent_state, tmux_target, cwd FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+      "SELECT name, actor_id, command, agent_state, state_changed_at, tmux_target, cwd FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
     )
-    .all(project.id) as { name: string; agent_state: string; tmux_target: string; cwd: string }[];
+    .all(project.id) as (ProvenanceRow & { name: string; tmux_target: string; cwd: string })[];
   if (agents.length > 0) {
     // Rows only; liveness would mean shelling out to tmux on every session
-    // start. hive doctor and agent_list are where dead rows get resolved.
+    // start. hive doctor and agent_list are where dead rows get resolved, so
+    // alive is passed as null (not probed) rather than guessed.
+    const { deriveProvenance, describeForHuman } = await import("./stateProvenance.js");
     lines.push("", "WORKERS (per the store; agent_list confirms they are alive)");
-    for (const a of agents) lines.push(`  ${a.name} [${a.agent_state}] ${a.cwd}`);
+    for (const a of agents) {
+      lines.push(`  ${a.name} [${describeForHuman(deriveProvenance(a, null))}] ${a.cwd}`);
+    }
   }
 
   const wakes = db
