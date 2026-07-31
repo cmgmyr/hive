@@ -688,11 +688,28 @@ export function registerAgents(server: McpServer): void {
 
         if (args.wait_ms != null) {
           await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+          // Issue #40. capturePane runs AFTER the send already landed, so a
+          // pane that dies during the wait must not turn a successful send
+          // into a reported error: a caller reading "error" here reasonably
+          // retries, and a duplicated instruction mid-task is worse than a
+          // missing tail. Same shape as paneChoiceCheck's wrapped read.
+          // tail and note are mutually exclusive, so one field carries either.
+          let tailField: { tail: string } | { note: string };
+          try {
+            tailField = { tail: capturePane(target, 15) };
+          } catch {
+            tailField = {
+              note: "Sent, but the terminal tail could not be read afterward (the pane may have died during the wait). Check agent_status or agent_output to confirm the worker is still there.",
+            };
+          }
           return {
             agent_id: agent.id,
             name: agent.name,
             sent: true,
-            tail: capturePane(target, 15),
+            ...tailField,
+            // inputBoxField wraps its own read the same way, so it is called
+            // unconditionally here rather than inside the try: a capturePane
+            // failure must not also cost the input-box read that follows it.
             ...inputBoxField(target),
           };
         }

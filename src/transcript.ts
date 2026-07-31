@@ -1,18 +1,6 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-
-// Mirrors cli.ts's claudeConfigDir(): Claude Code relocates its whole state
-// tree, transcripts included, when CLAUDE_CONFIG_DIR is set. Duplicated
-// rather than imported, on purpose: src/cli.ts belongs to issue #16 for this
-// wave, and importing it here would drag the CLI's own module graph (readline,
-// spawnSync, and db.js's module-load-time store choice) into every MCP server
-// process just to read one env var. Unify the two after #16 merges; until
-// then this is the CLAUDE_CONFIG_DIR half of that function, kept in sync by
-// hand.
-function claudeConfigDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR) : join(homedir(), ".claude");
-}
+import { join } from "node:path";
+import { claudeConfigDir } from "./claudeDir.js";
 
 // Claude Code's own project-transcript encoding (issue #5), reverse-engineered
 // against real directories under ~/.claude/projects rather than assumed:

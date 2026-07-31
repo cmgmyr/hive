@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { checkAbi, describeAbi, describeInterpreter } from "./abi.js";
+import { claudeConfigDir } from "./claudeDir.js";
 import {
   cliPath,
   dispatcherDir,
@@ -422,13 +423,6 @@ NEXT UP
 <dispatchable todos worth starting when a lane frees>
 `;
 
-// Claude Code relocates its whole state tree, plugins included, when
-// CLAUDE_CONFIG_DIR is set. Keying off homedir() alone reports "not installed"
-// to anyone using a custom config dir, and prints them an install command that
-// puts the symlink where their claude will never look.
-export const claudeConfigDir = () =>
-  process.env.CLAUDE_CONFIG_DIR ? resolve(process.env.CLAUDE_CONFIG_DIR) : join(homedir(), ".claude");
-
 const pluginLinkPath = () => join(claudeConfigDir(), "skills", "hive");
 
 // Printed paths keep the ~ shorthand only when that is where it actually
@@ -600,6 +594,10 @@ itself to this project before any real work runs.`);
 // The lead's standing process, resolved from the project's profile with
 // hive.yml vars substituted. A project on `profile: none` keeps its process in
 // the runbook pad, so print that instead of sending the lead somewhere else.
+//
+// Shared with cmdDoctor's check 3 below, which names the same fact.
+const NO_RUNBOOK_PAD_MESSAGE = `is on "profile: none" but has no runbook pad. Create one with: hive init`;
+
 function cmdRunbook(path?: string): void {
   const project = resolveProject(path);
   const { config, warnings } = loadProjectYml(project.path);
@@ -614,7 +612,7 @@ function cmdRunbook(path?: string): void {
     }
     console.log(
       config?.profile === NO_PROFILE
-        ? `This project is on "profile: none" but has no runbook pad. Create one with: hive init`
+        ? `This project ${NO_RUNBOOK_PAD_MESSAGE}`
         : `This project has no profile. Add "profile: <name>" to hive.yml (hive profile list) or run hive init.`,
     );
     process.exit(1);
@@ -969,12 +967,19 @@ function reportMcpRegistrations(project: Project | null): void {
 
 function cmdDoctor(): void {
   let failures = 0;
+  // Same counting and FAIL formatting as check()'s catch below, split out for
+  // a failure that is not the result of a thrown probe (issue #43's profile
+  // checks: there is nothing to call and catch, only a fact already in
+  // hand).
+  const fail = (label: string, ...lines: string[]) => {
+    failures += 1;
+    report("FAIL", label, lines);
+  };
   const check = (label: string, fn: () => string) => {
     try {
       console.log(`  ok    ${label}: ${fn()}`);
     } catch (e) {
-      failures += 1;
-      console.log(`  FAIL  ${label}: ${errorMessage(e)}`);
+      fail(label, errorMessage(e));
     }
   };
   console.log("hive doctor\n");
@@ -995,45 +1000,117 @@ function cmdDoctor(): void {
     return `${dataDir} (schema v${n})`;
   });
   check("hooks file", () => ensureHooksFile());
-  // Everything below is reported, never failed. A parse warning already has a
-  // fallback, hive cannot tell a deliberately omitted var from a forgotten one,
-  // and a hive.yml naming a profile a teammate does not have is a normal state,
-  // not a broken install. Doctor read the profile out of hive.yml but never
-  // looked at the parse, so a malformed one used to pass a clean run.
+  // hive.yml PARSE warnings never fail: a malformed key already has a
+  // fallback (loadProjectYml), and hive cannot tell a deliberately omitted
+  // var from a forgotten one. Doctor used to read the profile out of
+  // hive.yml without ever looking at the parse, so a malformed one passed a
+  // clean run; that half stays a warn.
+  //
+  // The PROFILE checks below (1-3) call fail(), deliberately, even though
+  // profiles are per-machine and hive.yml is committed -- the premise check
+  // 1 itself rests on. Counselors review on PR #47 named the consequence:
+  // `hive doctor` now exits 1 for a teammate whose machine lacks a profile
+  // this repo's hive.yml names, which reaches any script or CI step gating
+  // on it. That is the point, not an oversight -- issue #43 opens with
+  // exactly this state, a lead running with no standing process and nothing
+  // saying why, and a warn would report it just as loudly without ever
+  // stopping a script that should stop.
   const here = findProjectForCwd();
   reportDispatcher();
   reportMcpRegistrations(here);
-  const loaded = here ? loadProjectYml(here.path) : null;
-  for (const w of loaded?.warnings ?? []) warn("hive.yml", w);
-  const config = loaded?.config ?? null;
+  // Counselors review on PR #47, finding 3. `here` is null on a fresh clone:
+  // nothing has registered the project yet, which is issue #43's own opening
+  // scenario -- a lead has not started here before, so no project row exists.
+  // hive.yml is still readable from the cwd doctor is actually run from, so
+  // checks 1 and 2 below must not gate on `here`. Only check 3 needs it, for
+  // here.id's pad lookup.
+  const loaded = loadProjectYml(here?.path ?? process.cwd());
+  for (const w of loaded.warnings) warn("hive.yml", w);
+  const config = loaded.config;
   const profile = activeProfile(config);
-  if (here && profile) {
-    const files = profileStatus(profile).files;
-    if (files.length === 0) {
-      warn("profile", `"${profile}" is named in hive.yml but is not on this machine`);
-    } else {
-      info("profile", `${profile} (${files.map((f) => `${f.file}: ${f.source}`).join(", ")})`);
-      for (const f of files) {
-        if (f.upstreamMoved) warn("profile", `hive's default ${f.file} changed since you forked it`);
-      }
-      // Both files the project supplies vars to. worker.md is left out on
-      // purpose: its vars include the agent identity hive fills in per spawn,
-      // which would always read as "not set here".
-      const referenced = [...new Set(
-        ["runbook.md", "posture.md"].flatMap((file) => {
-          const text = readProfileFile(profile, file as ProfileFile);
-          return text ? templateVars(text) : [];
-        }),
-      )].sort();
-      const defined = Object.keys(config?.vars ?? {});
-      const missing = referenced.filter((v) => !defined.includes(v));
-      const unused = defined.filter((v) => !referenced.includes(v));
-      if (referenced.length > 0) {
-        info("profile vars", `runbook and posture reference ${referenced.join(", ")}`);
-        if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);
-        if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
-      }
+
+  // Issue #43, sharpened by counselors review on PR #47 (findings 5 and 6).
+  // Two early returns, so the vars-reporting tail sits at one indent level
+  // rather than three.
+  //
+  // Check 1: a profile profileExists() cannot find is a lead starting with
+  // no standing process and nothing saying why (kickoff.ts's own silence
+  // there is correct; nothing else looked).
+  //
+  // Check 2 is keyed on READABLE CONTENT, not on whether profileStatus
+  // resolved a path: resolveProfileFile accepts any existing path, including
+  // one that is not a regular file, and readProfileFile turns a read failure
+  // into null rather than throwing. A profileStatus that only checked
+  // existence would call `profiles/broken/posture.md` (a directory) healthy
+  // while `hive posture`/`hive runbook` both come back empty for it, which
+  // contradicts the "nothing usable" this check exists to catch.
+  //
+  // runbook.md gets its own failure, separate from "nothing at all is
+  // readable": a profile can legitimately ship fewer than all three files
+  // (profiles/simple/ ships only posture.md, and `hive profile create`
+  // itself writes only posture.md by default), so a missing worker.md or
+  // posture.md alone stays quiet. runbook.md is different: it is the lead's
+  // standing process, and its absence is the identical end state
+  // profile: none already FAILs for when there is no runbook pad (check 3)
+  // -- and it is gated the SAME way check 3 is, on that same pad. Chris
+  // caught this by running it: profiles/simple/ is a profile hive itself
+  // ships, and a project on it whose process legitimately lives in a
+  // runbook pad was told its install was broken, ignoring the exact escape
+  // hatch check 3 depends on three lines below. Only consult the pad when
+  // `here` exists: on a fresh clone there is no project row and so no pad
+  // to have, and that case correctly still FAILs (counselors finding 3).
+  const reportProfile = (name: string, cfg: ReturnType<typeof loadProjectYml>["config"]) => {
+    if (!profileExists(name)) {
+      fail("profile", `"${name}" is named in hive.yml but is not on this machine. List what you have with: hive profile list`);
+      return;
     }
+    const resolved = profileStatus(name).files;
+    const readable = (file: ProfileFile) => readProfileFile(name, file) != null;
+    if (!resolved.some((f) => readable(f.file))) {
+      fail("profile", `"${name}" has a directory but none of its files (${PROFILE_FILES.join(", ")}) resolve to readable content, here or in hive's shipped defaults.`);
+      return;
+    }
+    const hasRunbookPad = here != null && getActivePadByName(here.id, "runbook") != null;
+    if (!readable("runbook.md") && !hasRunbookPad) {
+      fail("profile", `"${name}" has no readable runbook.md, here or in hive's shipped defaults, so a lead using it starts with no standing process.`);
+    }
+    const usable = resolved.filter((f) => readable(f.file));
+    info("profile", `${name} (${usable.map((f) => `${f.file}: ${f.source}`).join(", ")})`);
+    for (const f of resolved) {
+      if (f.upstreamMoved) warn("profile", `hive's default ${f.file} changed since you forked it`);
+    }
+    // Both files the project supplies vars to. worker.md is left out on
+    // purpose: its vars include the agent identity hive fills in per spawn,
+    // which would always read as "not set here".
+    const referenced = [...new Set(
+      ["runbook.md", "posture.md"].flatMap((file) => {
+        const text = readProfileFile(name, file as ProfileFile);
+        return text ? templateVars(text) : [];
+      }),
+    )].sort();
+    const defined = Object.keys(cfg?.vars ?? {});
+    const missing = referenced.filter((v) => !defined.includes(v));
+    const unused = defined.filter((v) => !referenced.includes(v));
+    if (referenced.length > 0) {
+      info("profile vars", `runbook and posture reference ${referenced.join(", ")}`);
+      if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);
+      if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
+    }
+  };
+
+  // `here &&` is gone from this branch (counselors finding 3): a fresh
+  // clone, before anything registers the project, has hive.yml on disk and
+  // no project row, and issue #43 opens with exactly that case. Check 3
+  // keeps `here &&`, because it needs here.id for the pad lookup.
+  if (profile) {
+    reportProfile(profile, config);
+  } else if (here && config?.profile === NO_PROFILE && !getActivePadByName(here.id, "runbook")) {
+    // Check 3. cmdRunbook (above) already knows this state is where the
+    // standing process lives nowhere; doctor is where that should surface
+    // before a lead starts, not after `hive runbook` comes back empty. A
+    // project with no profile: key at all is out of scope, deliberately:
+    // that is a legitimate, quiet default, not this state.
+    fail("profile", `this project ${NO_RUNBOOK_PAD_MESSAGE}`);
   }
   check("stale state", () => {
     const r = janitor();

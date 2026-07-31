@@ -53,7 +53,19 @@ migrate();
 // one tmux has an opinion about.
 const realPath = process.env.PATH;
 const noServerTmp = mkdtempSync(join(tmpdir(), "hive-noserver-"));
-const brokenBinDir = mkdtempSync(join(tmpdir(), "hive-brokentmux-"));
+const realTmux = hasTmux
+  ? execFileSync("which", ["tmux"], { encoding: "utf8" }).trim()
+  : "/usr/bin/false";
+
+// A fake tmux that runs `shShouldFail` (a POSIX-sh snippet testing "$@") and,
+// if it does not exit first, passes the call through to the real tmux. One
+// scaffold shared by every "fails call X, honestly passes everything else
+// through" fixture below, rather than a hand-copied heredoc per fixture.
+function fakeTmuxFailing(label, shShouldFail) {
+  const dir = mkdtempSync(join(tmpdir(), `hive-${label}-`));
+  writeFileSync(join(dir, "tmux"), `#!/bin/sh\n${shShouldFail}\nexec ${realTmux} "$@"\n`, { mode: 0o755 });
+  return dir;
+}
 
 // Fails `list-panes -a` and passes everything else through to the real tmux.
 // Failing every call would work for the guards, but then nothing observable
@@ -62,13 +74,9 @@ const brokenBinDir = mkdtempSync(join(tmpdir(), "hive-brokentmux-"));
 // only the batch probe leaves a due wake still deliverable, which is the
 // positive control. It is also the more realistic failure: one call fails,
 // not the whole binary.
-const realTmux = hasTmux
-  ? execFileSync("which", ["tmux"], { encoding: "utf8" }).trim()
-  : "/usr/bin/false";
-writeFileSync(
-  join(brokenBinDir, "tmux"),
-  `#!/bin/sh
-if [ "$1" = "list-panes" ]; then
+const brokenBinDir = fakeTmuxFailing(
+  "brokentmux",
+  `if [ "$1" = "list-panes" ]; then
   for a in "$@"; do
     # Deliberately not one of the strings tmuxSaysNothingThere matches.
     if [ "$a" = "-a" ]; then echo "tmux: connection interrupted" >&2; exit 1; fi
@@ -76,11 +84,20 @@ if [ "$1" = "list-panes" ]; then
       echo "tmux: connection interrupted" >&2; exit 1
     fi
   done
-fi
-exec ${realTmux} "$@"
-`,
-  { mode: 0o755 },
+fi`,
 );
+
+// Issue #40. Fails only `capture-pane`, passing send-keys and everything else
+// through to the real tmux, so a send made through this PATH really lands in
+// the pane while the tail read that follows it fails honestly.
+const captureFailBinDir = fakeTmuxFailing(
+  "capturefail",
+  `if [ "$1" = "capture-pane" ]; then
+  echo "tmux: capture-pane failed" >&2
+  exit 1
+fi`,
+);
+const captureFailPath = `${captureFailBinDir}:${realPath}`;
 
 function withEnv(vars, fn) {
   const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
@@ -155,6 +172,7 @@ after(() => {
   stopEmptyServer();
   rmSync(noServerTmp, { recursive: true, force: true });
   rmSync(brokenBinDir, { recursive: true, force: true });
+  rmSync(captureFailBinDir, { recursive: true, force: true });
 });
 
 const EMPTY = { panes: new Set(), windows: new Set() };
@@ -648,5 +666,59 @@ describe("the tools that changed how they refuse", { skip: hasTmux ? false : "tm
     assert.equal(out.retitled, false, "the pane is not retitled while tmux is unreachable");
     const row = db.prepare("SELECT name FROM agents WHERE id = ?").get(agent);
     assert.equal(row.name, "renamed", "the row is renamed either way");
+  });
+});
+
+describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  beforeEach(reset);
+
+  it("reports a successful send even when the post-send tail read fails", async () => {
+    // capturePane in agent_send's wait_ms branch used to run unwrapped, AFTER
+    // the text was already sent, so a pane that died (or a capture that
+    // failed for any other reason) during the wait turned a successful send
+    // into a reported error. A caller reading "error" here reasonably
+    // retries, and a duplicated instruction mid-task is worse than a missing
+    // tail (issue #40).
+    //
+    // Counselors review on PR #47, finding 1 (both seats independently):
+    // without the final assertion below, this test passes even with the
+    // sendText call deleted from agent_send entirely -- requireLive uses
+    // list-panes (passes through captureFailPath), paneChoiceCheck's own
+    // capture fails and returns awaitingChoice: null so the text branch falls
+    // straight to wait_ms, and the receipt comes out byte-identical with no
+    // text ever having been typed. That proves the receipt SHAPE under a
+    // capture failure, not that the send landed, which is the one thing
+    // issue #40 is actually about: sent: true must mean the keystrokes
+    // reached the pane. Read the pane back with the real tmux binary,
+    // outside captureFailPath (which only fails capture-pane for the MCP
+    // server child, not for this test process's own PATH), so a no-op send
+    // cannot pass silently.
+    const id = agentRow("wait-ms-tail", livePane);
+
+    const receipt = await callTool(
+      "agent_send",
+      { agent_id: id, text: "hello", submit: false, wait_ms: 250 },
+      { PATH: captureFailPath },
+    );
+
+    assert.equal(receipt.sent, true, "the send itself succeeded through send-keys, not capture-pane");
+    assert.equal(receipt.tail, undefined, "the tail could not be read, so it must be omitted, not blank");
+    assert.match(receipt.note, /tail could not be read/);
+
+    const rendered = execFileSync("tmux", ["capture-pane", "-p", "-t", livePane], { encoding: "utf8" });
+    assert.match(rendered, /hello/, "sent: true must mean the keystrokes actually reached the pane");
+  });
+
+  it("still returns the tail on the happy path, unaffected by the wrap", async () => {
+    const id = agentRow("wait-ms-happy", livePane);
+
+    const receipt = await callTool("agent_send", { agent_id: id, text: "hello", submit: false, wait_ms: 250 });
+
+    assert.equal(receipt.sent, true);
+    // A hard-coded empty string would satisfy `typeof tail === "string"`
+    // without proving capture happened at all, or that it captured what was
+    // actually sent (counselors review on PR #47, finding 1).
+    assert.match(receipt.tail, /hello/, "the captured tail must actually show what was just sent");
+    assert.equal(receipt.note, undefined);
   });
 });
