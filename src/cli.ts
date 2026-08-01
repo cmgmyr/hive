@@ -836,11 +836,23 @@ function cmdStatus(): void {
         )
         .get(project.id) as { n: number }
     ).n;
-    const timers = (
-      db
-        .prepare(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`)
-        .get(project.id) as { n: number }
-    ).n;
+    // Issue #27. held is the half that was invisible before this lane: a
+    // wake stuck behind a modal choice read identically to one simply not
+    // due yet in the plain pending count. COUNT(held_at) skips NULLs, so one
+    // query over the same PENDING row set (ACTIVE_TIMER_WHERE) gets both
+    // numbers without a second round trip. NOT a guarantee that this only
+    // ever counts a wake stuck right now, though - counselors A4: the held
+    // write itself is guarded against a concurrent claim, but the clearing
+    // write (deliver()'s bestEffortRun) is best-effort and can silently lose
+    // to SQLITE_BUSY under lock contention, which the file's own comment on
+    // that write calls the ordinary case, not the exotic one. This count can
+    // then include a wake that delivered fine moments ago whose clearing
+    // write simply never landed.
+    const { timers, heldWakes } = db
+      .prepare(
+        `SELECT COUNT(*) AS timers, COUNT(held_at) AS heldWakes FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
+      )
+      .get(project.id) as { timers: number; heldWakes: number };
     if (agents.length === 0 && todos === 0 && timers === 0) continue;
     anyOutput = true;
     console.log(`\n${project.name}  (${project.path})  session: ${sessionName(project.id)}`);
@@ -854,7 +866,9 @@ function cmdStatus(): void {
       console.log(`  ${a.kind === "command" ? "cmd  " : "agent"}  ${a.name.padEnd(20)} ${state}`);
     }
     if (agents.length === 0) console.log("  no running agents or commands");
-    console.log(`  open todos: ${todos}   pending wake-ups: ${timers}`);
+    console.log(
+      `  open todos: ${todos}   pending wake-ups: ${timers}${heldWakes > 0 ? ` (${heldWakes} held)` : ""}`,
+    );
   }
   if (!anyOutput) console.log("Nothing running and no open work in any project.");
 }

@@ -35,6 +35,10 @@ export interface TimerRow {
   fired_at: string | null;
   cancelled_at: string | null;
   fire_count: number;
+  typed_at: string | null;
+  held_at: string | null;
+  held_reason: string | null;
+  confirmed_at: string | null;
 }
 
 // The single definition of "this timer is still live" (one-shot pending, or
@@ -64,6 +68,21 @@ function stmt(sql: string): Statement {
     prepared.set(sql, s);
   }
   return s;
+}
+
+// Issue #27. Bookkeeping about a delivery, never delivery itself: same
+// precedent as src/hook.ts's record() (.claude/rules/worker-state.md). A
+// throw from a write like this must cost only the write, never abort the
+// rest of a tick's candidates or turn an already-successful delivery into a
+// thrown exception. Every write this lane added to the scheduler (held_at,
+// typed_at, confirmed_at) is exactly this shape, so it is one function
+// rather than the same try/catch retyped at each call site.
+function bestEffortRun(sql: string, ...params: unknown[]): void {
+  try {
+    stmt(sql).run(...params);
+  } catch {
+    // Best-effort bookkeeping; see comment above.
+  }
 }
 
 let ticking = false;
@@ -133,7 +152,13 @@ function cancelTimer(timerId: number): void {
 // cap in hook.ts keeps the worst case near 200MB rather than unbounded. Those
 // two constants multiply, so moving either one moves that figure: see
 // PAYLOAD_LIMIT in src/hook.ts.
-const LOG_RETENTION = "-7 days";
+// Exported (counselors A6) so wake_list's recently_delivered section can
+// bound itself by the same window: past this, checkConfirmations() can never
+// find a matching prompt row again regardless, so a stale one-shot's
+// "unconfirmed" would otherwise mean "hive stopped looking days ago" rather
+// than "waiting on an ack", the exact ambiguity the tri-state exists to
+// remove.
+export const LOG_RETENTION = "-7 days";
 const LOG_MAX_ROWS = 20_000;
 
 // In tick() rather than in janitor(), and that is not tidiness. janitor answers
@@ -181,6 +206,118 @@ function pruneStateLog(): void {
   }
 }
 
+// Issue #27. Confirmation is an OBSERVATION - a UserPromptSubmit (event
+// 'prompt') row in agent_state_log for deliver_actor, at or after typed_at -
+// never inferred from an absent row. A busy pane queues a paste for minutes,
+// so silence is not evidence of loss; this drives REPORTING only and must
+// never drive retry.
+//
+// Counselors A1. (actor, time) ALONE is a proxy, not an observation: any
+// prompt row for deliver_actor at or after typed_at matched, including one
+// caused by something else entirely - two wakes to one pane where the first
+// answers a dialog nobody read while the second's legitimate prompt row
+// confirms it, or a background subagent's task-notification landing as a
+// fresh user turn with no wake involved at all. The discriminator was sitting
+// unused: deliver() (below) always prefixes what it types with
+// `[hive wake #<id>...] `, and Claude Code's UserPromptSubmit payload carries
+// the exact text submitted in its "prompt" field, so agent_state_log.payload
+// (src/hook.ts's record(), stored raw) contains that prefix verbatim whenever
+// the wake's own paste is what got submitted. PAYLOAD_LIMIT truncates the
+// TAIL (src/hook.ts), so the prefix - which starts the prompt field - always
+// survives. Two terminator forms because the prefix is either
+// `#<id>] ` (no note) or `#<id>, <note>] ` (maybeFireIdle's "max wait
+// reached"): matching only `#<id>]` would silently miss every idle/max-wait
+// wake.
+//
+// confirmed_at is written HERE, by the scheduler, and nowhere else. The hook
+// (src/hook.ts) never learns timers exist: it runs on every turn of every
+// worker, is deliberately minimal, and already swallows its own failures:
+// making it a second writer of delivery state would be a second thing to
+// reconcile, for the same reason record() stays ignorant of everything but
+// the state it just decided.
+//
+// Why a stored column at all, rather than a plain join at read time in
+// wake_list/status: pruneStateLog (above) deletes by a GLOBAL id span across
+// EVERY actor (LOG_MAX_ROWS), not per-actor, so a quiet actor's own prompt
+// row can be evicted by a completely unrelated actor's churn while the timer
+// row it confirmed sits untouched. A confirmation computed fresh on every
+// read would then silently regress from confirmed back to unconfirmed the
+// moment that eviction happens - the exact class of small lie #27 exists to
+// remove, just moved from "fired means delivered" to "confirmed sometimes
+// un-confirms itself". Stamping it once, the first tick that observes it,
+// makes the fact durable against a table that owes it nothing. Positive-only
+// and one-way WITHIN one delivery: this UPDATE never clears a confirmed_at
+// it did not just set, and nothing here can move a timer OUT of the WHERE
+// clause's confirmed_at IS NULL once IN. That promise is about one delivery,
+// not about a row a REPEATING timer reuses across many - fireDelay's own
+// claim (below) resets confirmed_at to NULL at the start of each new cycle,
+// counselors A3, precisely so a stale confirmation from cycle N-1 cannot
+// outlive cycle N.
+//
+// Bounded to timers typed within LOG_RETENTION, the same window
+// pruneStateLog uses to decide what agent_state_log itself still owes an
+// answer for - a typed_at older than that can never find its prompt row
+// again regardless, confirmed or not, so there is nothing to keep scanning
+// for. Runs every tick, unconditionally, for the same reason pruneStateLog
+// does: it touches no tmux and has no reason to wait on one being reachable.
+//
+// One correlated UPDATE rather than a SELECT-then-loop-then-UPDATE: the
+// candidate set here is normally single digits (typed-but-unconfirmed wakes
+// within the retention window), so this is not a hot-path optimisation, but
+// a single statement is also simply less code than the three-way split it
+// replaced. The subquery's MIN(created_at) is the EARLIEST matching prompt
+// row, matching the original loop's ORDER BY ... LIMIT 1. A timer with no
+// matching row gets confirmed_at set to NULL, which it already is - a
+// harmless no-op, not a violation of "positive-only, never cleared": nothing
+// here can ever move a timer OUT of the WHERE clause's confirmed_at IS NULL
+// once it has been set.
+//
+// Counselors A5. That "harmless no-op" is still a WRITE: an UPDATE opens its
+// transaction at statement start regardless of whether any row's value
+// actually changes, and nothing prunes `timers` (no DELETE FROM timers
+// anywhere in src/), so the typed-but-unconfirmed set only grows - until L4
+// lands, every lead-targeted wake is permanently unconfirmable and
+// accumulates for the whole retention window. pruneStateLog, just above,
+// states the rule this used to violate: "A DELETE that matches nothing still
+// opens a write transaction... so the common case must not take the write
+// lock at all." Same shape here: a cheap read-first guard (SELECT 1 LIMIT 1)
+// decides whether there is anything to confirm at all before the UPDATE ever
+// runs, and AND EXISTS inside the UPDATE itself means even a false positive
+// from the read-then-write race (a matching row evicted in between) still
+// touches no row. That race is benign for the same reason it is in
+// pruneStateLog: a missed pass is corrected by the next tick, 3 seconds
+// later. Deliberately NOT adding an index here even though the read is still
+// a full scan when it DOES find something to do: that is a second migration,
+// #15 (todo_archive) is already queued behind this one, and two lanes
+// appending to MIGRATIONS concurrently collide at rebase.
+// Exported so a test can pin the AND EXISTS guard's row count directly via
+// SQLite's changes(), rather than through tick()'s noisy total_changes()
+// (janitor, pruneStateLog and maybeBackupHourly all write independently of
+// this).
+export function checkConfirmations(): void {
+  const confirmationQuery = `
+       SELECT MIN(created_at) FROM agent_state_log
+        WHERE actor_id = timers.deliver_actor AND event = 'prompt' AND created_at >= timers.typed_at
+          AND (payload LIKE '%[hive wake #' || timers.id || ']%'
+               OR payload LIKE '%[hive wake #' || timers.id || ',%')`;
+  try {
+    const pending = stmt(
+      `SELECT 1 AS hit FROM timers
+        WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?) LIMIT 1`,
+    ).get(LOG_RETENTION);
+    if (!pending) return;
+    stmt(
+      `UPDATE timers SET confirmed_at = (${confirmationQuery})
+       WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?)
+         AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
+    ).run(LOG_RETENTION);
+  } catch {
+    // Best-effort bookkeeping, same precedent as bestEffortRun above: a
+    // failure here costs only this tick's confirmation pass, never delivery,
+    // and the next tick tries again.
+  }
+}
+
 // One sweep-and-fire pass. The snapshot is a parameter for the same reason
 // janitor's is: it is the one input that decides everything here, and handing
 // it in is the difference between driving a tick and simulating a tmux.
@@ -207,6 +344,14 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // null rather than be resolved here.
     if (snapshot === undefined) snapshot = liveTargets();
     janitor(snapshot);
+    // Before pruneStateLog, not after: a prompt row about to be evicted this
+    // very tick (LOG_MAX_ROWS is a global cap, so a quiet actor's row can be
+    // the one that falls off the end) still gets its one chance to confirm a
+    // wake before it is gone for good. That ordering is the entire reason
+    // checkConfirmations stamps a durable memo rather than being a plain
+    // read - reversed, this tick could delete the only evidence it was ever
+    // going to see.
+    checkConfirmations();
     pruneStateLog();
     // Issue #23: hourly, rate-limited across every concurrent instance by an
     // atomic claim inside maybeBackupHourly itself. Placed beside the other
@@ -299,9 +444,54 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   //
   // Above claimOneShot for the same reason the liveness check is: after the
   // claim, "not now" and "never" are the same thing.
-  if (awaitingChoice(timer.deliver_pane, choices) === true) return false;
+  if (awaitingChoice(timer.deliver_pane, choices) === true) {
+    // Issue #27. This records that a hold happened; it does not change the
+    // answer above, which was already false before this line. The most
+    // recent hold only, not a count: a wake stuck behind a dialog for an
+    // hour writes the same row every tick, not one per tick.
+    //
+    // deliverable() used to be a pure predicate; this write makes it one
+    // with a side effect, and that side effect must never cost more than
+    // itself. Several MCP server instances tick concurrently against the
+    // same WAL store, so every one of them writes this same row on every
+    // tick a dialog stays up - SQLITE_BUSY here is the ordinary case, not
+    // the exotic one. Before this write existed, a modal pane could not
+    // abort the rest of this tick's candidates; a throw escaping this
+    // UPDATE would newly let it, which is a behaviour change this lane's
+    // "reporting only" boundary does not allow. bestEffortRun is the same
+    // precedent as src/hook.ts's record() (see .claude/rules/worker-state.md):
+    // this is forensics about a hold, not the hold itself, so a failure to
+    // record it costs the record, never the candidates after it in this tick.
+    //
+    // Counselors A4. GUARDED by due_at, the same optimistic token fireDelay's
+    // own claim already uses - the write used to carry no guard at all.
+    // `timer` here is the row THIS tick read at its candidates SELECT, and a
+    // concurrent instance can claim and fully deliver the SAME repeating
+    // timer (a one-shot never stays a candidate past its claim, so only a
+    // repeating timer is exposed) in the gap between that read and this
+    // write: this tick's own earlier candidates each cost a claim, several
+    // capture-pane forks and sendText's real ENTER_DELAY_MS sleep, so by the
+    // time this timer is reached its due_at may already have moved on. Without
+    // the guard, that write lands anyway and reports a wake that delivered on
+    // schedule as stuck behind a dialog - `hive status` then shows "(1 held)"
+    // for nothing, and for a repeating timer nothing clears it until the next
+    // cycle, potentially the whole repeat period. WHERE due_at = ? makes the
+    // write a no-op exactly when a concurrent claim has already moved this row
+    // past the state this tick observed.
+    bestEffortRun(
+      `UPDATE timers SET held_at = datetime('now'), held_reason = ?
+       WHERE id = ? AND cancelled_at IS NULL
+         AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
+      HELD_REASON_MODAL_CHOICE,
+      timer.id,
+      timer.due_at,
+    );
+    return false;
+  }
   return true;
 }
+
+const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
 
 async function fireDelay(
   timer: TimerRow,
@@ -312,10 +502,20 @@ async function fireDelay(
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
+    // Issue #27, counselors A3. A repeating timer reuses one row across many
+    // deliveries, and this claim - not deliver()'s post-send write - is where
+    // a NEW delivery cycle begins. The previous version only reset these
+    // columns after sendText returned, so a THROWING sendText on cycle 5 left
+    // cycle 1's typed_at/confirmed_at in place: fire_count advanced, the
+    // claim succeeded, and wake_list reported a cycle that was never typed as
+    // confirmed. Resetting here means a failed send leaves exactly the same
+    // signal a one-shot's failed send does - fired_at set, everything else
+    // NULL - instead of stale success data from a previous cycle.
     claimed =
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
-           fired_at = datetime('now'), fire_count = fire_count + 1
+           fired_at = datetime('now'), fire_count = fire_count + 1,
+           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL
          WHERE id = ? AND due_at = ? AND cancelled_at IS NULL`,
       ).run(seconds, timer.id, timer.due_at).changes === 1;
   } else {
@@ -501,6 +701,52 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   try {
     await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
   } finally {
+    // Unchanged from before this lane: a throw out of sendText still
+    // propagates from here, past the typed_at write below, so typed_at
+    // stays NULL exactly as the column's acceptance requires. Cache
+    // invalidation runs on both the success and the throw path, exactly as
+    // it did before typed_at existed.
     choices.delete(timer.deliver_pane);
   }
+  // Issue #27. typed_at is the attempt, set only once sendText above has
+  // returned without throwing. This write sits OUTSIDE the try/finally on
+  // purpose: sendText has already succeeded by this line, so a failure
+  // recording that fact must cost the record, never retroactively turn an
+  // already-successful delivery into a thrown exception that aborts the
+  // rest of this tick's candidates (bestEffortRun is the same precedent as
+  // deliverable()'s held_at write, above, and src/hook.ts's record(); see
+  // .claude/rules/worker-state.md). held_at/held_reason are cleared on the
+  // same write, since a hold that is now resolved should stop being
+  // reported as the wake's current state.
+  //
+  // confirmed_at IS ALSO CLEARED HERE, redundantly for a repeating timer -
+  // the due_at claim UPDATE above (fireDelay) already reset it, along with
+  // typed_at/held_at/held_reason, the moment this cycle was claimed, which is
+  // where a NEW delivery cycle actually begins (counselors A3: a throwing
+  // sendText must not leave a previous cycle's success recorded against this
+  // one). For a ONE-SHOT wake, claimOneShot never touches these columns, so
+  // this line is the only place held_at/held_reason get cleared once a
+  // previously-held wake finally delivers - not a no-op there. "Positive-only,
+  // never cleared" (the comment on checkConfirmations, above) is a promise
+  // about ONE delivery, not about a row a repeating timer reuses across many;
+  // "resets confirmed_at on every re-delivery of a repeating timer" in
+  // test/delivery-state.test.mjs is the test that pins both halves.
+  //
+  // MILLISECONDS, matching agent_state_log.created_at's own
+  // strftime('%Y-%m-%d %H:%M:%f', 'now') exactly, not datetime('now')'s
+  // whole seconds. checkConfirmations compares created_at >= typed_at as an
+  // EXACT match, not a lenient one (the part C gate's fired_at-vs-created_at
+  // false red, fixed in #63, is the opposite case: floor to the coarser
+  // resolution when a lenient match is wanted). A whole-second typed_at
+  // would match any prompt row in the same wall second, including one
+  // written up to 999ms before this line ever ran, and that is a FALSE
+  // CONFIRMED - a target's own unrelated turn read as having acknowledged a
+  // wake it had not been sent yet. typed_at is brand new in this lane and
+  // nothing else reads its format, so there is no compatibility reason to
+  // keep it coarse.
+  bestEffortRun(
+    `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'),
+       held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
+    timer.id,
+  );
 }

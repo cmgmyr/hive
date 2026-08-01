@@ -202,6 +202,18 @@ CREATE TABLE agents (
 );
 CREATE INDEX idx_agents_project ON agents(project_id, status);
 `,
+  // fired_at is the CLAIM timestamp: the atomic one-shot claim (or the
+  // repeating due_at UPDATE) sets it, before deliver() ever types into a
+  // pane. It does not mean "delivered" and never has; issue #27's typed_at
+  // (added in a later migration, below) is the attempt that follows it, set
+  // only after sendText returns without throwing. Do not rename, repurpose,
+  // or add a claimed_at that duplicates this column: it sits inside
+  // ACTIVE_TIMER_WHERE, which the scheduler's own tick reads, it sits inside
+  // idx_timers_active, a partial index, and already-running MCP servers keep
+  // executing old code against a newer schema, so they keep writing fired_at
+  // with this exact meaning until their sessions restart. A column whose
+  // meaning changes under a fleet of live writers is data corruption, not a
+  // refactor.
   `
 ALTER TABLE agents ADD COLUMN agent_state TEXT NOT NULL DEFAULT 'unknown';
 ALTER TABLE agents ADD COLUMN state_changed_at TEXT;
@@ -313,6 +325,35 @@ CREATE TABLE agent_state_log (
 -- Named here so it does not read as an index nobody uses.
 CREATE INDEX idx_agent_state_log_actor ON agent_state_log(actor_id, id);
 CREATE INDEX idx_agent_state_log_created ON agent_state_log(created_at);
+`,
+  // Issue #27: delivery is a keystroke, not a confirmation. fired_at (defined
+  // above, at the timers CREATE TABLE) is the CLAIM; these four columns let
+  // the scheduler report what happened after the claim without changing when
+  // a wake fires or where it is typed. All nullable, all additive, nothing in
+  // src/ reads or writes them yet - that lands in a later commit.
+  //
+  //   typed_at       hive typed it at the pane. An assertion, set only after
+  //                  sendText returns without throwing, never before it is
+  //                  called. A throwing sendText must leave this NULL: that
+  //                  is the whole reason the column exists.
+  //   held_at        + held_reason. The most recent hold, not a count.
+  //                  Recorded when deliverable() returns false for a modal
+  //                  pane; deliverable()'s answer itself does not change, the
+  //                  timer stays pending and retries on a later tick exactly
+  //                  as it does today. Cleared or superseded once delivery
+  //                  succeeds.
+  //   confirmed_at   reserved for the positive observation that a
+  //                  UserPromptSubmit row arrived for deliver_actor at or
+  //                  after typed_at. Whether it is written here or computed
+  //                  at query time against agent_state_log is decided in a
+  //                  later step; either way it is an observation, never
+  //                  inferred from silence. Absence of an ack is not evidence
+  //                  of loss.
+  `
+ALTER TABLE timers ADD COLUMN typed_at TEXT;
+ALTER TABLE timers ADD COLUMN held_at TEXT;
+ALTER TABLE timers ADD COLUMN held_reason TEXT;
+ALTER TABLE timers ADD COLUMN confirmed_at TEXT;
 `,
 ];
 

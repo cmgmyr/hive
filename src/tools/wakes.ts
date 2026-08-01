@@ -4,7 +4,7 @@ import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
 import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
-import { ACTIVE_TIMER_WHERE, type TimerRow } from "../scheduler.js";
+import { ACTIVE_TIMER_WHERE, LOG_RETENTION, type TimerRow } from "../scheduler.js";
 import { projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { liveTargets } from "../tmux.js";
@@ -52,6 +52,124 @@ function pendingWakes(projectId: number): TimerRow[] {
     .prepare(`SELECT * FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} ORDER BY id`)
     .all(projectId) as TimerRow[];
 }
+
+// Issue #27. A ONE-SHOT wake leaves pendingWakes() the moment it fires -
+// ACTIVE_TIMER_WHERE excludes it on purpose (src/scheduler.ts), and widening
+// that clause would change what the scheduler FIRES, not just what is
+// reported (pinned by test/delivery-state.test.mjs). So "delivered,
+// unconfirmed" has nowhere to appear without a second, separate section.
+// This is that section: one-shot only (a repeating timer never leaves
+// pendingWakes(), so it would only be a duplicate row here), most recent
+// fired_at first, bounded by RECENTLY_FIRED_LIMIT so wake_list's output
+// cannot grow without bound in a busy project ("write tools return slim
+// receipts; token cost is a design input", CLAUDE.md).
+const RECENTLY_FIRED_LIMIT = 10;
+
+// Counselors A6. Also bounded by LOG_RETENTION (the same window
+// checkConfirmations, src/scheduler.ts, uses to decide what it can still
+// confirm), and that second bound is not cosmetic. Past LOG_RETENTION, a
+// typed one-shot's confirmed_at can never change again - hive has
+// permanently stopped looking - but deliveryState() below still renders it
+// as "unconfirmed", the identical string used for a wake typed eight seconds
+// ago that hive is actively still watching. A quiet project would otherwise
+// show a one-shot fired months ago under "recently" and report it as
+// waiting on an ack it structurally cannot ever receive. Dropping those rows
+// loses no information a lead could act on; it just stops the section lying
+// about what "unconfirmed" means.
+// Counselors A7. `, id DESC` is a real tiebreaker, not decoration: fired_at
+// is whole-second (src/scheduler.ts's datetime('now')) and a single tick
+// fires every due timer in one loop, so a burst sharing one second is
+// ordinary, not exotic. Without a tiebreak, ORDER BY carries no stability
+// guarantee for equal keys, so which rows survive LIMIT can differ between
+// two calls with no intervening write.
+function recentlyFiredWakes(projectId: number): TimerRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM timers
+       WHERE project_id = ? AND cancelled_at IS NULL AND fired_at IS NOT NULL AND repeat_every_ms IS NULL
+         AND fired_at >= datetime('now', ?)
+       ORDER BY fired_at DESC, id DESC LIMIT ${RECENTLY_FIRED_LIMIT}`,
+    )
+    .all(projectId, LOG_RETENTION) as TimerRow[];
+}
+
+// A wake's target has never written a hook row at all (the lead, until issue
+// #27's L4 lands) versus a target that writes hook rows but simply has not
+// submitted one yet: an absent confirmed_at means one of those two very
+// different things, and reporting only "not confirmed" for both is exactly
+// the kind of small lie #27 exists to remove (see plan-l3-delivery-states,
+// "WHAT L3 CAN AND CANNOT REPORT ABOUT THE LEAD"). Every spawned agent gets
+// an agents row (running or closed) the moment it is spawned; the lead does
+// not, today. Existence, not liveness - a closed worker's earlier prompt
+// rows are still real evidence.
+//
+// Memoized per wake_list call, not globally: a repeating wake or several
+// wakes to the same worker would otherwise repeat an identical lookup once
+// per row across both sections below. Not worth a shared cache across calls
+// - the whole answer depends on `agents`, which changes on every spawn.
+function makeChannelChecker(): (actorId: string) => boolean {
+  const known = new Map<string, boolean>();
+  return (actorId) => {
+    let has = known.get(actorId);
+    if (has === undefined) {
+      has = db.prepare("SELECT 1 FROM agents WHERE actor_id = ?").get(actorId) !== undefined;
+      known.set(actorId, has);
+    }
+    return has;
+  };
+}
+
+type ConfirmationStatus = "confirmed" | "unconfirmed" | "no_confirmation_channel";
+
+// Shared by both sections below so a wake's delivery state reads the same
+// way wherever it appears. confirmation is deliberately a tri-state rather
+// than boolean-plus-null: "unconfirmed" and "no_confirmation_channel" are
+// both an absent confirmed_at, and collapsing them back into one value would
+// recreate the exact ambiguity this field exists to remove.
+function deliveryState(
+  t: TimerRow,
+  hasChannel: (actorId: string) => boolean,
+): {
+  typed_at: string | null;
+  held_at: string | null;
+  held_reason: string | null;
+  confirmed_at: string | null;
+  confirmation: ConfirmationStatus | null;
+} {
+  return {
+    typed_at: t.typed_at,
+    held_at: t.held_at,
+    held_reason: t.held_reason,
+    confirmed_at: t.confirmed_at,
+    // null (rather than "unconfirmed") when typed_at itself is unset: this
+    // is either a wake still pending delivery, or - for a fired one-shot in
+    // the recently-delivered section - a claim whose sendText never
+    // completed (issue #27's own motivating defect). Neither is "waiting on
+    // an ack", so forcing either into the confirmed/unconfirmed pair would
+    // hide the more urgent fact that nothing was ever typed at all.
+    confirmation:
+      t.typed_at == null
+        ? null
+        : t.confirmed_at != null
+          ? "confirmed"
+          : hasChannel(t.deliver_actor)
+            ? "unconfirmed"
+            : "no_confirmation_channel",
+  };
+}
+
+const truncateBody = (body: string): string => (body.length > 120 ? `${body.slice(0, 120)}…` : body);
+
+// The five fields every wake carries regardless of which section it appears
+// in, factored out so the two map() calls below cannot drift apart on a
+// field they are both supposed to report identically.
+const baseWakeFields = (t: TimerRow) => ({
+  wake_id: t.id,
+  kind: t.kind,
+  body: truncateBody(t.body),
+  owner: t.owner,
+  deliver_to: t.deliver_actor,
+});
 
 export function registerWakes(server: McpServer): void {
   server.registerTool(
@@ -206,24 +324,33 @@ export function registerWakes(server: McpServer): void {
   server.registerTool(
     "wake_list",
     {
-      description: "List pending wake-ups in this project.",
+      description:
+        "List pending wake-ups in this project, plus recently_delivered: the last " +
+        `${RECENTLY_FIRED_LIMIT} one-shot wakes that have already fired, with their delivery ` +
+        "state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the " +
+        "pending list the moment it fires; recently_delivered is where to check whether it " +
+        "was actually typed and, if its target has a confirmation channel, acknowledged.",
       inputSchema: { project_id: projectIdParam },
     },
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
+        const hasChannel = makeChannelChecker();
         return {
           project_id: projectId,
           wakes: pendingWakes(projectId).map((t) => ({
-            wake_id: t.id,
-            kind: t.kind,
-            body: t.body.length > 120 ? `${t.body.slice(0, 120)}…` : t.body,
-            owner: t.owner,
-            deliver_to: t.deliver_actor,
+            ...baseWakeFields(t),
             due_at: t.due_at,
             max_wait_at: t.max_wait_at,
             repeating: t.repeat_every_ms != null,
             fire_count: t.fire_count,
+            ...deliveryState(t, hasChannel),
+          })),
+          recently_delivered: recentlyFiredWakes(projectId).map((t) => ({
+            ...baseWakeFields(t),
+            fired_at: t.fired_at,
+            fire_count: t.fire_count,
+            ...deliveryState(t, hasChannel),
           })),
         };
       }),

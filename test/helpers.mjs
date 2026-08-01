@@ -408,10 +408,31 @@ export function firedSessionStart(stdout) {
 // rather than opening its own: callers already picked their store via
 // HIVE_DATA_DIR before importing dist/db.js, and this must not become a
 // second way to choose one.
-export function insertStateLogRow(db, actorId, event, state, agoSeconds) {
+// Milliseconds, matching agent_state_log.created_at's own real format
+// (src/db.ts: strftime('%Y-%m-%d %H:%M:%f', 'now')), not datetime('now')'s
+// whole seconds - every existing caller here only reads minute-or-coarser
+// ages off the result, so the extra precision changes nothing for them, but
+// a caller testing an exact-timestamp comparison (issue #27's
+// checkConfirmations) needs the real column shape, not a rounded stand-in.
+//
+// payload defaults to '{}', an UNRELATED row that carries no wake's marker -
+// issue #27 counselors A1 made checkConfirmations() require the delivered
+// `[hive wake #<id>...] ` prefix inside payload, so a caller that means to
+// actually confirm a specific wake must pass wakeConfirmPayload(wakeId)
+// below, not rely on time order alone.
+export function insertStateLogRow(db, actorId, event, state, agoSeconds, payload = "{}") {
   db.prepare(
-    "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, ?, ?, '{}', datetime('now', ?))",
-  ).run(actorId, event, state, `-${agoSeconds} seconds`);
+    "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', ?))",
+  ).run(actorId, event, state, payload, `-${agoSeconds} seconds`);
+}
+
+// The minimum payload checkConfirmations() (src/scheduler.ts) will correlate
+// to a given wake: a real UserPromptSubmit's "prompt" field carries the exact
+// text hive typed, which always starts with deliver()'s `[hive wake #<id>] `
+// prefix. Shaped as real JSON, not just a bare substring, so a test seeding
+// this is exercising the same LIKE match a real hook-written payload does.
+export function wakeConfirmPayload(wakeId) {
+  return JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: `[hive wake #${wakeId}] acknowledged` });
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

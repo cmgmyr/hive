@@ -742,7 +742,9 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
   }
 
   const timerRow = (id) =>
-    db.prepare("SELECT fired_at, cancelled_at, fire_count FROM timers WHERE id = ?").get(id);
+    db
+      .prepare("SELECT fired_at, cancelled_at, fire_count, typed_at, held_at, held_reason FROM timers WHERE id = ?")
+      .get(id);
 
   it("sees a dialog on the screen", async () => {
     // The regex is claude's chrome, so it gets its own assertion rather than
@@ -865,6 +867,12 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
       !delivered().includes("MUSTNOTLAND"),
       "nothing may be typed at a pane whose Enter key means yes",
     );
+    // Issue #27. The hold itself must be legible even though the timer is
+    // otherwise untouched: deliverable()'s answer did not change, but a lead
+    // reading this row should see why it has not fired yet.
+    assert.equal(held.typed_at, null, "not typed yet: the pane was never written to");
+    assert.notEqual(held.held_at, null, "the hold must be recorded, not just inferred from silence");
+    assert.notEqual(held.held_reason, null, "and the reason must say why, not just that");
 
     clearDialog();
     await until(() => paneAwaitingChoice(dialogPane) === false);
@@ -877,8 +885,12 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
       new RegExp(`\\[hive wake #${wake}\\] MUSTNOTLAND`),
       "the same wake, still whole, delivered late rather than lost",
     );
-    assert.notEqual(timerRow(wake).fired_at, null);
-    assert.equal(timerRow(wake).fire_count, 1, "and delivered exactly once");
+    const done = timerRow(wake);
+    assert.notEqual(done.fired_at, null);
+    assert.equal(done.fire_count, 1, "and delivered exactly once");
+    assert.notEqual(done.typed_at, null, "typed_at follows a successful sendText");
+    assert.equal(done.held_at, null, "a resolved hold must stop being reported as current");
+    assert.equal(done.held_reason, null);
   });
 });
 

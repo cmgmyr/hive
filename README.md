@@ -362,7 +362,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | **wake-ups** | | |
 | `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action) |
 | `wake_when_idle` | Fires when watched workers go idle, using exact hook state | The lead's main loop: dispatch, set this, go quiet; never poll |
-| `wake_list` | Lists pending wake-ups | To see what is scheduled |
+| `wake_list` | Lists pending wake-ups, plus recently delivered ones with their typed/held/confirmed state | To see what is scheduled, and whether a fired wake actually landed |
 | `wake_cancel` | Cancels a pending wake-up you own | When the plan changes |
 | **pads** | | |
 | `pad_write` | Creates a named pad, or overwrites one with `expected_revision` | Shared plans, findings, the runbook, the board |
