@@ -111,25 +111,37 @@ function gitPrimaryRoot(dir: string): string | null {
   }
 }
 
-function detectFromCwd(): number | null {
-  let cwd: string;
-  try {
-    cwd = realpathSync(process.cwd());
-  } catch {
-    return null;
-  }
-  const direct = matchRegistered(cwd);
+// The one resolution rule: a directory belongs to the project whose root it
+// sits under, or its git primary root's project, or nothing.
+function detectFromDir(dir: string): number | null {
+  const direct = matchRegistered(dir);
   if (direct != null) return direct;
-  const root = gitPrimaryRoot(cwd);
+  const root = gitPrimaryRoot(dir);
   return root ? matchRegistered(root) : null;
 }
 
-// Non-registering lookup for read-only callers (hive statusline): resolves
-// the cwd to an already-registered project or null. Unlike
-// effectiveProjectId, an unknown directory is never registered.
-export function findProjectForCwd(): Project | null {
-  const id = detectFromCwd();
+function detectFromCwd(): number | null {
+  return findProjectForDir(process.cwd())?.id ?? null;
+}
+
+// Non-registering lookup: resolves a directory to an already-registered
+// project or null. Unlike effectiveProjectId, an unknown directory is never
+// registered - callers on this path (agent_spawn's cwd guard, hive
+// statusline) must never create a project row as a side effect of checking
+// one.
+export function findProjectForDir(dir: string): Project | null {
+  let resolved: string;
+  try {
+    resolved = realpathSync(dir);
+  } catch {
+    return null;
+  }
+  const id = detectFromDir(resolved);
   return id == null ? null : (getProject(id) ?? null);
+}
+
+export function findProjectForCwd(): Project | null {
+  return findProjectForDir(process.cwd());
 }
 
 const projectLock = process.env.HIVE_PROJECT_LOCK === "1";

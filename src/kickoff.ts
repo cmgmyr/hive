@@ -131,7 +131,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     // start. hive doctor and agent_list are where dead rows get resolved, so
     // alive is passed as null (not probed) rather than guessed.
     const { deriveProvenance, describeForHuman } = await import("./stateProvenance.js");
-    lines.push("", "WORKERS (per the store; agent_list confirms they are alive)");
+    lines.push("", "WORKERS (per the store, NOT probed; agent_list to confirm they are alive)");
     for (const a of agents) {
       lines.push(`  ${a.name} [${describeForHuman(deriveProvenance(a, null))}] ${a.cwd}`);
     }

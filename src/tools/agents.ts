@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { currentActor, resolveProject } from "../context.js";
+import { currentActor, findProjectForDir, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
@@ -339,6 +339,27 @@ export function registerAgents(server: McpServer): void {
         if (args.cwd) {
           cwd = realpathSync(args.cwd);
           if (!statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${args.cwd}`);
+          // The worker resolves its own scope from this cwd at runtime
+          // (src/context.ts's detectFromCwd), independent of what project
+          // this spawn resolved above. An unregistered cwd is the ordinary
+          // case (a worktree matches by git primary root; a scratch
+          // directory belongs to nobody) and stays allowed. Only refuse when
+          // cwd names a DIFFERENT project that is already registered: a
+          // caller who means it passes project_id for the cwd's project.
+          const cwdProject = findProjectForDir(cwd);
+          if (cwdProject && cwdProject.id !== project.id) {
+            // project_id is the deliberate escape hatch, but only an
+            // unlocked caller (a lead) can use it: assertAccessible refuses
+            // any project_id but the home one under HIVE_PROJECT_LOCK=1, so
+            // a locked worker told to "pass project_id" would just get a
+            // second, unrecoverable refusal. Tell it the truth instead.
+            const remedy = process.env.HIVE_PROJECT_LOCK === "1"
+              ? `This session is locked to project ${project.id} (HIVE_PROJECT_LOCK=1) and cannot spawn outside it.`
+              : `Pass project_id: ${cwdProject.id} to spawn into the cwd's project deliberately.`;
+            throw new Error(
+              `cwd ${cwd} belongs to project "${cwdProject.name}" (id ${cwdProject.id}), but this spawn resolved to project "${project.name}" (id ${project.id}). ${remedy}`,
+            );
+          }
         }
 
         const name = args.name != null

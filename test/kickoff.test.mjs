@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import Database from "better-sqlite3";
 import { firedSessionStart as fired, KICKOFF, McpClient, isolateTmux, runCli, runNode, scratchDirs } from "./helpers.mjs";
 
 // The hook and the CLI both start hive, which probes tmux; isolate first.
@@ -118,6 +119,43 @@ describe("hive kickoff gates", () => {
     assert.match(additionalContext, /land the schema/);
     assert.match(additionalContext, /BLOCKED: 1 todo/);
     assert.doesNotMatch(additionalContext, /depends on schema/, "a blocked todo is not dispatchable work");
+  });
+
+  // kickoff passes alive=null and never shells out to tmux (deliberately: it
+  // runs on every session start and has to stay cheap), so the WORKERS header
+  // must not read as a liveness check that already happened. Seeded with a
+  // raw insert rather than agent_spawn, since kickoff's WORKERS query is a
+  // plain SELECT with no tmux involved and this is the row shape it reads.
+  it("heads WORKERS as unprobed, not confirmed", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, 'agent:900', 'seeded', '%1', 'claude', ?, 'agent', 'running')`,
+        )
+        .run(projectId, dirs.projectDir);
+    } finally {
+      store.close();
+    }
+
+    const { additionalContext } = fired((await kickoff()).stdout);
+    assert.match(additionalContext, /WORKERS \(per the store, NOT probed; agent_list to confirm they are alive\)/);
+    assert.doesNotMatch(additionalContext, /agent_list confirms they are alive/);
+    assert.match(additionalContext, /seeded/);
+    // The header's wording is not the only thing that has to stay true: if
+    // kickoff ever started passing a real tmux probe instead of alive=null,
+    // the header text alone would not catch it, since deriveProvenance's
+    // state stays a separate field from the string above it (counselors'
+    // T3). tmux_target '%1' names no real pane on this isolated server, so a
+    // real probe would render "gone" (src/stateProvenance.ts) - the seeded
+    // row is the discriminator this assertion needs to be able to fail.
+    assert.doesNotMatch(additionalContext, /gone/);
   });
 
   it("stays inside the 10,000 character hook output cap", async () => {
