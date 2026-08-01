@@ -379,13 +379,20 @@ export function alternateInterpreter() {
 // git, usable in a throwaway scratch repo. -c commit.gpgsign=false plus a
 // fake author/committer identity, so a suite run under a developer's own
 // signing config (which may be locked) never blocks on a commit that exists
-// only to give a scratch repo a branch to read.
+// only to give a scratch repo a branch to read. -c core.hooksPath=/dev/null
+// neutralises a developer's own global hooksPath (husky, pre-commit): a
+// hook failing inside `git commit` throws in the describe BODY, not inside
+// a test, which takes down the whole file rather than one case.
 export function scratchGit(cwd, ...args) {
-  return execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "gpg.format=openpgp", ...args], {
-    cwd,
-    encoding: "utf8",
-    env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
-  });
+  return execFileSync(
+    "git",
+    ["-c", "commit.gpgsign=false", "-c", "gpg.format=openpgp", "-c", "core.hooksPath=/dev/null", ...args],
+    {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" },
+    },
+  );
 }
 
 // Parses a SessionStart hook's JSON stdout and returns hookSpecificOutput,

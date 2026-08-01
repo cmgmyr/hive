@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { McpClient, clearHiveEnv, isolateTmux, liveAgentRow, scratchDirs } from "./helpers.mjs";
+import { McpClient, clearHiveEnv, isolateTmux, liveAgentRow, scratchDirs, scratchGit } from "./helpers.mjs";
 
 // Issue: agent_spawn resolves the worker's PROJECT from the spawner (or an
 // explicit project_id) and never looks at args.cwd, but the worker itself
@@ -65,6 +65,148 @@ describe("findProjectForDir: the resolution rule the guard is built on", () => {
 
   it("(c) returns null for a directory that belongs to no registered project", () => {
     assert.equal(findProjectForDir(unregistered), null);
+  });
+});
+
+describe("findProjectForDir: git-root vs a registered ancestor (issue #62)", () => {
+  // The defect this pins: matchRegistered(dir) used to return as soon as it
+  // hit, so a registered project that is a path ANCESTOR of dir shadowed
+  // gitPrimaryRoot outright. A linked worktree sitting outside its own repo
+  // checkout, but still under some broader registered project (e.g. a
+  // home-directory project), resolved to that broader ancestor instead of
+  // its own repo. These fixtures use a REAL linked git worktree - (b) above
+  // has no .git in it and stays green even if gitPrimaryRoot is deleted
+  // outright, which is why this defect survived a whole lane.
+  const gitInit = (dir) => {
+    scratchGit(dir, "init", "-q");
+    scratchGit(dir, "commit", "-q", "--allow-empty", "-m", "init");
+  };
+
+  const ancestorDir = mkdtempSync(join(unitRoot, "ancestor62-"));
+  const ancestor = addProject(ancestorDir, "ancestor62");
+
+  // The worked example from the issue: the repo lives inside the ancestor's
+  // tree, and its linked worktree sits at a sibling path also inside the
+  // ancestor's tree but outside the repo checkout itself.
+  const repoDir = join(ancestorDir, "repo");
+  mkdirSync(repoDir, { recursive: true });
+  gitInit(repoDir);
+  const repo = addProject(repoDir, "repo62");
+  const worktreeDir = join(ancestorDir, "wt-outside-repo");
+  scratchGit(repoDir, "worktree", "add", "-q", worktreeDir, "-b", "feature62");
+  // A subdirectory of the worktree, not just its top level - the shape a
+  // real session actually sits in, and untouched by every fixture until
+  // this one, all of which asserted only at a worktree's root.
+  const worktreeSubdir = join(worktreeDir, "src", "deep");
+  mkdirSync(worktreeSubdir, { recursive: true });
+
+  it("(g) acceptance: a linked worktree outside its repo, under a registered ancestor, resolves to the repo's project - not the ancestor", () => {
+    // Fails if the new git-preferred branch is taken NEVER (the old, buggy
+    // behaviour): matchRegistered(worktreeDir) hits the ancestor first and
+    // gitPrimaryRoot is never consulted, so this would return ancestor.id.
+    assert.equal(findProjectForDir(worktreeDir)?.id, repo.id);
+    assert.equal(findProjectForDir(worktreeSubdir)?.id, repo.id);
+  });
+
+  // Control: a linked worktree of an UNRELATED repo (registered as its own
+  // project, but not nested under the ancestor at all) sitting inside the
+  // ancestor's tree resolves to the ancestor, not the unrelated repo. This is
+  // the cross-tree case the rule decides deliberately: the git-root project's
+  // path is neither equal to, nor nested under, the direct match's path, so
+  // containment says no and the direct match stands.
+  const unrelatedRepoDir = mkdtempSync(join(unitRoot, "unrelated62-"));
+  gitInit(unrelatedRepoDir);
+  const unrelatedRepo = addProject(unrelatedRepoDir, "unrelated62");
+  const wtInsideAncestor = join(ancestorDir, "wt-of-unrelated");
+  scratchGit(unrelatedRepoDir, "worktree", "add", "-q", wtInsideAncestor, "-b", "feature62b");
+
+  it("(h) control: a linked worktree of an unrelated repo, sitting inside a registered ancestor, resolves to the ancestor - not the unrelated repo", () => {
+    // Fails if the new git-preferred branch is taken ALWAYS (ignoring
+    // containment): gitPrimaryRoot(wtInsideAncestor) resolves into
+    // unrelatedRepoDir, which is not under ancestorDir, so an unconditional
+    // git-wins rule would pick unrelatedRepo instead of the ancestor.
+    assert.notEqual(unrelatedRepo.id, ancestor.id);
+    // This case is supposed to kill a length-based "prefer longer path"
+    // rule too, but only does so as long as unrelatedRepoDir's path is
+    // longer than ancestorDir's - true today because "unrelated62-" is one
+    // character longer than "ancestor62-", by accident of naming, not by
+    // anything this test asserts. Pin the precondition so a rename that
+    // silently reverses the lengths fails loudly here instead of letting a
+    // length-based rule pass this case unnoticed.
+    assert.ok(unrelatedRepoDir.length > ancestorDir.length);
+    assert.equal(findProjectForDir(wtInsideAncestor)?.id, ancestor.id);
+  });
+
+  // Control: a `git init --separate-git-dir=X` checkout (not a worktree),
+  // not separately registered, living inside the ancestor's tree resolves to
+  // the ancestor unchanged - the no-op-for-ordinary-checkouts property
+  // asserted here rather than only argued in the code comment.
+  //
+  // This REPLACES an earlier version of this case that used a plain nested
+  // checkout with no --separate-git-dir. That version could not fail for
+  // ANY variant of the resolution rule: an ordinary checkout's git root is
+  // an ancestor of dir by construction, so the direct-match scan and the
+  // git-root scan land on the SAME registered project regardless of which
+  // one the rule prefers - false-green shape 7 (test/CLAUDE.md), and this
+  // repo's second time shipping it.
+  //
+  // The external gitdir is placed INSIDE a project registered UNDER the
+  // ancestor (decoyDir, not just anywhere unregistered) so that the OLD,
+  // buggy endsWith(".git") check produces a DIFFERENT, wrong, but still
+  // real answer rather than accidentally falling back to the right one: an
+  // external gitdir under an unregistered directory resolves to `null` and
+  // falls through to `direct` regardless of the basename check, which does
+  // not discriminate anything. Verified by hand before relying on it - see
+  // todo 142.
+  const decoyDir = join(ancestorDir, "decoy-under-ancestor");
+  mkdirSync(decoyDir, { recursive: true });
+  const decoy = addProject(decoyDir, "decoy62");
+  const sepGitDirCheckout = join(ancestorDir, "sep-git-dir-checkout");
+  mkdirSync(sepGitDirCheckout);
+  const externalGitDir = join(decoyDir, "sepgitdir62.git");
+  scratchGit(sepGitDirCheckout, "init", "-q", `--separate-git-dir=${externalGitDir}`);
+  scratchGit(sepGitDirCheckout, "commit", "-q", "--allow-empty", "-m", "init");
+
+  it("(i) control: a --separate-git-dir checkout under a registered ancestor, not separately registered, is unchanged by this rule", () => {
+    // Fails under the old endsWith(".git") check (group B's regression pin):
+    // --git-common-dir here is externalGitDir, which ends in ".git" but is
+    // not sepGitDirCheckout's own .git and is not an ancestor of it. The
+    // pre-fix code would dirname() it to decoyDir - a DIFFERENT registered
+    // project nested under the ancestor, so the old containment check would
+    // accept it as "more specific" and wrongly return decoy.id instead of
+    // ancestor.id.
+    assert.notEqual(decoy.id, ancestor.id);
+    assert.equal(findProjectForDir(sepGitDirCheckout)?.id, ancestor.id);
+  });
+
+  // Control: a directory belonging to no registered project, even one with a
+  // git repo of its own, still returns null.
+  const unownedRepoDir = mkdtempSync(join(unitRoot, "unowned62-"));
+  gitInit(unownedRepoDir);
+
+  it("(j) control: a directory belonging to no registered project still returns null, even with a git repo of its own", () => {
+    assert.equal(findProjectForDir(unownedRepoDir), null);
+  });
+
+  // Control: the `!direct` half of detectFromDir's git-preference check.
+  // Every other case in this describe block has a non-null `direct` - (g),
+  // (h) and (i) all sit under the registered ancestor - except (j), where
+  // `direct` AND the git match are both null, so the disjunct is never
+  // actually reached. Deleting `!direct ||` and every other case here still
+  // passes; this is the only one that needs it: a repo's linked worktree
+  // placed somewhere NO project is registered at all, where `direct` is
+  // null but the git match is not.
+  const orphanScratch = mkdtempSync(join(unitRoot, "orphan62-"));
+  const orphanRepoDir = join(orphanScratch, "repo");
+  mkdirSync(orphanRepoDir, { recursive: true });
+  gitInit(orphanRepoDir);
+  const orphanRepo = addProject(orphanRepoDir, "orphanrepo62");
+  // Not mkdtempSync'd - `git worktree add` requires the target not to exist.
+  const orphanWorktreeDir = join(orphanScratch, "wt");
+  scratchGit(orphanRepoDir, "worktree", "add", "-q", orphanWorktreeDir, "-b", "feature-orphan62");
+
+  it("(k) control: a linked worktree of a registered repo, placed where nothing else is registered, resolves to the repo (the null-direct branch)", () => {
+    assert.equal(findProjectForDir(orphanWorktreeDir)?.id, orphanRepo.id);
   });
 });
 
@@ -148,6 +290,35 @@ describe("agent_spawn refuses a cwd belonging to a different project", () => {
     } finally {
       await lockedMcp.close();
     }
+  });
+
+  it("(l) refuses a cwd that is a linked worktree of a DIFFERENT project nested under the caller's own project - the new refusal issue #62 introduces", async () => {
+    // Before issue #62's fix, a linked worktree outside its own repo but
+    // still under some broader registered project (here, the caller's own
+    // project A - dirs.projectDir) resolved to A, the SAME project as the
+    // caller, so agent_spawn allowed it: both sides agreed. After the fix,
+    // findProjectForDir(cwd) correctly resolves the worktree to the more
+    // specific nested repo project instead of A, so this spawn is now
+    // refused where it used to be allowed. That is correct under strict
+    // scoping (CLAUDE.md's first invariant), but it is a new user-facing
+    // failure this lane introduces, and nothing pinned it before this case:
+    // (d) and (e) both refuse on a directly registered path, never on a
+    // worktree.
+    const nestedRepoDir = join(dirs.projectDir, "nested-repo");
+    mkdirSync(nestedRepoDir, { recursive: true });
+    scratchGit(nestedRepoDir, "init", "-q");
+    scratchGit(nestedRepoDir, "commit", "-q", "--allow-empty", "-m", "init");
+    const nestedRepo = await mcp.call("project_add", { path: nestedRepoDir, name: "nestedRepo62" });
+    const nestedWorktreeDir = join(dirs.projectDir, "nested-repo-worktree");
+    scratchGit(nestedRepoDir, "worktree", "add", "-q", nestedWorktreeDir, "-b", "feature-nested62");
+
+    await assert.rejects(mcp.call("agent_spawn", { cwd: nestedWorktreeDir }), (err) => {
+      assert.match(err.message, new RegExp(escapeRegex(nestedWorktreeDir)));
+      assert.match(err.message, namedAs(projA));
+      assert.match(err.message, namedAs(nestedRepo));
+      assert.match(err.message, new RegExp(`project_id: ${nestedRepo.id}\\b`));
+      return true;
+    });
   });
 });
 
