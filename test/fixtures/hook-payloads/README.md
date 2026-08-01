@@ -49,7 +49,32 @@ No `background_tasks` entry has ever been observed with `type: "shell"` or
 with a terminal `status` (`completed`, `failed`, etc.); entries seem to be
 removed from the array rather than marked terminal. Not fixtured, same reason.
 
-This corpus is a net under the canary (issue #32, half D), never a substitute
-for it: it proves `stateFor` handles the payloads listed above and says
-nothing about any payload Claude Code has not yet been observed sending. See
-the header comment in `test/hook-replay.test.mjs`.
+This corpus is a net under the canary (issue #32's half D, carried forward as
+issue #46), never a substitute for it: it proves `stateFor` handles the
+payloads listed above and says nothing about any payload Claude Code has not
+yet been observed sending. See the header comment in
+`test/hook-replay.test.mjs`.
+
+## What answers the three questions above
+
+`scripts/payload-shape.mjs` (issue #46) derives KNOWN and REQUIRED field
+paths, plus enum values, from this corpus at runtime, and
+`scripts/payload-canary.mjs` diffs a real, live run's hook payloads against
+that derivation. Both are shape-only: neither asserts what `stateFor` decides,
+only whether Claude Code is still sending what this corpus recorded.
+
+`notification_type`, `background_tasks[].type` and `background_tasks[].status`
+are the canary's discriminator paths. The moment a real `Notification` payload
+carries `notification_type: "elicitation_complete"`, or a real `Stop` payload
+carries a `background_tasks` entry with `type: "shell"` or a terminal
+`status`, the canary FAILS loudly with the exact value observed, and that
+finding is a fixture waiting to be captured. Neither question is answered yet;
+both now have a live tripwire instead of a doc comment.
+
+`session_crons` sits outside the discriminator list, so a populated cron does
+not FAIL the canary. Its first non-empty entry will still surface as an INFO
+finding (a field never seen inside `session_crons` before), which is how this
+corpus is meant to grow: capture that run's payload as a new fixture, and the
+`waitingOnSubagents` question issue #32 raised for it becomes something
+`test/hook-replay.test.mjs` can assert on directly, with a real payload behind
+it instead of an invented one.
