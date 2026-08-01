@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   statSync,
@@ -18,6 +19,7 @@ import { after, describe, it } from "node:test";
 import { isolateTmux } from "./helpers.mjs";
 import {
   DIST_DIR,
+  MCP_CONFIG_FILE,
   REPO_DIR,
   SRC_DIR,
   checkAxesPresent,
@@ -30,6 +32,8 @@ import {
   formatEnvBlock,
   killSocket,
   scratchPaths,
+  workerProjectRoot,
+  writeWorkerMcpConfig,
 } from "../scripts/isolated-hive.mjs";
 
 // scripts/isolated-hive.mjs's own `up`/`down` never touch the ambient tmux
@@ -132,6 +136,12 @@ describe("isolated-hive guards", () => {
     assert.match(block, /unset TMUX TMUX_PANE/);
     assert.match(block, /export HIVE_DATA_DIR=\/scratch\/data/);
     assert.match(block, /export TMUX_TMPDIR=\/scratch\/tmux/);
+    // ensureAttached() in src/tmux.ts pops a native terminal onto the
+    // developer's own desktop for a project nobody is watching; an isolated
+    // instance must neutralise that the same way it neutralises the shared
+    // store and the shared tmux server. Found by running the gate and
+    // watching windows open on a real screen, not by reading the wiring.
+    assert.match(block, /export HIVE_AUTO_ATTACH=0/);
   });
 
   // down's kill-server path had zero coverage before this: no test ever
@@ -189,15 +199,92 @@ describe("isolated-hive guards", () => {
     }
   });
 
-  it("checkOwnsInstance accepts a root with matching paths and the marker up writes", () => {
+  it("checkOwnsInstance refuses a root with a marker but no workerRoot named at all", () => {
+    // Same proof, second root (see the function's own comment): a state file
+    // missing workerRoot entirely -- e.g. one written by a pre-part-C build
+    // of this script -- must refuse rather than let `down` skip validating a
+    // path it never checked.
+    const root = mkdtempSync(join(tmpdir(), "hive-iso-test-"));
+    writeFileSync(join(root, ".hive-isolated-instance"), "test\n");
+    try {
+      assert.match(checkOwnsInstance(scratchPaths(root)), /names no valid worker-facing project root/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("checkOwnsInstance refuses a workerRoot with no hive-isolated marker of its own", () => {
+    const root = mkdtempSync(join(tmpdir(), "hive-iso-test-"));
+    writeFileSync(join(root, ".hive-isolated-instance"), "test\n");
+    const workerRoot = mkdtempSync(join(tmpdir(), "hive-iso-test-worker-"));
+    try {
+      assert.match(
+        checkOwnsInstance({ ...scratchPaths(root), workerRoot }),
+        /names no valid worker-facing project root/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(workerRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("checkOwnsInstance accepts a root and a workerRoot each carrying the marker up writes", () => {
     const root = mkdtempSync(join(tmpdir(), "hive-iso-test-"));
     // The literal name, not the (unexported) MARKER_FILE constant: this is
     // what up actually writes to disk, which is the thing worth pinning.
     writeFileSync(join(root, ".hive-isolated-instance"), "test\n");
+    const workerRoot = mkdtempSync(join(tmpdir(), "hive-iso-test-worker-"));
+    writeFileSync(join(workerRoot, ".hive-isolated-instance"), "test\n");
     try {
-      assert.equal(checkOwnsInstance(scratchPaths(root)), null);
+      assert.equal(checkOwnsInstance({ ...scratchPaths(root), workerRoot }), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
+      rmSync(workerRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("the worker-facing project root", () => {
+  // The trust-inheritance mechanism the header documents only holds if this
+  // directory is actually created UNDER the repo checkout, not under the OS
+  // tmpdir like the other scratch paths -- that placement is the entire
+  // point, so pin it rather than trusting the implementation to keep it.
+  it("workerProjectRoot creates a fresh directory under the given repo dir's .claude/", () => {
+    const fakeRepo = mkdtempSync(join(tmpdir(), "hive-iso-fake-repo-"));
+    mkdirSync(join(fakeRepo, ".claude"));
+    try {
+      const root = workerProjectRoot(fakeRepo);
+      try {
+        assert.ok(existsSync(root));
+        assert.equal(dirname(root), realpathSync(join(fakeRepo, ".claude")));
+        const second = workerProjectRoot(fakeRepo);
+        try {
+          assert.notEqual(second, root, "two calls must never hand back the same directory");
+        } finally {
+          rmSync(second, { recursive: true, force: true });
+        }
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(fakeRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("writeWorkerMcpConfig points --mcp-config at this branch's dist, not at the pinned `hive` shim", () => {
+    const workerRoot = mkdtempSync(join(tmpdir(), "hive-iso-test-worker-"));
+    try {
+      const path = writeWorkerMcpConfig(workerRoot, "/some/branch/dist", "/some/pinned/node");
+      assert.equal(path, join(workerRoot, MCP_CONFIG_FILE));
+      const config = JSON.parse(readFileSync(path, "utf8"));
+      assert.equal(config.mcpServers["hive-iso"].command, "/some/pinned/node");
+      assert.deepEqual(config.mcpServers["hive-iso"].args, ["/some/branch/dist/index.js"]);
+      // No env block: the worker's pane already carries the right
+      // HIVE_DATA_DIR/HIVE_AGENT_ID (spawn.ts sets both), and this config
+      // must not hold a second, driftable copy of either.
+      assert.equal(config.mcpServers["hive-iso"].env, undefined);
+    } finally {
+      rmSync(workerRoot, { recursive: true, force: true });
     }
   });
 });
@@ -275,6 +362,28 @@ describe("isolated-hive CLI lifecycle", () => {
     assert.match(envAfter.stderr, /no instance is up/);
   });
 
+  it("up creates a worker-facing project root under this repo's .claude/, with an mcp-config pointing at this branch's dist; down removes it", () => {
+    // The whole reason this directory lives inside the repo checkout rather
+    // than the OS tmpdir: trust inherits from an already-trusted ancestor,
+    // which only holds if the path is actually nested under REPO_DIR. If a
+    // future change moved it back under the tmpdir "for consistency" with
+    // the other scratch paths, this is the test that would catch it.
+    const up = run(["up"]);
+    assert.equal(up.code, 0, up.stdout);
+    const workerRootLine = /worker-facing project root \(pre-trusted, see header\): (\S+)/.exec(up.stderr);
+    assert.ok(workerRootLine, up.stderr);
+    const workerRoot = workerRootLine[1];
+
+    assert.equal(dirname(workerRoot), realpathSync(join(REPO_DIR, ".claude")));
+    assert.ok(existsSync(join(workerRoot, MCP_CONFIG_FILE)), "up must write the worker's --mcp-config file");
+    const config = JSON.parse(readFileSync(join(workerRoot, MCP_CONFIG_FILE), "utf8"));
+    assert.match(config.mcpServers["hive-iso"].args[0], new RegExp(`^${reEscape(DIST_DIR)}`));
+
+    const down = run(["down"]);
+    assert.equal(down.code, 0, down.stdout);
+    assert.ok(!existsSync(workerRoot), "down must remove the worker-facing project root, not just `root`");
+  });
+
   it("up self-heals a stale state file whose root was removed externally", () => {
     // PR gate re-review, post-merge-readiness pass. The stale case (pointer
     // present, root gone -- external cleanup, a temp reaper, a crashed `up`)
@@ -290,8 +399,13 @@ describe("isolated-hive CLI lifecycle", () => {
     assert.equal(first.code, 0, first.stdout);
     const firstDataDir = /HIVE_DATA_DIR=(\S+)/.exec(first.stdout)?.[1];
     assert.ok(firstDataDir, first.stdout);
+    const firstWorkerRoot = /worker-facing project root \(pre-trusted, see header\): (\S+)/.exec(first.stderr)?.[1];
+    assert.ok(firstWorkerRoot, first.stderr);
 
-    // External cleanup: the tree is gone, the state file survives.
+    // External cleanup: the tree is gone, the state file survives. Only
+    // `root` -- unlike workerRoot, this is what a temp reaper or a crashed
+    // `up` would actually remove, since workerRoot lives inside the repo
+    // checkout, not the OS tmpdir a reaper would ever touch.
     rmSync(dirname(firstDataDir), { recursive: true, force: true });
 
     try {
@@ -302,6 +416,10 @@ describe("isolated-hive CLI lifecycle", () => {
         second.stderr,
         /claimed the instance pointer first/,
         "a stale pointer must self-heal, not be misreported as a concurrent race",
+      );
+      assert.ok(
+        !existsSync(firstWorkerRoot),
+        "the self-heal must sweep the first run's workerRoot too, or it leaks inside the repo checkout forever",
       );
 
       const secondDataDir = /HIVE_DATA_DIR=(\S+)/.exec(second.stdout)?.[1];
@@ -338,6 +456,86 @@ describe("isolated-hive CLI lifecycle", () => {
     } finally {
       rmSync(forgedStatePath, { force: true });
       rmSync(foreign, { recursive: true, force: true });
+    }
+  });
+
+  // THE CRITICAL, counselors review on PR #60: both `down`'s "root already
+  // gone" shortcut and `up`'s stale-pointer self-heal used to call
+  // rmRoots([workerRoot]) unconditionally, entirely before checkOwnsInstance
+  // (or any marker check at all) ever ran -- because both shortcuts trigger
+  // exactly when state.root does not exist, which is also exactly when
+  // checkOwnsInstance's own workerRoot check never gets reached. A state file
+  // naming a gone root and an arbitrary, unmarked workerRoot reached rm -rf
+  // on that arbitrary directory with no ownership proof. This forges exactly
+  // that state file -- root gone, workerRoot a real scratch directory this
+  // script never created -- and asserts both `down` and `up` refuse rather
+  // than deleting it. Deleting the checkWorkerRootRemovable calls added
+  // alongside this test (or reverting to the unconditional rmRoots) makes
+  // this fail with the target directory gone.
+  it("down refuses to delete workerRoot when root is already gone and workerRoot carries no marker", () => {
+    const tag = createHash("sha256").update(realpathSync(REPO_DIR)).digest("hex").slice(0, 8);
+    const forgedStatePath = join(scratchTmpDir, `hive-isolated-instance-${tag}.json`);
+    const goneRoot = join(scratchTmpDir, "root-that-was-already-cleaned-up");
+    // Stands in for "an arbitrary directory this script never created" --
+    // real production report named /Users/dev/Code, the entire checkout
+    // tree; this is the same shape, just scoped to a directory this test can
+    // safely assert on.
+    const arbitraryDir = mkdtempSync(join(tmpdir(), "hive-iso-arbitrary-"));
+    writeFileSync(join(arbitraryDir, "definitely-not-hive-related.txt"), "do not delete me\n");
+    writeFileSync(
+      forgedStatePath,
+      JSON.stringify({
+        root: goneRoot,
+        dataDir: join(goneRoot, "data"),
+        tmuxTmpDir: join(goneRoot, "tmux"),
+        workerRoot: arbitraryDir,
+        createdAt: "now",
+      }),
+    );
+    try {
+      const result = run(["down"]);
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(result.stderr, /has no hive-isolated marker/);
+      assert.ok(existsSync(arbitraryDir), "down must not delete workerRoot without proof it created it");
+      assert.ok(
+        existsSync(join(arbitraryDir, "definitely-not-hive-related.txt")),
+        "the arbitrary directory's contents must survive untouched",
+      );
+    } finally {
+      rmSync(forgedStatePath, { force: true });
+      rmSync(arbitraryDir, { recursive: true, force: true });
+    }
+  });
+
+  it("up refuses to delete workerRoot on its stale-pointer self-heal when workerRoot carries no marker", () => {
+    const tag = createHash("sha256").update(realpathSync(REPO_DIR)).digest("hex").slice(0, 8);
+    const forgedStatePath = join(scratchTmpDir, `hive-isolated-instance-${tag}.json`);
+    const goneRoot = join(scratchTmpDir, "root-that-was-already-cleaned-up-2");
+    const arbitraryDir = mkdtempSync(join(tmpdir(), "hive-iso-arbitrary-"));
+    writeFileSync(join(arbitraryDir, "definitely-not-hive-related.txt"), "do not delete me\n");
+    writeFileSync(
+      forgedStatePath,
+      JSON.stringify({
+        root: goneRoot,
+        dataDir: join(goneRoot, "data"),
+        tmuxTmpDir: join(goneRoot, "tmux"),
+        workerRoot: arbitraryDir,
+        createdAt: "now",
+      }),
+    );
+    try {
+      const result = run(["up"]);
+      assert.equal(result.code, 1, result.stdout);
+      assert.match(result.stderr, /has no hive-isolated marker/);
+      assert.ok(existsSync(arbitraryDir), "up's self-heal must not delete workerRoot without proof it created it");
+      assert.ok(
+        existsSync(join(arbitraryDir, "definitely-not-hive-related.txt")),
+        "the arbitrary directory's contents must survive untouched",
+      );
+    } finally {
+      rmSync(forgedStatePath, { force: true });
+      rmSync(arbitraryDir, { recursive: true, force: true });
+      run(["down"]); // in case up somehow left a live instance behind
     }
   });
 

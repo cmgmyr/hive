@@ -9,23 +9,83 @@
 // this script itself lives, which is this branch's worktree, never the
 // pinned `hive` shim or whatever PATH happens to resolve.
 //
+// A FOURTH THING THE INSTANCE HAS TO NEUTRALISE, alongside those three axes,
+// found by running the gate and having it pop open blank terminal windows on
+// the developer's own screen: `ensureAttached()` in src/tmux.ts auto-attaches
+// a native terminal to a project's tmux session whenever nobody is watching
+// it, so it can put windows on the human's screen for a gate that is meant to
+// run unattended. Disabled the same way the test suite already disables it
+// (test/helpers.mjs's baseEnv): HIVE_AUTO_ATTACH=0, set alongside
+// HIVE_DATA_DIR and TMUX_TMPDIR below, because it belongs to the same idea --
+// an isolated instance must not reach out and touch the developer's desktop.
+//
 // Lives in scripts/, not test/: `npm test` must not run it, and it is meant
 // to be run by hand -- see the plan pad and .claude/rules/tmux-and-panes.md /
 // store-and-datadir.md for the failure modes this guards against.
 //
-// KNOWN GAP FOR PART C (counselors review on PR #48, opus finding 6): the
-// dist axis covers the lead's own MCP server and the hooks (both resolve
-// from the running module), but NOT a spawned worker's own hive MCP server.
-// agent_spawn launches a plain `claude`, which picks up whatever hive
-// registration Claude Code has configured -- ordinarily the user-scoped one
-// pointing at the INSTALLED build, not this branch's dist -- even though
-// spawn.ts passes HIVE_DATA_DIR explicitly, so that server opens the correct
-// SCRATCH STORE with the WRONG CODE. If the branch under test adds a
-// MIGRATIONS entry, the lead applies it and an older worker build skips it
-// silently, so a part-C run would exercise the previous release against the
-// new schema and read that as a pass. Closing this needs a project-scoped
-// .mcp.json inside the scratch tree pointing workers at this branch's dist
-// too; deliberately not built here (out of scope for part B).
+// PART C'S FOURTH AXIS: a spawned worker's own hive MCP server, and the
+// folder-trust dialog on its project root. agent_spawn launches a plain
+// `claude`, which by default picks up whatever hive registration Claude Code
+// has configured -- ordinarily the user-scoped one pointing at the INSTALLED
+// build, not this branch's dist -- even though spawn.ts passes
+// HIVE_DATA_DIR explicitly, so that server would open the correct SCRATCH
+// STORE with the WRONG CODE. If the branch under test adds a MIGRATIONS
+// entry, the lead applies it and an older worker build skips it silently, so
+// a part-C run would exercise the previous release against the new schema
+// and read that as a pass. Two mechanisms were tried and rejected before the
+// one below, each verified by running it, not by reading the docs:
+//   - A project-scoped .mcp.json, auto-discovered from the worker's cwd,
+//     raises a real, blocking "New MCP server found in this project" dialog
+//     the first time Claude Code sees it. An unattended gate cannot answer
+//     that, and every worker gets a fresh scratch cwd, so it is never
+//     pre-approved. `--mcp-config <file> --strict-mcp-config` is the
+//     alternative: an explicit CLI argument instead of project-file
+//     auto-discovery, and it raises no dialog at all (confirmed via `/mcp`:
+//     the server connects, with the correct tool count, and none of the
+//     machine's other hive registrations present -- --strict-mcp-config's
+//     own job, since without it the worker would load the installed build
+//     alongside this one). This is what workerMcpConfigPath() below feeds.
+//   - The worker's cwd triggers a SECOND, independent dialog: any
+//     never-before-seen directory raises Claude Code's folder-trust prompt,
+//     regardless of the MCP mechanism above. CLAUDE_CONFIG_DIR looked like
+//     the clean fix, relocating trust the same way the other axes relocate
+//     state, and it does kill the dialog with zero writes to the real
+//     ~/.claude.json. But it relocates auth along with trust: a scratch
+//     CLAUDE_CONFIG_DIR is a fresh, credential-less install (confirmed by
+//     running it -- the worker came back "Not logged in", and a totally
+//     empty scratch config dir raises the full first-run onboarding wizard
+//     instead, which rules out one bad JSON file as the cause and confirms
+//     this is inherent to the mechanism). Copying live OAuth credential
+//     material into a scratch directory to work around that was refused ON
+//     PURPOSE, not merely left undone: it is a decision about handling real
+//     credential material this script does not get to make on its own, and
+//     it is not worth the residual risk for a gate that has a free
+//     alternative anyway.
+// The free alternative, also verified by running it: trust INHERITS into a
+// brand-new subdirectory of an already-trusted root, with no dialog at all.
+// This worktree is already trusted by the time this script runs (nothing
+// else here would be possible otherwise), so workerProjectRoot() below
+// creates the worker's project root under THIS repo checkout (`.claude/`,
+// already gitignored) instead of under the OS tmpdir like the other scratch
+// paths. It is still fresh per run and still torn down by `down`, and it
+// costs nothing: no credential handling, no write to the real
+// ~/.claude.json, no keystroke. HIVE_DATA_DIR and TMUX_TMPDIR stay under the
+// OS tmpdir exactly as before -- TMUX_TMPDIR in particular cannot move under
+// this repo's (long) worktree path without risking the 104-byte unix socket
+// cap this file already guards elsewhere (see SOCKET_PATH_LIMIT below).
+//
+// WHAT THAT TRADES AWAY: the reason siting workerRoot inside the checkout
+// removes the dialog is the same reason it changes the worker's blast
+// radius. Under part B's OS-tmpdir root, the worker had no trusted path back
+// to the checkout at all. Now its cwd sits inside it, so `..` is the working
+// tree this very branch lives in, and the gate spawns a REAL claude with
+// real tools and tells it to act. The isolation axes above keep the STORE
+// and the TMUX SERVER scratch; they do nothing to keep the FILESYSTEM
+// scratch, because the worker's project root is deliberately not scratch
+// with respect to the repo anymore. Part C's own assertions (see the gate
+// script and its git-status check) exist to catch this if it ever happens,
+// not to prevent it -- there is no isolation fix here that does not undo the
+// trust inheritance this section just spent five paragraphs earning.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -193,6 +253,89 @@ export function scratchPaths(root) {
 // to exist or that a state file happens to name.
 const MARKER_FILE = ".hive-isolated-instance";
 
+// /simplify: root and workerRoot are each created-with-a-marker, validated,
+// and torn down, and before these three helpers existed each of those three
+// steps was written out by hand at every call site that needed it -- twice
+// for creation, twice for validation, four times for teardown, once this
+// file grew a second scratch root to manage. root and workerRoot stay two
+// separate, differently-validated fields on state (root's own dataDir/
+// tmuxTmpDir shape check below has no workerRoot equivalent, so they were
+// never good candidates for a single generic "list of tracked roots"), but
+// the mechanics below are the same regardless of which root they're applied
+// to, so they are written once.
+function writeMarker(dir) {
+  writeFileSync(join(dir, MARKER_FILE), "hive isolated instance -- created by scripts/isolated-hive.mjs\n");
+}
+
+function hasMarker(dir, exists = existsSync) {
+  return exists(join(dir, MARKER_FILE));
+}
+
+// The proof required before ANY removal of workerRoot, on EVERY path that
+// reaches one -- including cmdUp's stale-pointer self-heal and cmdDown's
+// "root already gone" shortcut, which both used to call rmRoots([workerRoot])
+// directly, before checkOwnsInstance (which validates the very same marker)
+// ever ran. Those two shortcuts exist precisely because state.root is
+// unusable, so they cannot lean on checkOwnsInstance's `root` half; this is
+// the workerRoot half of that same proof, usable standalone.
+// Counselors review on PR #60: a state file this script did not write --
+// {"root": "/tmp/gone", "workerRoot": "/Users/dev/Code"} -- reached rmSync
+// on an arbitrary directory through these two shortcuts with no marker check
+// at all. Returns null (safe to proceed) when there is nothing there to prove
+// ownership over: rmSync on a missing path is already a no-op, so refusing
+// would only block the self-heal these paths exist to perform.
+function checkWorkerRootRemovable(workerRoot, exists = existsSync) {
+  if (typeof workerRoot !== "string" || !exists(workerRoot)) return null;
+  if (!hasMarker(workerRoot, exists)) {
+    return (
+      `refuses: ${workerRoot} has no hive-isolated marker, so it may not be something \`up\` created. ` +
+      "Refusing to delete it; remove the state file by hand if it is stale."
+    );
+  }
+  return null;
+}
+
+// Filters out anything that isn't a path rather than requiring every caller
+// to guard it: workerRoot didn't exist in state files written before todo
+// 129, so a stale one loaded from disk may have no workerRoot at all, and a
+// still-`let`-undeclared local at an early failure point in cmdUp is exactly
+// the same shape.
+function rmRoots(dirs) {
+  for (const dir of dirs) {
+    if (typeof dir === "string") rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// The worker-facing project root: unlike `root` (dataDir/tmuxTmpDir, under
+// the OS tmpdir), this is a fresh mkdtemp under THIS repo checkout's
+// `.claude/` -- already gitignored, and already trusted by Claude Code
+// because this script cannot be running otherwise -- so a worker spawned
+// with this as its cwd inherits that trust and never sees the folder-trust
+// dialog. See the header for why it lives apart from `root` rather than
+// nested inside it: nesting under `.claude/` would put it under this repo's
+// (long) worktree path, and dataDir/tmuxTmpDir must stay short and
+// tmpdir-rooted for the socket-length guard below to keep meaning anything.
+export function workerProjectRoot(repoDir = REPO_DIR) {
+  return realpathSync(mkdtempSync(join(repoDir, ".claude", "hive-iso-project-")));
+}
+
+// Named once so cmdUp (which writes it) and a part-C gate script (which
+// reads it to build a worker's `command`) never duplicate the filename.
+export const MCP_CONFIG_FILE = "mcp-config.json";
+
+// The file `--mcp-config <path> --strict-mcp-config` reads: this branch's
+// dist, nothing else. No env block -- the worker's pane already carries the
+// right HIVE_DATA_DIR and HIVE_AGENT_ID (spawn.ts sets both), and this
+// config's child process inherits them same as any other env var, so
+// hardcoding them here would be a second, driftable copy of what spawn.ts
+// already guarantees.
+export function writeWorkerMcpConfig(workerRoot, distDir, execPath = process.execPath) {
+  const path = join(workerRoot, MCP_CONFIG_FILE);
+  const config = { mcpServers: { "hive-iso": { command: execPath, args: [join(distDir, "index.js")] } } };
+  writeFileSync(path, JSON.stringify(config, null, 2));
+  return path;
+}
+
 // down's own guard, distinct from the isolation axes above: a state file is
 // not proof by itself of what it names. Counselors review on PR #48 (codex
 // finding 5, opus finding 5, found independently by both seats): down used
@@ -217,10 +360,20 @@ export function checkOwnsInstance(state, exists = existsSync) {
       "Refusing to delete or kill anything it names; remove the state file by hand if it is stale."
     );
   }
-  if (!exists(join(state.root, MARKER_FILE))) {
+  if (!hasMarker(state.root, exists)) {
     return (
       `refuses: ${state.root} has no hive-isolated marker, so it may not be something \`up\` created. ` +
       "Refusing to delete or kill anything there; remove the state file by hand if it is stale."
+    );
+  }
+  // Same proof, second root: workerRoot lives inside this repo checkout, not
+  // under the OS tmpdir, so a stale or hand-edited pointer here is exactly
+  // the case that would otherwise turn `down` into `rm -rf` on some other
+  // directory this script never created.
+  if (typeof state.workerRoot !== "string" || !hasMarker(state.workerRoot, exists)) {
+    return (
+      `refuses: the state file names no valid worker-facing project root (or its marker is missing). ` +
+      "Refusing to delete anything there; remove the state file by hand if it is stale."
     );
   }
   return null;
@@ -316,6 +469,10 @@ export function formatEnvBlock({ dataDir, tmuxTmpDir, distDir }, quote) {
     `export HIVE_DATA_DIR=${quote(dataDir)}`,
     `export TMUX_TMPDIR=${quote(tmuxTmpDir)}`,
     `export HIVE_ISO_DIST=${quote(distDir)}`,
+    // See the header: ensureAttached() in src/tmux.ts pops open a native
+    // terminal on this machine's desktop whenever nobody is watching a
+    // project's tmux session, which an isolated instance must never do.
+    "export HIVE_AUTO_ATTACH=0",
     "",
     "# MCP server for this instance -- THIS BRANCH's dist, not the pinned `hive` shim:",
     `#   claude mcp add --scope local hive-iso -- "$(command -v node)" "$HIVE_ISO_DIST/index.js"`,
@@ -329,7 +486,12 @@ function fail(message) {
   process.exitCode = 1;
 }
 
-async function cmdUp() {
+// Exported (unlike cmdEnv/cmdDown's CLI-only siblings until now) so a
+// programmatic caller -- the part-C gate script -- gets the paths as data
+// instead of scraping the human-facing stderr banner and stdout env block
+// with regexes. Returns undefined on any refusal (fail() already reported
+// it); the CLI's own `main()` ignores the return value either way.
+export async function cmdUp() {
   const existing = readState();
   if (existing) {
     if (existsSync(existing.root)) {
@@ -348,7 +510,19 @@ async function cmdUp() {
     // does for the same reason -- this makes the two self-heal the same
     // way. A genuine "wx" collision below (the pointer was live at THIS
     // check but another `up` won the write) is still a real race and still
-    // gets that message.
+    // gets that message. workerRoot lives inside this repo checkout rather
+    // than the OS tmpdir, so unlike `root` it will not clean itself up by
+    // sitting in a temp reaper's path; sweep it here too rather than leaving
+    // visible clutter under .claude/ behind a pointer we are about to erase.
+    // But this pointer came from disk, not from this process's own `up` --
+    // exactly the input checkWorkerRootRemovable exists to check before any
+    // rm -rf runs against it, on this shortcut same as cmdDown's.
+    const workerRootProblem = checkWorkerRootRemovable(existing.workerRoot);
+    if (workerRootProblem) {
+      fail(workerRootProblem);
+      return;
+    }
+    rmRoots([existing.workerRoot]);
     clearState();
   }
 
@@ -361,23 +535,46 @@ async function cmdUp() {
   }
 
   const root = realpathSync(mkdtempSync(join(tmpdir(), "hive-iso-")));
-  writeFileSync(join(root, MARKER_FILE), "hive isolated instance -- created by scripts/isolated-hive.mjs\n");
+  writeMarker(root);
   const paths = scratchPaths(root);
   mkdirSync(paths.dataDir, { recursive: true });
   mkdirSync(paths.tmuxTmpDir, { recursive: true });
 
   const refusal = firstFailure(paths, deps);
   if (refusal) {
-    rmSync(root, { recursive: true, force: true });
+    rmRoots([root]);
     fail(refusal);
     return;
   }
 
+  // The fourth axis (see header): a worker's project root, sited under this
+  // repo checkout so it inherits trust instead of raising Claude Code's
+  // folder-trust dialog, carrying the MCP config that points a worker at
+  // THIS BRANCH's dist via --mcp-config, not project-file auto-discovery.
+  // Anything failing here must not leave `root` behind either -- same
+  // all-or-nothing shape as the guard above, one door over.
+  let workerRoot;
   try {
-    writeState({ root, dataDir: paths.dataDir, tmuxTmpDir: paths.tmuxTmpDir, createdAt: new Date().toISOString() });
+    workerRoot = workerProjectRoot();
+    writeMarker(workerRoot);
+    writeWorkerMcpConfig(workerRoot, DIST_DIR);
+  } catch (e) {
+    rmRoots([root, workerRoot]);
+    fail(e.message);
+    return;
+  }
+
+  try {
+    writeState({
+      root,
+      dataDir: paths.dataDir,
+      tmuxTmpDir: paths.tmuxTmpDir,
+      workerRoot,
+      createdAt: new Date().toISOString(),
+    });
   } catch (e) {
     if (e.code === "EEXIST") {
-      rmSync(root, { recursive: true, force: true });
+      rmRoots([root, workerRoot]);
       fail("refuses: another `up` claimed the instance pointer first (a concurrent run won the race). Run `down` on that one, or try `up` again.");
       return;
     }
@@ -390,8 +587,11 @@ async function cmdUp() {
   // of the block, so the env got set correctly behind a spurious error --
   // confusing rather than broken, but needless. Counselors review on PR #48,
   // opus's closing note.
-  console.error(`isolated hive instance up at ${root}\n`);
+  console.error(`isolated hive instance up at ${root}`);
+  console.error(`worker-facing project root (pre-trusted, see header): ${workerRoot}\n`);
   console.log(formatEnvBlock({ ...paths, distDir: DIST_DIR }, deps.shellQuote));
+
+  return { root, dataDir: paths.dataDir, tmuxTmpDir: paths.tmuxTmpDir, distDir: DIST_DIR, workerRoot };
 }
 
 async function cmdEnv() {
@@ -426,25 +626,47 @@ async function cmdEnv() {
   console.log(formatEnvBlock({ dataDir: state.dataDir, tmuxTmpDir: state.tmuxTmpDir, distDir: DIST_DIR }, deps.shellQuote));
 }
 
-async function cmdDown(force) {
+// Exported for the same reason cmdUp is: a programmatic caller needs a
+// success/failure signal without parsing console output. Returns true once
+// the instance is confirmed gone (including the two "nothing to tear down"
+// no-op cases, which are success by this function's own contract), false on
+// any refusal.
+export async function cmdDown(force) {
   const state = readState();
   if (!state) {
     console.log("nothing to tear down");
-    return;
+    return true;
   }
   if (typeof state.root === "string" && !existsSync(state.root)) {
     // Already gone (external cleanup, a previous crashed `down`, ...):
     // nothing to validate against and nothing destructive left to attempt,
     // so this is the same "safe to run twice" shape as no state file at all.
+    // workerRoot gets the same sweep as root's own EEXIST rollback above: it
+    // sits inside this repo checkout, not the OS tmpdir, so nothing else on
+    // the machine will ever clean it up on our behalf.
+    // THE CRITICAL this closes (counselors review on PR #60): this shortcut
+    // used to call rmRoots([state.workerRoot]) here unconditionally, entirely
+    // BEFORE checkOwnsInstance ever runs -- checkOwnsInstance sits below,
+    // gated on state.root existing, so a state file naming a nonexistent
+    // root and an arbitrary workerRoot (hand-edited, or corrupted) reached
+    // rm -rf on that arbitrary path with no ownership proof at all. Same
+    // marker check as checkOwnsInstance's own workerRoot half, usable here
+    // where the state.root half of that function cannot apply.
+    const workerRootProblem = checkWorkerRootRemovable(state.workerRoot);
+    if (workerRootProblem) {
+      fail(workerRootProblem);
+      return false;
+    }
+    rmRoots([state.workerRoot]);
     clearState();
     console.log("nothing to tear down (scratch tree already gone)");
-    return;
+    return true;
   }
 
   const ownershipProblem = checkOwnsInstance(state);
   if (ownershipProblem) {
     fail(ownershipProblem);
-    return;
+    return false;
   }
 
   if (existsSync(state.tmuxTmpDir)) {
@@ -460,7 +682,7 @@ async function cmdDown(force) {
       // left in place so a retry after fixing the build can still tear down
       // properly.
       fail(`${e.message} Cannot compute the private tmux socket without it, so the server is being left running rather than silently leaking it. Fix the build, then run \`down\` again.`);
-      return;
+      return false;
     }
     const socket = killSocket(state, geometry);
     if (socket) {
@@ -482,7 +704,7 @@ async function cmdDown(force) {
             "will silently start reaching the SHARED tmux server once this teardown removes " +
             "TMUX_TMPDIR. Stop those sessions first, or run `down --force` to tear down anyway.",
         );
-        return;
+        return false;
       }
       if (sessions.length > 0) {
         // --force chose to proceed anyway; say so rather than letting a bare
@@ -498,9 +720,10 @@ async function cmdDown(force) {
     }
   }
 
-  rmSync(state.root, { recursive: true, force: true });
+  rmRoots([state.root, state.workerRoot]);
   clearState();
   console.log(`torn down: ${state.root}`);
+  return true;
 }
 
 // [] both when the server is unreachable/gone and when it has no sessions;
