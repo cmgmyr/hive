@@ -48,6 +48,7 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { isClaudeCommand } from "./brief.js";
+import { LEAD_KIND } from "./spawn.js";
 import type { Liveness } from "./tmux.js";
 
 // Lazily cached rather than prepared at module scope: this module loads
@@ -85,6 +86,7 @@ export interface ProvenanceRow {
   command: string;
   agent_state: string;
   state_changed_at: string | null;
+  kind: string;
 }
 
 // SQLite's datetime('now') and this schema's other timestamp columns are
@@ -138,7 +140,16 @@ export function deriveProvenance(
   // A non-claude worker never receives --settings (src/tools/agents.ts,
   // gated on isClaudeCommand) and so writes NO hook row, ever, by design.
   // That must read as a permanent, uninteresting fact, never as staleness.
-  if (!isClaudeCommand(row.command)) {
+  //
+  // A lead is the same shape for a different reason: it DOES get --settings
+  // and its hook DOES fire, but src/hook.ts's agent_state UPDATE is scoped to
+  // kind = 'agent' (worker-state.md), so agent_state never leaves its
+  // 'unknown' default. isClaudeCommand(row.command) alone cannot tell that
+  // apart from a genuinely fresh, about-to-report worker - which is exactly
+  // "no-record"'s meaning, and reporting a lead that way (issue #27's L4 fix
+  // round, DECISION 4) reads as a worker that just hasn't checked in yet
+  // rather than one with no state channel at all, permanently, by design.
+  if (!isClaudeCommand(row.command) || row.kind === LEAD_KIND) {
     return {
       state: row.agent_state,
       source: "not-instrumented",

@@ -8,6 +8,7 @@ import { ACTIVE_TIMER_WHERE, LOG_RETENTION, type TimerRow } from "../scheduler.j
 import { projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { liveTargets } from "../tmux.js";
+import { LEAD_KIND } from "../spawn.js";
 
 const agentRefParam = z
   .union([z.number().int(), z.string()])
@@ -217,7 +218,7 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes. mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes. mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers. Refuses a lead target: a lead has no idle/working state channel.",
       inputSchema: {
         agents: z.array(agentRefParam).min(1).describe("Agents to watch."),
         body: z.string(),
@@ -232,6 +233,24 @@ export function registerWakes(server: McpServer): void {
         const projectId = effectiveProjectId(args.project_id);
         const mode = args.mode ?? "any";
         const watched = args.agents.map((ref) => resolveAgentRef(projectId, ref));
+        // Issue #27's L4 fix round, DECISION 4/5. The lead's hook writes only
+        // its append-only log row, never agents.agent_state (worker-state.md,
+        // src/hook.ts's UPDATE is scoped to kind = 'agent') - so watchedStates
+        // (src/scheduler.ts) can never read a lead as idle, "idle" is false
+        // forever, and this would silently degrade to firing only at
+        // max_wait_seconds, reported as a timeout rather than the loud,
+        // immediate error a caller can actually act on. Refuse before the
+        // INSERT, not after: a scheduled wake that can only ever time out is
+        // worse than no wake at all.
+        const leadWatched = watched.find((a) => a.kind === LEAD_KIND);
+        if (leadWatched) {
+          throw new Error(
+            `Agent ${leadWatched.id} ("${leadWatched.name}") is this project's lead session, which has no ` +
+              "idle/working state channel: its hook writes only agent_state_log, never agent_state. " +
+              "wake_when_idle refuses a lead target; it could only ever fire at max_wait_seconds, reported " +
+              "as a timeout instead of the failure it actually is.",
+          );
+        }
         const delivery = resolveDelivery(projectId, args.deliver_to);
         // One subprocess for every watched agent's liveness, not one per
         // agent: the mode=all check below and the watching decoration

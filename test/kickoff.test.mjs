@@ -99,6 +99,40 @@ describe("hive kickoff gates", () => {
     assert.match(out.initialUserMessage, /triage/i);
   });
 
+  it("still fires on a lead checkout once the lead carries HIVE_AGENT_ID too", async () => {
+    // Issue #27: `hive lead` now sets HIVE_AGENT_ID (lead:<id>) so the hook
+    // has an actor to write against, which makes check 1's OLD rule -
+    // "HIVE_AGENT_ID is set" means worker - true for a lead's own session for
+    // the first time. HIVE_LEAD is what tells the two apart; this is the
+    // regression the plan named as most likely to ship silently, so it is
+    // asserted on the RENDERED payload, not a boolean.
+    yml("profile: orchestration\n");
+    const { code, stdout } = await kickoff([], {
+      ...opts,
+      env: { HIVE_AGENT_ID: "lead:1", HIVE_LEAD: "1" },
+    });
+    assert.equal(code, 0);
+    const out = fired(stdout);
+    assert.match(out.additionalContext, /\[hive\] Project/);
+    assert.match(out.additionalContext, /BOARD/);
+    assert.match(out.initialUserMessage, /triage/i);
+  });
+
+  // Issue #27's L4 fix round, DECISION 7a. The check used to be truthiness
+  // (`!process.env.HIVE_LEAD`), so HIVE_LEAD="0" - the one value a future
+  // caller would most plausibly write meaning false - read as truthy and let
+  // a worker past the gate that exists specifically to keep it from opening
+  // the store at all. The only test covering this check before now was the
+  // accepting HIVE_LEAD="1" case above; this is the rejecting one.
+  it("still says nothing for a worker whose HIVE_LEAD is set but not \"1\"", async () => {
+    yml("profile: orchestration\n");
+    const { stdout } = await kickoff(["--explain"], {
+      ...opts,
+      env: { HIVE_AGENT_ID: "agent:7", HIVE_LEAD: "0" },
+    });
+    assert.match(stdout, /silent \(worker session/);
+  });
+
   it("reports live state: in-flight, ready, blocked, and wake-ups", async () => {
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();
@@ -156,6 +190,43 @@ describe("hive kickoff gates", () => {
     // real probe would render "gone" (src/stateProvenance.ts) - the seeded
     // row is the discriminator this assertion needs to be able to fail.
     assert.doesNotMatch(additionalContext, /gone/);
+  });
+
+  // Issue #27, step 5: confirming rather than assuming that the WORKERS
+  // block's existing kind='agent' filter also excludes the lead's own row,
+  // now that the lead has one. Zero production code changes here - the
+  // filter was already there - this is the test that goes red if a future
+  // change widens it.
+  it("excludes the lead's own row from WORKERS", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, 'agent:901', 'a-real-worker', '%2', 'claude', ?, 'agent', 'running')`,
+        )
+        .run(projectId, dirs.projectDir);
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, 'lead:901', 'the-lead-itself', '%3', 'claude', ?, 'lead', 'running')`,
+        )
+        .run(projectId, dirs.projectDir);
+    } finally {
+      store.close();
+    }
+
+    const { additionalContext } = fired((await kickoff()).stdout);
+    assert.match(additionalContext, /a-real-worker/, "the worker row must still render");
+    // The WORKERS line prints the row's NAME, not its actor_id - asserting on
+    // actor_id here would pass even with kind='agent' dropped from the query,
+    // since nothing in the rendered line ever carries actor_id at all.
+    assert.doesNotMatch(additionalContext, /the-lead-itself/, "the lead's own row must not appear as a worker");
   });
 
   it("stays inside the 10,000 character hook output cap", async () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import Database from "better-sqlite3";
 import { McpClient, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 // runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
@@ -71,6 +72,33 @@ describe("hive CLI pads", () => {
     const outside = await runCli(["statusline"], { ...cliOpts, cwd: dirs.tmp });
     assert.equal(outside.code, 0);
     assert.equal(outside.stdout, "");
+  });
+
+  // Issue #27, step 5: the "N agents" count has always filtered kind='agent',
+  // and this confirms that filter also excludes the lead's own row now that
+  // one exists, rather than assuming it. Zero production code changes here -
+  // this is the test that goes red if a future change widens the filter.
+  it("does not count the lead's own row as an agent", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+           VALUES (?, 'lead:902', 'lead', '%4', 'claude', ?, 'lead', 'running')`,
+        )
+        .run(projectId, dirs.projectDir);
+    } finally {
+      store.close();
+    }
+
+    const { code, stdout } = await runCli(["statusline"], cliOpts);
+    assert.equal(code, 0);
+    assert.match(stdout, /0 agents/, "a running lead row must not inflate the agent count");
   });
 
   it("statusline stays silent in a registered project with no live state", async () => {

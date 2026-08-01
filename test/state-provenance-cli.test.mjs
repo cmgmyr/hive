@@ -84,6 +84,24 @@ describe("hive status decorates worker lines with provenance", () => {
     assert.match(stdout, /agent {2}probe-2 {14}unknown \(not instrumented\)/);
   });
 
+  // Issue #27's L4 fix round, DECISION 4. This used to be a two-way ternary
+  // (command vs. everything else), so a lead's own row printed as
+  // `agent  lead  running` - indistinguishable from an actual worker named
+  // "lead", and wrong on the one row this project ever has exactly one of.
+  it("labels a lead row 'lead', not 'agent'", async () => {
+    reset();
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status, kind)
+       VALUES (?, 'lead:1', 'lead', '%9602', 'claude --settings /tmp/hooks.json', ?, 'running', 'lead')`,
+    ).run(project, projectDir);
+
+    const { code, stdout } = await runCli(["status"], opts);
+
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /lead {3}lead {17}running/);
+    assert.doesNotMatch(stdout, /agent {2}lead /, "must not print the two-way ternary's old 'agent' label");
+  });
+
   it("leaves a command row's plain 'running' alone -- it has no provenance to report", async () => {
     reset();
     db.prepare(

@@ -127,6 +127,31 @@ describe("deriveProvenance", () => {
     assert.equal(prov.age_seconds, null);
   });
 
+  // Issue #27's L4 fix round, DECISION 4. A lead DOES get --settings and its
+  // hook DOES fire (unlike the non-claude case above), but src/hook.ts's
+  // agent_state UPDATE is scoped to kind = 'agent' (worker-state.md), so a
+  // lead's agent_state never leaves its 'unknown' default. Without the kind
+  // check, isClaudeCommand(row.command) alone cannot tell that apart from a
+  // genuinely fresh worker that just has not reported in yet - which is
+  // exactly what "no-record" means - so a lead used to read as a worker on
+  // the verge of its first report, forever, rather than one with no state
+  // channel at all, permanently, by design.
+  it("a lead reads not-instrumented, never no-record, even though its command is claude", () => {
+    const actorId = "lead:1";
+    makeActor(actorId, 3);
+
+    const prov = deriveProvenance(
+      { actor_id: actorId, command: "claude --settings /tmp/hooks.json", agent_state: "unknown", state_changed_at: null, kind: "lead" },
+      true,
+      NOW,
+    );
+
+    assert.equal(prov.source, "not-instrumented");
+    assert.equal(prov.state, "unknown");
+    assert.equal(prov.event, null);
+    assert.equal(prov.age_seconds, null);
+  });
+
   it("a claude worker with alive=false reports the probe as the source, not a hook", () => {
     // agentSummary already collapses "gone" from the tmux probe into the same
     // field a hook writes (src/tools/agents.ts:282); this is the guard against

@@ -1,7 +1,7 @@
 import type { Statement } from "better-sqlite3";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
-import { closeAgentRow } from "./spawn.js";
+import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
 import {
   capturePane,
   liveTargets,
@@ -115,20 +115,51 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   if (snapshot === null) return { closed_agents: 0, cancelled_timers: 0, probed: false };
   let closedAgents = 0;
   let cancelledTimers = 0;
+  // kind != LEAD_KIND: issue #27's L4 fix round, DECISION 3. A reused lead
+  // row's created_at is from its ORIGINAL insert, not this restart, so
+  // SETTLE_WINDOW gives it no grace the way a freshly spawned worker gets one
+  // - closing it here would cost the very identity ensureLeadRow (src/cli.ts)
+  // exists to keep stable. See that function's comment for the accepted
+  // consequence: a dead-paned lead row now stays 'running' until `hive lead`
+  // re-records a live pane, and `hive doctor` reports that rather than this
+  // sweep hiding it.
   const agents = stmt(
-    `SELECT id, tmux_target FROM agents WHERE status = 'running' AND tmux_target != ''
+    `SELECT id, tmux_target FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
      AND created_at < datetime('now', ?)`,
-  ).all(SETTLE_WINDOW) as { id: number; tmux_target: string }[];
+  ).all(LEAD_KIND, SETTLE_WINDOW) as { id: number; tmux_target: string }[];
   for (const agent of agents) {
     if (!targetAlive(agent.tmux_target, snapshot)) {
       closeAgentRow(agent.id);
       closedAgents += 1;
     }
   }
+  // deliver_actor NOT LIKE LEAD_ACTOR_PREFIX + '%': the same defect wearing a
+  // different hat. A wake set for the lead itself carries the lead's actor_id
+  // in this column (wakes.ts's resolveDelivery), and a lead's pane can be
+  // exactly as momentarily dead across a restart as its agents row's
+  // tmux_target - for the identical reason, this sweep must not cancel it
+  // just because the restart has not landed a fresh pane yet. deliverable()
+  // below carries the matching exemption for the per-tick delivery-time
+  // check.
+  //
+  // Accepted consequence, matching ensureLeadRow's for the agents row: a
+  // lead-owned wake whose pane is gone is never cancelled by this sweep. It
+  // sits pending (deliverable() below holds it, HELD_REASON_LEAD_PANE_DEAD)
+  // until either a human runs wake_cancel, or the lead's next `hive lead`
+  // reaches it - and as of issue #27's L4 fix round R6 (todo 166), `hive
+  // lead` ACTUALLY re-points every pending lead-owned wake's deliver_pane to
+  // the fresh pane in the same transaction that records it, rather than
+  // merely hoping a future tick's own liveness probe would notice. So the
+  // residual here is now only the genuinely-never-returns case - a lead
+  // whose session is abandoned for good, not one that restarts - and
+  // resolves the moment `hive lead` runs, not on some later tick. Unlike the
+  // agents row, nothing surfaces the never-returns residual in hive doctor
+  // today; a pending-forever wake is visible in wake_list, not silently
+  // hidden, so that gap was judged the lesser one, not zero.
   const timers = stmt(
-    `SELECT id, deliver_pane FROM timers WHERE ${ACTIVE_TIMER_WHERE}
+    `SELECT id, deliver_pane FROM timers WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor NOT LIKE ?
      AND created_at < datetime('now', ?)`,
-  ).all(SETTLE_WINDOW) as { id: number; deliver_pane: string }[];
+  ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as { id: number; deliver_pane: string }[];
   for (const timer of timers) {
     if (!targetAlive(timer.deliver_pane, snapshot)) {
       cancelTimer(timer.id);
@@ -429,11 +460,45 @@ function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
   return answer;
 }
 
+// Counselors R2-A on the L4 fix round's todo 161. The lead exemption below
+// used to just `return false` with nothing written, so a lead wake blocked
+// on a dead pane sat with typed_at, held_at and held_reason all NULL - the
+// identical shape wake_list already uses for "not due yet", the exact
+// ambiguity #27 shipped held_at/held_reason to remove. Recorded through the
+// same guarded write the modal-choice hold below uses, not a second
+// mechanism, with its own reason string.
+function holdTimer(timer: TimerRow, reason: string): void {
+  bestEffortRun(
+    `UPDATE timers SET held_at = datetime('now'), held_reason = ?
+     WHERE id = ? AND cancelled_at IS NULL
+       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
+    reason,
+    timer.id,
+    timer.due_at,
+  );
+}
+
+const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
+const HELD_REASON_LEAD_PANE_DEAD =
+  "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
+  "cancellation for this alone, so it is held rather than lost";
+
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
   const live = snapshot ? targetAlive(timer.deliver_pane, snapshot) : targetLive(timer.deliver_pane);
   if (live === null) return false;
   if (!live) {
-    cancelTimer(timer.id);
+    // A lead-owned wake gets the same exemption janitor()'s timer sweep does,
+    // and for the same reason: this check has no SETTLE_WINDOW grace at all,
+    // so a wake becoming due in the exact gap between the lead's old pane
+    // dying and a restart recording the new one would otherwise be cancelled
+    // outright rather than just held for a tick. Held, not silently skipped
+    // (counselors R2-A): wake_list must be able to tell this apart from a
+    // wake that simply is not due yet.
+    if (isLeadActorId(timer.deliver_actor)) {
+      holdTimer(timer, HELD_REASON_LEAD_PANE_DEAD);
+    } else {
+      cancelTimer(timer.id);
+    }
     return false;
   }
   // Todo 65. A pane sitting on a modal choice eats the paste and reads the
@@ -478,20 +543,11 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // cycle, potentially the whole repeat period. WHERE due_at = ? makes the
     // write a no-op exactly when a concurrent claim has already moved this row
     // past the state this tick observed.
-    bestEffortRun(
-      `UPDATE timers SET held_at = datetime('now'), held_reason = ?
-       WHERE id = ? AND cancelled_at IS NULL
-         AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
-      HELD_REASON_MODAL_CHOICE,
-      timer.id,
-      timer.due_at,
-    );
+    holdTimer(timer, HELD_REASON_MODAL_CHOICE);
     return false;
   }
   return true;
 }
-
-const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
 
 async function fireDelay(
   timer: TimerRow,

@@ -249,6 +249,32 @@ function stateFor(event: string): string | null {
   }
 }
 
+// Issue #27. A lead now has an agents row (kind='lead'), so an unqualified
+// UPDATE by actor_id would MATCH it and write real agent_state - the
+// discriminator has to run before the write, not be inferred from "the row
+// doesn't exist anyway". Folded into the UPDATE's own WHERE (kind = 'agent')
+// rather than a separate SELECT first: one query instead of two on every
+// hook invocation, for every actor, not just the lead's.
+//
+// Written as an ALLOWLIST (only kind='agent' gets state), not a denylist
+// (everything except kind='lead'): agents.kind also holds 'command' for
+// hive.yml background processes, and .claude/rules/worker-state.md's rule is
+// specifically about a worker's /goal, not about "everyone but the lead". A
+// denylist would default a future third kind into getting state written; an
+// allowlist defaults it to the same silence a lead now deliberately gets.
+//
+// A lead's hook writes the log row and nothing else, deliberately, not as a
+// half-measure: .claude/rules/worker-state.md's "never set a /goal on a
+// worker" names why. A /goal fires Stop after every turn while immediately
+// starting another, so hive would record idle for an actor that never
+// stopped - nine consecutive false idles were measured on agent:53 in 50
+// seconds with no prompt|working between them. A /goal is the lead's normal
+// unattended operating mode, and the lead has no supervisor polling it the
+// way a lead polls a worker, so a false idle here has nothing above it to
+// catch the mistake. The log row still gets state computed by stateFor below;
+// what stays unwritten is agents.agent_state, the value anything else in hive
+// would act on.
+
 try {
   const actorId = process.env.HIVE_AGENT_ID;
   if (actorId) {
@@ -256,7 +282,7 @@ try {
     const state = stateFor(event);
     if (state !== null) {
       db.prepare(
-        "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ?",
+        "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
       ).run(state, actorId);
     }
     // Outside the branch above: the event proves the session is alive whether or

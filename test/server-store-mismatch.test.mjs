@@ -302,6 +302,31 @@ describe("hive refuses to read liveness off a tmux server its store does not liv
   });
 });
 
+describe(
+  "an empty tmux_target is never live (todo 180)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    it("list-panes -t '' resolves to a real session instead of erroring, the reproduction the fix rests on", () => {
+      // The lead's own reproduction against this file's isolated server, kept
+      // as a live check rather than a comment: fallbackSession (set up above)
+      // is still running at this point in the file, and an empty target
+      // silently answers with ITS pane rather than failing the way a dead
+      // target does. A future tmux that started erroring instead would fail
+      // this test, not targetLive('')'s below, which is the point of keeping
+      // both.
+      const out = execFileSync("tmux", ["list-panes", "-t", ""], { encoding: "utf8" });
+      assert.match(out, /%\d+/, "an empty target answers with a real pane id, not an error");
+    });
+
+    it("targetLive('') is always false, without ever asking tmux", () => {
+      // Same server, same live session as the test above - if targetLive
+      // reached tmux for an empty target the way it used to, this would come
+      // back true (or, off the default store, null), never false.
+      assert.equal(targetLive(""), false);
+    });
+  },
+);
+
 describe("the janitor sweeps nothing when it cannot trust the server it probed", () => {
   beforeEach(reset);
 

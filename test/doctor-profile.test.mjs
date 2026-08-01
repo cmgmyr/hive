@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { failureCount, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 // Issue #43. `hive doctor` said nothing when a project's hive.yml named a
 // profile this machine does not have, so a lead could start with no standing
@@ -31,13 +31,9 @@ const { db } = await import("../dist/db.js");
 // assert doctor's global exit code. Two recorded instances of that shape have
 // cost this project a red CI, and comparing two exit codes saturates at 1 so
 // the test passes even after the thing under test breaks. Compare the
-// FAILURE COUNT the summary line carries instead.
-const summaryLine = (stdout) => stdout.trim().split("\n").pop();
-const failureCount = (stdout) => {
-  const m = summaryLine(stdout).match(/^(\d+) problem/);
-  return m ? Number(m[1]) : 0;
-};
-
+// FAILURE COUNT the summary line carries instead - failureCount is shared
+// via test/helpers.mjs now that a second file needs it (issue #27's L4 fix
+// round R7, todo 171).
 let baseline;
 let projectId;
 

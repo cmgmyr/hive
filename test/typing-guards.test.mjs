@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, REPO, scratchDirs, sleep } from "./helpers.mjs";
+import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, REPO, scratchDirs, seedLeadRow, sleep } from "./helpers.mjs";
 
 // Todo 70 / issue #27. The #24 lane guarded exactly one typing path, the
 // scheduler's own wake delivery. These three still typed into whatever was on
@@ -14,6 +14,7 @@ const { hasTmux, cleanup } = isolateTmux("the typing-guard tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
+const { db } = await import("../dist/db.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 const fixturePath = (file) => join(FIXTURES, file);
@@ -334,5 +335,89 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
       const receipt = await mcp.call("agent_send", { name, keys: ["Escape"] });
       assert.equal(receipt.sent, true, `keys must reach ${file} unconditionally`);
     }
+    // The accept case for the guard below: an ORDINARY worker's keys path is
+    // untouched by it, on every fixture including a dialog one - this loop
+    // already proves that; the new guard below is scoped to kind='lead'.
+  });
+
+  // Issue #27's L4 fix round R6, todo 169 (counselors opus F3). agent_close
+  // already refuses a kind='lead' target (src/tools/agents.ts); agent_send's
+  // keys path did not, and a worker could reach the identical outcome -
+  // ending the lead's session - with no dialog guard, no confirm_self, and
+  // no kind check at all. Refused only when the CALLER is not itself a lead.
+  describe("refuses raw keys to a lead from a non-lead caller (does not touch a peer lead, or text)", () => {
+    async function showingAsLead(name, file) {
+      const receipt = await spawnShowing(name, replayFixture(file));
+      spawned.push(receipt.agent_id);
+      // Relabelled directly on the row rather than minted through
+      // ensureLeadRow: this guard checks agent.kind alone, and the point
+      // here is a REAL live pane to prove keys do or do not reach it, not
+      // exercising the mint path (that is lead-identity.test.mjs's job).
+      db.prepare("UPDATE agents SET kind = 'lead' WHERE id = ?").run(receipt.agent_id);
+      return name;
+    }
+
+    it("refuses keys from an ordinary (non-lead) caller, and the keys never reach the pane", async () => {
+      const name = await showingAsLead("send-lead-keys-refused", "ready-idle.txt");
+      await assert.rejects(
+        mcp.call("agent_send", { name, keys: ["C-c"] }),
+        /this project's lead session.*no.*supervisor above it.*non-lead caller/s,
+      );
+      const { output } = await mcp.call("agent_output", { name });
+      assert.doesNotMatch(output, /\^C/, "the C-c must never have reached the pane");
+    });
+
+    it("still sends text to a lead from a non-lead caller - the guard is keys-specific", async () => {
+      const name = await showingAsLead("send-lead-text-still-works", "ready-idle.txt");
+      const receipt = await mcp.call("agent_send", { name, text: "hello", submit: false });
+      assert.equal(receipt.sent, true);
+      const { output } = await mcp.call("agent_output", { name });
+      assert.match(output, /hello/);
+    });
+
+    it("still sends keys to a lead from ANOTHER lead - the escape hatch survives for a peer", async () => {
+      const name = await showingAsLead("send-lead-keys-from-lead", "folder-trust-dialog.txt");
+      // Issue #27's L4 fix round R8, todo 175 item 3 (BOTH SEATS). Used to
+      // be a bare HIVE_AGENT_ID: "lead:999" naming no row at all, which is
+      // exactly the env-shaped hole this round closes: the guard now checks
+      // for a REAL running kind='lead' row with this actor_id, so the
+      // fixture has to be one, or this test would pass for the wrong reason
+      // (the same trap it was written to catch on the callER's side).
+      const peerLeadId = seedLeadRow(db, projectId, dirs.projectDir);
+      spawned.push(peerLeadId);
+      const leadMcp = new McpClient({
+        cwd: dirs.projectDir,
+        dataDir: dirs.dataDir,
+        env: { HIVE_AGENT_ID: "lead:999" },
+      });
+      await leadMcp.start();
+      try {
+        const receipt = await leadMcp.call("agent_send", { name, keys: ["Escape"] });
+        assert.equal(receipt.sent, true, "a lead caller must keep the keys escape hatch on another lead");
+      } finally {
+        await leadMcp.close();
+      }
+    });
+
+    it("refuses keys from a caller whose HIVE_AGENT_ID merely LOOKS like a lead, with no row behind it", async () => {
+      // Issue #27's L4 fix round R8, todo 175 item 3 (BOTH SEATS). The exact
+      // shape the branch's own prior fixture proved passed the escape hatch:
+      // a string shaped like a lead actor id, naming no agents row at all.
+      const name = await showingAsLead("send-lead-keys-from-fake-lead", "folder-trust-dialog.txt");
+      const fakeLeadMcp = new McpClient({
+        cwd: dirs.projectDir,
+        dataDir: dirs.dataDir,
+        env: { HIVE_AGENT_ID: "lead:999999" },
+      });
+      await fakeLeadMcp.start();
+      try {
+        await assert.rejects(
+          fakeLeadMcp.call("agent_send", { name, keys: ["Escape"] }),
+          /this project's lead session.*no.*supervisor above it.*non-lead caller/s,
+        );
+      } finally {
+        await fakeLeadMcp.close();
+      }
+    });
   });
 });

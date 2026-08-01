@@ -325,6 +325,22 @@ export function runCli(args, opts = {}) {
   return runNode(CLI, args, opts);
 }
 
+// Issue #43, counselors review on PR #47 (test/doctor-profile.test.mjs's own
+// non-negotiable rule, also in test/CLAUDE.md): never assert `hive doctor`'s
+// global exit code. A machine missing an optional binary (claude, on a CI
+// runner that installs only node and tmux) makes doctor correctly FAIL and
+// exit 1 - the product is right, and an absolute exit-code assertion is not
+// portable across machines. Compare the FAILURE COUNT the summary line
+// carries, relative to a baseline run on the SAME machine, instead. Shared
+// here after a second file (test/lead-doctor-liveness.test.mjs) needed the
+// identical pattern - issue #27's L4 fix round R7, todo 171, the same
+// mistake reintroduced on the same command four commits later.
+export const summaryLine = (stdout) => stdout.trim().split("\n").pop();
+export const failureCount = (stdout) => {
+  const m = summaryLine(stdout).match(/^(\d+) problem/);
+  return m ? Number(m[1]) : 0;
+};
+
 // node defaults to whatever the suite is running under. Pass another
 // interpreter to test what happens when hive is run by one it was not built
 // for; everything else about the call stays identical.
@@ -433,6 +449,28 @@ export function insertStateLogRow(db, actorId, event, state, agoSeconds, payload
 // this is exercising the same LIKE match a real hook-written payload does.
 export function wakeConfirmPayload(wakeId) {
   return JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: `[hive wake #${wakeId}] acknowledged` });
+}
+
+// The running kind='lead' row for a project, however it got there - a real
+// `hive lead`, or seedLeadRow() below. No status filter: some callers want
+// the most recent row regardless of state (see the comments at those call
+// sites for why a status-filtered query would match the wrong one).
+export function leadRow(db, projectId) {
+  return db.prepare("SELECT * FROM agents WHERE project_id = ? AND kind = 'lead'").get(projectId);
+}
+
+// A standalone kind='lead' row, without going through `hive lead` or a real
+// tmux pane - for tests of a generic agent_* tool's lead guard (agent_rename,
+// wake_when_idle), where the guard itself is what's under test, not identity
+// minting. tmux_target is a value nothing here will ever probe.
+export function seedLeadRow(db, projectId, projectDir) {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+       VALUES (?, 'lead:999', 'lead', '%not-a-real-pane', 'claude', ?, 'lead', 'running')
+       RETURNING id`,
+    )
+    .get(projectId, projectDir).id;
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

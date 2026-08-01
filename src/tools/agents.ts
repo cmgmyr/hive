@@ -15,7 +15,7 @@ import { currentActor, findProjectForDir, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
-import { closeAgentRow, launchAgent, renameAgent } from "../spawn.js";
+import { closeAgentRow, isReservedAgentName, isRunningLeadActor, launchAgent, LEAD_KIND, renameAgent } from "../spawn.js";
 import { resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
@@ -64,11 +64,11 @@ export interface AgentRow {
 // The most recently closed agent whose name matches, folded the same way the
 // running passes fold. Only reached when no running agent answered, so the
 // scan over a project's dead agents stays off the hot path.
-function closedAgentNamed(projectId: number, needle: string): { id: number; name: string } | undefined {
+function closedAgentNamed(projectId: number, needle: string): { id: number; name: string; kind: string } | undefined {
   return (
     db
-      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status != 'running' ORDER BY id DESC")
-      .all(projectId) as { id: number; name: string }[]
+      .prepare("SELECT id, name, kind FROM agents WHERE project_id = ? AND status != 'running' ORDER BY id DESC")
+      .all(projectId) as { id: number; name: string; kind: string }[]
   ).find((r) => r.name.toLowerCase() === needle);
 }
 
@@ -107,8 +107,15 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
     // resolves to the live one.
     const closed = closedAgentNamed(projectId, needle);
     if (closed) {
+      // Issue #27's L4 fix round R10, todo 182 item 3 (opus). "Spawn a new
+      // worker" is impossible advice for a retired LEAD - newly reachable
+      // since todo 176 let agent_close retire a confirmed-dead lead row at
+      // all: "lead" stays reserved (isReservedAgentName), so agent_spawn
+      // refuses it outright, and the actual remedy is `hive lead` from a
+      // terminal.
+      const remedy = closed.kind === LEAD_KIND ? "Run `hive lead` to start a new one" : "Spawn a new worker";
       throw new Error(
-        `Agent ${closed.id} ("${closed.name}") is closed. Spawn a new worker, or target a running one by name or agent_id.`,
+        `Agent ${closed.id} ("${closed.name}") is closed. ${remedy}, or target a running one by name or agent_id.`,
       );
     }
 
@@ -173,6 +180,17 @@ function requireLive(agent: AgentRow): void {
 // prevent. One rule needs one implementation.
 function requireNameFree(projectId: number, name: string, exceptAgentId?: number): void {
   const needle = name.toLowerCase();
+  // Issue #27's L4 fix round, DECISION 7c. "lead" is reserved, not merely
+  // usually taken: ensureLeadRow (src/cli.ts) inserts the lead's own row
+  // directly, never through this door, so a worker could take the name the
+  // moment no lead row is running (a fresh clone, or between a lead session
+  // ending and the next `hive lead`). The next `hive lead` would then INSERT,
+  // hit SQLITE_CONSTRAINT_UNIQUE on idx_agents_running_name, and throw out of
+  // ensureLeadRow BEFORE ensureSession or attach - the lead does not start,
+  // and nothing about that failure names a worker as the cause.
+  if (isReservedAgentName(needle)) {
+    throw new Error(`"${name}" is reserved for this project's lead session and cannot be used as a worker name.`);
+  }
   const taken = (
     db
       .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
@@ -498,7 +516,7 @@ export function registerAgents(server: McpServer): void {
     "agent_rename",
     {
       description:
-        "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task.",
+        "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task. Refuses a lead target outright.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -512,6 +530,21 @@ export function registerAgents(server: McpServer): void {
       run(async () => {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
+        // Issue #27's L4 fix round, DECISION 4/5. "lead" is the name every
+        // wake, pad and todo comment addresses this project's lead by, and
+        // ensureLeadRow (src/cli.ts) now keys its own lookup on kind='lead' +
+        // running rather than on the name - so a rename would not even strand
+        // the identity, it would let the NEXT `hive lead` mint a second one
+        // under the freed name while the renamed row goes on being the real
+        // lead under a name nothing points at any more. Refuse outright,
+        // defence in depth alongside the kind='lead' keying: the message is
+        // what a human or lead actually needs here, a silent non-strand is not.
+        if (agent.kind === LEAD_KIND) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is this project's lead session. Its name is the handle ` +
+              "every wake, pad and todo addresses it by; agent_rename refuses a lead target.",
+          );
+        }
         // Reachable only by id: name lookups already filter to running agents.
         // Renaming a closed one changes a label nothing can address and
         // rewrites the actors row for a worker that is gone.
@@ -690,6 +723,21 @@ export function registerAgents(server: McpServer): void {
         // used exactly this to clear a folder-trust prompt and unstick a
         // worker on 2026-07-29. Guarding keys would remove the only supported
         // way to get a pane like that moving again.
+        //
+        // BUT that escape-hatch argument is about a SUPERVISOR unsticking a
+        // SUBORDINATE's TUI, and does not reach the lead: nothing supervises
+        // it, the same premise agent_close's own refusal rests on (below).
+        // Without a kind check here, any worker could type C-c C-c (or C-d)
+        // at "lead" and end its session exactly as effectively as the
+        // agent_close this lane already refuses - with no dialog guard, no
+        // confirm_self, and no kind check of its own (issue #27's L4 fix
+        // round R6, todo 169; counselors opus F3). Refused only when the
+        // CALLER is not itself a lead: a peer lead keeps the hatch, for the
+        // multi-lead direction this lane deliberately preserves
+        // addressability for. .claude/rules/tmux-and-panes.md is updated to
+        // match - it previously said this path "MUST STAY" unguarded, full
+        // stop, and did not have this exception to make.
+        //
         // Pre-existing, found by this lane's review rather than introduced by
         // it: passing both used to silently send keys and drop text, still
         // reporting sent: true. "keys won, text vanished" is not a thing any
@@ -698,6 +746,13 @@ export function registerAgents(server: McpServer): void {
         if (args.keys && args.keys.length > 0 && args.text != null) {
           throw new Error("Pass text or keys, not both.");
         } else if (args.keys && args.keys.length > 0) {
+          if (agent.kind === LEAD_KIND && !isRunningLeadActor(currentActor())) {
+            throw new Error(
+              `Agent ${agent.id} ("${agent.name}") is this project's lead session, the one actor with no ` +
+                "supervisor above it. agent_send refuses to send raw keys to a lead from a non-lead caller " +
+                "(text still works); unstick or restart it from its own terminal instead.",
+            );
+          }
           tmux("send-keys", "-t", target, "--", ...args.keys);
         } else if (args.text != null) {
           const { awaitingChoice, tail } = paneChoiceCheck(target);
@@ -788,7 +843,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -800,16 +855,59 @@ export function registerAgents(server: McpServer): void {
       run(() => {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
+        // Issue #27's L4 fix round R10, todo 181 item 1 (BOTH SEATS). R9's
+        // retirement path (below) was written on the premise that closing a
+        // lead is "the deliberate human action that replaces the
+        // unanswerable question" (.claude/rules/tmux-and-panes.md's own
+        // words) - but nothing enforced that premise. Any WORKER could call
+        // agent_close(name: "lead") same as a human at a terminal; a worker
+        // on a different tmux server even got a false "dead" for a lead
+        // that is genuinely still running elsewhere, and retired it. Checked
+        // before the probe below, and before the live-lead refusal further
+        // down, because a worker has no business here whether the target
+        // reads live, dead, or unknown: a plain claude session is
+        // user:<name> and a peer lead is lead:N (src/context.ts), so only a
+        // spawned worker's HIVE_AGENT_ID-derived agent:<id> trips this.
+        if (agent.kind === LEAD_KIND && currentActor().startsWith("agent:")) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is this project's lead session. Retiring a lead - live, ` +
+              "confirmed dead, or unprobed - is reserved for a human at a terminal or a peer lead; a " +
+              "worker this project spawned may not close it.",
+          );
+        }
+        // Refuse rather than half-close, for every kind. Closing the row
+        // while the pane may still be up leaks a running process nothing
+        // tracks, and the kill would not land anyway while tmux is
+        // unreachable - unknown liveness must never be treated as dead
+        // (issue #14).
+        const live = isLive(agent);
+        if (live === null) throw probeFailed(agent);
+        // Issue #27's L4 fix round R9, todo 176 item 2. Used to refuse ANY
+        // lead target outright, unconditionally - the argument (nothing
+        // supervises the lead, so ending its session is a decision only its
+        // own terminal gets to make) still holds while the pane is LIVE, and
+        // still refuses here for exactly that reason. But an unconditional
+        // refusal also meant a lead row could never be retired: the janitor
+        // exempts kind='lead' (DECISION 3) and startYmlCommand cannot reach
+        // it, so a lead whose session had genuinely ended stayed
+        // status='running' forever, which is what made `hive restore`
+        // latch shut permanently (todo 165) and then, after R8's liveness
+        // probing attempt, guess wrong in both directions (todo 176's own
+        // finding). A lead whose pane is CONFIRMED dead - not merely
+        // unprobed - can now be closed like anything else, which is the
+        // deliberate human action that replaces the unanswerable question.
+        if (agent.kind === LEAD_KIND && live) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is this project's lead session, the one actor with no ` +
+              "supervisor above it, and its pane is still live. agent_close refuses to end a running " +
+              "lead's session; restart it from its own terminal instead.",
+          );
+        }
         if (agent.actor_id === currentActor() && args.confirm_self !== true) {
           throw new Error(
             "This would close your own session. Pass confirm_self=true only if the user explicitly asked you to close yourself.",
           );
         }
-        const live = isLive(agent);
-        // Refuse rather than half-close. Closing the row while the pane may
-        // still be up leaks a running worker nothing tracks, and the kill
-        // would not land anyway while tmux is unreachable.
-        if (live === null) throw probeFailed(agent);
         if (live) {
           const pane = isPaneTarget(agent.tmux_target);
           // Resolve the window before the pane dies, then re-tile the
@@ -824,7 +922,27 @@ export function registerAgents(server: McpServer): void {
             );
           }
         }
-        closeAgentRow(agent.id);
+        // Issue #27's L4 fix round R10, todo 181 item 3 (codex F1).
+        // Conditional on the target this call actually probed as `live`
+        // above, not merely on id and status='running': a concurrent `hive
+        // lead` can record a fresh pane on this exact row between the probe
+        // and this write (the row this call read as a confirmed-dead lead,
+        // CAS'd back to running by a restart that landed in the gap), and an
+        // unconditional close would retire it anyway on the strength of a
+        // probe that is no longer true - the lead keeps running but stops
+        // resolving by name, and a peer store's `hive restore` loses this
+        // row as a live-usage signal too. No kill-pane can have hit the
+        // WRONG pane from this race (the branch above only kills when this
+        // call's own probe said live, and a lead never reaches it live -
+        // see the refusal above), so the only thing this guards is the row
+        // write itself.
+        if (!closeAgentRow(agent.id, agent.tmux_target)) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}")'s row changed since this call probed it - most likely a ` +
+              "concurrent `hive lead` recording a fresh pane on it. Nothing was closed. Re-run agent_close " +
+              "if the agent is still not what you want.",
+          );
+        }
         return { agent_id: agent.id, name: agent.name, closed: true };
       }),
   );

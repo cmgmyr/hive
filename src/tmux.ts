@@ -290,7 +290,19 @@ export function untrustedTmuxServer(): boolean {
 
 // list-panes errors on a dead target; display-message would silently fall
 // back to a default target and report success.
+//
+// Issue #27's L4 fix round R10, todo 180 (the lead's own reproduction). An
+// EMPTY target is not "no target given" to tmux; `list-panes -t ""` resolves
+// to the CALLER's own current session and exits 0, confirmed against a real
+// tmux. Every caller here uses "" to mean "no pane recorded yet" (a fresh
+// lead row, a closed worker), so without this check an empty tmux_target
+// read as permanently live: unretirable by agent_close, invisible to
+// `hive doctor`, and a kill-pane against "" would hit whatever pane this
+// process itself happens to be running in. Checked before the untrusted-server
+// guard too - an empty target is never live regardless of which server
+// answers.
 export function targetLive(target: string): Liveness {
+  if (target === "") return false;
   if (untrustedTmuxServer()) return null;
   try {
     tmux("list-panes", "-t", target);

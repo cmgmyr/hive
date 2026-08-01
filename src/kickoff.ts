@@ -123,7 +123,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   const agents = db
     .prepare(
-      "SELECT name, actor_id, command, agent_state, state_changed_at, tmux_target, cwd FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+      "SELECT name, actor_id, command, agent_state, state_changed_at, kind, tmux_target, cwd FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
     )
     .all(project.id) as (ProvenanceRow & { name: string; tmux_target: string; cwd: string })[];
   if (agents.length > 0) {
@@ -158,7 +158,21 @@ const TRIAGE_MESSAGE =
 
 export async function evaluate(cwd: string): Promise<KickoffResult> {
   // 1. A hive-spawned worker gets its brief from agent_spawn, not from this.
-  if (process.env.HIVE_AGENT_ID) return { fired: false, reason: "worker session (HIVE_AGENT_ID is set)" };
+  // HIVE_LEAD, not HIVE_AGENT_ID alone: issue #27 gave the lead an agents row
+  // too, so HIVE_AGENT_ID is now set for both. This still has to stay a plain
+  // env check, not a database lookup - it is the check that keeps this hook
+  // free in every unrelated directory on the machine, and it runs before
+  // check 2 opens hive.yml, let alone the store two gates further down.
+  //
+  // === "1", not truthiness (issue #27's L4 fix round, DECISION 7a): a
+  // worker's env carries HIVE_LEAD unset today, but a truthy check treats
+  // ANY non-empty value as "this is the lead", including the literal string
+  // "0" - the one value a future caller would most plausibly write meaning
+  // false. That would let a worker past the one gate that exists specifically
+  // to keep it from opening the store at all.
+  if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") {
+    return { fired: false, reason: "worker session (HIVE_AGENT_ID is set)" };
+  }
 
   let dir: string;
   try {

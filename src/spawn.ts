@@ -56,6 +56,24 @@ function splitTargetWindow(session: string, leadTitle: string): string {
   return (rows.find(([name]) => name === leadTitle) ?? rows[0])[1];
 }
 
+// Flattens an env object into tmux's `-e KEY=VALUE` flag pairs. The one
+// place launchAgent and cmdLead (src/cli.ts) both funnel a spawned pane's
+// environment through, found in /simplify review after cmdLead had
+// hand-rolled its own parallel array literal: a var added to one path (as
+// HIVE_DATA_DIR was, issue #27's L4 fix round R6 todo 167) had to be
+// re-derived and re-added to the other by hand, with nothing to catch a
+// future miss. One flattening step means a missing var is a one-line object
+// literal to review, not a second manual audit.
+export function buildEnvFlags(env: Record<string, string>): string[] {
+  return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+}
+
+// Issue #27's L4 fix round R10, todo 182 item 3 (opus, orphaned-comment
+// finding). This paragraph describes idx_agents_running_name, which
+// asNameClash (below) turns a SQLITE_CONSTRAINT hit on into hive's own
+// sentence - it used to sit above buildEnvFlags instead, orphaned from the
+// function it was actually about.
+//
 // idx_agents_running_name only fires on the path requireNameFree cannot see:
 // two sessions that both passed the application check and both write. A raw
 // SQLITE_CONSTRAINT reaching a lead tells it nothing it can act on, so it
@@ -69,9 +87,70 @@ export function asNameClash(e: unknown, name: string): unknown {
     err.code === "SQLITE_CONSTRAINT_UNIQUE" &&
     (message.includes("agents.name") || message.includes("idx_agents_running_name"))
   ) {
+    // Issue #27's L4 fix round R6, todo 170 (counselors opus F7). "lead" is
+    // never a name the caller CHOSE - it is this project's own reserved
+    // name - so "pick another name" is advice a `hive lead` race's loser
+    // cannot act on. What actually happened: two invocations both passed
+    // ensureLeadRow's running-row lookup before either INSERTed, and this
+    // constraint firing means the OTHER one won; its row now exists, so a
+    // re-run finds it via that same lookup and reuses it rather than racing
+    // again.
+    if (name === LEAD_NAME) {
+      return new Error(
+        "Another `hive lead` won the race to start this project's lead session. Re-run `hive lead`; " +
+          "it will find and reuse the row that invocation just created.",
+      );
+    }
     return new Error(`A running agent named "${name}" already exists. Pick another name.`);
   }
   return e;
+}
+
+// The lead's kind and its actor_id shape, defined once so ensureLeadRow
+// (src/cli.ts, the only place that ever mints one) and every consumer that
+// needs to recognise a lead without a row already in hand (src/scheduler.ts's
+// janitor and deliverable()) move together. Counselors review on the L4 fix
+// round's todo 161: three hand-written copies of "lead" - a kind check, an
+// actor_id LIKE pattern, an actor_id startsWith - drifted from the mint site
+// and from each other with nothing to catch it, since every fixture that
+// exercises them also hand-writes the same literal (shape 7's question: if
+// the format changed, no test would go red).
+export const LEAD_KIND = "lead";
+export const LEAD_ACTOR_PREFIX = `${LEAD_KIND}:`;
+export const isLeadActorId = (actorId: string): boolean => actorId.startsWith(LEAD_ACTOR_PREFIX);
+export const mintLeadActorId = (agentId: number): string => `${LEAD_ACTOR_PREFIX}${agentId}`;
+
+// Issue #27's L4 fix round R8, todo 175 item 3 (BOTH SEATS). isLeadActorId
+// alone is a STRING check on whatever HIVE_AGENT_ID happens to hold - env-
+// shaped, the same argument agentProjectPin (src/context.ts) already makes
+// against trusting identity by env var alone. currentActor() returns
+// process.env.HIVE_AGENT_ID verbatim with no row lookup, so a caller can
+// satisfy isLeadActorId by setting HIVE_AGENT_ID to any string with the
+// right prefix, naming no row at all - the branch's own test proved this
+// (test/typing-guards.test.mjs, "lead:999"). Row-shaped: a real, currently
+// running kind='lead' agents row with this exact actor_id.
+export const isRunningLeadActor = (actorId: string): boolean =>
+  !!db.prepare("SELECT 1 FROM agents WHERE actor_id = ? AND kind = ? AND status = 'running'").get(actorId, LEAD_KIND);
+
+// The lead's own row is also always named "lead" - the same string as
+// LEAD_KIND, by design (its display name and its kind coincide), not two
+// constants that happen to agree today. Exported here, not redeclared where
+// it is compared, for the same drift reason as LEAD_KIND above: two hand-rolled
+// "lead" reserved-name checks (src/cli.ts's hive.yml process names,
+// src/tools/agents.ts's requireNameFree) used to carry the same reasoning in
+// two comments and could disagree if only one were ever updated.
+export const LEAD_NAME = LEAD_KIND;
+export const isReservedAgentName = (name: string): boolean => name.toLowerCase() === LEAD_NAME;
+
+// The actors row for an agents row: same id, a display name that can drift
+// from it (renameAgent), and last_seen_at bumped on conflict. Shared by
+// launchAgent and cmdLead's own lead-row insert (src/cli.ts) so the two
+// identity paths cannot drift on this one statement.
+export function upsertActor(actorId: string, name: string, kind: string): void {
+  db.prepare(
+    `INSERT INTO actors (id, name, kind) VALUES (?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, last_seen_at = datetime('now')`,
+  ).run(actorId, name, kind);
 }
 
 export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: string; target: string } {
@@ -125,10 +204,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     const commandString =
       typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
     db.prepare("UPDATE agents SET actor_id = ?, command = ? WHERE id = ?").run(actorId, commandString, agentId);
-    db.prepare(
-      `INSERT INTO actors (id, name, kind) VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, last_seen_at = datetime('now')`,
-    ).run(actorId, spec.name, spec.kind);
+    upsertActor(actorId, spec.name, spec.kind);
 
     const session = sessionName(spec.projectId);
     const createdSession = ensureSession(session, spec.projectPath);
@@ -155,9 +231,17 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
             HIVE_PROJECT_LOCK: "1",
             HIVE_PROJECT_PATH: spec.projectPath,
             HIVE_DATA_DIR: dataDir,
+            // Issue #27's L4 fix round, DECISION 7b. Never set true here, but
+            // never explicitly cleared either, and tmux panes inherit the
+            // server's global environment - so a worker launched on a server
+            // whose environment happens to carry HIVE_LEAD=1 (nothing
+            // reachable sets it that way today) would pass kickoff's === "1"
+            // check as if it were the lead. Cheap insurance against a path
+            // that does not exist yet rather than one that does.
+            HIVE_LEAD: "",
           }
         : spec.env;
-    const envFlags = Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+    const envFlags = buildEnvFlags(env);
 
     const title = windowTitle(spec.projectName, spec.name);
     let target: string;
@@ -234,8 +318,28 @@ export function renameAgent(
   }
 }
 
-export function closeAgentRow(agentId: number): void {
-  db.prepare(
-    "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'",
-  ).run(agentId);
+// Issue #27's L4 fix round R10, todo 181 item 3 (codex F1). expectedTmuxTarget
+// is optional and, when given, makes the close conditional on the row STILL
+// naming the pane the caller actually probed - not just on id and
+// status='running'. Without it, a caller that reads tmux_target, decides the
+// pane is dead, and then calls this can race a DIFFERENT writer (the one
+// case that matters here: `hive lead`'s own CAS) recording a fresh pane on
+// the same row in between. id and status alone would still match, closing a
+// row that is now genuinely running again on the strength of a probe that is
+// no longer true - agent_close passes the target it probed for exactly this
+// reason. The return value says whether the close actually happened, so a
+// caller that cares (agent_close does) can tell "closed" from "the row moved
+// out from under me" instead of reporting the former for both.
+export function closeAgentRow(agentId: number, expectedTmuxTarget?: string): boolean {
+  const info =
+    expectedTmuxTarget === undefined
+      ? db
+          .prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'")
+          .run(agentId)
+      : db
+          .prepare(
+            "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' AND tmux_target = ?",
+          )
+          .run(agentId, expectedTmuxTarget);
+  return info.changes > 0;
 }

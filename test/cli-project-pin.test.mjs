@@ -13,6 +13,14 @@ import { McpClient, isolateTmux, liveAgentRow, runCli, scratchDirs } from "./hel
 // suite ran any CLI command with a pin set, which is how that was missed.
 const { hasTmux, cleanup } = isolateTmux("the CLI project-pin tests");
 
+// Issue #27's L4 fix round R6, todo 170 (counselors opus F6). Needed only by
+// the duplicate-actor_id describe block below, which seeds rows directly
+// rather than through a real spawn.
+const dbDirs = scratchDirs();
+process.env.HIVE_DATA_DIR = dbDirs.dataDir;
+const { db, migrate } = await import("../dist/db.js");
+migrate();
+
 // mkdtempSync's prefix argument lands literally in the path, so matching an
 // unregistered directory's own path back out of an error message needs
 // escaping - the same rule test/spawn-cwd-scope.test.mjs's namedAs() exists
@@ -219,3 +227,46 @@ describe(
     });
   },
 );
+
+// Issue #27's L4 fix round R6, todo 170 (counselors opus F6). Decision 2's
+// closed-row actor_id reuse (the lead's own identity-survives-a-restart
+// mechanism) means actor_id stopped being unique across agents ROWS: one
+// closed row and one running row can now legitimately share it.
+// agentProjectPin's SELECT had no ORDER BY, so which row's project_id it
+// returned was whatever SQLite's query plan reached first - unreachable for
+// a lead TODAY only because a lead's own env carries no HIVE_PROJECT_LOCK=1
+// (todo 167 in this same round), but the mechanism (two rows, one actor_id)
+// is real and this guard should not depend on that staying true.
+describe("agentProjectPin resolves the RUNNING row when actor_id names two (issue #27's L4 fix round R6, todo 170)", () => {
+  it("returns the running row's project, not a closed row sharing the same actor_id", async () => {
+    const actorId = "dup-actor-170";
+    const closedProject = db
+      .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+      .get("dup-actor-closed-project", mkdtempSync(join(dbDirs.tmp, "dup-actor-closed-")));
+    const runningProject = db
+      .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+      .get("dup-actor-running-project", mkdtempSync(join(dbDirs.tmp, "dup-actor-running-")));
+    // Lower rowid, closed - exactly the row a bare `.get()` with no ORDER BY
+    // tends to reach first in practice, per the finding.
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+       VALUES (?, ?, 'closed-half', '', 'sleep', '/tmp', 'agent', 'closed')`,
+    ).run(closedProject.id, actorId);
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+       VALUES (?, ?, 'running-half', '', 'sleep', '/tmp', 'agent', 'running')`,
+    ).run(runningProject.id, actorId);
+    db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'closed-project-todo-170')").run(closedProject.id);
+    db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'running-project-todo-170')").run(runningProject.id);
+
+    const unregisteredCwd = mkdtempSync(join(dbDirs.tmp, "dup-actor-cwd-"));
+    const { code, stdout } = await runCli(["todos", "--all"], {
+      cwd: unregisteredCwd,
+      dataDir: dbDirs.dataDir,
+      env: { HIVE_AGENT_ID: actorId, HIVE_PROJECT_LOCK: "1" },
+    });
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /running-project-todo-170/, "must resolve to the RUNNING row's project");
+    assert.doesNotMatch(stdout, /closed-project-todo-170/, "must not resolve to the closed row's project");
+  });
+});

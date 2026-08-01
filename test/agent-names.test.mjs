@@ -462,6 +462,49 @@ describe("control characters in a name", { skip: hasTmux ? false : "tmux is not 
   });
 });
 
+// Issue #27's L4 fix round, DECISION 7c. Before this guard, once no lead row
+// was running (a fresh clone, or between a lead session ending and the next
+// `hive lead`), a worker could take the name "lead" outright: the next `hive
+// lead` would INSERT, hit SQLITE_CONSTRAINT_UNIQUE on idx_agents_running_name,
+// and throw out of ensureLeadRow BEFORE ensureSession or attach - the lead
+// does not start, and nothing about that failure names a worker as the cause.
+describe("the name \"lead\" is reserved", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  after(async () => {
+    for (const row of (await mcp.call("agent_list")).agents) {
+      await mcp.call("agent_close", { agent_id: row.agent_id }).catch(() => {});
+    }
+  });
+
+  it("refuses to spawn a worker named \"lead\"", async () => {
+    await assert.rejects(
+      mcp.call("agent_spawn", { name: "lead", command: "sleep", extra_args: ["600"] }),
+      /reserved/,
+    );
+    const named = (await mcp.call("agent_list")).agents.filter((a) => a.name.toLowerCase() === "lead");
+    assert.deepEqual(named, [], "a refused spawn must not leave a row behind");
+  });
+
+  it("refuses regardless of case, the same rule every other name collision uses", async () => {
+    await assert.rejects(
+      mcp.call("agent_spawn", { name: "LEAD", command: "sleep", extra_args: ["600"] }),
+      /reserved/,
+    );
+  });
+
+  it("refuses to rename a worker onto \"lead\"", async () => {
+    await mcp.call("agent_spawn", { name: "renamable", command: "sleep", extra_args: ["600"] });
+    await liveAgentRow(mcp, "renamable");
+    await assert.rejects(mcp.call("agent_rename", { name: "renamable", new_name: "lead" }), /reserved/);
+    assert.equal((await mcp.call("agent_status", { name: "renamable" })).name, "renamable");
+  });
+
+  it("still spawns an ordinary worker, the accept case for this guard", async () => {
+    await mcp.call("agent_spawn", { name: "not-lead", command: "sleep", extra_args: ["600"] });
+    const row = await liveAgentRow(mcp, "not-lead");
+    assert.ok(row.alive);
+  });
+});
+
 describe("the database enforces name uniqueness too", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   after(async () => {
     for (const row of (await mcp.call("agent_list")).agents) {
@@ -515,31 +558,35 @@ describe("the database enforces name uniqueness too", { skip: hasTmux ? false : 
     await liveAgentRow(mcp, "contended");
   });
 
-  // Losing the race must read like losing the race, not like a database
-  // fault. Driven through asNameClash directly with a REAL constraint error,
-  // because the path it covers is by definition the one no single-caller test
-  // can reach: requireNameFree has already passed and another session's write
-  // landed in between. Going through agent_spawn here would prove nothing,
+  // Two rows racing for the same running name, driven by a REAL constraint
+  // error rather than a stand-in: this is the path no single-caller test can
+  // reach (requireNameFree has already passed and another session's write
+  // landed in between), and going through agent_spawn would prove nothing,
   // since requireNameFree would catch the planted row first and produce the
-  // same sentence by the other route.
-  it("reports a lost race in the same words as the application check", async () => {
-    const { asNameClash } = await import("../dist/spawn.js");
+  // same sentence by the other route. Factored out of two near-identical
+  // tests in /simplify review - they differed only in these three values and
+  // in what they asserted about asNameClash's output afterward.
+  async function forcedNameClashError(actorId, name, kind) {
     const store = new Database(join(dirs.dataDir, "hive.db"));
     const insert = store.prepare(
       `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
-       VALUES (?, 'agent:9100', 'raced', '', 'sleep 600', ?, 'agent', 'running')`,
+       VALUES (?, ?, ?, '', 'sleep 600', ?, ?, 'running')`,
     );
-    let raw;
     try {
-      insert.run(projectId, dirs.projectDir);
-      insert.run(projectId, dirs.projectDir);
+      insert.run(projectId, actorId, name, dirs.projectDir, kind);
+      insert.run(projectId, actorId, name, dirs.projectDir, kind);
       assert.fail("the second insert should have violated the unique index");
     } catch (e) {
-      raw = e;
+      assert.equal(e.code, "SQLITE_CONSTRAINT_UNIQUE");
+      return e;
     } finally {
       store.close();
     }
-    assert.equal(raw.code, "SQLITE_CONSTRAINT_UNIQUE");
+  }
+
+  it("reports a lost race in the same words as the application check", async () => {
+    const { asNameClash } = await import("../dist/spawn.js");
+    const raw = await forcedNameClashError("agent:9100", "raced", "agent");
 
     const translated = asNameClash(raw, "raced");
     assert.match(translated.message, /A running agent named "raced" already exists/);
@@ -549,5 +596,20 @@ describe("the database enforces name uniqueness too", { skip: hasTmux ? false : 
     // reported to a lead as a name collision it can do nothing about.
     const unrelated = new Error("disk I/O error");
     assert.equal(asNameClash(unrelated, "raced"), unrelated);
+  });
+
+  // Issue #27's L4 fix round R6, todo 170 (counselors opus F7). "lead" is
+  // never a name a caller CHOSE - ensureLeadRow (src/cli.ts) is the only
+  // thing that ever names a row "lead" - so "pick another name" is advice
+  // the loser of a `hive lead` race cannot act on. Same driving shape as the
+  // test above, with name="lead" to hit the branch that changes the sentence.
+  it("tells a hive lead race's loser to re-run, not to pick another name", async () => {
+    const { asNameClash } = await import("../dist/spawn.js");
+    const raw = await forcedNameClashError("lead:9200", "lead", "lead");
+
+    const translated = asNameClash(raw, "lead");
+    assert.match(translated.message, /won the race/);
+    assert.match(translated.message, /re-run `hive lead`/i);
+    assert.doesNotMatch(translated.message, /pick another name/i);
   });
 });

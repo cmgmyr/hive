@@ -330,9 +330,23 @@ export function agentProjectPin(): number | null {
   // "redundant" with the identity check above it.
   const actorId = process.env.HIVE_AGENT_ID;
   if (!actorId || process.env.HIVE_PROJECT_LOCK !== "1") return null;
-  const row = db.prepare("SELECT project_id, status FROM agents WHERE actor_id = ?").get(actorId) as
-    | { project_id: number; status: string }
-    | undefined;
+  // Issue #27's L4 fix round R6, todo 170 (counselors opus F6). actor_id
+  // stopped being unique across agents ROWS the moment decision 2 shipped: a
+  // lead row closed by someone else has its actor_id inherited by the NEXT
+  // `hive lead`'s freshly INSERTed row (src/cli.ts's ensureLeadRow), so one
+  // actor_id can now legitimately name two rows, one closed and one running.
+  // A bare SELECT with no ORDER BY leaves SQLite free to return either -
+  // this query is unreachable for a lead today (a lead's env carries no
+  // HIVE_PROJECT_LOCK=1, todo 167), but that is one lane away from mattering,
+  // not a guarantee this function can lean on. Prefer a RUNNING row over a
+  // CLOSED one when both exist, tie-broken by the most recent id; when only a
+  // closed row exists (the ordinary, single-row worker case this branch was
+  // written for), that is still exactly what falls out.
+  const row = db
+    .prepare(
+      "SELECT project_id, status FROM agents WHERE actor_id = ? ORDER BY (status = 'running') DESC, id DESC LIMIT 1",
+    )
+    .get(actorId) as { project_id: number; status: string } | undefined;
   if (!row) {
     // "Restart it" is not an escape hatch here: `tmux -e` env is PANE-scoped
     // and outlives the process (the same fact the closed-row branch below is

@@ -56,10 +56,21 @@ import {
   restoreSnapshot,
   totalSizeBytes,
 } from "./backup.js";
-import { closeAgentRow, launchAgent } from "./spawn.js";
+import {
+  asNameClash,
+  buildEnvFlags,
+  closeAgentRow,
+  isReservedAgentName,
+  launchAgent,
+  LEAD_KIND,
+  LEAD_NAME,
+  mintLeadActorId,
+  upsertActor,
+} from "./spawn.js";
 import {
   claimInitialWindow,
   ensureSession,
+  isPaneTarget,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
@@ -242,6 +253,17 @@ async function ensureTrusted(
 }
 
 function startYmlCommand(project: Project, name: string, proc: YmlProcess): string {
+  // Issue #27's L4 fix round, DECISION 7c, the hive.yml half. This lookup
+  // carries no kind filter, so a process literally named "lead" would
+  // otherwise match the REAL lead's own running row here and report "already
+  // running" without ever starting anything - and if no lead happened to be
+  // running yet, launchAgent below would take the name outright, so the next
+  // `hive lead` collides on idx_agents_running_name the same way agent_spawn
+  // used to (requireNameFree, src/tools/agents.ts). Refused before either
+  // can happen.
+  if (isReservedAgentName(name)) {
+    return `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`;
+  }
   const existing = db
     .prepare("SELECT id, tmux_target FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
     .get(project.id, name) as { id: number; tmux_target: string } | undefined;
@@ -301,10 +323,284 @@ function attach(session: string, project: Project): void {
   process.exit(result.status ?? 0);
 }
 
+// The lead's own identity, so hive has one identity mechanism (an agents row)
+// instead of two: HIVE_AGENT_ID for workers and nothing at all for the lead.
+// kind='lead' needs no migration - agents.kind carries no CHECK constraint -
+// and idx_agents_running_name already enforces one running "lead" row per
+// project, the same index that stops two workers racing for a name.
+//
+// REUSE ON RESTART IS THE POINT, not an optimisation. A restarted lead is the
+// SAME lead; minting lead:5, lead:6, lead:7 across restarts would fragment one
+// seat's identity across agent_state_log and every pad/todo write it makes as
+// itself. So this looks up the running row for (project_id, "lead") first and
+// reuses its actor_id rather than inserting unconditionally.
+//
+// FIXED (was a NAMED RISK): src/scheduler.ts's janitor now skips kind='lead'
+// in its agent sweep, so a reused row's stale created_at (from its ORIGINAL
+// insert, not this restart) can no longer cost it SETTLE_WINDOW's grace and
+// get it swept between an external restart script killing the lead's old
+// pane and this function recording the new one.
+//
+// That alone is not enough, because every ALREADY-RUNNING MCP server in
+// another session keeps running the PRE-FIX janitor (no kind filter) until
+// its own session restarts, and a kind filter added here cannot reach them.
+// So identity has to survive the row being closed by someone else, not
+// merely avoid being closed: when no RUNNING lead row exists, look for the
+// most recent CLOSED kind='lead' row for this project and, if it has a
+// non-empty actor_id, give the new row THAT actor_id instead of minting
+// lead:<newRowId>. Skip rows with actor_id = '' - a row left behind by a
+// process that died between the INSERT and the actor_id UPDATE below (see
+// DECISION 6, not yet fixed) is not a real prior identity to inherit.
+//
+// actor_id is opaque to every consumer (agent_state_log, pads, todos all key
+// on it as an unstructured string), so lead:5 living on agents row 9 is
+// correct, not a bug to "fix" on sight.
+//
+// Accepted consequence, stated here rather than left implicit: a lead row
+// now stays status='running' after its own session ends, until the next
+// `hive lead` re-records a live pane on it. `hive doctor` reports a lead
+// whose pane is not live rather than the janitor silently sweeping it.
+//
+// Issue #27's L4 fix round R8, todo 175 item 1. Named separately from
+// asNameClash (src/spawn.ts) rather than reusing its LEAD_NAME branch: that
+// branch's "another `hive lead` won the race" is correct for the INSERT
+// door (two `hive lead`s racing past the running-row lookup), but wrong
+// advice here, where the collision is a WORKER holding the name, not a
+// peer lead. Looks up who actually holds it so the message names a fixable
+// cause instead of a plausible-but-wrong one.
+function asLeadNameReuseClash(e: unknown, projectId: number, leadRowId: number): unknown {
+  const err = e as { code?: string; message?: string };
+  const message = err.message ?? "";
+  if (err.code !== "SQLITE_CONSTRAINT_UNIQUE" || !(message.includes("agents.name") || message.includes("idx_agents_running_name"))) {
+    return e;
+  }
+  // Issue #27's L4 fix round R9, todo 179 item 2 (codex F4). COLLATE NOCASE,
+  // matching idx_agents_running_name's own collation: a legacy worker named
+  // "Lead" or "LEAD" is exactly who this constraint fires against (the
+  // index is case-insensitive), and a plain `name = ?` here would miss it,
+  // reporting "could not find which one" instead of naming the culprit.
+  const holder = db
+    .prepare(
+      "SELECT id, kind, actor_id FROM agents WHERE project_id = ? AND name = ? COLLATE NOCASE AND status = 'running' AND id != ?",
+    )
+    .get(projectId, LEAD_NAME, leadRowId) as { id: number; kind: string; actor_id: string } | undefined;
+  if (!holder) {
+    return new Error(
+      'Cannot reclaim the name "lead": another running row already holds it, but a second look could not find ' +
+        "which one. Re-run `hive lead`.",
+    );
+  }
+  return new Error(
+    `Cannot reclaim the name "lead": a running ${holder.kind} (actor ${holder.actor_id}, agents.id ${holder.id}) ` +
+      `already holds it. Rename or close that ${holder.kind} first, then re-run \`hive lead\`.`,
+  );
+}
+
+// previousTarget is the row's tmux_target as it stood BEFORE this call, "" for
+// a brand new row. cmdLead uses it to tell a surviving lead pane from a
+// surviving window that just lost its lead (DECISION 2).
+//
+// Issue #27's L4 fix round R10, todo 181 item 2 (BOTH SEATS, opus's fix).
+// casExpected is a SEPARATE value from previousTarget, added because one
+// value used to do both jobs and they are not the same job. previousTarget
+// answers "what pane did this identity last have", which stillThere below
+// needs even when it names a pane from a previous tmux generation. casExpected
+// answers "what does the tmux_target COLUMN actually hold right now", which
+// the CAS a few lines below cmdLead needs exactly - and for a fresh INSERT
+// those two answers now differ: the column is seeded "" (see the INSERT
+// below), never the closed row's stale pane, so a crash between this INSERT
+// and the CAS leaves the row advertising tmux_target='' - which todo 180
+// made a universal "not live" - rather than a pane id from a previous tmux
+// generation that this invocation never confirmed and that the CURRENT
+// generation may have already reissued to someone else.
+function ensureLeadRow(
+  project: Project,
+  command: string,
+): { agentId: number; actorId: string; previousTarget: string; casExpected: string } {
+  // Keyed on kind='lead' + running, not on name (issue #27's L4 fix round,
+  // DECISION 5). Keying on name too would only give a rename somewhere to
+  // hide behind - and agent_rename now refuses a lead target outright
+  // (DECISION 4), so this is defence in depth for a path that should
+  // already be unreachable, not a guard against one that still is.
+  //
+  // Issue #27's L4 fix round R9, todo 179 item 4 (opus F5). This used to
+  // claim idx_agents_running_name "enforces at most one running row named
+  // lead per project, so this cannot match two" - true of the NAME, not of
+  // kind='lead'. The index constrains (project_id, name), not (project_id,
+  // kind), so once a pre-fix agent_rename moves the lead row off "lead" -
+  // the exact premise the name reset just above this function's INSERT
+  // branch exists to undo - the name "lead" is free again, and an older
+  // `hive lead` on that same pre-fix server can INSERT a second running
+  // kind='lead' row: nothing here stops it, since idx_agents_running_name
+  // has nothing to say about a row named something else. Both would then
+  // persist, and .get() with no ORDER BY picks whichever SQLite happens to
+  // return first - non-deterministic across otherwise-identical runs. ORDER
+  // BY id does not prevent the double row (that needs a kind-scoped unique
+  // index, a bigger change than this comment fix); it only makes which one
+  // this function acts on deterministic rather than accidental.
+  const existing = db
+    .prepare(
+      "SELECT id, actor_id, tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+    )
+    .get(project.id, LEAD_KIND) as { id: number; actor_id: string; tmux_target: string } | undefined;
+  // One reuse branch for a found running row, healing two independent kinds
+  // of damage another process or version may have left on it - merged from
+  // two near-identical branches in /simplify, since both ran the identical
+  // "UPDATE command plus one other column, then upsertActor" transaction and
+  // differed only in which column and where its value came from.
+  //
+  // DECISION 6. actor_id = '' names a row an earlier `hive lead` process
+  // left behind after dying between its INSERT and the actor_id UPDATE
+  // further down - before that fix, a three-write sequence with a real gap
+  // in the middle. A lookup that treated this row as a normal hit would
+  // launch the lead with HIVE_AGENT_ID= (empty), and the hook then writes
+  // neither a state log row nor last_seen_at for it. Treating it as a plain
+  // MISS is not enough either: it is still the running "lead" row,
+  // idx_agents_running_name still holds its name, and an INSERT below would
+  // hit SQLITE_CONSTRAINT_UNIQUE and surface asNameClash's generic "already
+  // exists, pick another name" - true of the row, useless as advice, since
+  // "lead" is not a name this caller chose. So a damaged actor_id is healed
+  // in place rather than left as a miss: `existing.actor_id || mintLeadActorId(...)`
+  // mints only when the column is empty, keeps it unchanged otherwise.
+  //
+  // Issue #27's L4 fix round R6, todo 170 (counselors codex F5). An
+  // already-running pre-41bbd77 MCP server (agent_rename did not yet refuse
+  // a lead target) can still execute its old agent_rename against this row -
+  // found by kind, addressed by whatever name it currently carries, same
+  // shape as the actor_id-reuse gap decision 3 closes for other
+  // already-running pre-fix servers. Reset the name back to LEAD_NAME on
+  // EVERY reuse (not only the healed-actor_id case), the same "identity
+  // survives what another version did to the row" argument decision 2
+  // already rests on: otherwise a rename strands the canonical "lead" handle
+  // every wake, pad and todo comment addresses this row by, and the NEXT
+  // `hive lead`'s own running-row lookup (kind='lead' + status='running',
+  // not name - DECISION 5) still finds THIS row fine, but nothing else that
+  // resolves "lead" by name can reach it any more.
+  if (existing) {
+    const actorId = existing.actor_id || mintLeadActorId(existing.id);
+    // Issue #27's L4 fix round R8, todo 175 item 1 (counselors opus F2,
+    // MEDIUM). idx_agents_running_name is UNIQUE(project_id, name COLLATE
+    // NOCASE) WHERE status='running', and this UPDATE unconditionally resets
+    // name back to LEAD_NAME with no guard of its own - only the INSERT
+    // branch below wraps its own constraint hit. This round's own premise is
+    // the scenario that trips it: an already-running pre-41bbd77 server
+    // renames this row to something else (exactly what todo 170's reset
+    // above exists to undo), and a pre-7c agent_spawn on that same old
+    // server takes the now-free "lead" name for a worker before this reset
+    // runs. asNameClash's own LEAD_NAME branch is the wrong message here -
+    // "another `hive lead` won the race" names a peer lead, and the actual
+    // holder is a worker - so this looks up who really holds the name.
+    try {
+      db.transaction(() => {
+        db.prepare("UPDATE agents SET command = ?, actor_id = ?, name = ? WHERE id = ?").run(
+          command,
+          actorId,
+          LEAD_NAME,
+          existing.id,
+        );
+        upsertActor(actorId, LEAD_NAME, LEAD_KIND);
+      })();
+    } catch (e) {
+      throw asLeadNameReuseClash(e, project.id, existing.id);
+    }
+    // casExpected equals previousTarget here, deliberately: this UPDATE never
+    // touches tmux_target (only command/actor_id/name), so the column still
+    // holds exactly what it held before this call - unlike the fresh-INSERT
+    // branch below, where the column is about to be seeded to something the
+    // row's own previousTarget does NOT equal.
+    return { agentId: existing.id, actorId, previousTarget: existing.tmux_target, casExpected: existing.tmux_target };
+  }
+  // Issue #27's L4 fix round R9, todo 178 (counselors opus F2, MEDIUM,
+  // opus's fix). tmux_target is read here too, not just actor_id, and
+  // handed back as previousTarget below instead of "". Read why that
+  // matters at the return statement; the short version is that a closed
+  // row still knows where its pane was, and throwing that away was the bug.
+  const priorClosed = db
+    .prepare(
+      "SELECT actor_id, tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
+    )
+    .get(project.id, LEAD_KIND) as { actor_id: string; tmux_target: string } | undefined;
+  // The INSERT, its actor_id UPDATE and upsertActor used to be three
+  // separate writes, which is exactly the gap this whole comment block is
+  // about - one transaction now, so a process dying anywhere in here leaves
+  // either nothing or a fully-formed row, never the actor_id = '' state
+  // above. Belt and braces, not a substitute for it: a crash mid-fsync
+  // inside better-sqlite3's synchronous transaction is not impossible, and
+  // that residual is exactly what the branch above still exists to repair,
+  // for a row this fix could not have prevented because it predates it.
+  let result;
+  try {
+    result = db.transaction(() => {
+      // Issue #27's L4 fix round R10, todo 181 item 2 (BOTH SEATS, opus's
+      // fix, superseding R9's todo 178 reasoning below the old version of
+      // this comment gave). Seeded "" unconditionally now, NOT the closed
+      // row's own stale target. R9 seeded the closed row's value here so the
+      // CAS below would match; that made a running row ADVERTISE a pane id
+      // from a previous tmux generation that this invocation never
+      // confirmed, from the moment this INSERT commits. A crash between here
+      // and the CAS (ensureSession throwing crossServerRefusal, new-session
+      // failing) then leaves the row running and naming that stale pane -
+      // which the CURRENT tmux generation may have already reissued to some
+      // other live agent, exactly the "hive types into a stranger's pane"
+      // failure class #27 exists to remove. "" carries no such risk (todo
+      // 180 made it universally read as not-live), and casExpected below is
+      // set to match it, so the CAS is unaffected: it now compares against
+      // what the column actually holds instead of what previousTarget
+      // claims. previousTarget itself is UNCHANGED - see the return
+      // statement - so stillThere's adoption check still gets the closed
+      // row's real last pane to decide about.
+      const info = db
+        .prepare(
+          "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_target) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(project.id, LEAD_NAME, command, project.path, LEAD_KIND, currentActor(), "");
+      const agentId = Number(info.lastInsertRowid);
+      const actorId = priorClosed?.actor_id ?? mintLeadActorId(agentId);
+      db.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run(actorId, agentId);
+      upsertActor(actorId, LEAD_NAME, LEAD_KIND);
+      return { agentId, actorId };
+    })();
+  } catch (e) {
+    // The same idx_agents_running_name race launchAgent's own INSERT guards
+    // against (src/spawn.ts): two `hive lead` invocations racing past the
+    // lookup above. asNameClash turns the raw SQLITE_CONSTRAINT_UNIQUE into
+    // hive's normal sentence instead of a stack trace naming a SQLite index.
+    throw asNameClash(e, LEAD_NAME);
+  }
+  // Issue #27's L4 fix round R9, todo 178 (counselors opus F2, MEDIUM). This
+  // used to always answer "" here, which the loser message's own advice
+  // ("re-run `hive lead`") turns destructive for exactly the closed-row
+  // case: `hive lead` reads the loser message and re-runs, ensureLeadRow
+  // finds no RUNNING row (this one is closed) and takes this branch,
+  // isPaneTarget("") is false so cmdLead's stillThere check can never even
+  // ask whether the ORIGINAL pane is still there, and it unconditionally
+  // splits a fresh one - leaving the original pane alive, untracked, and
+  // still writing hook state under the SAME HIVE_AGENT_ID this new row just
+  // inherited. That is the "two panes sharing one HIVE_AGENT_ID" damage the
+  // CAS a few lines below exists to prevent, reached one invocation later
+  // through a door the CAS never sees. A closed row still knows where its
+  // pane was; handing that back as previousTarget lets cmdLead's EXISTING
+  // stillThere check (the same one the ordinary reuse path already uses)
+  // decide for itself whether that pane is genuinely still there, instead
+  // of this function throwing the answer away before cmdLead ever gets to
+  // ask. isPaneTarget() and targetLive() already reject a stale, dead, or
+  // window-shaped value safely - this needs no tmux awareness of its own.
+  //
+  // casExpected is "" here, not priorClosed's target: the INSERT above now
+  // always seeds the column "" (todo 181 item 2), so "" is what the CAS must
+  // compare against for this branch to ever match.
+  return {
+    agentId: result.agentId,
+    actorId: result.actorId,
+    previousTarget: priorClosed?.tmux_target ?? "",
+    casExpected: "",
+  };
+}
+
 async function cmdLead(path?: string): Promise<void> {
   const project = resolveProject(path);
   const session = sessionName(project.id);
-  ensureHooksFile();
+  const hooksPath = ensureHooksFile();
 
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
@@ -319,6 +615,16 @@ async function cmdLead(path?: string): Promise<void> {
     } else {
       console.log("Using the default claude lead instead.");
     }
+  }
+
+  // State hooks (working/idle/waiting) ride along via --settings, same as
+  // every claude worker agent_spawn launches. Gated on isClaudeCommand for
+  // the same reason the posture flag below is: a custom lead command from
+  // hive.yml may not take the flag at all.
+  if (!isClaudeCommand(leadCommand)) {
+    console.log("! lead command is not claude; skipping hooks.");
+  } else {
+    leadCommand += ` --settings ${shellQuote(hooksPath)}`;
   }
 
   // Posture rides in the system prompt: prompt-cached, uncompactable, and
@@ -344,14 +650,235 @@ async function cmdLead(path?: string): Promise<void> {
 
   // The lead launches before auto-start processes so that on a fresh session
   // it claims the initial window rather than one of them.
-  const leadTitle = windowTitle(project.name, "lead");
+  const leadTitle = windowTitle(project.name, LEAD_NAME);
+  const {
+    agentId: leadAgentId,
+    actorId: leadActorId,
+    previousTarget,
+    casExpected,
+  } = ensureLeadRow(project, leadCommand);
+  // HIVE_LEAD marks this session as the lead, distinctly from HIVE_AGENT_ID
+  // being set at all: src/kickoff.ts's very first check (before it opens the
+  // store, deliberately) has always read HIVE_AGENT_ID alone to mean "worker
+  // session, no kickoff". Now that a lead carries HIVE_AGENT_ID too, that
+  // check needs a way to tell the two apart without a database lookup, and a
+  // second env var is cheaper than one.
+  // Issue #27's L4 fix round R6, todo 167 (counselors codex F4, verified by
+  // the lead against the code). launchAgent (src/spawn.ts) passes
+  // HIVE_DATA_DIR to every worker it launches; this block never did for the
+  // lead. Without it, `HIVE_DATA_DIR=/tmp/alt hive lead` writes the lead row
+  // and the hooks file into /tmp/alt, but the claude process it launches
+  // inherits the tmux server's own environment and defaults its MCP server
+  // AND its hooks to ~/.hive - the alternate store gets no hook rows at all,
+  // and a coincidentally-matching lead:N in the DEFAULT store gets mutated
+  // instead. A lead whose hooks write to the wrong store is this lane's own
+  // thesis failing. The suite hid this because every scratch store also gets
+  // a freshly isolated tmux server that happens to inherit the matching
+  // data dir - never exercising a lead launched into a server that does not.
+  //
+  // HIVE_PROJECT_LOCK and HIVE_PROJECT_PATH are never SET here - both exist
+  // to PIN a worker to one project via its actor_id row (agentProjectPin,
+  // src/context.ts), gated on HIVE_PROJECT_LOCK === "1", and a lead must
+  // never be locked that way: cross-project access when a human asks (cd, or
+  // a wake targeting another project) is exactly what distinguishes a lead
+  // from a worker.
+  //
+  // Issue #27's L4 fix round R8, todo 175 item 2 (counselors codex F4,
+  // MEDIUM). "Never set" used to mean "absent from this object", which is
+  // NOT the same as absent from the pane: tmux panes inherit the SERVER's
+  // own environment (src/spawn.ts's HIVE_LEAD: "" clear exists for exactly
+  // this reason, the opposite direction), so a pre-existing server carrying
+  // HIVE_PROJECT_LOCK=1 handed a project-locked lead, and a mismatching
+  // inherited HIVE_PROJECT_PATH made its project-scoped calls fail outright.
+  // Explicitly clearing both closes that the same way HIVE_LEAD's own clear
+  // does for a worker - present-and-empty, not merely absent-and-hopeful.
+  // buildEnvFlags (src/spawn.ts): the same flattening step launchAgent uses
+  // for a worker's env, found in /simplify review after this array used to
+  // be its own hand-rolled literal - a second, parallel implementation that
+  // HIVE_DATA_DIR above had to be manually re-added to.
+  const envFlags = buildEnvFlags({
+    HIVE_AGENT_ID: leadActorId,
+    HIVE_AGENT_NAME: LEAD_NAME,
+    HIVE_LEAD: "1",
+    HIVE_DATA_DIR: dataDir,
+    HIVE_PROJECT_LOCK: "",
+    HIVE_PROJECT_PATH: "",
+  });
+  // The lead's tmux_target is a PANE id (%N), never session:window. wakes.ts's
+  // resolveDelivery prefers this row's tmux_target over TMUX_PANE, and a
+  // window target delivers to that window's ACTIVE pane - a split worker's,
+  // once one is running there - not the lead's. Each branch captures its own
+  // pane directly rather than a trailing list-windows lookup afterward:
+  // claimInitialWindow already returns one, and -P -F gets one straight off
+  // new-window's/split-window's own output the same way launchAgent does
+  // (src/spawn.ts).
+  let leadPane: string;
+  // Issue #27's L4 fix round R9, todo 177 item 1 (BOTH SEATS). Tracked at
+  // the site each pane is actually made, not inferred afterward by
+  // comparing leadPane to previousTarget: that comparison is a PROXY for
+  // "this process created the pane" and it is unsound, because pane ids are
+  // not globally unique - split-window can hand back an id that happens to
+  // equal a stale previousTarget (opus's finding: a genuinely fresh pane
+  // then reads as "already there" and a losing process leaves it running
+  // untracked), and this file already relies elsewhere on ids restarting at
+  // %0 on a fresh tmux server (see the "pane ids wrap around" comment
+  // above). createdPane records the fact directly instead of re-deriving it
+  // from a string comparison a few lines later.
+  let createdPane: boolean;
   if (ensureSession(session, project.path)) {
-    claimInitialWindow(session, leadTitle, project.path, [], leadCommand);
+    leadPane = claimInitialWindow(session, leadTitle, project.path, envFlags, leadCommand).pane;
+    createdPane = true;
   } else {
-    const windows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}").split("\n");
-    if (!windows.includes(leadTitle)) {
-      tmux("new-window", "-t", `=${session}`, "-n", leadTitle, "-c", project.path, leadCommand);
+    const windows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}\t#{session_name}:#{window_id}")
+      .split("\n")
+      .map((row) => row.split("\t"));
+    const foundWindow = windows.find(([name]) => name === leadTitle)?.[1];
+    if (!foundWindow) {
+      leadPane = tmux(
+        "new-window",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "-t",
+        `=${session}`,
+        "-n",
+        leadTitle,
+        "-c",
+        project.path,
+        ...envFlags,
+        leadCommand,
+      );
+      createdPane = true;
+    } else {
+      // A found window is not proof of a live lead: split workers keep it
+      // open (and keep matching leadTitle) after the lead's own claude exits,
+      // so list-windows finding a title match is not enough (that was the
+      // "restart attaches to a window containing no lead" defect). Reuse the
+      // row's previous pane only when it is still a real pane in THIS window;
+      // otherwise split a fresh one in for the lead. Unknown liveness
+      // (untrusted tmux server) is treated as "not live" rather than the
+      // opposite bias startYmlCommand uses for hive.yml processes: a stray
+      // extra pane here is cheap, a restart silently landing with no lead at
+      // all is the defect this branch exists to close.
+      const stillThere =
+        isPaneTarget(previousTarget) &&
+        tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}")
+          .split("\n")
+          .includes(previousTarget) &&
+        targetLive(previousTarget) === true;
+      if (stillThere) {
+        leadPane = previousTarget;
+        createdPane = false;
+      } else {
+        leadPane = tmux(
+          "split-window",
+          "-P",
+          "-F",
+          "#{pane_id}",
+          "-t",
+          foundWindow,
+          "-c",
+          project.path,
+          ...envFlags,
+          leadCommand,
+        );
+        createdPane = true;
+      }
     }
+  }
+  // Issue #27's L4 fix round R6, todo 166 (counselors codex F1, verified by
+  // the lead against the code). `deliver_pane` is snapshotted once at
+  // wake_set time (src/tools/wakes.ts) and nothing else ever updates it, so
+  // without this, a restart that changes the lead's pane - the NORMAL case,
+  // not an exotic one - leaves every pending lead-owned wake naming a stale
+  // pane. Two ways that fails, both bad: held forever if the old pane is
+  // simply gone (the new lead-row exemption in the janitor and deliverable()
+  // now protects it from ever being cancelled, so "held" looks deliberate
+  // and never resolves), or worse, typed into a RECYCLED pane belonging to
+  // someone else once the tmux server itself has restarted and pane ids
+  // wrap around - the exact failure class issue #27 exists to remove,
+  // reintroduced by a second route (the first was the window-target bug
+  // fixed earlier in this round). One transaction with the pane update
+  // itself, so a reader never observes the new pane recorded on the agents
+  // row with a pending wake still naming the old one. held_at/held_reason
+  // are cleared too: a wake held against the OLD pane is no longer held
+  // against anything once it is re-pointed at a fresh one.
+  //
+  // Issue #27's L4 fix round R6, todo 170's investigation (counselors codex
+  // F3, reasoned rather than executed, checked here before acting). Two
+  // concurrent `hive lead` processes that both see the SAME dead
+  // previousTarget both take this far: both create their own fresh pane
+  // (new-window, or split-window in the found-window branch), and an
+  // unconditional UPDATE would let the second write silently clobber the
+  // first, leaving one of the two freshly-created panes' claude alive and
+  // untracked, both sharing one HIVE_AGENT_ID. Guarded with a conditional
+  // update instead: this only wins the write if tmux_target STILL reads what
+  // this process itself read as casExpected (works for every branch above,
+  // including the fresh-INSERT case where casExpected is "" and the
+  // reused-pane case where casExpected is the row's unchanged pre-existing
+  // value - SQLite counts a matched row as changed even when the new value
+  // equals the old one). The loser kills the orphan pane it just created
+  // rather than leaving a live, untracked claude process running, and fails
+  // loudly telling the human to re-run - the same shape asNameClash's
+  // race-loser message uses (todo 170's item 3) - rather than silently
+  // retrying, which this round is not carrying. NOT closed by this guard,
+  // and written down rather than chased: a crash between pane creation and
+  // this UPDATE landing (this process dies, never reaching either branch)
+  // leaves the SAME kind of orphan pane with nothing to detect it on the
+  // next `hive lead`, since there is no second process racing to notice.
+  // That residual needs a liveness sweep over stray panes in the lead's
+  // window, which is a bigger change than this round's guard.
+  // Issue #27's L4 fix round R8, todo 172 (counselors codex F1, HIGH). The
+  // CAS above used to check only id and tmux_target; closeAgentRow() leaves
+  // tmux_target unchanged when it closes a row, so a janitor closing this row
+  // between ensureLeadRow's read and this write still let the UPDATE match, a
+  // running lead's pane got recorded on a status='closed' row, and a SECOND
+  // `hive lead` would then INSERT another running row for the same actor,
+  // leaving two panes. status = 'running' closes it the same way the reuse
+  // read above already filters on it.
+  //
+  // Issue #27's L4 fix round R10, todo 181 item 2 (BOTH SEATS). Matches
+  // against casExpected now, not previousTarget: they agree for the reuse
+  // branch but not for a fresh INSERT (see ensureLeadRow), and the CAS has
+  // to compare against what the COLUMN holds, never against what
+  // previousTarget merely claims - matching a value the column was never
+  // actually written with would make the CAS fail (or worse, coincidentally
+  // pass against an unrelated row state) for the wrong reason.
+  const wonRace = db.transaction(() => {
+    const updated = db
+      .prepare("UPDATE agents SET tmux_target = ? WHERE id = ? AND tmux_target = ? AND status = 'running'")
+      .run(leadPane, leadAgentId, casExpected).changes;
+    if (updated === 0) return false;
+    db.prepare(
+      `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+       WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?`,
+    ).run(leadPane, leadActorId);
+    return true;
+  })();
+  if (!wonRace) {
+    // Issue #27's L4 fix round R8, todo 172 (counselors opus F1, MEDIUM but
+    // the damage is a live session), refined in R9's todo 177 item 1. The
+    // stillThere branch sets leadPane === previousTarget: a pane this
+    // process PROBED as already live, not one it just created. Killing it
+    // here was the bug - "the loser kills the orphan pane it just created"
+    // is only true of the other two branches, which split or spawn a
+    // genuinely fresh pane that has no reason to exist once the CAS says
+    // someone else already recorded a live one. Only kill when this process
+    // is actually the one that made it - tracked directly as createdPane,
+    // not re-derived from comparing leadPane to previousTarget, which a
+    // recycled pane id can satisfy by coincidence either way.
+    if (createdPane) {
+      try {
+        tmux("kill-pane", "-t", leadPane);
+      } catch {
+        // Best effort; the pane may already be gone.
+      }
+    }
+    throw new Error(
+      "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
+        "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +
+        "Re-run `hive lead`; it will attach to the pane that invocation recorded.",
+    );
   }
 
   if (config) {
@@ -863,7 +1390,13 @@ function cmdStatus(): void {
       // command row (a dev server, not a hook-tracked worker) has no
       // provenance to report at all; "running" is the whole fact.
       const state = a.kind === "agent" ? describeForHuman(deriveProvenance(a, null)) : "running";
-      console.log(`  ${a.kind === "command" ? "cmd  " : "agent"}  ${a.name.padEnd(20)} ${state}`);
+      // Issue #27's L4 fix round, DECISION 4. This used to be a two-way
+      // ternary (command vs. everything else), so a lead's own row printed
+      // as `agent  lead  running` - indistinguishable from an actual worker
+      // named "lead" would be, and wrong on the one row this project has
+      // exactly one of.
+      const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
+      console.log(`  ${label}  ${a.name.padEnd(20)} ${state}`);
     }
     if (agents.length === 0) console.log("  no running agents or commands");
     console.log(
@@ -1210,6 +1743,59 @@ function cmdDoctor(): void {
     }
     return `${r.closed_agents} dead agents closed, ${r.cancelled_timers} undeliverable wake-ups cancelled`;
   });
+  // DECISION 3's other half: the janitor now deliberately never closes a
+  // kind='lead' row on its own (see ensureLeadRow's comment, src/cli.ts), so
+  // a lead whose pane died stays status='running' silently unless something
+  // says so. This is that something, gated on `here` for the same reason the
+  // profile checks above are: a fresh clone has no project row yet.
+  if (here) {
+    // Issue #27's L4 fix round R10, todo 182 item 3 (opus F5). ORDER BY id:
+    // ensureLeadRow's own comment (this file) documents that a pre-fix
+    // `hive lead` server can still leave TWO running kind='lead' rows for one
+    // project (idx_agents_running_name constrains name, not kind), and a
+    // .get() with no ordering picks whichever SQLite happens to return
+    // first - non-deterministic across otherwise-identical runs. Todo 179
+    // item 4 fixed the identical defect in ensureLeadRow's own sibling
+    // lookup and left this one; this is that fix's other half.
+    const lead = db
+      .prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id")
+      .get(here.id, LEAD_KIND) as { tmux_target: string } | undefined;
+    if (lead) {
+      const live = targetLive(lead.tmux_target);
+      if (live === false) {
+        // Issue #27's L4 fix round R9, todo 176 item 3. Two remedies now,
+        // named: restart the SAME identity (`hive lead`), or retire it for
+        // good with agent_close, which finally exists because a lead is no
+        // longer immortal - and matters here specifically because a running
+        // lead row is what makes `hive restore` refuse unconditionally.
+        //
+        // Issue #27's L4 fix round R10, todo 182 item 2 (opus F4). agent_close
+        // is an MCP TOOL, not a `hive` CLI verb - this message used to say
+        // "`agent_close` it" as if it were one, which sends a human at a bare
+        // terminal (this check's own audience) looking for a subcommand that
+        // does not exist. The only way to reach it is a live MCP session
+        // against this store (a claude session with the hive MCP server
+        // running), and that session itself holds hive.db open - relevant
+        // here because the retirement is usually a step on the way to `hive
+        // restore`, which needs every such session closed first anyway. Named
+        // both: what agent_close actually is, and to end that session before
+        // restoring, rather than adding a CLI verb whose only job would be
+        // reaching a tool that already exists (see this todo's own comment
+        // for the fuller argument).
+        warn(
+          "lead",
+          "the lead's row is running but its pane is not live. The janitor leaves it alone on purpose " +
+            "(DECISION 3). Run `hive lead` to record a fresh pane and reuse this same identity, or ask a " +
+            "claude session connected to this project's hive MCP server to call the agent_close tool on " +
+            "it to retire the row for good (e.g. before `hive restore`, which otherwise refuses while any " +
+            "lead row reads running) - then end that session before restoring, since it holds this store " +
+            "open too.",
+        );
+      } else if (live === null) {
+        warn("lead", "the lead's pane liveness could not be probed (tmux did not answer).");
+      }
+    }
+  }
   check("sessions", () => {
     try {
       const sessions = execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
@@ -1317,13 +1903,24 @@ function cmdBackups(): void {
 
 // Whether anything hive can SEE looks like it is using this store right now
 // (PR #36, S1). Two independent signals, because either alone misses a real
-// case hive itself created: `agents` only tracks SPAWNED workers and
-// hive.yml commands, not the lead session itself (which is never a row in
-// that table), while a running tmux session catches the lead but says
-// nothing about a worker whose row is stale. Store-wide, not scoped to the
-// current project: hive.db is one file shared across every project in it,
-// and a restore replaces all of it, so a running worker in an unrelated
-// project is just as much a reason to refuse as one in this one.
+// case hive itself created: `agents` catches a worker or command whose row is
+// stale before its own tmux session would tell you, while a running tmux
+// session catches a live lead even if its row's signal is momentarily wrong.
+// Store-wide, not scoped to the current project: hive.db is one file shared
+// across every project in it, and a restore replaces all of it, so a running
+// worker in an unrelated project is just as much a reason to refuse as one in
+// this one.
+//
+// A lead row is NOT trustworthy by status alone (issue #27's L4 fix round,
+// DECISION 3): it deliberately stays 'running' after its own session ends,
+// until the next `hive lead` re-records a live pane, so counting it the same
+// way as a worker's row would make this refusal latch forever the first time
+// any project ever runs `hive lead` - the tmux-session signal below already
+// covers a lead that IS still live, which is why a lead row is excluded here
+// UNLESS its own pane also probes live. Not an unconditional kind='lead'
+// exclusion: a store whose live tmux session does not happen to match
+// SESSION_PREFIX (a different tag, a probe that fails) would lose the
+// live-lead case entirely if this signal did not also catch it.
 //
 // This is not, and cannot be, a complete answer to "is anything using this
 // store" (C6): a claude session started directly rather than through hive
@@ -1333,10 +1930,63 @@ function cmdBackups(): void {
 // more than this one does.
 function activeHiveUsage(): string[] {
   const reasons: string[] = [];
-  const runningAgents = (
-    db.prepare("SELECT COUNT(*) AS c FROM agents WHERE status = 'running'").get() as { c: number }
+  const runningNonLeads = (
+    db.prepare("SELECT COUNT(*) AS c FROM agents WHERE status = 'running' AND kind != ?").get(LEAD_KIND) as {
+      c: number;
+    }
   ).c;
-  if (runningAgents > 0) reasons.push(`${runningAgents} agent(s)/command(s) recorded as running`);
+  if (runningNonLeads > 0) reasons.push(`${runningNonLeads} agent(s)/command(s) recorded as running`);
+
+  // Issue #27's L4 fix round R9, todo 176 (BOTH SEATS, codex HIGH). This used
+  // to probe each lead row's pane liveness (targetAlive against a
+  // liveTargets() snapshot, todo 173) and only count a row as active usage
+  // when the probe found it alive. Two failure directions, from one root
+  // cause: a lead row is IMMORTAL (the janitor exempts kind='lead', DECISION
+  // 3; agent_close refused it outright until this same round). Liveness
+  // therefore could not be answered by probing - only guessed at - and every
+  // guess failed a different way:
+  //   - liveTargets() answers an EMPTY snapshot in essentially one realistic
+  //     case: "no server running", because a live server always has at
+  //     least one pane. That is the ORDINARY state after a reboot - exactly
+  //     when a human restores a backup - so todo 173's snapshotEmpty rule
+  //     refused restore on every store that had EVER run `hive lead`, with
+  //     --force as the only way out. --force also skips the runningNonLeads
+  //     check above, so routine use of it costs the signal that catches the
+  //     common case (a genuinely running worker).
+  //   - A POPULATED wrong server (a legitimate private-tmux/scratch-store
+  //     pair, per .claude/rules/tmux-and-panes.md, probed from an ordinary
+  //     shell on the shared server) yields a non-empty snapshot that simply
+  //     does not contain this row's target. targetAlive correctly answers
+  //     false, snapshotEmpty is false, and restore proceeds over a store a
+  //     genuinely live lead still has open.
+  // Cross-server liveness is not answerable without the socket-on-the-row
+  // migration .claude/rules/tmux-and-panes.md already names as a residual.
+  // So this stops asking it: any RUNNING kind='lead' row counts as active
+  // usage, unconditionally, the same way runningNonLeads above never probes
+  // tmux either. What makes this safe rather than a return to R6's own
+  // "latches forever" complaint (todo 165) is that a lead row is no longer
+  // immortal - agent_close now retires one whose pane is confirmed dead
+  // (see src/tools/agents.ts), which converts the unanswerable liveness
+  // question into an explicit human action instead of a permanent latch.
+  const leadRows = (
+    db.prepare("SELECT COUNT(*) AS c FROM agents WHERE status = 'running' AND kind = ?").get(LEAD_KIND) as {
+      c: number;
+    }
+  ).c;
+  if (leadRows > 0) {
+    // Issue #27's L4 fix round R10, todo 182 item 2 (opus F4). Same fix as
+    // doctor's message above: agent_close is an MCP tool, reached from a
+    // claude session talking to this project's hive MCP server, not a `hive`
+    // CLI verb - and that session has to end before a restore proceeds
+    // anyway, since it holds this exact store open.
+    reasons.push(
+      `${leadRows} lead session(s) recorded as running - run \`hive doctor\` to check whether each is ` +
+        "actually live; a confirmed-dead one can be retired by asking a claude session connected to this " +
+        "project's hive MCP server to call the agent_close tool on it, which lets a later restore proceed " +
+        "without --force. End that session before restoring either way, since it holds this store open too.",
+    );
+  }
+
   try {
     const sessions = execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
       encoding: "utf8",
