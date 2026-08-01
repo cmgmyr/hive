@@ -234,8 +234,155 @@ export function findProjectForCwd(): Project | null {
 
 const projectLock = process.env.HIVE_PROJECT_LOCK === "1";
 
+// A worker's spawner tells it which project it belongs to, not by an env var
+// naming a bare id, but by a fact already recorded ON THE AGENTS ROW at spawn
+// time (src/spawn.ts's launchAgent INSERT), looked up by actor_id - the same
+// identity hive already trusts for hook writes (src/hook.ts) - and only for a
+// session that also carries HIVE_PROJECT_LOCK=1 (see agentProjectPin's own
+// comment for why that second check is load-bearing, not redundant).
+// Consumed ahead of detectFromCwd: the whole point is that a cwd disagreeing
+// with the brief must not silently win. Checked ahead of selectedId's
+// *caller* (effectiveProjectId's override param) too, in the sense that
+// project_select already routes through assertAccessible, which under
+// HIVE_PROJECT_LOCK=1 can only ever select the home project anyway - so
+// selectedId stays the first check without the pin needing to outrank it.
+//
+// Row-shaped, not env-shaped, because an env var naming a bare id can be
+// validated for EXISTENCE but never for IDENTITY: issue #63 shipped an env
+// pin first, and rebuilding (not restoring) the store reissues ids, so a
+// stale HIVE_PROJECT_ID could name a getProject()-valid but DIFFERENT
+// project while the loud check on existence passed. The agents row moves
+// WITH the project across a restore and cannot be reissued out from under a
+// running worker the way a bare id can.
+//
+// Three cases, and the difference between them is the whole design:
+//   ROW RUNNING -> its project_id is the answer, guarded below by
+//     projectPathGuard.
+//   ROW CLOSED -> prefer cwd, but never let this fall through to
+//     resolveHomeProject's registration fallback while HIVE_PROJECT_PATH
+//     still names a real project (see the closed-row branch below for why).
+//     This is what fixes a hole an env pin could never close: `tmux -e` env
+//     is PANE-scoped and outlives the process launched in it, so a human who
+//     later runs `claude` by hand in a pane a closed worker left behind must
+//     not inherit that worker's project - on main this was always benign
+//     (home came from cwd), and an env-only pin would have turned a harmless
+//     leak into a wrong-project WRITE. A closed row is an affirmative "this
+//     worker is finished", not an error, so it is not cached as one below.
+//   ROW MISSING while HIVE_AGENT_ID and HIVE_PROJECT_LOCK are both set ->
+//     fail loudly, naming the actor id. The store does not know this worker
+//     (a rebuilt store, most likely); falling through to cwd here would
+//     silently reintroduce this issue's own defect one level up.
+// A missing-row or path-mismatch failure can never resolve on its own, so a
+// worker stuck with one would otherwise re-run this DB lookup on every tool
+// call for the rest of its life - resolveHomeProject is on that hot path.
+// Caching the error means the query runs once per process, not once per
+// call. The closed-row case needs no such cache: it does not throw, and
+// resolveHomeProject's own selectedId memoizes whatever cwd resolves to
+// right below it.
+let pinFailure: Error | null = null;
+
+// HIVE_PROJECT_PATH is a GUARD over the row lookup above, not a second
+// source of truth: it catches a store swapped underneath a live worker,
+// where the agents row survived the swap but now names a project at a
+// different path than the one this process was actually spawned into.
+// Compared realpath'd, since the row's own path is stored realpath'd
+// (addProject) and a raw HIVE_PROJECT_PATH may not be.
+function projectPathGuard(id: number): number {
+  const expected = process.env.HIVE_PROJECT_PATH?.trim();
+  if (!expected) return id;
+  // FK-guaranteed: agents.project_id references projects(id) ON DELETE
+  // CASCADE, so a live agents row can never outlive its project.
+  const project = getProject(id)!;
+  let resolvedExpected: string;
+  try {
+    resolvedExpected = realpathSync(expected);
+  } catch {
+    resolvedExpected = expected;
+  }
+  if (resolvedExpected !== project.path) {
+    pinFailure = new Error(
+      `This worker's project pin (agents row -> project ${id} at "${project.path}") disagrees with its spawn path HIVE_PROJECT_PATH="${expected}". The store may have been swapped underneath a live worker - restart it.`,
+    );
+    throw pinFailure;
+  }
+  return id;
+}
+
+// Exported for the CLI (src/cli.ts's cmdStatusline/cmdTodos/cmdTodo): those
+// commands resolve by cwd alone today (findProjectForCwd) and never register,
+// so a locked worker's pane answered agent_spawn's own tools one way and
+// these commands another - a NEW symptom of a pre-existing structural gap,
+// now that the MCP path resolves from this pin instead of cwd. They must
+// consult this SAME function, not re-derive their own version of it, or the
+// two answers can drift again the next time this logic changes.
+export function agentProjectPin(): number | null {
+  if (pinFailure) throw pinFailure;
+  // The pin applies to a session claiming BOTH an agent identity AND a
+  // project lock - exactly and only what launchAgent produces for
+  // kind="agent" - not to HIVE_AGENT_ID alone. HIVE_AGENT_ID is the
+  // documented manual-identity mechanism (README's "Identity" section) that
+  // ANY session may claim without ever being spawned or getting a backing
+  // agents row; HIVE_PROJECT_LOCK=1 is what only a real spawned worker ever
+  // carries alongside it. Keying this on identity alone once broke that
+  // manual pattern outright (two unrelated existing tests simulating a
+  // second actor via a bare HIVE_AGENT_ID started failing loudly the moment
+  // they touched a project-scoped tool) - do not drop this second check as
+  // "redundant" with the identity check above it.
+  const actorId = process.env.HIVE_AGENT_ID;
+  if (!actorId || process.env.HIVE_PROJECT_LOCK !== "1") return null;
+  const row = db.prepare("SELECT project_id, status FROM agents WHERE actor_id = ?").get(actorId) as
+    | { project_id: number; status: string }
+    | undefined;
+  if (!row) {
+    // "Restart it" is not an escape hatch here: `tmux -e` env is PANE-scoped
+    // and outlives the process (the same fact the closed-row branch below is
+    // built on), so a plain restart in this pane re-inherits HIVE_AGENT_ID
+    // and HIVE_PROJECT_LOCK and fails identically forever. Name the env to
+    // clear, since that is the only way out of this pane specifically.
+    pinFailure = new Error(
+      `HIVE_AGENT_ID=${actorId} names no agents row. This worker's store does not know it - most likely a rebuilt store. Restarting in this pane will not help: HIVE_AGENT_ID and HIVE_PROJECT_LOCK are set in the pane's own environment and survive a restart. Run "unset HIVE_AGENT_ID HIVE_PROJECT_LOCK HIVE_PROJECT_PATH" first, or open a new pane.`,
+    );
+    throw pinFailure;
+  }
+  if (row.status === "closed") {
+    // The janitor closes a running row on a PANE probe, not a process probe
+    // (tmux-and-panes.md documents it closing live workers), so a closed row
+    // does not mean this pane is actually done: the same process can still be
+    // running, or a human can have reused the pane verbatim. Prefer wherever
+    // this pane's cwd ACTUALLY is now, non-registering - that is the
+    // reused-pane property this branch exists for, and it wins first so a
+    // genuinely different, already-registered cwd is not shadowed by a stale
+    // path. Only when cwd resolves to nothing do we fall back to the project
+    // this pane's env still names: an unregistered cwd on a pane that still
+    // carries a worker's HIVE_PROJECT_PATH is at least as likely to be this
+    // false-closure case as a human's fresh unrelated repo, and silently
+    // registering a stray project for it is exactly the failure mode issue
+    // #63 exists to remove. If HIVE_PROJECT_PATH itself resolves to nothing
+    // (its directory is gone from disk; the project row survives, so this is
+    // not the FK-cascade case), fail loudly rather than let the caller fall
+    // through to resolveHomeProject's own registration fallback - "never
+    // register while HIVE_PROJECT_PATH is set" holds even here.
+    const expectedPath = process.env.HIVE_PROJECT_PATH?.trim();
+    if (!expectedPath) return null;
+    const byCwd = findProjectForCwd();
+    if (byCwd) return byCwd.id;
+    const byPath = findProjectForDir(expectedPath);
+    if (byPath) return byPath.id;
+    pinFailure = new Error(
+      `HIVE_AGENT_ID=${actorId}'s agents row is closed. Its cwd resolves to no project, and its spawn path HIVE_PROJECT_PATH="${expectedPath}" no longer resolves to one either. Unset HIVE_AGENT_ID HIVE_PROJECT_LOCK HIVE_PROJECT_PATH in this pane, or start a new one.`,
+    );
+    throw pinFailure;
+  }
+  return projectPathGuard(row.project_id);
+}
+
 function resolveHomeProject(): number {
   if (selectedId != null) return selectedId;
+  const pinned = agentProjectPin();
+  if (pinned != null) {
+    selectedId = pinned;
+    return selectedId;
+  }
   const detected = detectFromCwd();
   if (detected != null) {
     selectedId = detected.id;

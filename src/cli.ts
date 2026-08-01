@@ -35,6 +35,7 @@ import {
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate } from "./db.js";
 import {
+  agentProjectPin,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
@@ -147,9 +148,53 @@ the lead, workers, and commands all appear as native windows and panes.`);
   process.exit(1);
 }
 
+// An explicit path argument gets the SAME treatment a locked session's
+// explicit numeric project_id already gets from assertAccessible: refused
+// under HIVE_PROJECT_LOCK=1 when it disagrees with the pin, never silently
+// honoured and never silently overridden by the pin either. Before this fix,
+// the pin (consulted first inside resolveHomeProject) silently outranked the
+// chdir above - `hive init ~/other-repo` run from a pinned pane seeded
+// ~/other-repo's hive.yml into the PINNED project instead, with no error at
+// all. A path argument is just another way to name a target project;
+// letting it bypass the lock while an equivalent numeric project_id cannot
+// would make the lock optional depending on which parameter shape a caller
+// happens to use, not a real safety boundary.
+//
+// This does not piggyback on effectiveProjectId's override param (which
+// already routes a numeric id through assertAccessible): that path requires
+// the project to already exist, so an unregistered directory would have to
+// be registered FIRST to reach the check, and register-then-refuse would
+// manufacture exactly the junk project row finding 1's fix exists to stop
+// creating - refuse first, register nothing, on the same branch.
 function resolveProject(path?: string): Project {
-  if (path) process.chdir(path);
-  return getProject(effectiveProjectId())!;
+  if (!path) return getProject(effectiveProjectId())!;
+  process.chdir(path);
+  const pinned = agentProjectPin();
+  if (pinned == null) return getProject(effectiveProjectId())!;
+  const target = findProjectForCwd();
+  if (target != null && target.id === pinned) return target;
+  const pinnedProject = getProject(pinned)!;
+  throw new Error(
+    `This session is locked to project ${pinned} ("${pinnedProject.name}") but "${path}" resolves to ${
+      target ? `project ${target.id} ("${target.name}")` : "no registered project"
+    }. An explicit path argument cannot escape HIVE_PROJECT_LOCK=1. Unset HIVE_AGENT_ID and HIVE_PROJECT_LOCK in this pane, or open a new one, to act on a different project.`,
+  );
+}
+
+// cmdStatusline/cmdTodos/cmdTodo's shared entry point: consult the SAME pin
+// agent_spawn's own tools honor (src/context.ts's agentProjectPin, reached
+// via effectiveProjectId in every other command), falling back to
+// findProjectForCwd when there is no pin. MUST NEVER REGISTER - unlike
+// resolveProject above, whose effectiveProjectId can register a project as a
+// side effect, these three commands are deliberately silent outside a hive
+// project (D5, see the comment on cmdTodos) rather than creating one merely
+// because they were run in some directory. agentProjectPin only reads the
+// agents/projects tables and findProjectForCwd is already non-registering
+// (its own doc comment in context.ts), so this preserves that contract.
+function pinnedOrCwdProject(): Project | null {
+  const pinned = agentProjectPin();
+  if (pinned != null) return getProject(pinned) ?? null;
+  return findProjectForCwd();
 }
 
 // A yes/no prompt that never hangs on a stream nothing will answer: readline's
@@ -1179,7 +1224,19 @@ function cmdDoctor(): void {
 // status line. Prints nothing outside a registered project, and never
 // registers one; status lines run in every directory a session opens.
 function cmdStatusline(): void {
-  const project = findProjectForCwd();
+  let project: Project | null;
+  try {
+    project = pinnedOrCwdProject();
+  } catch {
+    // pinnedOrCwdProject can throw (a missing/mismatched agents-row pin) -
+    // that is the right behavior for cmdTodos/cmdTodo, which run once, on
+    // purpose, and can afford to be loud. A status line redraws on every
+    // prompt, so the same throw here would print the pin error on every
+    // render and exit non-zero forever, breaking this function's own "prints
+    // nothing" contract. The loud path belongs to the commands a human
+    // actually runs, not to a line that redraws whether they asked or not.
+    return;
+  }
   if (!project) return;
   const count = (sql: string) => (db.prepare(sql).get(project.id) as { n: number }).n;
   const agents = count(
@@ -1381,10 +1438,10 @@ function flagValue(argv: string[], flag: string): string | undefined {
 }
 
 // Silent outside a hive project (D5): matches cmdStatusline exactly, via
-// findProjectForCwd rather than resolveProject, so a bare `hive todos` never
+// pinnedOrCwdProject rather than resolveProject, so a bare `hive todos` never
 // registers a project as a side effect the way cmdPads does.
 function cmdTodos(argv: string[]): void {
-  const project = findProjectForCwd();
+  const project = pinnedOrCwdProject();
   if (!project) return;
 
   const all = argv.includes("--all");
@@ -1463,7 +1520,7 @@ function cmdTodos(argv: string[]): void {
 // project stays silent rather than printing a usage line for a project that
 // was never going to be registered.
 function cmdTodo(argv: string[]): void {
-  const project = findProjectForCwd();
+  const project = pinnedOrCwdProject();
   if (!project) return;
 
   const id = Number(argv.find((a) => !a.startsWith("--")));
@@ -1622,62 +1679,75 @@ if (!COMMANDS.includes(command)) {
   }
 }
 migrate();
-switch (command) {
-  case "lead":
-    await cmdLead(rest[0]);
-    break;
-  case "init":
-    await cmdInit(rest);
-    break;
-  case "attach":
-    cmdAttach(rest[0]);
-    break;
-  case "start":
-    await cmdStart(rest[0], rest[1]);
-    break;
-  case "status":
-    cmdStatus();
-    break;
-  case "setup":
-    cmdSetup(rest);
-    break;
-  case "doctor":
-    cmdDoctor();
-    break;
-  case "pads":
-    cmdPads();
-    break;
-  case "pad":
-    cmdPad(rest);
-    break;
-  case "todos":
-    cmdTodos(rest);
-    break;
-  case "todo":
-    cmdTodo(rest);
-    break;
-  case "backups":
-    cmdBackups();
-    break;
-  case "restore":
-    await cmdRestore(rest);
-    break;
-  case "runbook":
-    cmdRunbook(rest[0]);
-    break;
-  case "posture":
-    cmdPosture(rest[0]);
-    break;
-  case "profile":
-    cmdProfile(rest);
-    break;
-  case "kickoff":
-    // The plugin hook runs dist/kickoff.js directly, which never opens the
-    // store unless a directory earns it. This path is for humans testing the
-    // gates by hand, and pays cli.js's own startup cost.
-    await (await import("./kickoff.js")).runKickoff(rest);
-    break;
-  case "statusline":
-    cmdStatusline();
-    break;
+// A bad project pin (src/context.ts's agentProjectPin, now reachable from a
+// CLI command via pinnedOrCwdProject/resolveProject rather than only from an
+// MCP tool call wrapped by run()/src/result.ts) throws, same as every other
+// unhandled error a command below might raise. Without this, that reaches
+// the top of the module as an uncaught exception - a raw node stack trace
+// instead of the message the error actually carries. Wraps the whole
+// dispatch, not just the pin-consulting commands, since any command can
+// throw and every one deserves the same clean floor.
+try {
+  switch (command) {
+    case "lead":
+      await cmdLead(rest[0]);
+      break;
+    case "init":
+      await cmdInit(rest);
+      break;
+    case "attach":
+      cmdAttach(rest[0]);
+      break;
+    case "start":
+      await cmdStart(rest[0], rest[1]);
+      break;
+    case "status":
+      cmdStatus();
+      break;
+    case "setup":
+      cmdSetup(rest);
+      break;
+    case "doctor":
+      cmdDoctor();
+      break;
+    case "pads":
+      cmdPads();
+      break;
+    case "pad":
+      cmdPad(rest);
+      break;
+    case "todos":
+      cmdTodos(rest);
+      break;
+    case "todo":
+      cmdTodo(rest);
+      break;
+    case "backups":
+      cmdBackups();
+      break;
+    case "restore":
+      await cmdRestore(rest);
+      break;
+    case "runbook":
+      cmdRunbook(rest[0]);
+      break;
+    case "posture":
+      cmdPosture(rest[0]);
+      break;
+    case "profile":
+      cmdProfile(rest);
+      break;
+    case "kickoff":
+      // The plugin hook runs dist/kickoff.js directly, which never opens the
+      // store unless a directory earns it. This path is for humans testing
+      // the gates by hand, and pays cli.js's own startup cost.
+      await (await import("./kickoff.js")).runKickoff(rest);
+      break;
+    case "statusline":
+      cmdStatusline();
+      break;
+  }
+} catch (e) {
+  console.log(errorMessage(e));
+  process.exit(1);
 }

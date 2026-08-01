@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { McpClient, clearHiveEnv, isolateTmux, liveAgentRow, scratchDirs, scratchGit } from "./helpers.mjs";
+import { McpClient, clearHiveEnv, isolateTmux, liveAgentRow, scratchDirs, scratchGit, until } from "./helpers.mjs";
 
 // Issue: agent_spawn resolves the worker's PROJECT from the spawner (or an
 // explicit project_id) and never looks at args.cwd, but the worker itself
@@ -31,8 +31,8 @@ clearHiveEnv();
 // the store's own directory look like a project's subdirectory by accident.
 const unitRoot = realpathSync(mkdtempSync(join(tmpdir(), "hive-scope-unit-")));
 process.env.HIVE_DATA_DIR = join(unitRoot, "data");
-const { findProjectForDir, addProject } = await import("../dist/context.js");
-const { migrate } = await import("../dist/db.js");
+const { findProjectForDir, addProject, listProjects } = await import("../dist/context.js");
+const { db, migrate } = await import("../dist/db.js");
 migrate();
 
 // Shared by every case below that asserts on an error message: a path built
@@ -321,6 +321,486 @@ describe("agent_spawn refuses a cwd belonging to a different project", () => {
     });
   });
 });
+
+describe("a worker's project comes from its own agents row, guarded by HIVE_PROJECT_PATH (issue #63, fix round after counselors run 8)", () => {
+  // Env-shaped pin, take one, validated only for EXISTENCE never IDENTITY:
+  // counselors broke it two ways (id reuse across a rebuilt store; a reused
+  // tmux pane inheriting a finished worker's project via pane-scoped `-e`
+  // env). The row lookup fixes both - see resolveHomeProject's own comment
+  // in src/context.ts for why each of the three cases below resolves the
+  // way it does.
+  //
+  // These simulate the worker side of a spawn directly: a real `agents` row
+  // inserted by hand (matching exactly what launchAgent's own INSERT
+  // produces), then a McpClient started with the env launchAgent's
+  // kind==="agent" branch builds (HIVE_AGENT_ID, HIVE_PROJECT_LOCK,
+  // optionally HIVE_PROJECT_PATH) - rather than a real tmux pane. This is
+  // the same store this file's top-level `db` already has open, so the
+  // insert and the worker's own lookup share one on-disk database exactly
+  // the way a real spawn and a real worker do. The actual env launchAgent
+  // constructs is covered separately below, by a test that inspects a real
+  // spawned process's environment.
+  const pinRoot = mkdtempSync(join(unitRoot, "pin63-"));
+  let nextAgentId = 950;
+
+  function pinnedProject(name) {
+    return addProject(mkdtempSync(join(pinRoot, `${name}-`)), name);
+  }
+
+  function unregisteredDir(name) {
+    return mkdtempSync(join(pinRoot, `unreg-${name}-`));
+  }
+
+  // Mirrors launchAgent's own INSERT (src/spawn.ts) closely enough to stand
+  // in for it: same table, same columns that matter here (project_id,
+  // actor_id, status).
+  function insertAgentsRow(projectId, status) {
+    const actorId = `agent:${nextAgentId++}`;
+    db.prepare("INSERT INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(actorId, actorId);
+    db.prepare(
+      "INSERT INTO agents (project_id, actor_id, name, command, cwd, status) VALUES (?, ?, ?, 'sleep', '/tmp', ?)",
+    ).run(projectId, actorId, actorId, status);
+    return actorId;
+  }
+
+  const pinnedDataDir = join(unitRoot, "data");
+  const workerClient = (cwd, env) => new McpClient({ cwd, dataDir: pinnedDataDir, env });
+  const todosTitled = (projectId, title) =>
+    db.prepare("SELECT id FROM todos WHERE project_id = ? AND title = ?").all(projectId, title);
+
+  it("(m) THE REGRESSION TEST: a worker with a RUNNING agents row resolves to that project, writes state there, and registers no new project", async () => {
+    const project = pinnedProject("pin-m");
+    const actorId = insertAgentsRow(project.id, "running");
+    const projectsBefore = listProjects().length;
+    const worker = workerClient(unregisteredDir("m"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+    });
+    await worker.start();
+    try {
+      await worker.call("todo_create", { title: "written-by-pinned-worker-m" });
+    } finally {
+      await worker.close();
+    }
+    // The bug's signature is a new projects row, not a worker that merely
+    // "looks right" - assert the count, not just the write's destination.
+    assert.equal(listProjects().length, projectsBefore);
+    // And the write actually landed in the row's own project, not nowhere
+    // and not some other project silently registered for the unregistered
+    // cwd.
+    assert.equal(todosTitled(project.id, "written-by-pinned-worker-m").length, 1);
+  });
+
+  it("(n) control: with NO HIVE_AGENT_ID at all (a lead, or any non-agent-kind process), a session in an unregistered cwd still registers a new project - unaffected by the pin mechanism", async () => {
+    // agentProjectPin's guard clause is `if (!actorId || lock !== "1")
+    // return null`, so this path never touches the agents table at all.
+    // This is what (m) would look like if the row lookup fired for every
+    // session rather than only ones with both HIVE_AGENT_ID and
+    // HIVE_PROJECT_LOCK set - the answer this file's own history already
+    // proved for the env-var version of this pin (issue #63's original
+    // reproduction): an unregistered cwd registers.
+    const dir = unregisteredDir("n");
+    const projectsBefore = listProjects().length;
+    const worker = workerClient(dir, {});
+    await worker.start();
+    let who;
+    try {
+      who = await worker.call("whoami");
+    } finally {
+      await worker.close();
+    }
+    assert.equal(listProjects().length, projectsBefore + 1);
+    assert.equal(who.project.path, realpathSync(dir));
+  });
+
+  it("(n2) THE LOCK GATE ITSELF: HIVE_AGENT_ID set with NO HIVE_PROJECT_LOCK resolves from cwd and does not fail, even when a RUNNING row exists for that identity elsewhere", async () => {
+    // The documented manual-identity pattern (README's Identity section:
+    // "Set identity through environment variables when starting a worker
+    // session: HIVE_AGENT_ID=worker-1 ... claude") is unlocked and was
+    // never meant to carry a project pin - any session may claim an
+    // identity without ever going through agent_spawn. Two existing tests
+    // elsewhere in the suite (test/store.test.mjs's lease-conflict case,
+    // test/todo-cli.test.mjs's actor-attribution case) already exercise
+    // this pattern incidentally; this is the one that names the property
+    // deliberately, and it is the strongest form of the check: a row DOES
+    // exist and DOES name a project, so only the lock gate - not a missing
+    // row - can be what stops it from winning.
+    const pinnedElsewhere = pinnedProject("pin-n2-elsewhere");
+    const actorId = insertAgentsRow(pinnedElsewhere.id, "running");
+    const cwdProject = pinnedProject("pin-n2-cwd");
+    const worker = workerClient(cwdProject.path, {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      // Deliberately no HIVE_PROJECT_LOCK.
+    });
+    await worker.start();
+    let who;
+    try {
+      who = await worker.call("whoami");
+    } finally {
+      await worker.close();
+    }
+    assert.equal(who.project.id, cwdProject.id);
+  });
+
+  it("(o) THE IMPORTANT CASE (codex P2): a missing agents row fails loudly even when the cwd IS a registered project", async () => {
+    // Every OTHER bad-pin case in this describe sits in a fresh
+    // unregistered directory. An implementation that falls back to cwd
+    // whenever detectFromCwd() finds *anything* - not just on a genuinely
+    // closed row - would keep every one of those green while silently
+    // resolving here. This is the one case built specifically to catch
+    // that: the cwd is registered, so a fallback would succeed quietly
+    // instead of failing loudly.
+    const registered = pinnedProject("pin-o-registered");
+    const missingActorId = `agent:${nextAgentId++}`; // never inserted - no matching row
+    const worker = workerClient(registered.path, {
+      HIVE_AGENT_ID: missingActorId,
+      HIVE_AGENT_NAME: missingActorId,
+      HIVE_PROJECT_LOCK: "1",
+    });
+    await worker.start();
+    try {
+      await assert.rejects(worker.call("todo_list"), (err) => {
+        assert.match(err.message, new RegExp(escapeRegex(missingActorId)));
+        return true;
+      });
+    } finally {
+      await worker.close();
+    }
+  });
+
+  it("(o2) a missing-row failure is CACHED, not re-resolved as unset on a second call", async () => {
+    // (o) makes exactly one call. Rewriting the cache as `return null`
+    // (treating "already failed" the same as "unset") would leave that
+    // test green while a real worker's SECOND call fell through and
+    // registered its cwd - this calls the tool twice in the same worker and
+    // checks the project count only after both.
+    const dir = unregisteredDir("o2");
+    const missingActorId = `agent:${nextAgentId++}`;
+    const projectsBefore = listProjects().length;
+    const worker = workerClient(dir, {
+      HIVE_AGENT_ID: missingActorId,
+      HIVE_AGENT_NAME: missingActorId,
+      HIVE_PROJECT_LOCK: "1",
+    });
+    await worker.start();
+    try {
+      for (let call = 0; call < 2; call++) {
+        await assert.rejects(worker.call("todo_list"), (err) => {
+          assert.match(err.message, new RegExp(escapeRegex(missingActorId)));
+          return true;
+        });
+      }
+    } finally {
+      await worker.close();
+    }
+    assert.equal(listProjects().length, projectsBefore);
+  });
+
+  it("(p) THE HEADLINE REGRESSION TEST: a running row whose project's path disagrees with HIVE_PROJECT_PATH fails loudly, naming both", async () => {
+    // The defect the fix round exists to close: a bare id survives a
+    // rebuilt store's reissued ids and would silently "agree" with a row
+    // that now names a different project. HIVE_PROJECT_PATH is the guard
+    // that catches it - a forged/stale path naming a DIFFERENT project than
+    // the row actually resolves to, simulating a store swapped underneath a
+    // live worker where the row survived but now points somewhere else.
+    const real = pinnedProject("pin-p-real");
+    const other = pinnedProject("pin-p-other");
+    const actorId = insertAgentsRow(real.id, "running");
+    const worker = workerClient(unregisteredDir("p"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: other.path,
+    });
+    await worker.start();
+    try {
+      await assert.rejects(worker.call("todo_list"), (err) => {
+        assert.match(err.message, new RegExp(escapeRegex(real.path)));
+        assert.match(err.message, new RegExp(escapeRegex(other.path)));
+        return true;
+      });
+    } finally {
+      await worker.close();
+    }
+  });
+
+  it("(q) a CLOSED agents row is treated as unset and falls through to cwd - the property that fixes a reused tmux pane inheriting a finished worker's project", async () => {
+    const closed = pinnedProject("pin-q-closed");
+    const actorId = insertAgentsRow(closed.id, "closed");
+    // A DIFFERENT, freshly registered project as the cwd, so landing there
+    // (rather than in the closed row's own project, and rather than a
+    // thrown error) is unambiguous proof the closed row was ignored, not
+    // consulted and not fatal.
+    const reused = pinnedProject("pin-q-reused");
+    const worker = workerClient(reused.path, {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+    });
+    await worker.start();
+    try {
+      await worker.call("todo_create", { title: "written-after-reuse-q" });
+    } finally {
+      await worker.close();
+    }
+    assert.equal(todosTitled(reused.id, "written-after-reuse-q").length, 1);
+    assert.equal(todosTitled(closed.id, "written-after-reuse-q").length, 0);
+  });
+
+  it("(q2) THE FALSE-CLOSURE DEFECT (counselors run 9, finding 1): a closed row in an UNREGISTERED cwd resolves to the project HIVE_PROJECT_PATH still names, and registers no new project", async () => {
+    // (q) proves the reused-pane property by landing in a DIFFERENT,
+    // already-registered cwd. This proves the other half: the janitor closes
+    // rows on a pane probe, not a process probe (tmux-and-panes.md), so the
+    // SAME worker can still be alive in its ORIGINAL unregistered cwd when
+    // its row goes closed underneath it. Falling through to (q)'s plain
+    // "closed -> cwd" rule here would hit resolveHomeProject's own
+    // registration fallback and re-create issue #63's own defect one level
+    // up - a stray project, and HIVE_PROJECT_LOCK then locking the worker to
+    // it. HIVE_PROJECT_PATH is exactly the fact that stops that: it still
+    // names the real project, unlike cwd.
+    const project = pinnedProject("pin-q2");
+    const actorId = insertAgentsRow(project.id, "closed");
+    const projectsBefore = listProjects().length;
+    const worker = workerClient(unregisteredDir("q2"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: project.path,
+    });
+    await worker.start();
+    try {
+      await worker.call("todo_create", { title: "written-after-false-closure-q2" });
+    } finally {
+      await worker.close();
+    }
+    assert.equal(listProjects().length, projectsBefore);
+    assert.equal(todosTitled(project.id, "written-after-false-closure-q2").length, 1);
+  });
+
+  it("(q3) cwd still wins over HIVE_PROJECT_PATH on a closed row when both resolve - the reused-pane property is not shadowed by (q2)'s fallback", async () => {
+    // Locks in the order inside the closed-row branch: cwd is checked BEFORE
+    // HIVE_PROJECT_PATH. If that order were reversed, a human reusing a
+    // closed worker's pane in a DIFFERENT, already-registered repo would land
+    // back in the closed worker's project whenever the stale
+    // HIVE_PROJECT_PATH happened to still be set - exactly the regression (q)
+    // exists to prevent, just with the path guard now also in play.
+    const closed = pinnedProject("pin-q3-closed");
+    const actorId = insertAgentsRow(closed.id, "closed");
+    const reused = pinnedProject("pin-q3-reused");
+    const worker = workerClient(reused.path, {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: closed.path,
+    });
+    await worker.start();
+    try {
+      await worker.call("todo_create", { title: "written-after-reuse-q3" });
+    } finally {
+      await worker.close();
+    }
+    assert.equal(todosTitled(reused.id, "written-after-reuse-q3").length, 1);
+    assert.equal(todosTitled(closed.id, "written-after-reuse-q3").length, 0);
+  });
+
+  it("(q4) a closed row whose cwd AND whose HIVE_PROJECT_PATH both resolve to nothing fails loudly rather than falling through to registration", async () => {
+    // Neither half of (q2)'s fix can answer here: cwd is unregistered (same
+    // as (q2)) and the project's own directory is gone from disk (not the
+    // FK-cascade case - the row survives, only the path stopped resolving).
+    // "never register while HIVE_PROJECT_PATH is set" has to hold even when
+    // HIVE_PROJECT_PATH itself is stale, or this is a silent registration
+    // path with no test on it at all.
+    const project = pinnedProject("pin-q4");
+    const actorId = insertAgentsRow(project.id, "closed");
+    const goneDir = unregisteredDir("q4-gone");
+    rmSync(goneDir, { recursive: true, force: true });
+    const projectsBefore = listProjects().length;
+    const worker = workerClient(unregisteredDir("q4"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: goneDir,
+    });
+    await worker.start();
+    try {
+      await assert.rejects(worker.call("todo_list"), (err) => {
+        assert.match(err.message, new RegExp(escapeRegex(actorId)));
+        assert.match(err.message, new RegExp(escapeRegex(goneDir)));
+        return true;
+      });
+    } finally {
+      await worker.close();
+    }
+    assert.equal(listProjects().length, projectsBefore);
+  });
+
+  it("(r) a blank HIVE_PROJECT_PATH is treated as unset, not compared as an empty-string mismatch", async () => {
+    const project = pinnedProject("pin-r");
+    const actorId = insertAgentsRow(project.id, "running");
+    const worker = workerClient(unregisteredDir("r"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: "   ",
+    });
+    await worker.start();
+    try {
+      const who = await worker.call("whoami");
+      assert.equal(who.project.id, project.id);
+    } finally {
+      await worker.close();
+    }
+  });
+
+  it("(s) a running, locked pin still refuses a different project's id and still allows its own - the pin does not weaken HIVE_PROJECT_LOCK", async () => {
+    // Answers "what fails if the pin is applied but the lock is dropped":
+    // were HIVE_PROJECT_LOCK not honoured alongside the row lookup, the
+    // first assertion below would see the other project's todo_list
+    // succeed instead of being refused.
+    const home = pinnedProject("pin-s-home");
+    const other = pinnedProject("pin-s-other");
+    const actorId = insertAgentsRow(home.id, "running");
+    const worker = workerClient(unregisteredDir("s"), {
+      HIVE_AGENT_ID: actorId,
+      HIVE_AGENT_NAME: actorId,
+      HIVE_PROJECT_LOCK: "1",
+    });
+    await worker.start();
+    try {
+      await assert.rejects(worker.call("todo_list", { project_id: other.id }), (err) => {
+        assert.match(err.message, new RegExp(`locked to project ${home.id}\\b`));
+        return true;
+      });
+      // The home project - the one its row names - is still reachable.
+      await worker.call("todo_list", { project_id: home.id });
+    } finally {
+      await worker.close();
+    }
+  });
+});
+
+describe(
+  "launchAgent: HIVE_PROJECT_PATH and HIVE_PROJECT_LOCK cannot be overridden by spec.env",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    // Unlike the describe above, this goes straight at launchAgent (real
+    // tmux, no MCP layer, and a REAL agents row from launchAgent's own
+    // INSERT rather than a hand-inserted one) and inspects a spawned
+    // process's ACTUAL environment, so it is the one test in this file that
+    // would catch a regression in spawn.ts's env-block ordering
+    // specifically - the row-lookup tests above cannot see it, since
+    // agent_spawn's own tool never lets a caller supply spec.env in the
+    // first place (it is always {}). This exercises launchAgent directly,
+    // the way a future caller with a non-empty spec.env would.
+    let launchAgent;
+    let closeAgentRow;
+    let pinProject;
+    let envFile;
+    let agentId;
+
+    before(async () => {
+      ({ launchAgent, closeAgentRow } = await import("../dist/spawn.js"));
+      const pinProjectDir = mkdtempSync(join(unitRoot, "pinproj63-"));
+      pinProject = addProject(pinProjectDir, "pinproj63");
+      const envDumpDir = mkdtempSync(join(unitRoot, "envdump63-"));
+      envFile = join(envDumpDir, "out.env");
+      const commandString = `sh -c "env > ${envFile}; sleep 30"`;
+      const { agentId: id } = launchAgent({
+        projectId: pinProject.id,
+        projectName: pinProject.name,
+        projectPath: pinProject.path,
+        name: "pin-clobber-63",
+        kind: "agent",
+        commandString,
+        cwd: pinProject.path,
+        // A caller trying to override the worker's own identity and scope -
+        // exactly what the ordering fix in spawn.ts (spec.env spreads
+        // FIRST) exists to stop. If that ordering regresses, this test
+        // reads these bogus values back out of the spawned process's real
+        // environment.
+        env: { HIVE_PROJECT_PATH: "/tmp/forged-project-path-63", HIVE_PROJECT_LOCK: "0" },
+        placement: "window",
+        parentActor: "test:pin-clobber-63",
+      });
+      agentId = id;
+    });
+
+    after(() => {
+      if (agentId != null) closeAgentRow(agentId);
+      cleanup(sessionName(pinProject.id));
+    });
+
+    it("delivers the real project path and lock to the spawned process, not the caller-supplied override", async () => {
+      let content;
+      await until(() => {
+        if (!existsSync(envFile)) return false;
+        content = readFileSync(envFile, "utf8");
+        return content.includes("HIVE_PROJECT_PATH=");
+      }, 5000);
+      assert.ok(content, `env dump never appeared at ${envFile}`);
+      assert.match(content, new RegExp(`HIVE_PROJECT_PATH=${escapeRegex(pinProject.path)}$`, "m"));
+      assert.match(content, /^HIVE_PROJECT_LOCK=1$/m);
+      assert.doesNotMatch(content, /forged-project-path-63/);
+    });
+
+    it("(finding 5) a failure recording tmux_target after the pane already exists does NOT delete the agents row - the worker it already spawned stays reachable by actor_id", async () => {
+      // The pane/window is created by respawn-pane/split-window/new-window,
+      // not by the tmux_target UPDATE that follows - by the time that UPDATE
+      // runs, a real process is already up with HIVE_AGENT_ID naming this
+      // row baked into its env. Deleting the row here (the pre-fix rollback)
+      // would strand a genuinely running worker whose own agentProjectPin()
+      // lookup then finds no row at all and fails loudly for its whole life.
+      // Simulates the SQLITE_BUSY class src/db.ts already retries for
+      // elsewhere by making the UPDATE throw directly - the class of the
+      // error is not what this test is about, only what launchAgent does
+      // with it once the pane is already live.
+      const dir = mkdtempSync(join(unitRoot, "pin-finding5-"));
+      const project = addProject(dir, "pin-finding5");
+      const originalPrepare = db.prepare.bind(db);
+      db.prepare = (sql) => {
+        if (sql === "UPDATE agents SET tmux_target = ? WHERE id = ?") {
+          return {
+            run: () => {
+              throw new Error("SQLITE_BUSY: simulated for finding 5");
+            },
+          };
+        }
+        return originalPrepare(sql);
+      };
+      try {
+        assert.throws(
+          () =>
+            launchAgent({
+              projectId: project.id,
+              projectName: project.name,
+              projectPath: project.path,
+              name: "finding5-worker",
+              kind: "agent",
+              commandString: "sleep 30",
+              cwd: project.path,
+              env: {},
+              placement: "window",
+              parentActor: "test:finding5",
+            }),
+          /SQLITE_BUSY/,
+        );
+      } finally {
+        db.prepare = originalPrepare;
+      }
+      const row = originalPrepare("SELECT id, status, tmux_target FROM agents WHERE project_id = ? AND name = ?").get(
+        project.id,
+        "finding5-worker",
+      );
+      assert.ok(row, "the agents row must survive a late failure, not be deleted out from under a live pane");
+      assert.equal(row.status, "running");
+      assert.equal(row.tmux_target, "");
+      closeAgentRow(row.id);
+      cleanup(sessionName(project.id));
+    });
+  },
+);
 
 describe(
   "agent_spawn allows a cwd inside the caller's own project",

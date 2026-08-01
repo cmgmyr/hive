@@ -243,6 +243,38 @@ describe("assertWakeFiredByIdleNotMaxWaitTimeout", () => {
     result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:02:55";
     assert.throws(() => assertWakeFiredByIdleNotMaxWaitTimeout(result), /FAILS.*outside the 30s window/);
   });
+
+  // The real bug this closes, reproduced exactly: fired_at is whole-second
+  // (datetime('now')), agent_state_log.created_at is millisecond
+  // (strftime %f). A wake firing in the SAME wall second as its own
+  // triggering idle row -- the best possible outcome -- must PASS, not read
+  // as firing before the idle row that triggered it just because the idle
+  // row happened to carry a later fractional part within that same second.
+  it("PASSES when fired_at and the triggering idle row land in the SAME whole second, even though the idle row's fractional part is later", () => {
+    const result = goodResult();
+    result.agentStateLog = result.agentStateLog.map((r) =>
+      r.state === "idle" ? { ...r, created_at: "2026-01-01 00:01:55.700" } : r,
+    );
+    // Same whole second as the idle row above (:55), but its raw millisecond
+    // value (:55.000) is earlier than the idle row's (:55.700) -- exactly
+    // the truncation-artifact negative the floor exists to admit.
+    result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:01:55";
+    const proof = assertWakeFiredByIdleNotMaxWaitTimeout(result);
+    assert.match(proof, /a genuine idle fire, not a max-wait timeout/);
+  });
+
+  // The negative control: this must still FAIL, or the fix above is just
+  // the check deleted wearing a floor's clothes. A full second (not a
+  // fraction of one) before the triggering idle row is a real ordering
+  // violation no amount of resolution-matching should admit.
+  it("still FAILS when fired_at is a full second or more BEFORE the triggering idle row's own whole second", () => {
+    const result = goodResult();
+    result.agentStateLog = result.agentStateLog.map((r) =>
+      r.state === "idle" ? { ...r, created_at: "2026-01-01 00:01:56.000" } : r,
+    );
+    result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:01:55";
+    assert.throws(() => assertWakeFiredByIdleNotMaxWaitTimeout(result), /FAILS.*BEFORE the first idle row/);
+  });
 });
 
 describe("assertSubagentActuallyObserved", () => {

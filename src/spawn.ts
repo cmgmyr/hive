@@ -117,6 +117,10 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
   }
   const agentId = Number(info.lastInsertRowid);
   const actorId = `${spec.kind}:${agentId}`;
+  // Flips once the tmux pane/window actually exists and its command has
+  // started - see the comment at the tmux_target UPDATE below for why the
+  // catch below treats a failure before and after that moment differently.
+  let paneUp = false;
   try {
     const commandString =
       typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
@@ -128,14 +132,29 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
 
     const session = sessionName(spec.projectId);
     const createdSession = ensureSession(session, spec.projectPath);
+    // spec.env spreads FIRST here, not last: a worker's identity and scope
+    // (who it is, which project it is locked to) are not a caller's to
+    // override. HIVE_PROJECT_LOCK moved for the same reason as
+    // HIVE_PROJECT_PATH below it, not because it was implicated in a bug of
+    // its own - agent_spawn always calls launchAgent with env: {} today, so
+    // nothing exploits the old ordering yet, but "nothing does today" is not
+    // an invariant worth leaving unguarded on this specific env block.
+    //
+    // No HIVE_PROJECT_ID here (issue #63's fix round): the project this
+    // worker belongs to is already a fact on the agents row this function
+    // just INSERTed, keyed by actor_id, which resolveHomeProject
+    // (src/context.ts) now looks up directly instead of trusting a second,
+    // env-shaped copy of the same number. HIVE_PROJECT_PATH is a GUARD on
+    // that lookup, not the source - see projectPathGuard's comment.
     const env =
       spec.kind === "agent"
         ? {
+            ...spec.env,
             HIVE_AGENT_ID: actorId,
             HIVE_AGENT_NAME: spec.name,
             HIVE_PROJECT_LOCK: "1",
+            HIVE_PROJECT_PATH: spec.projectPath,
             HIVE_DATA_DIR: dataDir,
-            ...spec.env,
           }
         : spec.env;
     const envFlags = Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
@@ -158,9 +177,25 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
         "-t", session, "-n", title, "-c", spec.cwd, ...envFlags, commandString,
       );
     }
+    paneUp = true;
+    // Past this line the pane is up and its command has already started
+    // (respawn-pane/split-window/new-window above launch it, not this
+    // statement) - with the worker's real env baked in via -e, including
+    // HIVE_AGENT_ID naming THIS row. A failure recording tmux_target here
+    // (SQLITE_BUSY past better-sqlite3's timeout, the same class src/db.ts
+    // already retries for) must not roll the row back the way an earlier
+    // failure does: deleting it would stand up a live, running worker whose
+    // own agentProjectPin() lookup then finds no agents row at all and fails
+    // loudly for the rest of its life, which is worse than the row it
+    // replaces - pre-pin, that worker fell back to resolving from cwd and
+    // kept working. The row already carries status='running' from its
+    // INSERT; leave it there and just rethrow, so the caller sees the
+    // failure while the worker it already spawned stays reachable by
+    // actor_id, just without a recorded tmux_target.
     db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(target, agentId);
     return { agentId, actorId, target };
   } catch (e) {
+    if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
     throw e;
   }

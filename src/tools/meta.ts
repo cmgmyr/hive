@@ -5,6 +5,7 @@ import {
   addProject,
   currentActor,
   listProjects,
+  resolveProject,
   selectProjectById,
   trySelectedProject,
 } from "../context.js";
@@ -27,12 +28,26 @@ export function registerMeta(server: McpServer): void {
           name: string;
           kind: string;
         };
-        const project = trySelectedProject();
+        // Not trySelectedProject: that swallows the resolution error into a
+        // bare null, indistinguishable from "no project here". A worker
+        // bricked by a bad project pin (src/context.ts's agentProjectPin)
+        // keeps sending hook rows, so the lead sees a healthy worker while
+        // every OTHER tool call fails - whoami is the one call that must
+        // not collapse the same failure, since it is how a worker (or the
+        // lead reading its output) would actually find out.
+        let project = null;
+        let projectError;
+        try {
+          project = resolveProject();
+        } catch (e) {
+          projectError = e instanceof Error ? e.message : String(e);
+        }
         return {
           actor_id: actor.id,
           actor_name: actor.name,
           kind: actor.kind,
           project: project ? { id: project.id, name: project.name, path: project.path } : null,
+          ...(projectError ? { project_error: projectError } : {}),
           cwd: process.cwd(),
         };
       }),

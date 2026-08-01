@@ -208,16 +208,40 @@ export function assertWakeFiredByIdleNotMaxWaitTimeout(result) {
   }
   const triggeringIdle = idleEpochs[0];
   const IDLE_TO_FIRE_WINDOW_SECONDS = 30; // scheduler ticks every 3s in production; generous margin for a slow tick.
-  const delta = firedEpoch - triggeringIdle.epoch;
-  if (delta < 0 || delta > IDLE_TO_FIRE_WINDOW_SECONDS) {
+  // timers.fired_at is written by `datetime('now')` (src/scheduler.ts) --
+  // WHOLE-SECOND resolution. agent_state_log.created_at is written by
+  // `strftime('%Y-%m-%d %H:%M:%f', 'now')` (src/db.ts) -- MILLISECOND
+  // resolution. Different precision ON PURPOSE for each column's own
+  // reasons; nobody should "fix" that by touching the schema (no MIGRATIONS
+  // entry belongs here) -- this is a COMPARISON bug, not a storage one.
+  // Comparing the two at full precision made a wake that fires in the SAME
+  // WALL SECOND as its triggering idle row -- the best possible outcome --
+  // read as up to 0.999s "before" its own trigger, a false FAILS for hive
+  // being fast rather than slow. Flooring the idle epoch to whole seconds
+  // before subtracting compares both sides at the coarser of the two
+  // resolutions, which is the real information content available here.
+  // This does not weaken the check: a fire a full second or more before the
+  // FLOORED idle second is still a genuine ordering violation and still
+  // fails below, since flooring only ever moves idleEpoch DOWN (toward
+  // firedEpoch), never up past it.
+  const flooredIdleEpoch = Math.floor(triggeringIdle.epoch);
+  const delta = firedEpoch - flooredIdleEpoch;
+  if (delta < 0) {
     throw new Error(
-      `FAILS: fired_at (${firedAt}) is ${Math.round(delta)}s after the first idle row at or after the last ` +
-        `completion (${triggeringIdle.createdAt}), outside the ${IDLE_TO_FIRE_WINDOW_SECONDS}s window a genuine ` +
+      `FAILS: fired_at (${firedAt}) is ${Math.abs(delta)}s BEFORE the first idle row at or after the last ` +
+        `completion (${triggeringIdle.createdAt}, floored to whole seconds for comparison) -- a wake cannot be ` +
+        "triggered by an idle row that had not happened yet.",
+    );
+  }
+  if (delta > IDLE_TO_FIRE_WINDOW_SECONDS) {
+    throw new Error(
+      `FAILS: fired_at (${firedAt}) is ${delta}s after the first idle row at or after the last completion ` +
+        `(${triggeringIdle.createdAt}), outside the ${IDLE_TO_FIRE_WINDOW_SECONDS}s window a genuine ` +
         "idle-triggered fire should land in -- this reads more like a coincidental fire than one caused by that idle row.",
     );
   }
   return (
-    `fired_at (${firedAt}) is before max_wait_at (${maxWaitAt}) and ${Math.round(delta)}s after the triggering ` +
+    `fired_at (${firedAt}) is before max_wait_at (${maxWaitAt}) and ${delta}s after the triggering ` +
     `idle row (${triggeringIdle.createdAt}) -- a genuine idle fire, not a max-wait timeout`
   );
 }
