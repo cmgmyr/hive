@@ -208,6 +208,29 @@ describe("hive status decorates worker lines with provenance", () => {
     assert.ok(Number(match[1]) < 60, `expected ~40s (the unchanged row), not ~200s (the latch's own row): got ${match[1]}s`);
   });
 
+  it("caps and cleans a hostile log event before printing it, same as the wake body does", async () => {
+    // Round 2 (Chris's decision): describeLastLogEvent() is one shared
+    // formatter, so fixing scheduler.ts's wake body without also proving
+    // `hive status` inherits the same guard would leave this exact column -
+    // agent_state_log's event, process.argv[2] verbatim (src/hook.ts) - open
+    // on an operator's own terminal even after the pane-typed path was
+    // closed. sanitizeEventForDisplay (src/tmux.ts) caps the raw event before
+    // formatting, so a padded fake clause cannot push the real age out of
+    // view here either.
+    reset();
+    agentRow({ name: "worker-hostile", state: "working", stateChangedAgo: 90 });
+    logRow("agent:worker-hostile", "stop (0s ago)" + " ".repeat(200), "working", 3600);
+
+    const { code, stdout } = await runCli(["status"], opts);
+
+    assert.equal(code, 0, stdout);
+    assert.match(
+      stdout,
+      /last log event: stop \(0s ago\)\s{7}\[truncated\] \(1h ago\)/,
+      `the real age must survive right after the capped, marked event; got: ${stdout}`,
+    );
+  });
+
   it("omits the last-log-event line for a non-claude worker", async () => {
     reset();
     agentRow({ name: "probe-2", command: "sleep 600", state: "unknown" });
@@ -245,6 +268,23 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
       stdout,
       /\| .*auto mode on/,
       "real screen content must survive, prefixed (fix round 2, item 4), not just a 'tail:' label",
+    );
+  });
+
+  it("caps and cleans a hostile log event before printing it, same as `hive status` and the wake body do", async () => {
+    // Round 2 (Chris's decision): doctor is the third of three callers of
+    // describeLastLogEvent(), and had no sanitizer at all before this fix
+    // landed in the shared formatter.
+    reset();
+    agentRow({ name: "worker-hostile", state: "working", stateChangedAgo: 90, target: busyPane });
+    logRow("agent:worker-hostile", "stop (0s ago)" + " ".repeat(200), "working", 3600);
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(
+      stdout,
+      /worker worker-hostile: last log event: stop \(0s ago\)\s{7}\[truncated\] \(1h ago\)/,
+      `the real age must survive right after the capped, marked event; got: ${stdout}`,
     );
   });
 

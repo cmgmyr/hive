@@ -59,7 +59,7 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { isClaudeCommand } from "./brief.js";
-import type { Liveness } from "./tmux.js";
+import { sanitizeEventForDisplay, type Liveness } from "./tmux.js";
 
 // Lazily cached rather than prepared at module scope: this module loads
 // before migrate() runs (same reasoning as src/scheduler.ts's own stmt()),
@@ -276,10 +276,22 @@ export function lastLogEvent(actorId: string, now: number = Date.now()): LastLog
 }
 
 // One human-facing formatter for lastLogEvent, same reason describeForHuman
-// exists above: `hive status` and `hive doctor` both render this line, and a
-// second surface hand-rolling the string is how the two drift apart.
+// exists above: `hive status`, `hive doctor` and the wake body scheduler.ts
+// types into the lead's pane all render this line, and a second surface
+// hand-rolling the string is how they drift apart.
+//
+// log.event is process.argv[2] verbatim (src/hook.ts), attacker-influenced
+// with no validation, and every one of those three callers embeds this
+// function's return value somewhere hive did not fully control - two of them
+// an operator's own terminal, one a pane hive types into as a user turn.
+// sanitizeEventForDisplay (src/tmux.ts) caps and cleans the EVENT before it
+// is formatted, not the finished sentence, so hive's own "(<age> ago)" can
+// never be pushed out of view or duplicated; see that function's own comment
+// for the full reasoning. Sanitizing here, in the one formatter all three
+// callers share, is what makes "fix both CLI sites too" a one-line change
+// rather than three copies of the same guard.
 export function describeLastLogEvent(log: LastLogEvent | null): string {
-  return log ? `${log.event} (${humanizeAge(log.age_seconds)} ago)` : "no record";
+  return log ? `${sanitizeEventForDisplay(log.event)} (${humanizeAge(log.age_seconds)} ago)` : "no record";
 }
 
 // The one fact "does this row have a state log worth reporting" reduces to,

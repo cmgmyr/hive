@@ -719,10 +719,22 @@ export function inputBoxState(target: string): InputBoxState | null {
 // the one that says yes. hive would be approving things on the lead's behalf
 // with the text of a wake-up.
 //
-// This is NOT the busy-pane case, which was the standing hypothesis and does
-// not reproduce: a pane mid-turn queues the paste and delivers it as a user
-// turn when the turn ends. Verified twice against the transcript on disk. Busy
-// is fine. Modal is not.
+// This is NOT the busy-pane case: a pane mid-turn shows no such footer, so it
+// does not reproduce as MODAL, whatever else is true of it. Whether a busy
+// paste eventually confirms once the target's turn ends is a SEPARATE,
+// UNSETTLED question, and this comment used to answer it anyway: "Verified
+// twice against the transcript on disk." .claude/rules/tmux-and-panes.md now
+// names that exact sentence as the one that stayed wrong - a transcript
+// proves the text ARRIVED, never that a user turn BEGAN, and a later
+// measurement (wake 109, claude 2.1.220) found a busy paste enters the
+// running turn as a `queued_command` attachment, firing no UserPromptSubmit,
+// not a new turn. src/scheduler.ts's typed_busy comment (deliver()) already
+// records that this file and the project's board reached opposite
+// conclusions here and calls it unsettled - both sides resting on a single
+// measurement - rather than settling it there; this file did not know that
+// and is the one that stayed wrong. Not re-settled here either: the n=1 limit
+// still stands on both accounts. Modal is not fine, regardless: nothing above
+// this line depends on the busy question either way.
 //
 // Matched on "Esc to cancel", which is the footer claude renders under every
 // choice it is waiting on: the folder-trust prompt, the bypass-permissions
@@ -841,6 +853,57 @@ export function sanitizeTail(raw: string): string {
     .filter((line) => line !== "")
     .slice(-TAIL_LINES)
     .join("\n");
+}
+
+// A short, single-line field embedded INLINE inside a larger sentence hive
+// itself authors, never typed alone - sanitizeTail's cousin for a value that
+// is not a screen. Lives here, next to stripControlBytes and sanitizeTail,
+// so tmux.ts stays the one place that decides what is safe to embed
+// somewhere hive types; stateProvenance.ts's describeLastLogEvent() imports
+// this rather than re-deriving it, and scheduler.ts's wake body and cli.ts's
+// `hive status`/`hive doctor` printers all reach it that way, through the one
+// formatter every one of them already calls, instead of three copies drifting
+// apart the way lastLogEventSuffix and the CLI printers already had before
+// this existed (round 2, both seats independently, plus Chris's decision to
+// fix the CLI call sites in the same lane).
+//
+// Round 2 (both seats independently) found that capping the FORMATTED
+// sentence - what this lane shipped first - caps the wrong string. The value
+// this wraps, agent_state_log's `event` column, is process.argv[2] verbatim
+// (src/hook.ts) with no validation, and every caller embeds it inside a FIXED
+// template hive controls: "last log event: <this> (<age> ago)". Capping the
+// finished sentence lets the attacker pad the EVENT half of it, pushing
+// hive's OWN "(<age> ago)" suffix past the cap and out of the rendered text
+// entirely - the true age is gone with no truncation marker, the exact
+// forgery this function exists to prevent. A second shape (Codex): an event
+// short enough to survive uncapped that itself CONTAINS the literal
+// wrapping phrase, e.g. "notify (0s ago), last log event: stop", renders as
+// two apparently genuine clauses.
+//
+// The fix is capping the EVENT ITSELF, before it is ever formatted, so
+// hive's own suffix is always appended after whatever the attacker supplied
+// and can never be pushed out. The cap is chosen SHORT enough that the
+// forgery cannot fit AT ALL, not merely unlikely to: the shortest wrapping
+// phrase any caller uses is "last log event: " (16 characters), and a
+// minimal complete forgery needs that phrase plus at least one character of
+// fake event, " (", one character of fake age, and " ago)" - about 25
+// characters at an absolute minimum. Capping the raw event at
+// EVENT_DISPLAY_CHARS keeps the ENTIRE forged template out of reach rather
+// than just making it look odd. The real vocabulary (prompt/stop/notify) is
+// 4-6 characters, so this costs nothing legitimate. A literal ", last log
+// event:" fragment shorter than the cap can still appear verbatim in the
+// rendered text; that is accepted rather than chased further; a value that
+// starts with hive's own delimiter reads as garbled injection, not as a
+// second clean clause with its own plausible age, and closing that
+// completely would mean validating the event against a fixed vocabulary,
+// which is a different, larger change than this lane makes.
+//
+// Truncation is marked, never silent, so a reader can tell a long event was
+// cut rather than trust a suspiciously long value at face value.
+const EVENT_DISPLAY_CHARS = 20;
+export function sanitizeEventForDisplay(event: string): string {
+  const clean = stripControlBytes(event).replace(/[\r\n]+/g, " ");
+  return clean.length > EVENT_DISPLAY_CHARS ? `${clean.slice(0, EVENT_DISPLAY_CHARS)}[truncated]` : clean;
 }
 
 // Capture enough rows that sanitizeTail still has TAIL_LINES of content after

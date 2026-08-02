@@ -2,7 +2,13 @@ import type { Statement } from "better-sqlite3";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
-import { lastLogEvent } from "./stateProvenance.js";
+import {
+  ageSecondsSince,
+  describeLastLogEvent,
+  humanizeAge,
+  lastLogEvent,
+  reportsAgentStateLog,
+} from "./stateProvenance.js";
 import {
   capturePane,
   foreignSocket,
@@ -667,6 +673,26 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   //
   // Above claimOneShot for the same reason the liveness check is: after the
   // claim, "not now" and "never" are the same thing.
+  //
+  // Issue #27's surviving residual, recorded here because #27 itself is being
+  // closed (decided with Chris 2026-08-02) and an argument that lives only in
+  // a closed issue is one refactor from being deleted as arbitrary. Every
+  // timer routed through deliverable() is held here for as long as its target
+  // pane has a dialog up, including an idle wake whose watched agents already
+  // transitioned and including a plain delay wake, not only one whose watched
+  // agents never went idle - under a permanent dialog, NO wake delivered
+  // through this pane ever fires, and that is true regardless of timedOut.
+  // What is unique to a timed-out idle_any wake specifically: maybeFireIdle's
+  // own timedOut branch (below, line ~840) sets ready=true unconditionally
+  // once max_wait_at has passed, and this hold still runs after that and
+  // still wins, so such a wake is held past a bound the TIMER ITSELF declared
+  // as its own guarantee of firing. It is deliberate, not an oversight: typing
+  // into a dialog answers it with the wake body, which is the whole reason
+  // this hold exists, and a wake is worth losing less than a dialog is worth
+  // answering blind. Reopens only if a dialog is ever observed staying up long
+  // enough that "held" stops reading as "will resolve" - i.e. if this project
+  // ever needs a ceiling or a backoff on top of the hold, neither of which
+  // lives here today.
   if (awaitingChoice(timer.deliver_pane, choices) === true) {
     // Issue #27. This records that a hold happened; it does not change the
     // answer above, which was already false before this line. The most
@@ -877,6 +903,125 @@ const TAIL_AGENTS = 3;
 // deliver nothing in its place. Every read is individually optional: a pane
 // that died between the decision and this call costs its own line, not the
 // wake.
+// Counselors round 1, both seats: the first version of this function reported
+// ONLY describeLastLogEvent()'s fact and that hid the exact stall it was
+// built to show. describeLastLogEvent() (stateProvenance.ts) answers "what did
+// the log most recently record", and a Notification hive reads as
+// idle_prompt writes a FRESH row with the literal state 'unchanged'
+// (src/hook.ts's stateForNotification) - the latch itself never moves. Issue
+// #38's own incident is exactly that shape: 75|prompt|working at 04:40:53,
+// then 78|notify|unchanged at 05:17:50, 37 minutes later. Reporting only the
+// last log event renders that as "last log event: notify (0s ago)", which
+// reads as fresh and gives no hint the latch has not moved in 37 minutes.
+//
+// So this reports TWO facts, not one, neither inferring anything from the
+// other:
+//   - How long the CURRENT state has held, from agents.state_changed_at, the
+//     authoritative latch (ageSecondsSince/humanizeAge, stateProvenance.ts -
+//     the same source deriveProvenance() uses for age, reused directly here
+//     rather than through that function, since its own `event` field
+//     deliberately skips 'unchanged' rows and this needs the opposite). Only
+//     while status='running' (round 2, both seats, P2): agent_close never
+//     touches state_changed_at (hook.ts:285 is the only writer), so a closed
+//     row's latch is frozen at whatever it read on its way out, and "now
+//     minus that" ages a state nothing is observing any more - a worker that
+//     entered 'working' at 12:00 and closed at 12:01 would otherwise report
+//     "working for 1h" at 13:00. deriveProvenance refuses this exact
+//     attribution (alive === false -> age_seconds: null,
+//     src/stateProvenance.ts) and this matches it, gated on the row's own
+//     status rather than a probed liveness, since watchedTail already reads
+//     status straight off this same row.
+//   - The log's own last row regardless of whether it moved the latch
+//     (lastLogEvent(), #72), which says the session is still ALIVE and
+//     emitting hooks even when the latch has not moved.
+//
+// WHAT THE PAIR ACTUALLY SEPARATES, AND WHAT IT DOES NOT. Round 2, both
+// seats independently: the previous version of this comment stated a general
+// rule ("divergence means stall, convergence means healthy") and both seats
+// found a real worker it misclassifies. The pair reliably flags a stall ONLY
+// when something has logged an event AFTER the state being reported - a
+// fresh notify (or any other event) sitting on an old latch, #38's own
+// shape. It does NOT separate:
+//   - A worker genuinely, continuously busy for 40 minutes with no event
+//     logged since, from a #38 worker whose turn died 40 minutes ago and has
+//     logged nothing since either: both render byte-identical ("working for
+//     40m, last log event: prompt (40m ago)"), because nothing here observes
+//     the difference between "still running" and "stopped and nothing has
+//     looked since". The PANE TAIL this clause sits beside in watchedTail's
+//     output is the discriminator for that case, not this line.
+//   - A 'waiting' worker whose permission prompt was already answered.
+//     'waiting' is LATCHED and nothing clears it until the worker's turn
+//     ends (worker-state.md), so a worker approved at 12:01 and busy running
+//     the approved tool for 30 minutes still reads "waiting for 30m, last
+//     log event: notify (30m ago)" - an actively working session presented
+//     as blocked. Not a new residual: worker-state.md already documents
+//     'waiting' as latched for every other reader of agent_state; this
+//     clause inherits that property rather than introducing it.
+// REPORT, DO NOT INFER still stands: this function states both facts and
+// leaves the reader to judge; it does not itself decide "stalled" from
+// either one.
+//
+// Gated on reportsAgentStateLog, the same gate every other reader of this log
+// uses (stateProvenance.ts): plain agent_state for a row that never writes
+// this log at all (a lead, a kind='command' process, a non-instrumented
+// worker), never describeLastLogEvent's own "no record", because that string
+// means an instrumented worker whose log row retention already evicted - a
+// different fact from "this row was never in scope". describeLastLogEvent()
+// itself now sanitizes and caps the event field before formatting it
+// (sanitizeEventForDisplay, src/tmux.ts): it is process.argv[2] verbatim
+// (src/hook.ts) and this function's result is typed into the lead's pane.
+//
+// TWO SEPARATE try/catches below, not one, so a failure in either clause
+// costs only itself, never the other - matching this file's own contract
+// that a lookup failure here costs its own clause, never the wake. Round 2
+// (opus): the latch-age read used to sit OUTSIDE any try at all, so an
+// exception there would escape this function entirely, be swallowed by
+// watchedTail's outer catch, and drop the ENTIRE "what hive sees" block for
+// every watched agent - exactly the failure mode deliver()'s own reliance on
+// "a failure here costs its own clause" assumes cannot happen. Neither
+// ageSecondsSince nor humanizeAge actually throws on a bad string (they
+// return NaN), so Number.isFinite is the real guard against silently
+// rendering "for NaNh"; the try is defence in depth for this read, matching
+// every other read in this function.
+function stateNowClause(agent: {
+  agent_state: string;
+  state_changed_at: string | null;
+  status: string;
+  actor_id: string;
+  command: string;
+  kind: string;
+}): string {
+  if (!reportsAgentStateLog(agent)) return agent.agent_state;
+
+  let latchAge = "";
+  try {
+    if (agent.status === "running") {
+      if (agent.state_changed_at) {
+        const seconds = ageSecondsSince(agent.state_changed_at);
+        // Round 2 (opus): a null latch used to drop this clause silently,
+        // indistinguishable from "nothing to say" - exactly the broken-
+        // instrumentation case (agent_state defaults to 'unknown',
+        // state_changed_at has no default) where a lead most needs the
+        // line to say something.
+        latchAge = Number.isFinite(seconds) ? ` for ${humanizeAge(seconds)}` : " (latch age: unavailable)";
+      } else {
+        latchAge = " (latch age: no record)";
+      }
+    }
+  } catch {
+    latchAge = " (latch age: unavailable)";
+  }
+
+  let lastEvent = "";
+  try {
+    lastEvent = `, last log event: ${describeLastLogEvent(lastLogEvent(agent.actor_id))}`;
+  } catch {
+    // Individually optional, matching this function's own callers: a lookup
+    // failure here costs its own clause, never the wake.
+  }
+  return `${agent.agent_state}${latchAge}${lastEvent}`;
+}
+
 function watchedTail(timer: TimerRow): string {
   try {
     const ids = JSON.parse(timer.watch) as number[];
@@ -884,13 +1029,29 @@ function watchedTail(timer: TimerRow): string {
     const shown: string[] = [];
     for (const id of ids.slice(0, TAIL_AGENTS)) {
       const agent = stmt(
-        "SELECT name, tmux_target, tmux_socket, agent_state, status FROM agents WHERE id = ?",
+        "SELECT name, tmux_target, tmux_socket, agent_state, state_changed_at, status, actor_id, command, kind FROM agents WHERE id = ?",
       ).get(id) as
-        | { name: string; tmux_target: string; tmux_socket: string; agent_state: string; status: string }
+        | {
+            name: string;
+            tmux_target: string;
+            tmux_socket: string;
+            agent_state: string;
+            state_changed_at: string | null;
+            status: string;
+            actor_id: string;
+            command: string;
+            kind: string;
+          }
         | undefined;
       if (!agent) continue;
+      // Counselors round 1, item 7. A wake firing BECAUSE a watched worker
+      // went away is exactly a wake where "what was it doing" matters most,
+      // so this carries the same fact every other branch below does rather
+      // than narrowing the file's own "one added fact per watched agent"
+      // claim to exclude it - closing a row does not erase its log history,
+      // and the row read above already has everything stateNowClause needs.
       if (agent.status !== "running") {
-        shown.push(`${agent.name}: closed, so there is no terminal left to read.`);
+        shown.push(`${agent.name} (hive state now: ${stateNowClause(agent)}): closed, so there is no terminal left to read.`);
         continue;
       }
       // Issue #73 counselors F2. This used to capturePane() any running row
@@ -904,7 +1065,7 @@ function watchedTail(timer: TimerRow): string {
       // the same way rowLive/rowAlive gate every other reader of this fact.
       if (foreignSocket(agent.tmux_socket)) {
         shown.push(
-          `${agent.name} (hive state now: ${agent.agent_state}): its terminal lives on a different tmux ` +
+          `${agent.name} (hive state now: ${stateNowClause(agent)}): its terminal lives on a different tmux ` +
             "socket than this process, so it cannot honestly be read from here.",
         );
         continue;
@@ -923,10 +1084,11 @@ function watchedTail(timer: TimerRow): string {
       } catch {
         // Pane gone or tmux unreachable; say so rather than dropping the agent.
       }
+      const stateNow = stateNowClause(agent);
       shown.push(
         tail
-          ? `${agent.name} (hive state now: ${agent.agent_state}), last lines of its terminal:\n${tail}`
-          : `${agent.name} (hive state now: ${agent.agent_state}): its terminal could not be read.`,
+          ? `${agent.name} (hive state now: ${stateNow}), last lines of its terminal:\n${tail}`
+          : `${agent.name} (hive state now: ${stateNow}): its terminal could not be read.`,
       );
     }
     if (shown.length === 0) return "";
@@ -978,16 +1140,26 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   // Everything after typing is a prediction, and four independent findings
   // showed the prediction unsafe in both directions - so state only the
   // observation and let a reader judge:
-  //   - .claude/rules/tmux-and-panes.md:43 and this project's board disagree
-  //     about whether a queued paste eventually confirms once the target's
-  //     turn ends, and both claim to have verified it. That conflict is
-  //     recorded on the board, not settled here, and does not need to be:
-  //     this value means the same thing under either reading, because it
-  //     only describes what hive typed INTO, never what happens next. If a
-  //     genuine prompt row does arrive later, confirmed_at is set exactly as
-  //     it is for any other wake (checkConfirmations, above) and
-  //     unconfirmed_busy is never reached - deliveryState() (wakes.ts)
-  //     checks confirmed_at first.
+  //   - .claude/rules/tmux-and-panes.md:49-57 and this project's board
+  //     disagree about whether a queued paste eventually confirms once the
+  //     target's turn ends. Round 2 (opus): the citation used to point at
+  //     line 43, the unrelated `display-message` paragraph, and the
+  //     characterisation was stale - the rule file no longer claims
+  //     verification on the confirms side of this; it now records a measured
+  //     finding (wake 109, claude 2.1.220, tmux-and-panes.md:51) that a busy
+  //     paste enters the running turn as an attachment and fires no
+  //     UserPromptSubmit, and says plainly (tmux-and-panes.md:57) that its
+  //     own earlier "verified twice against the transcript" claim was wrong.
+  //     The board's claim is the one still standing unretracted, so this is
+  //     no longer symmetric doubt - it is one measured account against one
+  //     unretracted claim, and BOTH still rest on their own single
+  //     observation. That conflict is recorded on the board, not settled
+  //     here, and does not need to be: this value means the same thing under
+  //     either reading, because it only describes what hive typed INTO,
+  //     never what happens next. If a genuine prompt row does arrive later,
+  //     confirmed_at is set exactly as it is for any other wake
+  //     (checkConfirmations, above) and unconfirmed_busy is never reached -
+  //     deliveryState() (wakes.ts) checks confirmed_at first.
   //   - A target latched into a stuck 'working' (issue #38: a turn that died
   //     mid-response and never recovers, or a dropped API response leaving a
   //     stale prompt|working row) reports unconfirmed_busy, the QUIET value,
