@@ -59,11 +59,12 @@ Each rule below is injected automatically when you open a file it covers, so you
 | Rule | Fires on | Covers |
 |---|---|---|
 | `.claude/rules/tmux-and-panes.md` | `src/tmux.ts`, `src/spawn.ts`, `src/scheduler.ts`, `src/tools/agents.ts` | why a private tmux server plus the default store is refused; session-name namespacing; the four paths that type into a pane and why one is deliberately unguarded |
-| `.claude/rules/store-and-datadir.md` | `src/dataDir.ts`, `src/db.ts`, `src/backup.ts`, `src/result.ts`, `src/scheduler.ts` | why the data dir is read at call time; the two guards that make test isolation structural; what a live restore does to open connections and the guard that now detects it, with its known residuals |
+| `.claude/rules/store-and-datadir.md` | `src/dataDir.ts`, `src/db.ts`, `src/backup.ts`, `src/result.ts`, `src/scheduler.ts`, `src/config.ts` | why the data dir is read at call time; the two guards that make test isolation structural; what a live restore does to open connections and the guard that now detects it, with its known residuals |
 | `.claude/rules/worker-state.md` | `src/hook.ts`, `src/hooks.ts`, `src/scheduler.ts`, `src/tools/wakes.ts` | why `agent_state_log` is append-only and how to assert over it; the three open ways worker state is wrong; never set a /goal on a worker |
 | `.claude/rules/native-addon.md` | `src/abi.ts`, `src/db.ts`, `src/dispatcher.ts`, `package.json` | why a passing `require()` proves nothing; why hive pins its interpreter |
+| `.claude/rules/tool-contract.md` | `src/tools/*.ts`, `src/cli.ts`, `src/help.ts`, `src/context.ts` | the verified lifecycle matrix and its accepted gaps; the naming convention for a new tool's verb; the CLI/MCP split and why it is mechanical, not stylistic |
 | `test/CLAUDE.md` | anything under `test/` | suite isolation, and the false-green shapes that have shipped here |
 
-Every one of them is enforced by code and pinned by a test. Do not remove a guard because its reasoning is not in this file.
+Every one of them is enforced by code and pinned by a test, except `tool-contract.md`, which is a convention: see its own header. Do not remove a guard because its reasoning is not in this file.
 
 Incident history and standing lessons that outlive a lane are in the project's `lessons` pad (`hive pad lessons`), not here.

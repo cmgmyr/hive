@@ -218,6 +218,12 @@ function touch(todoId: number): void {
   db.prepare("UPDATE todos SET updated_at = datetime('now') WHERE id = ?").run(todoId);
 }
 
+// No todo_delete (issue #82, and #15 before it). A todo's comments are the
+// only durable record of a worker's reasoning once its pane is gone, and
+// this project has already leaned on that record more than once. pad_delete
+// exists because a pad can be genuinely disposable; a todo carrying a
+// worker's handoff is not. #15 asks for todo_archive instead, to hide a
+// closed lane's scaffolding without destroying it.
 export function registerTodos(server: McpServer): void {
   server.registerTool(
     "todo_create",

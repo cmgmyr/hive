@@ -12,6 +12,15 @@ import {
 import { run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
 
+// No project_get, project_update, or a soft-retire state for projects
+// (issue #82). project_list already returns every field on every row (id,
+// name, path, created_at), and this store carries only a handful of
+// projects, so a read-one tool would just filter what list already returns
+// in full. A project's path or name changing is rare enough that no one has
+// asked for it. Retire is accepted for the same reason removal is not: a
+// dead project row is not something anyone wants to keep seeing in a
+// filtered-out state, it is something that should be gone. That is a
+// project_prune gap, not a project_archive one; see the issue-82-drafts pad.
 export function registerMeta(server: McpServer): void {
   server.registerTool(
     "whoami",

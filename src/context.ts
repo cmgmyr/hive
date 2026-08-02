@@ -16,6 +16,14 @@ let cachedActorId: string | null = null;
 let lastTouchMs = 0;
 const TOUCH_INTERVAL_MS = 30_000;
 
+// No actor_get, actor_list, or a soft-retire state for actors (issue #82).
+// An agent-kind actor is already fully readable through agent_status and
+// agent_list, addressed by the same id; a user or lead actor's id (user:name,
+// lead:N) is already a readable string, so a lookup tool would name the same
+// thing its argument already says. Retire is accepted for the same reason it
+// is for projects: a stale actor row is something to remove, not archive.
+// That is the same project_prune-shaped gap, applied to actors; see the
+// issue-82-drafts pad.
 export function currentActor(): string {
   if (cachedActorId) {
     // last_seen_at is advisory; avoid a write transaction on every tool call.

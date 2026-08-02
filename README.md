@@ -354,7 +354,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
-## Tools (36)
+## Tools (37)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 

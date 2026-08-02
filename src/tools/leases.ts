@@ -19,6 +19,19 @@ function purgeExpired(projectId: number): void {
   );
 }
 
+// Update is NOT missing here: re-acquiring your own lease extends it in
+// place below, so lease_acquire fills both the Create and Update cells the
+// way kv_set does for kv. The first pass of #82's matrix left that cell an
+// unqualified "none", which read as unclassified; the PR gate caught it.
+//
+// No lease_read or lease_list (issue #82). A failed acquire below already
+// answers "who holds this, until when" through held_by and expires_at, with
+// no side effect when the lease is actually contended. It only stops being a
+// clean read when the lease is free: acquiring one to check it claims it.
+// That gap (a side-effect-free peek, or a project-wide list of every held
+// lease) is accepted rather than filed. It has not bitten anyone yet, and a
+// caller who wants to check before dispatching a worker into a contended
+// area can already do so for the one case that matters: the lease is held.
 export function registerLeases(server: McpServer): void {
   server.registerTool(
     "lease_acquire",
