@@ -40,7 +40,17 @@ Never derive a session name from a project id alone. A scratch store numbers its
 
 Delivery is a paste followed by Enter. A pane showing a modal has nowhere to put the paste and reads the Enter as "choose the highlighted option", so the wake vanishes, no user turn is created, and hive answers a prompt nobody read.
 
-A pane that is merely BUSY is fine. Claude queues the paste and delivers it as a user turn when the turn ends; that was verified twice against the transcript on disk. Busy is not modal, and conflating them sends you fixing the wrong thing.
+A pane that is merely BUSY is fine, and that conclusion still holds. The mechanism this file described until 2026-08-02 did not, and the difference decides how you read a wake that never confirms.
+
+Measured against Claude Code 2.1.220 by delivering wake 109 into a worker that was mid-turn: the paste is enqueued (a `queue-operation` transcript entry with `operation: "enqueue"`), removed from the queue 0.8s later, and enters the RUNNING turn as `type: "attachment"` carrying `attachment.type: "queued_command"`. The model read it and acted on it 3.1s after typing, while the turn it interrupted carried on to its own end. It is NOT delivered as a user turn, and it is NOT held until the turn ends.
+
+The consequence is the part that bites. An attachment fires no `UserPromptSubmit`, so no `prompt` row reaches `agent_state_log`, and `checkConfirmations()` in `src/scheduler.ts` can only set `confirmed_at` from a prompt row carrying the `[hive wake #N]` marker at or after `typed_at`. A wake delivered into a busy pane arrives, is read, is acted on, and still reads `unconfirmed` for the rest of its life. That is a PERMANENT false negative, not a delivery that confirms late. `timers.typed_busy` (schema v8) records the busy observation at typing time so the two cases can be told apart afterwards.
+
+Busy is still not modal, and conflating them still sends you fixing the wrong thing.
+
+How this stayed wrong is the transferable part. The old sentence claimed it was "verified twice against the transcript on disk", and the wake text genuinely IS in the transcript, so a reader who goes looking finds it and reads an attachment as a user turn. The transcript answers "did the text arrive". It never answers "did a user turn begin". For the second question read `agent_state_log`. A record citing one channel cannot settle a claim about the other, and both of this project's records about this made that mistake in opposite directions.
+
+The same measurement names a confirmation channel hive does not use yet: the transcript entry is structured JSON, carries the `[hive wake #N]` marker in `attachment.prompt`, is timestamped, and sits at a path hive already resolves for claude workers (`resolveTranscriptDir` in `src/transcript.ts`, reached today only by `agent_status`'s `transcript_dir` in `src/tools/agents.ts`). That is a better instrument than scraping a rendered pane, and it is still coupled to undocumented Claude Code internals, so weigh both before building on it.
 
 Four paths type into a pane, guarded two different ways:
 
