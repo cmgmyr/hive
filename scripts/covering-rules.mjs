@@ -33,11 +33,15 @@
 // user-facing, changes for different reasons than an invariant does, and
 // #83 pins its structure separately.
 //
-// matchesGlob needs Node 20.17+ (backported from 22.5.0, where it landed).
-// package.json declares engines.node ">=18", looser than what this file
-// actually needs; that floor has not been re-verified against every script
-// in this repo in a long time and this is not the lane to change it
-// package-wide. Recorded, not fixed here.
+// This file needs Node 22.5.0: fs.globSync below landed in 22.0, and
+// matchesGlob landed at 22.5.0 (backported to 20.17). package.json's
+// engines.node used to claim ">=18", so a Node 18 or 20 run threw a
+// SyntaxError at import before any code ran, including --help. It now says
+// ">=22.5.0". CI tests 22 and 24, but `node-version: 22` resolves to the
+// latest 22.x, so the .5.0 is reasoned from matchesGlob's own history rather
+// than exercised; 22.0 through 22.4 would still throw here. A 20 leg was
+// tried and failed on this file and on test/docs.test.mjs, which has depended
+// on globSync all along without anything testing it.
 
 import { execFileSync } from "node:child_process";
 import { globSync, readFileSync } from "node:fs";
@@ -108,7 +112,11 @@ Prints which .claude/rules/*.md files cover the diff between <base> and
 HEAD (git diff --name-only <base>...HEAD), plus CLAUDE.md's Invariants
 section, which is always in scope regardless of what changed.
 
-<base> defaults to "main" when omitted.`;
+<base> defaults to "main" when omitted.
+
+Reads COMMITTED work only. Uncommitted changes in the working tree are
+invisible to it, so run it after committing -- which is where runbook step 7
+puts it, just before the PR opens.`;
 
 // Checked separately from running the diff itself: an unresolved <base>
 // otherwise reaches `git diff --name-only <base>...HEAD` as a bad rev, and

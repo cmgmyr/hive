@@ -8,23 +8,59 @@ on:
 jobs:
   test:
     runs-on: macos-latest
+    strategy:
+      # Every version reports, rather than the first failure hiding the rest.
+      # A break real on one version and absent on another is the whole reason
+      # this matrix exists, and fail-fast throws that signal away.
+      fail-fast: false
+      matrix:
+        # 22 is the floor, not 20: fs.globSync (test/docs.test.mjs and
+        # scripts/covering-rules.mjs) landed in Node 22, so 20 cannot import
+        # either file. A 20 leg was tried on this branch and failed exactly
+        # there; supporting it would mean replacing globSync in a test whose
+        # dead-rule check genuinely wants a filesystem glob, and 22 was
+        # chosen as the floor instead.
+        #
+        # THE DECLARED FLOOR IS 22.5.0, AND THIS MATRIX CANNOT VERIFY THE
+        # PATCH PART. `node-version: 22` resolves to the latest 22.x, well
+        # past 22.5.0, while path.matchesGlob (scripts/covering-rules.mjs)
+        # landed at exactly 22.5.0 and throws on 22.0 through 22.4. So the
+        # ".5.0" in package.json's engines.node is reasoned from the API's
+        # own history, not exercised here. Pinning a leg to 22.5.0 to prove
+        # it would test a version nobody runs; the honest move is to say
+        # the gap out loud, which is what this comment is.
+        #
+        # `alt` is paired explicitly rather than derived, because the only
+        # thing that makes an alt VALID is that its NODE_MODULE_VERSION
+        # differs from `node`'s (test/helpers.mjs alternateInterpreter). A
+        # rule like "always 22" silently stops discriminating on the leg
+        # where 22 IS the primary, and the tests that need it would skip
+        # while still reporting green.
+        include:
+          - node: 22
+            alt: 24
+          - node: 24
+            alt: 22
+    name: test (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
-      # A second, older Node -- deliberately a different NODE_MODULE_VERSION
-      # than the one below, which is what the addon gets built against.
-      # test/kickoff-reexec.test.mjs's alternateInterpreter() needs one of
-      # these to exercise the re-exec/ABI-mismatch paths at all; without this,
-      # it depends on whatever second Node the runner image happens to carry,
-      # which is exactly the "skipped 0" guarantee the comment below exists
-      # for. Captured into GITHUB_ENV before the next step's PATH prepend
-      # would otherwise bury it.
+      # A second Node -- deliberately a different NODE_MODULE_VERSION than the
+      # one below, which is what the addon gets built against. It does not
+      # have to be OLDER, only different: alternateInterpreter() takes the
+      # first candidate whose process.versions.modules disagrees with the
+      # running one. test/kickoff-reexec.test.mjs needs it to exercise the
+      # re-exec/ABI-mismatch paths at all; without this, it depends on
+      # whatever second Node the runner image happens to carry, which is
+      # exactly the "skipped 0" guarantee the comment below exists for.
+      # Captured into GITHUB_ENV before the next step's PATH prepend would
+      # otherwise bury it.
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.alt }}
       - run: echo "HIVE_TEST_ALT_NODE=$(command -v node)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
           cache: npm
       # Required, not a nicety. The layout tests drive a real tmux server, and
       # the probe tests assert hive's classification of tmux's own error text
