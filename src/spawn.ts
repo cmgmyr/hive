@@ -7,6 +7,7 @@ import {
   crossServerRefusal,
   sessionName,
   tmux,
+  tmuxSocketPath,
   untrustedTmuxServer,
   windowTitle,
   type WindowLayout,
@@ -171,11 +172,16 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
   // precisely so a rejection never leaves a half-built pane, and a refusal
   // after it would leave an orphan row instead.
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
+  // Computed once and reused at both writes below (issue #73): it names the
+  // server THIS call would talk to, which cannot change mid-call, and the
+  // INSERT records it before the pane even exists so a row that dies before
+  // reaching the tmux_target UPDATE still carries the fact.
+  const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
   let info;
   try {
     info = db
       .prepare(
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         spec.projectId,
@@ -188,6 +194,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
         spec.cwd,
         spec.kind,
         spec.parentActor,
+        socket,
       );
   } catch (e) {
     // The very first statement, before any tmux work, so losing the race
@@ -276,7 +283,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     // INSERT; leave it there and just rethrow, so the caller sees the
     // failure while the worker it already spawned stays reachable by
     // actor_id, just without a recorded tmux_target.
-    db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(target, agentId);
+    db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?").run(target, socket, agentId);
     return { agentId, actorId, target };
   } catch (e) {
     if (paneUp) throw e;

@@ -760,7 +760,7 @@ describe(
       const project = addProject(dir, "pin-finding5");
       const originalPrepare = db.prepare.bind(db);
       db.prepare = (sql) => {
-        if (sql === "UPDATE agents SET tmux_target = ? WHERE id = ?") {
+        if (sql === "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?") {
           return {
             run: () => {
               throw new Error("SQLITE_BUSY: simulated for finding 5");

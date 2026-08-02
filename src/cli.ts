@@ -71,13 +71,15 @@ import {
   claimInitialWindow,
   describePaneChoice,
   ensureSession,
+  foreignSocket,
   isPaneTarget,
   paneChoiceCheck,
+  rowLive,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
   tmux,
-  targetLive,
+  tmuxSocketPath,
   untrustedTmuxServer,
   windowTitle,
 } from "./tmux.js";
@@ -274,10 +276,13 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
     return `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`;
   }
   const existing = db
-    .prepare("SELECT id, tmux_target FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
-    .get(project.id, name) as { id: number; tmux_target: string } | undefined;
+    .prepare("SELECT id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
+    .get(project.id, name) as { id: number; tmux_target: string; tmux_socket: string } | undefined;
   if (existing) {
-    const live = targetLive(existing.tmux_target);
+    // Issue #73, D6: a foreign socket reads unknown here the same way an
+    // unanswered probe already does, below - never as "already running" and
+    // never as grounds to start a second copy either.
+    const live = rowLive(existing.tmux_socket, existing.tmux_target);
     if (live) return "already running";
     // Unknown liveness must not start a second copy. These are hive.yml
     // processes, so a duplicate is a second dev server fighting for the port
@@ -425,7 +430,7 @@ function asLeadNameReuseClash(e: unknown, projectId: number, leadRowId: number):
 function ensureLeadRow(
   project: Project,
   command: string,
-): { agentId: number; actorId: string; previousTarget: string; casExpected: string } {
+): { agentId: number; actorId: string; previousTarget: string; previousSocket: string; casExpected: string } {
   // Keyed on kind='lead' + running, not on name (issue #27's L4 fix round,
   // DECISION 5). Keying on name too would only give a rename somewhere to
   // hide behind - and agent_rename now refuses a lead target outright
@@ -449,9 +454,9 @@ function ensureLeadRow(
   // this function acts on deterministic rather than accidental.
   const existing = db
     .prepare(
-      "SELECT id, actor_id, tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      "SELECT id, actor_id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
     )
-    .get(project.id, LEAD_KIND) as { id: number; actor_id: string; tmux_target: string } | undefined;
+    .get(project.id, LEAD_KIND) as { id: number; actor_id: string; tmux_target: string; tmux_socket: string } | undefined;
   // One reuse branch for a found running row, healing two independent kinds
   // of damage another process or version may have left on it - merged from
   // two near-identical branches in /simplify, since both ran the identical
@@ -516,8 +521,18 @@ function ensureLeadRow(
     // touches tmux_target (only command/actor_id/name), so the column still
     // holds exactly what it held before this call - unlike the fresh-INSERT
     // branch below, where the column is about to be seeded to something the
-    // row's own previousTarget does NOT equal.
-    return { agentId: existing.id, actorId, previousTarget: existing.tmux_target, casExpected: existing.tmux_target };
+    // row's own previousTarget does NOT equal. previousSocket is this same
+    // row's tmux_socket, similarly untouched by this UPDATE (issue #73) -
+    // cmdLead's stillThere check needs it alongside previousTarget to decide
+    // whether that PANE, not just this row, is one this process can honestly
+    // judge.
+    return {
+      agentId: existing.id,
+      actorId,
+      previousTarget: existing.tmux_target,
+      previousSocket: existing.tmux_socket,
+      casExpected: existing.tmux_target,
+    };
   }
   // Issue #27's L4 fix round R9, todo 178 (counselors opus F2, MEDIUM,
   // opus's fix). tmux_target is read here too, not just actor_id, and
@@ -526,9 +541,9 @@ function ensureLeadRow(
   // row still knows where its pane was, and throwing that away was the bug.
   const priorClosed = db
     .prepare(
-      "SELECT actor_id, tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
+      "SELECT actor_id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
     )
-    .get(project.id, LEAD_KIND) as { actor_id: string; tmux_target: string } | undefined;
+    .get(project.id, LEAD_KIND) as { actor_id: string; tmux_target: string; tmux_socket: string } | undefined;
   // The INSERT, its actor_id UPDATE and upsertActor used to be three
   // separate writes, which is exactly the gap this whole comment block is
   // about - one transaction now, so a process dying anywhere in here leaves
@@ -558,11 +573,23 @@ function ensureLeadRow(
       // claims. previousTarget itself is UNCHANGED - see the return
       // statement - so stillThere's adoption check still gets the closed
       // row's real last pane to decide about.
+      // Issue #73: recorded at creation, same as launchAgent's INSERT
+      // (src/spawn.ts) - the fact is a property of THIS process and does not
+      // wait on the CAS below to land it.
       const info = db
         .prepare(
-          "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_target) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_target, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .run(project.id, LEAD_NAME, command, project.path, LEAD_KIND, currentActor(), "");
+        .run(
+          project.id,
+          LEAD_NAME,
+          command,
+          project.path,
+          LEAD_KIND,
+          currentActor(),
+          "",
+          tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+        );
       const agentId = Number(info.lastInsertRowid);
       const actorId = priorClosed?.actor_id ?? mintLeadActorId(agentId);
       db.prepare("UPDATE agents SET actor_id = ? WHERE id = ?").run(actorId, agentId);
@@ -597,11 +624,17 @@ function ensureLeadRow(
   //
   // casExpected is "" here, not priorClosed's target: the INSERT above now
   // always seeds the column "" (todo 181 item 2), so "" is what the CAS must
-  // compare against for this branch to ever match.
+  // compare against for this branch to ever match. previousSocket rides along
+  // with previousTarget for the same reason (issue #73): the closed row's own
+  // recorded socket is what stillThere needs to judge that stale pane
+  // honestly, not this fresh row's own tmux_socket (which the INSERT above
+  // already seeded to THIS process's socket, and which is not what the pane
+  // in question was ever recorded under).
   return {
     agentId: result.agentId,
     actorId: result.actorId,
     previousTarget: priorClosed?.tmux_target ?? "",
+    previousSocket: priorClosed?.tmux_socket ?? "",
     casExpected: "",
   };
 }
@@ -664,6 +697,7 @@ async function cmdLead(path?: string): Promise<void> {
     agentId: leadAgentId,
     actorId: leadActorId,
     previousTarget,
+    previousSocket,
     casExpected,
   } = ensureLeadRow(project, leadCommand);
   // HIVE_LEAD marks this session as the lead, distinctly from HIVE_AGENT_ID
@@ -769,12 +803,53 @@ async function cmdLead(path?: string): Promise<void> {
       // opposite bias startYmlCommand uses for hive.yml processes: a stray
       // extra pane here is cheap, a restart silently landing with no lead at
       // all is the defect this branch exists to close.
+      // Issue #73, D6: previousSocket is the row's OWN recorded socket from
+      // before this call (ensureLeadRow), not this process's - a foreign
+      // value here means the row's last-known pane belongs to a server this
+      // process cannot honestly judge, and rowLive reads that as unknown,
+      // which the `=== true` below already treats as "not still there" (D6's
+      // stated bias for this branch, same as an untrusted tmux server).
+      //
+      // Counselors round 1 (#73, A5), accepted and recorded rather than
+      // changed. Treating unknown as "not still there" means `hive lead`
+      // PROCEEDS on a liveness question it cannot honestly answer, and can
+      // split a fresh pane while the OLD lead's pane is genuinely still
+      // alive on the foreign server this process cannot see - two live
+      // leads for the one row this project otherwise works hard to keep
+      // singular. The alternative is refusing outright on unknown, which
+      // trades that risk for the one F4 names as the honest cost of this
+      // whole lane: a lead row stuck 'running' forever with no recorded
+      // pane, unrecoverable the same way a foreign-socket worker row is
+      // (`hive doctor` now names those; a lead that refuses to start at all
+      // has no such recovery path).
+      //
+      // Counselors round 2 (#73, A5) corrected the comparison above: it is
+      // not "maybe two leads" against "certainly no lead and no way to get
+      // one". Refusing here does not strand the caller without a lead at
+      // all - the ORIGINAL lead, if it is genuinely still alive on the
+      // foreign socket, is exactly as reachable as it was before this call;
+      // refusing only means THIS pane does not get a new one, and the human
+      // is left where the real lead already was, back on the socket it is
+      // actually running on. Nor does "a human notices two panes and closes
+      // one" hold: the two panes live on DIFFERENT tmux servers, so nothing
+      // run from this pane can ever list the other one - there is no single
+      // view where a human would see both at once. The real trade is
+      // between an UNDETECTABLE risk (a second live lead, on a server this
+      // process cannot see well enough to warn about) and a DETECTABLE but
+      // inconvenient cost (F4's stuck row, visible in `hive doctor`, but
+      // only to whoever thinks to run it from the socket that row is
+      // actually stuck on). PROCEEDING is still the choice made here: a
+      // `hive lead` that refuses outright on unknown liveness is one that
+      // stops working from a legitimate new pane the moment any stale row's
+      // socket cannot be confirmed dead, which is the common case after any
+      // reboot or crash, not the rare one. Deliberate bias, not an
+      // oversight.
       const stillThere =
         isPaneTarget(previousTarget) &&
         tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}")
           .split("\n")
           .includes(previousTarget) &&
-        targetLive(previousTarget) === true;
+        rowLive(previousSocket, previousTarget) === true;
       if (stillThere) {
         leadPane = previousTarget;
         createdPane = false;
@@ -854,9 +929,14 @@ async function cmdLead(path?: string): Promise<void> {
   // actually written with would make the CAS fail (or worse, coincidentally
   // pass against an unrelated row state) for the wrong reason.
   const wonRace = db.transaction(() => {
+    // Issue #73: a restart under a different tmux server must re-record the
+    // socket here, in the same statement as the pane, or the row keeps
+    // advertising a socket it no longer lives on.
     const updated = db
-      .prepare("UPDATE agents SET tmux_target = ? WHERE id = ? AND tmux_target = ? AND status = 'running'")
-      .run(leadPane, leadAgentId, casExpected).changes;
+      .prepare(
+        "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+      )
+      .run(leadPane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), leadAgentId, casExpected).changes;
     if (updated === 0) return false;
     db.prepare(
       `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
@@ -1782,10 +1862,15 @@ function cmdDoctor(): void {
     // item 4 fixed the identical defect in ensureLeadRow's own sibling
     // lookup and left this one; this is that fix's other half.
     const lead = db
-      .prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id")
-      .get(here.id, LEAD_KIND) as { tmux_target: string } | undefined;
+      .prepare(
+        "SELECT tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      )
+      .get(here.id, LEAD_KIND) as { tmux_target: string; tmux_socket: string } | undefined;
     if (lead) {
-      const live = targetLive(lead.tmux_target);
+      // Issue #73, D6: a foreign socket reads unknown, same branch as an
+      // unanswered probe below - never misreported as a confirmed-dead lead
+      // this doctor run would otherwise tell a human to retire.
+      const live = rowLive(lead.tmux_socket, lead.tmux_target);
       if (live === false) {
         // Issue #27's L4 fix round R9, todo 176 item 3. Two remedies now,
         // named: restart the SAME identity (`hive lead`), or retire it for
@@ -1818,6 +1903,33 @@ function cmdDoctor(): void {
       } else if (live === null) {
         warn("lead", "the lead's pane liveness could not be probed (tmux did not answer).");
       }
+    }
+    // Issue #73 counselors F4, the honest cost of D2/D4/D6's own refusal to
+    // guess. A worker/command row whose recorded socket disagrees with this
+    // process's own reads unknown, never dead, so the janitor sweep above
+    // never closes it. Pre-#73 the identical row was closed WRONGLY -
+    // probing the wrong server and getting a false "dead" - so it was
+    // self-clearing; post-#73 it is correct but stuck 'running' forever,
+    // its name stays taken against requireNameFree, agent_close throws
+    // probeFailed on it, and hive restore counts it as active usage, with
+    // no signal anywhere that anything is wrong. This names it instead of
+    // building a retire-without-killing path (new surface on an
+    // already-deep lane): visible-and-stuck is a state a human can act on,
+    // silent-and-stuck is not.
+    const stuck = db
+      .prepare(
+        "SELECT name, kind, tmux_socket FROM agents WHERE project_id = ? AND status = 'running' AND kind != ?",
+      )
+      .all(here.id, LEAD_KIND) as { name: string; kind: string; tmux_socket: string }[];
+    for (const row of stuck) {
+      if (!foreignSocket(row.tmux_socket)) continue;
+      warn(
+        `${row.kind} ${row.name}`,
+        `recorded on tmux socket ${row.tmux_socket}, but this process would use ` +
+          `${tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR)}. The janitor cannot judge this row ` +
+          "from here, so it stays 'running' - and its name stays taken - until it is probed from wherever " +
+          "that socket actually lives.",
+      );
     }
   }
   // Issue #72. NOT the per-worker listing the L1 comment on the "stale
@@ -1852,12 +1964,31 @@ function cmdDoctor(): void {
   if (here) {
     const workers = db
       .prepare(
-        "SELECT name, actor_id, command, kind, tmux_target FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+        "SELECT name, actor_id, command, kind, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
       )
-      .all(here.id) as { name: string; actor_id: string; command: string; kind: string; tmux_target: string }[];
+      .all(here.id) as {
+      name: string;
+      actor_id: string;
+      command: string;
+      kind: string;
+      tmux_target: string;
+      tmux_socket: string;
+    }[];
     for (const w of workers) {
       if (!reportsAgentStateLog(w)) continue;
-      const { awaitingChoice, tail } = paneChoiceCheck(w.tmux_target);
+      // Issue #73 counselors F2. This used to call paneChoiceCheck
+      // unconditionally, with no socket check at all: a foreign-socket row
+      // (D2/D6) had its OWN pane id probed against THIS process's server
+      // instead, and any pane genuinely alive here under that id was
+      // captured and reported as if it were this worker's real screen.
+      // foreignSocket() must gate the capture the same way rowLive/rowAlive
+      // gate every other reader of this fact - stated plainly below rather
+      // than folded silently into the ordinary "could not be read" case,
+      // which reads as a transient tmux hiccup, not a structural refusal.
+      const foreign = foreignSocket(w.tmux_socket);
+      const { awaitingChoice, tail } = foreign
+        ? { awaitingChoice: null, tail: "" }
+        : paneChoiceCheck(w.tmux_target);
       // Fix round 1, item 1 (found independently by both counselors seats).
       // This used to print the tail only when awaitingChoice === true, which
       // drops it in exactly the case worker-state.md's #38 exists to
@@ -1904,12 +2035,16 @@ function cmdDoctor(): void {
       info(
         `worker ${w.name}`,
         `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
-        `pane: ${describePaneChoice(awaitingChoice)}`,
-        ...(awaitingChoice === null
-          ? ["tail: (pane could not be read)"]
-          : tail === ""
-            ? ["tail: (pane rendered nothing)"]
-            : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
+        foreign
+          ? `pane: recorded on a different tmux socket (${w.tmux_socket}); this process cannot read it`
+          : `pane: ${describePaneChoice(awaitingChoice)}`,
+        ...(foreign
+          ? ["tail: (not read - foreign socket)"]
+          : awaitingChoice === null
+            ? ["tail: (pane could not be read)"]
+            : tail === ""
+              ? ["tail: (pane rendered nothing)"]
+              : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
       );
     }
   }

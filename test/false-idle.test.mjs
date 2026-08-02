@@ -36,10 +36,12 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText } = await import(
-  "../dist/tmux.js"
-);
+const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText, tmuxSocketPath } =
+  await import("../dist/tmux.js");
 migrate();
+
+const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const FOREIGN_SOCKET = "/nonexistent/foreign-socket-dir/tmux-0/default";
 
 const HOOK = join(DIST, "hook.js");
 
@@ -58,15 +60,15 @@ const project = db
 // from a working one unless the row starts somewhere else. A missing migration,
 // a bad HIVE_AGENT_ID handoff or a failed db open would all have left those
 // tests green.
-function agentRow(name, target, state = "idle") {
+function agentRow(name, target, state = "idle", socket = "") {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status,
          agent_state, created_at)
-       VALUES (?, ?, ?, ?, 'claude', '/tmp', 'running', ?, datetime('now', '-60 seconds'))
+       VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'running', ?, datetime('now', '-60 seconds'))
        RETURNING id`,
     )
-    .get(project, `agent:${name}`, name, target, state).id;
+    .get(project, `agent:${name}`, name, target, socket, state).id;
 }
 
 const stateOf = (id) => db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(id).agent_state;
@@ -540,6 +542,24 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
       .get(project, JSON.stringify([agentId]), deliveryPane).id;
   }
 
+  // max_wait_at already past: maybeFireIdle's timedOut branch sets ready=true
+  // unconditionally and never calls watchedStates() at all - the exact path
+  // counselors F2 named, since a foreign-socket watched agent can never
+  // satisfy the ordinary idle_any transition (watchedStates reads it as
+  // UNKNOWN, D2/D4/D6, which is neither "gone" nor "idle"). Timeout is the
+  // only door that ever reaches watchedTail() for one.
+  function timedOutIdleWake(agentId) {
+    return db
+      .prepare(
+        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+           max_wait_at, created_at)
+         VALUES (?, 'user:test', 'lane check', 'idle_any', ?, 'user:test', ?,
+           datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
+         RETURNING id`,
+      )
+      .get(project, JSON.stringify([agentId]), deliveryPane).id;
+  }
+
   // The transition idle_any is waiting for, written after the wake exists.
   const goIdle = (agentId) =>
     db
@@ -585,6 +605,42 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(text, /named-in-tail/, "a lead watching several workers needs to know which one");
     assert.match(text, /hive state now: idle/);
+  });
+
+  // Counselors round 1 on #73, F2. watchedTail used to capturePane() any
+  // running row with no socket check at all, so a foreign-socket watched
+  // agent had its OWN pane id probed against THIS process's server instead -
+  // exactly what watchedPane stands in for here, a real, alive pane that only
+  // coincidentally shares an id with wherever the agent's row says it lives.
+  it("never captures a foreign-socket watched agent's screen, even when its recorded pane happens to be alive here", async () => {
+    const agent = agentRow("foreign-watched", watchedPane, "working", FOREIGN_SOCKET);
+    const wake = timedOutIdleWake(agent);
+
+    await tick();
+    await until(() => delivered().includes(`hive wake #${wake}`));
+
+    const text = delivered();
+    assert.ok(
+      !text.includes(MARKER),
+      `a foreign-socket agent's screen must never be captured; got: ${JSON.stringify(text)}`,
+    );
+    assert.match(
+      text,
+      /cannot honestly be read/,
+      "must say plainly why the terminal is missing, not omit it silently",
+    );
+  });
+
+  it("control: still captures the identical screen, via the identical timeout path, when the watched agent's own recorded socket matches this process", async () => {
+    const agent = agentRow("matching-watched", watchedPane, "working", ownSocket);
+    const wake = timedOutIdleWake(agent);
+
+    await tick();
+    await until(() => delivered().includes(MARKER));
+
+    const text = delivered();
+    assert.match(text, new RegExp(`\\[hive wake #${wake}, max wait reached\\]`), "the wake still delivers");
+    assert.ok(text.includes(MARKER), "a matching, non-empty socket must still capture exactly as before this lane");
   });
 
   it("does not fire on a transition that happened before the wake was set", async () => {

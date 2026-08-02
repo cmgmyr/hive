@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
 
 // tmux's stderr is the only thing that says whether tmux answered at all, and
@@ -214,12 +214,64 @@ const canonical = (path: string): string => realpathOr(path, path) ?? path;
 const socketUnder = (base: string): string =>
   join(canonical(base), `tmux-${process.getuid?.() ?? 0}`, "default");
 
+// Issue #73 counselors F3. `canonical()` above is right for a DIRECTORY - the
+// only kind of path socketUnder() ever feeds it - but wrong for a full socket
+// path, because the leaf ("default") is a live unix socket FILE tmux itself
+// can transiently unlink and recreate with the server's identity completely
+// unchanged. Calling canonical() on the leaf directly means a socket that
+// happens to be mid-recreation at the exact moment this runs falls back to
+// whatever RAW string TMUX handed us; every recorded value went through this
+// same function already canonicalised, so the two representations of the
+// IDENTICAL server (macOS's /tmp vs /private/tmp, for one) silently stop
+// agreeing, and foreignSocket() reads every row as foreign until the leaf
+// resolves again - the whole store looks foreign with no message saying why.
+// Canonicalise only the CONTAINING DIRECTORY (mirroring socketUnder's own
+// shape, which never touches the leaf either) and rejoin the two trailing
+// segments verbatim: a directory is far more stable than the socket file
+// living inside it, and this function itself stays a pure function of
+// `path` alone.
+//
+// That is NOT the same as the predicate that USES it being independent of
+// process.getuid() (counselors round 2, F3 - the previous wording here
+// claimed exactly that, and it does not hold). foreignSocket() compares
+// this value against defaultTmuxSocketPath(), and THAT side still rebuilds
+// its uid segment from process.getuid() (socketUnder(), above) rather than
+// reading it out of any path. The getuid() dependency did not leave the
+// comparison; it moved to the other operand.
+function canonicalSocketPath(path: string): string {
+  const uidDir = dirname(path);
+  const base = dirname(uidDir);
+  return join(canonical(base), basename(uidDir), basename(path));
+}
+
 // The socket a tmux client started by THIS process would talk to. Pure in its
 // inputs so it can be tested without touching the environment.
+//
+// Issue #73 counselors A1, accepted and recorded rather than fixed here. A
+// socket PATH is a location, not a server identity: `TMUX` is
+// `<path>,<server pid>,<session>` (counselors round 2 - this comment used to
+// say "window index" for the third field, contradicting the correct format
+// stated ~70 lines up; only the split below reads field 0, so nothing broke,
+// but a file stating one wire format two ways is what a later reader trusts
+// the wrong half of), and the split below keeps only `<path>`, discarding
+// the pid. Two DIFFERENT tmux servers that happen to
+// reuse the same socket path (the ordinary case across a reboot, since tmux
+// always names the default socket `<base>/tmux-<uid>/default`) compare
+// equal here. After a reboot, rows recorded on the old server read as
+// non-foreign against the new one, pane ids restart at `%0` and collide
+// with whatever the new server has already issued, and `agent_send` can
+// type into the wrong pane believing it is the right one. This is
+// PRE-EXISTING, not a regression this lane introduced - but this is the
+// lane that closes the env-shaped half of the foreign-socket residual
+// (`.claude/rules/tmux-and-panes.md`), so the claim has to be scoped
+// truthfully rather than read as complete. What this function answers is
+// "which socket path", never "which server" - closing that gap for real
+// needs the pid (or the socket file's inode) recorded alongside the path,
+// which is a second migration, not a one-line fix here.
 export function tmuxSocketPath(tmux: string | undefined, tmuxTmpDir: string | undefined): string {
   // Input 1: already an absolute path, written by tmux itself.
   const inherited = tmux?.split(",")[0];
-  if (inherited) return canonical(inherited);
+  if (inherited) return canonicalSocketPath(inherited);
   // Input 2, but only when it is reachable; otherwise input 3.
   const reachable = tmuxTmpDir ? realpathOr(tmuxTmpDir, null) : null;
   return socketUnder(reachable ?? DEFAULT_TMUX_TMPDIR);
@@ -343,6 +395,44 @@ export function liveTargets(): AliveSnapshot | null {
 
 export function targetAlive(target: string, snapshot: AliveSnapshot): boolean {
   return isPaneTarget(target) ? snapshot.panes.has(target) : snapshot.windows.has(target);
+}
+
+// Issue #73, D2/D6. A ROW's own recorded socket disagreeing with the one this
+// process would talk to is the same refusal untrustedTmuxServer() makes for
+// the whole process, applied per-row instead: a pane id only means something
+// relative to the server it came from, and a mismatch here means this row's
+// pane was very likely recorded on, or has since moved to, a server this
+// process cannot see into. '' is NOT foreign - it means "no fact recorded",
+// true of every row written before this migration and of a timer whose
+// deliver_actor names no agents row at all - and it behaves exactly as it did
+// before this lane. Reading '' as foreign would silently stop the janitor
+// sweeping every pre-upgrade row forever, trading a latent unsoundness for an
+// immediate, silent regression (see the migration's own comment, src/db.ts).
+//
+// Counselors round 1 (#73, A4) proposed reading '' as foreign anyway, on the
+// grounds that legacy rows stay exposed to the unsoundness until they drain.
+// REJECTED: that restates D2's tradeoff above without engaging why the
+// alternative is worse, and per this project's own runbook a suggestion
+// that contradicts a recorded decision is not a finding unless it shows the
+// existing reasoning fails. It does not. Behaviour unchanged.
+export function foreignSocket(recorded: string): boolean {
+  return recorded !== "" && recorded !== tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+}
+
+// The row-level counterparts of targetLive/targetAlive: unknown the instant
+// the row's own recorded socket says this process is looking at the wrong
+// server, before tmux is ever asked about the target itself. D4 on
+// plan-73-tmux-socket is the reason these return Liveness, never a plain
+// boolean truthiness callers could coerce: a foreign row must read exactly
+// like an unanswered probe to the janitor, deliverable() and every other
+// caller that already knows how to hold rather than sweep on null. One place
+// reads the predicate above, one place tests it.
+export function rowLive(recordedSocket: string, target: string): Liveness {
+  return foreignSocket(recordedSocket) ? null : targetLive(target);
+}
+
+export function rowAlive(recordedSocket: string, target: string, snapshot: AliveSnapshot): Liveness {
+  return foreignSocket(recordedSocket) ? null : targetAlive(target, snapshot);
 }
 
 // tmux layout presets hive can apply to a window of split-placed workers.

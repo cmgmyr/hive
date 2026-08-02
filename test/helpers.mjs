@@ -520,14 +520,18 @@ export function leadRow(db, projectId) {
 // tmux pane - for tests of a generic agent_* tool's lead guard (agent_rename,
 // wake_when_idle), where the guard itself is what's under test, not identity
 // minting. tmux_target is a value nothing here will ever probe.
-export function seedLeadRow(db, projectId, projectDir) {
+//
+// socket defaults to '' (issue #73's "no fact recorded" case, matching every
+// pre-migration row): pass this process's own tmuxSocketPath() or a foreign
+// value for a test of the row-level liveness gate itself.
+export function seedLeadRow(db, projectId, projectDir, socket = "") {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
-       VALUES (?, 'lead:999', 'lead', '%not-a-real-pane', 'claude', ?, 'lead', 'running')
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status)
+       VALUES (?, 'lead:999', 'lead', '%not-a-real-pane', ?, 'claude', ?, 'lead', 'running')
        RETURNING id`,
     )
-    .get(projectId, projectDir).id;
+    .get(projectId, socket, projectDir).id;
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -5,14 +5,15 @@ import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./sp
 import { lastLogEvent } from "./stateProvenance.js";
 import {
   capturePane,
+  foreignSocket,
   liveTargets,
   maskChoiceMarker,
   paneAwaitingChoice,
+  rowAlive,
+  rowLive,
   sanitizeTail,
   sendText,
   tailCaptureLines,
-  targetAlive,
-  targetLive,
   type AliveSnapshot,
 } from "./tmux.js";
 
@@ -41,7 +42,69 @@ export interface TimerRow {
   held_reason: string | null;
   confirmed_at: string | null;
   typed_busy: number | null;
+  // Issue #73, D6. Joined from agents.tmux_socket via deliver_actor, never a
+  // column on timers itself - see the candidates query in tick() and the
+  // janitor's own timers sweep above. Coalesced to '' in SQL for a join miss
+  // (a plain `user:` target with no agents row), so this reads exactly like
+  // the '' "no fact recorded" case at every call site - D2 - with one
+  // representation of "unset" instead of two.
+  deliver_socket: string;
 }
+
+// Shared by the janitor's timers sweep and tick()'s candidates query, the
+// same reason ACTIVE_TIMER_WHERE (below) is named rather than retyped in
+// both: a timer names a pane, not an agents row, so its own recorded socket
+// (issue #73, D6) has to be reached through deliver_actor.
+//
+// Resolves the PREFERRED agents row for deliver_actor rather than filtering
+// rows out - that distinction is the fix (counselors round 2, R2-1). The
+// first version of this join filtered with `AND agents.status = 'running'`
+// on the theory that a closed row sharing an actor_id with a running
+// successor should never be allowed to answer for it (see F1's reasoning
+// below). But closeAgentRow() (src/spawn.ts) never cancels that actor's
+// timers, so a timer can go on being active after ITS OWN owning row closes
+// with no running successor at all. Filtered out, that join misses
+// entirely, deliver_socket reads '' (D2's "no fact recorded"), and the
+// closed row's real, possibly-foreign recorded socket is silently treated
+// as local: rowAlive() then judges the pane against THIS process's own
+// server, where a small pane id can easily name a live stranger's pane.
+// Before the filter existed the closed row matched and the wake was held;
+// the filter traded the laundering hole F1 fixed for a new hole in the same
+// function. The subquery below still prefers a running row when one shares
+// the actor_id (the ORIGINAL F1 scenario: a closed row must not outvote a
+// live successor), falling back to the most recently created row - closed
+// or not - only when no running row exists, so a lone closed row keeps its
+// own fact readable instead of being discarded.
+//
+// F1's original comment claimed the running-only filter made this join
+// "at most one-to-one, since idx_agents_running_name permits only one
+// running row per name". That claim was WRONG (counselors round 2, R2-2):
+// the index is UNIQUE(project_id, name COLLATE NOCASE) WHERE
+// status='running' - it constrains NAME, not actor_id or kind, and
+// ensureLeadRow's own comment (src/cli.ts) documents a reachable path where
+// a pre-fix server leaves TWO running kind='lead' rows in one project,
+// because the index has nothing to say about kind. If the second inherits
+// the first's actor_id - exactly what ensureLeadRow's own reuse rule
+// produces whenever a closed predecessor's actor_id is non-empty - the join
+// is one-to-many again regardless of any status filter, and nothing today
+// has a fixture for that shape. The one-to-one guarantee this code actually
+// needs comes from LIMIT 1 on the subquery, not from any index: whichever
+// row SQLite's ORDER BY picks, it can only ever pick one.
+export const DELIVER_SOCKET_JOIN = `LEFT JOIN agents ON agents.id = (
+  SELECT a.id FROM agents a WHERE a.actor_id = timers.deliver_actor
+   ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1
+)`;
+
+// Issue #73 counselors A2, accepted and recorded, not fixed here. A timer
+// whose deliver_actor names no agents row at all - a wake set by a plain
+// `user:` session - joins to nothing here, reads deliver_socket = '' (D2's
+// "no fact recorded"), and is treated as local. Deriving the socket from
+// deliver_actor cannot protect a rowless session; there is no row to derive
+// it FROM. NOT a regression: timers had zero socket protection before this
+// lane, and this join strictly narrows the gap (every timer that DOES join
+// to an agents row is now covered) rather than widening it. A socket column
+// on timers themselves would close this, and is a second migration for
+// whoever picks it up next, not this lane.
 
 // The single definition of "this timer is still live" (one-shot pending, or
 // repeating and not cancelled). Shared with wake_list and hive status.
@@ -126,11 +189,16 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // re-records a live pane, and `hive doctor` reports that rather than this
   // sweep hiding it.
   const agents = stmt(
-    `SELECT id, tmux_target FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
+    `SELECT id, tmux_target, tmux_socket FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
      AND created_at < datetime('now', ?)`,
-  ).all(LEAD_KIND, SETTLE_WINDOW) as { id: number; tmux_target: string }[];
+  ).all(LEAD_KIND, SETTLE_WINDOW) as { id: number; tmux_target: string; tmux_socket: string }[];
   for (const agent of agents) {
-    if (!targetAlive(agent.tmux_target, snapshot)) {
+    // Issue #73, D2/D4/D6: a foreign socket reads unknown (null), never dead,
+    // so this loop must sweep only an explicit `false` - the same trap the
+    // old `!targetAlive(...)` truthiness check would otherwise fall into the
+    // moment rowAlive starts answering null for a row this process cannot
+    // honestly judge.
+    if (rowAlive(agent.tmux_socket, agent.tmux_target, snapshot) === false) {
       closeAgentRow(agent.id);
       closedAgents += 1;
     }
@@ -158,12 +226,24 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // agents row, nothing surfaces the never-returns residual in hive doctor
   // today; a pending-forever wake is visible in wake_list, not silently
   // hidden, so that gap was judged the lesser one, not zero.
+  // LEFT JOIN, not JOIN: a timer's deliver_actor can name a plain `user:`
+  // session with no agents row at all, which has no recorded fact and must
+  // behave exactly as before this lane (D2/D6) - COALESCE reads that join
+  // miss as '' (the same "no fact recorded" case), so there is one
+  // representation of "unset" for callers, not NULL from the join and '' from
+  // the column.
   const timers = stmt(
-    `SELECT id, deliver_pane FROM timers WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor NOT LIKE ?
-     AND created_at < datetime('now', ?)`,
-  ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as { id: number; deliver_pane: string }[];
+    `SELECT timers.id, timers.deliver_pane, COALESCE(agents.tmux_socket, '') AS deliver_socket
+       FROM timers ${DELIVER_SOCKET_JOIN}
+      WHERE ${ACTIVE_TIMER_WHERE} AND timers.deliver_actor NOT LIKE ?
+        AND timers.created_at < datetime('now', ?)`,
+  ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as {
+    id: number;
+    deliver_pane: string;
+    deliver_socket: string;
+  }[];
   for (const timer of timers) {
-    if (!targetAlive(timer.deliver_pane, snapshot)) {
+    if (rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot) === false) {
       cancelTimer(timer.id);
       cancelledTimers += 1;
     }
@@ -402,11 +482,16 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // synchronous path entirely - not a fix that belongs in this diff.
     maybeBackupHourly(db, dataDir);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
+    // LEFT JOIN for deliver_socket (issue #73, D6): see TimerRow's own comment
+    // on the field. timers.* keeps every bare column reference below
+    // unambiguous against agents' own id/project_id/kind/created_at columns.
     const candidates = stmt(
-      `SELECT * FROM timers WHERE cancelled_at IS NULL AND (
-         (kind = 'delay' AND due_at <= datetime('now')
-           AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL))
-         OR (kind != 'delay' AND fired_at IS NULL)
+      `SELECT timers.*, COALESCE(agents.tmux_socket, '') AS deliver_socket
+         FROM timers ${DELIVER_SOCKET_JOIN}
+        WHERE timers.cancelled_at IS NULL AND (
+         (timers.kind = 'delay' AND timers.due_at <= datetime('now')
+           AND (timers.fired_at IS NULL OR timers.repeat_every_ms IS NOT NULL))
+         OR (timers.kind != 'delay' AND timers.fired_at IS NULL)
        )`,
     ).all() as TimerRow[];
     // Scoped to this tick: a dialog that clears between ticks must be seen.
@@ -486,7 +571,9 @@ const HELD_REASON_LEAD_PANE_DEAD =
   "cancellation for this alone, so it is held rather than lost";
 
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
-  const live = snapshot ? targetAlive(timer.deliver_pane, snapshot) : targetLive(timer.deliver_pane);
+  const live = snapshot
+    ? rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot)
+    : rowLive(timer.deliver_socket, timer.deliver_pane);
   // Issue #69, accepted 2026-08-02, not fixed. live === null means the tmux
   // probe could not answer, and every due wake renders byte-identical to one
   // that is not due yet for as long as that holds - this branch records
@@ -508,7 +595,12 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // needs a hold that writes once per condition rather than once per tick
   // for every due wake from every concurrent instance - real design work in
   // the hottest loop hive has, bought for a state that is either refused by
-  // design or transient. Reopen if a wake is ever observed
+  // design or transient. A THIRD source joined this acceptance's null case in
+  // issue #73: deliver_socket disagreeing with this process's own socket
+  // (D6/D2) - a wake whose pane lives on a server this process cannot see
+  // into, never one this project has any business typing into either. Same
+  // shape, same handling: held, not lost, and it clears the moment a tick with
+  // the matching socket observes it. Reopen if a wake is ever observed
   // pending-and-invisible for more than a few ticks running - a probe error
   // that resolves within a tick or two is the expected, already-accounted-for
   // case, not this.
@@ -682,6 +774,12 @@ function claimOneShot(timerId: number): boolean {
 // two ways of reaching it share one value.
 const GONE: WatchedState = { idle: true, gone: true, since: null };
 
+// Not yet a fact this process can act on: a foreign socket (issue #73) and a
+// row that has not settled yet (below) are different reasons for the same
+// answer, so both share it rather than each spelling out the identical
+// literal.
+const UNKNOWN: WatchedState = { idle: false, gone: false, since: null };
+
 function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[] {
   const ids = JSON.parse(timer.watch) as number[];
   return ids.map((id) => {
@@ -691,17 +789,26 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       | {
           status: string;
           tmux_target: string;
+          tmux_socket: string;
           agent_state: string;
           state_changed_at: string | null;
           settled: number;
         }
       | undefined;
     if (!agent || agent.status !== "running") return GONE;
-    if (!targetAlive(agent.tmux_target, snapshot)) {
+    const alive = rowAlive(agent.tmux_socket, agent.tmux_target, snapshot);
+    // Issue #73, D2/D4/D6: unknown (a foreign socket) is reported as UNKNOWN,
+    // never folded into GONE. Collapsing it there would let a watched agent
+    // this process cannot honestly judge fire an idle_any wake (via its own
+    // `gone` disjunct) or silently drop out of an idle_all wait, exactly the
+    // damage this lane exists to prevent, just reached through the idle-wake
+    // door instead of the janitor's.
+    if (alive === null) return UNKNOWN;
+    if (!alive) {
       // The same spawn race the janitor guards against: a row inserted before
       // its window exists is not gone, it is not born yet. Without this an
       // idle_any wake set during another session's spawn fires immediately.
-      if (!agent.settled) return { idle: false, gone: false, since: null };
+      if (!agent.settled) return UNKNOWN;
       return GONE;
     }
     return { idle: agent.agent_state === "idle", gone: false, since: agent.state_changed_at };
@@ -777,13 +884,29 @@ function watchedTail(timer: TimerRow): string {
     const shown: string[] = [];
     for (const id of ids.slice(0, TAIL_AGENTS)) {
       const agent = stmt(
-        "SELECT name, tmux_target, agent_state, status FROM agents WHERE id = ?",
+        "SELECT name, tmux_target, tmux_socket, agent_state, status FROM agents WHERE id = ?",
       ).get(id) as
-        | { name: string; tmux_target: string; agent_state: string; status: string }
+        | { name: string; tmux_target: string; tmux_socket: string; agent_state: string; status: string }
         | undefined;
       if (!agent) continue;
       if (agent.status !== "running") {
         shown.push(`${agent.name}: closed, so there is no terminal left to read.`);
+        continue;
+      }
+      // Issue #73 counselors F2. This used to capturePane() any running row
+      // with no socket check at all, so a foreign-socket watched agent (D6) -
+      // one whose pane lives on a server this process cannot see into - had
+      // its OWN tmux_target probed against THIS process's server instead.
+      // Any pane genuinely alive here under that id gets captured and typed
+      // into the wake this function builds, embedded as if it were that
+      // agent's real screen: a stranger's terminal, mislabelled, delivered
+      // into the lead's own pane next. foreignSocket() must gate the capture
+      // the same way rowLive/rowAlive gate every other reader of this fact.
+      if (foreignSocket(agent.tmux_socket)) {
+        shown.push(
+          `${agent.name} (hive state now: ${agent.agent_state}): its terminal lives on a different tmux ` +
+            "socket than this process, so it cannot honestly be read from here.",
+        );
         continue;
       }
       let tail = "";

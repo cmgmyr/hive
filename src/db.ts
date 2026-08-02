@@ -382,6 +382,59 @@ ALTER TABLE timers ADD COLUMN confirmed_at TEXT;
   `
 ALTER TABLE timers ADD COLUMN typed_busy INTEGER;
 `,
+  // Issue #73. A pane id only means something relative to the tmux server it
+  // came from, and nothing on a row said which server that was - the missing
+  // fact behind every finding #68's five review rounds surfaced. Recorded
+  // wherever tmux_target is written (src/spawn.ts, src/cli.ts), from
+  // tmuxSocketPath(), the same function untrustedTmuxServer() already decides
+  // server identity with.
+  //
+  // DEFAULT '' means "no fact recorded", not "foreign". Every row that
+  // exists before this migration reads '', and reading that as foreign would
+  // make the janitor silently stop sweeping every one of them forever with
+  // no message - trading a latent unsoundness for an immediate silent
+  // regression. Pre-upgrade rows drain on their own as their agents close;
+  // read-side callers (src/tools/agents.ts, src/scheduler.ts, src/cli.ts)
+  // treat '' as "behaves exactly as today", never as foreign.
+  //
+  // Counselors round 1 (#73, A3) corrected an overclaim here: this migration
+  // running does NOT mean every '' row is now a pre-upgrade leftover. Each
+  // hive MCP server instance runs its own process against this shared
+  // database (CLAUDE.md), so a server already running OLD code at the
+  // moment this migration lands keeps inserting fresh '' rows for the rest
+  // of its own session's lifetime - it has no idea tmux_socket exists. That
+  // is exactly why a restart is mandatory after this lane merges (see the
+  // lane's own plan pad), not optional.
+  //
+  // Counselors round 2 (#73, A3) corrected a second overclaim in that fix:
+  // restarting every such session is NECESSARY but not SUFFICIENT. A row
+  // itself is never rewritten after it is written - only a fresh
+  // INSERT/UPDATE at spawn or restart time writes tmux_socket - so an old
+  // `hive start web` launched by pre-upgrade code leaves a long-lived
+  // kind='command' row carrying '' that outlives the session that spawned
+  // it entirely: restarting the MCP server does nothing to a command
+  // process it never touches. That row keeps reading as "no fact recorded"
+  // until it is itself stopped and restarted, same as any other pre-upgrade
+  // row (D2), and the guard's full strength is bounded by whichever
+  // outlives the other: the last old session, or the last old long-lived
+  // command it started.
+  `
+ALTER TABLE agents ADD COLUMN tmux_socket TEXT NOT NULL DEFAULT '';
+`,
+  // /simplify pass on issue #73's own diff (efficiency finding): the
+  // migration above made agents.actor_id a JOIN key on two of the
+  // scheduler's hottest queries (the janitor's timers sweep and tick()'s
+  // per-tick candidates fetch, both in src/scheduler.ts, both joining
+  // timers.deliver_actor to agents.actor_id for D6's socket check), and
+  // nothing indexed that column - every other lookup already keying on it
+  // (agentProjectPin in src/context.ts, src/hook.ts, src/tools/wakes.ts,
+  // src/spawn.ts) predates this migration and shares the same gap. A table
+  // scan per tick is cheap while a project runs a handful of agents; it is
+  // the wrong shape to leave unindexed in code whose own comments call it
+  // "the hottest loop hive has".
+  `
+CREATE INDEX idx_agents_actor_id ON agents(actor_id);
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

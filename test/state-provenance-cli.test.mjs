@@ -10,6 +10,7 @@ import {
   assertScratchStore,
   clearHiveEnv,
   createLiveAndDialogPanes,
+  failureCount,
   firedSessionStart,
   insertStateLogRow,
   isolateTmux,
@@ -94,7 +95,11 @@ process.env.HIVE_DATA_DIR = dataDir;
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
+const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
+
+const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const FOREIGN_SOCKET = "/nonexistent/foreign-socket-dir/tmux-0/default";
 
 writeFileSync(join(projectDir, "hive.yml"), "profile: orchestration\n");
 const init = await runCli(["init"], opts);
@@ -105,13 +110,13 @@ const project = db.prepare("SELECT id FROM projects WHERE path = ?").get(project
 // created_at defaults to now, which matters: it keeps the row inside the
 // janitor's 15-second spawn-race guard, so `hive status`'s own janitor() call
 // does not sweep it out from under the assertion before it can be read.
-function agentRow({ name, command = "claude", state = "unknown", stateChangedAgo = null, target = "%9600" }) {
+function agentRow({ name, command = "claude", state = "unknown", stateChangedAgo = null, target = "%9600", socket = "" }) {
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status, kind, agent_state, state_changed_at)
-     VALUES (?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', ?,
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state, state_changed_at)
+     VALUES (?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', ?,
        ${stateChangedAgo == null ? "NULL" : "datetime('now', ?)"})`,
   ).run(
-    ...[project, `agent:${name}`, name, target, command, state],
+    ...[project, `agent:${name}`, name, target, socket, command, state],
     ...(stateChangedAgo == null ? [] : [`-${stateChangedAgo} seconds`]),
   );
 }
@@ -285,6 +290,49 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     );
   });
 
+  // Counselors round 1 on #73, F2: this loop used to call paneChoiceCheck
+  // unconditionally, with no socket check at all. busyPane is a REAL, alive
+  // pane with real screen content ("auto mode on"); a foreign-socket row
+  // recording it stands in for the coincidental pane-id collision the
+  // finding depends on - the pane hive would actually have to read lives on
+  // a server this process cannot see into, and busyPane only happens to
+  // share its id.
+  it("never captures a foreign-socket worker's screen, even one that happens to be alive here (fix round on #73, F2)", async () => {
+    reset();
+    agentRow({ name: "worker-foreign", state: "working", stateChangedAgo: 90, target: busyPane, socket: FOREIGN_SOCKET });
+    logRow("agent:worker-foreign", "prompt", "working", 90);
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(
+      stdout,
+      /worker worker-foreign:[\s\S]*?pane: recorded on a different tmux socket/,
+      "must say plainly that the socket disagrees, not just 'could not be read'",
+    );
+    assert.match(stdout, /worker worker-foreign:[\s\S]*?tail: \(not read - foreign socket\)/);
+    assert.doesNotMatch(
+      stdout,
+      /auto mode on/,
+      "busyPane's real content must never be captured for a row whose recorded socket is foreign",
+    );
+  });
+
+  it("control: still captures the identical pane's content when the worker's own recorded socket matches this process", async () => {
+    reset();
+    agentRow({ name: "worker-matching", state: "working", stateChangedAgo: 90, target: busyPane, socket: ownSocket });
+    logRow("agent:worker-matching", "prompt", "working", 90);
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(stdout, /worker worker-matching: last log event: prompt \(1m ago\)/);
+    assert.match(stdout, /pane: no dialog/);
+    assert.match(
+      stdout,
+      /\| .*auto mode on/,
+      "a matching, non-empty socket must still capture real content exactly as before this lane",
+    );
+  });
+
   it("reports awaiting a choice, plus the dialog's own tail, for a worker parked on a real dialog", async () => {
     reset();
     agentRow({ name: "worker-dialog", state: "waiting", stateChangedAgo: 5, target: dialogPane });
@@ -349,6 +397,74 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     const { stdout } = await runCli(["doctor"], opts);
 
     assert.doesNotMatch(stdout, /worker dev-server:/);
+  });
+});
+
+// Counselors round 1 on #73, F4. A foreign-socket running row never gets
+// closed by the janitor sweep (rowAlive reads unknown, never dead), so it
+// stays 'running' forever from this process's point of view - correct, per
+// D4, but silently stuck: its name stays taken, agent_close refuses it, and
+// hive restore counts it as active usage. None of this needs a real tmux
+// probe (foreignSocket() is a pure string comparison), so no isolateTmux
+// skip is needed here.
+describe("hive doctor names a foreign-socket row it cannot sweep (counselors F4 on #73)", () => {
+  it("warns, naming both sockets, for a running row recorded on a socket this process does not use", async () => {
+    reset();
+    agentRow({ name: "stuck-worker", state: "unknown", target: "%9999", socket: FOREIGN_SOCKET });
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(
+      stdout,
+      new RegExp(`agent stuck-worker:[\\s\\S]*?recorded on tmux socket ${FOREIGN_SOCKET.replace(/\//g, "\\/")}`),
+    );
+    assert.match(stdout, /but this process would use/, "must name the socket this process would actually use too");
+  });
+
+  it("control: says nothing for a running row on this process's own socket", async () => {
+    reset();
+    agentRow({ name: "healthy-worker", state: "unknown", target: "%9998", socket: ownSocket });
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.doesNotMatch(stdout, /healthy-worker:[\s\S]*?recorded on tmux socket/);
+  });
+
+  it("control: says nothing for a legacy row with no socket recorded at all", async () => {
+    reset();
+    agentRow({ name: "legacy-worker", state: "unknown", target: "%9997" });
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.doesNotMatch(stdout, /legacy-worker:[\s\S]*?recorded on tmux socket/);
+  });
+
+  // Counselors round 2, F4. The tests above read stdout only, so they never
+  // pinned that this report is a warn() rather than a fail() - changing that
+  // one call would still leave every assertion above green while doctor
+  // started exiting 1 for a state D4 says is merely unknown, not broken.
+  // test/CLAUDE.md forbids asserting doctor's global exit code directly (not
+  // portable across machines missing an optional binary), so compare the
+  // FAILURE COUNT the summary line carries against a baseline taken on the
+  // same machine, same as test/doctor-profile.test.mjs and
+  // test/lead-doctor-liveness.test.mjs already do for this exact shape.
+  it("is a warn(), not a fail() - must not move doctor's own failure count", async () => {
+    reset();
+    const baseline = await runCli(["doctor"], opts);
+
+    agentRow({ name: "stuck-worker-exit-code", state: "unknown", target: "%9996", socket: FOREIGN_SOCKET });
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(
+      stdout,
+      /stuck-worker-exit-code:[\s\S]*?recorded on tmux socket/,
+      "the report must actually fire in this run, or the comparison below proves nothing",
+    );
+    assert.equal(
+      failureCount(stdout),
+      failureCount(baseline.stdout),
+      "F4's report must stay a warn(); a fail() here would move this count and this assertion would catch it",
+    );
   });
 });
 

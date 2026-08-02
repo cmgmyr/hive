@@ -29,14 +29,14 @@ import {
   paneChoiceCheck,
   paneCurrentCommand,
   paneWindow,
+  rowAlive,
+  rowLive,
   sendText,
   sessionName,
   sleep,
-  targetAlive,
   tmux,
   waitForPaneInput,
   WINDOW_LAYOUTS,
-  targetLive,
   windowLayout,
   type AliveSnapshot,
   type InputBoxState,
@@ -51,6 +51,7 @@ export interface AgentRow {
   actor_id: string;
   name: string;
   tmux_target: string;
+  tmux_socket: string;
   command: string;
   cwd: string;
   parent_actor_id: string | null;
@@ -139,7 +140,7 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
 // unknown as dead is what closed live workers (issue #14).
 export function isLive(agent: AgentRow): Liveness {
   if (agent.status !== "running") return false;
-  return targetLive(agent.tmux_target);
+  return rowLive(agent.tmux_socket, agent.tmux_target);
 }
 
 // The message matters as much as the refusal. Told a worker has no window, a
@@ -248,9 +249,9 @@ export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null):
   // as unknown during a hiccup would make a definitely-dead worker look like
   // it might still be there.
   if (row.status !== "running") return false;
-  if (snapshot === undefined) return targetLive(row.tmux_target);
+  if (snapshot === undefined) return rowLive(row.tmux_socket, row.tmux_target);
   if (snapshot === null) return null;
-  return targetAlive(row.tmux_target, snapshot);
+  return rowAlive(row.tmux_socket, row.tmux_target, snapshot);
 }
 
 // Issue #34. A SEPARATE capture from the tail/output, not derived from it:
