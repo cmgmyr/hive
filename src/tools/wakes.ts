@@ -120,13 +120,49 @@ function makeChannelChecker(): (actorId: string) => boolean {
   };
 }
 
-type ConfirmationStatus = "confirmed" | "unconfirmed" | "no_confirmation_channel";
+type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no_confirmation_channel";
 
 // Shared by both sections below so a wake's delivery state reads the same
-// way wherever it appears. confirmation is deliberately a tri-state rather
-// than boolean-plus-null: "unconfirmed" and "no_confirmation_channel" are
-// both an absent confirmed_at, and collapsing them back into one value would
+// way wherever it appears. confirmation is deliberately a tri-state, now
+// four, rather than boolean-plus-null: each value is an absent confirmed_at
+// for a DIFFERENT reason, and collapsing any two back together would
 // recreate the exact ambiguity this field exists to remove.
+//
+// Issue #75. unconfirmed_busy is that discipline applied to a third cause:
+// typed_busy (src/scheduler.ts's deliver()) records that the target's last
+// recorded hook state, AT THE MOMENT HIVE TYPED, was mid-turn. It is an
+// OBSERVATION, not a prediction of whether this wake will go on to confirm.
+//
+// Counselors round 1 (todo 209, item B) corrected an earlier version of this
+// comment, which claimed a busy delivery "can structurally never confirm".
+// .claude/rules/tmux-and-panes.md:43 and this project's board disagree about
+// exactly that - both claim verification - and this value does not need
+// either one to be right (see deliver()'s own comment for the full
+// argument). If a genuine prompt row DOES arrive later, confirmed_at is set
+// exactly as it is for any other wake and this branch is never reached: the
+// ternary below checks confirmed_at first. unconfirmed_busy only ever means
+// "still unconfirmed, and the target's last recorded state at typing time
+// was mid-turn" - nothing stronger.
+//
+// typed_busy === 0 or null (idle, or no hook row to ask at all) still
+// reports plain "unconfirmed": that is the real alarm this tri-, now four-,
+// state exists to keep legible, and a row written before this column existed
+// has typed_busy NULL, so it reports exactly as it always did - no backfill
+// needed, no behaviour change for history.
+//
+// NAMED RESIDUAL: typed_busy=1 can be STALE. A target latched into a stuck
+// 'working' (issue #38, or a dropped API response) or a permanently stuck
+// 'waiting' (issue #28, a permission prompt nobody ever answers - deliver()'s
+// own comment puts 'waiting' in the same busy bucket as 'working') reports
+// unconfirmed_busy, the quiet value, for what is actually the real alarm - a
+// target that is not coming back. Not fixed here: this field must not grow a
+// freshness bound (stateProvenance.ts's own docstring forbids exactly that
+// inference). Issue #72 (merged f1b805b, shortly before this lane) is the
+// compensating control - last_log_event plus its age is surfaced in
+// agent_list, `hive status` and `hive doctor`, so a stale 'working' or
+// 'waiting' row is visible through a channel built to show staleness, even
+// though this field deliberately does not try. Reopen if unconfirmed_busy is
+// ever the ONLY place a stuck target would have been visible.
 function deliveryState(
   t: TimerRow,
   hasChannel: (actorId: string) => boolean,
@@ -153,9 +189,11 @@ function deliveryState(
         ? null
         : t.confirmed_at != null
           ? "confirmed"
-          : hasChannel(t.deliver_actor)
-            ? "unconfirmed"
-            : "no_confirmation_channel",
+          : !hasChannel(t.deliver_actor)
+            ? "no_confirmation_channel"
+            : t.typed_busy === 1
+              ? "unconfirmed_busy"
+              : "unconfirmed",
   };
 }
 

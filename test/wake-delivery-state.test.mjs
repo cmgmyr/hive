@@ -21,7 +21,17 @@ import {
 // running server on its own natural scheduler tick, not tick() called
 // in-process) at each stage. Unit tests elsewhere pin the timers-table
 // writes; nothing else exercises the OUTPUT this lane exists to make
-// legible - the four-way distinction a lead actually reads.
+// legible - the distinctions a lead actually reads.
+//
+// Issue #75 added a fifth: unconfirmed_busy, alongside confirmed, plain
+// unconfirmed, no_confirmation_channel, and the null (nothing typed yet)
+// case. One test below seeds typed_busy directly to pin the reporting
+// layer's own NULL/0/1 boundary in isolation; a second, added in counselors
+// round 1 (todo 209, item E3), drives a real wake_set through this file's
+// real running server and its own natural scheduler tick against two real
+// spawned targets - the lane's actual claim, busy vs idle reporting
+// differently, THROUGH THE REAL PATH, not asserted only against a hand-set
+// column.
 
 const { hasTmux, cleanup } = isolateTmux("the wake-delivery-state tests");
 
@@ -68,7 +78,7 @@ async function spawnShowing(name, shellCommand) {
 const findWake = (wakes, wakeId) => wakes.find((w) => w.wake_id === wakeId);
 
 describe(
-  "wake_list reports the four delivery states a lead actually reads",
+  "wake_list reports the delivery states a lead actually reads",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     it("held with a reason while pending, then typed and unconfirmed once the dialog clears", async () => {
@@ -206,6 +216,130 @@ describe(
         neverTyped.confirmation,
         null,
         "no confirmation state applies when nothing was ever typed - not unconfirmed, not no_confirmation_channel",
+      );
+    });
+
+    // Issue #75. Reporting-layer half of the busy/idle distinction; the
+    // scheduler's own write of typed_busy is exercised in
+    // test/delivery-state.test.mjs's tick()-driven tests. This seeds the
+    // column directly and checks only what wake_list derives from it, which
+    // is what deliveryState() (src/tools/wakes.ts) actually reads. Each
+    // target needs a real agents row - unlike the no-channel case above,
+    // this is about the channel EXISTING but the delivery landing mid-turn.
+    it("reports unconfirmed_busy only when typed_busy = 1, never for 0 or NULL", async () => {
+      const seedAgent = (actor) =>
+        db
+          .prepare(
+            `INSERT INTO agents (project_id, actor_id, name, command, cwd)
+             VALUES (?, ?, ?, 'claude', '/tmp')`,
+          )
+          .run(projectId, actor, actor);
+      const seedTimer = (actor, typedBusy) =>
+        db
+          .prepare(
+            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+               due_at, created_at, fired_at, typed_at, typed_busy)
+             VALUES (?, 'user:test', 'busy report wake', 'delay', '[]', ?, '%busy-report',
+               datetime('now', '-30 seconds'), datetime('now', '-60 seconds'),
+               datetime('now', '-20 seconds'), strftime('%Y-%m-%d %H:%M:%f', 'now', '-20 seconds'), ?)
+             RETURNING id`,
+          )
+          .get(projectId, actor, typedBusy).id;
+
+      seedAgent("agent:busy-report-working");
+      seedAgent("agent:busy-report-idle");
+      seedAgent("agent:busy-report-unknown");
+      const busyId = seedTimer("agent:busy-report-working", 1);
+      const idleId = seedTimer("agent:busy-report-idle", 0);
+      const unknownId = seedTimer("agent:busy-report-unknown", null);
+
+      const list = await mcp.call("wake_list");
+      const busy = findWake(list.recently_delivered, busyId);
+      const idle = findWake(list.recently_delivered, idleId);
+      const unknown = findWake(list.recently_delivered, unknownId);
+
+      assert.ok(busy, "the busy-delivered wake must still be reported");
+      assert.equal(
+        busy.confirmation,
+        "unconfirmed_busy",
+        "typed_busy = 1 must read distinctly from a plain 'unconfirmed' - it says the target's last recorded " +
+          "state at typing time was mid-turn, not that an ack was impossible",
+      );
+
+      assert.ok(idle, "the idle-delivered wake must still be reported");
+      assert.equal(
+        idle.confirmation,
+        "unconfirmed",
+        "typed_busy = 0 (observed idle) must stay the real alarm, not be folded into unconfirmed_busy",
+      );
+
+      assert.ok(unknown, "the never-instrumented wake must still be reported");
+      assert.equal(
+        unknown.confirmation,
+        "unconfirmed",
+        "typed_busy = NULL (no hook row to ask, e.g. a pre-#75 row) must report exactly as it always did - " +
+          "no behaviour change for history",
+      );
+    });
+
+    // Counselors round 1 (todo 209, item E3). The lane's central claim - a
+    // wake typed at a busy target reports differently from one typed at an
+    // idle target - was previously only hand-seeded at this reporting layer
+    // (the test above) or tick()-driven against a bare actor string with no
+    // real agent (test/delivery-state.test.mjs). Neither drove a real wake
+    // through the actual wake_set -> real running server's own scheduler
+    // tick -> wake_list path against a real spawned target. This does, for
+    // both targets in the same test, so a constant confirmation value cannot
+    // pass it. fakeClaude never runs a real hook, so each target's log is
+    // primed by hand the same way a real turn's hook invocation would leave
+    // it - the same technique the busy/idle table in delivery-state.test.mjs
+    // uses, just driven through wake_set/wake_list instead of tick()
+    // directly.
+    it("drives a real busy delivery and a real idle delivery through wake_set/wake_list, and they report differently", async () => {
+      const busyWorker = await spawnShowing("busy-real-worker", "sleep 600");
+      insertStateLogRow(db, busyWorker.actor_id, "prompt", "working", 0);
+      const busyWake = await mcp.call("wake_set", {
+        delay_seconds: 1,
+        body: "E2E busy wake",
+        deliver_to: busyWorker.agent_id,
+      });
+
+      const idleWorker = await spawnShowing("idle-real-worker", "sleep 600");
+      insertStateLogRow(db, idleWorker.actor_id, "stop", "idle", 0);
+      const idleWake = await mcp.call("wake_set", {
+        delay_seconds: 1,
+        body: "E2E idle wake",
+        deliver_to: idleWorker.agent_id,
+      });
+
+      let busyRow;
+      await until(async () => {
+        const list = await mcp.call("wake_list");
+        busyRow = findWake(list.recently_delivered, busyWake.wake_id);
+        return busyRow?.typed_at != null;
+      }, 15000);
+      let idleRow;
+      await until(async () => {
+        const list = await mcp.call("wake_list");
+        idleRow = findWake(list.recently_delivered, idleWake.wake_id);
+        return idleRow?.typed_at != null;
+      }, 15000);
+
+      assert.equal(
+        busyRow.confirmation,
+        "unconfirmed_busy",
+        "a wake delivered through the real scheduler tick, into a target whose last real hook row was " +
+          "working, must report unconfirmed_busy",
+      );
+      assert.equal(
+        idleRow.confirmation,
+        "unconfirmed",
+        "the identical real delivery path, into a target whose last real hook row was idle, must report plain unconfirmed",
+      );
+      assert.notEqual(
+        busyRow.confirmation,
+        idleRow.confirmation,
+        "this is the lane's whole claim: busy and idle deliveries through the real path must report differently",
       );
     });
 

@@ -2,6 +2,7 @@ import type { Statement } from "better-sqlite3";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
+import { lastLogEvent } from "./stateProvenance.js";
 import {
   capturePane,
   liveTargets,
@@ -39,6 +40,7 @@ export interface TimerRow {
   held_at: string | null;
   held_reason: string | null;
   confirmed_at: string | null;
+  typed_busy: number | null;
 }
 
 // The single definition of "this timer is still live" (one-shot pending, or
@@ -485,6 +487,31 @@ const HELD_REASON_LEAD_PANE_DEAD =
 
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
   const live = snapshot ? targetAlive(timer.deliver_pane, snapshot) : targetLive(timer.deliver_pane);
+  // Issue #69, accepted 2026-08-02, not fixed. live === null means the tmux
+  // probe could not answer, and every due wake renders byte-identical to one
+  // that is not due yet for as long as that holds - this branch records
+  // nothing. Counselors round 1 (todo 209, item F) corrected this comment's
+  // own boundary: the original text said null occurs ONLY when
+  // untrustedTmuxServer() refuses a private tmux server paired with the
+  // default store (.claude/rules/tmux-and-panes.md), and named any other
+  // occurrence as this acceptance's reopen trigger. That is false as written
+  // - targetLive()/liveTargets() (src/tmux.ts) also answer null for ANY
+  // unexpected tmux error the caught exception does not recognise as "no
+  // such pane" (tmuxSaysNothingThere returning false), so a correctly
+  // configured, trusted shared server with a transiently erroring socket
+  // hits this exact branch too, which is precisely the "outside that refused
+  // configuration" case the old text said would trigger a reopen. The
+  // refused pairing is still the common, by-design case this acceptance was
+  // argued against; a transient probe error is rarer and, like the refused
+  // pairing, self-corrects the next tick a live snapshot resolves this timer
+  // again. The acceptance still stands under either cause: a correct fix
+  // needs a hold that writes once per condition rather than once per tick
+  // for every due wake from every concurrent instance - real design work in
+  // the hottest loop hive has, bought for a state that is either refused by
+  // design or transient. Reopen if a wake is ever observed
+  // pending-and-invisible for more than a few ticks running - a probe error
+  // that resolves within a tick or two is the expected, already-accounted-for
+  // case, not this.
   if (live === null) return false;
   if (!live) {
     // A lead-owned wake gets the same exemption janitor()'s timer sweep does,
@@ -497,6 +524,45 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     if (isLeadActorId(timer.deliver_actor)) {
       holdTimer(timer, HELD_REASON_LEAD_PANE_DEAD);
     } else {
+      // Issue #71, accepted 2026-08-02, no diff. A pre-#27 scheduler running
+      // in another concurrent session has no isLeadActorId exemption above
+      // and cancels a lead-owned wake outright the moment its pane reads
+      // dead, exactly as this function used to for everyone. That window is
+      // self-closing: it exists only while other sessions are still running
+      // pre-#27 code, worst on the day this exemption lands and gone once
+      // every session has restarted onto it. Decided not to build a soft
+      // cancel to survive it - that would add a fourth axis to the same
+      // delivery-state columns #69, #70 and #75 exist to stop misreporting,
+      // the wrong trade for a transient condition. The asymmetry with
+      // identity is deliberate: ensureLeadRow (src/cli.ts) reuses a closed
+      // lead row's actor_id because an actor_id cannot be recreated by the
+      // user, while a timer can - the recovery here is to call wake_set
+      // again. Reopen if a lead-owned wake is ever observed cancelled during
+      // a real restart outside this mixed-version window, not inside it.
+      //
+      // Counselors round 1 (todo 209, item D2) found a second mixed-version
+      // window in this same self-closing family, on the typed_busy column
+      // (#75) rather than this cancellation. A pre-#75 server's repeating-
+      // timer claim UPDATE (fireDelay, below) has no `typed_busy = NULL`
+      // clause in its compiled SQL - that clause did not exist yet - so when
+      // such a server claims and delivers a LATER cycle of a repeating timer
+      // whose EARLIER cycle a new-code server already delivered, SQLite
+      // leaves typed_busy exactly as that earlier cycle set it. A reader on
+      // new code then reports the later, unrelated cycle's confirmation
+      // state using the earlier cycle's stale typed_busy. Unlike this
+      // cancellation window, which errs toward LOSING a wake, this one errs
+      // toward the QUIET direction: a cycle typed at a genuinely idle target
+      // and genuinely lost can still read unconfirmed_busy, the reassuring
+      // value, for what is the real alarm. Same self-closing argument, same
+      // evidence: 82 timers created in this project's entire history, 0
+      // repeating, 0 fired more than once (recorded above, dba5a29), so no
+      // row has ever had a second cycle for a mixed-version claim to corrupt.
+      // The one-shot direction stays clean regardless of server version -
+      // claimOneShot never touches typed_busy, and an old-code deliver()
+      // simply never sets it, so an old-code one-shot degrades to NULL
+      // (plain unconfirmed), never a stale busy claim. ACCEPT AND RECORD;
+      // reopen under the same trigger as #70, above: this project's first
+      // repeating wake.
       cancelTimer(timer.id);
     }
     return false;
@@ -567,11 +633,34 @@ async function fireDelay(
     // confirmed. Resetting here means a failed send leaves exactly the same
     // signal a one-shot's failed send does - fired_at set, everything else
     // NULL - instead of stale success data from a previous cycle.
+    //
+    // Issue #70, accepted 2026-08-02, not fixed. deliverable() (above) can
+    // run and hold this SAME row for cycle N+1 before this claim resets
+    // typed_at and confirmed_at, so the hold it writes sits next to cycle N's
+    // typed_at and confirmation until this claim finally succeeds - a held
+    // repeating wake can report the previous cycle's confirmation as if it
+    // belonged to the one currently held. Queried against the live store on
+    // 2026-08-02: 82 timers created in this project's entire history, 0
+    // repeating (repeat_every_ms IS NOT NULL), 0 that have fired more than
+    // once (fire_count > 1). The repeating claim this defect depends on has
+    // never run, so the hold-then-re-fire sequence it describes has never
+    // been reachable. Not an argument the code is fine - an argument that
+    // fixing it buys nothing today against a lane in the most contended loop
+    // in the codebase, next to holdTimer()'s already-flagged SQLITE_BUSY
+    // contention. Reopen if this project ever creates its first repeating
+    // wake; the query above is the trigger, not a judgement call.
+    //
+    // Counselors round 1 (todo 209, item D1) extended this same acceptance to
+    // typed_busy (#75), added to this claim's reset list below alongside
+    // typed_at/confirmed_at/held_at/held_reason: it is reset by the exact
+    // same claim, so it is held-stale by the exact same window, for the exact
+    // same reason, covered by the exact same evidence above. No separate
+    // acceptance needed; this is the same window, one more column wide.
     claimed =
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
            fired_at = datetime('now'), fire_count = fire_count + 1,
-           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL
+           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL
          WHERE id = ? AND due_at = ? AND cancelled_at IS NULL`,
       ).run(seconds, timer.id, timer.due_at).changes === 1;
   } else {
@@ -754,6 +843,126 @@ function watchedTail(timer: TimerRow): string {
 async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
+  // Issue #75. typed_busy is an OBSERVATION, not a prediction: the target's
+  // own last agent_state_log row, read right before typing. It records what
+  // hive saw at the moment it typed - nothing about what happens afterward.
+  //
+  // Counselors round 1 (todo 209, item B) corrected the first version of
+  // this comment, and the matching ones in src/db.ts's migration and
+  // src/tools/wakes.ts's deliveryState(), all of which asserted that a busy
+  // delivery "can never confirm" / "structurally" / "no acknowledgement was
+  // ever possible". The code cannot see that; it saw one log row.
+  // Everything after typing is a prediction, and four independent findings
+  // showed the prediction unsafe in both directions - so state only the
+  // observation and let a reader judge:
+  //   - .claude/rules/tmux-and-panes.md:43 and this project's board disagree
+  //     about whether a queued paste eventually confirms once the target's
+  //     turn ends, and both claim to have verified it. That conflict is
+  //     recorded on the board, not settled here, and does not need to be:
+  //     this value means the same thing under either reading, because it
+  //     only describes what hive typed INTO, never what happens next. If a
+  //     genuine prompt row does arrive later, confirmed_at is set exactly as
+  //     it is for any other wake (checkConfirmations, above) and
+  //     unconfirmed_busy is never reached - deliveryState() (wakes.ts)
+  //     checks confirmed_at first.
+  //   - A target latched into a stuck 'working' (issue #38: a turn that died
+  //     mid-response and never recovers, or a dropped API response leaving a
+  //     stale prompt|working row) reports unconfirmed_busy, the QUIET value,
+  //     for what is actually the real alarm: a target that is not coming
+  //     back, not one genuinely mid-turn. Item C1 (below) puts 'waiting' in
+  //     this same busy bucket, so a permanently stuck 'waiting' (issue #28: a
+  //     worker blocked on a permission prompt nobody ever answers - "'waiting'
+  //     is LATCHED... nothing clears it") is the identical shape, not a
+  //     separate residual. NAMED RESIDUAL, not fixed here: issue #72 (merged
+  //     f1b805b, shortly before this lane) is the compensating control -
+  //     last_log_event plus its age is surfaced in agent_list, `hive status`
+  //     and `hive doctor`, so a stale 'working' or 'waiting' row is visible
+  //     through a channel built to show staleness, even though typed_busy
+  //     deliberately does not try (see stateProvenance.ts's own docstring on
+  //     why a freshness bound does not belong here either). Reopen if
+  //     unconfirmed_busy is ever the ONLY place a stuck target would have
+  //     been visible - i.e. if #72's channel stops covering it.
+  //   - The sample is taken before sendText, so the target can transition
+  //     either way in the gap between this read and the paste landing.
+  // typed_busy still does its one job under all of this: separating "typed
+  // at a target whose last recorded state was mid-turn" from "typed at a
+  // target whose last recorded state was not" - a fact hive can see - from a
+  // claim about acknowledgement, which hive cannot make.
+  //
+  // 1/0/null, not a boolean: null means hive has no hook row for this actor
+  // at all (never instrumented, e.g. a plain `user:` target with no agents
+  // row, or an instrumented one that simply has not written its first row
+  // yet) and must read as unknown, never coerced to "not busy" - that
+  // coercion is exactly the inference .claude/rules/worker-state.md rules
+  // out ("a debounce that waits and reports what it observed asserts
+  // nothing... one that asserts a fact it cannot see is not legitimate").
+  //
+  // lastLogEvent (the LOG), deliberately, not agents.agent_state (the
+  // LATCH) - despite stateProvenance.ts's own docstring ranking the latch
+  // authoritative and the log forensics. That ranking holds for a worker,
+  // but issue #75's own motivating case (wake 107) is a wake to the LEAD,
+  // and src/hook.ts's agent_state UPDATE is scoped to `kind = 'agent'`: a
+  // lead's latch stays 'unknown' forever by design (worker-state.md). Reading
+  // the latch here would read every lead-targeted wake as never-busy,
+  // silently no-oping this fix for the exact target the issue was filed
+  // against. The log is the only channel a lead writes to at all.
+  //
+  // Counselors round 1, item C1: 'working' OR 'waiting' both count as busy.
+  // The first version of this line read only literal 'working', arguing that
+  // a blocking dialog is caught earlier and separately by deliverable()'s
+  // own awaitingChoice() hold above. That argument covers the pane WHILE a
+  // dialog is up; it says nothing about after. worker-state.md is explicit
+  // that 'waiting' is LATCHED and nothing clears it until the worker's turn
+  // ends - "however long the approved tool runs". So: a worker approves a
+  // permission prompt, the dialog clears, and the worker stays mid-turn for
+  // the whole length of whatever it just approved - a long test run, a build
+  // - with its last log row still notify|waiting the entire time. That is
+  // the single longest, most common busy window a worker has, and exactly
+  // when a lead is likely to set a wake. Reading it as not-busy reported the
+  // real alarm's opposite: a target unambiguously mid-turn as plain
+  // "unconfirmed", byte-identical to a lost wake. Only a literal 'idle' row,
+  // or the notify sentinel 'unchanged' (src/hook.ts's UNCHANGED, written
+  // when a notification left the latch alone - the idle_prompt case, Claude
+  // signalling it is genuinely free), now read as not-busy.
+  //
+  // Counselors round 1, item C2 - a STATED LIMIT, not a fix. Under a /goal,
+  // Claude Code fires Stop after every turn while immediately starting
+  // another, so a lead's log alternates stop|idle / prompt|working
+  // continuously - worker-state.md measured nine consecutive false idles in
+  // fifty seconds. A wake landing in one of those idle gaps reads
+  // typed_busy=0 for a lead that is, in every practical sense, busy. NOT
+  // fixable at this read site: stateProvenance.ts's own docstring names the
+  // identical trap for a different reader and says the module "cannot detect
+  // that condition... and must not pretend to" - adding a freshness bound or
+  // an age threshold here to compensate would be exactly the inference that
+  // docstring forbids, and stays out of scope for this lane for the same
+  // reason. This bounds the fix for its own motivating case (a lead) without
+  // claiming to close it.
+  //
+  // A THROW HERE MUST NOT COST THE DELIVERY (counselors round 1, item A,
+  // both seats, the lane's only real bug). This read used to run unguarded
+  // between the claim (fireDelay/claimOneShot, above) and sendText (below);
+  // every other read or write in this function is guarded on exactly that
+  // ground - watchedTail carries its own try/catch, the post-send write uses
+  // bestEffortRun - because by this line the claim has already committed
+  // fired_at: the timer is already spent. An unguarded throw here (SQLITE_
+  // IOERR, SQLITE_BUSY, a schema broken under a running server, a store
+  // replaced mid-tick) would reject deliver() before sendText ever ran,
+  // which tick()'s own catch (far above) keeps the SERVER alive through but
+  // does nothing for THIS delivery: a one-shot permanently reporting
+  // fired_at set and typed_at forever NULL, never retried, plus every
+  // candidate after it in this tick skipped. Fall back to null (unknown) on
+  // any failure here - the same answer a genuinely absent hook row gets -
+  // and let sendText run regardless. Pinned by
+  // test/delivery-state.test.mjs's "does not turn a held timer into a
+  // crash..." fixture, which now also drops agent_state_log itself.
+  let typedBusy: number | null;
+  try {
+    const lastEvent = lastLogEvent(timer.deliver_actor);
+    typedBusy = lastEvent == null ? null : lastEvent.state === "working" || lastEvent.state === "waiting" ? 1 : 0;
+  } catch {
+    typedBusy = null;
+  }
   try {
     await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
   } finally {
@@ -788,6 +997,11 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   // "resets confirmed_at on every re-delivery of a repeating timer" in
   // test/delivery-state.test.mjs is the test that pins both halves.
   //
+  // typed_busy follows the identical cycle discipline, set here and reset to
+  // NULL by the same due_at claim UPDATE above, for the same reason: it
+  // describes THIS delivery's moment of typing, and a repeating timer must
+  // not carry cycle N's busy observation into cycle N+1's report.
+  //
   // MILLISECONDS, matching agent_state_log.created_at's own
   // strftime('%Y-%m-%d %H:%M:%f', 'now') exactly, not datetime('now')'s
   // whole seconds. checkConfirmations compares created_at >= typed_at as an
@@ -801,8 +1015,9 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   // nothing else reads its format, so there is no compatibility reason to
   // keep it coarse.
   bestEffortRun(
-    `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'),
+    `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
        held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
+    typedBusy,
     timer.id,
   );
 }

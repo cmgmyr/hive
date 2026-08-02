@@ -355,6 +355,33 @@ ALTER TABLE timers ADD COLUMN held_at TEXT;
 ALTER TABLE timers ADD COLUMN held_reason TEXT;
 ALTER TABLE timers ADD COLUMN confirmed_at TEXT;
 `,
+  // Issue #75. A wake typed into a session that is already mid-turn is
+  // received and acted on, but Claude Code fires no UserPromptSubmit for text
+  // absorbed into a running turn, so no `prompt` row is written for it and
+  // confirmed_at often stays NULL - before this column, that read
+  // byte-identical to "unconfirmed", the field's alarm value and also what a
+  // genuinely lost wake produces (issue #27's own motivating case).
+  //
+  // Counselors round 1 (todo 209, item B): typed_busy is NOT a prediction of
+  // whether that wake will ever confirm. An earlier version of this comment
+  // claimed a busy delivery "structurally" cannot - .claude/rules/tmux-and-
+  // panes.md:43 and this project's own board disagree about whether a queued
+  // paste confirms late once the target's turn ends, both claiming
+  // verification, and this column does not need to settle that (see
+  // src/scheduler.ts's deliver() for the full argument). It is the
+  // scheduler's own OBSERVATION of the target's last recorded hook state,
+  // made at the moment of typing, so a reader can tell "typed at a target
+  // whose last recorded state was idle" from "typed at a target whose last
+  // recorded state was mid-turn" - two facts hive can see - rather than a
+  // claim about acknowledgement, which hive cannot make. NULL/0/1 rather
+  // than a boolean: NULL means hive has no hook row for deliver_actor at all
+  // (never instrumented, or none written yet) and must read as unknown,
+  // never coerced to "not busy" - see the column's own write site for why
+  // that coercion is exactly the inference .claude/rules/worker-state.md
+  // rules out.
+  `
+ALTER TABLE timers ADD COLUMN typed_busy INTEGER;
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

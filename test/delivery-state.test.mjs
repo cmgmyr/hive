@@ -60,7 +60,11 @@ function seedProject() {
 }
 
 const timerRow = (id) =>
-  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, fire_count, due_at FROM timers WHERE id = ?").get(id);
+  db
+    .prepare(
+      "SELECT fired_at, typed_at, held_at, held_reason, fire_count, due_at, typed_busy FROM timers WHERE id = ?",
+    )
+    .get(id);
 
 describe("issue #27: the scheduler records what it did, not just that it claimed", () => {
   it("a sendText that throws leaves fired_at set and typed_at NULL", async () => {
@@ -119,6 +123,158 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
       ACTIVE_TIMER_WHERE,
       "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)",
       "this lane is reporting-only; widening this clause changes what fires, not just what is reported",
+    );
+  });
+});
+
+// Issue #75. deliver() reads deliver_actor's last agent_state_log row right
+// before typing (src/scheduler.ts) and stamps 1/0/NULL. The discriminating
+// claim of this lane is that a wake typed at a BUSY target is recorded
+// differently from one typed at an IDLE target - a fixture where the target
+// was only ever idle cannot prove anything this lane claims, so both are
+// exercised here, plus the never-instrumented case.
+function seedDueTimer(project, actor, pane) {
+  return db
+    .prepare(
+      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+         due_at, created_at)
+       VALUES (?, 'user:test', 'busy-check wake', 'delay', '[]', ?, ?,
+         datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
+       RETURNING id`,
+    )
+    .get(project, actor, pane).id;
+}
+
+// One case table rather than three near-identical `it`s: each row differs
+// only in the seeded hook state (or its absence) and the expected column
+// value, so the shared shape - seed, deliver, assert typed_at, assert
+// typed_busy - is written once. A future fourth observed state is a one-line
+// addition here instead of a fourth copy-pasted test.
+// Counselors round 1, item E1. This table used to cover only working, idle
+// and absent, while the code comment specifically claims to handle 'waiting'
+// and the notify sentinel 'unchanged' a certain way (deliver(),
+// src/scheduler.ts) - neither was pinned. After item C1's fix, 'waiting'
+// counts as busy (a worker mid-turn on an approved tool, e.g. a long test
+// run, latches 'waiting' for the whole run - worker-state.md); 'unchanged'
+// (a notify that left the latch alone, typically Claude signalling it is
+// genuinely free) stays not-busy alongside plain idle.
+const TYPED_BUSY_CASES = [
+  {
+    label: "working",
+    seed: (actor) => insertStateLogRow(db, actor, "prompt", "working", 5),
+    expected: 1,
+    message: "a target whose last hook row is 'working' must be recorded as busy",
+  },
+  {
+    label: "waiting",
+    seed: (actor) => insertStateLogRow(db, actor, "notify", "waiting", 5),
+    expected: 1,
+    message:
+      "'waiting' (latched through however long an approved tool runs) must count as busy, not be reported as the real alarm",
+  },
+  {
+    label: "idle",
+    seed: (actor) => insertStateLogRow(db, actor, "stop", "idle", 5),
+    expected: 0,
+    message:
+      "an idle target must record 0, not 1 and not NULL - a reader distinguishes 'observed idle' from 'never observed'",
+  },
+  {
+    label: "unchanged",
+    seed: (actor) => insertStateLogRow(db, actor, "notify", "unchanged", 5),
+    expected: 0,
+    message: "the notify sentinel 'unchanged' (Claude signalling it is genuinely free) must read as not-busy",
+  },
+  {
+    label: "never instrumented",
+    seed: null,
+    expected: null,
+    message: "no hook row at all must read as unknown, never coerced to 'not busy'",
+  },
+];
+
+describe("issue #75: the scheduler records whether the target was busy at delivery time", () => {
+  for (const { label, seed, expected, message } of TYPED_BUSY_CASES) {
+    it(`records typed_busy = ${expected} when the target's last hook row is ${label}`, async () => {
+      if (!hasTmux) return;
+      const project = seedProject();
+      const actor = `agent:busy-${label.replace(/\s+/g, "-")}-${project}`;
+      seed?.(actor);
+      const timerId = seedDueTimer(project, actor, livePane);
+
+      await tick();
+
+      const row = timerRow(timerId);
+      assert.ok(row.typed_at, "must have actually delivered for this test to mean anything");
+      assert.equal(row.typed_busy, expected, message);
+    });
+  }
+
+  // Counselors round 1, item E2. Every actor in TYPED_BUSY_CASES above is a
+  // bare string with no `agents` row at all, so a regression that made
+  // deliver() read agents.agent_state (the LATCH) instead of the log would
+  // go red there for the WRONG reason - a missing row, not the lead-scoping
+  // argument deliver()'s own comment makes. Pin the actual claim: a
+  // kind='lead' row, whose agent_state stays 'unknown' forever by design
+  // (src/hook.ts's UPDATE is scoped to kind = 'agent' - worker-state.md),
+  // must still read typed_busy = 1 from a working LOG row - proving the read
+  // goes through the log, not the latch that never updates for a lead.
+  it("reads typed_busy from the log even for a lead, whose agents.agent_state latch never updates", async () => {
+    if (!hasTmux) return;
+    const project = seedProject();
+    const actor = `lead:e2-${project}`;
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, command, cwd, kind)
+       VALUES (?, ?, 'e2-lead', 'claude', '/tmp', 'lead')`,
+    ).run(project, actor);
+    assert.equal(
+      db.prepare("SELECT agent_state FROM agents WHERE actor_id = ?").get(actor).agent_state,
+      "unknown",
+      "a lead's latch must still be at its untouched default for this test to mean anything",
+    );
+    insertStateLogRow(db, actor, "prompt", "working", 5);
+    const timerId = seedDueTimer(project, actor, livePane);
+
+    await tick();
+
+    const row = timerRow(timerId);
+    assert.ok(row.typed_at, "must have actually delivered for this test to mean anything");
+    assert.equal(row.typed_busy, 1, "typed_busy must come from the log, not the lead's never-updated latch");
+  });
+
+  // Counselors A3's own discipline (above), applied to the new column: a
+  // held-before-claim write for a LATER cycle must never leave an EARLIER
+  // cycle's busy observation sitting on the row once the new cycle claims.
+  it("resets typed_busy on every re-delivery of a repeating timer, not just its first", async () => {
+    if (!hasTmux) return;
+    const project = seedProject();
+    const actor = `agent:busy-repeat-${project}`;
+    insertStateLogRow(db, actor, "prompt", "working", 5);
+    const timerId = db
+      .prepare(
+        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+           due_at, created_at, repeat_every_ms)
+         VALUES (?, 'user:test', 'repeat busy-check', 'delay', '[]', ?, ?,
+           datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), 999999999)
+         RETURNING id`,
+      )
+      .get(project, actor, livePane).id;
+
+    await tick();
+    const fire1 = timerRow(timerId);
+    assert.equal(fire1.typed_busy, 1, "fire 1 must record the working observation seeded above");
+
+    // The actor goes idle before the next cycle fires.
+    insertStateLogRow(db, actor, "stop", "idle", 0);
+    db.prepare("UPDATE timers SET due_at = datetime('now', '-1 seconds') WHERE id = ?").run(timerId);
+    await tick();
+
+    const fire2 = timerRow(timerId);
+    assert.equal(fire2.fire_count, 2, "must have actually re-fired for this test to mean anything");
+    assert.equal(
+      fire2.typed_busy,
+      0,
+      "fire 2 must record its own, later observation - fire 1's busy=1 must not survive the claim",
     );
   });
 });
@@ -540,14 +696,27 @@ describe("issue #27, counselors A4: the held_at write is guarded against a concu
 // SQLITE_BUSY on either write is the ordinary case, not the exotic one, and
 // before these writes existed nothing about the dialog check or a successful
 // sendText could abort the rest of a tick's candidates. This test breaks
-// exactly those two writes (drops the columns they set, in a throwaway store
-// nothing else here shares) and proves the failure costs only itself: the
-// held timer is still correctly held, an already-typed wake still lands, and
-// a later candidate in the same tick still gets processed. Run in its own
-// process against its own store, never the shared `db` above, because the
-// schema break must not leak into the tests that ran before it.
+// those two writes (drops the columns they set, in a throwaway store nothing
+// else here shares) and proves the failure costs only itself: the held timer
+// is still correctly held, an already-typed wake still lands, and a later
+// candidate in the same tick still gets processed. Run in its own process
+// against its own store, never the shared `db` above, because the schema
+// break must not leak into the tests that ran before it.
+//
+// Counselors round 1 (todo 209, item A). Issue #75 added a THIRD unguarded
+// read to this same window: lastLogEvent(timer.deliver_actor), called
+// between the claim and sendText, with no try/catch of its own at first -
+// every other statement in deliver() is guarded on exactly the ground this
+// describe block exists to prove, and this one was not. A throw there would
+// have burned a one-shot delivery entirely: the claim already committed
+// fired_at, so the row would report fired_at set and typed_at forever NULL,
+// never retried. Guarded now (falls back to typed_busy = null, the same
+// answer a genuinely absent hook row gets); DROP TABLE agent_state_log below
+// forces that exact throw for both ALPHA and BETA, so if the guard ever
+// regresses, this makes them stop delivering rather than merely reporting
+// typed_busy wrong.
 describe("issue #27: a bookkeeping write that fails costs the record, never the delivery", () => {
-  it("does not turn a held timer into a crash, or a delivered wake into an aborted tick", async () => {
+  it("does not turn a held timer into a crash, or a delivered wake into an aborted tick, even with agent_state_log gone", async () => {
     if (!hasTmux) return;
     const { dataDir: bkDataDir, tmp: bkTmp } = scratchDirs();
     const outFile = join(bkTmp, "bookkeeping-delivered.txt");
@@ -584,10 +753,14 @@ describe("issue #27: a bookkeeping write that fails costs the record, never the 
           seed(dialogPane, "HELD wake") +
           seed(deliveryPane, "ALPHA delivered") +
           seed(deliveryPane, "BETA delivered") +
-          // Break only the two bookkeeping writes; claimOneShot (fired_at,
+          // Break the two bookkeeping writes; claimOneShot (fired_at,
           // fire_count) and sendText itself never touch these columns.
           `db.exec("ALTER TABLE timers DROP COLUMN held_at");\n` +
           `db.exec("ALTER TABLE timers DROP COLUMN typed_at");\n` +
+          // Item A. Everything lastLogEvent() (src/stateProvenance.ts) reads
+          // is gone, forcing the exact throw its new try/catch in deliver()
+          // exists to survive.
+          `db.exec("DROP TABLE agent_state_log");\n` +
           `await tick();\n` +
           `const dialogRow = db.prepare("SELECT fired_at, cancelled_at FROM timers WHERE deliver_pane = ? AND body = 'HELD wake'").get(${JSON.stringify(dialogPane)});\n` +
           `process.stdout.write(JSON.stringify({ dialogFired: dialogRow.fired_at !== null, dialogCancelled: dialogRow.cancelled_at !== null }));\n`,
