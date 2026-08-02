@@ -65,7 +65,10 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       assert.equal(row1.actor_id, `lead:${row1.id}`);
       assert.notEqual(row1.tmux_target, "", "the lead's pane target must be recorded");
 
-      // restart-lead.sh's job: kill the lead's pane, then re-run `hive lead`.
+      // restart-lead.sh's job (scripts/restart-lead.sh): kill the lead's
+      // pane, then re-run `hive lead`. True of the script's code since its
+      // own step-2 fix; this simulates that sequence directly rather than
+      // shelling out to it.
       // Backdated created_at past SETTLE_WINDOW first: a freshly inserted row
       // is protected by the settle window regardless of kind, so without this
       // the janitor() call below would have no discriminating power at all
