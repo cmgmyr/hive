@@ -128,7 +128,7 @@ runbook (fork it first), not a pad write.`,
     start a worker (default command: claude) in session hive-<project_id>.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
-    its own tmux window (iTerm tab). layout picks how split panes are
+    its own tmux window (an iTerm tab under control mode). layout picks how split panes are
     arranged: tiled (default), main-vertical (lead takes the left half,
     workers stack on the right), main-horizontal, even-horizontal,
     even-vertical. hive re-applies it when a worker closes, so the
@@ -158,10 +158,12 @@ partial name works when it matches one running worker, so name="123" finds
 DEVX-123. The name is the handle you chose and the one shown in its pane.
 
 Visibility is automatic: if nothing is attached to the project session when
-a worker spawns, hive pops open iTerm (control mode) or Terminal attached
-to it, so the human sees every worker as a native window and can type into
-any of them. The human usually starts the day with the CLI: hive lead.
-Manual attach also works: tmux -CC attach -t hive-<project_id>.
+a worker spawns, hive pops open iTerm (control mode by default; see
+hive setup --attach) or Terminal attached to it, so the human sees every
+worker as a native window and can type into any of them. The human usually
+starts the day with the CLI: hive lead.
+Manual attach also works: tmux attach -t hive-<project_id>, or
+tmux -CC attach -t hive-<project_id> for iTerm's native windows.
 
 Worker state (agent_state on list/status) comes from Claude Code hooks that
 agent_spawn wires automatically: working (prompt submitted), idle (finished
@@ -188,8 +190,8 @@ Delivery contract:
 Receiving wake-ups:
   Spawned workers can always receive (deliver_to their name or id).
   A lead session can receive only if it runs inside tmux; start it with
-  tmux, then claude (watch via iTerm: tmux -CC attach). Otherwise wake_set
-  without deliver_to fails with guidance.
+  tmux, then claude (watch with tmux attach, or tmux -CC attach for iTerm's
+  native windows). Otherwise wake_set without deliver_to fails with guidance.
 
 Idle detection is exact, not heuristic: Claude Code hooks in each spawned
 worker report working/idle/waiting into the shared store the moment they

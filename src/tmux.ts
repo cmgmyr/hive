@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { attachMode } from "./config.js";
 import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
 
 // tmux's stderr is the only thing that says whether tmux answered at all, and
@@ -960,6 +961,33 @@ export function shellQuote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
+// The one decision both attach sites make: does the iTerm-style branch carry
+// -CC. "raw" and "control" answer outright; "auto" defers to whatever the
+// caller's own iTerm detection found, which is what makes "auto" reproduce
+// today's behaviour exactly at both sites (issue #81). Read at call time,
+// same as attachMode() itself.
+export function controlModeFor(iTermDetected: boolean): boolean {
+  const mode = attachMode();
+  if (mode === "raw") return false;
+  if (mode === "control") return true;
+  return iTermDetected;
+}
+
+// Pure, so the three modes are testable without an actual osascript. This
+// branch is always the iTerm one, so iTermDetected is unconditionally true:
+// "auto" here means what it always meant, -CC. "raw" drops it and keeps the
+// app, running a plain attach through iTerm instead of opening a
+// control-mode window. The Terminal fallback never carried -CC and stays
+// that way regardless of mode; it is the fallback for a machine with no
+// iTerm at all, not a second control-mode option.
+export function attachScripts(tmuxPath: string, session: string): string[] {
+  const cc = controlModeFor(true) ? "-CC " : "";
+  return [
+    `tell application "iTerm" to create window with default profile command "${tmuxPath} ${cc}attach -t ${session}"`,
+    `tell application "Terminal" to do script "${tmuxPath} attach -t ${session}"`,
+  ];
+}
+
 // When nobody is watching a project's tmux session, pop open a native
 // terminal attached in control mode so spawned workers appear on screen
 // automatically. iTerm control mode (-CC) maps each tmux window to a native
@@ -980,11 +1008,7 @@ export function ensureAttached(session: string): void {
   } catch {
     return;
   }
-  const scripts = [
-    `tell application "iTerm" to create window with default profile command "${tmuxPath} -CC attach -t ${session}"`,
-    `tell application "Terminal" to do script "${tmuxPath} attach -t ${session}"`,
-  ];
-  for (const script of scripts) {
+  for (const script of attachScripts(tmuxPath, session)) {
     try {
       execFileSync("osascript", ["-e", script], { stdio: "ignore", timeout: 8000 });
       return;

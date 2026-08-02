@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { checkAbi, describeAbi, describeInterpreter } from "./abi.js";
 import { claudeConfigDir } from "./claudeDir.js";
+import { ATTACH_MODES, attachMode, AttachMode, isAttachMode, resolvedAttachMode, setAttachMode } from "./config.js";
 import {
   cliPath,
   dispatcherDir,
@@ -69,6 +70,7 @@ import {
 } from "./spawn.js";
 import {
   claimInitialWindow,
+  controlModeFor,
   describePaneChoice,
   ensureSession,
   foreignSocket,
@@ -143,6 +145,7 @@ Usage:
   hive status                overview of agents, todos, and wake-ups everywhere
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
+  hive setup --attach <mode> auto|raw|control: whether tmux attaches carry -CC
   hive doctor                check the environment and clean up stale state
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
@@ -165,8 +168,9 @@ writes this starter file (uncomment what you need):
 ${HIVE_YML_TEMPLATE.trimEnd().replace(/^/gm, "  ")}
 
 Repo-defined commands run only after a one-time interactive approval; any
-change to a command re-requires it. In iTerm, lead/attach use control mode:
-the lead, workers, and commands all appear as native windows and panes.`);
+change to a command re-requires it. By default (attach mode auto), lead/attach
+use iTerm's control mode: the lead, workers, and commands all appear as native
+windows and panes. hive setup --attach raw switches to a plain tmux attach.`);
   process.exit(1);
 }
 
@@ -321,14 +325,12 @@ function attach(session: string, project: Project): void {
     spawnSync("tmux", ["switch-client", "-t", `=${session}`], { stdio: "inherit" });
     return;
   }
+  const controlMode = controlModeFor(process.env.TERM_PROGRAM === "iTerm.app");
   if (!process.stdout.isTTY) {
     console.log(`Session ${session} is ready for project "${project.name}" (${project.path}).`);
-    console.log(
-      `Attach from a terminal with: tmux ${process.env.TERM_PROGRAM === "iTerm.app" ? "-CC " : ""}attach -t ${session}`,
-    );
+    console.log(`Attach from a terminal with: tmux ${controlMode ? "-CC " : ""}attach -t ${session}`);
     return;
   }
-  const controlMode = process.env.TERM_PROGRAM === "iTerm.app";
   const result = spawnSync(
     "tmux",
     [...(controlMode ? ["-CC"] : []), "attach", "-t", `=${session}`],
@@ -1527,6 +1529,23 @@ function cmdSetup(argv: string[]): void {
   const node = process.execPath;
   const cli = cliPath();
 
+  // Validated before any write, dispatcher included: an unknown value should
+  // never reach config.json, where it would silently read back as "auto" at
+  // resolve time instead of failing here where a human can see it. Presence
+  // is checked separately from the value itself: flagValue alone cannot tell
+  // "--attach" with nothing after it from "--attach" never passed at all,
+  // and the former deserves the same rejection as an unknown mode name.
+  const attachRequested = argv.includes("--attach");
+  const attachValue = flagValue(argv, "--attach");
+  let attachArg: AttachMode | undefined;
+  if (attachRequested) {
+    if (!isAttachMode(attachValue)) {
+      console.log(`--attach must be one of: ${ATTACH_MODES.join(", ")} (got ${attachValue ?? "nothing"})`);
+      process.exit(1);
+    }
+    attachArg = attachValue;
+  }
+
   const existing = readDispatcher(file);
   if (existing && !existing.mine && !argv.includes("--force")) {
     // Almost always npm link's shim, and overwriting someone else's `hive`
@@ -1550,6 +1569,14 @@ function cmdSetup(argv: string[]): void {
   console.log(`  runs         ${cli}`);
   console.log("\nThat is the interpreter that built better-sqlite3 here, so the dispatcher");
   console.log("and the addon cannot disagree about the ABI.");
+
+  // An absent --attach leaves the stored value alone; setup only ever writes
+  // it when asked. README:238 tells everyone to run this after every update,
+  // so a bare `hive setup` that reset the setting to its default would read
+  // as a hive bug on every rebuild. Echoed the way the interpreter above is,
+  // whether this run changed it or not.
+  if (attachArg) setAttachMode(attachArg);
+  console.log(`\nattach mode  ${attachMode()}`);
 
   console.log("");
   for (const line of durabilityLines(node)) console.log(line);
@@ -2068,6 +2095,17 @@ function cmdDoctor(): void {
     return health.message;
   });
   info("auto-attach", process.env.HIVE_AUTO_ATTACH === "0" ? "off (HIVE_AUTO_ATTACH=0)" : "on");
+  {
+    const { mode, source } = resolvedAttachMode();
+    info(
+      "attach mode",
+      source === "env"
+        ? `${mode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach)`
+        : source === "config"
+          ? `${mode} (set with \`hive setup --attach\`)`
+          : `${mode} (default; set with \`hive setup --attach\`)`,
+    );
+  }
   console.log(failures === 0 ? "\nAll good." : `\n${failures} problem(s) found.`);
   process.exit(failures === 0 ? 0 : 1);
 }

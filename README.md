@@ -88,13 +88,25 @@ cd ~/Code/your-project
 hive
 ```
 
-`hive` is shorthand for `hive lead`. In iTerm it attaches in control mode: a `lead` window running claude opens as a native window, and every worker the lead spawns appears automatically. Detaching (or closing the windows) leaves everything running; `hive` again reattaches. `hive attach` does the same without creating a lead window.
+`hive` is shorthand for `hive lead`. It attaches to the project's tmux session: with the default `auto` attach mode under iTerm, a `lead` window running claude opens as a native window (tmux control mode), and every worker the lead spawns appears automatically as its own native window or pane. Detaching (or closing the windows) leaves everything running; `hive` again reattaches. `hive attach` does the same without creating a lead window. Prefer a plain tmux session over iTerm's native windows? See [Attach mode](#attach-mode) below.
 
-Layout: by default workers spawn as panes in the lead's window, auto-tiled, which iTerm renders as native split panes. Full-screen the project window and the whole crew (lead plus workers) shares one screen; iTerm's normal pane navigation and resizing work. Each project is its own window, so drag project windows together as tabs if you like tabs. Prefer a tab per worker instead? Set `placement: window` in the project's `hive.yml`, pass `placement: "window"` on a single spawn, or set `HIVE_SPAWN_PLACEMENT=window` machine-wide. Spawn argument beats project config beats env.
+Layout: by default workers spawn as panes in the lead's window, auto-tiled; under control mode iTerm renders these as native split panes, and under a raw attach they are ordinary tmux panes in one terminal window. Full-screen the project window and the whole crew (lead plus workers) shares one screen; pane navigation and resizing work either way. Each project is its own tmux window, which control mode maps to an iTerm tab; drag them together if you like tabs. Prefer a tab (or window) per worker instead of one shared window? Set `placement: window` in the project's `hive.yml`, pass `placement: "window"` on a single spawn, or set `HIVE_SPAWN_PLACEMENT=window` machine-wide. Spawn argument beats project config beats env.
 
 Want the lead to have a prominent pane instead of an even grid? Set `layout: main-vertical` in `hive.yml` (or pass `layout: "main-vertical"` on a single spawn) and the lead fills the left half with workers stacked on the right. The options are `tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, and `even-vertical`; the `main-*` ones give the lead half the window. hive re-applies the layout when a worker closes as well as when one spawns, so it survives crew changes.
 
-If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers are always visible. macOS will ask once to allow controlling iTerm; approve it. Set `HIVE_AUTO_ATTACH=0` to turn the auto-open behavior off.
+If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers are always visible, in control mode by default. macOS will ask once to allow controlling iTerm; approve it. Set `HIVE_AUTO_ATTACH=0` to turn the auto-open behavior off, or `hive setup --attach raw` to keep the pop-open but drop control mode in favor of a plain `tmux attach`.
+
+### Attach mode
+
+Two places decide whether tmux attaches carry iTerm's control mode (`-CC`): your own `hive lead`/`hive attach`, and the auto-open above. One stored setting controls both:
+
+| `hive setup --attach <mode>` | `hive lead` / `hive attach` | Auto-open |
+|---|---|---|
+| `auto` (default) | control mode iff your terminal is iTerm | iTerm in control mode, then Terminal |
+| `raw` | never control mode | iTerm running a plain `tmux attach`, then Terminal |
+| `control` | always control mode | unchanged from `auto` |
+
+`auto` is today's behavior: nothing changes if you never touch this. Prefer tmux's own key bindings over `-CC`'s window management, or want a raw tmux session under any terminal? `hive setup --attach raw`. `hive doctor` reports the effective mode and where it came from.
 
 ### Profiles (standing instructions across projects)
 
@@ -203,6 +215,8 @@ tmux attach -t hive-<project_id>      # plain terminal
 tmux -CC attach -t hive-<project_id>  # iTerm native windows/tabs
 ```
 
+`hive attach` runs one of these for you already, picked by [attach mode](#attach-mode).
+
 ### Wake-ups, not polling
 
 Spawned `claude` workers carry Claude Code hooks (wired via `--settings`, nothing written into your repo) that report exact state into the store the moment it changes: `working`, `idle`, or `waiting` for permission. The lead sets `wake_when_idle` on its workers and goes quiet; when a worker goes idle, the wake-up body is typed into the lead's terminal as a fresh user turn, prefixed `[hive wake #N]`. `wake_set` gives plain delayed or repeating wake-ups. The scheduler runs inside every hive server instance with atomic claims, so there is no daemon; wake-ups fire as long as any session is open.
@@ -244,13 +258,15 @@ cd ~/Code/your-project
 hive
 ```
 
-The first time a worker spawns with nobody attached, macOS asks permission for hive to control iTerm; approve it once.
+The first time a worker spawns with nobody attached, macOS asks permission for hive to control iTerm; approve it once. This applies under either attach mode: `raw` still opens iTerm, just without control mode.
 
-One-time iTerm settings (Settings > General > tmux), per machine:
+With the default `auto` attach mode (or `control`), one-time iTerm settings (Settings > General > tmux), per machine:
 
 - Check "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
 - Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
 - Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server, not the display.
+
+None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
 Optional: show the store in Claude Code's status line. `hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing when a project has no live state (no agents, todos, pads, or wake-ups) or is not registered at all, so it is safe to run everywhere. If you use a custom status line script, append:
 
@@ -334,7 +350,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `ERR_DLOPEN_FAILED`, or `NODE_MODULE_VERSION 137 ... requires 147`: hive is running under a different Node than the one that built it. `hive doctor` names both numbers. Fix it by running hive through its dispatcher (`hive setup`), or rebuild for the Node you are on (`npm install && npm run build`). Rebuilding per Node treats the symptom; pinning treats the cause.
 - `No version is set for command hive`, or `hive: command not found` in one repo but not another: you are getting `npm link`'s shim, which only exists under the Node version that was active when you linked. Run `hive setup` and put `~/.local/bin` ahead of your version manager's shims.
 - "This session cannot receive wake-ups: it is not running inside tmux": the lead was started with bare `claude` instead of `hive`. Start it with `hive` (or inside tmux) and wake-ups deliver.
-- An idle background iTerm window after attaching: enable the gateway bury setting from Setup. Don't close that window by hand; it detaches the session.
+- An idle background iTerm window after attaching (control mode only): enable the gateway bury setting from Setup. Don't close that window by hand; it detaches the session. `hive setup --attach raw` avoids this window entirely, since it never runs a control-mode client.
 - `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
@@ -407,6 +423,7 @@ Conventions borrowed from tools that got this right:
 | `HIVE_PROJECT_LOCK` | Set to `1` to reject all cross-project access in this session (good for workers) | off |
 | `HIVE_PROJECT_PATH` | Set automatically by `agent_spawn`: the worker's project path, checked against its project pin (looked up from its `agents` row) as a guard against a store swapped underneath a live worker | unset |
 | `HIVE_AUTO_ATTACH` | Set to `0` to stop spawns from popping open a terminal when nothing is attached | on |
+| `HIVE_ATTACH_MODE` | `auto`, `raw`, or `control`: a one-off testing override for the stored attach mode. Not the way to configure this -- use `hive setup --attach` for that. It does not reliably reach auto-attach, which runs inside the MCP server process, so setting it in your shell will not change what a spawned worker's terminal pops open in | unset |
 | `HIVE_SPAWN_PLACEMENT` | `split` (workers tile as panes in the lead's window) or `window` (tab per worker) | `split` |
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box before typing its `[hive]` line. On timeout the line is skipped, not sent blindly; the worker's brief is unaffected either way | `45000` |
 

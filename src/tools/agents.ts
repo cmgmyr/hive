@@ -414,7 +414,7 @@ export function registerAgents(server: McpServer): void {
           .enum(["split", "window"])
           .optional()
           .describe(
-            "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (iTerm tab).",
+            "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode).",
           ),
         layout: z
           .enum(WINDOW_LAYOUTS)

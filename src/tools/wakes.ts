@@ -44,7 +44,7 @@ function resolveDelivery(
   const pane = process.env.TMUX_PANE;
   if (pane) return { actor, pane };
   throw new Error(
-    "This session cannot receive wake-ups: it is not running inside tmux, so nothing can be typed into its terminal. Start the lead inside tmux (run tmux, then claude; watch via iTerm with tmux -CC attach), or pass deliver_to targeting a spawned agent.",
+    "This session cannot receive wake-ups: it is not running inside tmux, so nothing can be typed into its terminal. Start the lead inside tmux (run tmux, then claude; watch with tmux attach, or tmux -CC attach for iTerm's native windows), or pass deliver_to targeting a spawned agent.",
   );
 }
 

@@ -5,6 +5,7 @@ paths:
   - "src/backup.ts"
   - "src/result.ts"
   - "src/scheduler.ts"
+  - "src/config.ts"
 ---
 
 # The store, the data dir, and what keeps tests off it
@@ -20,6 +21,8 @@ It now reads the env when asked and caches nothing, so importing a module no lon
 Be precise about what that does NOT fix: `src/db.ts` still opens the database in its module body, so importing `db.js` is itself the act of choosing a store. That is the remaining debt. `db.ts` keeping a `const` is fine, because it only writes down a commitment the module already made.
 
 `resolveDataDir` is deliberately NOT exported. It is `storeDir()` with the refusal removed, and exporting it would put the one call that reintroduces this whole class of bug into the public API, shorter than the guarded one and reading more obviously correct.
+
+**Issue #81's `src/config.ts` is a second consumer of this reasoning, not a special case.** `attachMode()`/`setAttachMode()` resolve `storeDir()` inside the function body on every call, for the identical reason `dataDir.ts` does. One place it diverges deliberately: a config READ (an absent or malformed `config.json`) never throws, defaulting instead, because a config read must not be the thing that breaks a tmux attach. `storeDir()`'s OWN refusal (the test-isolation guard right above) is not folded into that default -- it is left outside the try in `readConfig()` so it still reaches the caller, the same as it already does on the write side. Swallowing it too would make a misconfigured test process read a silent default instead of the loud failure this guard exists to give it.
 
 Only the COMPARISON canonicalises symlinks. `resolveDataDir` keeps returning the path as the caller named it, because that string also builds brief and posture files, and rewriting it to `/private/var` on macOS changes paths callers hand back to hive.
 
