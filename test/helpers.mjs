@@ -442,6 +442,63 @@ export function insertStateLogRow(db, actorId, event, state, agoSeconds, payload
   ).run(actorId, event, state, payload, `-${agoSeconds} seconds`);
 }
 
+// Issue #72. Two real tmux panes for a test that needs to prove a dialog
+// discriminator works against actual captured chrome, not a synthetic
+// string: one ordinary pane (index 0 of a fresh session) and one replaying a
+// real captured fixture (test/fixtures/panes/<fixtureFile>) via `cat` so
+// paneChoiceCheck reads it exactly as it would a live claude pane showing
+// the same screen. Extracted here because test/state-provenance-mcp.test.mjs
+// and test/state-provenance-cli.test.mjs both needed this and were drifting
+// toward two copies of the same ~15 lines, the exact class of duplication
+// isolateTmux() itself was extracted to stop.
+//
+// `-P -F '#{pane_id}'` on new-window prints the new pane's own id back
+// directly, so this needs no follow-up list-panes call (and never `-a`,
+// which test/CLAUDE.md forbids: it ignores `-t` and would read the whole
+// server, not this session).
+//
+// Fix round 1, item 8. `-x 300 -y 60`, matching typing-guards.test.mjs's own
+// explicit geometry (which spends forty lines explaining why): with no
+// explicit size this session inherits tmux's 24-row detached default against
+// the measured 18-row threshold for folder-trust-dialog.txt -- six rows of
+// margin that would go quiet if it ever shrinks (two tests fail loudly, but
+// a doctor "never warns" test would go quietly vacuous instead, since it
+// asserts an ABSENCE). The width also matters here specifically: a physical
+// terminal wraps a long logical line into several short rows, which is not
+// the same bound as sanitizeTail's per-line 160-char cap and can hide it
+// entirely if a caller relies on this pane to prove that cap.
+export function createLiveAndDialogPanes(session, fixtureFile) {
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "300", "-y", "60", "sleep 600"], { stdio: "ignore" });
+  const livePane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")[0];
+  const dialogPane = execFileSync(
+    "tmux",
+    [
+      "new-window",
+      "-t",
+      `=${session}`,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      // Fix round 1, item 10 (ACCEPT AND RECORD). Single-quoting REPO's path
+      // misquotes if a checkout ever lived under a path containing a single
+      // quote, the same convention typing-guards.test.mjs, wake-delivery-
+      // state.test.mjs, pane-fixtures.test.mjs and false-idle.test.mjs
+      // already use (this helper extracted it, not invented it). Not
+      // rewritten here: REPO is repo-controlled, not attacker-supplied, and
+      // CLAUDE.md's execFileSync-with-argument-arrays invariant is about
+      // what hive itself EXECUTES on a user's behalf, not this suite's own
+      // fixture plumbing.
+      `cat '${join(REPO, "test", "fixtures", "panes", fixtureFile)}'; sleep 600`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  return { livePane, dialogPane };
+}
+
 // The minimum payload checkConfirmations() (src/scheduler.ts) will correlate
 // to a given wake: a real UserPromptSubmit's "prompt" field carries the exact
 // text hive typed, which always starts with deliver()'s `[hive wake #<id>] `

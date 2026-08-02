@@ -21,6 +21,7 @@ import {
   applyLayout,
   capturePane,
   DEFAULT_LAYOUT,
+  describePaneChoice,
   ensureAttached,
   inputBoxState,
   isPaneTarget,
@@ -42,7 +43,7 @@ import {
   type Liveness,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
-import { deriveProvenance } from "../stateProvenance.js";
+import { deriveProvenance, lastLogEvent, reportsAgentStateLog, type LastLogEvent } from "../stateProvenance.js";
 
 export interface AgentRow {
   id: number;
@@ -289,6 +290,77 @@ function transcriptDirField(row: AgentRow): { transcript_dir: string | null } | 
   return isClaudeCommand(row.command) ? { transcript_dir: resolveTranscriptDir(row.cwd) } : {};
 }
 
+// Issue #72. Two more reports, neither derived from agent_state/provenance
+// above: a worker whose latch and log genuinely stopped moving reads the
+// same in `provenance` whether it is dead-in-the-water or perfectly healthy
+// and just quiet, because provenance only ever shows the row that explains
+// the CURRENT latch. These make that condition VISIBLE and worth a second
+// look, reported raw, with no verdict attached. Fix round 1, item 7: this
+// used to claim they are "what a reader actually needs to tell those apart",
+// which overclaims -- two workers with the same prompt|working row and
+// identical "running tool" screens, one waiting on a slow tool and one
+// SIGSTOPped, produce byte-identical last_log_event and pane. They do not
+// distinguish those two states; this lane's own rule is report, do not
+// infer, and a field that actually discriminated every cause would be doing
+// the inferring. Two functions, not one, matching
+// inputBoxField/transcriptDirField above: each field owns exactly one
+// inclusion gate, and the two gates here are genuinely different
+// (reportsAgentStateLog vs. liveness), so fusing them into one helper would
+// be this file's only multi-gate field function.
+//
+// last_log_event: the actor's log, independent of whether the latch moved
+// (stateProvenance.ts's lastLogEvent -- see its own comment for why this is
+// not the same question deriveProvenance answers). Gated on
+// reportsAgentStateLog (stateProvenance.ts): present (possibly null) for a
+// claude worker, absent for anything else, since a lead or a non-claude
+// command never writes this log the way #72 means it (worker-state.md).
+function lastLogEventField(row: AgentRow): { last_log_event: LastLogEvent | null } | Record<string, never> {
+  return reportsAgentStateLog(row) ? { last_log_event: lastLogEvent(row.actor_id) } : {};
+}
+
+// pane: what the pane shows right now -- describePaneChoice's own three-value
+// vocabulary (src/tmux.ts), the same words `hive doctor` renders, so the two
+// surfaces cannot drift onto different spellings of the same fact. No tail
+// here (fix round 1, item 2): a tail on every alive claude row made agent_list
+// -- the hottest read tool -- pay ~1KB/row against CLAUDE.md's "token cost is
+// a design input" to save one agent_output call in the rare dialog case, the
+// wrong trade for a list response. A lead that sees `pane: "awaiting a choice
+// (dialog)"` calls agent_output or agent_status for the tail, which is what
+// those tools are for.
+//
+// AGENT_LIST ONLY, deliberately not folded into agentSummary (fix round 1,
+// item 2): agentSummary is shared with agent_status, which already captures
+// its own, separately-timed pane snapshot (capturePane + inputBoxField,
+// below). A pane field riding along inside agentSummary would be a SECOND,
+// older capture of the same pane sitting next to agent_status's own -- if a
+// dialog clears between the two captures, one response would carry
+// `pane: "awaiting a choice (dialog)"` next to a top-level tail that shows no
+// dialog at all. Call this only from agent_list's own row-mapping, using the
+// `alive` agentSummary already computed for that row.
+//
+// This is the one place in this file that spends a capture-pane fork on
+// every alive claude row, inside rows.map()'s unbounded loop -- one call per
+// row, synchronous, no timeout, so an unresponsive tmux server hangs
+// agent_list for as long as that row's fork takes, times however many alive
+// rows come before it. The D3 comment on transcript_dir above warns against
+// growing the alive-worker path for a payload-size reason; that half no
+// longer applies here now that the tail is gone (this field is a few
+// bytes). The LATENCY half is real and is not new: liveTargets(), a few
+// lines above this field's own call site, already forks tmux unconditionally
+// on this exact call path with no timeout of its own, so an unresponsive
+// tmux server already hangs agent_list today, before this field exists. What
+// this field adds is latency proportional to the number of ALIVE claude
+// rows, on top of that pre-existing single fork -- and capture-pane has no
+// batched form to call instead of one fork per row, the way liveTargets()
+// batches liveness. Accepted deliberately: this project runs at most a
+// handful of workers, so N sequential forks on top of the one hive already
+// pays is not worth a batching scheme for.
+function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<string, never> {
+  if (!reportsAgentStateLog(row) || alive !== true) return {};
+  const { awaitingChoice } = paneChoiceCheck(row.tmux_target);
+  return { pane: describePaneChoice(awaitingChoice) };
+}
+
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
   const alive = summaryLiveness(row, snapshot);
   // `state` is dropped from the nested object below and used directly as
@@ -307,6 +379,10 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     agent_state: state,
     state_changed_at: row.state_changed_at,
     provenance,
+    // last_log_event only -- SQL-only, cheap, and useful on both surfaces
+    // that build on this shared summary. pane is NOT here; see paneField's
+    // own comment for why it stays agent_list-only.
+    ...lastLogEventField(row),
     tmux_target: row.tmux_target,
     command: row.command,
     cwd: row.cwd,
@@ -642,7 +718,14 @@ export function registerAgents(server: McpServer): void {
           // what is left, not a case to withhold it from.
           agents: rows.map((r) => {
             const summary = agentSummary(r, snapshot);
-            return { ...summary, ...(summary.alive !== true ? transcriptDirField(r) : {}) };
+            return {
+              ...summary,
+              ...(summary.alive !== true ? transcriptDirField(r) : {}),
+              // agent_list only -- see paneField's own comment for why this
+              // is not inside agentSummary (agent_status must not get a
+              // second, independently-timed pane snapshot).
+              ...paneField(r, summary.alive),
+            };
           }),
         };
       }),

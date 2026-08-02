@@ -18,11 +18,22 @@
 // by a GLOBAL id span across every actor and project (pruneStateLog,
 // src/scheduler.ts), so a quiet worker's own rows can be evicted by a
 // completely different actor's churn while its latch survives untouched.
-// Consequence for this module: AGE NEVER DEPENDS ON THE LOG. age_seconds and
-// since come only from state_changed_at. Only the EVENT that explains the
-// current state can be missing, and when it is, that is reported as its own
-// named answer (source "no-record") rather than as an age of zero or a
-// guess.
+// Consequence for deriveProvenance()/StateProvenance specifically (fix round
+// 1, item 3 narrowed this from a module-wide claim, which lastLogEvent below
+// now makes false as written): AGE NEVER DEPENDS ON THE LOG THERE.
+// age_seconds and since come only from state_changed_at. Only the EVENT that
+// explains the current state can be missing, and when it is, that is
+// reported as its own named answer (source "no-record") rather than as an
+// age of zero or a guess.
+//
+// lastLogEvent (below) is the DELIBERATE exception, for a different question
+// entirely: not "how old is the latch" but "how old is the log's own last
+// row". Its age_seconds comes from agent_state_log.created_at on purpose --
+// that is the whole point of the function, see its own comment. The
+// retention argument above does not sink this: a row that has been evicted
+// is reported as null (absence), never as a fabricated age of zero, and
+// deriveProvenance's own latch age on the line above is completely
+// unaffected by whether that log row still exists.
 //
 // THE FRESH-PROVENANCE TRAP. Under a /goal, Claude Code fires Stop after
 // every turn while immediately starting another, so a worker can sit through
@@ -48,7 +59,6 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { isClaudeCommand } from "./brief.js";
-import { LEAD_KIND } from "./spawn.js";
 import type { Liveness } from "./tmux.js";
 
 // Lazily cached rather than prepared at module scope: this module loads
@@ -149,7 +159,23 @@ export function deriveProvenance(
   // "no-record"'s meaning, and reporting a lead that way (issue #27's L4 fix
   // round, DECISION 4) reads as a worker that just hasn't checked in yet
   // rather than one with no state channel at all, permanently, by design.
-  if (!isClaudeCommand(row.command) || row.kind === LEAD_KIND) {
+  //
+  // Fix round 1, item 4. This used to be `!isClaudeCommand(row.command) ||
+  // row.kind === LEAD_KIND` -- a blocklist naming leads specifically, and
+  // wrong for a kind='command' row (a hive.yml process started by `hive
+  // start`, src/cli.ts): launchAgent gives a non-'agent' kind no
+  // HIVE_AGENT_ID and no --settings (src/spawn.ts), so a kind='command' row
+  // running `claude -p '...'` can never write a hook row or a log row
+  // either, exactly like a lead. The old gate let it fall through to the
+  // instrumented branch below and report "no-record" forever -- "a claude
+  // worker that hasn't checked in yet" -- which is precisely the misreport
+  // DECISION 4 fixed for the lead, just for a different kind. Now shares
+  // reportsAgentStateLog (below) with agent_list/hive status/hive doctor, an
+  // ALLOWLIST on kind='agent' rather than a lead-specific exclusion, so the
+  // two cannot independently drift onto different readings of the same row
+  // again, and a future third kind defaults to not-instrumented rather than
+  // to no-record by accident.
+  if (!reportsAgentStateLog(row)) {
     return {
       state: row.agent_state,
       source: "not-instrumented",
@@ -206,4 +232,65 @@ export function describeForHuman(prov: StateProvenance, now: number = Date.now()
     case "hook":
       return `${prov.state} (${prov.event}, ${humanizeAge(prov.age_seconds as number)} ago)`;
   }
+}
+
+// Issue #72. A SEPARATE reader from deriveProvenance above, on purpose: this
+// module's own docstring already names why. deriveProvenance's `event`
+// answers "which row explains the CURRENT latch value" and stops looking the
+// instant it finds one, which is a different question from "what did this
+// actor's log most recently record, full stop". A worker stuck on a dialog
+// for 40 minutes has a latch that has not moved and a matching log row that
+// has not moved either, so deriveProvenance reports it correctly as
+// `waiting (notify, 40m ago)` -- and #72's whole premise is that a
+// correct-looking provenance line is exactly what a lead keeps missing here,
+// because nothing about it says the age is worth a second look. This
+// function reports the same underlying row a different way: not "what
+// explains the latch" but "the single most recent thing this actor's log
+// holds", so a caller can show it on its own line instead of overloading a
+// field named for a different purpose.
+//
+// Reports, never infers. There is no "stale" or "stuck" verdict here, same
+// rule as deriveProvenance and for the same reason -- a caller judges the
+// age for themselves.
+export interface LastLogEvent {
+  event: string;
+  state: string;
+  age_seconds: number;
+  at: string;
+}
+
+// null means no row for this actor. Callers report that as its own named
+// fact (mirroring deriveProvenance's "no-record"), never as an age of zero:
+// retention (pruneStateLog, src/scheduler.ts) deletes agent_state_log by a
+// GLOBAL id span across every actor's rows together, not per actor, so a
+// quiet actor's last-ever row can be evicted by a completely unrelated
+// actor's churn. null can mean "this actor has never reported" or "it did,
+// and retention already took it" -- indistinguishable from inside this
+// table alone, which is why it is reported as absence rather than guessed at.
+export function lastLogEvent(actorId: string, now: number = Date.now()): LastLogEvent | null {
+  const row = stmt(
+    "SELECT event, state, created_at FROM agent_state_log WHERE actor_id = ? ORDER BY id DESC LIMIT 1",
+  ).get(actorId) as { event: string; state: string; created_at: string } | undefined;
+  if (!row) return null;
+  return { event: row.event, state: row.state, age_seconds: ageSecondsSince(row.created_at, now), at: row.created_at };
+}
+
+// One human-facing formatter for lastLogEvent, same reason describeForHuman
+// exists above: `hive status` and `hive doctor` both render this line, and a
+// second surface hand-rolling the string is how the two drift apart.
+export function describeLastLogEvent(log: LastLogEvent | null): string {
+  return log ? `${log.event} (${humanizeAge(log.age_seconds)} ago)` : "no record";
+}
+
+// The one fact "does this row have a state log worth reporting" reduces to,
+// shared so agent_list, hive status and hive doctor cannot drift onto three
+// slightly different tests of it. An allowlist on kind (not a lead-specific
+// exclusion) on purpose, matching src/hook.ts's own UPDATE scope
+// (worker-state.md): a future third kind defaults to no report, not to
+// reporting by accident. A lead DOES write agent_state_log rows of its own
+// (worker-state.md's goal-churn section), which is deliberately not what
+// this predicate is about -- #72's surface is for a worker's liveness, not a
+// lead's, and a lead's own churn is out of scope for it.
+export function reportsAgentStateLog(row: { kind: string; command: string }): boolean {
+  return row.kind === "agent" && isClaudeCommand(row.command);
 }

@@ -15,9 +15,8 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 migrate();
-const { deriveProvenance, ageSecondsSince, humanizeAge, describeForHuman } = await import(
-  "../dist/stateProvenance.js"
-);
+const { deriveProvenance, ageSecondsSince, humanizeAge, describeForHuman, lastLogEvent, describeLastLogEvent, reportsAgentStateLog } =
+  await import("../dist/stateProvenance.js");
 
 const project = db
   .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
@@ -70,6 +69,14 @@ function logRow(actorId, event, state, agoSeconds) {
   ).run(actorId, event, state, `${secondsAgo(agoSeconds)}.000`);
 }
 
+// Fix round 1, item 4. Every row literal below now sets kind: "agent"
+// explicitly. Before this round the gate was a lead-specific blocklist, so a
+// literal with no `kind` at all happened to read as an ordinary agent by
+// accident (undefined !== "lead"); that never represented a real row, since
+// agents.kind is NOT NULL DEFAULT 'agent' (src/db.ts) and every row read
+// from the table always has one. reportsAgentStateLog's allowlist takes that
+// accident away, correctly, so these fixtures now say explicitly what they
+// always meant.
 describe("deriveProvenance", () => {
   beforeEach(reset);
 
@@ -80,7 +87,7 @@ describe("deriveProvenance", () => {
     logRow(actorId, "prompt", "working", 90);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(90) },
+      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(90), kind: "agent" },
       true,
       NOW,
     );
@@ -99,7 +106,7 @@ describe("deriveProvenance", () => {
     const stateChangedAt = secondsAgo(400);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "idle", state_changed_at: stateChangedAt },
+      { actor_id: actorId, command: "claude", agent_state: "idle", state_changed_at: stateChangedAt, kind: "agent" },
       true,
       NOW,
     );
@@ -115,7 +122,7 @@ describe("deriveProvenance", () => {
     makeActor(actorId, 3);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "python3 probe.py", agent_state: "unknown", state_changed_at: null },
+      { actor_id: actorId, command: "python3 probe.py", agent_state: "unknown", state_changed_at: null, kind: "agent" },
       true,
       NOW,
     );
@@ -152,6 +159,31 @@ describe("deriveProvenance", () => {
     assert.equal(prov.age_seconds, null);
   });
 
+  // Fix round 2, item 2 (both counselors seats). Fix round 1, item 4's own
+  // regression test never seeded this row through deriveProvenance itself --
+  // reportsAgentStateLog's unit test above covers the predicate in
+  // isolation, this covers the gate that actually calls it. A kind='command'
+  // row (a hive.yml process started by `hive start`, src/cli.ts) running
+  // claude gets no HIVE_AGENT_ID and no --settings (src/spawn.ts), so it can
+  // never write a hook row, exactly like a lead -- before item 4 this fell
+  // through to "no-record" forever, "a claude worker that hasn't checked in
+  // yet", which is precisely the misreport DECISION 4 fixed for the lead.
+  it("a kind='command' row running claude reads not-instrumented, never no-record", () => {
+    const actorId = "command:watch-build";
+    makeActor(actorId, 3);
+
+    const prov = deriveProvenance(
+      { actor_id: actorId, command: "claude -p 'watch the build'", agent_state: "unknown", state_changed_at: null, kind: "command" },
+      true,
+      NOW,
+    );
+
+    assert.equal(prov.source, "not-instrumented");
+    assert.equal(prov.state, "unknown");
+    assert.equal(prov.event, null);
+    assert.equal(prov.age_seconds, null);
+  });
+
   it("a claude worker with alive=false reports the probe as the source, not a hook", () => {
     // agentSummary already collapses "gone" from the tmux probe into the same
     // field a hook writes (src/tools/agents.ts:282); this is the guard against
@@ -161,7 +193,7 @@ describe("deriveProvenance", () => {
     logRow(actorId, "prompt", "working", 500);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(500) },
+      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(500), kind: "agent" },
       false,
       NOW,
     );
@@ -181,7 +213,7 @@ describe("deriveProvenance", () => {
     logRow(actorId, "stop", "working", 100);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(100) },
+      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(100), kind: "agent" },
       true,
       NOW,
     );
@@ -204,7 +236,7 @@ describe("deriveProvenance", () => {
     logRow(actorId, "notify", "unchanged", 60);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(300) },
+      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(300), kind: "agent" },
       true,
       NOW,
     );
@@ -225,7 +257,7 @@ describe("deriveProvenance", () => {
     logRow(actorId, "notify", "unchanged", 20);
 
     const prov = deriveProvenance(
-      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(300) },
+      { actor_id: actorId, command: "claude", agent_state: "working", state_changed_at: secondsAgo(300), kind: "agent" },
       true,
       NOW,
     );
@@ -233,6 +265,128 @@ describe("deriveProvenance", () => {
     assert.equal(prov.source, "no-record");
     assert.equal(prov.event, null);
     assert.equal(prov.age_seconds, 300, "the latch's age is still known even though provenance is not");
+  });
+});
+
+describe("lastLogEvent", () => {
+  beforeEach(reset);
+
+  it("reports the LAST row in the sequence, not the first", () => {
+    // False-green shape 7 (test/CLAUDE.md): a fixture with only one state
+    // cannot prove this picks the last of several. Three rows here, three
+    // different events, so a function that returned the first, or a fixed
+    // index, or the row matching some other state, goes red.
+    const actorId = "agent:sequence";
+    logRow(actorId, "prompt", "working", 300);
+    logRow(actorId, "stop", "idle", 200);
+    logRow(actorId, "notify", "waiting", 40);
+
+    const last = lastLogEvent(actorId, NOW);
+
+    assert.equal(last.event, "notify");
+    assert.equal(last.state, "waiting");
+    assert.equal(last.age_seconds, 40);
+    // Fix round 1, item 5c: `at` was asserted nowhere in this suite, so
+    // `at: row.created_at` -> `at: ""` survived the whole suite while still
+    // shipping in agent_list's payload. A caller with a wrong timestamp has
+    // no way to notice one that is never checked.
+    assert.equal(last.at, `${secondsAgo(40)}.000`);
+  });
+
+  it("returns null when the actor has no log rows at all", () => {
+    // Never a fabricated age of zero: absence is its own answer, distinct
+    // from a fresh row at age 0.
+    assert.equal(lastLogEvent("agent:never-logged", NOW), null);
+  });
+
+  it("scopes to the requested actor, not the whole table", () => {
+    // A function that ignored actor_id (e.g. always returned MAX(id) across
+    // every actor) would pass every other test here by accident and only
+    // fail this one.
+    logRow("agent:other", "prompt", "working", 5);
+    logRow("agent:target", "stop", "idle", 500);
+
+    const last = lastLogEvent("agent:target", NOW);
+
+    assert.equal(last.event, "stop");
+    assert.equal(last.age_seconds, 500);
+  });
+
+  it("breaks a created_at tie on id, matching the table's own forensic ordering", () => {
+    // Two rows logged in the same millisecond must still resolve to the
+    // truly-later one. Ordering by created_at string alone (rather than id)
+    // would leave this nondeterministic and could return either row.
+    const actorId = "agent:tie";
+    const at = secondsAgo(10);
+    db.prepare(
+      "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, 'prompt', 'working', '{}', ?)",
+    ).run(actorId, `${at}.500`);
+    db.prepare(
+      "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, 'stop', 'idle', '{}', ?)",
+    ).run(actorId, `${at}.500`);
+
+    const last = lastLogEvent(actorId, NOW);
+
+    assert.equal(last.event, "stop", "the second INSERT has the higher id and must win the tie");
+  });
+
+  it("reports a notify|unchanged row as-is, never silently reaching past it", () => {
+    // Unlike deriveProvenance (which must reach past an "unchanged" sentinel
+    // to find the row that actually explains the latch), this function
+    // reports whatever the log's own last row says, raw. Reaching past it
+    // here would be the wrong behaviour for THIS question.
+    const actorId = "agent:unchanged-tail";
+    logRow(actorId, "prompt", "working", 300);
+    logRow(actorId, "notify", "unchanged", 20);
+
+    const last = lastLogEvent(actorId, NOW);
+
+    assert.equal(last.event, "notify");
+    assert.equal(last.state, "unchanged");
+    assert.equal(last.age_seconds, 20);
+  });
+});
+
+describe("describeLastLogEvent", () => {
+  it("renders the event and its age", () => {
+    assert.equal(describeLastLogEvent({ event: "notify", state: "waiting", age_seconds: 2400, at: "x" }), "notify (40m ago)");
+  });
+
+  it("renders 'no record' for null, never a fabricated age", () => {
+    assert.equal(describeLastLogEvent(null), "no record");
+  });
+});
+
+describe("reportsAgentStateLog", () => {
+  it("is true only for kind='agent' running a claude command", () => {
+    assert.equal(reportsAgentStateLog({ kind: "agent", command: "claude" }), true);
+  });
+
+  it("is false for a lead, even though its command is claude and it does write log rows", () => {
+    // worker-state.md: a lead's hook DOES insert into agent_state_log (its
+    // state UPDATE is what's scoped to kind='agent', not the log write) --
+    // this predicate is deliberately about #72's worker-liveness surface,
+    // not about whether a row physically exists in the table.
+    assert.equal(reportsAgentStateLog({ kind: "lead", command: "claude --settings /tmp/hooks.json" }), false);
+  });
+
+  it("is false for a non-claude command, even with kind='agent'", () => {
+    assert.equal(reportsAgentStateLog({ kind: "agent", command: "sleep 600" }), false);
+  });
+
+  it("is false for a command row running a non-claude command", () => {
+    assert.equal(reportsAgentStateLog({ kind: "command", command: "npm run dev" }), false);
+  });
+
+  // Fix round 2, item 2 (both counselors seats). Every command-row fixture
+  // anywhere in this suite before this test used a non-claude command, which
+  // is false under BOTH this allowlist and the OLD lead-only blocklist it
+  // replaced (fix round 1, item 4) -- so a mutant reverting to
+  // `isClaudeCommand(row.command) && row.kind !== "lead"` passed the whole
+  // suite. This is the one row shape that disagrees: a kind='command' row
+  // (a hive.yml process started by `hive start`) running claude itself.
+  it("is false for a command row running claude -- the row shape item 4 was fixed for", () => {
+    assert.equal(reportsAgentStateLog({ kind: "command", command: "claude -p 'watch the build'" }), false);
   });
 });
 

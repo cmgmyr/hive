@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { after, before, beforeEach, describe, it } from "node:test";
 
 import {
   McpClient,
   assertScratchStore,
   clearHiveEnv,
+  createLiveAndDialogPanes,
   insertStateLogRow,
   isolateTmux,
   scratchDirs,
@@ -33,16 +33,17 @@ const project = db
   .get("state-provenance-mcp-test", projectDir).id;
 
 const session = `hive-provenance-${process.pid}`;
+// Issue #72's pane signal. dialogPane replays a real captured dialog screen
+// (test/fixtures/panes/folder-trust-dialog.txt, same fixture
+// typing-guards.test.mjs pins paneChoiceCheck against) rather than typing
+// anything synthetic: what is under test here is agent_list carrying
+// paneChoiceCheck's answer through, not paneChoiceCheck itself.
 let livePane;
+let dialogPane;
 
 before(() => {
   if (!hasTmux) return;
-  execFileSync("tmux", ["new-session", "-d", "-s", session, "sleep 600"], { stdio: "ignore" });
-  livePane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
-    encoding: "utf8",
-  })
-    .trim()
-    .split("\n")[0];
+  ({ livePane, dialogPane } = createLiveAndDialogPanes(session, "folder-trust-dialog.txt"));
 });
 
 after(() => cleanup(session));
@@ -162,6 +163,104 @@ describe(
 
       assert.equal(out.provenance.event, "prompt", "not notify: the unchanged row decided nothing");
       assert.equal(out.provenance.source, "hook");
+    });
+  },
+);
+
+describe(
+  "agent_list surfaces #72's stopped-worker signals",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    beforeEach(reset);
+
+    it("carries last_log_event for a claude worker, the LAST of several rows", async () => {
+      // False-green shape 7 (test/CLAUDE.md): a fixture with only one state
+      // cannot prove this is the last row, not just any row.
+      agentRow({ name: "sequenced", state: "waiting" });
+      logRow("agent:sequenced", "prompt", "working", 300);
+      logRow("agent:sequenced", "stop", "idle", 200);
+      logRow("agent:sequenced", "notify", "waiting", 40);
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "sequenced");
+
+      assert.equal(row.last_log_event.event, "notify");
+      assert.equal(row.last_log_event.state, "waiting");
+      assert.ok(row.last_log_event.age_seconds >= 40 && row.last_log_event.age_seconds < 45);
+    });
+
+    it("reports last_log_event null, not absent, for a claude worker with no log rows", async () => {
+      agentRow({ name: "no-log-72", state: "unknown" });
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "no-log-72");
+
+      assert.ok("last_log_event" in row, "the key itself must be present for a claude worker");
+      assert.equal(row.last_log_event, null);
+    });
+
+    it("omits last_log_event and pane entirely for a non-claude worker, which never writes this log", async () => {
+      // Fix round 1, item 5b. paneField's reportsAgentStateLog half used to
+      // be unpinned here: this worker is on a LIVE pane (alive === true), so
+      // a mutant that gated pane only on `alive !== true return {}` -- never
+      // checking reportsAgentStateLog at all -- passed every other test in
+      // this file and would only go red here.
+      agentRow({ name: "probe-72", command: "sleep 600", state: "unknown" });
+      logRow("agent:probe-72", "prompt", "working", 10);
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "probe-72");
+
+      assert.equal("last_log_event" in row, false, "a non-claude worker has no hook, so no field to report");
+      assert.equal("pane" in row, false, "nor does it write a state a dialog could ever be checked against");
+    });
+
+    it("reports the dialog label for a worker parked on a real dialog screen, no tail (fix round 1, item 2)", async () => {
+      agentRow({ name: "on-dialog", state: "waiting", target: dialogPane, stateChangedAgo: 5 });
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "on-dialog");
+
+      assert.equal(row.pane, "awaiting a choice (dialog)");
+      assert.equal("tail" in row, false, "agent_list's pane field is state-only; agent_output/agent_status carry the tail");
+    });
+
+    it("reports 'no dialog' for a worker on an ordinary, non-dialog pane", async () => {
+      agentRow({ name: "no-dialog", state: "working", target: livePane, stateChangedAgo: 5 });
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "no-dialog");
+
+      assert.equal(row.pane, "no dialog");
+    });
+
+    it("omits pane entirely for a worker the tmux probe cannot find, rather than probing a dead target", async () => {
+      // Same bogus target the existing "dead" case above uses. alive is
+      // false here, and #72's pane signal is specifically about a worker
+      // that IS alive but stuck -- a dead one has nothing to capture.
+      agentRow({ name: "gone-72", state: "working", target: "%9999", stateChangedAgo: 5 });
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "gone-72");
+
+      assert.equal(row.alive, false);
+      assert.equal("pane" in row, false);
+      assert.ok("last_log_event" in row, "last_log_event does not depend on liveness, unlike pane");
+    });
+
+    it("agent_status does NOT carry a pane field from agentSummary (fix round 1, item 2b)", async () => {
+      // paneField used to live inside the shared agentSummary, so agent_status
+      // silently got a SECOND, independently-timed pane snapshot next to its
+      // own capturePane/inputBoxField below -- a dialog clearing between the
+      // two captures could leave one response with a dialog pane field beside
+      // a top-level tail showing no dialog at all. agent_status must build
+      // its pane picture from its own single capture only.
+      agentRow({ name: "status-no-pane", state: "waiting", target: dialogPane, stateChangedAgo: 5 });
+
+      const out = await callTool("agent_status", { name: "status-no-pane" });
+
+      assert.equal("pane" in out, false);
+      assert.ok(out.tail.includes("Esc to cancel"), "agent_status's own single capture still carries the dialog");
     });
   },
 );

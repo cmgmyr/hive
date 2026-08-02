@@ -773,6 +773,21 @@ export function paneChoiceCheck(target: string): { awaitingChoice: boolean | nul
   }
 }
 
+// Issue #72 fix round 1. paneChoiceCheck's `awaitingChoice` is a tri-state
+// boolean (true/false/null), and a bare JSON `null` in a field named for a
+// yes/no question cannot be told from `false` by a reader -- reachable with
+// no tmux failure at all, since liveTargets() snapshots liveness once and a
+// pane that dies between that snapshot and this function's own capture-pane
+// call reports alive:true beside an unreadable pane. One function, used by
+// every surface that renders this value, so hive status/doctor/agent_list
+// cannot each spell the three states slightly differently and drift apart --
+// the same reason describeForHuman exists in src/stateProvenance.ts.
+export function describePaneChoice(awaitingChoice: boolean | null): string {
+  if (awaitingChoice === true) return "awaiting a choice (dialog)";
+  if (awaitingChoice === false) return "no dialog";
+  return "could not be read";
+}
+
 // Round 2, D5. watchedTail (src/scheduler.ts) embeds a captured pane tail
 // into a wake body, which is then typed into the LEAD's pane as a user turn.
 // A worker sitting on a real dialog carries "Esc to cancel" in its tail, so

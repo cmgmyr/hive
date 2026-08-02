@@ -69,8 +69,10 @@ import {
 } from "./spawn.js";
 import {
   claimInitialWindow,
+  describePaneChoice,
   ensureSession,
   isPaneTarget,
+  paneChoiceCheck,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
@@ -88,7 +90,14 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { isClaudeCommand, writeProjectPosture } from "./brief.js";
-import { deriveProvenance, describeForHuman, type ProvenanceRow } from "./stateProvenance.js";
+import {
+  deriveProvenance,
+  describeForHuman,
+  describeLastLogEvent,
+  lastLogEvent,
+  reportsAgentStateLog,
+  type ProvenanceRow,
+} from "./stateProvenance.js";
 import {
   checkoutRoot,
   createProfile,
@@ -1397,6 +1406,21 @@ function cmdStatus(): void {
       // exactly one of.
       const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
       console.log(`  ${label}  ${a.name.padEnd(20)} ${state}`);
+      // Issue #72. A plain SQL query, not a tmux probe, so it costs nothing
+      // the "not probed" comment above is protecting against. This is
+      // deliberately a DIFFERENT fact from `state` on the line above: `state`
+      // is the row that explains the current LATCH (deriveProvenance stops
+      // looking once it finds one matching row); this is the log's own last
+      // entry regardless of whether it moved the latch. The two usually
+      // agree; when they do not (e.g. a notify|unchanged fired after the row
+      // that actually explains the latch), that gap is itself information a
+      // lead cannot get from the line above. No pane signal here on purpose
+      // -- that needs a capture-pane fork per row, which this function's own
+      // "not probed" design forbids; `agent_list` and `hive doctor` are
+      // where that cost is already being paid.
+      if (reportsAgentStateLog(a)) {
+        console.log(`         last log event: ${describeLastLogEvent(lastLogEvent(a.actor_id))}`);
+      }
     }
     if (agents.length === 0) console.log("  no running agents or commands");
     console.log(
@@ -1794,6 +1818,99 @@ function cmdDoctor(): void {
       } else if (live === null) {
         warn("lead", "the lead's pane liveness could not be probed (tmux did not answer).");
       }
+    }
+  }
+  // Issue #72. NOT the per-worker listing the L1 comment on the "stale
+  // state" check above declines to add: that decision was specifically
+  // about duplicating `hive status`'s LATCH-based provenance line here for
+  // symmetry. This is different information -- the actor's log regardless
+  // of whether the latch moved, plus what the pane shows right now --
+  // neither of which exists in `hive status` or anywhere else in doctor
+  // today. Unconditional info lines, one per running claude worker, the same
+  // reporting-only shape src/kickoff.ts already uses for its own per-worker
+  // listing: never ok/warn/FAIL here, because a check that passes or fails
+  // on how old a state is is exactly the bound/threshold/verdict
+  // stateProvenance.ts's docstring and the L1 comment above both forbid
+  // adding. A reader judges the age and the pane for themselves.
+  //
+  // Costs one capture-pane fork per running claude worker, unlike `hive
+  // status`'s deliberately-not-probed line for the same signal (see its own
+  // comment): doctor is the tool a human runs to look closely, not one
+  // scripted into a tight polling loop, so that cost is worth paying here.
+  //
+  // Fix round 1, item 11 (the seats disagreed on this one). When tmux is
+  // unreachable, the "stale state" check above already FAILs once with the
+  // server-level fact; every row in the loop below then independently
+  // forks capture-pane, gets nothing, and prints its own
+  // `pane: could not be read` -- N lines restating one cause. Accepted
+  // rather than special-cased: `r` (the janitor's own probed flag, the one
+  // signal that would let this loop skip itself) is scoped inside that
+  // check's own callback and not in hand here, and hoisting it out to save
+  // doctor N redundant-but-individually-true lines on an already-rare path
+  // (tmux unreachable) is not worth restructuring the check for. Each line
+  // is still honest about the one pane it tried and failed to read.
+  if (here) {
+    const workers = db
+      .prepare(
+        "SELECT name, actor_id, command, kind, tmux_target FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+      )
+      .all(here.id) as { name: string; actor_id: string; command: string; kind: string; tmux_target: string }[];
+    for (const w of workers) {
+      if (!reportsAgentStateLog(w)) continue;
+      const { awaitingChoice, tail } = paneChoiceCheck(w.tmux_target);
+      // Fix round 1, item 1 (found independently by both counselors seats).
+      // This used to print the tail only when awaitingChoice === true, which
+      // drops it in exactly the case worker-state.md's #38 exists to
+      // surface: a worker latched `working` after an API error, sitting
+      // quietly with no dialog on screen. awaitingChoice is false there --
+      // correctly, there is no dialog -- so the old gate printed
+      // `pane: no dialog` with nothing else, identical to a healthy worker
+      // mid-turn. The tail is the ONLY field this lane reports that carries
+      // worker-state.md's own discriminator verbatim ("whose pane shows an
+      // error and an empty input box"), so doctor -- the close-look surface
+      // -- prints it unconditionally rather than gating it on the one
+      // boolean that is exactly wrong for the case that matters most.
+      // Fix round 2, item 3(b), corrected by fix round 3 (PR gate). An empty
+      // tail (sanitizeTail returns "" when the pane rendered nothing
+      // survivable, e.g. a blank screen) used to print the "tail:" header
+      // anyway, promising content and then showing a single blank
+      // continuation line -- reachable with no tmux failure at all. Named as
+      // its own fact instead of an empty rendering.
+      //
+      // tail === "" is NOT one fact, though -- it is true for two different
+      // reasons that paneChoiceCheck's own comment (src/tmux.ts) already
+      // keeps apart: the capture SUCCEEDED and every visible line was blank
+      // (awaitingChoice: false, a real read), or the capture FAILED outright
+      // -- the pane died, capture-pane threw -- and paneChoiceCheck's catch
+      // returns {awaitingChoice: null, tail: ""} having read NOTHING. Round
+      // 2's fix collapsed both onto "(pane rendered nothing)", which for the
+      // null case asserts a successful blank read that never happened --
+      // this lane's own report-do-not-infer rule, broken by the exact line
+      // meant to stop conflating two facts into one string. Branch on
+      // awaitingChoice === null first, consistent with the `pane:` line
+      // immediately above, which already tells the two apart. Do not
+      // re-merge these: unreadable, read-but-empty and read-with-content are
+      // three distinct facts, not two.
+      // Fix round 2, item 4 (opus). Every non-empty tail line is prefixed
+      // with "| " so a WORKER's own screen text can never be read as
+      // DOCTOR's verdict vocabulary. Without this, a worker whose last six
+      // screen lines happen to contain "  warn  worker ...:" (e.g. it just
+      // ran `hive doctor` in its own pane) gets that text interleaved into
+      // the lead's doctor report at the same continuation indent report()
+      // uses for its own ok/warn/FAIL lines, indistinguishable from a real
+      // verdict to a human skimming the output. Do not remove this prefix as
+      // decoration; it exists to keep worker-controlled text out of
+      // doctor's own vocabulary.
+      info(
+        `worker ${w.name}`,
+        `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
+        `pane: ${describePaneChoice(awaitingChoice)}`,
+        ...(awaitingChoice === null
+          ? ["tail: (pane could not be read)"]
+          : tail === ""
+            ? ["tail: (pane rendered nothing)"]
+            : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
+      );
     }
   }
   check("sessions", () => {

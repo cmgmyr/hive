@@ -14,7 +14,7 @@ import { REPO, isolateTmux, until } from "./helpers.mjs";
 // claude 2.1.220 pane; see test/fixtures/panes/README.md for how and when.
 const { hasTmux, cleanup } = isolateTmux("the pane fixture tests");
 
-const { paneAwaitingChoice, waitForPaneInput } = await import("../dist/tmux.js");
+const { paneAwaitingChoice, waitForPaneInput, describePaneChoice } = await import("../dist/tmux.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 
@@ -89,3 +89,22 @@ describe(
     }
   },
 );
+
+// Issue #72 fix round 2, item 1 (both counselors seats). No test in the
+// suite referenced describePaneChoice directly; agent_list/doctor tests only
+// ever observed "no dialog" or "awaiting a choice (dialog)", so this mutant
+// survived the full suite:
+//   describePaneChoice = (a) => a === true ? "awaiting a choice (dialog)" : "no dialog"
+// which collapses the null branch into false and reverts the exact failure
+// the function exists to fix: a pane that dies between liveTargets()'s
+// snapshot and paneField's own capture-pane call reports awaitingChoice:null,
+// and the collapsed version would have agent_list/doctor claim "no dialog"
+// for a pane that was never actually read. A direct assertion on all three
+// inputs is what makes that mutation impossible to pass unnoticed.
+describe("describePaneChoice", () => {
+  it("distinguishes all three states, null included", () => {
+    assert.equal(describePaneChoice(true), "awaiting a choice (dialog)");
+    assert.equal(describePaneChoice(false), "no dialog");
+    assert.equal(describePaneChoice(null), "could not be read");
+  });
+});
