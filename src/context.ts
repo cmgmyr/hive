@@ -148,6 +148,28 @@ function gitPrimaryRoot(dir: string): string | null {
 // (is git's path the direct match's path, or under it?) decides the
 // cross-tree case deliberately instead of by accident.
 //
+// THAT CROSS-TREE ANSWER WAS CHALLENGED AND IS ACCEPTED, NOT OVERLOOKED. On
+// PR #64 a codex counselors seat raised it as a P1: a linked worktree of repo
+// B sitting inside registered project A resolves to A, and it argued that is
+// incorrect, since the files being edited are B's. It was rejected as a change
+// there (identical to main, so the branch neither introduced nor worsened it)
+// and then decided outright with Chris on 2026-08-02: ACCEPT, CHANGE NOTHING.
+// Recorded here rather than only on a pad, because the next review pass will
+// have the code and not the argument, and will otherwise rediscover it as a
+// defect - which is exactly what happened the first time.
+// The reasoning, so disagreeing with it means engaging with THIS: containment
+// is the only principled tie-breaker available across trees, the obvious
+// alternative is the length comparison ruled out in the paragraph above, and
+// nobody has proposed a third rule that beats containment on principle. It has
+// also never fired in this project: every worktree in use is of hive itself,
+// where gitPrimaryRoot resolves to an ancestor and the answer is A regardless.
+// THE HONEST RESIDUAL, and the only thing worth reopening on: this crossing is
+// SILENT. The deliberate cross-project path refuses and makes the caller pass
+// project_id (agent_spawn, src/tools/agents.ts); this one just picks. If a
+// foreign worktree is ever nested inside a registered project here and writes
+// to the wrong store, that is the trigger, and the fix is to SURFACE the
+// crossing rather than to change what it resolves to.
+//
 // THIS WAS CLAIMED AS A NO-OP FOR EVERY ORDINARY CHECKOUT AND SUBDIRECTORY,
 // AND THAT WAS FALSE: a `git init --separate-git-dir=X` checkout and a bare
 // repo's linked worktree both produce a --git-common-dir that is NOT an
