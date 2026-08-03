@@ -44,7 +44,10 @@ LEASES — advisory expiring claims on shared work areas
   lease_acquire, lease_release
 
 PROJECTS — scope management
-  project_list, project_add, project_select`;
+  project_list, project_add, project_select, project_prune
+
+ACTORS — who is writing
+  actor_prune`;
 }
 
 export const HELP_TOPICS: Record<string, string> = {
@@ -204,6 +207,9 @@ Every pad, todo, kv entry, and lease belongs to one project (a directory).
   project_list — all registered projects plus the current selection
   project_add(path?, name?) — register a directory (defaults to cwd)
   project_select(project_id) — set this session's default scope
+  project_prune() — delete every registered project that owns no rows
+    anywhere in the store, verified individually; never your own; refuses
+    under HIVE_PROJECT_LOCK=1 since it sweeps every project, not just yours
 
 Resolution order: explicit project_id argument, then session selection, then
 working-directory auto-detection. When the working directory matches no
@@ -234,7 +240,19 @@ sessions with distinct ids so handoffs and locks are attributable:
 
   HIVE_AGENT_ID=worker-1 claude
 
-whoami shows your actor id, kind, and effective project.`,
+whoami shows your actor id, kind, and effective project.
+
+See help(topic="actors") for actor_prune.`,
+
+  actors: `ACTORS — pruning stale identities
+
+  actor_prune() — delete every actor that owns no rows anywhere in the store
+    and has not been active in the last minute, checked globally across
+    every project since actors carry no project_id; never your own;
+    refuses under HIVE_PROJECT_LOCK=1 since it sweeps the whole store
+
+See help(topic="identity") for how an actor id is assigned in the first
+place.`,
 
   pads: `PADS — shared documents
 

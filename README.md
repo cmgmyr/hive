@@ -354,7 +354,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
-## Tools (37)
+## Tools (39)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -367,6 +367,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `project_list` | Lists registered projects and which one is selected | To check what this machine knows about |
 | `project_add` | Registers a directory as its own project | To split a worktree or subdirectory off from its parent repo's state |
 | `project_select` | Points this session at another project | Cross-project work you asked for by name; workers with `HIVE_PROJECT_LOCK=1` can't |
+| `project_prune` | Deletes every registered project that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray projects a scratch spawn or a cwd change registered on its own |
 | **agents** | | |
 | `agent_spawn` | Starts a worker (default `claude`) in a tmux pane or window, locked to the project | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |
@@ -405,6 +406,8 @@ Every tool is project-scoped: it acts on the current working directory's project
 | **leases** | | |
 | `lease_acquire` | Claims a named work area with a TTL; re-taking your own lease extends it | Before editing shared file areas; expired leases free themselves |
 | `lease_release` | Releases a lease you own | When done early; otherwise TTL handles it |
+| **actors** | | |
+| `actor_prune` | Deletes every actor that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray or one-off actors; unlike every other tool here, the scan is store-wide, not scoped to the current project, since actors carry no `project_id` |
 
 Conventions borrowed from tools that got this right:
 
