@@ -155,6 +155,56 @@ describe("hive kickoff gates", () => {
     assert.doesNotMatch(additionalContext, /depends on schema/, "a blocked todo is not dispatchable work");
   });
 
+  // #15: this digest is the first thing a lead reads at cold boot, which is
+  // exactly when a closed lane's archived scaffolding must stay invisible.
+  // Archived and completed are independent axes, so an archived todo can
+  // still carry status 'open' or 'in_progress' - the case a naive
+  // status-only query would miss.
+  it("keeps an archived todo out of IN FLIGHT and READY, and drops it from the BLOCKED count", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    let blockedId;
+    try {
+      const inFlight = await mcp.call("todo_create", { title: "archived in-flight lane" });
+      await mcp.call("todo_update", { todo_id: inFlight.todo_id, status: "in_progress" });
+      await mcp.call("todo_archive", { todo_id: inFlight.todo_id });
+
+      const ready = await mcp.call("todo_create", { title: "archived ready lane" });
+      await mcp.call("todo_archive", { todo_id: ready.todo_id });
+
+      const blocker = await mcp.call("todo_create", { title: "archived-away blocker" });
+      const blocked = await mcp.call("todo_create", { title: "archived blocked lane" });
+      blockedId = blocked.todo_id;
+      await mcp.call("todo_block", { todo_id: blocked.todo_id, blocker_id: blocker.todo_id });
+    } finally {
+      await mcp.close();
+    }
+
+    // Counselors round on #15: kickoff's BLOCKED section prints only a
+    // count, never titles, so a title-absence assertion there is checking
+    // output the digest never produces regardless of whether the count is
+    // right. Capture the count BEFORE archiving the dependent, then assert
+    // it drops by exactly one after - the only assertion that actually
+    // discriminates a correct exclusion from a query that never applied it.
+    const before = fired((await kickoff()).stdout).additionalContext;
+    assert.doesNotMatch(before, /archived in-flight lane/);
+    assert.doesNotMatch(before, /archived ready lane/);
+    const beforeCount = Number(/BLOCKED: (\d+) todo/.exec(before)?.[1] ?? 0);
+    assert.ok(beforeCount >= 1, "the freshly-created, still-active blocked todo must be counted before archiving it");
+
+    const mcp2 = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp2.start();
+    try {
+      await mcp2.call("todo_archive", { todo_id: blockedId });
+    } finally {
+      await mcp2.close();
+    }
+
+    const after = fired((await kickoff()).stdout).additionalContext;
+    const afterCount = Number(/BLOCKED: (\d+) todo/.exec(after)?.[1] ?? 0);
+    assert.equal(afterCount, beforeCount - 1, "archiving the blocked dependent must drop the BLOCKED count by exactly one");
+  });
+
   // kickoff passes alive=null and never shells out to tmux (deliberately: it
   // runs on every session start and has to stay cheap), so the WORKERS header
   // must not read as a liveness check that already happened. Seeded with a

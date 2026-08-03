@@ -113,3 +113,70 @@ describe("the running-name unique index arriving on a store that violates it", (
     assert.deepEqual(names(first), before);
   });
 });
+
+// Issue #15, counselors round: without this, the suite would pass exactly as
+// well if archived_at had been added by EDITING migration 1 and omitting the
+// v11 entry entirely - fine for a fresh scratch store (which is all every
+// other test here uses), even though every real v10 store would then never
+// gain the column at all. This is the append-only invariant itself, pinned.
+const ARCHIVED_AT_VERSION = 11;
+
+// Same rewind technique as rewindOneMigration above, applied to an ADD
+// COLUMN instead of a CREATE INDEX: drop the column (DROP COLUMN needs
+// SQLite 3.35+; better-sqlite3 here bundles 3.53) and forget the version, so
+// the next migrate() call replays the exact ALTER TABLE a real v10 store
+// would run, rather than a hand-written approximation that could drift from
+// db.ts.
+function rewindArchivedAt() {
+  migrate();
+  assert.ok(
+    db.prepare("SELECT 1 FROM pragma_table_info('todos') WHERE name = 'archived_at'").get(),
+    "todos.archived_at must exist before the rewind, or ARCHIVED_AT_VERSION names the wrong migration",
+  );
+  db.exec("ALTER TABLE todos DROP COLUMN archived_at");
+  db.prepare("DELETE FROM migrations WHERE version = ?").run(ARCHIVED_AT_VERSION);
+}
+
+describe("issue #15: archived_at arriving on a v10 store", () => {
+  it("adds the column and leaves every existing row's own data untouched", () => {
+    rewindArchivedAt();
+
+    const projectId = seedProject("/tmp/archived-at-upgrade");
+    db.prepare(
+      "INSERT INTO todos (project_id, title, body, priority, status) VALUES (?, ?, ?, ?, ?)",
+    ).run(projectId, "pre-existing todo", "written before the upgrade", "high", "in_progress");
+    const before = db.prepare("SELECT * FROM todos WHERE project_id = ?").get(projectId);
+
+    migrate();
+
+    const cols = db.prepare("PRAGMA table_info(todos)").all().map((c) => c.name);
+    assert.ok(cols.includes("archived_at"), "archived_at must exist after migrating from v10");
+
+    const after = db.prepare("SELECT * FROM todos WHERE project_id = ?").get(projectId);
+    assert.equal(after.archived_at, null, "a pre-existing row must read as not-archived, never backfilled");
+    // Every other column on the pre-existing row survives untouched - the
+    // append-only invariant itself: v11 must be purely additive, not a
+    // rewrite of a row's own data.
+    assert.equal(after.id, before.id);
+    assert.equal(after.title, before.title);
+    assert.equal(after.body, before.body);
+    assert.equal(after.priority, before.priority);
+    assert.equal(after.status, before.status);
+    assert.equal(after.created_at, before.created_at);
+
+    assert.equal(
+      db.prepare("SELECT MAX(version) AS v FROM migrations").get().v,
+      ARCHIVED_AT_VERSION,
+      "the migrations table must record v11 as applied, not skip past it",
+    );
+  });
+
+  it("is idempotent, so a second open neither drops nor duplicates the column", () => {
+    migrate();
+    const before = db.prepare("PRAGMA table_info(todos)").all().filter((c) => c.name === "archived_at");
+    assert.equal(before.length, 1);
+    migrate();
+    const after = db.prepare("PRAGMA table_info(todos)").all().filter((c) => c.name === "archived_at");
+    assert.equal(after.length, 1);
+  });
+});

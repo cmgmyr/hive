@@ -435,6 +435,27 @@ ALTER TABLE agents ADD COLUMN tmux_socket TEXT NOT NULL DEFAULT '';
   `
 CREATE INDEX idx_agents_actor_id ON agents(actor_id);
 `,
+  // Issue #15. archived_at marks a todo as retired without deleting it: NULL
+  // means still active, a timestamp means archived at that moment. This
+  // deliberately does not mirror scratchpads' own `archived INTEGER` flag
+  // (this file's first migration, above): a boolean needs nothing else, but
+  // this column also has to record WHEN, since todo_archive is reversible
+  // (archived=false clears it back to NULL) and a plain flag would lose that
+  // fact on every toggle. Nullable with no default: NULL is "not archived"
+  // with no backfill and no second column to keep in sync.
+  //
+  // Archived and completed are independent axes (#15's own design note, not
+  // this repo's convention): never set or clear archived_at as a side effect
+  // of completed_at changing, or the other way around. A todo can be
+  // completed and still visible, or archived and never completed - an
+  // abandoned todo is exactly what this column is for.
+  //
+  // todo_archive (landing in a later commit) is the only writer, in both
+  // directions, mirroring pad_archive's own signature. Never derive "is this
+  // archived" from anything but this column being non-NULL.
+  `
+ALTER TABLE todos ADD COLUMN archived_at TEXT;
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

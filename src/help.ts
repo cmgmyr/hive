@@ -34,8 +34,8 @@ PADS — shared documents (plans, findings, handoffs)
   pad_write, pad_read, pad_append, pad_edit, pad_list, pad_archive, pad_delete
 
 TODOS — shared task tracking with dependencies
-  todo_create, todo_list, todo_get, todo_update, todo_complete,
-  todo_comment, todo_block, todo_unblock
+  todo_create, todo_list, todo_get, todo_update, todo_archive,
+  todo_complete, todo_comment, todo_block, todo_unblock
 
 KV — small shared status values (with optional TTL)
   kv_set, kv_get, kv_list, kv_delete
@@ -290,18 +290,24 @@ since every read pays for its full length.`,
 
   todo_create(title, body?, priority?, tags?, blocked_by?) — priority is
     high|medium|low
-  todo_list(status?, is_blocked?, priority?, query?, tags?, limit?, offset?)
+  todo_list(status?, is_blocked?, priority?, query?, tags?, include_archived?, limit?, offset?)
     — status is open|in_progress|backlog|completed; is_blocked=false finds
-    dispatchable work
-  todo_get(todo_id, include_comments?) — full body, blockers, comments
+    dispatchable work; archived todos are excluded unless include_archived
+  todo_get(todo_id, include_comments?) — full body, blockers, comments;
+    always reaches an archived todo too, by id
   todo_update(todo_id, title?, body?, priority?, status?, tags?)
+  todo_archive(todo_id, archived?) — retires a todo but keeps it readable
+    by id; archived=false reverses it. Refuses if this todo still blocks
+    a non-completed todo, unless this todo is itself completed
   todo_complete(todo_id, completed?) — returns newly_unblocked todo ids;
     completed=false reopens
   todo_comment(todo_id, body) — handoffs, decisions, findings
   todo_block(todo_id, blocker_id) / todo_unblock(todo_id, blocker_id)
 
 Blockers form a dependency graph (cycles are rejected). A todo is blocked
-while any of its blockers is not completed.`,
+while any of its blockers is not completed. Archived and completed are
+independent axes: archiving hides a closed lane's scaffolding from
+todo_list without marking anything done.`,
 
   kv: `KV — small shared status values
 

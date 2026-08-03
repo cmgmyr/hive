@@ -92,6 +92,34 @@ describe("hive todos", () => {
     assert.match(stdout, /Open dispatchable todo/);
   });
 
+  // #15: hive pads has no flag to surface an archived pad at all
+  // (listActivePads is hardcoded to archived = 0) - hive todos follows the
+  // same precedent. --all widens which STATUSES are shown; it does not
+  // reach into archived_at, which stays MCP-only (todo_list's
+  // include_archived), same as pad_list's own parameter.
+  it("--all still excludes an archived todo, matching hive pads' own precedent", async () => {
+    const dirs = scratchDirs();
+    const { open } = await seed(dirs);
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      await mcp.call("todo_archive", { todo_id: open.todo_id });
+    } finally {
+      await mcp.close();
+    }
+
+    const { stdout } = await runCli(["todos", "--all"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.doesNotMatch(stdout, /Open dispatchable todo/);
+    // Counselors round on #15: "Blocked todo" alone as a positive control
+    // would still pass if --all dropped every unblocked, active todo (a
+    // much bigger bug than this test claims to guard). "Blocker todo" is
+    // unblocked and was never archived, and "Completed todo" is only
+    // visible under --all at all - both must still show.
+    assert.match(stdout, /Blocker todo/);
+    assert.match(stdout, /Blocked todo/);
+    assert.match(stdout, /Completed todo/);
+  });
+
   it("--status filters to exactly that status", async () => {
     const dirs = scratchDirs();
     await seed(dirs);
@@ -288,6 +316,41 @@ describe("hive todo <id>", () => {
     });
     assert.match(blockingLine.stdout, /blocks:/);
     assert.match(blockingLine.stdout, new RegExp(`#${blocked.todo_id}\\b`));
+  });
+
+  // #15: todo_get (and cmdTodo, its CLI wrapper) always reaches an archived
+  // todo by id - that is the whole reason this is archive and not delete.
+  it("still reaches an archived todo by id, hidden from hive todos as it is, and says so", async () => {
+    const dirs = scratchDirs();
+    const { open, blocker } = await seed(dirs);
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      await mcp.call("todo_archive", { todo_id: open.todo_id });
+    } finally {
+      await mcp.close();
+    }
+
+    const { code, stdout } = await runCli(["todo", String(open.todo_id)], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+    assert.equal(code, 0);
+    assert.match(stdout, /Open dispatchable todo/);
+    assert.match(stdout, /the open todo's body/);
+    // Counselors round on #15, P2: MCP todo_get exposes the archived axis;
+    // the CLI was silently dropping it, so an archived open todo rendered
+    // identically to an active one.
+    assert.match(stdout, /status open.*archived/);
+
+    // Positive control: an ordinary, un-archived todo must not print the
+    // marker at all - a status line that always says "archived" would
+    // still pass the assertion above.
+    const active = await runCli(["todo", String(blocker.todo_id)], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+    assert.doesNotMatch(active.stdout, /archived/);
   });
 
   it("exits 1 with a usage line for an unknown id", async () => {

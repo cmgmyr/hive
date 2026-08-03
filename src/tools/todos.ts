@@ -16,6 +16,7 @@ interface TodoRow {
   tags: string;
   created_at: string;
   completed_at: string | null;
+  archived_at: string | null;
   updated_at: string;
   open_blockers?: number;
   comment_count?: number;
@@ -35,6 +36,21 @@ const statusParam = z.enum(TODO_STATUSES);
 // about. Same shape as ACTIVE_TIMER_WHERE in scheduler.ts.
 export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
    WHERE b.todo_id = t.id AND bt.status != 'completed'`;
+
+// The mirror of OPEN_BLOCKERS_SQL, addressed from the blocker's own id
+// (a `?` parameter) rather than a correlated t.id: todos that currently
+// depend on ? and are not yet completed. todo_complete's newly-unblocked
+// check and todo_archive's refusal both need exactly this join; extracted
+// so the two cannot drift on what "still depends on this one" means.
+//
+// archived_at IS NULL (counselors round on #15, P2): an archived dependent
+// is not something anyone is waiting on - it is already invisible from
+// every default list, same as the blocker it would otherwise strand.
+// Without this, archiving a blocked dependent first and then its blocker
+// second was refused forever, with no way out but falsely completing the
+// dependent or destroying the edge.
+const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
+   WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
 
 const SUMMARY_SQL = `
   SELECT t.*,
@@ -59,6 +75,7 @@ export interface TodoSummary {
   status: string;
   priority: string;
   tags: string[];
+  archived: boolean;
   is_blocked: boolean;
   open_blockers: number;
   comment_count: number;
@@ -72,6 +89,7 @@ function summarize(row: TodoRow): TodoSummary {
     status: row.status,
     priority: row.priority,
     tags: parseTags(row.tags),
+    archived: row.archived_at != null,
     is_blocked: (row.open_blockers ?? 0) > 0,
     open_blockers: row.open_blockers ?? 0,
     comment_count: row.comment_count ?? 0,
@@ -85,6 +103,7 @@ export interface TodoListFilter {
   query?: string;
   tags?: string[];
   isBlocked?: boolean;
+  includeArchived?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -100,6 +119,9 @@ export function listTodoSummaries(projectId: number, filter: TodoListFilter = {}
   const offset = filter.offset ?? 0;
   let sql = `${SUMMARY_SQL} WHERE t.project_id = ?`;
   const params: unknown[] = [projectId];
+  if (!filter.includeArchived) {
+    sql += " AND t.archived_at IS NULL";
+  }
   if (filter.statuses && filter.statuses.length > 0) {
     sql += ` AND t.status IN (${filter.statuses.map(() => "?").join(",")})`;
     params.push(...filter.statuses);
@@ -200,10 +222,22 @@ function transitiveBlockers(startId: number): Set<number> {
   return seen;
 }
 
-function addBlocker(projectId: number, todoId: number, blockerId: number): void {
+// Counselors round on #15 (CI gate, second pass): the archived-blocker check
+// and the INSERT were two separate statements, so a concurrent todo_archive
+// could land in the gap - archiving the blocker AFTER this check passed and
+// BEFORE the edge was written, recreating the exact invisible-active-blocker
+// bug this check exists to prevent. Same .immediate() treatment as
+// archiveTodo below, for the identical reason: the write lock has to be held
+// from BEGIN, before the archived_at read runs.
+const addBlocker = db.transaction((projectId: number, todoId: number, blockerId: number) => {
   if (todoId === blockerId) throw new Error("A todo cannot block itself.");
   getTodo(projectId, todoId);
-  getTodo(projectId, blockerId);
+  const blocker = getTodo(projectId, blockerId);
+  if (blocker.archived_at != null) {
+    throw new Error(
+      `Cannot add blocker ${blockerId} to todo ${todoId}: todo ${blockerId} is archived. Unarchive it first.`,
+    );
+  }
   if (transitiveBlockers(blockerId).has(todoId)) {
     throw new Error(
       `Adding blocker ${blockerId} to todo ${todoId} would create a dependency cycle.`,
@@ -212,11 +246,140 @@ function addBlocker(projectId: number, todoId: number, blockerId: number): void 
   db.prepare(
     "INSERT OR IGNORE INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)",
   ).run(todoId, blockerId);
-}
+});
 
 function touch(todoId: number): void {
   db.prepare("UPDATE todos SET updated_at = datetime('now') WHERE id = ?").run(todoId);
 }
+
+// Counselors round on #15, P1: the blocker check and the UPDATE were two
+// separate statements, so another session's todo_block/todo_create could
+// insert a live blocker edge in the gap between them - the same shape #97's
+// CI gate caught in src/tools/meta.ts, whose own comment has the fuller
+// argument for .immediate() over a plain (deferred) transaction: a deferred
+// transaction only takes the write lock at its first write, so the read
+// below would still run unlocked and the race would just move one line
+// later. IMMEDIATE takes the write lock at BEGIN, before getTodo's read
+// runs, so no other writer can commit a new blocker into this project
+// between the check and the write.
+const archiveTodo = db.transaction((projectId: number, todoId: number, archived: boolean) => {
+  const todo = getTodo(projectId, todoId);
+  if ((todo.archived_at != null) === archived) {
+    return { todo_id: todo.id, archived };
+  }
+  // Archiving is refused, not silently allowed, when this todo still
+  // blocks live work: a dependent's blocker would go invisible from
+  // todo_list's default view while still active. Two separate
+  // conditions, both from the pad's own wording:
+  //   - the dependent (t below) is not completed - the same status
+  //     check OPEN_BLOCKERS_SQL uses to decide whether a blocker
+  //     counts at all.
+  //   - THIS todo is not completed. That is not implied by the
+  //     dependents query, which reads the dependent's status, not
+  //     this one's - conflating the two was a bug caught by a smoke
+  //     test before this landed. When this todo IS completed,
+  //     OPEN_BLOCKERS_SQL already excludes it from every dependent's
+  //     open_blockers (verified for #15), so archiving it changes
+  //     nothing and must be allowed unconditionally.
+  if (archived && todo.status !== "completed") {
+    const dependents = db.prepare(LIVE_DEPENDENTS_SQL).all(todo.id) as { todo_id: number }[];
+    if (dependents.length > 0) {
+      const ids = dependents.map((d) => d.todo_id).join(", ");
+      throw new Error(
+        `Cannot archive todo ${todo.id}: it still blocks ${ids}. Complete or unblock ` +
+          `${dependents.length === 1 ? "that todo" : "those todos"} first.`,
+      );
+    }
+  }
+  db.prepare(
+    `UPDATE todos SET archived_at = CASE WHEN ? THEN datetime('now') ELSE NULL END,
+       updated_at = datetime('now') WHERE id = ?`,
+  ).run(archived ? 1 : 0, todo.id);
+  return { todo_id: todo.id, archived };
+});
+
+// Counselors round on #15 (CI gate, second pass): the un-completing guard
+// below read todo.archived_at/status through an earlier getTodo and wrote
+// later, with nothing between - the same gap as addBlocker above, reached
+// through todo_update instead. A concurrent todo_archive could archive this
+// todo (unconditionally allowed once it is completed and has no open
+// dependents) after the guard's read and before its own UPDATE, letting a
+// reactivating status change land on a todo that is now archived. Wrapped
+// with the same .immediate() treatment.
+const updateTodo = db.transaction(
+  (
+    projectId: number,
+    todoId: number,
+    patch: { title?: string; body?: string; priority?: string; status?: string; tags?: string[] },
+  ) => {
+    const todo = getTodo(projectId, todoId);
+    // Moving TO completed, or changing status on a todo that was never
+    // completed, carries no reactivation hazard and is left alone.
+    if (todo.archived_at != null && todo.status === "completed" && patch.status && patch.status !== "completed") {
+      throw new Error(
+        `Cannot change todo ${todo.id}'s status away from completed while archived. Unarchive it first.`,
+      );
+    }
+    currentActor();
+    db.prepare(
+      `UPDATE todos SET
+         title = COALESCE(?, title),
+         body = COALESCE(?, body),
+         priority = COALESCE(?, priority),
+         status = COALESCE(?, status),
+         tags = COALESCE(?, tags),
+         completed_at = CASE WHEN ? = 'completed' THEN datetime('now')
+                             WHEN ? IS NOT NULL THEN NULL
+                             ELSE completed_at END,
+         updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(
+      patch.title ?? null,
+      patch.body ?? null,
+      patch.priority ?? null,
+      patch.status ?? null,
+      patch.tags ? JSON.stringify(patch.tags) : null,
+      patch.status ?? null,
+      patch.status ?? null,
+      todo.id,
+    );
+    return { todo_id: todo.id };
+  },
+);
+
+// Same gap as updateTodo above, reached through todo_complete's reopen path
+// instead: the reactivation guard read archived_at through an earlier
+// getTodo and wrote later, with a concurrent todo_archive able to land
+// between. Same .immediate() treatment; also folds in the newly-unblocked
+// query so that read is consistent with the write that produced it, not
+// just the reactivation guard.
+const completeTodo = db.transaction((projectId: number, todoId: number, completed: boolean) => {
+  const todo = getTodo(projectId, todoId);
+  if (!completed && todo.archived_at != null) {
+    throw new Error(`Cannot reopen archived todo ${todo.id}. Unarchive it first.`);
+  }
+  currentActor();
+  db.prepare(
+    `UPDATE todos SET status = ?,
+       completed_at = CASE WHEN ? THEN datetime('now') ELSE NULL END,
+       updated_at = datetime('now') WHERE id = ?`,
+  ).run(completed ? "completed" : "open", completed ? 1 : 0, todo.id);
+  let newlyUnblocked: number[] = [];
+  if (completed) {
+    newlyUnblocked = (
+      db
+        .prepare(
+          `${LIVE_DEPENDENTS_SQL}
+             AND NOT EXISTS (
+               SELECT 1 FROM todo_blockers b2 JOIN todos bt ON bt.id = b2.blocker_id
+               WHERE b2.todo_id = t.id AND bt.status != 'completed'
+             )`,
+        )
+        .all(todo.id) as { todo_id: number }[]
+    ).map((r) => r.todo_id);
+  }
+  return { todo_id: todo.id, completed, newly_unblocked: newlyUnblocked };
+});
 
 // No todo_delete (issue #82, and #15 before it). A todo's comments are the
 // only durable record of a worker's reasoning once its pane is gone, and
@@ -256,7 +419,7 @@ export function registerTodos(server: McpServer): void {
           );
         const todoId = Number(info.lastInsertRowid);
         for (const blockerId of args.blocked_by ?? []) {
-          addBlocker(projectId, todoId, blockerId);
+          addBlocker.immediate(projectId, todoId, blockerId);
         }
         return { project_id: projectId, todo_id: todoId };
       }),
@@ -266,13 +429,14 @@ export function registerTodos(server: McpServer): void {
     "todo_list",
     {
       description:
-        "List todo summaries. is_blocked=false finds dispatchable work. query matches title and body.",
+        "List todo summaries. is_blocked=false finds dispatchable work. query matches title and body. Archived todos are excluded by default; include_archived=true retrieves them too.",
       inputSchema: {
         status: statusParam.optional(),
         is_blocked: z.boolean().optional(),
         priority: priorityParam.optional(),
         query: z.string().optional(),
         tags: z.array(z.string()).optional(),
+        include_archived: z.boolean().optional(),
         limit: z.number().int().optional(),
         offset: z.number().int().optional(),
         project_id: projectIdParam,
@@ -287,6 +451,7 @@ export function registerTodos(server: McpServer): void {
           query: args.query,
           tags: args.tags,
           isBlocked: args.is_blocked,
+          includeArchived: args.include_archived,
           limit: args.limit,
           offset: args.offset,
         });
@@ -332,31 +497,33 @@ export function registerTodos(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        const todo = getTodo(projectId, args.todo_id);
-        currentActor();
-        db.prepare(
-          `UPDATE todos SET
-             title = COALESCE(?, title),
-             body = COALESCE(?, body),
-             priority = COALESCE(?, priority),
-             status = COALESCE(?, status),
-             tags = COALESCE(?, tags),
-             completed_at = CASE WHEN ? = 'completed' THEN datetime('now')
-                                 WHEN ? IS NOT NULL THEN NULL
-                                 ELSE completed_at END,
-             updated_at = datetime('now')
-           WHERE id = ?`,
-        ).run(
-          args.title ?? null,
-          args.body ?? null,
-          args.priority ?? null,
-          args.status ?? null,
-          args.tags ? JSON.stringify(args.tags) : null,
-          args.status ?? null,
-          args.status ?? null,
-          todo.id,
-        );
-        return { project_id: projectId, todo_id: todo.id };
+        const result = updateTodo.immediate(projectId, args.todo_id, {
+          title: args.title,
+          body: args.body,
+          priority: args.priority,
+          status: args.status,
+          tags: args.tags,
+        });
+        return { project_id: projectId, ...result };
+      }),
+  );
+
+  server.registerTool(
+    "todo_archive",
+    {
+      description:
+        "Archive a todo (or unarchive with archived=false), mirroring pad_archive. Archived todos are excluded from todo_list by default; todo_get always reaches them by id. Refuses when this todo still blocks another todo that is not completed.",
+      inputSchema: {
+        todo_id: z.number().int(),
+        archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(() => {
+        const projectId = effectiveProjectId(args.project_id);
+        const result = archiveTodo.immediate(projectId, args.todo_id, args.archived ?? true);
+        return { project_id: projectId, ...result };
       }),
   );
 
@@ -374,36 +541,8 @@ export function registerTodos(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        const todo = getTodo(projectId, args.todo_id);
-        const completed = args.completed ?? true;
-        currentActor();
-        db.prepare(
-          `UPDATE todos SET status = ?,
-             completed_at = CASE WHEN ? THEN datetime('now') ELSE NULL END,
-             updated_at = datetime('now') WHERE id = ?`,
-        ).run(completed ? "completed" : "open", completed ? 1 : 0, todo.id);
-        let newlyUnblocked: number[] = [];
-        if (completed) {
-          newlyUnblocked = (
-            db
-              .prepare(
-                `SELECT b.todo_id FROM todo_blockers b
-                 JOIN todos t ON t.id = b.todo_id
-                 WHERE b.blocker_id = ? AND t.status != 'completed'
-                   AND NOT EXISTS (
-                     SELECT 1 FROM todo_blockers b2 JOIN todos bt ON bt.id = b2.blocker_id
-                     WHERE b2.todo_id = b.todo_id AND bt.status != 'completed'
-                   )`,
-              )
-              .all(todo.id) as { todo_id: number }[]
-          ).map((r) => r.todo_id);
-        }
-        return {
-          project_id: projectId,
-          todo_id: todo.id,
-          completed,
-          newly_unblocked: newlyUnblocked,
-        };
+        const result = completeTodo.immediate(projectId, args.todo_id, args.completed ?? true);
+        return { project_id: projectId, ...result };
       }),
   );
 
@@ -443,7 +582,7 @@ export function registerTodos(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        addBlocker(projectId, args.todo_id, args.blocker_id);
+        addBlocker.immediate(projectId, args.todo_id, args.blocker_id);
         touch(args.todo_id);
         return { project_id: projectId, todo_id: args.todo_id, blocker_id: args.blocker_id };
       }),

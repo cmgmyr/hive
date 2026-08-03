@@ -1447,10 +1447,16 @@ function cmdStatus(): void {
       tmux_target: string;
       cwd: string;
     })[];
+    // archived_at IS NULL (#15): an archived todo can still carry status
+    // 'open' or 'in_progress' (archived and completed are independent axes),
+    // and this count exists to answer "is there live work here" at cold
+    // boot - the exact moment archiving a closed lane's scaffolding is for.
+    // Counting an archived row here would make the number climb forever
+    // regardless of archiving, the same noise #15 exists to remove.
     const todos = (
       db
         .prepare(
-          "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress')",
+          "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
         )
         .get(project.id) as { n: number }
     ).n;
@@ -2135,12 +2141,15 @@ function cmdStatusline(): void {
   const commands = count(
     "SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'command'",
   );
+  // archived_at IS NULL (#15): same reasoning as cmdStatus and kickoff's
+  // digest - a status line must stop counting a lane once it is archived,
+  // or the number it prints on every redraw never reflects the archiving.
   const todos = count(
-    "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress')",
+    "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
   );
   const ready = count(
     `SELECT COUNT(*) AS n FROM todos t
-     WHERE t.project_id = ? AND t.status IN ('open', 'in_progress')
+     WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
        AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
   );
   const pads = count("SELECT COUNT(*) AS n FROM scratchpads WHERE project_id = ? AND archived = 0");
@@ -2491,7 +2500,9 @@ function cmdTodo(argv: string[]): void {
   }
 
   console.log(`#${d.todo_id} ${d.title}`);
-  console.log(`status ${d.status}   priority ${d.priority}${d.is_blocked ? "   blocked" : ""}`);
+  console.log(
+    `status ${d.status}   priority ${d.priority}${d.is_blocked ? "   blocked" : ""}${d.archived ? "   archived" : ""}`,
+  );
   if (d.tags.length > 0) console.log(`tags ${d.tags.join(", ")}`);
   if (d.body) console.log(`\n${d.body}`);
 

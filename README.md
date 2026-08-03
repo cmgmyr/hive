@@ -354,7 +354,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
-## Tools (39)
+## Tools (40)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -396,6 +396,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `todo_list` | Todo summaries with filters | `is_blocked=false, status="open"` finds work ready to dispatch |
 | `todo_get` | One todo in full: body, blockers, comments | Before starting or reviewing a task |
 | `todo_update` | Edits fields and status | Set `in_progress` while working |
+| `todo_archive` | Retires a todo but keeps it readable by id, or unarchives with `archived=false`; refuses if it still blocks non-completed work | Hiding a closed lane's scaffolding from `todo_list` without losing its comments |
 | `todo_complete` | Completes or reopens; returns ids it newly unblocked | Finish work and immediately see what it freed up |
 | `todo_comment` | Appends a comment | Handoffs: changed files, tests run, remaining risk |
 | `todo_block` | Adds a dependency; cycles are rejected | Encode ordering between tasks |

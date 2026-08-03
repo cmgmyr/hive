@@ -87,15 +87,19 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     lines.push("", "BOARD (top of the pad; pad_read for the rest)", truncate(board.content.trim(), BOARD_BUDGET));
   }
 
+  // archived_at IS NULL throughout (#15): this digest is the first thing a
+  // lead reads at cold boot, which is exactly when a closed lane's archived
+  // scaffolding must stay invisible - the same reasoning as cmdStatus's
+  // open-todos count in src/cli.ts.
   const inFlight = db
     .prepare(
-      "SELECT id, title, status FROM todos WHERE project_id = ? AND status = 'in_progress' ORDER BY updated_at DESC LIMIT 10",
+      "SELECT id, title, status FROM todos WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 10",
     )
     .all(project.id) as { id: number; title: string; status: string }[];
   const ready = db
     .prepare(
       `SELECT id, title FROM todos t
-       WHERE t.project_id = ? AND t.status = 'open'
+       WHERE t.project_id = ? AND t.status = 'open' AND t.archived_at IS NULL
          AND NOT EXISTS (${OPEN_BLOCKERS_SQL})
        ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, id
        LIMIT 10`,
@@ -105,7 +109,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM todos t
-         WHERE t.project_id = ? AND t.status IN ('open', 'in_progress')
+         WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
            AND EXISTS (${OPEN_BLOCKERS_SQL})`,
       )
       .get(project.id) as { n: number }

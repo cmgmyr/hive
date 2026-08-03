@@ -37,7 +37,7 @@ would have held the missing tool; see the file named in each case.
 | Resource | Create | Read one | List | Update | Retire | Remove |
 |---|---|---|---|---|---|---|
 | pads | `pad_write` | `pad_read` | `pad_list` | `pad_edit`, `pad_append` | `pad_archive` | `pad_delete` |
-| todos | `todo_create` | `todo_get` | `todo_list` | `todo_update` | none, filed as #15 | none, accepted (`src/tools/todos.ts`) |
+| todos | `todo_create` | `todo_get` | `todo_list` | `todo_update` | `todo_archive` | none, accepted (`src/tools/todos.ts`) |
 | kv | `kv_set` | `kv_get` | `kv_list` | `kv_set` | TTL | `kv_delete` |
 | leases | `lease_acquire` | none, accepted (`src/tools/leases.ts`) | none, accepted (`src/tools/leases.ts`) | `lease_acquire` (re-acquiring extends) | TTL | `lease_release` |
 | agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | n/a, folded into `agent_close` | `agent_close` |
