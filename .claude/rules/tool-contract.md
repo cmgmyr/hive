@@ -79,11 +79,30 @@ current names.
   domain verb when removal does more than delete a row: `agent_close` kills
   a live process first, `lease_release` gives up a claim without deleting
   any history of it having existed. **Write tools return slim receipts**
-  (CLAUDE.md's own invariant), and a slim receipt cannot confirm what it
-  does not echo, so prefer a dedicated read tool (`lease_get`, `wake_get`)
-  over widening a write tool's response to compensate for one. Do not
-  invert that argument into skipping the read tool because the write
-  response could just be made fatter instead.
+  (see the section below), and a slim receipt cannot confirm what it does
+  not echo, so prefer a dedicated read tool (`lease_get`, `wake_get`) over
+  widening a write tool's response to compensate for one. Do not invert
+  that argument into skipping the read tool because the write response
+  could just be made fatter instead.
+
+## Write tools return slim receipts
+
+Every tool registered here answers a write with the minimum that identifies
+what it did: the ids, and the one or two fields a caller cannot reconstruct.
+Token cost is a design input, not an afterthought. These responses land in
+the context of every session that calls them, and a lead makes hundreds of
+such calls across a wave.
+
+The consequence to hold onto is that **a slim receipt cannot confirm what it
+does not echo.** When a field matters, read it back with the resource's own
+read tool rather than assuming the write did what you asked. `todo_archive`
+returning `{todo_id, archived}` says the row was archived; it says nothing
+about whether the comments survived, and that is exactly the thing worth
+checking after a retire operation.
+
+This is the reason the Read-one column of the matrix above is not optional
+decoration. A resource with no read tool forces the choice between a fatter
+write response and an unverifiable one.
 
 `todo_complete` and `todo_block`/`todo_unblock` are not lifecycle verbs and
 sit outside this table on purpose: they are domain operations on a todo's

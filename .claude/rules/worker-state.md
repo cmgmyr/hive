@@ -47,3 +47,11 @@ Both appeared in one lane and only one was legitimate. The notify branch asserte
 ## Never set a /goal on a worker
 
 A goal fires the Stop hook after every turn while immediately starting another, so hive records idle for a worker that never stopped. Nine consecutive false idles were measured on agent:53 in 50 seconds with no `prompt|working` between them. `agent_state_log` does not save you here: the rows are not corrupt, they are each briefly true and instantly stale. The lead has an agents row now (issue #27) and writes hook rows like any other actor, but stays safe because its hook writes no STATE row: `src/hook.ts`'s `agents.agent_state` UPDATE is scoped to `WHERE ... AND kind = 'agent'`, an allowlist rather than a lead-specific skip (so a future third kind defaults to the same silence, not to getting state written by accident), so this exact churn lands in `agent_state_log` only, where it is harmless and best-effort forensics rather than a false idle something else acts on.
+
+## Wake-up bodies are delivered verbatim into a terminal
+
+Whatever you pass as a wake body is typed into the target pane exactly as written, and it becomes a fresh user turn only if that pane happens to be idle. So write it as plain English that stands on its own: the ids it refers to, the context needed to act, and the next action.
+
+The failure this prevents is a body that only parses as a reply. "Yes, go ahead with option 2" is unreadable when it lands mid-turn hours later next to work that has moved on, and there is no thread for the reader to scroll back to. Assume the reader has none of the conversation that produced the wake, because usually it does not.
+
+**A delivery into a BUSY pane can never be confirmed, so `unconfirmed` does not mean undelivered.** The text is absorbed into the turn already running, no `UserPromptSubmit` fires, and `confirmed_at` can never be set for it. Do not read that as a failure and do not build anything that waits for a late confirmation. The mechanism, and the one path where a wake genuinely never fires (a pane sitting on a dialog holds it past `max_wait_at`), are in `.claude/rules/tmux-and-panes.md`.

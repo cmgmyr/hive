@@ -13,6 +13,7 @@ Claude Code gets these automatically: `.claude/rules/*.md` declare `paths:` glob
 | `.claude/rules/worker-state.md` | `src/hook.ts`, `src/hooks.ts`, `src/scheduler.ts`, `src/tools/wakes.ts`: why `agent_state_log` is append-only and how to assert over it, the three open ways worker state is wrong |
 | `.claude/rules/native-addon.md` | `src/abi.ts`, `src/db.ts`, `src/dispatcher.ts`, `package.json`: why a passing `require()` proves nothing, why hive pins its interpreter |
 | `.claude/rules/tool-contract.md` | `src/tools/*.ts`, `src/cli.ts`, `src/help.ts`, `src/context.ts`: the verified lifecycle matrix and its accepted gaps, the naming convention for a new tool's verb, the CLI/MCP split and why it is mechanical, not stylistic |
+| `.claude/rules/project-scoping.md` | `src/context.ts`, `src/spawn.ts`, `src/tools/agents.ts`: why a worker's files and its store are separate questions and the store wins, why `agent_spawn`'s cross-project refusal cannot be a prompt, the two accepted residuals |
 
 Every rule but `tool-contract.md` is enforced by code and pinned by a test. `tool-contract.md` is a naming convention and a matrix, not a guard; `docs.test.mjs` pins only that it exists, its globs still match, and it stays indexed, not that its content agrees with the code. A suggestion that contradicts one is not a finding unless it engages with the recorded reasoning and shows a concrete failure it misses. The project's own rule: do not remove a guard because its reasoning is not in the file you happen to be reading.
 

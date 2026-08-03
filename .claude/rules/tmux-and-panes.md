@@ -82,3 +82,15 @@ Pinned by `test/typing-guards.test.mjs` and `test/pane-fixtures.test.mjs`.
 
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings. Target a session by id when its name starts with `=`.
 - **Never run `tmux kill-server`.** It takes down whatever server the ambient env points at, which during development is the session the lead and workers are running in. Tear down with `kill-session -t =<name>`.
+
+## All process execution goes through `execFileSync` with argument arrays
+
+`tmux()` in `src/tmux.ts` is the only way this codebase reaches tmux, and it takes an array. Never build a shell command string out of data. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
+
+An argument array has no shell, so quoting is not a thing you can get wrong. A command string reintroduces the whole class, and the shell trap above is the mild version of it that has already been hit: a leading `=` expanding as a path.
+
+## iTerm profile commands run with no shell and a minimal PATH
+
+Auto-attach drives iTerm through AppleScript, and the command an iTerm profile runs does NOT get a login shell. It inherits a minimal `PATH` that does not include `~/.local/bin`, Homebrew, or any nvm or Herd directory, so a bare `hive` or `tmux` in one of those strings resolves to nothing and the failure surfaces as a window that opens and immediately dies.
+
+Embed absolute binary paths in AppleScript strings. Resolve them at call time from the same place the dispatcher does rather than hardcoding a literal, since the interpreter this project pins moves with the machine's Node install (`.claude/rules/native-addon.md`).
