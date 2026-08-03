@@ -774,25 +774,77 @@ async function fireDelay(
     // same claim, so it is held-stale by the exact same window, for the exact
     // same reason, covered by the exact same evidence above. No separate
     // acceptance needed; this is the same window, one more column wide.
+    // Counselors round on #101, P1. This claim's own WHERE now guards every
+    // field wake_update can touch, not just due_at - see claimOneShot's
+    // comment below for why one column was not enough, including the
+    // stale-branch scenario specific to this repeating path: a repeat-only
+    // wake_update on an already-repeating wake changes repeat_every_ms
+    // without touching due_at, and `seconds` above is computed from the
+    // STALE in-memory value the moment this branch was chosen - guarding
+    // repeat_every_ms here means that stale `seconds` can never be
+    // committed; a concurrent change makes this claim a no-op, and the next
+    // tick recomputes `seconds` from the row it reads fresh.
     claimed =
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
            fired_at = datetime('now'), fire_count = fire_count + 1,
            typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL
-         WHERE id = ? AND due_at = ? AND cancelled_at IS NULL`,
-      ).run(seconds, timer.id, timer.due_at).changes === 1;
+         WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
+      ).run(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1;
   } else {
-    claimed = claimOneShot(timer.id);
+    claimed = claimOneShot(timer);
   }
   if (claimed) await deliver(timer, "", choices);
 }
 
-function claimOneShot(timerId: number): boolean {
+// Issue #96. wake_update is the first tool that can change a PENDING timer's
+// due_at, body, or repeat_every_ms out from under a tick that already read
+// this same row into its in-memory TimerRow at the candidates SELECT
+// (tick(), above) - the exact staleness window the repeating claim above and
+// holdTimer()'s own write already guard against.
+//
+// Counselors round on #101, P1. The CI review gate on this PR's first
+// version of this fix caught the missing due_at guard; a follow-up
+// counselors round on the FIX ITSELF found due_at alone was not enough. A
+// wake_update that changes body or repeat_every_seconds WITHOUT touching
+// due_at left a due_at-only guard satisfied while delivering the stale
+// in-memory body - the identical bug, reached through a sibling field. Worse:
+// fireDelay's own branch above (`timer.repeat_every_ms != null`) is decided
+// from this SAME stale in-memory read, BEFORE either claim runs. A
+// repeat-only wake_update landing on a due one-shot mid-tick left the branch
+// decision stale too: the row took the ONE-SHOT branch below, claimOneShot
+// set fired_at but left the now-overdue due_at untouched (only the repeating
+// claim advances due_at), and the row's repeat_every_ms was already non-null
+// by the time the NEXT tick ran its candidates query - `due_at <= now AND
+// (fired_at IS NULL OR repeat_every_ms IS NOT NULL)` matched again
+// immediately, firing the same wake a second time.
+//
+// The fix is the same shape scaled up: the claim's WHERE now checks every
+// field wake_update can change (due_at, body, repeat_every_ms) against
+// exactly what THIS tick read, not just one of them. A concurrent edit to
+// ANY of them invalidates the claim - it does not matter which branch was
+// chosen from the stale data, because a stale branch's own claim now fails
+// too. `IS` rather than `=` throughout: idle_any/idle_all timers always have
+// a NULL due_at (wake_when_idle never sets it) and a one-shot wake always has
+// a NULL repeat_every_ms - `=` against a NULL parameter is never true in
+// SQLite, so it would silently break every claim on an unedited row of
+// either shape. `IS` compares NULL-to-NULL correctly while behaving
+// identically to `=` for every non-null value. body is NOT NULL by schema,
+// so `IS`/`=` are equivalent there, but `IS` throughout means one rule to
+// state rather than two.
+//
+// A failed claim here behaves exactly like a claim another concurrent
+// instance already won: this timer simply is not returned as claimed, tick()
+// moves on to the next candidate, and the row - now carrying wake_update's
+// new values - is picked up fresh on a later tick. Nothing here throws;
+// CLAUDE.md's "the scheduler must never throw" holds.
+function claimOneShot(timer: TimerRow): boolean {
   return (
     stmt(
       `UPDATE timers SET fired_at = datetime('now'), fire_count = fire_count + 1
-       WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
-    ).run(timerId).changes === 1
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+         AND fired_at IS NULL AND cancelled_at IS NULL`,
+    ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
   );
 }
 
@@ -868,7 +920,7 @@ async function maybeFireIdle(
         ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
         : states.length > 0 && states.every((s) => s.idle);
   }
-  if (ready && deliverable(timer, snapshot, choices) && claimOneShot(timer.id)) {
+  if (ready && deliverable(timer, snapshot, choices) && claimOneShot(timer)) {
     await deliver(timer, timedOut ? "max wait reached" : "", choices);
   }
 }

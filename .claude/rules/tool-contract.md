@@ -41,17 +41,17 @@ would have held the missing tool; see the file named in each case.
 | kv | `kv_set` | `kv_get` | `kv_list` | `kv_set` | TTL | `kv_delete` |
 | leases | `lease_acquire` | none, accepted (`src/tools/leases.ts`) | none, accepted (`src/tools/leases.ts`) | `lease_acquire` (re-acquiring extends) | TTL | `lease_release` |
 | agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | n/a, folded into `agent_close` | `agent_close` |
-| wakes | `wake_set`, `wake_when_idle` | none, gap | `wake_list` | none, gap | n/a | `wake_cancel` |
+| wakes | `wake_set`, `wake_when_idle` | `wake_get` | `wake_list` | `wake_update` | n/a | `wake_cancel` |
 | projects | `project_add` | none, accepted (`src/tools/meta.ts`) | `project_list` | none, accepted (`src/tools/meta.ts`) | none, accepted (`src/tools/meta.ts`) | `project_prune` |
 | actors | implicit (`src/context.ts`) | none, accepted (`src/context.ts`) | none, accepted (`src/context.ts`) | n/a | none, accepted (`src/context.ts`) | `actor_prune` |
 
 Filed in the same batch from the #82 audit: #96 (wake read-plus-reschedule)
 and #97 (the projects and actors remove cells, filed as one issue since the
-manual sweep already treats them as one operation done twice). #97 has
-landed as `project_prune` and `actor_prune`, above; #96's wake cells are a
-separate lane and may still be open. A future reader who finds a cell out of
-date because a new gap got filed should update that cell, not distrust the
-rest of the table.
+manual sweep already treats them as one operation done twice). Both have now
+landed: #97 as `project_prune` and `actor_prune`, #96 as `wake_get` and
+`wake_update`, above. A future reader who finds a cell out of date because a
+new gap got filed should update that cell, not distrust the rest of the
+table.
 
 ## Naming a new tool
 

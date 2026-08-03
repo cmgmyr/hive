@@ -200,12 +200,14 @@ function deliveryState(
 const truncateBody = (body: string): string => (body.length > 120 ? `${body.slice(0, 120)}…` : body);
 
 // The five fields every wake carries regardless of which section it appears
-// in, factored out so the two map() calls below cannot drift apart on a
-// field they are both supposed to report identically.
-const baseWakeFields = (t: TimerRow) => ({
+// in, factored out so the callers below cannot drift apart on a field they
+// are all supposed to report identically. truncate defaults to true for
+// wake_list's two sections; wake_get passes false, since an untruncated body
+// is its whole reason to exist.
+const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   wake_id: t.id,
   kind: t.kind,
-  body: truncateBody(t.body),
+  body: truncate ? truncateBody(t.body) : t.body,
   owner: t.owner,
   deliver_to: t.deliver_actor,
 });
@@ -356,6 +358,156 @@ export function registerWakes(server: McpServer): void {
               ? "Fires on the next fresh idle transition; agents already idle now do not count."
               : "Fires when all watched agents are idle.",
         };
+      }),
+  );
+
+  server.registerTool(
+    "wake_get",
+    {
+      description:
+        "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
+        "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
+        "wake_update just changed.",
+      inputSchema: { wake_id: z.number().int(), project_id: projectIdParam },
+    },
+    (args) =>
+      run(() => {
+        const projectId = effectiveProjectId(args.project_id);
+        const t = db
+          .prepare("SELECT * FROM timers WHERE id = ? AND project_id = ?")
+          .get(args.wake_id, projectId) as TimerRow | undefined;
+        if (!t) throw new Error(`Wake ${args.wake_id} not found in this project.`);
+        const hasChannel = makeChannelChecker();
+        return {
+          ...baseWakeFields(t, { truncate: false }),
+          due_at: t.due_at,
+          max_wait_at: t.max_wait_at,
+          repeat_every_seconds: t.repeat_every_ms != null ? t.repeat_every_ms / 1000 : null,
+          repeating: t.repeat_every_ms != null,
+          fire_count: t.fire_count,
+          cancelled_at: t.cancelled_at,
+          ...deliveryState(t, hasChannel),
+        };
+      }),
+  );
+
+  server.registerTool(
+    "wake_update",
+    {
+      description:
+        "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of " +
+        "delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in " +
+        "wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only " +
+        "changes the interval used for firings AFTER this one; on its own it does not move the next " +
+        "fire time. Only a still-pending wake can be edited; use wake_get to read the result back. " +
+        "delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle " +
+        "wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so " +
+        "only body can be edited on one.",
+      inputSchema: {
+        wake_id: z.number().int(),
+        delay_seconds: z.number().int().positive().optional(),
+        body: z.string().optional(),
+        repeat_every_seconds: z.number().int().positive().optional(),
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(() => {
+        if (args.delay_seconds == null && args.body == null && args.repeat_every_seconds == null) {
+          throw new Error(
+            "wake_update requires at least one of delay_seconds, body, repeat_every_seconds.",
+          );
+        }
+        const projectId = effectiveProjectId(args.project_id);
+        // due_at/repeat_every_ms only mean anything to a 'delay' wake.
+        // tick()'s candidates query (this file's own scheduler.ts) dispatches
+        // purely on kind: an idle_any/idle_all row goes to maybeFireIdle
+        // regardless of due_at, so writing due_at on one is a silent no-op -
+        // the exact "receipt says something happened when it did not" shape
+        // as the claimOneShot staleness this same PR already fixed, reached
+        // from a different direction. Worse for repeat_every_seconds:
+        // ACTIVE_TIMER_WHERE keeps a row with repeat_every_ms set active
+        // forever once fired_at is set, but an idle-kind candidate requires
+        // fired_at IS NULL (tick()'s WHERE), so once it fires once it can
+        // never be a candidate again - a permanently-pending wake that can
+        // never fire, visible in wake_list forever.
+        //
+        // Counselors round on #101, P2. Scoped by the SAME predicate the
+        // final UPDATE below uses (id, project_id, owner, ACTIVE_TIMER_WHERE)
+        // - not project_id alone, which the first version of this check used.
+        // A wake's kind never changes after creation, so there is no
+        // staleness risk in checking it separately from the write; the
+        // reason to match predicates is failure SHAPE, not correctness.
+        // Scoping only by project_id meant "another actor's idle wake" or "a
+        // cancelled/fired idle wake" threw this kind-specific error instead
+        // of the plain updated: false every other kind of miss (wrong owner,
+        // not pending) already returns - two different failure shapes for
+        // what is, from the caller's side, the same class of "you can't
+        // touch this wake" miss. Matching the predicate means this throw is
+        // reachable only for a wake the caller could otherwise legitimately
+        // edit, so the helpful, kind-specific message survives for the one
+        // case a caller can actually act on; every other mismatch (including
+        // a foreign or non-pending idle wake) now falls through to the same
+        // updated: false the main UPDATE already returns for its own misses.
+        if (args.delay_seconds != null || args.repeat_every_seconds != null) {
+          const target = db
+            .prepare(
+              `SELECT kind FROM timers WHERE id = ? AND project_id = ? AND owner = ? AND ${ACTIVE_TIMER_WHERE}`,
+            )
+            .get(args.wake_id, projectId, currentActor()) as { kind: string } | undefined;
+          if (target && target.kind !== "delay") {
+            throw new Error(
+              `Wake ${args.wake_id} is a ${target.kind} wake (from wake_when_idle): it fires on ` +
+                "watched-agent state and max_wait_seconds, not due_at, so delay_seconds and " +
+                "repeat_every_seconds have no effect on it. Only body can be edited on it.",
+            );
+          }
+        }
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        // body: same free-text field wake_set already accepts from this same
+        // caller, typed into a terminal the identical way (deliver()'s prefix
+        // and sendText are unchanged by this lane) - no new untrusted surface,
+        // so nothing here needs the sanitize-the-field discipline that
+        // applies to a value hive itself derives, like describeLastLogEvent's
+        // event column (.claude/sessions/dead-ends/2026-08-02-capping-the-
+        // sentence-not-the-field.md). Matches wake_set exactly; adds nothing.
+        if (args.body != null) {
+          sets.push("body = ?");
+          params.push(args.body);
+        }
+        // Changes the interval used from the NEXT firing onward only.
+        // due_at (the next fire time) is written solely by the scheduler's
+        // claim UPDATE (src/scheduler.ts's fireDelay), using repeat_every_ms
+        // read from the row AT THAT FIRING - so updating this column here
+        // never moves a due_at already set by the prior cycle. Verified
+        // against src/scheduler.ts as todo 236's own check, not assumed.
+        if (args.repeat_every_seconds != null) {
+          sets.push("repeat_every_ms = ?");
+          params.push(args.repeat_every_seconds * 1000);
+        }
+        // The only field that moves due_at, and it does so relative to now,
+        // matching wake_set (Chris's pre-decision) rather than the wake's
+        // original due_at.
+        if (args.delay_seconds != null) {
+          sets.push("due_at = datetime('now', printf('+%d seconds', ?))");
+          params.push(args.delay_seconds);
+        }
+        params.push(args.wake_id, projectId, currentActor());
+        // Owner-scoped and pending-only, mirroring wake_cancel's own WHERE
+        // (owner = ?, cancelled_at IS NULL) - reusing ACTIVE_TIMER_WHERE
+        // rather than hand-writing a second pending predicate that could
+        // drift from pendingWakes()'s. A miss (wrong id, not yours, not
+        // pending) reads as updated: false, the same soft-failure shape
+        // wake_cancel already uses for the identical predicate shape.
+        const row = db
+          .prepare(
+            `UPDATE timers SET ${sets.join(", ")}
+             WHERE id = ? AND project_id = ? AND owner = ? AND ${ACTIVE_TIMER_WHERE}
+             RETURNING due_at`,
+          )
+          .get(...params) as { due_at: string } | undefined;
+        return { wake_id: args.wake_id, updated: row !== undefined, due_at: row?.due_at ?? null };
       }),
   );
 

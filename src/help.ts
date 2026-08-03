@@ -28,7 +28,7 @@ AGENTS — spawn and drive worker sessions in tmux
   agent_rename, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
-  wake_set, wake_when_idle, wake_cancel, wake_list
+  wake_set, wake_when_idle, wake_get, wake_update, wake_cancel, wake_list
 
 PADS — shared documents (plans, findings, handoffs)
   pad_write, pad_read, pad_append, pad_edit, pad_list, pad_archive, pad_delete
@@ -181,6 +181,14 @@ its turn), waiting (needs permission or input). Non-claude commands show
     fire when watched agents go idle. mode=any (default) fires on the first
     fresh idle transition; mode=all fires when every watched agent is idle
     and returns already_satisfied instead of scheduling if they already are.
+  wake_get(wake_id) — read one wake-up by id, with its untruncated body
+    (wake_list truncates at 120 chars)
+  wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?) — edit
+    a pending wake-up you own in place, without minting a new id.
+    delay_seconds is relative to now; repeat_every_seconds changes only the
+    interval used for firings after this one. Only body can be edited on an
+    idle wake (from wake_when_idle); delay_seconds/repeat_every_seconds
+    apply to a delay wake (from wake_set) only.
   wake_cancel(wake_id) — cancel a pending wake-up you own
   wake_list() — pending wake-ups in this project
 
