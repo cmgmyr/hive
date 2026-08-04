@@ -170,7 +170,8 @@ ${HIVE_YML_TEMPLATE.trimEnd().replace(/^/gm, "  ")}
 Repo-defined commands run only after a one-time interactive approval; any
 change to a command re-requires it. By default (attach mode auto), lead/attach
 use iTerm's control mode: the lead, workers, and commands all appear as native
-windows and panes. hive setup --attach raw switches to a plain tmux attach.`);
+windows and panes. hive setup --attach raw switches to a plain tmux attach;
+raw mode needs allow-passthrough all and pane-border-status enabled in tmux.`);
   process.exit(1);
 }
 
@@ -1528,6 +1529,12 @@ const report = (level: string, label: string, lines: string[]) => {
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
 const warn = (label: string, ...lines: string[]) => report("warn", label, lines);
 
+const RAW_ATTACH_TMUX_CONFIG = [
+  "set -g allow-passthrough all",
+  "set -g pane-border-status top",
+  'set -g pane-border-format " #{pane_index} #{pane_title} "',
+];
+
 function cmdSetup(argv: string[]): void {
   const dirFlag = argv.indexOf("--dir");
   const dir = dirFlag >= 0 ? resolve(argv[dirFlag + 1] ?? "") : dispatcherDir();
@@ -1583,6 +1590,10 @@ function cmdSetup(argv: string[]): void {
   // whether this run changed it or not.
   if (attachArg) setAttachMode(attachArg);
   console.log(`\nattach mode  ${attachMode()}`);
+  if (attachArg === "raw") {
+    console.log("\nRecommended ~/.tmux.conf settings for raw attach mode:");
+    for (const line of RAW_ATTACH_TMUX_CONFIG) console.log(`  ${line}`);
+  }
 
   console.log("");
   for (const line of durabilityLines(node)) console.log(line);
@@ -2111,6 +2122,28 @@ function cmdDoctor(): void {
           ? `${mode} (set with \`hive setup --attach\`)`
           : `${mode} (default; set with \`hive setup --attach\`)`,
     );
+    if (mode === "raw") {
+      // A tmux server exists if either global-option probe answers. With no
+      // server both commands fail; that is an unknown state, not a doctor
+      // failure and not useful output. Probe independently so one unavailable
+      // option cannot hide the other on a tmux version hive has not seen.
+      const optionValue = (option: string): string | null => {
+        try {
+          return execFileSync("tmux", ["show", "-gv", option], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }).trim();
+        } catch {
+          return null;
+        }
+      };
+      const allowPassthrough = optionValue("allow-passthrough");
+      const paneBorderStatus = optionValue("pane-border-status");
+      if (allowPassthrough !== null || paneBorderStatus !== null) {
+        info("allow-passthrough", allowPassthrough ?? "unknown");
+        info("pane-border-status", paneBorderStatus ?? "unknown");
+      }
+    }
   }
   console.log(failures === 0 ? "\nAll good." : `\n${failures} problem(s) found.`);
   process.exit(failures === 0 ? 0 : 1);
