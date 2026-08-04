@@ -1529,11 +1529,17 @@ const report = (level: string, label: string, lines: string[]) => {
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
 const warn = (label: string, ...lines: string[]) => report("warn", label, lines);
 
+// The three settings hive actually needs in raw attach mode, and nothing
+// else. Everything about WHY, plus the settings that are merely pleasant,
+// lives in the doc: this output is read at a terminal and a wall of tmux
+// prose there helps nobody. test/docs.test.mjs pins every option named here
+// against that file, so the two cannot drift.
 const RAW_ATTACH_TMUX_CONFIG = [
   "set -g allow-passthrough all",
   "set -g pane-border-status top",
   'set -g pane-border-format " #{pane_index} #{pane_title} "',
 ];
+const TMUX_DOC = "docs/tmux.md";
 
 function cmdSetup(argv: string[]): void {
   const dirFlag = argv.indexOf("--dir");
@@ -1593,6 +1599,7 @@ function cmdSetup(argv: string[]): void {
   if (attachArg === "raw") {
     console.log("\nRecommended ~/.tmux.conf settings for raw attach mode:");
     for (const line of RAW_ATTACH_TMUX_CONFIG) console.log(`  ${line}`);
+    console.log(`\nWhy these, and what else helps: ${TMUX_DOC}`);
   }
 
   console.log("");
@@ -2140,8 +2147,13 @@ function cmdDoctor(): void {
       const allowPassthrough = optionValue("allow-passthrough");
       const paneBorderStatus = optionValue("pane-border-status");
       if (allowPassthrough !== null || paneBorderStatus !== null) {
-        info("allow-passthrough", allowPassthrough ?? "unknown");
-        info("pane-border-status", paneBorderStatus ?? "unknown");
+        // Say what the value should be, not just what it is. "off" alone is
+        // not actionable: a reader has no way to know from it that hive wants
+        // "all", or that "on" silences every worker that is not the visible
+        // pane. The doc carries the measurement behind both.
+        info("allow-passthrough", `${allowPassthrough ?? "unknown"} (hive wants: all)`);
+        info("pane-border-status", `${paneBorderStatus ?? "unknown"} (hive wants: top)`);
+        info("tmux settings", `see ${TMUX_DOC}`);
       }
     }
   }

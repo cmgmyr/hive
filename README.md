@@ -106,7 +106,7 @@ Two places decide whether tmux attaches carry iTerm's control mode (`-CC`): your
 | `raw` | never control mode | iTerm running a plain `tmux attach`, then Terminal |
 | `control` | always control mode | unchanged from `auto` |
 
-`auto` is today's behavior: nothing changes if you never touch this. Prefer tmux's own key bindings over `-CC`'s window management, or want a raw tmux session under any terminal? `hive setup --attach raw`. Raw mode works best with `allow-passthrough all` and `pane-border-status top` in `~/.tmux.conf`; setup prints the complete recommended block. `hive doctor` reports the effective mode and where it came from.
+`auto` is today's behavior: nothing changes if you never touch this. Prefer tmux's own key bindings over `-CC`'s window management, or want a raw tmux session under any terminal? `hive setup --attach raw`. Raw mode works best with `allow-passthrough all` and `pane-border-status top` in `~/.tmux.conf`; setup prints the complete recommended block, and [docs/tmux.md](docs/tmux.md) says what each one buys you and what else helps. `hive doctor` reports the effective mode and where it came from.
 
 ### Profiles (standing instructions across projects)
 
