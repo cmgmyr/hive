@@ -42,9 +42,10 @@ describe("hive.yml layout", () => {
 
 describe("tmux layout application", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const session = `hive-layout-test-${process.pid}`;
+  const borderSession = `hive-layout-border-test-${process.pid}`;
   const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
 
-  after(() => cleanup(session));
+  after(() => cleanup(session, borderSession));
 
   const panes = (window) =>
     tmux("list-panes", "-t", window, "-F", "#{pane_id} #{pane_width} #{pane_height} #{pane_left} #{pane_top}")
@@ -57,6 +58,14 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
   it("keeps the lead pane main across a spawn and close cycle", () => {
     tmux("new-session", "-d", "-s", session, "-x", "200", "-y", "50", "sleep 600");
     const window = tmux("list-windows", "-t", `=${session}`, "-F", "#{session_name}:#{window_id}").split("\n")[0];
+    // STATE THE GEOMETRY THIS TEST DEPENDS ON RATHER THAN INHERITING IT.
+    // isolateTmux isolates the SOCKET, not the config: tmux reads the
+    // developer's own ~/.tmux.conf when the scratch server starts. A pane
+    // border costs every pane a row, so a developer who follows the raw-attach
+    // advice hive itself now prints (docs/tmux.md, `hive setup --attach raw`)
+    // saw this assert 49 against 50 and had no way to tell it from a real
+    // regression. The recommended setting gets its own case below.
+    tmux("set-window-option", "-t", window, "pane-border-status", "off");
     const lead = panes(window)[0].id;
 
     for (let i = 0; i < 3; i++) {
@@ -91,6 +100,33 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
       Math.max(...stacked.map((p) => p.height)) - Math.min(...stacked.map((p) => p.height)) <= 1,
       "workers are evenly divided after the re-tile",
     );
+  });
+
+  it("still gives the lead the main slot under the pane borders hive recommends", () => {
+    // hive tells raw-attach users to set pane-border-status top, so its own
+    // layout has to survive that. The case exists because the recommendation
+    // and the suite collided once already: the test above asserted 50 and got
+    // 49 on a machine configured the way hive's own output asks for.
+    tmux("new-session", "-d", "-s", borderSession, "-x", "200", "-y", "50", "sleep 600");
+    const window = tmux(
+      "list-windows", "-t", `=${borderSession}`, "-F", "#{session_name}:#{window_id}",
+    ).split("\n")[0];
+    tmux("set-window-option", "-t", window, "pane-border-status", "top");
+    const lead = panes(window)[0].id;
+
+    tmux("split-window", "-t", window, "sleep 600");
+    applyLayout(window, "main-vertical");
+
+    const arranged = panes(window);
+    assert.equal(windowLayout(window), "main-vertical");
+    assert.equal(arranged[0].id, lead, "the lead should still hold the main pane slot");
+    assert.equal(arranged[0].left, 0);
+    assert.equal(arranged[0].height, 49, "every pane gives one row back to its border");
+    assert.ok(
+      Math.abs(arranged[0].width - 100) <= 1,
+      `lead should still take about half of 200 columns, got ${arranged[0].width}`,
+    );
+    assert.ok(arranged[1].left > 0, "workers still stack to the right");
   });
 
   it("does not throw on a dead window", () => {
