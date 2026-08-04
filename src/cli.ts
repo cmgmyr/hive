@@ -76,11 +76,13 @@ import {
   foreignSocket,
   isPaneTarget,
   paneChoiceCheck,
+  RAW_ATTACH_TMUX_CONFIG,
   rowLive,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
   tmux,
+  TMUX_DOC,
   tmuxSocketPath,
   untrustedTmuxServer,
   windowTitle,
@@ -1528,18 +1530,6 @@ const report = (level: string, label: string, lines: string[]) => {
 };
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
 const warn = (label: string, ...lines: string[]) => report("warn", label, lines);
-
-// The three settings hive actually needs in raw attach mode, and nothing
-// else. Everything about WHY, plus the settings that are merely pleasant,
-// lives in the doc: this output is read at a terminal and a wall of tmux
-// prose there helps nobody. test/docs.test.mjs pins every option named here
-// against that file, so the two cannot drift.
-const RAW_ATTACH_TMUX_CONFIG = [
-  "set -g allow-passthrough all",
-  "set -g pane-border-status top",
-  'set -g pane-border-format " #{pane_index} #{pane_title} "',
-];
-const TMUX_DOC = "docs/tmux.md";
 
 function cmdSetup(argv: string[]): void {
   const dirFlag = argv.indexOf("--dir");

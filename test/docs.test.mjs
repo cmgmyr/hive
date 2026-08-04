@@ -22,14 +22,10 @@ const COMMANDS = (() => {
 })();
 
 // Same argument as COMMANDS, one surface over: the tmux settings hive tells a
-// raw-attach user to set are the ones docs/tmux.md has to explain. Read them
-// out of the source instead of restating them here, so a fourth setting added
-// to the CLI and not to the doc fails rather than shipping unexplained.
-const RAW_ATTACH_OPTIONS = (() => {
-  const block = /RAW_ATTACH_TMUX_CONFIG = \[([\s\S]*?)\];/.exec(readFileSync(CLI, "utf8"));
-  assert.ok(block, "RAW_ATTACH_TMUX_CONFIG not found in dist/cli.js");
-  return [...block[1].matchAll(/set -g ([a-z-]+)/g)].map((m) => m[1]);
-})();
+// raw-attach user to set are the ones docs/tmux.md has to explain. IMPORTED,
+// not transcribed and not scraped, so a fourth setting added to the CLI and
+// not to the doc fails rather than shipping unexplained.
+const { RAW_ATTACH_TMUX_CONFIG, TMUX_DOC } = await import("../dist/tmux.js");
 
 describe("docs keep up with the CLI", () => {
   it("lists every command in hive --help", async () => {
@@ -46,25 +42,25 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
-  it("explains every tmux setting the CLI recommends", () => {
-    // Guard the loop before trusting it. An extraction regex that stops
-    // matching yields an empty list, and a for-loop over nothing passes while
-    // proving nothing; that is the first of the false-green shapes test/
-    // CLAUDE.md names.
+  it("explains every tmux setting the CLI recommends, at the value it recommends", () => {
+    // Guard the loop before trusting it: a for-loop over an empty array passes
+    // while proving nothing, which is the first of the false-green shapes
+    // test/CLAUDE.md names.
     assert.ok(
-      RAW_ATTACH_OPTIONS.length >= 3,
-      `expected the raw-attach block to name tmux options, got ${RAW_ATTACH_OPTIONS.length}`,
+      RAW_ATTACH_TMUX_CONFIG.length >= 3,
+      `expected a raw-attach block, got ${RAW_ATTACH_TMUX_CONFIG.length} lines`,
     );
-    const doc = readRepo("docs/tmux.md");
-    for (const option of RAW_ATTACH_OPTIONS) {
-      assert.ok(doc.includes(option), `docs/tmux.md omits "${option}", which the CLI recommends`);
+    const doc = readRepo(TMUX_DOC);
+    // The WHOLE line, not the option name. Pinning the name alone would let
+    // the doc recommend pane-border-status bottom while the CLI prints top,
+    // and pass.
+    for (const line of RAW_ATTACH_TMUX_CONFIG) {
+      assert.ok(doc.includes(line), `${TMUX_DOC} omits "${line}", which the CLI recommends`);
     }
   });
 
   it("ships the tmux doc the CLI points at", () => {
-    const named = /TMUX_DOC = "([^"]+)"/.exec(readFileSync(CLI, "utf8"));
-    assert.ok(named, "TMUX_DOC not found in dist/cli.js");
-    assert.ok(existsSync(join(REPO, named[1])), `the CLI points at ${named[1]}, which does not exist`);
+    assert.ok(existsSync(join(REPO, TMUX_DOC)), `the CLI points at ${TMUX_DOC}, which does not exist`);
   });
 
   it("tells a reader to re-pin the interpreter after an update", () => {

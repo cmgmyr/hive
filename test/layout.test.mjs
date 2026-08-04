@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { loadProjectYml } from "../dist/projectYml.js";
-import { applyLayout, paneWindow, windowLayout } from "../dist/tmux.js";
+import { applyLayout, paneWindow, recommendedTmuxOption, windowLayout } from "../dist/tmux.js";
 import { isolateTmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the layout tests");
@@ -107,11 +107,18 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     // layout has to survive that. The case exists because the recommendation
     // and the suite collided once already: the test above asserted 50 and got
     // 49 on a machine configured the way hive's own output asks for.
+    // Read the value hive actually recommends rather than typing "top" here.
+    // A copy would go on proving the OLD advice works the day the
+    // recommendation changes, since the CLI and the doc would move together
+    // and this file would not.
+    const borderStatus = recommendedTmuxOption("pane-border-status");
+    assert.ok(borderStatus, "hive no longer recommends pane-border-status; this test needs rewriting");
+
     tmux("new-session", "-d", "-s", borderSession, "-x", "200", "-y", "50", "sleep 600");
     const window = tmux(
       "list-windows", "-t", `=${borderSession}`, "-F", "#{session_name}:#{window_id}",
     ).split("\n")[0];
-    tmux("set-window-option", "-t", window, "pane-border-status", "top");
+    tmux("set-window-option", "-t", window, "pane-border-status", borderStatus);
     const lead = panes(window)[0].id;
 
     tmux("split-window", "-t", window, "sleep 600");

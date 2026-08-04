@@ -437,6 +437,35 @@ export function rowAlive(recordedSocket: string, target: string, snapshot: Alive
 }
 
 // tmux layout presets hive can apply to a window of split-placed workers.
+// The tmux settings raw attach mode needs, and the doc that explains them.
+//
+// THIS IS THE ONLY COPY, DELIBERATELY. Three consumers read it and they used
+// to be three independent transcriptions of the same advice: `hive setup
+// --attach raw` and `hive doctor` print it (src/cli.ts), test/docs.test.mjs
+// asserts docs/tmux.md explains every line of it, and test/layout.test.mjs
+// derives the pane border it exercises from it. A copy in the test is the one
+// that rots silently: change the recommendation and the CLI and the doc move
+// together while the test goes on proving the OLD advice still works.
+//
+// It lives here rather than in src/cli.ts because it is tmux knowledge, and
+// because a test importing dist/cli.js would drag the whole CLI's
+// module-load-time store choice in with it.
+export const RAW_ATTACH_TMUX_CONFIG = [
+  "set -g allow-passthrough all",
+  "set -g pane-border-status top",
+  'set -g pane-border-format " #{pane_index} #{pane_title} "',
+];
+export const TMUX_DOC = "docs/tmux.md";
+
+// The value RAW_ATTACH_TMUX_CONFIG recommends for one option, for a caller
+// that has to act on it rather than print it. Returns null when the option is
+// not in the block at all, so a caller can fail loudly instead of silently
+// testing nothing.
+export function recommendedTmuxOption(option: string): string | null {
+  const line = RAW_ATTACH_TMUX_CONFIG.find((entry) => entry.startsWith(`set -g ${option} `));
+  return line ? line.slice(`set -g ${option} `.length) : null;
+}
+
 export const WINDOW_LAYOUTS = [
   "tiled",
   "main-vertical",
