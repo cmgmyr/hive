@@ -16,7 +16,19 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { checkAbi, describeAbi, describeInterpreter } from "./abi.js";
 import { claudeConfigDir } from "./claudeDir.js";
-import { ATTACH_MODES, attachMode, AttachMode, isAttachMode, resolvedAttachMode, setAttachMode } from "./config.js";
+import {
+  ATTACH_MODES,
+  AUTO_ATTACH_MODES,
+  attachMode,
+  AttachMode,
+  AutoAttach,
+  isAttachMode,
+  isAutoAttach,
+  resolvedAttachMode,
+  resolvedAutoAttach,
+  setAttachMode,
+  setAutoAttach,
+} from "./config.js";
 import {
   cliPath,
   dispatcherDir,
@@ -1555,6 +1567,19 @@ function cmdSetup(argv: string[]): void {
     attachArg = attachValue;
   }
 
+  const autoAttachRequested = argv.includes("--auto-attach");
+  const autoAttachValue = flagValue(argv, "--auto-attach");
+  let autoAttachArg: AutoAttach | undefined;
+  if (autoAttachRequested) {
+    if (!isAutoAttach(autoAttachValue)) {
+      console.log(
+        `--auto-attach must be one of: ${AUTO_ATTACH_MODES.join(", ")} (got ${autoAttachValue ?? "nothing"})`,
+      );
+      process.exit(1);
+    }
+    autoAttachArg = autoAttachValue;
+  }
+
   const existing = readDispatcher(file);
   if (existing && !existing.mine && !argv.includes("--force")) {
     // Almost always npm link's shim, and overwriting someone else's `hive`
@@ -1585,7 +1610,9 @@ function cmdSetup(argv: string[]): void {
   // as a hive bug on every rebuild. Echoed the way the interpreter above is,
   // whether this run changed it or not.
   if (attachArg) setAttachMode(attachArg);
+  if (autoAttachArg) setAutoAttach(autoAttachArg);
   console.log(`\nattach mode  ${attachMode()}`);
+  console.log(`auto-attach  ${resolvedAutoAttach().value}`);
   if (attachArg === "raw") {
     console.log("\nRecommended ~/.tmux.conf settings for raw attach mode:");
     for (const line of RAW_ATTACH_TMUX_CONFIG) console.log(`  ${line}`);
@@ -2108,7 +2135,17 @@ function cmdDoctor(): void {
     if (!health.ok) throw new Error(health.message);
     return health.message;
   });
-  info("auto-attach", process.env.HIVE_AUTO_ATTACH === "0" ? "off (HIVE_AUTO_ATTACH=0)" : "on");
+  {
+    const { value, source } = resolvedAutoAttach();
+    info(
+      "auto-attach",
+      source === "env"
+        ? `${value} (HIVE_AUTO_ATTACH override; testing only)`
+        : source === "config"
+          ? `${value} (set with \`hive setup --auto-attach\`)`
+          : `${value} (default; set with \`hive setup --auto-attach\`)`,
+    );
+  }
   {
     const { mode, source } = resolvedAttachMode();
     info(

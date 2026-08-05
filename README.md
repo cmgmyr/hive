@@ -94,7 +94,7 @@ Layout: by default workers spawn as panes in the lead's window, auto-tiled; unde
 
 Want the lead to have a prominent pane instead of an even grid? Set `layout: main-vertical` in `hive.yml` (or pass `layout: "main-vertical"` on a single spawn) and the lead fills the left half with workers stacked on the right. The options are `tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, and `even-vertical`; the `main-*` ones give the lead half the window. hive re-applies the layout when a worker closes as well as when one spawns, so it survives crew changes.
 
-If nothing is attached when a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers are always visible, in control mode by default. macOS will ask once to allow controlling iTerm; approve it. Set `HIVE_AUTO_ATTACH=0` to turn the auto-open behavior off, or `hive setup --attach raw` to keep the pop-open but drop control mode in favor of a plain `tmux attach`.
+When no tmux client is attached anywhere on hive's tmux server and a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers surface after you close your terminal without opening extra windows while you are watching another project. macOS will ask once to allow controlling iTerm; approve it. This default is `hive setup --auto-attach auto`; use `off` to disable auto-open, or `on` to retain the per-session behavior. Use `hive setup --attach raw` to keep the pop-open but drop control mode in favor of a plain `tmux attach`.
 
 ### Attach mode
 
@@ -428,7 +428,7 @@ Conventions borrowed from tools that got this right:
 | `HIVE_AGENT_NAME` | Display name for this session | the actor id |
 | `HIVE_PROJECT_LOCK` | Set to `1` to reject all cross-project access in this session (good for workers) | off |
 | `HIVE_PROJECT_PATH` | Set automatically by `agent_spawn`: the worker's project path, checked against its project pin (looked up from its `agents` row) as a guard against a store swapped underneath a live worker | unset |
-| `HIVE_AUTO_ATTACH` | Set to `0` to stop spawns from popping open a terminal when nothing is attached | on |
+| `HIVE_AUTO_ATTACH` | `auto`, `on`, `off`, or legacy `0`: a one-off testing override for stored auto-attach. Not the configuration mechanism -- use `hive setup --auto-attach` | unset |
 | `HIVE_ATTACH_MODE` | `auto`, `raw`, or `control`: a one-off testing override for the stored attach mode. Not the way to configure this -- use `hive setup --attach` for that. It does not reliably reach auto-attach, which runs inside the MCP server process, so setting it in your shell will not change what a spawned worker's terminal pops open in | unset |
 | `HIVE_SPAWN_PLACEMENT` | `split` (workers tile as panes in the lead's window) or `window` (tab per worker) | `split` |
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box before typing its `[hive]` line. On timeout the line is skipped, not sent blindly; the worker's brief is unaffected either way | `45000` |

@@ -15,6 +15,12 @@ process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
 const { resolvedAttachMode, setAttachMode } = await import("../dist/config.js");
 const { attachScripts, controlModeFor, sessionName } = await import("../dist/tmux.js");
 
+// Auto-attach's own behaviour lives in test/auto-attach-scope.test.mjs, which
+// drives ensureAttached against fake tmux and osascript binaries. It used to
+// live here as three assertions against a pure helper plus a regex over
+// src/tmux.ts's source text; see that file's header for why none of them could
+// fail when the behaviour regressed.
+
 // HIVE_ATTACH_MODE is a one-off testing override; withEnv restores it after
 // every case that sets it so a later, unrelated case does not inherit it.
 const withEnvAttachMode = (value, fn) => withEnv({ HIVE_ATTACH_MODE: value }, fn);

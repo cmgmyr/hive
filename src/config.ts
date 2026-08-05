@@ -17,8 +17,20 @@ export function isAttachMode(value: unknown): value is AttachMode {
   return ATTACH_MODES.includes(value as AttachMode);
 }
 
+export type AutoAttach = "auto" | "on" | "off";
+
+// Exported so a caller validating a user-supplied value (`hive setup
+// --auto-attach`) and this module's own fallback logic can't drift apart into
+// two lists that quietly disagree about what is valid.
+export const AUTO_ATTACH_MODES: readonly AutoAttach[] = ["auto", "on", "off"];
+
+export function isAutoAttach(value: unknown): value is AutoAttach {
+  return AUTO_ATTACH_MODES.includes(value as AutoAttach);
+}
+
 interface HiveConfig {
   attach?: AttachMode;
+  autoAttach?: AutoAttach;
   [key: string]: unknown;
 }
 
@@ -68,6 +80,17 @@ function envAttachMode(): AttachMode | null {
   return isAttachMode(value) ? value : null;
 }
 
+// HIVE_AUTO_ATTACH is a one-off TESTING override, not the way to configure
+// this -- use `hive setup --auto-attach` for that. ensureAttached runs inside
+// the MCP server process, which Claude Code starts from its own registration,
+// so a shell export reaches it only by accident of the process chain. The
+// legacy "0" spelling remains accepted because existing setups rely on it.
+function envAutoAttach(): AutoAttach | null {
+  const value = process.env.HIVE_AUTO_ATTACH;
+  if (value === "0") return "off";
+  return isAutoAttach(value) ? value : null;
+}
+
 // Where the mode came from, alongside the mode itself: "hive doctor" needs
 // both to answer "why am I in control mode", not just the resolved value.
 // Precedence is env, then the config file, then detection. An unknown config
@@ -85,11 +108,29 @@ export function attachMode(): AttachMode {
   return resolvedAttachMode().mode;
 }
 
+export function resolvedAutoAttach(): { value: AutoAttach; source: "env" | "config" | "detection" } {
+  const fromEnv = envAutoAttach();
+  if (fromEnv) return { value: fromEnv, source: "env" };
+  const value = readConfig().autoAttach;
+  return isAutoAttach(value)
+    ? { value, source: "config" }
+    : { value: "auto", source: "detection" };
+}
+
 // Read-modify-write, so a key this lane does not know about survives a write
 // from it.
 export function setAttachMode(mode: AttachMode): void {
   const config = readConfig();
   config.attach = mode;
+  mkdirSync(storeDir(), { recursive: true });
+  writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`);
+}
+
+// Read-modify-write, so a key this lane does not know about survives a write
+// from it.
+export function setAutoAttach(value: AutoAttach): void {
+  const config = readConfig();
+  config.autoAttach = value;
   mkdirSync(storeDir(), { recursive: true });
   writeFileSync(configPath(), `${JSON.stringify(config, null, 2)}\n`);
 }

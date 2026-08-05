@@ -63,7 +63,47 @@ describe("hive setup --attach", () => {
   });
 });
 
+describe("hive setup --auto-attach", () => {
+  it("writes the requested value and a later bare setup preserves it", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const bin = join(dirs.tmp, "bin");
+    const setup = await runCli(["setup", "--dir", bin, "--auto-attach", "off"], opts);
+    assert.equal(setup.code, 0, setup.stderr);
+    assert.match(setup.stdout, /auto-attach {2}off/);
+    const bare = await runCli(["setup", "--dir", bin], opts);
+    assert.match(bare.stdout, /auto-attach {2}off/);
+    assert.equal(JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8")).autoAttach, "off");
+  });
+
+  it("rejects a missing or unknown value before writing", async () => {
+    for (const value of [undefined, "bogus"]) {
+      const dirs = scratchDirs();
+      const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+      const args = ["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach"];
+      if (value) args.push(value);
+      const result = await runCli(args, opts);
+      assert.notEqual(result.code, 0);
+      assert.match(result.stdout, /--auto-attach must be one of: auto, on, off/);
+      assert.throws(() => readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+    }
+  });
+});
+
 describe("hive doctor's attach mode line", () => {
+  it("reports auto-attach's config and env sources", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    await runCli(["init"], opts);
+    await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach", "on"], opts);
+    // helpers default this legacy override to 0 to prevent native windows;
+    // an unknown value is deliberately absent and lets config discriminate.
+    const configured = await runCli(["doctor"], { ...opts, env: { HIVE_AUTO_ATTACH: "not-a-mode" } });
+    assert.match(configured.stdout, /auto-attach: on \(set with `hive setup --auto-attach`\)/);
+    const overridden = await runCli(["doctor"], { ...opts, env: { HIVE_AUTO_ATTACH: "0" } });
+    assert.match(overridden.stdout, /auto-attach: off \(HIVE_AUTO_ATTACH override; testing only\)/);
+  });
+
   it("reports the default and says it came from detection", async () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };

@@ -9,7 +9,58 @@ import { scratchDirs } from "./helpers.mjs";
 // itself), so setting HIVE_DATA_DIR before each case, rather than importing a
 // fresh process per case, is enough: nothing here is cached at module load.
 process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
-const { attachMode, setAttachMode } = await import("../dist/config.js");
+const { attachMode, resolvedAutoAttach, setAttachMode, setAutoAttach } = await import("../dist/config.js");
+
+const withAutoAttach = (value, fn) => {
+  const saved = process.env.HIVE_AUTO_ATTACH;
+  if (value === undefined) delete process.env.HIVE_AUTO_ATTACH;
+  else process.env.HIVE_AUTO_ATTACH = value;
+  try {
+    return fn();
+  } finally {
+    if (saved === undefined) delete process.env.HIVE_AUTO_ATTACH;
+    else process.env.HIVE_AUTO_ATTACH = saved;
+  }
+};
+
+describe("auto-attach config", () => {
+  it("resolves env over config over the default, including legacy 0", () => {
+    process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
+    withAutoAttach(undefined, () =>
+      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "detection" }),
+    );
+    setAutoAttach("on");
+    withAutoAttach(undefined, () =>
+      assert.deepEqual(resolvedAutoAttach(), { value: "on", source: "config" }),
+    );
+    withAutoAttach("off", () =>
+      assert.deepEqual(resolvedAutoAttach(), { value: "off", source: "env" }),
+    );
+    withAutoAttach("0", () =>
+      assert.deepEqual(resolvedAutoAttach(), { value: "off", source: "env" }),
+    );
+  });
+
+  it("treats unknown env and config values as absent", () => {
+    const dir = scratchDirs().dataDir;
+    process.env.HIVE_DATA_DIR = dir;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ autoAttach: "sometimes" }));
+    withAutoAttach("also-invalid", () =>
+      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "detection" }),
+    );
+  });
+
+  it("preserves attach and unrelated keys when written", () => {
+    const dir = scratchDirs().dataDir;
+    process.env.HIVE_DATA_DIR = dir;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ attach: "raw", future: "kept" }));
+    setAutoAttach("off");
+    const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
+    assert.deepEqual(config, { attach: "raw", future: "kept", autoAttach: "off" });
+  });
+});
 
 describe("attach mode config", () => {
   it("defaults to auto when no config file exists", () => {

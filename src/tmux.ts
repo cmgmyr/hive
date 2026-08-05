@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { attachMode } from "./config.js";
+import { attachMode, AutoAttach, resolvedAutoAttach } from "./config.js";
 import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
 
 // tmux's stderr is the only thing that says whether tmux answered at all, and
@@ -1017,14 +1017,38 @@ export function attachScripts(tmuxPath: string, session: string): string[] {
   ];
 }
 
-// When nobody is watching a project's tmux session, pop open a native
-// terminal attached in control mode so spawned workers appear on screen
-// automatically. iTerm control mode (-CC) maps each tmux window to a native
-// window/tab. Disable with HIVE_AUTO_ATTACH=0.
+// WHICH clients auto-attach asks about. This is the entire behavioural
+// difference between the two live modes, so it is a function rather than an
+// inline ternary, and it is exported so a test can see which probe ran.
+//
+// "on" asks whether THIS SESSION is watched, which is what hive did before
+// this preference existed: with one tmux client moved between per-project
+// sessions, every session the human is not looking at right now has zero
+// clients, so every spawn there opened a native window. "auto" asks whether
+// they are watching ANY session on this server, so hive stays out of the way
+// while they are at the keyboard and still surfaces a worker once they have
+// closed their terminal.
+//
+// The shape matters, not just the values. The first version of this chose the
+// probe with an inline ternary and then handed the single answer to a pure
+// decision helper TWICE (`shouldAutoAttach(value, hasClient, hasClient)`), so
+// the helper's two parameters could never disagree in production. Reverting
+// "auto" to the per-session probe - the exact regression this preference
+// exists to prevent - left all 1022 tests green, measured. A seam a test
+// cannot reach is not a seam.
+export function autoAttachProbe(value: AutoAttach, session: string): string[] {
+  return value === "on" ? ["list-clients", "-t", `=${session}`] : ["list-clients"];
+}
+
+// When nobody is watching, pop open a native terminal attached in control mode
+// so spawned workers appear on screen automatically. iTerm control mode (-CC)
+// maps each tmux window to a native window/tab.
 export function ensureAttached(session: string): void {
-  if (process.platform !== "darwin" || process.env.HIVE_AUTO_ATTACH === "0") return;
+  if (process.platform !== "darwin") return;
+  const { value } = resolvedAutoAttach();
+  if (value === "off") return;
   try {
-    if (tmux("list-clients", "-t", `=${session}`).trim() !== "") return;
+    if (tmux(...autoAttachProbe(value, session)).trim() !== "") return;
   } catch {
     return;
   }
