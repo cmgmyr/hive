@@ -573,7 +573,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     goIdle(agent);
 
     await tick();
-    await until(() => delivered().includes(MARKER));
+    await until(() => delivered().includes("read agent_output before acting on it"));
 
     const text = delivered();
     assert.match(text, new RegExp(`\\[hive wake #${wake}\\]`), "the wake still delivers");
@@ -1279,4 +1279,3 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
     assert.equal(done.held_reason, null);
   });
 });
-

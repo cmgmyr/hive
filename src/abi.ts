@@ -30,9 +30,17 @@ export type AbiStatus = {
   running: number;
   // NODE_MODULE_VERSION the addon was compiled for, null when unknowable.
   builtFor: number | null;
+  // Why the addon is unavailable. Linux's dlopen error for an ABI mismatch
+  // does not name either NODE_MODULE_VERSION, so builtFor alone cannot
+  // distinguish that mismatch from a missing or otherwise broken addon.
+  failure: "missing" | "mismatch" | "load" | null;
   ok: boolean;
   error: string | null;
 };
+
+export function classifyAddonLoadError(error: string): "mismatch" | "load" {
+  return /NODE_MODULE_VERSION \d+|Module did not self-register/i.test(error) ? "mismatch" : "load";
+}
 
 function addonPath(): string | null {
   try {
@@ -55,13 +63,14 @@ export function checkAbi(): AbiStatus {
       addon: null,
       running,
       builtFor: null,
+      failure: "missing",
       ok: false,
       error: "better-sqlite3's native addon is missing; it has not been built here",
     };
   }
   try {
     requireFromHere(addon);
-    return { addon, running, builtFor: running, ok: true, error: null };
+    return { addon, running, builtFor: running, failure: null, ok: true, error: null };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     // Node names both sides in the dlopen error, compiled-against first and
@@ -69,7 +78,14 @@ export function checkAbi(): AbiStatus {
     // using NODE_MODULE_VERSION 137. This version of Node.js requires
     // NODE_MODULE_VERSION 147."
     const found = [...error.matchAll(/NODE_MODULE_VERSION (\d+)/g)].map((m) => Number(m[1]));
-    return { addon, running, builtFor: found[0] ?? null, ok: false, error };
+    return {
+      addon,
+      running,
+      builtFor: found[0] ?? null,
+      failure: classifyAddonLoadError(error),
+      ok: false,
+      error,
+    };
   }
 }
 
@@ -80,6 +96,9 @@ export function describeInterpreter(): string {
 export function describeAbi(status: AbiStatus): string {
   if (status.ok) {
     return `addon built for NODE_MODULE_VERSION ${status.builtFor}, matches this interpreter`;
+  }
+  if (status.failure === "mismatch" && status.builtFor === null) {
+    return `addon did not register under this interpreter (NODE_MODULE_VERSION ${status.running}); its built-for version is not reported`;
   }
   if (status.builtFor === null) return status.error ?? "addon did not load";
   return `addon built for NODE_MODULE_VERSION ${status.builtFor}, this interpreter needs ${status.running}`;
@@ -94,7 +113,7 @@ export function describeAbi(status: AbiStatus): string {
 // `hive` on PATH is the command that just failed. The way out is always an
 // explicit interpreter, so the fix names one.
 export function abiFixLines(status: AbiStatus, pinned?: string | null): string[] {
-  if (status.builtFor === null) {
+  if (status.failure !== "mismatch") {
     return ["Build it:  npm install && npm run build"];
   }
   const good = pinned ? `"${pinned}"` : "<the Node that built it>";
@@ -131,9 +150,11 @@ export function guardAbi(): void {
   // them is the MCP server, whose stdout is a JSON-RPC stream.
   const doctor = process.argv[2] === "doctor";
   const headline =
-    status.builtFor === null
-      ? "hive: better-sqlite3's native addon is not built here."
-      : "hive: cannot run under this Node.";
+    status.failure === "mismatch"
+      ? "hive: cannot run under this Node."
+      : status.failure === "missing"
+        ? "hive: better-sqlite3's native addon is not built here."
+        : "hive: cannot load better-sqlite3's native addon.";
   const lines = [
     ...(doctor ? ["hive doctor", ""] : [headline, ""]),
     `  FAIL  node: ${describeInterpreter()}`,

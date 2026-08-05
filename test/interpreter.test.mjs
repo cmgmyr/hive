@@ -111,20 +111,53 @@ describe("interpreter and ABI", () => {
   });
 
   it("explains a mismatch in terms of both interpreters", async () => {
-    const { describeAbi, abiFixLines } = await import("../dist/abi.js");
-    const mismatch = { addon: "/x/better_sqlite3.node", running: 147, builtFor: 137, ok: false, error: null };
+    const { classifyAddonLoadError, describeAbi, abiFixLines } = await import("../dist/abi.js");
+    const mismatch = {
+      addon: "/x/better_sqlite3.node",
+      running: 147,
+      builtFor: 137,
+      failure: "mismatch",
+      ok: false,
+      error: null,
+    };
     assert.match(describeAbi(mismatch), /built for NODE_MODULE_VERSION 137/);
     assert.match(describeAbi(mismatch), /needs 147/);
     assert.match(abiFixLines(mismatch).join("\n"), /npm install && npm run build/);
 
-    const missing = { addon: null, running: 137, builtFor: null, ok: false, error: "not built" };
+    const missing = {
+      addon: null,
+      running: 137,
+      builtFor: null,
+      failure: "missing",
+      ok: false,
+      error: "not built",
+    };
     assert.match(describeAbi(missing), /not built/);
     assert.match(abiFixLines(missing).join("\n"), /npm install && npm run build/);
+
+    assert.equal(classifyAddonLoadError("Module did not self-register: '/x/better_sqlite3.node'"), "mismatch");
+    const linuxMismatch = {
+      addon: "/x/better_sqlite3.node",
+      running: 137,
+      builtFor: null,
+      failure: "mismatch",
+      ok: false,
+      error: "Module did not self-register",
+    };
+    assert.match(describeAbi(linuxMismatch), /built-for version is not reported/);
+    assert.match(abiFixLines(linuxMismatch).join("\n"), /Run hive under the Node it was built for/);
   });
 
   it("does not tell a broken interpreter to run `hive setup`", async () => {
     const { abiFixLines } = await import("../dist/abi.js");
-    const mismatch = { addon: "/x/better_sqlite3.node", running: 147, builtFor: 137, ok: false, error: null };
+    const mismatch = {
+      addon: "/x/better_sqlite3.node",
+      running: 147,
+      builtFor: 137,
+      failure: "mismatch",
+      ok: false,
+      error: null,
+    };
     // `hive setup` pins whatever Node runs it, and the `hive` on PATH is the
     // command that just failed. Advice that loops back to it is no advice.
     const bare = abiFixLines(mismatch).join("\n");
