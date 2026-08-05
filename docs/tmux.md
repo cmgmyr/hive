@@ -1,6 +1,6 @@
 # tmux settings for hive
 
-hive drives tmux, so a few tmux defaults decide whether parts of hive work at all. This file separates the settings hive actually needs from the ones that merely make the workflow pleasant, because hive has no business prescribing your terminal.
+hive drives tmux and sets the options it needs on every window it creates. This file separates the one global recommendation from settings that merely make the workflow pleasant, because hive has no business prescribing your terminal.
 
 Everything here was measured on tmux 3.7b with Claude Code 2.1.221. Where a default surprised us, the measurement is written down next to it.
 
@@ -8,17 +8,19 @@ Almost all of this applies to **raw attach mode** (`hive setup --attach raw`). U
 
 ## What hive needs
 
-`hive doctor` reports these two when your attach mode is `raw`, and `hive setup --attach raw` prints them.
+hive marks its windows with `@hive-owned` and sets `allow-passthrough all`, `pane-border-status top`, `pane-border-format " #{pane_index} #{pane_title} "`, and `monitor-bell on` before starting the real process. Split panes inherit the window's settings, and respawned panes retain them. `hive doctor` reports the effective values on hive-owned windows rather than inspecting your global configuration.
+
+No tmux configuration is required for hive-owned windows. One global recommendation remains for Claude Code sessions outside them:
 
 ```tmux
 set -g allow-passthrough all
-set -g pane-border-status top
-set -g pane-border-format " #{pane_index} #{pane_title} "
 ```
+
+Set `allow-passthrough all` globally if you run Claude Code in any pane hive did not create.
 
 ### `allow-passthrough all`
 
-Without this you get no notifications from Claude Code at all, in any pane.
+Without this on a pane you get no notifications from Claude Code there. hive sets it on the windows it owns; the global recommendation covers panes hive knows nothing about.
 
 Claude Code's `iterm2` notification channel emits an OSC 9 escape sequence, and when `$TMUX` is set it wraps that sequence in tmux's DCS passthrough (`\ePtmux;...\e\\`). tmux discards the wrapper unless `allow-passthrough` is on. Bare, unwrapped OSC 9 is discarded at every setting, which is why Claude wraps it.
 
@@ -36,7 +38,7 @@ Under `placement: split` a worker is a pane you are usually not looking at, and 
 
 ### `pane-border-status` and `pane-border-format`
 
-Without these you cannot tell your workers apart.
+hive sets these on its own windows so split workers remain distinguishable.
 
 hive names tmux windows (`<project> - lead`) and deliberately never names panes. A worker's identity comes from `claude --name <agent name>`, which Claude writes to the terminal title, which tmux records as `pane_title`. Under `placement: split` every worker is a pane in one window, so with `pane-border-status off` (the default) a whole crew reads as one window called `<project> - lead`.
 
@@ -108,6 +110,6 @@ It mislabels a session whose current window is not the lead, and it does nothing
 
 ## What this does not cover
 
-hive never writes to your `~/.tmux.conf` and never sets a global tmux option on your behalf. `hive doctor` reports what it sees and `hive setup --attach raw` prints what it recommends. Both stop there.
+hive never writes to your `~/.tmux.conf` and never sets a global tmux option on your behalf. It only configures windows carrying its own `@hive-owned` marker. `hive setup --attach raw` prints the remaining global recommendation.
 
 hive's own test suite runs against a private tmux socket but still reads your `~/.tmux.conf`, because tmux reads its config when the server starts. A test whose assertions depend on pane geometry states that dependency itself; see `test/layout.test.mjs`.

@@ -6,10 +6,12 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { loadProjectYml } from "../dist/projectYml.js";
-import { applyLayout, paneWindow, recommendedTmuxOption, windowLayout } from "../dist/tmux.js";
-import { isolateTmux } from "./helpers.mjs";
+import { isolateTmux, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the layout tests");
+const dirs = scratchDirs();
+process.env.HIVE_DATA_DIR = dirs.dataDir;
+const { applyLayout, claimInitialWindow, configureHiveWindow, paneWindow, windowLayout } = await import("../dist/tmux.js");
 
 function ymlProject(body) {
   const dir = mkdtempSync(join(tmpdir(), "hive-yml-"));
@@ -43,9 +45,11 @@ describe("hive.yml layout", () => {
 describe("tmux layout application", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const session = `hive-layout-test-${process.pid}`;
   const borderSession = `hive-layout-border-test-${process.pid}`;
+  const ownedSession = `hive-owned-options-${process.pid}`;
+  const claimedSession = `hive-owned-claim-${process.pid}`;
   const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
 
-  after(() => cleanup(session, borderSession));
+  after(() => cleanup(session, borderSession, ownedSession, claimedSession));
 
   const panes = (window) =>
     tmux("list-panes", "-t", window, "-F", "#{pane_id} #{pane_width} #{pane_height} #{pane_left} #{pane_top}")
@@ -54,6 +58,61 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
         const [id, width, height, left, top] = row.split(" ");
         return { id, width: +width, height: +height, left: +left, top: +top };
       });
+
+  it("configures created windows before respawn while leaving user windows alone", () => {
+    tmux("new-session", "-d", "-s", ownedSession, "sleep 600");
+
+    // isolateTmux isolates the socket, not ~/.tmux.conf. Force and re-read
+    // both globals after the server exists so the positive assertions cannot
+    // pass from this machine's real configuration.
+    tmux("set-option", "-g", "allow-passthrough", "off");
+    tmux("set-option", "-g", "pane-border-status", "off");
+    assert.equal(tmux("show-options", "-g", "-v", "allow-passthrough"), "off");
+    assert.equal(tmux("show-options", "-g", "-v", "pane-border-status"), "off");
+
+    const userWindow = tmux(
+      "new-window", "-P", "-F", "#{session_name}:#{window_id}", "-t", `=${ownedSession}`, "sleep 600",
+    );
+    configureHiveWindow(userWindow);
+    assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", userWindow, "pane-border-status"), "off");
+    assert.equal(tmux("display-message", "-p", "-t", userWindow, "#{@hive-owned}"), "");
+
+    tmux("new-session", "-d", "-s", claimedSession, "sleep 600");
+    const { pane, window } = claimInitialWindow(claimedSession, "claimed", dirs.projectDir, [], "sleep 600");
+    assert.equal(tmux("show-options", "-w", "-v", "-t", window, "@hive-owned"), "1");
+    assert.equal(tmux("show-options", "-p", "-A", "-v", "-t", pane, "allow-passthrough"), "all");
+    assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"), "top");
+    assert.equal(
+      tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-format"),
+      " #{pane_index} #{pane_title} ",
+    );
+    assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "monitor-bell"), "on");
+
+    // A stale target must not borrow another window's ownership marker.
+    // display-message silently falls back here; list-panes errors instead.
+    const staleWindow = tmux(
+      "new-window", "-P", "-F", "#{session_name}:#{window_id}", "-t", `=${claimedSession}`, "sleep 600",
+    );
+    tmux("kill-window", "-t", staleWindow);
+    tmux("set-window-option", "-t", window, "pane-border-status", "bottom");
+    configureHiveWindow(staleWindow);
+    assert.equal(
+      tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"),
+      "bottom",
+      "a dead target must not reconfigure the live hive-owned fallback window",
+    );
+    configureHiveWindow(window);
+    assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"), "top");
+
+    const child = tmux("split-window", "-P", "-F", "#{pane_id}", "-t", window, "sleep 600");
+    assert.equal(
+      tmux("show-options", "-p", "-A", "-v", "-t", child, "allow-passthrough"),
+      "all",
+      "a later split must inherit the window-scoped pane option",
+    );
+    tmux("respawn-pane", "-k", "-t", pane, "sleep 600");
+    assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"), "top");
+  });
 
   it("keeps the lead pane main across a spawn and close cycle", () => {
     tmux("new-session", "-d", "-s", session, "-x", "200", "-y", "50", "sleep 600");
@@ -102,23 +161,15 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     );
   });
 
-  it("still gives the lead the main slot under the pane borders hive recommends", () => {
-    // hive tells raw-attach users to set pane-border-status top, so its own
-    // layout has to survive that. The case exists because the recommendation
-    // and the suite collided once already: the test above asserted 50 and got
-    // 49 on a machine configured the way hive's own output asks for.
-    // Read the value hive actually recommends rather than typing "top" here.
-    // A copy would go on proving the OLD advice works the day the
-    // recommendation changes, since the CLI and the doc would move together
-    // and this file would not.
-    const borderStatus = recommendedTmuxOption("pane-border-status");
-    assert.ok(borderStatus, "hive no longer recommends pane-border-status; this test needs rewriting");
-
+  it("still gives the lead the main slot under the pane borders hive applies", () => {
+    // Hive applies pane-border-status top to its own windows, so its layout
+    // has to survive the row that border consumes. The setting itself is
+    // pinned by the ownership case above; this case pins the geometry.
     tmux("new-session", "-d", "-s", borderSession, "-x", "200", "-y", "50", "sleep 600");
     const window = tmux(
       "list-windows", "-t", `=${borderSession}`, "-F", "#{session_name}:#{window_id}",
     ).split("\n")[0];
-    tmux("set-window-option", "-t", window, "pane-border-status", borderStatus);
+    tmux("set-window-option", "-t", window, "pane-border-status", "top");
     const lead = panes(window)[0].id;
 
     tmux("split-window", "-t", window, "sleep 600");

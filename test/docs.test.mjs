@@ -47,7 +47,7 @@ describe("docs keep up with the CLI", () => {
     // while proving nothing, which is the first of the false-green shapes
     // test/CLAUDE.md names.
     assert.ok(
-      RAW_ATTACH_TMUX_CONFIG.length >= 3,
+      RAW_ATTACH_TMUX_CONFIG.length >= 1,
       `expected a raw-attach block, got ${RAW_ATTACH_TMUX_CONFIG.length} lines`,
     );
     const doc = readRepo(TMUX_DOC);
@@ -57,6 +57,13 @@ describe("docs keep up with the CLI", () => {
     for (const line of RAW_ATTACH_TMUX_CONFIG) {
       assert.ok(doc.includes(line), `${TMUX_DOC} omits "${line}", which the CLI recommends`);
     }
+  });
+
+  it("keeps the README's raw attach advice scoped to hive-owned windows", () => {
+    const readme = readRepo("README.md");
+    assert.match(readme, /hive configures the tmux windows it creates/);
+    assert.match(readme, /allow-passthrough all.*global notification recommendation/);
+    assert.doesNotMatch(readme, /pane-border-status top.*~\/\.tmux\.conf/);
   });
 
   it("ships the tmux doc the CLI points at", () => {

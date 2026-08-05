@@ -142,6 +142,7 @@ export function claimInitialWindow(
   )
     .split("\n")[0]
     .split(" ");
+  configureHiveWindow(window, true);
   tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...envFlags, command);
   tmux("rename-window", "-t", window, windowName);
   return { pane, window };
@@ -441,29 +442,49 @@ export function rowAlive(recordedSocket: string, target: string, snapshot: Alive
 //
 // THIS IS THE ONLY COPY, DELIBERATELY. Three consumers read it and they used
 // to be three independent transcriptions of the same advice: `hive setup
-// --attach raw` and `hive doctor` print it (src/cli.ts), test/docs.test.mjs
-// asserts docs/tmux.md explains every line of it, and test/layout.test.mjs
-// derives the pane border it exercises from it. A copy in the test is the one
-// that rots silently: change the recommendation and the CLI and the doc move
-// together while the test goes on proving the OLD advice still works.
+// --attach raw` prints it (src/cli.ts), test/docs.test.mjs asserts docs/tmux.md
+// explains every line of it, and `hive doctor` points to that same document.
+// A copy in a consumer is the one that rots silently: change the recommendation
+// and the CLI and the doc can otherwise drift independently.
 //
 // It lives here rather than in src/cli.ts because it is tmux knowledge, and
 // because a test importing dist/cli.js would drag the whole CLI's
 // module-load-time store choice in with it.
 export const RAW_ATTACH_TMUX_CONFIG = [
   "set -g allow-passthrough all",
-  "set -g pane-border-status top",
-  'set -g pane-border-format " #{pane_index} #{pane_title} "',
 ];
 export const TMUX_DOC = "docs/tmux.md";
 
-// The value RAW_ATTACH_TMUX_CONFIG recommends for one option, for a caller
-// that has to act on it rather than print it. Returns null when the option is
-// not in the block at all, so a caller can fail loudly instead of silently
-// testing nothing.
-export function recommendedTmuxOption(option: string): string | null {
-  const line = RAW_ATTACH_TMUX_CONFIG.find((entry) => entry.startsWith(`set -g ${option} `));
-  return line ? line.slice(`set -g ${option} `.length) : null;
+// Hive configures only windows it created. The marker is the boundary: a
+// split can deliberately land in a window the user made, and a pane border
+// would take a row from that window. `created` is true only at the three
+// window-creation sites, where the marker and options are applied before the
+// real process is respawned into the window. Later callers must prove the
+// marker is already present. All of this is cosmetic/best-effort; a running
+// worker without these settings is better than a failed spawn.
+export function configureHiveWindow(window: string, created = false): void {
+  try {
+    if (!created) {
+      // list-panes errors when the target is dead. display-message silently
+      // falls back to another window, which could borrow that window's marker
+      // and turn a stale target into apparent permission to write.
+      const owned = tmux("list-panes", "-t", window, "-F", "#{@hive-owned}").split("\n")[0];
+      if (owned !== "1") return;
+    }
+    // One tmux client, not five. The suite creates many windows concurrently;
+    // separate clients exhausted macOS's process/PTY capacity and made a later
+    // unrelated respawn fail. `;` is tmux's own command separator argument,
+    // still passed through execFileSync with no shell involved.
+    tmux(
+      ...(created ? ["set-window-option", "-t", window, "@hive-owned", "1", ";"] : []),
+      "set-window-option", "-t", window, "allow-passthrough", "all", ";",
+      "set-window-option", "-t", window, "pane-border-status", "top", ";",
+      "set-window-option", "-t", window, "pane-border-format", " #{pane_index} #{pane_title} ", ";",
+      "set-window-option", "-t", window, "monitor-bell", "on",
+    );
+  } catch {
+    // Leave the window and its process usable with tmux's existing settings.
+  }
 }
 
 export const WINDOW_LAYOUTS = [

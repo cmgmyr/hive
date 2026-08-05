@@ -82,6 +82,7 @@ import {
 } from "./spawn.js";
 import {
   claimInitialWindow,
+  configureHiveWindow,
   controlModeFor,
   describePaneChoice,
   ensureSession,
@@ -185,7 +186,8 @@ Repo-defined commands run only after a one-time interactive approval; any
 change to a command re-requires it. By default (attach mode auto), lead/attach
 use iTerm's control mode: the lead, workers, and commands all appear as native
 windows and panes. hive setup --attach raw switches to a plain tmux attach;
-raw mode needs allow-passthrough all and pane-border-status enabled in tmux.`);
+raw mode works without tmux config; one global notification setting is recommended
+for Claude Code panes hive did not create (see docs/tmux.md).`);
   process.exit(1);
 }
 
@@ -794,20 +796,22 @@ async function cmdLead(path?: string): Promise<void> {
       .map((row) => row.split("\t"));
     const foundWindow = windows.find(([name]) => name === leadTitle)?.[1];
     if (!foundWindow) {
-      leadPane = tmux(
+      const created = tmux(
         "new-window",
         "-P",
         "-F",
-        "#{pane_id}",
+        "#{pane_id}\t#{session_name}:#{window_id}",
         "-t",
         `=${session}`,
         "-n",
         leadTitle,
         "-c",
         project.path,
-        ...envFlags,
-        leadCommand,
       );
+      const [pane, window] = created.split("\t");
+      configureHiveWindow(window, true);
+      tmux("respawn-pane", "-k", "-t", pane, "-c", project.path, ...envFlags, leadCommand);
+      leadPane = pane;
       createdPane = true;
     } else {
       // A found window is not proof of a live lead: split workers keep it
@@ -1614,7 +1618,7 @@ function cmdSetup(argv: string[]): void {
   console.log(`\nattach mode  ${attachMode()}`);
   console.log(`auto-attach  ${resolvedAutoAttach().value}`);
   if (attachArg === "raw") {
-    console.log("\nRecommended ~/.tmux.conf settings for raw attach mode:");
+    console.log("\nRecommended ~/.tmux.conf setting for raw attach mode:");
     for (const line of RAW_ATTACH_TMUX_CONFIG) console.log(`  ${line}`);
     console.log(`\nWhy these, and what else helps: ${TMUX_DOC}`);
   }
@@ -2157,30 +2161,42 @@ function cmdDoctor(): void {
           : `${mode} (default; set with \`hive setup --attach\`)`,
     );
     if (mode === "raw") {
-      // A tmux server exists if either global-option probe answers. With no
-      // server both commands fail; that is an unknown state, not a doctor
-      // failure and not useful output. Probe independently so one unavailable
-      // option cannot hide the other on a tmux version hive has not seen.
-      const optionValue = (option: string): string | null => {
-        try {
-          return execFileSync("tmux", ["show", "-gv", option], {
+      // Globals may stay at their defaults: hive stamps the windows it owns.
+      // Inspect those objects, not user configuration. allow-passthrough is a
+      // pane option inherited from the window, so -p -A is load-bearing here:
+      // show-options -p without -A reports the working inherited value as
+      // unset. A missing server or no hive-owned windows is simply no report.
+      try {
+        const owned = execFileSync(
+          "tmux",
+          ["list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{@hive-owned}"],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+        )
+          .trim()
+          .split("\n")
+          .map((row) => row.split("\t"))
+          .filter(([target, marker]) => target.startsWith(SESSION_PREFIX) && marker === "1");
+        for (const [target] of owned) {
+          const pane = execFileSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_id}"], {
             encoding: "utf8",
             stdio: ["ignore", "pipe", "ignore"],
-          }).trim();
-        } catch {
-          return null;
+          }).trim().split("\n")[0];
+          const option = (scope: "-p" | "-w", optionName: string): string =>
+            execFileSync("tmux", ["show-options", scope, "-A", "-v", "-t", scope === "-p" ? pane : target, optionName], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+            }).trim();
+          info(
+            `tmux window ${target}`,
+            `allow-passthrough ${option("-p", "allow-passthrough")}; ` +
+              `pane-border-status ${option("-w", "pane-border-status")}; ` +
+              `pane-border-format ${JSON.stringify(option("-w", "pane-border-format"))}; ` +
+              `monitor-bell ${option("-w", "monitor-bell")}`,
+          );
         }
-      };
-      const allowPassthrough = optionValue("allow-passthrough");
-      const paneBorderStatus = optionValue("pane-border-status");
-      if (allowPassthrough !== null || paneBorderStatus !== null) {
-        // Say what the value should be, not just what it is. "off" alone is
-        // not actionable: a reader has no way to know from it that hive wants
-        // "all", or that "on" silences every worker that is not the visible
-        // pane. The doc carries the measurement behind both.
-        info("allow-passthrough", `${allowPassthrough ?? "unknown"} (hive wants: all)`);
-        info("pane-border-status", `${paneBorderStatus ?? "unknown"} (hive wants: top)`);
-        info("tmux settings", `see ${TMUX_DOC}`);
+      } catch {
+        // Doctor already reports tmux availability; an object disappearing
+        // during inspection must not turn cosmetic diagnostics into failure.
       }
     }
   }

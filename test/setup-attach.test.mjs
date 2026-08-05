@@ -31,8 +31,6 @@ describe("hive setup --attach", () => {
     assert.match(result.stdout, /attach mode {2}raw/);
     const block = [
       "set -g allow-passthrough all",
-      "set -g pane-border-status top",
-      'set -g pane-border-format " #{pane_index} #{pane_title} "',
     ];
     for (const line of block) {
       assert.equal(result.stdout.split(line).length - 1, 1, `${line} should be printed once`);
@@ -126,21 +124,27 @@ describe("hive doctor's attach mode line", () => {
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });
 
-  it("reports raw attach tmux options when the server is reachable", async () => {
+  it("reports hive-owned window options instead of global options", async () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
     const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw"], opts);
     assert.equal(setup.code, 0, setup.stderr);
-    execFileSync("tmux", ["new-session", "-d", "-s", "doctor-raw-options", "sleep 600"], { stdio: "ignore" });
-    execFileSync("tmux", ["set-option", "-g", "allow-passthrough", "all"]);
-    execFileSync("tmux", ["set-option", "-g", "pane-border-status", "bottom"]);
+    execFileSync("tmux", ["new-session", "-d", "-s", "hive-doctor-raw-options", "sleep 600"], { stdio: "ignore" });
+    execFileSync("tmux", ["set-option", "-g", "allow-passthrough", "off"]);
+    execFileSync("tmux", ["set-option", "-g", "pane-border-status", "off"]);
+    assert.equal(execFileSync("tmux", ["show-options", "-g", "-v", "allow-passthrough"], { encoding: "utf8" }).trim(), "off");
+    assert.equal(execFileSync("tmux", ["show-options", "-g", "-v", "pane-border-status"], { encoding: "utf8" }).trim(), "off");
+    execFileSync("tmux", ["set-window-option", "-t", "=hive-doctor-raw-options:0", "@hive-owned", "1"]);
+    execFileSync("tmux", ["set-window-option", "-t", "=hive-doctor-raw-options:0", "allow-passthrough", "all"]);
+    execFileSync("tmux", ["set-window-option", "-t", "=hive-doctor-raw-options:0", "pane-border-status", "top"]);
+    execFileSync("tmux", ["set-window-option", "-t", "=hive-doctor-raw-options:0", "pane-border-format", " #{pane_index} #{pane_title} "]);
+    execFileSync("tmux", ["set-window-option", "-t", "=hive-doctor-raw-options:0", "monitor-bell", "on"]);
 
     const doctor = await runCli(["doctor"], opts);
-    execFileSync("tmux", ["kill-session", "-t", "=doctor-raw-options"]);
-    assert.match(doctor.stdout, /info {2}allow-passthrough: all/);
-    assert.match(doctor.stdout, /info {2}pane-border-status: bottom/);
+    execFileSync("tmux", ["kill-session", "-t", "=hive-doctor-raw-options"]);
+    assert.match(doctor.stdout, /tmux window hive-doctor-raw-options:@\d+: allow-passthrough all; pane-border-status top/);
   });
 
   it("keeps raw attach tmux options unknown when no server is reachable", async () => {

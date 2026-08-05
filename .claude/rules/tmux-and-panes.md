@@ -42,6 +42,19 @@ Never derive a session name from a project id alone. A scratch store numbers its
 
 `display-message -t` silently falls back to a default target when the given one is dead.
 
+## Hive-owned windows carry hive's required tmux options
+
+Every window hive creates is marked with the window option `@hive-owned=1`
+and receives `allow-passthrough all`, `pane-border-status top`, hive's pane
+border format, and `monitor-bell on` before its real process starts. A split
+may target a window the user created, so an unmarked window is the user's and
+hive must not write these options to it. The settings are best-effort: losing
+cosmetic configuration must never fail a spawn whose process is already live.
+
+`allow-passthrough` is a pane option inherited from the window. Probes must
+use `show-options -p -A`; without `-A`, tmux reports that inherited, working
+value as unset.
+
 ## Never type into a pane that is waiting on a choice
 
 Delivery is a paste followed by Enter. A pane showing a modal has nowhere to put the paste and reads the Enter as "choose the highlighted option", so the wake vanishes, no user turn is created, and hive answers a prompt nobody read.

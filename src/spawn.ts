@@ -2,6 +2,7 @@ import { dataDir, db } from "./db.js";
 import {
   applyLayout,
   claimInitialWindow,
+  configureHiveWindow,
   DEFAULT_LAYOUT,
   ensureSession,
   crossServerRefusal,
@@ -263,10 +264,14 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
       );
       applyLayout(win, spec.layout ?? DEFAULT_LAYOUT);
     } else {
-      target = tmux(
-        "new-window", "-P", "-F", "#{session_name}:#{window_id}",
-        "-t", session, "-n", title, "-c", spec.cwd, ...envFlags, commandString,
+      const created = tmux(
+        "new-window", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
+        "-t", session, "-n", title, "-c", spec.cwd,
       );
+      const [pane, window] = created.split("\t");
+      configureHiveWindow(window, true);
+      tmux("respawn-pane", "-k", "-t", pane, "-c", spec.cwd, ...envFlags, commandString);
+      target = window;
     }
     paneUp = true;
     // Past this line the pane is up and its command has already started
