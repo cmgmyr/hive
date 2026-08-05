@@ -15,7 +15,7 @@ export const KICKOFF = join(DIST, "kickoff.js");
 // HIVE_AGENT_ID, HIVE_PROJECT_LOCK and friends. Inheriting those makes a
 // spawned server think it is that worker, so drop the whole namespace and let
 // each helper set back only what it means to. Explicit per-call env still wins.
-function baseEnv() {
+export function baseEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HIVE_")));
 }
 

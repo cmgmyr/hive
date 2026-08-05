@@ -217,7 +217,15 @@ for Claude Code panes hive did not create (see docs/tmux.md).`);
 // calling getProject(effectiveProjectId())! directly, the same reasoning as
 // run() itself: one place, not one per command, so a future resolveProject
 // caller inherits the notice for free instead of needing to remember it.
-function resolveProjectAndNotify(id: number): Project {
+// onNotice lets a caller defer WHEN the notice is printed without changing
+// WHAT gets printed or that it prints on stderr: `hive lead`'s attach scrolls
+// the terminal within about a second of this function returning, so printing
+// here is invisible in practice (decisions/2026-08-05-cli-notices-go-to-
+// stderr.md's sibling problem, not the one that decision fixes). Every other
+// caller omits it and keeps today's print-at-resolve-time behaviour
+// unchanged - this is the one choke point, so a future resolveProject caller
+// still inherits the notice for free without inheriting the deferral.
+function resolveProjectAndNotify(id: number, onNotice?: (text: string) => void): Project {
   const project = getProject(id)!;
   const notice = takeRegistrationNotice();
   // stderr, not stdout: this is diagnostic output describing a side effect,
@@ -227,15 +235,19 @@ function resolveProjectAndNotify(id: number): Project {
   // land inside the redirected file, ahead of the pad content it is meant to
   // capture. A human still sees this printed to their terminal either way;
   // a redirect only stops capturing it.
-  if (notice) console.error(registrationNoticeText(notice));
+  if (notice) {
+    const text = registrationNoticeText(notice);
+    if (onNotice) onNotice(text);
+    else console.error(text);
+  }
   return project;
 }
 
-function resolveProject(path?: string): Project {
-  if (!path) return resolveProjectAndNotify(effectiveProjectId());
+function resolveProject(path?: string, onNotice?: (text: string) => void): Project {
+  if (!path) return resolveProjectAndNotify(effectiveProjectId(), onNotice);
   process.chdir(path);
   const pinned = agentProjectPin();
-  if (pinned == null) return resolveProjectAndNotify(effectiveProjectId());
+  if (pinned == null) return resolveProjectAndNotify(effectiveProjectId(), onNotice);
   const target = findProjectForCwd();
   if (target != null && target.id === pinned) return target;
   const pinnedProject = getProject(pinned)!;
@@ -681,351 +693,416 @@ function ensureLeadRow(
 }
 
 async function cmdLead(path?: string): Promise<void> {
-  const project = resolveProject(path);
-  const session = sessionName(project.id);
-  const hooksPath = ensureHooksFile();
-
-  const { config, warnings } = loadProjectYml(project.path);
-  for (const w of warnings) console.log(`! ${w}`);
-  let leadCommand = "claude";
-  if (!config) {
-    console.log(
-      "No hive.yml here; starting a plain claude lead. Add a hive.yml to define project commands and a custom lead (run hive --help for the format).",
-    );
-  } else if (config.lead) {
-    if (await ensureTrusted(project.id, "lead", config.lead, null, {})) {
-      leadCommand = config.lead;
-    } else {
-      console.log("Using the default claude lead instead.");
-    }
-  }
-
-  // State hooks (working/idle/waiting) ride along via --settings, same as
-  // every claude worker agent_spawn launches. Gated on isClaudeCommand for
-  // the same reason the posture flag below is: a custom lead command from
-  // hive.yml may not take the flag at all.
-  if (!isClaudeCommand(leadCommand)) {
-    console.log("! lead command is not claude; skipping hooks.");
-  } else {
-    leadCommand += ` --settings ${shellQuote(hooksPath)}`;
-  }
-
-  // Posture rides in the system prompt: prompt-cached, uncompactable, and
-  // impossible for the lead to forget. A profile named in a committed
-  // hive.yml that this machine does not have must never be an error; the
-  // lead just starts without it, and hive doctor says so.
-  const profile = activeProfile(config);
-  if (profile) {
-    const posture = resolveProfileFile(profile, "posture.md");
-    if (!posture) {
-      console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
-    } else if (!isClaudeCommand(leadCommand)) {
-      console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
-    } else {
-      // The flag takes a path, so the vars are resolved into a generated file
-      // rather than into the profile. `hive posture` prints the same text.
-      const rendered = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
-      const path = writeProjectPosture(project.id, rendered);
-      leadCommand += ` --append-system-prompt-file ${shellQuote(path)}`;
-      console.log(`- profile: ${profile} (${posture.source} posture; see it with: hive posture)`);
-    }
-  }
-
-  // The lead launches before auto-start processes so that on a fresh session
-  // it claims the initial window rather than one of them.
-  const leadTitle = windowTitle(project.name, LEAD_NAME);
-  const {
-    agentId: leadAgentId,
-    actorId: leadActorId,
-    previousTarget,
-    previousSocket,
-    casExpected,
-  } = ensureLeadRow(project, leadCommand);
-  // HIVE_LEAD marks this session as the lead, distinctly from HIVE_AGENT_ID
-  // being set at all: src/kickoff.ts's very first check (before it opens the
-  // store, deliberately) has always read HIVE_AGENT_ID alone to mean "worker
-  // session, no kickoff". Now that a lead carries HIVE_AGENT_ID too, that
-  // check needs a way to tell the two apart without a database lookup, and a
-  // second env var is cheaper than one.
-  // Issue #27's L4 fix round R6, todo 167 (counselors codex F4, verified by
-  // the lead against the code). launchAgent (src/spawn.ts) passes
-  // HIVE_DATA_DIR to every worker it launches; this block never did for the
-  // lead. Without it, `HIVE_DATA_DIR=/tmp/alt hive lead` writes the lead row
-  // and the hooks file into /tmp/alt, but the claude process it launches
-  // inherits the tmux server's own environment and defaults its MCP server
-  // AND its hooks to ~/.hive - the alternate store gets no hook rows at all,
-  // and a coincidentally-matching lead:N in the DEFAULT store gets mutated
-  // instead. A lead whose hooks write to the wrong store is this lane's own
-  // thesis failing. The suite hid this because every scratch store also gets
-  // a freshly isolated tmux server that happens to inherit the matching
-  // data dir - never exercising a lead launched into a server that does not.
+  // Deferred, not printed here: resolveProjectAndNotify runs at the very top
+  // of this function, with the attach that takes over the terminal still a
+  // second-plus and a dozen-odd console.log lines away, which is exactly why
+  // a human never actually reads this notice at resolve time. Held until
+  // just before attach() (decisions/2026-08-05-cli-notices-go-to-stderr.md's
+  // sibling problem, not what that decision itself fixes) instead.
   //
-  // HIVE_PROJECT_LOCK and HIVE_PROJECT_PATH are never SET here - both exist
-  // to PIN a worker to one project via its actor_id row (agentProjectPin,
-  // src/context.ts), gated on HIVE_PROJECT_LOCK === "1", and a lead must
-  // never be locked that way: cross-project access when a human asks (cd, or
-  // a wake targeting another project) is exactly what distinguishes a lead
-  // from a worker.
-  //
-  // Issue #27's L4 fix round R8, todo 175 item 2 (counselors codex F4,
-  // MEDIUM). "Never set" used to mean "absent from this object", which is
-  // NOT the same as absent from the pane: tmux panes inherit the SERVER's
-  // own environment (src/spawn.ts's HIVE_LEAD: "" clear exists for exactly
-  // this reason, the opposite direction), so a pre-existing server carrying
-  // HIVE_PROJECT_LOCK=1 handed a project-locked lead, and a mismatching
-  // inherited HIVE_PROJECT_PATH made its project-scoped calls fail outright.
-  // Explicitly clearing both closes that the same way HIVE_LEAD's own clear
-  // does for a worker - present-and-empty, not merely absent-and-hopeful.
-  // buildEnvFlags (src/spawn.ts): the same flattening step launchAgent uses
-  // for a worker's env, found in /simplify review after this array used to
-  // be its own hand-rolled literal - a second, parallel implementation that
-  // HIVE_DATA_DIR above had to be manually re-added to.
-  const envFlags = buildEnvFlags({
-    HIVE_AGENT_ID: leadActorId,
-    HIVE_AGENT_NAME: LEAD_NAME,
-    HIVE_LEAD: "1",
-    HIVE_DATA_DIR: dataDir,
-    HIVE_PROJECT_LOCK: "",
-    HIVE_PROJECT_PATH: "",
-  });
-  // The lead's tmux_target is a PANE id (%N), never session:window. wakes.ts's
-  // resolveDelivery prefers this row's tmux_target over TMUX_PANE, and a
-  // window target delivers to that window's ACTIVE pane - a split worker's,
-  // once one is running there - not the lead's. Each branch captures its own
-  // pane directly rather than a trailing list-windows lookup afterward:
-  // claimInitialWindow already returns one, and -P -F gets one straight off
-  // new-window's/split-window's own output the same way launchAgent does
-  // (src/spawn.ts).
-  let leadPane: string;
-  // Issue #27's L4 fix round R9, todo 177 item 1 (BOTH SEATS). Tracked at
-  // the site each pane is actually made, not inferred afterward by
-  // comparing leadPane to previousTarget: that comparison is a PROXY for
-  // "this process created the pane" and it is unsound, because pane ids are
-  // not globally unique - split-window can hand back an id that happens to
-  // equal a stale previousTarget (opus's finding: a genuinely fresh pane
-  // then reads as "already there" and a losing process leaves it running
-  // untracked), and this file already relies elsewhere on ids restarting at
-  // %0 on a fresh tmux server (see the "pane ids wrap around" comment
-  // above). createdPane records the fact directly instead of re-deriving it
-  // from a string comparison a few lines later.
-  let createdPane: boolean;
-  if (ensureSession(session, project.path)) {
-    leadPane = claimInitialWindow(session, leadTitle, project.path, envFlags, leadCommand).pane;
-    createdPane = true;
-  } else {
-    const windows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}\t#{session_name}:#{window_id}")
-      .split("\n")
-      .map((row) => row.split("\t"));
-    const foundWindow = windows.find(([name]) => name === leadTitle)?.[1];
-    if (!foundWindow) {
-      const created = tmux(
-        "new-window",
-        "-P",
-        "-F",
-        "#{pane_id}\t#{session_name}:#{window_id}",
-        "-t",
-        `=${session}`,
-        "-n",
-        leadTitle,
-        "-c",
-        project.path,
+  // The whole body below is wrapped in a try so a throw between capture and
+  // the deferred print still gets the notice out before the process exits
+  // (see the catch below, and the comment on the print itself for which
+  // throws actually reach it). A `finally` was considered and is wrong
+  // here: attach()'s TTY path calls `process.exit()` directly, which skips
+  // a `finally` block entirely, so the notice would still go unprinted on
+  // exactly the path that matters least to protect (the one where
+  // everything else already worked).
+  let registrationNotice: string | null = null;
+  try {
+    const project = resolveProject(path, (text) => {
+      registrationNotice = text;
+    });
+    const session = sessionName(project.id);
+    const hooksPath = ensureHooksFile();
+
+    const { config, warnings } = loadProjectYml(project.path);
+    for (const w of warnings) console.log(`! ${w}`);
+    let leadCommand = "claude";
+    if (!config) {
+      console.log(
+        "No hive.yml here; starting a plain claude lead. Add a hive.yml to define project commands and a custom lead (run hive --help for the format).",
       );
-      const [pane, window] = created.split("\t");
-      configureHiveWindow(window, true);
-      tmux("respawn-pane", "-k", "-t", pane, "-c", project.path, ...envFlags, leadCommand);
-      leadPane = pane;
+    } else if (config.lead) {
+      if (await ensureTrusted(project.id, "lead", config.lead, null, {})) {
+        leadCommand = config.lead;
+      } else {
+        console.log("Using the default claude lead instead.");
+      }
+    }
+
+    // State hooks (working/idle/waiting) ride along via --settings, same as
+    // every claude worker agent_spawn launches. Gated on isClaudeCommand for
+    // the same reason the posture flag below is: a custom lead command from
+    // hive.yml may not take the flag at all.
+    if (!isClaudeCommand(leadCommand)) {
+      console.log("! lead command is not claude; skipping hooks.");
+    } else {
+      leadCommand += ` --settings ${shellQuote(hooksPath)}`;
+    }
+
+    // Posture rides in the system prompt: prompt-cached, uncompactable, and
+    // impossible for the lead to forget. A profile named in a committed
+    // hive.yml that this machine does not have must never be an error; the
+    // lead just starts without it, and hive doctor says so.
+    const profile = activeProfile(config);
+    if (profile) {
+      const posture = resolveProfileFile(profile, "posture.md");
+      if (!posture) {
+        console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
+      } else if (!isClaudeCommand(leadCommand)) {
+        console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
+      } else {
+        // The flag takes a path, so the vars are resolved into a generated file
+        // rather than into the profile. `hive posture` prints the same text.
+        const rendered = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
+        const path = writeProjectPosture(project.id, rendered);
+        leadCommand += ` --append-system-prompt-file ${shellQuote(path)}`;
+        console.log(`- profile: ${profile} (${posture.source} posture; see it with: hive posture)`);
+      }
+    }
+
+    // The lead launches before auto-start processes so that on a fresh session
+    // it claims the initial window rather than one of them.
+    const leadTitle = windowTitle(project.name, LEAD_NAME);
+    const {
+      agentId: leadAgentId,
+      actorId: leadActorId,
+      previousTarget,
+      previousSocket,
+      casExpected,
+    } = ensureLeadRow(project, leadCommand);
+    // HIVE_LEAD marks this session as the lead, distinctly from HIVE_AGENT_ID
+    // being set at all: src/kickoff.ts's very first check (before it opens the
+    // store, deliberately) has always read HIVE_AGENT_ID alone to mean "worker
+    // session, no kickoff". Now that a lead carries HIVE_AGENT_ID too, that
+    // check needs a way to tell the two apart without a database lookup, and a
+    // second env var is cheaper than one.
+    // Issue #27's L4 fix round R6, todo 167 (counselors codex F4, verified by
+    // the lead against the code). launchAgent (src/spawn.ts) passes
+    // HIVE_DATA_DIR to every worker it launches; this block never did for the
+    // lead. Without it, `HIVE_DATA_DIR=/tmp/alt hive lead` writes the lead row
+    // and the hooks file into /tmp/alt, but the claude process it launches
+    // inherits the tmux server's own environment and defaults its MCP server
+    // AND its hooks to ~/.hive - the alternate store gets no hook rows at all,
+    // and a coincidentally-matching lead:N in the DEFAULT store gets mutated
+    // instead. A lead whose hooks write to the wrong store is this lane's own
+    // thesis failing. The suite hid this because every scratch store also gets
+    // a freshly isolated tmux server that happens to inherit the matching
+    // data dir - never exercising a lead launched into a server that does not.
+    //
+    // HIVE_PROJECT_LOCK and HIVE_PROJECT_PATH are never SET here - both exist
+    // to PIN a worker to one project via its actor_id row (agentProjectPin,
+    // src/context.ts), gated on HIVE_PROJECT_LOCK === "1", and a lead must
+    // never be locked that way: cross-project access when a human asks (cd, or
+    // a wake targeting another project) is exactly what distinguishes a lead
+    // from a worker.
+    //
+    // Issue #27's L4 fix round R8, todo 175 item 2 (counselors codex F4,
+    // MEDIUM). "Never set" used to mean "absent from this object", which is
+    // NOT the same as absent from the pane: tmux panes inherit the SERVER's
+    // own environment (src/spawn.ts's HIVE_LEAD: "" clear exists for exactly
+    // this reason, the opposite direction), so a pre-existing server carrying
+    // HIVE_PROJECT_LOCK=1 handed a project-locked lead, and a mismatching
+    // inherited HIVE_PROJECT_PATH made its project-scoped calls fail outright.
+    // Explicitly clearing both closes that the same way HIVE_LEAD's own clear
+    // does for a worker - present-and-empty, not merely absent-and-hopeful.
+    // buildEnvFlags (src/spawn.ts): the same flattening step launchAgent uses
+    // for a worker's env, found in /simplify review after this array used to
+    // be its own hand-rolled literal - a second, parallel implementation that
+    // HIVE_DATA_DIR above had to be manually re-added to.
+    const envFlags = buildEnvFlags({
+      HIVE_AGENT_ID: leadActorId,
+      HIVE_AGENT_NAME: LEAD_NAME,
+      HIVE_LEAD: "1",
+      HIVE_DATA_DIR: dataDir,
+      HIVE_PROJECT_LOCK: "",
+      HIVE_PROJECT_PATH: "",
+    });
+    // The lead's tmux_target is a PANE id (%N), never session:window. wakes.ts's
+    // resolveDelivery prefers this row's tmux_target over TMUX_PANE, and a
+    // window target delivers to that window's ACTIVE pane - a split worker's,
+    // once one is running there - not the lead's. Each branch captures its own
+    // pane directly rather than a trailing list-windows lookup afterward:
+    // claimInitialWindow already returns one, and -P -F gets one straight off
+    // new-window's/split-window's own output the same way launchAgent does
+    // (src/spawn.ts).
+    let leadPane: string;
+    // Issue #27's L4 fix round R9, todo 177 item 1 (BOTH SEATS). Tracked at
+    // the site each pane is actually made, not inferred afterward by
+    // comparing leadPane to previousTarget: that comparison is a PROXY for
+    // "this process created the pane" and it is unsound, because pane ids are
+    // not globally unique - split-window can hand back an id that happens to
+    // equal a stale previousTarget (opus's finding: a genuinely fresh pane
+    // then reads as "already there" and a losing process leaves it running
+    // untracked), and this file already relies elsewhere on ids restarting at
+    // %0 on a fresh tmux server (see the "pane ids wrap around" comment
+    // above). createdPane records the fact directly instead of re-deriving it
+    // from a string comparison a few lines later.
+    let createdPane: boolean;
+    if (ensureSession(session, project.path)) {
+      leadPane = claimInitialWindow(session, leadTitle, project.path, envFlags, leadCommand).pane;
       createdPane = true;
     } else {
-      // A found window is not proof of a live lead: split workers keep it
-      // open (and keep matching leadTitle) after the lead's own claude exits,
-      // so list-windows finding a title match is not enough (that was the
-      // "restart attaches to a window containing no lead" defect). Reuse the
-      // row's previous pane only when it is still a real pane in THIS window;
-      // otherwise split a fresh one in for the lead. Unknown liveness
-      // (untrusted tmux server) is treated as "not live" rather than the
-      // opposite bias startYmlCommand uses for hive.yml processes: a stray
-      // extra pane here is cheap, a restart silently landing with no lead at
-      // all is the defect this branch exists to close.
-      // Issue #73, D6: previousSocket is the row's OWN recorded socket from
-      // before this call (ensureLeadRow), not this process's - a foreign
-      // value here means the row's last-known pane belongs to a server this
-      // process cannot honestly judge, and rowLive reads that as unknown,
-      // which the `=== true` below already treats as "not still there" (D6's
-      // stated bias for this branch, same as an untrusted tmux server).
-      //
-      // Counselors round 1 (#73, A5), accepted and recorded rather than
-      // changed. Treating unknown as "not still there" means `hive lead`
-      // PROCEEDS on a liveness question it cannot honestly answer, and can
-      // split a fresh pane while the OLD lead's pane is genuinely still
-      // alive on the foreign server this process cannot see - two live
-      // leads for the one row this project otherwise works hard to keep
-      // singular. The alternative is refusing outright on unknown, which
-      // trades that risk for the one F4 names as the honest cost of this
-      // whole lane: a lead row stuck 'running' forever with no recorded
-      // pane, unrecoverable the same way a foreign-socket worker row is
-      // (`hive doctor` now names those; a lead that refuses to start at all
-      // has no such recovery path).
-      //
-      // Counselors round 2 (#73, A5) corrected the comparison above: it is
-      // not "maybe two leads" against "certainly no lead and no way to get
-      // one". Refusing here does not strand the caller without a lead at
-      // all - the ORIGINAL lead, if it is genuinely still alive on the
-      // foreign socket, is exactly as reachable as it was before this call;
-      // refusing only means THIS pane does not get a new one, and the human
-      // is left where the real lead already was, back on the socket it is
-      // actually running on. Nor does "a human notices two panes and closes
-      // one" hold: the two panes live on DIFFERENT tmux servers, so nothing
-      // run from this pane can ever list the other one - there is no single
-      // view where a human would see both at once. The real trade is
-      // between an UNDETECTABLE risk (a second live lead, on a server this
-      // process cannot see well enough to warn about) and a DETECTABLE but
-      // inconvenient cost (F4's stuck row, visible in `hive doctor`, but
-      // only to whoever thinks to run it from the socket that row is
-      // actually stuck on). PROCEEDING is still the choice made here: a
-      // `hive lead` that refuses outright on unknown liveness is one that
-      // stops working from a legitimate new pane the moment any stale row's
-      // socket cannot be confirmed dead, which is the common case after any
-      // reboot or crash, not the rare one. Deliberate bias, not an
-      // oversight.
-      const stillThere =
-        isPaneTarget(previousTarget) &&
-        tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}")
-          .split("\n")
-          .includes(previousTarget) &&
-        rowLive(previousSocket, previousTarget) === true;
-      if (stillThere) {
-        leadPane = previousTarget;
-        createdPane = false;
-      } else {
-        leadPane = tmux(
-          "split-window",
+      const windows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}\t#{session_name}:#{window_id}")
+        .split("\n")
+        .map((row) => row.split("\t"));
+      const foundWindow = windows.find(([name]) => name === leadTitle)?.[1];
+      if (!foundWindow) {
+        const created = tmux(
+          "new-window",
           "-P",
           "-F",
-          "#{pane_id}",
+          "#{pane_id}\t#{session_name}:#{window_id}",
           "-t",
-          foundWindow,
+          `=${session}`,
+          "-n",
+          leadTitle,
           "-c",
           project.path,
-          ...envFlags,
-          leadCommand,
         );
+        const [pane, window] = created.split("\t");
+        configureHiveWindow(window, true);
+        tmux("respawn-pane", "-k", "-t", pane, "-c", project.path, ...envFlags, leadCommand);
+        leadPane = pane;
         createdPane = true;
+      } else {
+        // A found window is not proof of a live lead: split workers keep it
+        // open (and keep matching leadTitle) after the lead's own claude exits,
+        // so list-windows finding a title match is not enough (that was the
+        // "restart attaches to a window containing no lead" defect). Reuse the
+        // row's previous pane only when it is still a real pane in THIS window;
+        // otherwise split a fresh one in for the lead. Unknown liveness
+        // (untrusted tmux server) is treated as "not live" rather than the
+        // opposite bias startYmlCommand uses for hive.yml processes: a stray
+        // extra pane here is cheap, a restart silently landing with no lead at
+        // all is the defect this branch exists to close.
+        // Issue #73, D6: previousSocket is the row's OWN recorded socket from
+        // before this call (ensureLeadRow), not this process's - a foreign
+        // value here means the row's last-known pane belongs to a server this
+        // process cannot honestly judge, and rowLive reads that as unknown,
+        // which the `=== true` below already treats as "not still there" (D6's
+        // stated bias for this branch, same as an untrusted tmux server).
+        //
+        // Counselors round 1 (#73, A5), accepted and recorded rather than
+        // changed. Treating unknown as "not still there" means `hive lead`
+        // PROCEEDS on a liveness question it cannot honestly answer, and can
+        // split a fresh pane while the OLD lead's pane is genuinely still
+        // alive on the foreign server this process cannot see - two live
+        // leads for the one row this project otherwise works hard to keep
+        // singular. The alternative is refusing outright on unknown, which
+        // trades that risk for the one F4 names as the honest cost of this
+        // whole lane: a lead row stuck 'running' forever with no recorded
+        // pane, unrecoverable the same way a foreign-socket worker row is
+        // (`hive doctor` now names those; a lead that refuses to start at all
+        // has no such recovery path).
+        //
+        // Counselors round 2 (#73, A5) corrected the comparison above: it is
+        // not "maybe two leads" against "certainly no lead and no way to get
+        // one". Refusing here does not strand the caller without a lead at
+        // all - the ORIGINAL lead, if it is genuinely still alive on the
+        // foreign socket, is exactly as reachable as it was before this call;
+        // refusing only means THIS pane does not get a new one, and the human
+        // is left where the real lead already was, back on the socket it is
+        // actually running on. Nor does "a human notices two panes and closes
+        // one" hold: the two panes live on DIFFERENT tmux servers, so nothing
+        // run from this pane can ever list the other one - there is no single
+        // view where a human would see both at once. The real trade is
+        // between an UNDETECTABLE risk (a second live lead, on a server this
+        // process cannot see well enough to warn about) and a DETECTABLE but
+        // inconvenient cost (F4's stuck row, visible in `hive doctor`, but
+        // only to whoever thinks to run it from the socket that row is
+        // actually stuck on). PROCEEDING is still the choice made here: a
+        // `hive lead` that refuses outright on unknown liveness is one that
+        // stops working from a legitimate new pane the moment any stale row's
+        // socket cannot be confirmed dead, which is the common case after any
+        // reboot or crash, not the rare one. Deliberate bias, not an
+        // oversight.
+        const stillThere =
+          isPaneTarget(previousTarget) &&
+          tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}")
+            .split("\n")
+            .includes(previousTarget) &&
+          rowLive(previousSocket, previousTarget) === true;
+        if (stillThere) {
+          leadPane = previousTarget;
+          createdPane = false;
+        } else {
+          leadPane = tmux(
+            "split-window",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "-t",
+            foundWindow,
+            "-c",
+            project.path,
+            ...envFlags,
+            leadCommand,
+          );
+          createdPane = true;
+        }
       }
     }
-  }
-  // Issue #27's L4 fix round R6, todo 166 (counselors codex F1, verified by
-  // the lead against the code). `deliver_pane` is snapshotted once at
-  // wake_set time (src/tools/wakes.ts) and nothing else ever updates it, so
-  // without this, a restart that changes the lead's pane - the NORMAL case,
-  // not an exotic one - leaves every pending lead-owned wake naming a stale
-  // pane. Two ways that fails, both bad: held forever if the old pane is
-  // simply gone (the new lead-row exemption in the janitor and deliverable()
-  // now protects it from ever being cancelled, so "held" looks deliberate
-  // and never resolves), or worse, typed into a RECYCLED pane belonging to
-  // someone else once the tmux server itself has restarted and pane ids
-  // wrap around - the exact failure class issue #27 exists to remove,
-  // reintroduced by a second route (the first was the window-target bug
-  // fixed earlier in this round). One transaction with the pane update
-  // itself, so a reader never observes the new pane recorded on the agents
-  // row with a pending wake still naming the old one. held_at/held_reason
-  // are cleared too: a wake held against the OLD pane is no longer held
-  // against anything once it is re-pointed at a fresh one.
-  //
-  // Issue #27's L4 fix round R6, todo 170's investigation (counselors codex
-  // F3, reasoned rather than executed, checked here before acting). Two
-  // concurrent `hive lead` processes that both see the SAME dead
-  // previousTarget both take this far: both create their own fresh pane
-  // (new-window, or split-window in the found-window branch), and an
-  // unconditional UPDATE would let the second write silently clobber the
-  // first, leaving one of the two freshly-created panes' claude alive and
-  // untracked, both sharing one HIVE_AGENT_ID. Guarded with a conditional
-  // update instead: this only wins the write if tmux_target STILL reads what
-  // this process itself read as casExpected (works for every branch above,
-  // including the fresh-INSERT case where casExpected is "" and the
-  // reused-pane case where casExpected is the row's unchanged pre-existing
-  // value - SQLite counts a matched row as changed even when the new value
-  // equals the old one). The loser kills the orphan pane it just created
-  // rather than leaving a live, untracked claude process running, and fails
-  // loudly telling the human to re-run - the same shape asNameClash's
-  // race-loser message uses (todo 170's item 3) - rather than silently
-  // retrying, which this round is not carrying. NOT closed by this guard,
-  // and written down rather than chased: a crash between pane creation and
-  // this UPDATE landing (this process dies, never reaching either branch)
-  // leaves the SAME kind of orphan pane with nothing to detect it on the
-  // next `hive lead`, since there is no second process racing to notice.
-  // That residual needs a liveness sweep over stray panes in the lead's
-  // window, which is a bigger change than this round's guard.
-  // Issue #27's L4 fix round R8, todo 172 (counselors codex F1, HIGH). The
-  // CAS above used to check only id and tmux_target; closeAgentRow() leaves
-  // tmux_target unchanged when it closes a row, so a janitor closing this row
-  // between ensureLeadRow's read and this write still let the UPDATE match, a
-  // running lead's pane got recorded on a status='closed' row, and a SECOND
-  // `hive lead` would then INSERT another running row for the same actor,
-  // leaving two panes. status = 'running' closes it the same way the reuse
-  // read above already filters on it.
-  //
-  // Issue #27's L4 fix round R10, todo 181 item 2 (BOTH SEATS). Matches
-  // against casExpected now, not previousTarget: they agree for the reuse
-  // branch but not for a fresh INSERT (see ensureLeadRow), and the CAS has
-  // to compare against what the COLUMN holds, never against what
-  // previousTarget merely claims - matching a value the column was never
-  // actually written with would make the CAS fail (or worse, coincidentally
-  // pass against an unrelated row state) for the wrong reason.
-  const wonRace = db.transaction(() => {
-    // Issue #73: a restart under a different tmux server must re-record the
-    // socket here, in the same statement as the pane, or the row keeps
-    // advertising a socket it no longer lives on.
-    const updated = db
-      .prepare(
-        "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
-      )
-      .run(leadPane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), leadAgentId, casExpected).changes;
-    if (updated === 0) return false;
-    db.prepare(
-      `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-       WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?`,
-    ).run(leadPane, leadActorId);
-    return true;
-  })();
-  if (!wonRace) {
-    // Issue #27's L4 fix round R8, todo 172 (counselors opus F1, MEDIUM but
-    // the damage is a live session), refined in R9's todo 177 item 1. The
-    // stillThere branch sets leadPane === previousTarget: a pane this
-    // process PROBED as already live, not one it just created. Killing it
-    // here was the bug - "the loser kills the orphan pane it just created"
-    // is only true of the other two branches, which split or spawn a
-    // genuinely fresh pane that has no reason to exist once the CAS says
-    // someone else already recorded a live one. Only kill when this process
-    // is actually the one that made it - tracked directly as createdPane,
-    // not re-derived from comparing leadPane to previousTarget, which a
-    // recycled pane id can satisfy by coincidence either way.
-    if (createdPane) {
-      try {
-        tmux("kill-pane", "-t", leadPane);
-      } catch {
-        // Best effort; the pane may already be gone.
+    // Issue #27's L4 fix round R6, todo 166 (counselors codex F1, verified by
+    // the lead against the code). `deliver_pane` is snapshotted once at
+    // wake_set time (src/tools/wakes.ts) and nothing else ever updates it, so
+    // without this, a restart that changes the lead's pane - the NORMAL case,
+    // not an exotic one - leaves every pending lead-owned wake naming a stale
+    // pane. Two ways that fails, both bad: held forever if the old pane is
+    // simply gone (the new lead-row exemption in the janitor and deliverable()
+    // now protects it from ever being cancelled, so "held" looks deliberate
+    // and never resolves), or worse, typed into a RECYCLED pane belonging to
+    // someone else once the tmux server itself has restarted and pane ids
+    // wrap around - the exact failure class issue #27 exists to remove,
+    // reintroduced by a second route (the first was the window-target bug
+    // fixed earlier in this round). One transaction with the pane update
+    // itself, so a reader never observes the new pane recorded on the agents
+    // row with a pending wake still naming the old one. held_at/held_reason
+    // are cleared too: a wake held against the OLD pane is no longer held
+    // against anything once it is re-pointed at a fresh one.
+    //
+    // Issue #27's L4 fix round R6, todo 170's investigation (counselors codex
+    // F3, reasoned rather than executed, checked here before acting). Two
+    // concurrent `hive lead` processes that both see the SAME dead
+    // previousTarget both take this far: both create their own fresh pane
+    // (new-window, or split-window in the found-window branch), and an
+    // unconditional UPDATE would let the second write silently clobber the
+    // first, leaving one of the two freshly-created panes' claude alive and
+    // untracked, both sharing one HIVE_AGENT_ID. Guarded with a conditional
+    // update instead: this only wins the write if tmux_target STILL reads what
+    // this process itself read as casExpected (works for every branch above,
+    // including the fresh-INSERT case where casExpected is "" and the
+    // reused-pane case where casExpected is the row's unchanged pre-existing
+    // value - SQLite counts a matched row as changed even when the new value
+    // equals the old one). The loser kills the orphan pane it just created
+    // rather than leaving a live, untracked claude process running, and fails
+    // loudly telling the human to re-run - the same shape asNameClash's
+    // race-loser message uses (todo 170's item 3) - rather than silently
+    // retrying, which this round is not carrying. NOT closed by this guard,
+    // and written down rather than chased: a crash between pane creation and
+    // this UPDATE landing (this process dies, never reaching either branch)
+    // leaves the SAME kind of orphan pane with nothing to detect it on the
+    // next `hive lead`, since there is no second process racing to notice.
+    // That residual needs a liveness sweep over stray panes in the lead's
+    // window, which is a bigger change than this round's guard.
+    // Issue #27's L4 fix round R8, todo 172 (counselors codex F1, HIGH). The
+    // CAS above used to check only id and tmux_target; closeAgentRow() leaves
+    // tmux_target unchanged when it closes a row, so a janitor closing this row
+    // between ensureLeadRow's read and this write still let the UPDATE match, a
+    // running lead's pane got recorded on a status='closed' row, and a SECOND
+    // `hive lead` would then INSERT another running row for the same actor,
+    // leaving two panes. status = 'running' closes it the same way the reuse
+    // read above already filters on it.
+    //
+    // Issue #27's L4 fix round R10, todo 181 item 2 (BOTH SEATS). Matches
+    // against casExpected now, not previousTarget: they agree for the reuse
+    // branch but not for a fresh INSERT (see ensureLeadRow), and the CAS has
+    // to compare against what the COLUMN holds, never against what
+    // previousTarget merely claims - matching a value the column was never
+    // actually written with would make the CAS fail (or worse, coincidentally
+    // pass against an unrelated row state) for the wrong reason.
+    const wonRace = db.transaction(() => {
+      // Issue #73: a restart under a different tmux server must re-record the
+      // socket here, in the same statement as the pane, or the row keeps
+      // advertising a socket it no longer lives on.
+      const updated = db
+        .prepare(
+          "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+        )
+        .run(leadPane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), leadAgentId, casExpected).changes;
+      if (updated === 0) return false;
+      db.prepare(
+        `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+         WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?`,
+      ).run(leadPane, leadActorId);
+      return true;
+    })();
+    if (!wonRace) {
+      // Issue #27's L4 fix round R8, todo 172 (counselors opus F1, MEDIUM but
+      // the damage is a live session), refined in R9's todo 177 item 1. The
+      // stillThere branch sets leadPane === previousTarget: a pane this
+      // process PROBED as already live, not one it just created. Killing it
+      // here was the bug - "the loser kills the orphan pane it just created"
+      // is only true of the other two branches, which split or spawn a
+      // genuinely fresh pane that has no reason to exist once the CAS says
+      // someone else already recorded a live one. Only kill when this process
+      // is actually the one that made it - tracked directly as createdPane,
+      // not re-derived from comparing leadPane to previousTarget, which a
+      // recycled pane id can satisfy by coincidence either way.
+      if (createdPane) {
+        try {
+          tmux("kill-pane", "-t", leadPane);
+        } catch {
+          // Best effort; the pane may already be gone.
+        }
       }
+      throw new Error(
+        "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
+          "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +
+          "Re-run `hive lead`; it will attach to the pane that invocation recorded.",
+      );
     }
-    throw new Error(
-      "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
-        "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +
-        "Re-run `hive lead`; it will attach to the pane that invocation recorded.",
-    );
-  }
 
-  if (config) {
-    for (const [name, proc] of Object.entries(config.processes)) {
-      if (!proc.auto_start) {
-        console.log(`- ${name}: defined, auto_start off (start with: hive start "${name}")`);
-        continue;
-      }
-      if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-        console.log(`- ${name}: ${startYmlCommand(project, name, proc)}`);
+    if (config) {
+      for (const [name, proc] of Object.entries(config.processes)) {
+        if (!proc.auto_start) {
+          console.log(`- ${name}: defined, auto_start off (start with: hive start "${name}")`);
+          continue;
+        }
+        if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
+          console.log(`- ${name}: ${startYmlCommand(project, name, proc)}`);
+        }
       }
     }
-  }
 
-  attach(session, project);
+    // Printed last, immediately before the attach that takes over the
+    // terminal - the one place on this path a human is actually still
+    // reading stderr. Still runs when nothing above set it
+    // (registrationNotice stays null on an already-registered project) and
+    // still runs on every attach outcome below: attach() either returns
+    // after printing its own instructions (no TTY) or exec's into a real
+    // tmux attach and never returns to this function at all, so nothing can
+    // be placed AFTER it that still needs to run.
+    //
+    // Nulled out immediately after: the catch below reprints
+    // registrationNotice on any throw that reaches it, and without this a
+    // throw from attach() itself (its TTY branch only calls process.exit,
+    // but nothing prevents a future change there) would print the notice
+    // twice. ensureTrusted (both call sites above) does NOT throw - it
+    // returns a boolean on every path - so it is not one of the throws the
+    // catch below exists for.
+    if (registrationNotice) {
+      console.error(registrationNotice);
+      registrationNotice = null;
+    }
+    attach(session, project);
+  } catch (e) {
+    // Review round 1, F5: this project's own review corrected a reachability
+    // claim recorded here that named the CAS race-loser as the only throw
+    // that could drop the notice, and that claim was wrong on its own terms
+    // (idx_agents_running_name is UNIQUE(project_id, name) WHERE
+    // status='running', so a second concurrent `hive lead` on the same
+    // brand-new project fails its OWN INSERT inside ensureLeadRow's
+    // transaction and throws asNameClash - it never reaches a CAS with
+    // casExpected === "" at all). The real answer is plainer and does not
+    // need a narrow story: EVERY tmux() call between the capture above and
+    // the print above throws on failure (src/tmux.ts), and cmdLead makes
+    // several before that print - ensureSession, claimInitialWindow, the
+    // found-window branch's own tmux calls, and the CAS transaction's own
+    // throw among them. The single most reachable case is the plainest:
+    // `hive lead` in a freshly unregistered directory on a machine with no
+    // tmux, or one whose tmux server this process refuses as foreign
+    // (untrustedTmuxServer, src/tmux.ts) - registration succeeds, the
+    // notice is captured, and the very next tmux call throws. Before this
+    // try/catch existed, a throw here dropped the notice permanently: the
+    // project is registered forever after, the notice is a consume-once
+    // in-process fact, and no later invocation ever sees it again. Catching
+    // here and reprinting closes exactly that gap, for every throw in the
+    // body above, not only the tmux ones.
+    if (registrationNotice) console.error(registrationNotice);
+    throw e;
+  }
 }
 
 const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the project root.
@@ -1987,12 +2064,12 @@ function cmdDoctor(): void {
         // for the fuller argument).
         warn(
           "lead",
-          "the lead's row is running but its pane is not live. The janitor leaves it alone on purpose " +
-            "(DECISION 3). Run `hive lead` to record a fresh pane and reuse this same identity, or ask a " +
-            "claude session connected to this project's hive MCP server to call the agent_close tool on " +
-            "it to retire the row for good (e.g. before `hive restore`, which otherwise refuses while any " +
-            "lead row reads running) - then end that session before restoring, since it holds this store " +
-            "open too.",
+          "the lead's row is running but its pane is not live. The janitor leaves lead rows alone on " +
+            "purpose, so nothing will fix this by itself. Run `hive lead` to record a fresh pane and reuse " +
+            "this identity, or ask a claude session connected to this project's hive MCP server to call " +
+            "the agent_close tool on it to retire the row for good - required before `hive restore`, which " +
+            "otherwise refuses while any lead row reads running, and end that session too, since it also " +
+            "holds this store open.",
         );
       } else if (live === null) {
         warn("lead", "the lead's pane liveness could not be probed (tmux did not answer).");
