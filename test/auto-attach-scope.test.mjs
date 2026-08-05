@@ -107,8 +107,16 @@ describe("which clients auto-attach counts", () => {
   });
 
   // ensureAttached is a no-op off darwin by construction, so the cases below
-  // would pass everywhere for the wrong reason. CI is macOS (see ci.yml); a
-  // skip anywhere else is honest, a silent pass is not.
+  // would pass everywhere for the wrong reason. These four are covered by
+  // the macOS leg of the CI matrix only (ci.yml) - Linux runs two of the
+  // three legs and always skips them - so a skip off darwin is honest, a
+  // silent pass is not. THIS IS THE ONLY COVERAGE of the `auto` predicate,
+  // the same predicate whose false green was the headline lesson of
+  // .claude/sessions/dead-ends/2026-08-05-helper-whose-parameters-cannot-disagree.md,
+  // and it now runs on exactly one of three CI legs. If that macOS leg is
+  // ever dropped (it bills 10x on a private repo; see ci.yml's own comment
+  // on the OS split), `auto` loses all coverage and nothing goes red -
+  // check for a replacement before cutting it.
   const runnable = process.platform === "darwin" && hasTmux;
 
   it(

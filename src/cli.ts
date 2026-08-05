@@ -54,10 +54,11 @@ import {
   findProjectForCwd,
   getProject,
   listProjects,
+  takeRegistrationNotice,
   type Project,
 } from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
-import { errorMessage, withTrailingNewline } from "./result.js";
+import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
 import {
   backupHealth,
@@ -209,11 +210,32 @@ for Claude Code panes hive did not create (see docs/tmux.md).`);
 // be registered FIRST to reach the check, and register-then-refuse would
 // manufacture exactly the junk project row finding 1's fix exists to stop
 // creating - refuse first, register nothing, on the same branch.
+// effectiveProjectId() can trigger resolveHomeProject's silent registration
+// fallback (src/context.ts), same as the MCP tool layer, but run()'s notice
+// (src/result.ts) only wraps that layer - the CLI has no equivalent choke
+// point, so this is it. Both call sites below route through here rather than
+// calling getProject(effectiveProjectId())! directly, the same reasoning as
+// run() itself: one place, not one per command, so a future resolveProject
+// caller inherits the notice for free instead of needing to remember it.
+function resolveProjectAndNotify(id: number): Project {
+  const project = getProject(id)!;
+  const notice = takeRegistrationNotice();
+  // stderr, not stdout: this is diagnostic output describing a side effect,
+  // not data a command produces. `hive pad lessons > out.md` from an
+  // unregistered directory routes through this same function, and stdout is
+  // that command's one machine-readable output - a notice on stdout would
+  // land inside the redirected file, ahead of the pad content it is meant to
+  // capture. A human still sees this printed to their terminal either way;
+  // a redirect only stops capturing it.
+  if (notice) console.error(registrationNoticeText(notice));
+  return project;
+}
+
 function resolveProject(path?: string): Project {
-  if (!path) return getProject(effectiveProjectId())!;
+  if (!path) return resolveProjectAndNotify(effectiveProjectId());
   process.chdir(path);
   const pinned = agentProjectPin();
-  if (pinned == null) return getProject(effectiveProjectId())!;
+  if (pinned == null) return resolveProjectAndNotify(effectiveProjectId());
   const target = findProjectForCwd();
   if (target != null && target.id === pinned) return target;
   const pinnedProject = getProject(pinned)!;

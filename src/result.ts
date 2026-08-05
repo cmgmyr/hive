@@ -1,4 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+// Type-only: erased at compile time, so this does not reintroduce the
+// eager-store-open problem the lazy `await import("./context.js")` below
+// exists to avoid.
+import type { Project } from "./context.js";
 
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -22,6 +26,18 @@ const STORE_REPLACED_MESSAGE =
   "This session has been writing to a file that no longer exists on disk; up to one tick " +
   "of writes may already be lost. Restart this session before doing anything else.";
 
+// Shared with src/cli.ts's own resolveProject, which reaches the same
+// resolveHomeProject fallback through effectiveProjectId and is not covered
+// by this file's run() choke point (run() only wraps the MCP tool layer).
+export function registrationNoticeText(notice: Pick<Project, "id" | "path">): string {
+  return (
+    `hive: no registered project matched this session's working directory, so it created ` +
+    `project ${notice.id} at "${notice.path}". If that's unintended: project_prune removes ` +
+    `it if it owns nothing yet, run the session from the intended directory, or call ` +
+    `project_select.`
+  );
+}
+
 export async function run(fn: () => unknown): Promise<CallToolResult> {
   // Imported lazily, not at module top level: result.ts is pulled in by
   // modules (projectYml.ts) that must NOT open the store merely by being
@@ -34,11 +50,29 @@ export async function run(fn: () => unknown): Promise<CallToolResult> {
   if (storeReplaced()) {
     return { content: [{ type: "text", text: STORE_REPLACED_MESSAGE }], isError: true };
   }
+  // Imported here, AFTER the guard above, not concurrently with db.js's own
+  // import: context.ts opens the store the same way db.js does (see the
+  // comment above), so starting its module load before storeReplaced() has
+  // had a chance to refuse would run that load ahead of the exact guard it
+  // exists to respect. Nothing pins that context.ts's module body stays that
+  // cheap. Overlapping the two imports was never worth that risk anyway:
+  // context.js is already in the module cache by the time a genuine tool
+  // call reaches here (every src/tools/*.ts file imports it statically), so
+  // this import() call never does real work, only resolves an
+  // already-cached entry - the only case where starting it early would have
+  // saved anything real is the one case it is not safe to run early in.
+  const { takeRegistrationNotice } = await import("./context.js");
+  let result: CallToolResult;
   try {
-    return ok(await fn());
+    result = ok(await fn());
   } catch (e) {
-    return { content: [{ type: "text", text: errorMessage(e) }], isError: true };
+    result = { content: [{ type: "text", text: errorMessage(e) }], isError: true };
   }
+  const notice = takeRegistrationNotice();
+  if (notice) {
+    result.content.push({ type: "text", text: registrationNoticeText(notice) });
+  }
+  return result;
 }
 
 export function parseTags(text: string): string[] {

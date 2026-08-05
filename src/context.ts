@@ -14,6 +14,52 @@ export interface Project {
 let selectedId: number | null = null;
 let cachedActorId: string | null = null;
 let lastTouchMs = 0;
+
+// Set ONLY by resolveHomeProject's registration fallback below, never inside
+// addProject itself: project_add's MCP handler calls addProject() directly,
+// never touching this flag, so it stays silent. `hive init` is NOT silent -
+// it resolves through this same fallback via resolveProject/effectiveProjectId
+// like every other CLI command, and src/cli.ts's resolveProjectAndNotify
+// prints the notice there too; see that function's own comment.
+//
+// TWO KNOWN RESIDUALS, both accepted rather than fixed here.
+//
+// First: this flag is a module global, not scoped to the request that set
+// it. CLAUDE.md already documents that MCP requests are handled concurrently
+// ("drive dependent calls sequentially" in test/helpers.mjs's own header).
+// selectedId's memoization means at most one call in a process's life ever
+// reaches the branch that sets this flag, but if that call and a second,
+// unrelated concurrent call are both in flight across an await boundary in
+// run() (src/result.ts), the second call's read could in principle drain the
+// notice before the call that produced it does, attaching it to the wrong
+// receipt. Fixing this properly means binding the notice to the specific
+// execution that produced it - AsyncLocalStorage keyed per tool call, or
+// threading it through fn()'s own return value - which is a real change to
+// the tool-call execution model, not a one-line fix, and out of scope for
+// the lane that added this notice. Narrow window, once per process, at worst
+// a misattributed notice rather than data loss or a wrong project id in the
+// working receipt.
+//
+// Second: addProject (below) returns an EXISTING row when the resolved path
+// is already registered, and this flag gets set to whatever addProject
+// returns regardless of which branch it took. gitPrimaryRoot has a 2-second
+// timeout (see its own comment); a call that times out on this attempt but
+// would have succeeded on a retry, combined with a second call that races it
+// and registers the git root itself in between, makes THIS call's own
+// addProject return that now-existing row - and the notice then says
+// "created" about a project this call merely found. Real and verified, but
+// the trigger needs a stalled git command landing in exactly that window,
+// and the cost is a false verb in a sentence naming a project that does
+// exist and is correctly identified - project_prune still refuses to touch
+// it once it owns rows, so the remedy this notice names stays honest either
+// way.
+let pendingRegistrationNotice: Project | null = null;
+
+export function takeRegistrationNotice(): Project | null {
+  const notice = pendingRegistrationNotice;
+  pendingRegistrationNotice = null;
+  return notice;
+}
 // Exported for src/tools/meta.ts's actor_prune: it derives its own liveness
 // window from this rather than picking an unrelated round number, since this
 // is the throttle that bounds how stale actors.last_seen_at can be for a
@@ -443,7 +489,9 @@ function resolveHomeProject(): number {
   // direct prefix match NOR a registered project at the git root, so there
   // is nothing already registered to prefer over the git root - registering
   // there is the most specific project a first-time session can create.
-  selectedId = addProject(gitPrimaryRoot(process.cwd()) ?? process.cwd()).id;
+  const created = addProject(gitPrimaryRoot(process.cwd()) ?? process.cwd());
+  selectedId = created.id;
+  pendingRegistrationNotice = created;
   return selectedId;
 }
 
