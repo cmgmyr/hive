@@ -37,7 +37,7 @@ before(async () => {
 
 after(async () => {
   await mcp.close();
-  cleanup(sessionName(projectId));
+  cleanup(sessionName());
 });
 
 // Pass "cat" when the test needs to see what hive typed into the pane: cat

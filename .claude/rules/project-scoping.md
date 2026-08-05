@@ -9,13 +9,13 @@ paths:
 
 `CLAUDE.md` carries the prohibition (state resolves from the working directory, never fall back to an unrelated project, cross-project access only when the user asks). This file carries the mechanics, because they are only actionable once you are editing one of the files above.
 
-## Where a worker's files are and whose store records its work are two different questions
+## Where a worker's files are, whose store records its work, and where its pane appears are three different questions
 
 Keeping them separable is deliberate, not an oversight to tidy up.
 
-The files come from `cwd`. The store comes from the worker's own `agents` row, read back by `agentProjectPin` in `src/context.ts`, **and the row beats `cwd` on purpose.**
+The files come from `cwd`. The store comes from the worker's own `agents` row, read back by `agentProjectPin` in `src/context.ts`, **and the row beats `cwd` on purpose.** The pane, for a split-placed worker, comes from a third lookup: `parent_actor_id` on that same row, resolved to the spawning lead's own pane and its window (`splitTargetWindow`, `src/spawn.ts`; `.claude/rules/tmux-and-panes.md`).
 
-So a lead in project A can send a worker into project B's checkout and keep orchestrating it from A. That is the point rather than a side effect: B's lead may not be running, and the lead that dispatched the work is the one that has to review it.
+So a lead in project A can send a worker into project B's checkout and keep orchestrating it from A. That is the point rather than a side effect: B's lead may not be running, and the lead that dispatched the work is the one that has to review it. The pane follows the same logic one layer further: that worker's row records project B, but its pane lands in project A's window, next to the lead that spawned it, because "the worker's project's window" is the exact popping-out behaviour this design exists to stop (`decisions/2026-08-05-tmux-topology-windows-not-sessions.md`). A worker's project id is never where you'd look to predict which window its pane is in.
 
 ## The crossing is refused, and it has to be a refusal rather than a prompt
 

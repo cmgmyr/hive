@@ -395,8 +395,8 @@ describe("the janitor sweeps nothing when it cannot trust the server it probed",
 describe("spawning refuses under the same pairing, not just reading", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   // The write half. Refusing to READ liveness off a tmux server this store does
   // not live on is only half a fix while the write path keeps putting that
-  // server's pane ids INTO the store: sessionName() returns the untagged hive-1
-  // for the default store, ensureSession creates a second one on the private
+  // server's pane ids INTO the store: sessionName() returns the untagged
+  // hive-main for the default store, ensureSession creates a second one on the private
   // server, and that server numbers panes from zero, so the row lands in the
   // shared store naming a pane id that very likely exists there belonging to
   // someone else. agent_send would type into it; agent_close would kill it.
@@ -471,8 +471,8 @@ describe("spawning refuses under the same pairing, not just reading", { skip: ha
     // The control for the gate above.
     const name = `hive-ensure-ok-${process.pid}`;
     try {
-      assert.equal(ensureSession(name, projectDir), true, "a legitimate pairing still creates one");
-      assert.equal(ensureSession(name, projectDir), false, "and is idempotent on the second call");
+      assert.equal(ensureSession(name, projectDir).created, true, "a legitimate pairing still creates one");
+      assert.equal(ensureSession(name, projectDir).created, false, "and is idempotent on the second call");
     } finally {
       try {
         execFileSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
@@ -497,7 +497,7 @@ describe("spawning refuses under the same pairing, not just reading", { skip: ha
       // dir along with the session, which is the trap documented at the top of
       // this file and the one that already bit it once. Never kill-server.
       try {
-        execFileSync("tmux", ["kill-session", "-t", `=${sessionName(project)}`], { stdio: "ignore" });
+        execFileSync("tmux", ["kill-session", "-t", `=${sessionName()}`], { stdio: "ignore" });
       } catch {
         // Never started, or already gone.
       }

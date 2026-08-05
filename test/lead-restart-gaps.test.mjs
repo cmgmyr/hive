@@ -160,7 +160,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-fresh-window-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       // A tmux SERVER with no sessions left exits, and the next one to start
       // renumbers windows from @0 - measured directly: an earlier version of
       // this test killed only the probe session, got window id 0 back for
@@ -298,7 +298,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-idempotent-restart-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -389,7 +389,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-unknown-liveness-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);

@@ -109,55 +109,162 @@ export function crossServerRefusal(action: string): Error {
   );
 }
 
-// Returns true when the session was created by this call.
-//
+// What a session start left behind: the ids of the window and pane THIS call
+// created, or nothing when the session was already there. A discriminated
+// union rather than `{created, pane?, window?}` so a caller cannot reach for
+// a window id on the path where there is none (todo 278).
+export type SessionStart = { created: true; pane: string; window: string } | { created: false };
+
 // The refusal lives HERE, not at the callers, because this is the one function
 // that creates a session on whatever server this process happens to reach.
 // launchAgent has its own gate above its INSERT (so a refusal cannot strand a
 // row), but hive lead and hive attach call this directly, and gating them
 // individually would be two copies of a rule that belongs to the act of
 // creating a session. hive attach was the visible half: under the bad pair it
-// created a SECOND hive-1 on the private server and attached the user to an
-// empty session while the real lead and its workers sat on the shared one.
-export function ensureSession(name: string, cwd: string): boolean {
-  if (quietTmux("has-session", "-t", `=${name}`)) return false;
+// created a SECOND hive-main on the private server and attached the user to
+// an empty session while the real lead and its workers sat on the shared one.
+//
+// Todo 278 (counselors codex #1), TWO CHANGES, both about what this function
+// tells its caller.
+//
+// It RETURNS THE IDS IT CREATED. `new-session -P -F` prints the new session's
+// first pane and window directly, so claimInitialWindow below no longer has to
+// ask which window the session is showing - see its own comment for the lead
+// this used to kill.
+//
+// It TREATS "duplicate session" AS SUCCESS BY SOMEONE ELSE. has-session-then-
+// new-session is a check-then-act, and it used to be harmless only because
+// racers had DIFFERENT session names (one session per project). Under one
+// store-scoped session, two `hive lead` runs in different repos used to be
+// able to both probe an absent session and both try to create it, and so
+// could a `hive attach` racing either. The loser used to die with a raw
+// "duplicate session: hive-main", which is tmux's answer to "it already
+// exists", the same fact the probe above returns false for. Matched on
+// tmux's own stderr (measured against tmux 3.7b: `duplicate session: base`),
+// and narrow deliberately: any OTHER new-session failure still throws.
+//
+// DEFENCE IN DEPTH NOW, NOT A LIVE PATH - pad 79 T5's own review caught an
+// earlier version of this comment claiming otherwise after `hive attach`
+// moved inside the claim below it describes. Every production call
+// (launchAgent, src/spawn.ts; cmdLead and cmdAttach, src/cli.ts) now reaches
+// ensureSession from INSIDE withWindowClaim's cross-process exclusion
+// (src/spawn.ts), which already serializes the has-session probe against the
+// create for every caller this codebase has, so two of THESE three can no
+// longer race each other into this catch at all. Kept anyway, and tested
+// directly rather than only through the callers above
+// (test/initial-window-claim.test.mjs, 10/10 under raceProcesses): the
+// exclusion is per-store, not a property of ensureSession itself, so a
+// future call site added outside a withWindowClaim section - a script, a
+// second CLI command, anything that does not route through it - would hit
+// this race for real and get tmux's raw stderr instead of the benign
+// { created: false } this catch was built to hand back.
+export function ensureSession(name: string, cwd: string): SessionStart {
+  if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
-  tmux("new-session", "-d", "-s", name, "-c", cwd);
-  return true;
+  try {
+    const [pane, window] = tmux(
+      "new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}", "-s", name, "-c", cwd,
+    ).split("\t");
+    return { created: true, pane, window };
+  } catch (e) {
+    if (!isDuplicateSession(e)) throw e;
+    return { created: false };
+  }
+}
+
+// tmux's answer when new-session names a session that already exists. Split
+// out so a test can pin the string against a REAL tmux error rather than a
+// hand-built one: this is a match on another program's English, and the cost
+// of it silently drifting is ensureSession rethrowing a race it is supposed to
+// absorb. tmux is not localized, so matching its English is stable.
+export function isDuplicateSession(e: unknown): boolean {
+  return e instanceof TmuxError && /duplicate session/.test(e.stderr);
 }
 
 // A new session opens its first window with a default shell. The first real
 // occupant (lead or agent) claims that window via respawn instead of leaving
 // the shell behind as an idle pane. respawn-pane -e keeps the env flags
 // pane-scoped; new-session -e would leak them into every later window.
+//
+// Todo 278 (counselors codex #1), THE MOST DESTRUCTIVE FINDING OF ITS ROUND.
+// `start` is the pane and window ensureSession itself created, passed in.
+// This used to identify "the initial window" by running
+// `list-panes -t =<session>`, which resolves to the session's CURRENT window -
+// not the one the caller made. Under one store-scoped session that is a
+// different window the moment anyone else adds one, and `new-window` MAKES
+// ITS RESULT CURRENT: project A creates the session, project B creates and
+// stamps its own window in it before A gets here, and A's list-panes then
+// resolves B's window. A overwrote B's stamp and ran `respawn-pane -k`,
+// KILLING LEAD B and replacing it with lead A. Both lead rows then named one
+// pane, and B's own liveness probe SUCCEEDED because that pane was alive, so
+// B's sends and wakes went to A.
+//
+// Never ask which window is current. A pane id or a window id, always.
+// projectId is REQUIRED, not optional, and `number | null` rather than
+// `number | undefined` - deliberately, after a defect this asymmetry caused
+// (found in /simplify review, todo 265/266): an optional parameter let one
+// call site (launchAgent's createdSession branch, src/spawn.ts) forward a
+// projectId already in scope to EVERY placement, stamping a placement="window"
+// worker's own private window with the project's ownership stamp and handing
+// a later `hive lead` or split-placed worker that private window to land in.
+// A required parameter forces every call site to choose: a project's shared
+// window passes its id, a worker's own dedicated window passes null,
+// explicitly, and a future call site will not compile until its author
+// decides which. Honest limit: this only binds TypeScript call sites: the
+// .mjs test suite can still pass anything it likes. Worth having anyway,
+// since TS is where the defect actually happened.
 export function claimInitialWindow(
-  session: string,
+  start: { pane: string; window: string },
   windowName: string,
   cwd: string,
   envFlags: string[],
   command: string,
+  projectId: number | null,
 ): { pane: string; window: string } {
-  const [pane, window] = tmux(
-    "list-panes", "-t", `=${session}`, "-F", "#{pane_id} #{session_name}:#{window_id}",
-  )
-    .split("\n")[0]
-    .split(" ");
-  configureHiveWindow(window, true);
+  const { pane, window } = start;
+  configureHiveWindow(window, true, projectId);
   tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...envFlags, command);
   tmux("rename-window", "-t", window, windowName);
   return { pane, window };
 }
 
 export const SESSION_PREFIX = "hive-";
-// dataDirTag is empty for the default store, so the everyday name stays the
-// documented hive-<project_id>. A scratch store gets its own namespace; see
-// src/dataDir.ts for why sharing one is dangerous.
+// One session per STORE, not per project: every project in a store shares
+// this session, one window each. dataDirTag is empty for the default store,
+// so the everyday name is the documented hive-main. A scratch store gets its
+// own namespace; see src/dataDir.ts for why sharing one is dangerous.
 //
 // The name this returns is the target argument for kill-session and
 // respawn-pane, so it is guarded exactly like opening the store: under a test
-// runner with no HIVE_DATA_DIR this refuses rather than handing back "hive-1",
-// which names a live session.
-export const sessionName = (projectId: number) => `${SESSION_PREFIX}${dataDirTag()}${projectId}`;
+// runner with no HIVE_DATA_DIR this refuses rather than handing back
+// "hive-main", which names a live session.
+export const sessionName = () => `${SESSION_PREFIX}${dataDirTag()}main`;
+
+// A second `hive <path>` outside tmux, when the base session already has a
+// client, attaches through its own VIEW SESSION instead of adding a second
+// client to the base (two clients on one session share a current window and
+// fight over it - pad 71 "SECOND PROJECT, SIDE BY SIDE INSTEAD", measured
+// 2026-08-04). A view session owns no panes; it is a second session grouped
+// with the base one (`new-session -t <base>`), so it borrows the base's
+// windows with its OWN current-window pointer.
+//
+// Named by the invoking process's pid rather than a lowest-free-integer
+// search: a pid cannot collide, so there is no retry loop to get wrong. Kept
+// under the same hive- prefix as sessionName so doctor's three
+// startsWith(SESSION_PREFIX) sweeps see it.
+export const viewSessionName = () => `${SESSION_PREFIX}${dataDirTag()}view-${process.pid}`;
+
+// Recognizes ANY process's view session, not just this one's own -
+// viewSessionName() above only ever builds the CURRENT pid's name. Doctor's
+// stray-view-session report (todo 273) and restart-lead.sh's session
+// derivation both need to tell "a view session" apart from the base session
+// among a list of names already filtered to the hive- prefix, for a session
+// this process did not create and whose pid it does not know. The suffix
+// alone is enough - dataDirTag() can appear ahead of "view-", but never
+// inside it - so this needs no dataDirTag() of its own, unlike viewSessionName.
+// scripts/restart-lead.sh mirrors this exact suffix in bash rather than
+// shelling out to node for it; keep the two in sync by hand if this changes.
+export const isViewSessionName = (name: string): boolean => /view-\d+$/.test(name);
 
 // Window names double as iTerm tab titles (and notification labels), so they
 // carry the project name: "hive - lead", "hive - worker-1".
@@ -457,12 +564,29 @@ export const TMUX_DOC = "docs/tmux.md";
 
 // Hive configures only windows it created. The marker is the boundary: a
 // split can deliberately land in a window the user made, and a pane border
-// would take a row from that window. `created` is true only at the three
-// window-creation sites, where the marker and options are applied before the
-// real process is respawned into the window. Later callers must prove the
-// marker is already present. All of this is cosmetic/best-effort; a running
-// worker without these settings is better than a failed spawn.
-export function configureHiveWindow(window: string, created = false): void {
+// would take a row from that window. `created` is true only at the window-
+// creation sites, where the marker and options are applied before the real
+// process is respawned into the window. Later callers must prove the marker
+// is already present. All of this is cosmetic/best-effort; a running worker
+// without these settings is better than a failed spawn.
+//
+// projectId stamps @hive-project-id alongside @hive-owned - the ownership key
+// cmdLead and splitTargetWindow look a project's SHARED window up by, instead
+// of by window NAME (decisions/2026-08-05-tmux-topology-windows-not-sessions.md).
+// REQUIRED, not optional, and `number | null` - deliberately, after a defect
+// this asymmetry caused (found in /simplify review, todo 265/266): an
+// optional parameter let one call site forward a projectId already in scope
+// to every window it created regardless of whether that window was the
+// project's SHARED one, stamping a worker's own PRIVATE window
+// (placement="window") with it and handing a later lookup that private
+// window to land in. Pass null for a window that must never resolve as
+// anyone's shared window - a worker's own placement="window" window is
+// exactly that case. No default value, deliberately, so every TypeScript
+// call site states its choice; a caller from the untyped .mjs test suite can
+// still omit it, and the runtime check below treats that the same as null.
+// Honest limit: this only binds TypeScript call sites, same caveat as
+// claimInitialWindow's.
+export function configureHiveWindow(window: string, created: boolean, projectId: number | null): void {
   try {
     if (!created) {
       // list-panes errors when the target is dead. display-message silently
@@ -477,14 +601,413 @@ export function configureHiveWindow(window: string, created = false): void {
     // still passed through execFileSync with no shell involved.
     tmux(
       ...(created ? ["set-window-option", "-t", window, "@hive-owned", "1", ";"] : []),
+      // != null (not !==) catches both null (an explicit "never stamp this
+      // window") and undefined (an untyped .mjs caller that omitted the
+      // argument entirely) the same way.
+      ...(created && projectId != null
+        ? ["set-window-option", "-t", window, "@hive-project-id", String(projectId), ";"]
+        : []),
       "set-window-option", "-t", window, "allow-passthrough", "all", ";",
       "set-window-option", "-t", window, "pane-border-status", "top", ";",
       "set-window-option", "-t", window, "pane-border-format", " #{pane_index} #{pane_title} ", ";",
-      "set-window-option", "-t", window, "monitor-bell", "on",
+      "set-window-option", "-t", window, "monitor-bell", "on", ";",
+      // `latest` (tmux's default) sizes a window to whoever focused it last,
+      // so two clients on the same window (a base client and a view client,
+      // above) fight over its size. `smallest` is identical to today's
+      // behaviour with one client and only differs once a view session
+      // exists. `manual` was considered and rejected (lane 1): it freezes the
+      // window and stops following a resize even with a single client.
+      // Chris accepted the letterboxing this trades in deliberately: it is a
+      // visible signal that a view session is open, not a bug to fix later.
+      "set-window-option", "-t", window, "window-size", "smallest",
     );
   } catch {
     // Leave the window and its process usable with tmux's existing settings.
   }
+}
+
+// A project's SHARED window in the one store-scoped session, found by its
+// @hive-project-id ownership stamp - never by window name (decisions/2026-
+// 08-05-tmux-topology-windows-not-sessions.md). cmdLead (src/cli.ts) and
+// splitTargetWindow (src/spawn.ts) both call this; extracted (/simplify
+// review, item 3) after they carried a character-for-character identical
+// lookup and two copies of the justification below.
+//
+// #{@hive-project-id} is a WINDOW-scope custom option read directly at
+// window scope via list-windows -F - not the M7 trap on pad 71, which is
+// specifically about reading a window-scope value through a PANE-scope
+// show-options query without -A. Measured live against a real tmux (this
+// comment's claim, not just pad 71's): show-options -w, with or without -A,
+// and list-windows -F all agree once a value is set at window scope: -A
+// only matters descending from window to pane scope, never at matching
+// scope. No -A appears below because this query never descends.
+//
+// cmdLead's own call site carries a SEPARATE comment about what its
+// stillThere check depends on this lookup being ownership-derived - that
+// comment stays there, not here: it is about cmdLead's restart path, not
+// about this lookup in general, and splitTargetWindow has no stillThere to
+// protect.
+// The raw fetch half of findProjectWindow below, split out for a caller that
+// matches against it repeatedly rather than once - `hive status`'s cmdStatus
+// loops over every project in the store, and sessionName() names the same
+// one session for all of them, so forking list-windows inside that loop
+// forks the identical listing once per project where one fork would do
+// (cli.ts hoists this above its own loop and matches per project against
+// the single result, the same pattern its own hiveSessions() already uses
+// for doctor's two session-report consumers).
+export function listOwnedWindows(session: string): [string, string][] {
+  return tmux(
+    "list-windows", "-t", `=${session}`, "-F", "#{session_name}:#{window_id}\t#{@hive-project-id}",
+  )
+    .split("\n")
+    .map((row) => row.split("\t") as [string, string]);
+}
+
+export function findProjectWindow(session: string, projectId: number): string | undefined {
+  return listOwnedWindows(session).find(([, ownerId]) => Number(ownerId) === projectId)?.[0];
+}
+
+// The inverse of findProjectWindow: not "which window does this project own"
+// but "which project does this window carry the stamp for". Todo 268 -
+// launchAgent's split branch needs this to tell whether a worker's pane just
+// landed in a window a DIFFERENT project owns (the cross-repo case: a worker
+// recorded under project 9's parent lead lives in project 1's window), so
+// the spawn receipt can say so rather than leaving a caller to reconstruct it
+// from project_id, which is exactly the field it cannot reconstruct.
+// show-options errors ("invalid option") on a custom option never set
+// anywhere on this window, rather than answering empty - same as
+// configureHiveWindow leaving @hive-project-id unset for a placement="window"
+// worker's own window (null passed there, deliberately). Read that as "no
+// owner", same as an empty stamp.
+export function windowOwner(window: string): number | null {
+  try {
+    const value = tmux("show-options", "-w", "-v", "-t", window, "@hive-project-id");
+    return value === "" ? null : Number(value);
+  } catch {
+    return null;
+  }
+}
+
+// Todo 276 (counselors opus #2). The window a lead's PREVIOUS pane is sitting
+// in, when that window is one this project may take back - or null when it is
+// not. Liveness is the caller's question (rowLive, at the call site); this
+// answers the ownership half, and it is an EXCLUSION rather than a
+// membership requirement.
+//
+// The distinction is the whole finding. cmdLead used to prove ownership by
+// requiring the pane to be a member of findProjectWindow's result, and read a
+// failed membership test as "the pane is gone" - a biconditional nothing
+// supports. A lead pane that merely MOVED (`tmux break-pane` to get it
+// full-screen, or the topology upgrade) is live, socket-matching and
+// correctly recorded, and still failed that test, so cmdLead split a SECOND
+// claude in beside it under the same HIVE_AGENT_ID. Membership PROVING
+// ownership was sound; failed membership proving death was not.
+//
+// Two things have to hold for the pane's window to be adoptable, and they are
+// both narrower than "any live pane":
+//   - the window is one of THIS store's session's own windows. A pane
+//     stranded in an old per-project session (hive-<project.id>, the accepted
+//     cross-upgrade residual at cmdLead's own call site) is live and is still
+//     not adoptable: nothing in this store points at that session any more.
+//   - the window carries no ownership stamp, or carries THIS project's. A
+//     stale target pointing into ANOTHER project's window stays refused,
+//     which is the property test/lead-window-ownership.test.mjs pins.
+//
+// The returned target is re-qualified with the BASE session's own name rather
+// than whatever session paneWindow() happened to report. list-panes resolves
+// a pane's `#{session_name}` to ANY session the window belongs to, and once a
+// view session is grouped with the base it can and does answer with the
+// VIEW's name (measured against tmux 3.7b: a pane created in `base` reported
+// `view1:@1` while view1 existed). A view is transient; a target carrying its
+// name outlives it by seconds. Only the window id is load-bearing here, so
+// only the window id crosses back out.
+export function adoptableWindow(session: string, projectId: number, pane: string): string | null {
+  const paneWin = paneWindow(pane);
+  if (!paneWin) return null;
+  const windowId = paneWin.split(":")[1];
+  const match = listOwnedWindows(session).find(([window]) => window.split(":")[1] === windowId);
+  if (!match) return null;
+  const owner = match[1] === "" ? null : Number(match[1]);
+  if (owner !== null && owner !== projectId) return null;
+  return `${session}:${windowId}`;
+}
+
+// A window created directly - not the session's already-existing first
+// window (claimInitialWindow, above, is for that) - stamped and launched in
+// one step. The sibling of claimInitialWindow for every OTHER window hive
+// creates: cmdLead's fresh window for a project with no window yet in the
+// shared session, launchAgent's placement="window" worker windows, and
+// launchAgent's own split branch when splitTargetWindow finds no existing
+// window for the project. Extracted (/simplify review, item 4) after three
+// near-identical copies of this exact sequence - new-window -P -F,
+// destructure, configureHiveWindow, respawn-pane -k - which is precisely the
+// drift buildEnvFlags' own comment (src/spawn.ts) already recorded this
+// codebase getting bitten by once: a var added to one copy and not the
+// others. One of the three copies used a bare session name rather than
+// `=${session}` for -t; standardised on the `=` form here, matching every
+// other session target in this file, since a bare name lets tmux's fuzzy
+// session-name matching pick a different session than the one meant -
+// harmless today (session names are unique in practice) but not a
+// distinction worth keeping once there is only one copy of this to write.
+export function createWindow(
+  session: string,
+  windowName: string,
+  cwd: string,
+  envFlags: string[],
+  command: string,
+  projectId: number | null,
+): { pane: string; window: string } {
+  const created = tmux(
+    "new-window", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
+    "-t", `=${session}`, "-n", windowName, "-c", cwd,
+  );
+  const [pane, window] = created.split("\t");
+  configureHiveWindow(window, true, projectId);
+  tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...envFlags, command);
+  return { pane, window };
+}
+
+// The decision and mechanics behind a second real terminal's `hive <path>`
+// attach, outside tmux (src/cli.ts's `attach()`). Extracted so a test can
+// drive the actual function two real clients would exercise, rather than a
+// reimplementation that could silently drift from it - the exact shape
+// dead-ends/2026-08-05-helper-whose-parameters-cannot-disagree.md warns
+// against.
+//
+// Two clients on ONE session share its current window and fight over it
+// (pad 71 "SECOND PROJECT, SIDE BY SIDE INSTEAD", measured 2026-08-04), so a
+// second attach when `session` already has a client routes through a VIEW
+// SESSION instead: `new-session -t <session>` groups with it, borrowing its
+// windows with an INDEPENDENT current-window pointer of its own. A view
+// session owns no panes, so destroying it can never kill a worker.
+//
+// The view is not created here as a separate tmux() call: it is created,
+// stamped and (when a window is found) navigated in the SAME chained
+// invocation this function returns, for two independent reasons measured
+// against tmux 3.7b.
+//
+// First, destroy-unattached (the view's whole teardown story) fires the
+// instant it is set on a session with zero clients - it is not a "next
+// detach" check - so creating the view first and setting the option in a
+// LATER, separate call would destroy it before its own client ever attaches.
+// Chaining `new-session` (which both creates and attaches, as one atomic
+// step) with `set-option` right after it, in the ONE invocation that
+// performs the real attach, guarantees the view already has a client by the
+// time tmux evaluates the option.
+//
+// Second, `new-session -t <base> -s <view>` followed by `; <cmd> -t =<view>`
+// in that SAME chained invocation intermittently answers "no such session"
+// for the exact-match `=view` form specifically - measured, reproducible,
+// gone the instant the chained sub-commands address the session by its BARE
+// name instead. Every OTHER target in this file uses the `=` exact-match
+// form deliberately (tmux's fuzzy prefix matching can pick the wrong
+// session); this one chain does not, and is safe only because viewSessionName
+// is tagged by pid and cannot collide with anything else on the server.
+// Todo 272. `hive attach` (and cmdLead's own cold-start attach) used to land
+// on whatever window the session happened to be showing, because attaching
+// to a session with no client selects nothing on its own - the session's
+// current window is whatever it last was, not necessarily this project's.
+// A window id (@N) is shared across every session in the group, but
+// `select-window -t <id>` with no session qualifier moves the CURRENT
+// window of every session sharing it (measured) - the exact yank a view
+// session exists to avoid, so this is qualified with the TARGET session's
+// own name in both branches: base's name in the no-client branch (base has
+// no client yet, so selecting its own current window here cannot yank
+// anyone), the view's name in the has-client branch (only its own
+// independent current-window pointer may move; base stays untouched).
+//
+// REVERSAL, recorded because a rejected suggestion and the change that
+// followed it need to read as the same idea judged differently, not as one
+// contradicting the other. A /simplify pass on this lane proposed chaining
+// the no-client branch's select-window into the returned argv, the way the
+// has-client branch already does, to save one fork. Rejected at the time on
+// the grounds that it changes behaviour: cmdAttach's non-TTY branch never
+// SPAWNS what this function returns, it only PRINTS advice built by hand, so
+// chaining would have stopped the window being selected on that path. That
+// reasoning was right about the mechanism and wrong about which behaviour to
+// keep. The smoke test against a real build found the actual bug: the
+// non-TTY branch's hand-built advice (`tmux attach -t <session>`) knew
+// nothing about the project's window or an already-attached base session, so
+// it could walk a human straight into the current-window fight this lane
+// exists to prevent - pad 71 opened on exactly this shape, two pieces of
+// hive's own advice pointing opposite ways, neither citing the other. The
+// fix is not "print smarter"; it is that resolveAttachTarget must be usable
+// to DESCRIBE the target as well as to REACH it, which an eager side effect
+// makes impossible - a function that also performs the outcome cannot be
+// reused to name it without performing it a second time. So this returns
+// argv now, unconditionally, with every tmux mutation folded INTO it; the
+// side effect the non-TTY path could not afford was the bug, not something
+// worth preserving. cmdAttach spawns this on the TTY path and renders it
+// into a pasteable command on the non-TTY one, from the one source that
+// cannot drift.
+// `known` is a window the caller already resolved and this lookup would get
+// wrong - cmdLead's adopted-pane branch (todo 276), whose lead pane is live in
+// a window that does not carry this project's stamp. Everything else omits it.
+// Todo 279 (counselors codex #4): THE list-clients READ IS GONE, and with it
+// the race it carried. This function used to branch on whether the base
+// session already had a client - a read whose answer is executed LATER, by a
+// caller that spawns the returned argv - so two terminals attaching at the
+// same instant both read zero clients, both got a plain attach, and both
+// landed on base: the two-clients-on-one-session fight the view session
+// exists to prevent, recreated by the check meant to avoid it. There is no
+// way to make a read-then-execute atomic across two processes while the
+// decision depends on the read at all.
+//
+// So EVERY attach from outside tmux goes through its own view session now.
+// Deleting the read beats guarding it: a serialized read would still leave
+// the EXECUTION outside the lock, which is the same read-then-act one level
+// up that todo 277 rejected for the reconcile shape - taking it here would
+// have left this round inconsistent with itself. It also collapses the
+// everyday one-terminal path and the side-by-side two-terminal path into one
+// path, so there is no longer a mode that is correct with one terminal and
+// wrong with two.
+//
+// WHAT IT COSTS, written down rather than left to be discovered: the daily
+// single-terminal attach now runs through machinery built for the second
+// terminal, and a view session stops being exceptional. `tmux ls` shows one
+// per attached terminal, and doctor's stray-view report (todo 273) gets
+// noisier in proportion, with destroy-unattached below as the thing keeping
+// that honest - it is what makes a view disappear the instant its client
+// goes, so a stray one really is a fault rather than the normal case.
+//
+// destroy-unattached is set ON THE VIEW, in this same chain, at creation.
+// NEVER on the base session and never globally (pad 76's view-session design,
+// point 3): leads run detached, so a global one would kill the base session
+// and every lead in it the moment the last client detached.
+export function resolveAttachTarget(
+  session: string,
+  projectId: number,
+  controlMode: boolean,
+  known?: string,
+): string[] {
+  const cc = controlMode ? ["-CC"] : [];
+  const window = known ?? findProjectWindow(session, projectId);
+  const view = viewSessionName();
+  return [
+    ...cc,
+    "new-session", "-t", `=${session}`, "-s", view,
+    ";", "set-option", "-t", view, "destroy-unattached", "on",
+    ...(window ? [";", "select-window", "-t", `${view}:${window.split(":")[1]}`] : []),
+  ];
+}
+
+// The session the CALLER is in, for a hive command run from inside a tmux
+// pane. Two sources, in this order, and the order is the finding (todo 279).
+//
+// `#{client_session}` is the session the human's own client is looking at.
+// That is the right answer even though it is not the pane's own session:
+// once a view session is grouped with the base, a pane CREATED in the base
+// is shown to a client attached to the VIEW, and moving the base's current
+// window would move the OTHER terminal while leaving this one exactly where
+// it was. Measured against tmux 3.7b with a real client on the view: a pane
+// created in `base` answered `client_session=view1`, while `$TMUX`'s own
+// session id still resolved to `base`.
+//
+// With two clients, tmux resolves "the current client" by most recent
+// activity - measured: a client on base and a client on view1, probing from
+// a pane in base's window, answered `view1`, the one that had just been
+// used. That is the right client for a human who just typed a command, and
+// it is a heuristic rather than a guarantee; there is no way to ask tmux
+// which client's terminal a process's stdout is on, because a pane's tty is
+// the PANE's, not the client's.
+//
+// Falling back to `$TMUX`'s third field (the session id of the session this
+// pane was created in) covers the case where nothing is attached at all - a
+// pane in a detached session. Nothing is looking at it, so nothing can be
+// yanked, and its own session is the honest answer. null when neither
+// resolves: the caller then has nothing to move.
+export function callerSession(): string | null {
+  try {
+    const attached = tmux("display-message", "-p", "#{client_session}");
+    if (attached) return attached;
+  } catch {
+    // No client, or no server; fall through to the pane's own session.
+  }
+  const sessionId = process.env.TMUX?.split(",")[2];
+  if (!sessionId) return null;
+  try {
+    return tmux("display-message", "-p", "-t", `$${sessionId}`, "#{session_name}") || null;
+  } catch {
+    return null;
+  }
+}
+
+export function windowIdsIn(session: string): string[] {
+  try {
+    return tmux("list-windows", "-t", `=${session}`, "-F", "#{window_id}").split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// The in-tmux sibling of resolveAttachTarget: what to run when `hive <path>`
+// is typed in a pane rather than in a bare terminal. Returns argv for the
+// same reason that one does - so cmdAttach can describe the target as well as
+// reach it - or null when there is nothing to move to.
+//
+// Todo 279 (counselors codex #3 and opus #1 independently, so certain). This
+// used to be one line: `select-window -t <window>`, where the window came
+// from findProjectWindow qualified with the BASE session's name.
+// select-window on a session-qualified target moves THAT SESSION's current
+// window, so from a pane inside a VIEW session it moved BASE's - yanking the
+// other terminal to a window nobody there asked for, while the caller did not
+// move at all. The comment that used to sit at the call site ("the caller is
+// already IN the session this pane belongs to") stopped being true the moment
+// a view session existed, which is the same commit that made views possible.
+//
+// A BARE window id is not the fix and never was: the code's own measurement
+// records that `select-window -t @4` moves the current window of sessions
+// sharing it, chosen by tmux rather than by the caller. Qualify it with the
+// CALLER's session.
+//
+// A caller in an UNRELATED tmux session - their own work session, not hive's
+// - cannot select a window it does not have, so it gets the same view session
+// every outside-tmux attach gets, reached with switch-client rather than
+// attach because this client already exists. The old switch-client
+// implementation handled that case and `new-session -t` alone does not, so it
+// is handled explicitly here rather than left to fail. The view is created
+// DETACHED and destroy-unattached is set LAST, after switch-client has put a
+// client on it: set any earlier and tmux destroys it on the spot, since that
+// option fires immediately on a session with zero clients rather than at the
+// next detach.
+export function resolveInTmuxTarget(session: string, window: string | undefined): string[] | null {
+  const windowId = window?.split(":")[1];
+  if (!windowId) return null;
+  const caller = callerSession();
+  if (caller && windowIdsIn(caller).includes(windowId)) {
+    return ["select-window", "-t", `${caller}:${windowId}`];
+  }
+  const view = viewSessionName();
+  return [
+    "new-session", "-d", "-t", `=${session}`, "-s", view,
+    ";", "select-window", "-t", `${view}:${windowId}`,
+    ";", "switch-client", "-t", view,
+    ";", "set-option", "-t", view, "destroy-unattached", "on",
+  ];
+}
+
+// Renders resolveAttachTarget's returned argv into a command a human can
+// PASTE into their own shell, for cmdAttach's non-TTY branch. Two things a
+// generic shellQuote() cannot get right here:
+//
+// A bare leading `=` in a tmux target (every session target this function
+// ever builds) triggers zsh EQUALS EXPANSION when a human pastes it
+// unquoted (.claude/rules/tmux-and-panes.md, "Two shell traps") - quoted
+// unconditionally here, not left to a "looks safe" heuristic, because the
+// character IS in shellQuote's own safe set and shellQuote would leave it
+// bare.
+//
+// A bare ";" is TMUX's OWN chaining syntax inside one argv, passed to
+// execFileSync/spawnSync with no shell involved - it is not a shell
+// separator there. Typed at a real shell UNQUOTED, that same token WOULD be
+// a shell separator, splitting one `tmux ...` invocation into two broken
+// fragments. Quoted here (`';'`, matching this file's own quoting
+// convention) so a human's shell passes it through to tmux as the single
+// literal argument it always was.
+export function renderAttachCommand(argv: string[]): string {
+  return argv
+    .map((token) => (token === ";" ? "';'" : token.startsWith("=") ? `'${token}'` : shellQuote(token)))
+    .join(" ");
 }
 
 export const WINDOW_LAYOUTS = [
@@ -1043,10 +1566,20 @@ export function attachScripts(tmuxPath: string, session: string): string[] {
 // inline ternary, and it is exported so a test can see which probe ran.
 //
 // "on" asks whether THIS SESSION is watched, which is what hive did before
-// this preference existed: with one tmux client moved between per-project
-// sessions, every session the human is not looking at right now has zero
-// clients, so every spawn there opened a native window. "auto" asks whether
-// they are watching ANY session on this server, so hive stays out of the way
+// this preference existed, back when each project had its OWN session: with
+// one tmux client moved between per-project sessions, every session the
+// human was not looking at right now had zero clients, so every spawn there
+// opened a native window. Under the one-session topology (todo 267-279)
+// that per-session signal is mostly gone: every project shares this one
+// base session, and every real attach now groups a separate, pid-named VIEW
+// session with it (todo 279, "always attach through a view") rather than
+// attaching to base directly - so `list-clients` scoped to base reads empty
+// even while a human is actively attached through a view. "on" is left as a
+// degenerate, near-always-empty probe rather than removed (T4b's own
+// decision, plan-lane-3-tmux-topology pad, records the identical cost for
+// doctor's stray-view report: "degrades from signal to noise", same cause).
+// "auto" asks whether they are watching ANY session on this server - base or
+// any view - so it still reflects real attachment; hive stays out of the way
 // while they are at the keyboard and still surfaces a worker once they have
 // closed their terminal.
 //

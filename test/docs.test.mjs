@@ -70,6 +70,27 @@ describe("docs keep up with the CLI", () => {
     assert.ok(existsSync(join(REPO, TMUX_DOC)), `the CLI points at ${TMUX_DOC}, which does not exist`);
   });
 
+  // Todo 275 (topology-3c). Sessions are one per STORE now, not one per
+  // project (`hive-main`, not `hive-<project_id>`); a doc still teaching the
+  // old naming sends a reader to attach at a session that does not exist.
+  // `\d+\b` alone would also flag the current, correct `hive-main` or a
+  // scratch store's hash-tagged `hive-<tag>-main` (the tag mixes letters and
+  // digits, and `\b` never falls inside one \w run), so this only matches
+  // what the old naming actually looked like: a project id, digits alone
+  // right after the prefix, or the literal `<project_id>` placeholder.
+  it("carries no hive-<project_id> session reference anywhere in docs/, README.md, or src/help.ts", () => {
+    const STALE = /hive-(?:<project_id>|\d+)\b/;
+    const candidates = [
+      ...globSync("docs/*.md", { cwd: REPO }),
+      "README.md",
+      "src/help.ts",
+    ];
+    for (const path of candidates) {
+      const text = readRepo(path);
+      assert.doesNotMatch(text, STALE, `${path} still names a per-project session (hive-<project_id> shape)`);
+    }
+  });
+
   it("tells a reader to re-pin the interpreter after an update", () => {
     const readme = readRepo("README.md");
     // The Updating section used to promise no reinstall and no

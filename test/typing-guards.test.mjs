@@ -91,13 +91,13 @@ before(async () => {
   // than asserting around it.
   if (!hasTmux) return;
   execFileSync("tmux", [
-    "new-session", "-d", "-s", sessionName(projectId), "-x", "300", "-y", "60", "-c", dirs.projectDir,
+    "new-session", "-d", "-s", sessionName(), "-x", "300", "-y", "60", "-c", dirs.projectDir,
   ]);
 });
 
 after(async () => {
   await mcp.close();
-  cleanup(sessionName(projectId));
+  cleanup(sessionName());
 });
 
 // Each command replays a fixture (or a synthetic screen) byte-for-byte via

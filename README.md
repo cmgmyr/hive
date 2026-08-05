@@ -94,7 +94,7 @@ Layout: by default workers spawn as panes in the lead's window, auto-tiled; unde
 
 Want the lead to have a prominent pane instead of an even grid? Set `layout: main-vertical` in `hive.yml` (or pass `layout: "main-vertical"` on a single spawn) and the lead fills the left half with workers stacked on the right. The options are `tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, and `even-vertical`; the `main-*` ones give the lead half the window. hive re-applies the layout when a worker closes as well as when one spawns, so it survives crew changes.
 
-When no tmux client is attached anywhere on hive's tmux server and a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers surface after you close your terminal without opening extra windows while you are watching another project. macOS will ask once to allow controlling iTerm; approve it. This default is `hive setup --auto-attach auto`; use `off` to disable auto-open, or `on` to retain the per-session behavior. Use `hive setup --attach raw` to keep the pop-open but drop control mode in favor of a plain `tmux attach`.
+When no tmux client is attached anywhere on hive's tmux server and a worker spawns, hive pops open iTerm (or Terminal) attached to the session, so workers surface after you close your terminal without opening extra windows while you are watching another project. macOS will ask once to allow controlling iTerm; approve it. This default is `hive setup --auto-attach auto`; use `off` to disable auto-open, or `on` to watch only the shared base session rather than every tmux session on the server - a narrower check than `auto`'s, and one that a normal attach (which opens its own view session grouped with base, never a direct client on base itself) rarely satisfies. Use `hive setup --attach raw` to keep the pop-open but drop control mode in favor of a plain `tmux attach`.
 
 ### Attach mode
 
@@ -206,16 +206,16 @@ Todos are reachable from the shell too: `hive todos` lists the current project's
 
 ### Workers
 
-A lead session spawns workers with `agent_spawn`; each worker is an agent CLI (default `claude`) in a tmux window under the session `hive-<project_id>`, started with its own actor identity and `HIVE_PROJECT_LOCK=1`. The lead types into workers with `agent_send` and reads their terminals with `agent_output`. For parallel file edits, spawn each worker in its own git worktree (`cwd` parameter); worktrees resolve to the same project, so everyone shares one plan.
+A lead session spawns workers with `agent_spawn`; each worker is an agent CLI (default `claude`) in a tmux pane or window, started with its own actor identity and `HIVE_PROJECT_LOCK=1`. One session (`hive-main`) holds every project in the store, one window per project; a worker lands in its spawning lead's own window, next to it. The lead types into workers with `agent_send` and reads their terminals with `agent_output`. For parallel file edits, spawn each worker in its own git worktree (`cwd` parameter); worktrees resolve to the same project, so everyone shares one plan.
 
 Watch or take over any worker live:
 
 ```bash
-tmux attach -t hive-<project_id>      # plain terminal
-tmux -CC attach -t hive-<project_id>  # iTerm native windows/tabs
+tmux attach -t hive-main      # plain terminal
+tmux -CC attach -t hive-main  # iTerm native windows/tabs
 ```
 
-`hive attach` runs one of these for you already, picked by [attach mode](#attach-mode).
+`hive attach` runs one of these for you already, picked by [attach mode](#attach-mode). Every terminal attaching from outside tmux gets its own view onto the same windows rather than fighting another one over its current window; see docs/tmux.md's "Every terminal gets its own view onto the same windows".
 
 ### Wake-ups, not polling
 
@@ -331,8 +331,12 @@ When developing hive itself, this project's `hive.yml` auto-starts `npm run watc
 Hive touches six things on a machine; remove them in any order:
 
 ```bash
-hive status                     # list running sessions, then end each one:
-tmux kill-session -t =hive-1    # one per project id shown above
+hive status                     # confirm the session name, then end it:
+tmux kill-session -t =hive-main # every project's windows live in this one session
+tmux ls | grep view- || true    # a second terminal's attach opens its own VIEW
+                                 # session grouped with hive-main; kill those
+                                 # too (or just close their terminals - a view
+                                 # destroys itself once its own client detaches)
 claude mcp remove hive          # the MCP registration (add --scope user if registered there)
 npm rm -g hive                  # the linked hive command
 rm ~/.local/bin/hive            # the dispatcher hive setup wrote, if you ran it
@@ -340,7 +344,7 @@ rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made 
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
 
-Kill hive's sessions by name, one at a time. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
+One session holds every project, so this is one `kill-session`, not one per project - but only when nothing else is attached. A window belongs to every session it is grouped with, not only to `hive-main`, so `kill-session -t =hive-main` does not tear the windows down while a VIEW session (opened by any other terminal's `hive attach`, `hive lead`, or `hive <project>`) is still holding them; the windows simply keep living under that view until it too is killed or its last client detaches. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
 
 Then revoke the automation permission under System Settings > Privacy & Security > Automation (the entry allowing your terminal to control iTerm), and delete the checkout.
 

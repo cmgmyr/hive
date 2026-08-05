@@ -49,7 +49,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
     const project = db
       .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
       .get("lead-reuse-test", projectDir);
-    const session = sessionName(project.id);
+    const session = sessionName();
 
     after(() => cleanup(session));
 
@@ -263,7 +263,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-name-clash-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -324,7 +324,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-name-clash-case-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -373,7 +373,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-closed-row-live-pane-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -476,7 +476,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-cas-stillthere-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -532,7 +532,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-cas-closed-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -601,7 +601,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-cas-created-pane-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const first = await runCli(["lead"], cliOpts);
         assert.equal(first.code, 0, first.stderr);
@@ -674,7 +674,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-insert-seed-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         // A closed lead row from a PREVIOUS generation, naming a pane that
         // never existed on THIS server - exactly the shape ensureLeadRow's
@@ -744,7 +744,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-wake-restart-test", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       const WAKE_BODY = "wake-follows-restart marker";
 
       try {
@@ -818,7 +818,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       const project = db
         .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
         .get("lead-settings-claude", projectDir);
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const result = await runCli(["lead"], {
           cwd: projectDir,
@@ -846,7 +846,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
       db.prepare(
         "INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)",
       ).run(project.id, "lead", configHash("lead", leadCommand, null, {}));
-      const session = sessionName(project.id);
+      const session = sessionName();
       try {
         const result = await runCli(["lead"], { cwd: projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
         assert.equal(result.code, 0, result.stderr);

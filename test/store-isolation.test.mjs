@@ -186,7 +186,7 @@ describe("naming a store is not opening one", () => {
         `import { sessionName } from "${DIST}/tmux.js";\n` +
         `const cache = createRequire(import.meta.url).cache;\n` +
         `let session;\n` +
-        `try { session = sessionName(1); } catch (e) { session = String(e.message); }\n` +
+        `try { session = sessionName(); } catch (e) { session = String(e.message); }\n` +
         `process.stdout.write(JSON.stringify({\n` +
         `  session,\n` +
         `  sqlite: Object.keys(cache).some((k) => k.includes("better") && k.includes("sqlite")),\n` +

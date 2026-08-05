@@ -42,7 +42,7 @@ before(async () => {
   const init = await runCli(["init"], opts);
   assert.equal(init.code, 0, init.stderr);
   projectId = db.prepare("SELECT id FROM projects LIMIT 1").get().id;
-  session = sessionName(projectId);
+  session = sessionName();
   // No lead row exists yet - the baseline this file's failure-count deltas
   // are measured against, on whatever this machine's own check outcomes are
   // (claude present or not).

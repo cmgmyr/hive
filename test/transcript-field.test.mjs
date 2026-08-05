@@ -48,7 +48,7 @@ before(async () => {
 
 after(async () => {
   await mcp.close();
-  cleanup(sessionName(projectId));
+  cleanup(sessionName());
 });
 
 const fakeClaude = makeFakeClaude(dirs.tmp);

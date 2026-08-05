@@ -53,7 +53,7 @@ describe("agent_close and the lead's retirement path", { skip: hasTmux ? false :
     mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();
     projectId = (await mcp.call("whoami")).project.id;
-    session = sessionName(projectId);
+    session = sessionName();
   });
 
   after(async () => {

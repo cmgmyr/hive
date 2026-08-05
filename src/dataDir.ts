@@ -89,6 +89,17 @@ export function underTestRunner(): boolean {
 // An explicit HIVE_DATA_DIR pointing at ~/.hive is refused too. A test that
 // names the real store is the exact thing being prevented, not an exemption.
 //
+// NAMING HAS SINCE CHANGED (topology-3c). sessionName() takes no project
+// argument now and returns "hive-main" for the default store - one session
+// per STORE, one window per project inside it, never a session per project.
+// Every sessionName(1)/"hive-1"/"<hash>-1" example below, here and in
+// tagFor's comment further down, is an INCIDENT RECORD from before that
+// change: read it for what actually happened under the old naming, not as
+// current API. Left exactly as written on purpose - the incidents are real
+// and rewriting them into the new naming would falsify the record - but a
+// reader meeting "hive-1" for the first time should know it no longer names
+// a session before trusting the rest of the story.
+//
 // Naming goes through here too, via dataDirTag. It used to be exempt on the
 // grounds that building a string touches no disk, which answered the wrong
 // question: a session name is the TARGET ARGUMENT for kill-session and

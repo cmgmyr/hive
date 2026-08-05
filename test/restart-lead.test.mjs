@@ -19,7 +19,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { sessionName } = await import("../dist/tmux.js");
+const { sessionName, viewSessionName } = await import("../dist/tmux.js");
 const { dispatcherScript, cliPath } = await import("../dist/dispatcher.js");
 migrate();
 
@@ -51,7 +51,7 @@ const projectDir = dirs.projectDir;
 const project = db
   .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id, name")
   .get("restart-lead-test", projectDir);
-const session = sessionName(project.id);
+const session = sessionName();
 const restartLog = join(dirs.tmp, "restart-lead.log");
 
 // execFileSync throws on a non-zero exit rather than returning it, and
@@ -176,7 +176,7 @@ describe(
     it("does not count a kind='command' row (a hive.yml process) as a blocking agent", async () => {
       const dir = mkdtempSync(join(dirs.tmp, "proj-allowlist-"));
       const proj = insertProject("restart-lead-allowlist", dir);
-      const projSession = sessionName(proj.id);
+      const projSession = sessionName();
       await startRealLead(proj, dir);
       after(() => cleanup(projSession));
 
@@ -204,7 +204,7 @@ describe(
       const dirB = mkdtempSync(join(dirs.tmp, "proj-scope-b-"));
       const projA = insertProject("restart-lead-scope-a", dirA);
       const projB = insertProject("restart-lead-scope-b", dirB);
-      const sessionA = sessionName(projA.id);
+      const sessionA = sessionName();
       await startRealLead(projA, dirA);
       after(() => cleanup(sessionA));
 
@@ -243,7 +243,7 @@ describe(
       // touches the live ~/.hive database, which has its own, unrelated
       // project row at the same path.
       const proj = insertProject("restart-lead-repo-derivation", REPO);
-      const projSession = sessionName(proj.id);
+      const projSession = sessionName();
       await startRealLead(proj, REPO);
       after(() => cleanup(projSession));
 
@@ -291,8 +291,8 @@ describe(
 // HIVE_DATA_DIR run derive a session that did not exist. This suite's
 // scratch store IS a non-default HIVE_DATA_DIR from hive's own
 // perspective (dataDirTag() hashes it to a real, non-empty tag), so
-// `sessionName(id)` here is already a hash-tagged name like
-// "hive-<8hex>-<id>", not the bare "hive-<id>" the everyday default-store
+// `sessionName()` here is already a hash-tagged name like
+// "hive-<8hex>-main", not the bare "hive-main" the everyday default-store
 // path would give - exactly the shape the deleted code could never
 // reproduce, verified directly against it before deleting it.
 describe(
@@ -304,7 +304,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-session-derivation-"));
         const proj = insertProject("restart-lead-session-derivation", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -335,6 +335,74 @@ describe(
   },
 );
 
+// Todo 273 (topology-3c). `display-message -p -t <pane-id>` is AMBIGUOUS the
+// instant the pane's window is linked into a second, grouped session - a real
+// view session (viewSessionName(), src/tmux.ts) is exactly that. Measured
+// against tmux 3.7b: it favors the MORE RECENTLY CREATED session of the
+// group, which is the view here, not the base - and a view session can
+// vanish (destroy-unattached) at any moment, so naming it as SESSION risks a
+// false refusal or a false "no live pane" read later in the same run. This
+// pins that resolve_lead_pane's fix (list-panes -a, filtered by the
+// view-session suffix) survives exactly the condition that broke the old
+// display-message-based derivation.
+describe(
+  "restart-lead.sh resolves the BASE session even when a view session is grouped with it",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    it(
+      "a clientless view session grouped with the base must not divert SESSION away from it",
+      async () => {
+        const dir = mkdtempSync(join(dirs.tmp, "proj-view-ambiguity-"));
+        const proj = insertProject("restart-lead-view-ambiguity", dir);
+        const projSession = sessionName();
+        await startRealLead(proj, dir);
+        after(() => cleanup(projSession));
+
+        // Grouped with the base (`new-session -t <base>`), the same
+        // relationship a real view session has - created AFTER the base, so
+        // it is the one tmux favors if the ambiguity this test exists for
+        // still exists.
+        const view = viewSessionName();
+        execFileSync("tmux", ["new-session", "-d", "-t", `=${projSession}`, "-s", view]);
+        after(() => {
+          try {
+            execFileSync("tmux", ["kill-session", "-t", `=${view}`]);
+          } catch {
+            // Already gone.
+          }
+        });
+
+        const log = join(dirs.tmp, "restart-lead-view-ambiguity.log");
+        const result = runScript(["--delay", "0"], { HIVE_REPO: dir }, log);
+        const contents = readFileSync(log, "utf8");
+        assert.equal(result.status, 0, `stdout: ${result.stdout}\nstderr: ${result.stderr}\nlog:\n${contents}`);
+
+        // Both occurrences (pre-kill resolution and post-restart
+        // re-resolution) must name the BASE session, never the view.
+        const marker = `session: ${projSession};`;
+        const count = contents.split(marker).length - 1;
+        assert.equal(
+          count,
+          2,
+          `expected "${marker}" (the base session) twice; the view must never be named; log:\n${contents}`,
+        );
+        assert.doesNotMatch(
+          contents,
+          new RegExp(`session: ${view};`),
+          `must never resolve SESSION to the view session; log:\n${contents}`,
+        );
+
+        const newPane = leadRow(db, proj.id).tmux_target;
+        const gotHandoff = await until(() =>
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+        );
+        assert.ok(gotHandoff, "the handoff must land in the new lead pane despite the grouped view session");
+      },
+      { timeout: 30000 },
+    );
+  },
+);
+
 // Fix round 1, todo 193 item 1 (opus finding 1, codex P1 3 - the central
 // defect this whole fix round exists for) plus item 1's session-survival and
 // store-match requirements (opus findings 3 and 6, codex P1 2 and 4). Every
@@ -351,7 +419,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-decoy-"));
         const proj = insertProject("restart-lead-decoy", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         const leadPane = await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -424,7 +492,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-singlepane-"));
         const proj = insertProject("restart-lead-singlepane", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -514,7 +582,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-norow-"));
         const proj = insertProject("restart-lead-no-row", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         after(() => cleanup(projSession));
 
         // No `hive lead` run at all here - no agents row, no tmux session.
@@ -542,7 +610,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-deadrow-"));
         const proj = insertProject("restart-lead-dead-row", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         const deadPane = await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -587,7 +655,7 @@ describe(
       // this test is about the SCRIPT's own preflight, not what `hive lead`
       // itself does with an untrusted command.
       const proj = insertProject("restart-lead-untrusted", dir);
-      const projSession = sessionName(proj.id);
+      const projSession = sessionName();
       await startRealLead(proj, dir);
       after(() => cleanup(projSession));
 
@@ -611,7 +679,7 @@ describe(
     it("LIMIT 1 resolves cleanly rather than degrading when a second, stray kind='lead' row exists", async () => {
       const dir = mkdtempSync(join(dirs.tmp, "proj-tworows-"));
       const proj = insertProject("restart-lead-two-rows", dir);
-      const projSession = sessionName(proj.id);
+      const projSession = sessionName();
       const realPane = await startRealLead(proj, dir);
       after(() => cleanup(projSession));
 
@@ -651,7 +719,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-neverready-"));
         const proj = insertProject("restart-lead-never-ready", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -715,7 +783,7 @@ describe(
       async () => {
         const dir = mkdtempSync(join(dirs.tmp, "proj-detached-"));
         const proj = insertProject("restart-lead-detached", dir);
-        const projSession = sessionName(proj.id);
+        const projSession = sessionName();
         const leadPane = await startRealLead(proj, dir);
         after(() => cleanup(projSession));
 
@@ -797,5 +865,44 @@ describe("restart-lead.sh's dialog/input-box markers stay in sync with src/tmux.
       tsInputBox,
       "INPUT_BOX has drifted from src/tmux.ts's own INPUT_BOX_PRESENT - issue #30 is this exact drift, discovered after the pane was already dead",
     );
+  });
+});
+
+// Todo 273. The two copies cannot be compared as TEXT the way CHOICE_DIALOG/
+// INPUT_BOX are above: bash's ERE ('view-[0-9]+$', via grep -vE) and the TS
+// regex source (isViewSessionName, src/tmux.ts) are two different dialects
+// for the identical shape, so a literal string match would fail even with no
+// drift at all. Compare BEHAVIOUR instead, across a shared fixture set - the
+// same guarantee CHOICE_DIALOG/INPUT_BOX give, reached the only way available
+// once the two sides cannot share source text.
+describe("restart-lead.sh's view-session filter agrees with src/tmux.ts's isViewSessionName", () => {
+  it("the pattern extracted from restart-lead.sh classifies the same names isViewSessionName does", async () => {
+    const script = readFileSync(SCRIPT, "utf8");
+    const scriptPattern = script.match(/grep -vE '([^']*)'/)?.[1];
+    assert.ok(scriptPattern, "could not extract the view-session filter pattern from restart-lead.sh");
+
+    const { isViewSessionName } = await import("../dist/tmux.js");
+    const samples = [
+      "hive-main",
+      "hive-abc123view-4821",
+      "hive-view-99",
+      "hive-abc123-notview-4821",
+      "hive-abc123view-",
+      "hive-abc123view-12x",
+    ];
+    for (const name of samples) {
+      let bashSays;
+      try {
+        execFileSync("bash", ["-c", 'printf \'%s\' "$2" | grep -qE "$1"', "_", scriptPattern, name]);
+        bashSays = true;
+      } catch {
+        bashSays = false;
+      }
+      assert.equal(
+        bashSays,
+        isViewSessionName(name),
+        `restart-lead.sh's filter and isViewSessionName disagree on ${JSON.stringify(name)}`,
+      );
+    }
   });
 });

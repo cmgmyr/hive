@@ -2,17 +2,87 @@ import { dataDir, db } from "./db.js";
 import {
   applyLayout,
   claimInitialWindow,
-  configureHiveWindow,
+  createWindow,
   DEFAULT_LAYOUT,
   ensureSession,
   crossServerRefusal,
+  findProjectWindow,
+  paneWindow,
+  rowLive,
   sessionName,
   tmux,
   tmuxSocketPath,
   untrustedTmuxServer,
+  windowOwner,
   windowTitle,
   type WindowLayout,
 } from "./tmux.js";
+
+// Todo 277 (counselors codex #2 and opus #3 independently, so certain). ONE
+// PROCESS AT A TIME may decide whether this store's session already has a
+// window for a project. Four sites used to read that and then create one
+// (cmdLead's two branches, launchAgent's two), each an unguarded
+// read-then-create: two concurrent creators both saw no window and both made
+// one, both stamped for the same project. findProjectWindow uses .find(), so
+// the lower-index window then wins FOREVER - the lead attaches to one tab,
+// parentless splits land in the other, and nothing detects or reconciles it.
+//
+// THE LOCK IS THE STORE'S OWN WRITE LOCK, and that is the whole reason this
+// works across processes: every hive instance on a machine shares one WAL-mode
+// SQLite database (CLAUDE.md), and SQLite allows exactly one writer at a time.
+// BEGIN IMMEDIATE takes that writer slot up front rather than on first write,
+// so a section that writes nothing still excludes every other section here.
+// A second process gets SQLITE_BUSY and waits out db.ts's 5s busy_timeout,
+// which is four orders of magnitude more than the few tmux forks inside.
+//
+// WHY NOT RECONCILE AFTER THE FACT (create, re-list, loser kills the window it
+// just made). That was the shape the fix round was briefed with, and it is
+// strictly weaker: the reconcile has the SAME read-then-act race one level up.
+// Two processes that both create a window and then both re-list can each
+// re-list BEFORE the other's stamp lands, each conclude it is the only
+// claimant, and keep both windows - the exact state it was supposed to
+// remove. It also has to kill a window whose process has already started, and
+// in claimInitialWindow's case that window is the session's only one, so
+// killing it destroys the session. Excluding the race is cheaper than
+// unwinding it.
+//
+// Two honest limits, stated rather than left to be discovered:
+//   - tmux side effects DO NOT roll back with the transaction. A throw inside
+//     leaves whatever windows were created; the lock buys mutual exclusion,
+//     not atomicity.
+//   - a process that dies inside the section releases the lock (SQLite rolls
+//     the transaction back on connection loss), which is precisely why this
+//     is a transaction and not a leases-table claim with a TTL to get wrong.
+//
+// THE HAZARD THAT SILENTLY REMOVES THE EXCLUSION, not merely a limit of it:
+// better-sqlite3 nests a transaction inside another one via SAVEPOINT rather
+// than throwing. A `claim` called from inside an already-open, DEFERRED outer
+// transaction would take no writer slot at all here - the outer transaction
+// already holds (or will lazily acquire) whatever lock SQLite gives it, and
+// this call becomes a no-op savepoint riding along inside it. Nothing fails:
+// no error, no test goes red, the exclusion is just gone and the read-then-
+// create race this function exists to close is back. Verified at review
+// (pad 79 T5), not merely asserted: every db.transaction call in src/ that
+// runs before a withWindowClaim call site sits outside it. cmdLead's two
+// (ensureLeadRow, src/cli.ts:594 and :643) both run before cmdLead's own
+// claim (src/cli.ts:895); the CAS at src/cli.ts:1100 runs after it. If a
+// future caller ever wraps ITS OWN call to launchAgent, cmdLead, or cmdAttach
+// in a transaction, that is what it breaks, silently.
+//
+// THE CLAIM MUST NEVER CONTAIN ANYTHING THAT BLOCKS ON A HUMAN. It holds the
+// store's only writer slot (BEGIN IMMEDIATE), so a prompt inside it would
+// hold every other hive process on this machine hostage to someone reading a
+// terminal. hive.yml's trust prompt is the live example of a prompt that
+// exists near this code and must stay OUTSIDE the claim: ensureTrusted runs
+// well above cmdLead's own claim call, never inside it. This is the same
+// shape as .claude/rules/store-and-datadir.md's second accepted residual ("a
+// CLI process blocked on an interactive prompt") one level up - that residual
+// is about a restore racing an open connection; this is about a lock, but
+// the failure mode a blocking prompt would create here is the identical one
+// that rule already warns against admitting.
+export function withWindowClaim<T>(claim: () => T): T {
+  return db.transaction(claim).immediate();
+}
 
 // The one place that knows the launch protocol shared by MCP agent_spawn and
 // the CLI's hive.yml commands: insert the row, derive the actor id, create
@@ -36,26 +106,82 @@ export interface LaunchSpec {
   parentActor: string;
 }
 
-// Where a split-placed worker lands: the caller's own window when the caller
-// (usually the lead) lives in this session, else the "lead" window, else the
-// session's first window. Everything stays on one screen.
-function splitTargetWindow(session: string, leadTitle: string): string {
-  const pane = process.env.TMUX_PANE;
-  if (pane) {
-    try {
-      // Echo the pane id back to confirm the target resolved to OUR pane;
-      // display-message falls back to a default target when it is gone.
-      const info = tmux("display-message", "-p", "-t", pane, "#{pane_id} #{session_name}:#{window_id}");
-      const [paneId, window] = info.split(" ");
-      if (paneId === pane && window.startsWith(`${session}:`)) return window;
-    } catch {
-      // Caller is not in tmux; fall through.
-    }
+// Where a split-placed worker's TARGET WINDOW is: THE SPAWNING LEAD's own
+// window, resolved from the STORE (pad 71 "THE PLACEMENT RULE, STATED
+// ONCE"): parent_actor_id -> that lead's agents row -> tmux_target (a pane
+// id) -> its window (paneWindow, src/tmux.ts). Never from ambient
+// TMUX_PANE, and never by window NAME - todo 267. The old TMUX_PANE read
+// happened to answer the same question by luck of derivation (under one
+// shared session, the CALLER's own pane usually IS the spawning lead's
+// pane), but "usually" is the defect: a second claude session in the same
+// project spawns into ITS OWN window rather than the lead's, because
+// TMUX_PANE names whoever called, not who the row says is the parent.
+//
+// parent.tmux_target must pass rowLive - a live pane on THIS process's own
+// tmux server, not a foreign socket's - before its window is trusted. A
+// parent row recorded on a socket this process cannot see into must read as
+// unresolvable, the same conservative bias every other tmux_target consumer
+// in this codebase already has (.claude/rules/tmux-and-panes.md), not as
+// "no parent". Skipping this check would let a stale or foreign parent row
+// send a worker's pane to a window on a server this process has no business
+// trusting.
+//
+// The `?? findProjectWindow(...)` fallback is the answer for a spawn with no
+// resolvable parent: an unattended run, a caller that is not a lead (a raw
+// `user:<name>` calling agent_spawn directly has no agents row of its own to
+// resolve), or a parent row that failed the liveness check above.
+//
+// A pure lookup, not a create-and-launch (/simplify review, item 5): returns
+// null when the project has no window yet, and the caller creates one via
+// createWindow (src/tmux.ts) - the same helper cmdLead and launchAgent's own
+// placement="window" branch use. This used to create and claim a window
+// itself, returning `{window, pane}` where a non-null pane meant "already
+// placed, do not split again" - the exact shape claimInitialWindow's return
+// has, meaning the opposite. Splitting the lookup from the creation removes
+// that trap along with the six positional parameters this only needed while
+// it also created windows.
+export function splitTargetWindow(session: string, projectId: number, parentActor: string): string | null {
+  // Scoped to status='running' and ordered, NOT a bare lookup by actor_id.
+  // A lead's actor_id is DELIBERATELY REUSED across a restart: ensureLeadRow
+  // (src/cli.ts) mints a NEW running row that carries the CLOSED row's old
+  // actor_id forward, specifically so the closed row's stale tmux_target
+  // stays around for stillThere's adoption check. So after any lead
+  // close-and-restart, two rows share one actor_id - a closed one holding a
+  // STALE pane, and the running one holding the real pane - and an unscoped
+  // `WHERE actor_id = ?` with no ORDER BY returns whichever SQLite hands
+  // back first, ordinarily the lower (closed) rowid. Two failure shapes from
+  // that, both silent: the stale pane reads dead and the worker quietly
+  // stops landing next to its lead (falls to findProjectWindow instead, no
+  // error); or the stale pane id gets REISSUED by a fresh tmux server (pane
+  // ids restart at %0, and a socket PATH is not a server identity - two
+  // servers reusing the default path compare equal, tmuxSocketPath's own
+  // comment above) and the worker splits into a stranger's window, the exact
+  // failure class this lane exists to remove. Same shape as
+  // DELIVER_SOCKET_JOIN's own fix (.claude/rules/tmux-and-panes.md): "an
+  // unscoped join let a closed row launder a foreign pane past this guard",
+  // closed there by scoping to status='running'. ORDER BY id DESC LIMIT 1 on
+  // top, matching ensureLeadRow's own reasoning: normal operation should
+  // never have two running rows share an actor_id, but the ordering costs
+  // nothing and is the honest defense if that invariant is ever wrong.
+  // resolveDelivery (src/tools/wakes.ts) carries the identical shape for the
+  // identical reason - cross-referenced there and here so a future reader
+  // sees one convention, not two.
+  const parent = db
+    .prepare("SELECT tmux_target, tmux_socket FROM agents WHERE actor_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
+    .get(parentActor) as { tmux_target: string; tmux_socket: string } | undefined;
+  if (parent && rowLive(parent.tmux_socket, parent.tmux_target) === true) {
+    const window = paneWindow(parent.tmux_target);
+    // Re-qualified with the BASE session passed in here, not whatever
+    // session paneWindow() reported - same reasoning and same tmux 3.7b
+    // measurement as adoptableWindow's identical re-qualification above:
+    // once the lead's window is grouped with a view, list-panes can answer
+    // with the VIEW's name, and a view is transient while a split-window
+    // target built from it would outlive the view by seconds and fail
+    // naming a session the caller never heard of. Only the window id is
+    // load-bearing.
+    if (window) return `${session}:${window.split(":")[1]}`;
   }
-  const rows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}\t#{session_name}:#{window_id}")
-    .split("\n")
-    .map((r) => r.split("\t"));
-  return (rows.find(([name]) => name === leadTitle) ?? rows[0])[1];
+  return findProjectWindow(session, projectId) ?? null;
 }
 
 // Flattens an env object into tmux's `-e KEY=VALUE` flag pairs. The one
@@ -155,14 +281,16 @@ export function upsertActor(actorId: string, name: string, kind: string): void {
   ).run(actorId, name, kind);
 }
 
-export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: string; target: string } {
+export function launchAgent(
+  spec: LaunchSpec,
+): { agentId: number; actorId: string; target: string; landedInProjectId: number | null } {
   // The write half of the guard in tmux.ts. Refusing to READ liveness off a
   // tmux server this store does not live on is only half a fix while the write
   // path keeps putting that server's pane ids into the store.
   //
   // What a spawn under the bad pair does: sessionName() returns the untagged
-  // hive-1 for the default store, ensureSession does not find it on the private
-  // server and creates a second one there, and the pane id from that fresh
+  // hive-main for the default store, ensureSession does not find it on the
+  // private server and creates a second one there, and the pane id from that fresh
   // server (numbered from zero, so %0 or %1) is written into the SHARED store.
   // A lead on the shared server then holds a row naming a pane id that very
   // likely exists there belonging to someone else. agent_send types into a
@@ -214,8 +342,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     db.prepare("UPDATE agents SET actor_id = ?, command = ? WHERE id = ?").run(actorId, commandString, agentId);
     upsertActor(actorId, spec.name, spec.kind);
 
-    const session = sessionName(spec.projectId);
-    const createdSession = ensureSession(session, spec.projectPath);
+    const session = sessionName();
     // spec.env spreads FIRST here, not last: a worker's identity and scope
     // (who it is, which project it is locked to) are not a caller's to
     // override. HIVE_PROJECT_LOCK moved for the same reason as
@@ -252,27 +379,80 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     const envFlags = buildEnvFlags(env);
 
     const title = windowTitle(spec.projectName, spec.name);
-    let target: string;
-    if (createdSession) {
-      const { pane, window } = claimInitialWindow(session, title, spec.cwd, envFlags, commandString);
-      target = spec.placement === "split" ? pane : window;
-    } else if (spec.placement === "split") {
-      const win = splitTargetWindow(session, windowTitle(spec.projectName, "lead"));
-      target = tmux(
-        "split-window", "-P", "-F", "#{pane_id}",
-        "-t", win, "-c", spec.cwd, ...envFlags, commandString,
-      );
-      applyLayout(win, spec.layout ?? DEFAULT_LAYOUT);
-    } else {
-      const created = tmux(
-        "new-window", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
-        "-t", session, "-n", title, "-c", spec.cwd,
-      );
-      const [pane, window] = created.split("\t");
-      configureHiveWindow(window, true);
-      tmux("respawn-pane", "-k", "-t", pane, "-c", spec.cwd, ...envFlags, commandString);
-      target = window;
-    }
+    // Todo 268: which project actually owns the window this pane landed in,
+    // when a split worker's window came from splitTargetWindow's PARENT-pane
+    // lookup rather than from this project's own stamp - the cross-repo case
+    // (a worker recorded under project 9 whose spawning lead lives in project
+    // 1's window). null everywhere else: the initial-session and
+    // no-window-yet branches below always create and stamp a window for
+    // spec.projectId itself, so there is nothing to disagree with, and
+    // placement="window" never carries an ownership stamp to disagree
+    // through. Populated below only in the one branch that can diverge.
+    let landedInProjectId: number | null = null;
+    // Todo 277: ensureSession and every branch below it read whether this
+    // project already has a window and then create one when it does not, so
+    // the whole read-then-create runs under withWindowClaim's cross-process
+    // lock (see its own comment). It covers ensureSession too, deliberately:
+    // "does this session exist" is the same shape of question one level up,
+    // and todo 278's interleaving lives in the gap between that answer and
+    // the window claim that follows it.
+    const target = withWindowClaim((): string => {
+      const started = ensureSession(session, spec.projectPath);
+      if (started.created) {
+        // A project's window is named for the project alone, matching
+        // splitTargetWindow's own create path below and cmdLead's
+        // (decisions/2026-08-05-tmux-topology-windows-not-sessions.md): once
+        // placement="split" makes this window hold the lead AND its workers,
+        // it is the project's tab, not this worker's. A placement="window"
+        // worker's OWN dedicated window keeps windowTitle - unaffected here.
+        // This is the very first thing to run in a brand-new store, before any
+        // `hive lead` for this project, so it is stamped for the same reason
+        // it is named right: a later `hive lead` must find this window rather
+        // than create a second one for the same project.
+        // The stamp is gated on placement exactly like the name, and for the
+        // identical reason: a placement="window" worker's window is ITS OWN,
+        // never the project's. Stamping it anyway hands a later `hive lead` or
+        // split-placed worker a private window to land in through
+        // cmdLead's/splitTargetWindow's ownership lookup, defeating
+        // placement="window" outright - the defect this comment now prevents
+        // from being re-introduced (found in /simplify review, one layer
+        // below the window-NAMING version of the same mistake, review round
+        // 1). Verified live: without this gate,
+        // test/worker-first-window-stamp.test.mjs fails with `'1' !== ''`,
+        // the worker's window carrying the stamp it must not have.
+        const windowName = spec.placement === "split" ? spec.projectName : title;
+        const { pane, window } = claimInitialWindow(
+          started, windowName, spec.cwd, envFlags, commandString,
+          spec.placement === "split" ? spec.projectId : null,
+        );
+        return spec.placement === "split" ? pane : window;
+      }
+      if (spec.placement === "split") {
+        const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
+        if (found) {
+          const pane = tmux(
+            "split-window", "-P", "-F", "#{pane_id}",
+            "-t", found, "-c", spec.cwd, ...envFlags, commandString,
+          );
+          applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
+          const owner = windowOwner(found);
+          if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
+          return pane;
+        }
+        // No window for this project yet in the shared session - create and
+        // claim one directly (item 5: this used to be splitTargetWindow's own
+        // job; it is a pure lookup now, so the create-and-launch this
+        // project's window needs lives at the one call site that reaches
+        // it). A single-pane window, same as claimInitialWindow's own result
+        // above, so there is nothing yet to applyLayout.
+        return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId).pane;
+      }
+      // placement="window": this worker's own dedicated window, never a
+      // project's shared one, so it must never carry the ownership stamp
+      // (item 1's defect, one branch over from this one) - createWindow's
+      // null is that choice stated explicitly.
+      return createWindow(session, title, spec.cwd, envFlags, commandString, null).window;
+    });
     paneUp = true;
     // Past this line the pane is up and its command has already started
     // (respawn-pane/split-window/new-window above launch it, not this
@@ -289,7 +469,7 @@ export function launchAgent(spec: LaunchSpec): { agentId: number; actorId: strin
     // failure while the worker it already spawned stays reachable by
     // actor_id, just without a recorded tmux_target.
     db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?").run(target, socket, agentId);
-    return { agentId, actorId, target };
+    return { agentId, actorId, target, landedInProjectId };
   } catch (e) {
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);

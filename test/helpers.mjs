@@ -231,6 +231,56 @@ export function isolateTmux(suite) {
   return { hasTmux, cleanup };
 }
 
+// Todo 275 (topology-3c). tmux(), windowOwners(), panesIn() and windowFor()
+// were copy-pasted byte-identical into roughly nine test files (four predate
+// lane 3; 3a/3b/3c added the rest) as the topology tests grew. Extracted
+// here, deferred until now deliberately: doing it during 3b would have meant
+// doing it again for 3c's own copies.
+//
+// THE ONE RULE THAT MAKES THIS SAFE, and it is not optional: these must keep
+// doing their OWN RAW TMUX QUERY and must NEVER call findProjectWindow(),
+// sessionName(), or any other dist/ function to answer the identical
+// question. The moment a test helper answers a question by asking the code
+// under test, every test using it only proves the code agrees with itself -
+// this project has written that false-green shape up twice already
+// (dead-ends/2026-08-05-test-hygiene-lane-that-dissolved.md, and
+// .claude/rules/tmux-and-panes.md's note on test/tmux-socket-foreign.test.mjs
+// asserting a function agrees with a second call to itself rather than an
+// independent derivation). It looks redundant next to `import { findProjectWindow } from "../dist/tmux.js"`
+// sitting right above it in most of these files - it is not; that import is
+// for driving the code under test, this is for checking its work.
+export function tmux(...args) {
+  return execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
+}
+
+// #{@hive-project-id} read at WINDOW scope via list-windows -F, not through a
+// pane and not via show-options. Measured live against a real tmux (not just
+// pad 71's own M7): a window-scope query of a window-scope value agrees with
+// or without -A, so none appears below. -A only matters descending FROM
+// window scope INTO a pane-scope query, which this never does.
+export function windowOwners(session) {
+  return tmux("list-windows", "-t", `=${session}`, "-F", "#{window_id}\t#{@hive-project-id}")
+    .split("\n")
+    .map((row) => row.split("\t"));
+}
+
+export function panesIn(target) {
+  return tmux("list-panes", "-t", target, "-F", "#{pane_id}").split("\n").filter(Boolean);
+}
+
+// Asserts rather than indexing blind: a missing window is a real, nameable
+// finding (which project, which owners actually exist), not a TypeError that
+// buries it. A caller that wants to observe the STORE's own account of what
+// happened under a broken lookup (a row's tmux_target, not a window) should
+// read that first and call this after, so a window-lookup failure never
+// hides a more direct signal behind an unrelated crash.
+export function windowFor(session, projectId) {
+  const owners = windowOwners(session);
+  const match = owners.find(([, id]) => id === String(projectId));
+  assert.ok(match, `expected a window stamped for project ${projectId}, got: ${JSON.stringify(owners)}`);
+  return match[0];
+}
+
 // Minimal MCP stdio client. Requests are sent sequentially; the server
 // handles piped requests concurrently, so callers must await each call.
 export class McpClient {

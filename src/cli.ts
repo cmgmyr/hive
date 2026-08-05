@@ -80,26 +80,35 @@ import {
   LEAD_NAME,
   mintLeadActorId,
   upsertActor,
+  withWindowClaim,
 } from "./spawn.js";
 import {
+  adoptableWindow,
   claimInitialWindow,
   configureHiveWindow,
   controlModeFor,
+  createWindow,
   describePaneChoice,
   ensureSession,
+  findProjectWindow,
   foreignSocket,
   isPaneTarget,
+  isViewSessionName,
+  listOwnedWindows,
   paneChoiceCheck,
   RAW_ATTACH_TMUX_CONFIG,
+  renderAttachCommand,
+  resolveAttachTarget,
+  resolveInTmuxTarget,
   rowLive,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
   tmux,
   TMUX_DOC,
+  tmuxSaysNothingThere,
   tmuxSocketPath,
   untrustedTmuxServer,
-  windowTitle,
 } from "./tmux.js";
 import {
   activeProfile,
@@ -371,22 +380,46 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
   }
 }
 
-function attach(session: string, project: Project): void {
+// A worker's window is stamped, cosmetic-only-by-name (decisions/2026-08-05-
+// tmux-topology-windows-not-sessions.md).
+//
+// The sentence that used to sit here - "the caller is already IN the session
+// this pane belongs to" - was FALSE from the commit that added view sessions
+// (todo 279, counselors codex #3 and opus #1). A pane belongs to a window,
+// and once a view session is grouped with the base, the human looking at that
+// pane is in the VIEW. Both branches below now resolve who is actually
+// asking rather than assuming; switch-client is back too, for the caller in
+// an unrelated tmux session that one session per store did not remove.
+// `window` is the caller's own answer to which window to land on, for a
+// caller that already knows one this lookup would get wrong: cmdLead's
+// adopted-pane branch (todo 276), where the lead's pane is live in a window
+// that is NOT the one carrying this project's stamp. Every other caller omits
+// it and the stamp lookup stands.
+function attach(session: string, project: Project, window?: string): void {
   if (process.env.TMUX) {
-    spawnSync("tmux", ["switch-client", "-t", `=${session}`], { stdio: "inherit" });
+    // resolveInTmuxTarget (src/tmux.ts) qualifies the window with the
+    // CALLER's own session rather than the base session's name, and carries
+    // why: the one-line version this replaced moved the BASE session's
+    // current window, so a caller inside a view session yanked the OTHER
+    // terminal and did not move itself (todo 279).
+    const argv = resolveInTmuxTarget(session, window ?? findProjectWindow(session, project.id));
+    if (argv) spawnSync("tmux", argv, { stdio: "inherit" });
     return;
   }
   const controlMode = controlModeFor(process.env.TERM_PROGRAM === "iTerm.app");
+  // resolveAttachTarget (src/tmux.ts) decides plain attach vs. a view
+  // session AND selects the project's window, with every tmux mutation
+  // folded into the returned argv rather than performed as a side effect -
+  // this is the ONE source both branches below read from, so the two can
+  // never drift the way pad 71 opened on ("two pieces of hive's own advice
+  // pointing opposite ways, neither citing the other").
+  const argv = resolveAttachTarget(session, project.id, controlMode, window);
   if (!process.stdout.isTTY) {
     console.log(`Session ${session} is ready for project "${project.name}" (${project.path}).`);
-    console.log(`Attach from a terminal with: tmux ${controlMode ? "-CC " : ""}attach -t ${session}`);
+    console.log(`Attach from a terminal with: tmux ${renderAttachCommand(argv)}`);
     return;
   }
-  const result = spawnSync(
-    "tmux",
-    [...(controlMode ? ["-CC"] : []), "attach", "-t", `=${session}`],
-    { stdio: "inherit" },
-  );
+  const result = spawnSync("tmux", argv, { stdio: "inherit" });
   process.exit(result.status ?? 0);
 }
 
@@ -713,7 +746,7 @@ async function cmdLead(path?: string): Promise<void> {
     const project = resolveProject(path, (text) => {
       registrationNotice = text;
     });
-    const session = sessionName(project.id);
+    const session = sessionName();
     const hooksPath = ensureHooksFile();
 
     const { config, warnings } = loadProjectYml(project.path);
@@ -764,7 +797,14 @@ async function cmdLead(path?: string): Promise<void> {
 
     // The lead launches before auto-start processes so that on a fresh session
     // it claims the initial window rather than one of them.
-    const leadTitle = windowTitle(project.name, LEAD_NAME);
+    //
+    // The window is named for the project alone, not "<project> - lead"
+    // (decisions/2026-08-05-tmux-topology-windows-not-sessions.md, Chris's
+    // call 2026-08-05): the window now holds the lead AND its workers, so it
+    // is the project's iTerm tab, not the lead's pane. Safe to rename because
+    // the lookup below no longer keys on it; windowTitle() still exists for
+    // worker WINDOWS (placement="window" in src/spawn.ts), untouched here.
+    const windowName = project.name;
     const {
       agentId: leadAgentId,
       actorId: leadActorId,
@@ -827,7 +867,6 @@ async function cmdLead(path?: string): Promise<void> {
     // claimInitialWindow already returns one, and -P -F gets one straight off
     // new-window's/split-window's own output the same way launchAgent does
     // (src/spawn.ts).
-    let leadPane: string;
     // Issue #27's L4 fix round R9, todo 177 item 1 (BOTH SEATS). Tracked at
     // the site each pane is actually made, not inferred afterward by
     // comparing leadPane to previousTarget: that comparison is a PROXY for
@@ -839,49 +878,63 @@ async function cmdLead(path?: string): Promise<void> {
     // %0 on a fresh tmux server (see the "pane ids wrap around" comment
     // above). createdPane records the fact directly instead of re-deriving it
     // from a string comparison a few lines later.
-    let createdPane: boolean;
-    if (ensureSession(session, project.path)) {
-      leadPane = claimInitialWindow(session, leadTitle, project.path, envFlags, leadCommand).pane;
-      createdPane = true;
-    } else {
-      const windows = tmux("list-windows", "-t", `=${session}`, "-F", "#{window_name}\t#{session_name}:#{window_id}")
-        .split("\n")
-        .map((row) => row.split("\t"));
-      const foundWindow = windows.find(([name]) => name === leadTitle)?.[1];
-      if (!foundWindow) {
-        const created = tmux(
-          "new-window",
-          "-P",
-          "-F",
-          "#{pane_id}\t#{session_name}:#{window_id}",
-          "-t",
-          `=${session}`,
-          "-n",
-          leadTitle,
-          "-c",
-          project.path,
-        );
-        const [pane, window] = created.split("\t");
-        configureHiveWindow(window, true);
-        tmux("respawn-pane", "-k", "-t", pane, "-c", project.path, ...envFlags, leadCommand);
-        leadPane = pane;
+    // The window the lead's pane actually ends up in, tracked at each site
+    // that decides it rather than looked up again at attach time (todo 276).
+    // The two disagree in exactly the case that todo exists for: a lead pane
+    // adopted where it MOVED to sits in a window that is not the one carrying
+    // this project's stamp, and a second findProjectWindow at the bottom of
+    // this function would send the human to the tab the lead just left.
+    // Todo 277: everything from ensureSession to the branch that produces a
+    // pane is one read-then-create - does this session exist, does this
+    // project already have a window - and two `hive lead` runs (or a `hive
+    // lead` racing an agent_spawn) that interleave inside it both create and
+    // stamp a window for the same project, permanently. withWindowClaim
+    // (src/spawn.ts) is the store's own write lock, held across the section
+    // rather than around each write in it; its comment carries why the
+    // reconcile-afterwards alternative is weaker.
+    const { leadPane, leadWindow, createdPane } = withWindowClaim(() => {
+      let leadPane: string;
+      let leadWindow: string;
+      let createdPane: boolean;
+      const started = ensureSession(session, project.path);
+      if (started.created) {
+        const claimed = claimInitialWindow(started, windowName, project.path, envFlags, leadCommand, project.id);
+        leadPane = claimed.pane;
+        leadWindow = claimed.window;
         createdPane = true;
       } else {
-        // A found window is not proof of a live lead: split workers keep it
-        // open (and keep matching leadTitle) after the lead's own claude exits,
-        // so list-windows finding a title match is not enough (that was the
-        // "restart attaches to a window containing no lead" defect). Reuse the
-        // row's previous pane only when it is still a real pane in THIS window;
-        // otherwise split a fresh one in for the lead. Unknown liveness
-        // (untrusted tmux server) is treated as "not live" rather than the
-        // opposite bias startYmlCommand uses for hive.yml processes: a stray
-        // extra pane here is cheap, a restart silently landing with no lead at
-        // all is the defect this branch exists to close.
+        // Found by the @hive-project-id OWNERSHIP STAMP, never by window name
+        // (decisions/2026-08-05-tmux-topology-windows-not-sessions.md: the
+        // window name is cosmetic now). findProjectWindow (src/tmux.ts) carries
+        // the M7/no--A justification for the lookup itself.
+        //
+        // Todo 276 (counselors opus #2) INVERTED what this lookup decides.
+        // Until this round, foundWindow gated the reuse of the row's previous
+        // pane: `stillThere` required that pane to be a MEMBER of foundWindow,
+        // and read a failed membership test as "the pane is gone" without ever
+        // consulting rowLive on that path. Membership PROVING ownership was
+        // sound and is kept (adoptableWindow, src/tmux.ts, states it as the
+        // exclusion it always was); failed membership proving DEATH never held,
+        // and a lead pane that merely moved to another window - `tmux
+        // break-pane`, which is also how you get the lead full-screen - got a
+        // SECOND claude split in beside it, both running under one
+        // HIVE_AGENT_ID. That is the damage cmdLead's own CAS below exists to
+        // prevent, arriving through a door the CAS cannot see, since one
+        // process creates and records both panes and nothing races.
+        //
+        // So LIVENESS is primary now, and this lookup is what a project falls
+        // back to when it has no live pane to take back.
+        // test/lead-window-ownership.test.mjs still pins the property that must
+        // not move with it: a stale target pointing into ANOTHER project's
+        // window is refused, proven through a real cross-project pane adoption
+        // rather than through a clause. test/lead-moved-pane.test.mjs pins this
+        // new direction, and both have to hold at once.
+        const foundWindow = findProjectWindow(session, project.id);
         // Issue #73, D6: previousSocket is the row's OWN recorded socket from
         // before this call (ensureLeadRow), not this process's - a foreign
         // value here means the row's last-known pane belongs to a server this
         // process cannot honestly judge, and rowLive reads that as unknown,
-        // which the `=== true` below already treats as "not still there" (D6's
+        // which the `=== true` below already treats as "not adoptable" (D6's
         // stated bias for this branch, same as an untrusted tmux server).
         //
         // Counselors round 1 (#73, A5), accepted and recorded rather than
@@ -918,16 +971,56 @@ async function cmdLead(path?: string): Promise<void> {
         // socket cannot be confirmed dead, which is the common case after any
         // reboot or crash, not the rare one. Deliberate bias, not an
         // oversight.
-        const stillThere =
-          isPaneTarget(previousTarget) &&
-          tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}")
-            .split("\n")
-            .includes(previousTarget) &&
-          rowLive(previousSocket, previousTarget) === true;
-        if (stillThere) {
+        const adopted =
+          isPaneTarget(previousTarget) && rowLive(previousSocket, previousTarget) === true
+            ? adoptableWindow(session, project.id, previousTarget)
+            : null;
+        if (adopted) {
+          // A live pane this project may take back, wherever in the session it
+          // ended up. leadWindow is that pane's ACTUAL window, not foundWindow:
+          // the two disagree in exactly the case this branch was added for, and
+          // attaching to the stamped window would leave the human looking at
+          // the tab the lead is no longer in.
           leadPane = previousTarget;
+          leadWindow = adopted;
           createdPane = false;
+        } else if (!foundWindow) {
+          // THE ACCEPTED RESIDUAL, decided with Chris (plan-lane-3-tmux-
+          // topology, todo 266): a lead running ACROSS the topology upgrade
+          // lands here even though its OLD pane may still be alive. Its
+          // previousTarget names a pane in the old per-project session
+          // (hive-<project.id>), which this store no longer creates or looks
+          // in, so findProjectWindow above can never find it - the row's
+          // history is invisible to a lookup keyed on @hive-project-id in
+          // hive-main. The old pane is not reused, not closed, not migrated: it
+          // is stranded, a live claude in a window nothing in this store points
+          // at any more, which `hive doctor` will name (a live pane, foreign
+          // to every window this run creates or claims). Not data loss, not a
+          // wrong store - a fresh pane starts here exactly as it would for a
+          // project with no prior lead at all.
+          // Accepted because Chris starts fresh instances daily and is the
+          // only user; the condition that reverses it is the same shape as the
+          // hive.yml vars gate in CLAUDE.md - someone other than Chris runs
+          // hive, or leads start being left running for days. Migrating a
+          // stranded old-topology pane into its new window (`move-window`) was
+          // considered and rejected as transitional code for a boundary
+          // crossed once, by one user, on the same grounds pad 71 rejected
+          // "hive gather" for the pane-placement case.
+          const fresh = createWindow(session, windowName, project.path, envFlags, leadCommand, project.id);
+          leadPane = fresh.pane;
+          leadWindow = fresh.window;
+          createdPane = true;
         } else {
+          // A found window is not proof of a live lead: split workers keep it
+          // open (and keep carrying the project's ownership stamp) after the
+          // lead's own claude exits, so finding the project's window is not
+          // enough on its own (that was the "restart attaches to a window
+          // containing no lead" defect, originally against a title match -
+          // decisions/2026-07-24-claim-initial-tmux-window.md - now against the
+          // ownership stamp instead, same defect shape either way). There is
+          // nothing live to take back - the adopted branch above already asked
+          // that question, across the whole session rather than inside this one
+          // window - so split a fresh pane in for the lead.
           leadPane = tmux(
             "split-window",
             "-P",
@@ -940,10 +1033,12 @@ async function cmdLead(path?: string): Promise<void> {
             ...envFlags,
             leadCommand,
           );
+          leadWindow = foundWindow;
           createdPane = true;
         }
       }
-    }
+      return { leadPane, leadWindow, createdPane };
+    });
     // Issue #27's L4 fix round R6, todo 166 (counselors codex F1, verified by
     // the lead against the code). `deliver_pane` is snapshotted once at
     // wake_set time (src/tools/wakes.ts) and nothing else ever updates it, so
@@ -1076,7 +1171,7 @@ async function cmdLead(path?: string): Promise<void> {
       console.error(registrationNotice);
       registrationNotice = null;
     }
-    attach(session, project);
+    attach(session, project, leadWindow);
   } catch (e) {
     // Review round 1, F5: this project's own review corrected a reachability
     // claim recorded here that named the CAS race-loser as the only throw
@@ -1525,9 +1620,50 @@ function cmdProfile(argv: string[]): void {
 
 function cmdAttach(path?: string): void {
   const project = resolveProject(path);
-  const session = sessionName(project.id);
-  ensureSession(session, project.path);
-  attach(session, project);
+  const session = sessionName();
+  // Pad 79, T5(b), and the PR gate's finding on the first version of this
+  // fix. Two DIFFERENT ways cmdAttach can reach a project with no window of
+  // its own: a truly cold store (ensureSession CREATES the session, so its
+  // first window is an ordinary, unstamped shell - claim that one) and a
+  // WARM store where the session exists but carries only OTHER projects'
+  // windows, because their `hive lead` ran first and this project's never
+  // has (create a new one). The first version of this fix only handled the
+  // cold case, gated on started.created alone, and left the warm-but-absent
+  // case to attach()'s two callers with no window to give them: in tmux,
+  // resolveInTmuxTarget's `!windowId` returns null and attach() does nothing
+  // at all, silently, exit 0; outside tmux, resolveAttachTarget's
+  // conditional select-window spread just drops, landing the human on a
+  // view showing whatever base's CURRENT window happens to be - plausibly
+  // another project's, the exact pop-into-a-stranger's-tab failure this
+  // whole design exists to prevent. The fix is the same shape cmdLead's own
+  // !foundWindow branch, launchAgent's create path, and splitTargetWindow's
+  // create path already use: the claim's job is "this project HAS a
+  // window", not "stamp whichever window ensureSession happened to create".
+  // withWindowClaim, matching every other read-then-create site todo 277
+  // covers (cmdLead's two branches, launchAgent's two): everything below is
+  // one read-then-create, and racing a `hive lead` for the same project is a
+  // fifth unguarded window race - the exact class T2 closed at the other
+  // four - without it.
+  const window = withWindowClaim(() => {
+    const started = ensureSession(session, project.path);
+    if (started.created) {
+      configureHiveWindow(started.window, true, project.id);
+      tmux("rename-window", "-t", started.window, project.name);
+      return started.window;
+    }
+    const found = findProjectWindow(session, project.id);
+    if (found) return found;
+    // Not createWindow (src/tmux.ts): it always respawn-pane -k's a real
+    // command into the pane, and there is nothing to launch here - a plain
+    // shell for the human, same reasoning as the cold-store branch above.
+    const created = tmux(
+      "new-window", "-P", "-F", "#{session_name}:#{window_id}",
+      "-t", `=${session}`, "-n", project.name, "-c", project.path,
+    );
+    configureHiveWindow(created, true, project.id);
+    return created;
+  });
+  attach(session, project, window);
 }
 
 async function cmdStart(name?: string, path?: string): Promise<void> {
@@ -1556,6 +1692,27 @@ async function cmdStart(name?: string, path?: string): Promise<void> {
 function cmdStatus(): void {
   janitor();
   let anyOutput = false;
+  // sessionName() is invariant for the whole process (one store-scoped
+  // session), so the listing below is identical on every iteration of the
+  // loop - fetched at most once here and matched per project against the
+  // shared result, rather than forking `tmux list-windows` once per project
+  // for the same answer. Lazy, not hoisted above the loop unconditionally:
+  // a project with no running agents/todos/timers never reaches the window
+  // lookup at all (see the `continue` below), so the common "nothing
+  // running" case still costs zero forks, exactly as before this change.
+  let windows: [string, string][] | null | undefined;
+  let windowsError: unknown;
+  const ownedWindows = (): [string, string][] | null => {
+    if (windows === undefined) {
+      try {
+        windows = listOwnedWindows(sessionName());
+      } catch (e) {
+        windows = null;
+        windowsError = e;
+      }
+    }
+    return windows;
+  };
   for (const project of listProjects()) {
     const agents = db
       .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY kind DESC, id")
@@ -1597,7 +1754,41 @@ function cmdStatus(): void {
       .get(project.id) as { timers: number; heldWakes: number };
     if (agents.length === 0 && todos === 0 && timers === 0) continue;
     anyOutput = true;
-    console.log(`\n${project.name}  (${project.path})  session: ${sessionName(project.id)}`);
+    // Todo 272 / plan-lane-3-tmux-topology: found by the lead by RUNNING the
+    // command, not by the suite. Under one store-scoped session this used to
+    // print the identical `session: hive-<tag>main` for every project -
+    // correct and useless, since the session no longer identifies a
+    // project; its WINDOW does (@hive-project-id, findProjectWindow). Best-
+    // effort: a project with open todos but no tmux session at all yet (the
+    // lead never started) is the ordinary case, not a failure - tmux answers
+    // "no such session" for it (tmuxSaysNothingThere), same as "no window
+    // stamped for this project" reads.
+    //
+    // CORRECTED (review gate on PR #116, the ubuntu legs' first real pass):
+    // the prior wording here named two paths into "unknown (tmux
+    // unreachable)" and neither actually reaches it. A MISSING tmux BINARY
+    // does not: tmuxSaysNothingThere() returns true for e.notInstalled by
+    // design (src/tmux.ts, "no tmux binary: nothing tmux manages can be
+    // alive either"), so it takes the SAME "none yet" branch as "the lead
+    // never started" - correctly, not as a gap to close. Special-casing
+    // notInstalled here to give it a distinct label would fight that design
+    // for one call site; a machine with no tmux at all has nothing alive for
+    // hive to report, and `hive doctor` is where that absence gets named. A
+    // REFUSED CROSS-SERVER PAIRING does not reach here either:
+    // listOwnedWindows never calls untrustedTmuxServer(), so
+    // crossServerRefusal cannot be thrown from this path - that refusal
+    // comes out of ensureSession, elsewhere in this file. What DOES reach
+    // "unknown" is any tmux error tmuxSaysNothingThere does not recognise -
+    // a transient socket failure, say - so the label is reachable, just not
+    // by either case this comment used to name.
+    let windowLabel: string;
+    const fetched = ownedWindows();
+    if (fetched) {
+      windowLabel = fetched.find(([, ownerId]) => Number(ownerId) === project.id)?.[0] ?? "none yet";
+    } else {
+      windowLabel = tmuxSaysNothingThere(windowsError) ? "none yet" : "unknown (tmux unreachable)";
+    }
+    console.log(`\n${project.name}  (${project.path})  window: ${windowLabel}`);
     for (const a of agents) {
       // Not probed: this is display over rows already in hand, the same
       // choice kickoff makes and for the same reason (see its own comment) --
@@ -2219,20 +2410,105 @@ function cmdDoctor(): void {
       );
     }
   }
-  check("sessions", () => {
+  // One store-scoped session now, not one per project (pad 76, "3a's SCOPE
+  // WIDENED"), so a hive- prefixed session on this server is either THE base
+  // session or a transient view session (viewSessionName()) riding along
+  // with it. Listed once and shared by the two blocks below: the "sessions"
+  // check reports only the base session(s), so what it prints stays true
+  // under one session per store; a view session is reported separately, on
+  // its own terms, immediately after.
+  const hiveSessions = (): string[] => {
     try {
-      const sessions = execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
+      return execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
       })
         .trim()
         .split("\n")
         .filter((s) => s.startsWith(SESSION_PREFIX));
-      return sessions.length > 0 ? sessions.join(", ") : "none running";
     } catch {
-      return "none running";
+      return [];
     }
+  };
+  const allSessions = hiveSessions();
+  check("sessions", () => {
+    const base = allSessions.filter((s) => !isViewSessionName(s));
+    return base.length > 0 ? base.join(", ") : "none running";
   });
+  // Todo 277. The race that produced this is closed (withWindowClaim,
+  // src/spawn.ts), and the check stays anyway: the state it names is durable,
+  // silent and permanent - findProjectWindow takes the lower-index window
+  // forever, so the lead ends up in one tab while parentless splits land in
+  // the other, with nothing in normal use ever saying why. A store carried
+  // across the fix keeps whatever duplicates it already had, and any future
+  // window-stamping site that forgets the claim reintroduces it.
+  //
+  // FAILS rather than warns, unlike the stray view session above, and the
+  // difference is what a human can do about it: a stray view owns no panes
+  // and destroy-unattached usually gets it, while two windows stamped for one
+  // project silently split that project's own panes across two tabs until
+  // somebody moves them. Doctor still only reports - the remedy names the
+  // command rather than running it, matching this file's posture everywhere
+  // else.
+  check("window stamps", () => {
+    const session = sessionName();
+    // No session is not a finding: list-windows would throw here and this
+    // check would FAIL on the ordinary machine where nothing is running.
+    if (!allSessions.includes(session)) return "no session";
+    const byProject = new Map<string, string[]>();
+    for (const [window, owner] of listOwnedWindows(session)) {
+      if (owner === "") continue;
+      byProject.set(owner, [...(byProject.get(owner) ?? []), window]);
+    }
+    const duplicates = [...byProject.entries()].filter(([, windows]) => windows.length > 1);
+    if (duplicates.length > 0) {
+      throw new Error(
+        duplicates
+          .map(
+            ([owner, windows]) =>
+              `project ${owner} is stamped on ${windows.length} windows (${windows.join(", ")}). ` +
+              "Only the lowest-indexed one is ever found, so this project's lead and its workers can end up " +
+              "in different tabs. Move the panes into one window (tmux join-pane -t <window>) and " +
+              `unstamp the other (tmux set-window-option -t <window> -u @hive-project-id).`,
+          )
+          .join("\n        "),
+      );
+    }
+    const stamped = [...byProject.keys()].length;
+    return stamped > 0 ? `${stamped} project window(s), no duplicates` : "no project windows";
+  });
+  // Todo 273, point 7 of pad 76's "VIEW SESSIONS DESIGNED AND SETTLED WITH
+  // CHRIS" - Chris's call. REPORT a stray view session, never kill one:
+  // destroy-unattached (set on every view at creation) should already make
+  // one unreachable the instant its client detaches, and killing sessions is
+  // a bigger posture than doctor takes anywhere else. This is belt-and-
+  // braces for the case that guard somehow did not fire, not a sweep.
+  // Only a CLIENTLESS view is stray - one with a client is in active use,
+  // exactly why destroy-unattached has not touched it yet.
+  for (const name of allSessions.filter(isViewSessionName)) {
+    let hasClient: boolean;
+    try {
+      hasClient = execFileSync("tmux", ["list-clients", "-t", `=${name}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() !== "";
+    } catch {
+      // Gone between the listing above and this probe - its own
+      // destroy-unattached already did doctor's job for it.
+      continue;
+    }
+    if (hasClient) continue;
+    // The quotes are load-bearing, not decoration: a bare leading `=` in a
+    // command a human pastes into zsh triggers EQUALS EXPANSION
+    // (.claude/rules/tmux-and-panes.md, "Two shell traps").
+    warn(
+      "view session",
+      `${name} has no attached client, so it did not clean itself up (destroy-unattached should remove a view ` +
+        "the instant its client detaches). Not touched here - a view session owns no panes, so removing it can " +
+        `never lose a worker's output, but doctor's own posture stops at reporting. Remove it by hand: ` +
+        `tmux kill-session -t '=${name}'`,
+    );
+  }
   check("backups", () => {
     const health = backupHealth(db, dataDir);
     if (!health.ok) throw new Error(health.message);
@@ -2274,7 +2550,17 @@ function cmdDoctor(): void {
           .trim()
           .split("\n")
           .map((row) => row.split("\t"))
-          .filter(([target, marker]) => target.startsWith(SESSION_PREFIX) && marker === "1");
+          // A window linked into a view session (topology-3c) is listed once
+          // PER SESSION it belongs to, so an open view would otherwise print
+          // the identical window's options TWICE under two different
+          // session-qualified labels - once via the durable base session,
+          // once via the view's own transient name. Keep only the base-
+          // session copy; the view contributes no window this list does not
+          // already have.
+          .filter(([target, marker]) => {
+            const [sess] = target.split(":");
+            return target.startsWith(SESSION_PREFIX) && marker === "1" && !isViewSessionName(sess);
+          });
         for (const [target] of owned) {
           const pane = execFileSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_id}"], {
             encoding: "utf8",
@@ -2480,7 +2766,14 @@ function activeHiveUsage(): string[] {
     })
       .trim()
       .split("\n")
-      .filter((s) => s.startsWith(SESSION_PREFIX));
+      // A view session (topology-3c) owns no panes of its own - it only
+      // borrows the base session's windows - so it can never itself be what
+      // holds hive.db open, unlike everything else this function checks.
+      // Counting one here would refuse a restore over a spectator terminal
+      // that is not really "hive running" in the sense this reason names,
+      // and it is exactly the kind of session most likely to exist right as
+      // someone runs `hive restore` from a second terminal.
+      .filter((s) => s.startsWith(SESSION_PREFIX) && !isViewSessionName(s));
     if (sessions.length > 0) reasons.push(`tmux session(s) still running: ${sessions.join(", ")}`);
   } catch {
     // tmux not installed or unreachable; the agents check above still stands.

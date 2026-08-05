@@ -53,13 +53,13 @@ before(async () => {
   projectId = (await mcp.call("whoami")).project.id;
   if (!hasTmux) return;
   execFileSync("tmux", [
-    "new-session", "-d", "-s", sessionName(projectId), "-x", "220", "-y", "50", "-c", dirs.projectDir,
+    "new-session", "-d", "-s", sessionName(), "-x", "220", "-y", "50", "-c", dirs.projectDir,
   ]);
 });
 
 after(async () => {
   await mcp.close();
-  cleanup(sessionName(projectId));
+  cleanup(sessionName());
 });
 
 const fakeClaude = makeFakeClaude(dirs.tmp);

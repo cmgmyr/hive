@@ -36,7 +36,7 @@ describe("agent_spawn config warnings", { skip: hasTmux ? false : "tmux is not i
 
   after(async () => {
     await mcp?.close();
-    cleanup(sessionName(projectId));
+    cleanup(sessionName());
   });
 
   // `sleep` instead of claude: the receipt shape under test is the same, and

@@ -32,11 +32,11 @@ Counselors round 2 (F3, R2-3) found this list itself under-claiming in the one p
 
 **R9's own residual text overclaimed here, and R10's todo 181 item 1 is the correction, not a widening.** R9 wrote "closing this one deliberately (a human choosing to run `agent_close` on a specific, named lead)" as if that were already true. It was not: nothing checked who the caller was, so any WORKER could call `agent_close(name: "lead")` exactly like a human at a terminal, including hitting the cross-server false-dead case above against a lead it has no business touching at all. `agent_close` now refuses outright - before probing liveness, so this applies whether the target reads live, dead, or unprobed - whenever `currentActor()` starts with `agent:`. A plain claude session is `user:<name>` and a peer lead is `lead:N` (`src/context.ts`), so a human at a terminal and a peer lead both keep the retirement path; only a spawned worker loses it. For those callers, the cross-server false-dead case is now closed too, by the paragraph above: this is a caller-KIND gate for who may reach the retirement path at all, alongside a liveness-TRUTH fix for what that path believes once reached.
 
-## tmux session names are namespaced by data store
+## tmux session names are namespaced by data store, not by project
 
-Project ids are SQLite row ids, unique only within one store, while tmux session names share one machine-wide namespace. `sessionName()` tags the name when `HIVE_DATA_DIR` is not the default; the default store keeps the documented `hive-<project_id>`.
+One session per STORE, one window per project inside it: `sessionName()` takes no argument and returns `hive-main` for the default store. Project ids are SQLite row ids, unique only within one store, so a project id was never a safe namespace on its own, and tmux session names share one machine-wide namespace regardless. `sessionName()` tags the name when `HIVE_DATA_DIR` is not the default; the default store keeps the documented `hive-main`.
 
-Never derive a session name from a project id alone. A scratch store numbers its first project 1 too, and would resolve to the live session of whatever real project is id 1. Naming goes through the same guard as opening: `dataDirTag()` is `tagFor(storeDir())`. It was exempt for one commit on the grounds that building a string touches no disk, which answered the wrong question, since a session name is the target argument for `kill-session` and `respawn-pane`.
+Naming goes through the same guard as opening: `dataDirTag()` is `tagFor(storeDir())`. It was exempt for one commit on the grounds that building a string touches no disk, which answered the wrong question, since a session name is the target argument for `kill-session` and `respawn-pane`. A scratch store still needs its own namespace for the identical reason it always did: `hive-main` in a scratch store must not resolve to the live session of the default store's own project window.
 
 ## Aliveness checks use `list-panes`
 
@@ -51,9 +51,60 @@ may target a window the user created, so an unmarked window is the user's and
 hive must not write these options to it. The settings are best-effort: losing
 cosmetic configuration must never fail a spawn whose process is already live.
 
+## A project's window is found by its `@hive-project-id` stamp, never by name
+
+Under one store-scoped session (`sessionName()`, above), every project's
+window carries `@hive-project-id`, set in the same `configureHiveWindow` call
+that sets `@hive-owned`. `cmdLead` (`src/cli.ts`) resolves a project's window
+by reading this stamp off the session's windows, never by matching the
+window's name. `splitTargetWindow` (`src/spawn.ts`) reads it too, but only as
+the fallback for a spawn with no resolvable parent - a split worker's
+PRIMARY placement is the store lookup one section below (`parent_actor_id` ->
+the spawning lead's `agents` row -> `tmux_target` -> its window), never the
+stamp and never ambient `TMUX_PANE`. A window name is cosmetic now (the
+project name alone, not "<project> - lead"), and two projects can
+legitimately share one: only `path` is unique in the `projects` table, so two
+real checkouts named the same thing is not a hypothetical.
+Reading `@hive-project-id` at window scope needs no `-A`: measured live
+against a real tmux, `show-options -w` (with or without `-A`) and
+`list-windows -F` all agree once a value is set at window scope, whether
+queried via the window itself or via one of its panes. `-A` only matters
+descending FROM window scope INTO a pane-scope `show-options` query - the M7
+trap on `pad 71` (`allow-passthrough`, a genuinely pane-inherited option) -
+never at matching scope, which is what every `@hive-project-id` read is.
+
+A worker's own placement="window" (its own dedicated window, not a split into
+its project's) does not stamp ownership yet and still resolves by
+`windowTitle()`; that is 3b's, not this invariant's.
+
 `allow-passthrough` is a pane option inherited from the window. Probes must
 use `show-options -p -A`; without `-A`, tmux reports that inherited, working
 value as unset.
+
+## A split worker's window is the SPAWNING LEAD's window, resolved from the store
+
+`splitTargetWindow` (`src/spawn.ts`) resolves a split-placed worker's target
+window through `parent_actor_id` -> the parent's `agents` row -> its
+`tmux_target` (a pane id) -> `paneWindow()` of that pane - never through
+ambient `TMUX_PANE`, which names whoever happens to be calling rather than
+who the row says spawned this worker, and never through a window name (todo
+267, `decisions/2026-08-05-tmux-topology-windows-not-sessions.md`). This is
+the cross-repo case the whole redesign started from: a worker's STORE scope
+(`agents.project_id`) and where its PANE appears are separate questions, and
+a worker recorded under a different project than its spawning lead is meant
+to land in the lead's window regardless (`.claude/rules/project-scoping.md`
+now names this as a third axis, beyond files and store).
+
+The parent row's `tmux_target` is trusted only after `rowLive()` returns
+`true` - the same foreign-socket conservatism every other tmux_target read
+in this file already applies. A parent row recorded on a socket this process
+cannot see into must read as unresolvable, not as "no parent"; skipping this
+check would let a stale or foreign parent row send a worker's pane to a
+window on a server this process has no business trusting. When the parent
+is unresolvable (no row, dead pane, foreign socket), `splitTargetWindow`
+falls back to `findProjectWindow` (the `@hive-project-id` stamp lookup,
+above) - the honest answer for a spawn with no resolvable parent: an
+unattended run, or a caller that is not a lead.
 
 ## Never type into a pane that is waiting on a choice
 
@@ -89,7 +140,17 @@ The pane answer is cached per tick, and that cache is invalidated whenever hive 
 
 Pinned by `test/typing-guards.test.mjs` and `test/pane-fixtures.test.mjs`.
 
-**Open residuals.** A pane sitting on a dialog forever holds its wake forever, including past `max_wait_at`. And the check-to-Enter race is real: the screen is read, then the Enter follows 300ms after the paste, so a dialog raised in that gap still gets answered. Closing it needs delivery to stop meaning "typed at a terminal".
+## A pane with unsubmitted human text holds its wake too
+
+The sibling of the dialog hold, not a reversal of it, and the two are told apart by opposite signals. A modal REPLACES the input box, so `paneAwaitingChoice` needs the box ABSENT. A human mid-typing has a box very much PRESENT with real text in it, so the dialog check cannot see this case at all.
+
+It matters for the same reason: delivery is a paste followed by Enter, so a box that already holds typed text gets the wake body pasted onto the end of it and both submitted as one message. Observed on two machines before this was closed - the wake arrives merged with whatever the human was halfway through writing.
+
+`deliverable()` holds, above `claimOneShot`, exactly where the dialog check sits and for the identical reason: after the claim, "not now" and "never" are the same thing. The discriminator is `inputBoxState()`, which already existed and was reporting-only - its sole consumer was `agent_status`/`agent_output`'s `input_box` field. Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle pane holds every wake forever, since an idle claude shows its own hint. `unknown` must not either: it means the detector's chrome-matching drifted (issue #30's shape), and a hold that silently starts firing on every unrecognised screen is worse than a detector that silently stops - the loud failure is `input_box` reporting `unknown` on a receipt, not a wake that quietly never fires.
+
+The two pane reads are deliberately NOT fused into one capture. `paneAwaitingChoice` reads plain, `inputBoxState` needs `-e` for the ghost/pending discriminator, and the `-e` serializer disagrees with the plain one about which rows are blank (it emits OSC 8 and SO/SI controls that the SGR-only strip leaves behind). See `src/tools/agents.ts`'s own comment - and note that comment's OTHER historical reason, ENOBUFS past `execFileSync`'s default `maxBuffer`, no longer applies since `tmux()` passes a 16MB buffer. The row-disagreement half is what still holds the two apart.
+
+**Open residuals.** TWO conditions now hold a wake indefinitely, both past `max_wait_at`: a pane sitting on a dialog, and a pane with unsubmitted human text. The second is a deliberate choice rather than an oversight - hold-until-the-box-clears was chosen over hold-until-`max_wait_at` so there is ONE rule for "a human is busy with this pane" instead of two, accepting that text left sitting in a box holds that wake forever. And the check-to-Enter race is real: the screen is read, then the Enter follows 300ms after the paste, so a dialog raised in that gap still gets answered.  Closing either needs delivery to stop meaning "typed at a terminal".
 
 ## Two shell traps
 

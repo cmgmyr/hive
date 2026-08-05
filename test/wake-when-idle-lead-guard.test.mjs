@@ -30,7 +30,7 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
 
   after(async () => {
     await mcp.close();
-    cleanup(sessionName(projectId));
+    cleanup(sessionName());
   });
 
   beforeEach(() => {

@@ -37,8 +37,13 @@ function resolveDelivery(
     return { actor: agent.actor_id, pane: agent.tmux_target };
   }
   const actor = currentActor();
+  // ORDER BY id DESC LIMIT 1, matching splitTargetWindow's identical shape
+  // (src/spawn.ts): two running rows sharing one actor_id should never
+  // happen, but a `.get()` with no ordering picks whichever SQLite returns
+  // first if it ever does, and the ordering costs nothing. One convention,
+  // not two - cross-referenced here and there.
   const own = db
-    .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running'")
+    .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actor) as AgentRow | undefined;
   if (own && isLive(own) === true) return { actor, pane: own.tmux_target };
   const pane = process.env.TMUX_PANE;
@@ -258,12 +263,19 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes. mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers. Refuses a lead target: a lead has no idle/working state channel.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers. Refuses a lead target: a lead has no idle/working state channel.",
       inputSchema: {
         agents: z.array(agentRefParam).min(1).describe("Agents to watch."),
         body: z.string(),
         mode: z.enum(["any", "all"]).optional().describe("Defaults to any."),
-        max_wait_seconds: z.number().int().positive().optional().describe("Deadline. Defaults to 900."),
+        max_wait_seconds: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "How long to wait for idle before firing anyway. Defaults to 900. Not a hard deadline: delivery holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
+          ),
         deliver_to: agentRefParam.optional().describe("Deliver to a spawned agent instead of this session."),
         project_id: projectIdParam,
       },

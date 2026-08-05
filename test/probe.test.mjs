@@ -517,7 +517,7 @@ describe("hive start refuses to duplicate a process it cannot see", { skip: hasT
   // On a failed probe it used to close the live row and launch a second copy,
   // so a hive.yml dev server ran twice: the original untracked and still
   // holding its port, the new one failing to bind.
-  const launched = sessionName(project);
+  const launched = sessionName();
 
   before(async () => {
     await seedTrustedYml({ db, projectId: project, projectDir, processes: { web: "sleep 600" } });

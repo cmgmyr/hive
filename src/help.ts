@@ -83,7 +83,7 @@ The operating pattern:
   7. Do not poll. Set wake_when_idle(agents=[...], body="...") and go
      quiet; hive wakes you when a worker goes idle. Read REAL output
      (agent_output) before declaring a lane done. The human can watch live
-     with tmux attach -t hive-<project_id>.
+     with tmux attach -t hive-main.
   8. The lead reviews real diffs and output, not just summaries, then
      integrates one lane at a time.
   9. Capture handoffs in pads/todo comments BEFORE agent_close; terminal
@@ -128,7 +128,7 @@ runbook (fork it first), not a pad write.`,
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
   agent_spawn(name?, model?, command?, extra_args?, cwd?, placement?, layout?) —
-    start a worker (default command: claude) in session hive-<project_id>.
+    start a worker (default command: claude) in session hive-main.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
     its own tmux window (an iTerm tab under control mode). layout picks how split panes are
@@ -165,8 +165,8 @@ a worker spawns, hive pops open iTerm (control mode by default; see
 hive setup --attach) or Terminal attached to it, so the human sees every
 worker as a native window and can type into any of them. The human usually
 starts the day with the CLI: hive lead.
-Manual attach also works: tmux attach -t hive-<project_id>, or
-tmux -CC attach -t hive-<project_id> for iTerm's native windows.
+Manual attach also works: tmux attach -t hive-main, or
+tmux -CC attach -t hive-main for iTerm's native windows.
 
 Worker state (agent_state on list/status) comes from Claude Code hooks that
 agent_spawn wires automatically: working (prompt submitted), idle (finished

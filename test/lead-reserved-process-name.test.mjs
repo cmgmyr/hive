@@ -29,7 +29,7 @@ before(async () => {
   const init = await runCli(["init"], opts);
   assert.equal(init.code, 0, init.stderr);
   projectId = db.prepare("SELECT id FROM projects LIMIT 1").get().id;
-  session = sessionName(projectId);
+  session = sessionName();
   await seedTrustedYml({
     db,
     projectId,

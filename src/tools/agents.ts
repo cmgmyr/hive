@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { currentActor, findProjectForDir, resolveProject } from "../context.js";
+import { currentActor, findProjectForDir, getProject, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
@@ -38,6 +38,7 @@ import {
   waitForPaneInput,
   WINDOW_LAYOUTS,
   windowLayout,
+  windowOwner,
   type AliveSnapshot,
   type InputBoxState,
   type Liveness,
@@ -270,6 +271,15 @@ export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null):
 // AFTER the text was already sent, turning a successful send into a
 // reported error. Two forks is the correct cost here, not one.
 //
+// UPDATE, topology-3c: the second (ENOBUFS) leg is no longer load-bearing on
+// its own -- tmux() (src/tmux.ts) now passes TMUX_MAX_BUFFER (16MB) to every
+// call, this one included, so the DEFAULT maxBuffer these two captures used
+// to risk is not what either one runs under any more. The FIRST leg (the two
+// serializers disagreeing on which rows are blank) is untouched and is
+// sufficient on its own to keep this split: merging the two captures back
+// into one would still silently break the row-blankness property, with
+// nothing here to catch it.
+//
 // Present only when a recognisable input-box line was found: an absent
 // field is a plain "nothing to say" (slim receipts), not a claim that the
 // box is empty.
@@ -397,7 +407,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent in a tmux window (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt and a short [hive] line is typed into its pane as the visible first turn, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-<project_id>.",
+        "Spawn a worker agent in a tmux window (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt and a short [hive] line is typed into its pane as the visible first turn, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       inputSchema: {
         name: z
           .string()
@@ -498,7 +508,7 @@ export function registerAgents(server: McpServer): void {
           (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
-        const { agentId, actorId, target } = launchAgent({
+        const { agentId, actorId, target, landedInProjectId } = launchAgent({
           projectId: project.id,
           projectName: project.name,
           projectPath: project.path,
@@ -511,7 +521,7 @@ export function registerAgents(server: McpServer): void {
           layout,
           parentActor: parent,
         });
-        ensureAttached(sessionName(project.id));
+        ensureAttached(sessionName());
 
         // The appended system prompt is invisible in the TUI and absent from
         // the transcript, so the pane gets a short line naming the worker: the
@@ -562,6 +572,30 @@ export function registerAgents(server: McpServer): void {
           actor_id: actorId,
           name,
           tmux_target: target,
+          // Todo 268: a caller cannot reconstruct where a pane landed from
+          // project_id alone - THE PLACEMENT RULE (pad 71) puts a split
+          // worker's pane in its spawning lead's window, which is a
+          // different project's window whenever that lead is orchestrating
+          // cross-repo work. Slim: omitted whenever the pane landed in this
+          // worker's own project's window, which is the ordinary case.
+          // SIBLING CALL SITE, and it answers the stale-stamp case
+          // DIFFERENTLY on purpose: agent_close's re-tile (further down this
+          // file) also resolves windowOwner -> getProject, and when the stamp
+          // names a project row that no longer exists it treats the owner as
+          // ABSENT and falls to DEFAULT_LAYOUT. Here the same state
+          // synthesizes a placeholder name instead. Both are right for their
+          // own question - a reader wants to be told SOMETHING about where the
+          // pane went, while a layout resolved from a project that no longer
+          // exists would be a guess dressed as a fact. Named in both places
+          // rather than unified behind one helper (/simplify review, 3b):
+          // sharing the lookup would not share the policy, and the policy is
+          // the part that differs. The state itself is near-unreachable -
+          // project_prune refuses a project that still owns rows, and a
+          // stamped window's project owns at least the agents row of whatever
+          // is running in it.
+          ...(landedInProjectId != null
+            ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }
+            : {}),
           // The lead has no other channel to learn its hive.yml is malformed:
           // loadProjectYml already fell back to a default, so the spawn looks
           // clean. Reported, never fatal, and omitted when there is nothing to
@@ -1000,9 +1034,33 @@ export function registerAgents(server: McpServer): void {
           const window = pane ? paneWindow(agent.tmux_target) : null;
           tmux(pane ? "kill-pane" : "kill-window", "-t", agent.tmux_target);
           if (window) {
+            // Todo 269 / counselors F1 on pad 71. The window's OWNER decides
+            // its hive.yml, never the CLOSING row's project: once a
+            // cross-project worker can share a window with a lead it did
+            // not spawn from (todo 268), re-tiling through `project.path`
+            // (the closing row's own project) lets a foreign repo arrange a
+            // window it does not own. windowLayout(window) is consulted
+            // FIRST and already reads @hive-layout off the window itself, so
+            // this only narrows the FALLBACK, which fires when the window
+            // carries no @hive-layout yet. A window with no @hive-project-id
+            // stamp (a user-created window, or a placement="window" worker's
+            // own - both deliberately unstamped, test/worker-first-window-
+            // stamp.test.mjs) has no owner to resolve a layout through
+            // either, so DEFAULT_LAYOUT is the honest answer there too -
+            // never the closing row's project, which is the defect.
+            // SIBLING CALL SITE: agent_spawn's landed_in_project receipt
+            // (above) resolves the same windowOwner -> getProject pair and
+            // handles a stamp naming a DEAD project row the other way, with a
+            // synthesized "project <id>" placeholder. Deliberate, and its own
+            // comment carries the argument. Absent is the honest answer HERE
+            // because the value feeds a layout: a hive.yml read from a project
+            // that no longer exists cannot be produced at all, so there is
+            // nothing to fall back to but DEFAULT_LAYOUT.
+            const ownerId = windowOwner(window);
+            const ownerProject = ownerId != null ? getProject(ownerId) : undefined;
             applyLayout(
               window,
-              windowLayout(window) ?? loadProjectYml(project.path).config?.layout ?? DEFAULT_LAYOUT,
+              windowLayout(window) ?? (ownerProject ? loadProjectYml(ownerProject.path).config?.layout : undefined) ?? DEFAULT_LAYOUT,
             );
           }
         }

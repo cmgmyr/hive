@@ -121,7 +121,7 @@ describe(
 
           const project = db.prepare("SELECT id, name, path FROM projects WHERE path = ?").get(projectDir);
           assert.ok(project, "hive lead must have registered this project");
-          session = sessionName(project.id);
+          session = sessionName();
 
           const lines = result.output.split("\n");
           assert.ok(

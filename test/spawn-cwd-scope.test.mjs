@@ -729,7 +729,7 @@ describe(
 
     after(() => {
       if (agentId != null) closeAgentRow(agentId);
-      cleanup(sessionName(pinProject.id));
+      cleanup(sessionName());
     });
 
     it("delivers the real project path and lock to the spawned process, not the caller-supplied override", async () => {
@@ -797,7 +797,7 @@ describe(
       assert.equal(row.status, "running");
       assert.equal(row.tmux_target, "");
       closeAgentRow(row.id);
-      cleanup(sessionName(project.id));
+      cleanup(sessionName());
     });
   },
 );
@@ -829,7 +829,7 @@ describe(
       // describe's own store just for this lookup so cleanup targets the
       // session this describe actually created.
       process.env.HIVE_DATA_DIR = dirs.dataDir;
-      cleanup(sessionName(projectId));
+      cleanup(sessionName());
     });
 
     it("spawns a live worker when cwd is a subdirectory of the caller's own project", async () => {

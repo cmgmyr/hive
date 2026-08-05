@@ -35,7 +35,7 @@ describe("a damaged lead row (actor_id = '') is healed, not returned or collided
   const project = db
     .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
     .get("lead-transaction-test", dirs.projectDir);
-  const session = sessionName(project.id);
+  const session = sessionName();
 
   after(() => cleanup(session));
 

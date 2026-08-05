@@ -16,7 +16,7 @@ import { DEFAULT_DATA_DIR, tagFor } from "../dist/dataDir.js";
 const nameUnder = (env) =>
   execFileSync(
     process.execPath,
-    ["-e", 'import("./dist/tmux.js").then((m) => process.stdout.write(m.sessionName(1)))'],
+    ["-e", 'import("./dist/tmux.js").then((m) => process.stdout.write(m.sessionName()))'],
     // stderr piped rather than inherited, so the refusal case can read it
     // instead of printing it into the suite's output.
     { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] },
@@ -37,10 +37,10 @@ function asHuman(dataDir) {
 }
 
 describe("tmux session naming", () => {
-  it("keeps the documented hive-<project_id> for the default store", () => {
-    assert.equal(nameUnder(asHuman(null)), "hive-1");
+  it("keeps the documented hive-main for the default store", () => {
+    assert.equal(nameUnder(asHuman(null)), "hive-main");
     // Naming the default explicitly is still the default, not a third store.
-    assert.equal(nameUnder(asHuman(join(homedir(), ".hive"))), "hive-1");
+    assert.equal(nameUnder(asHuman(join(homedir(), ".hive"))), "hive-main");
     // And the pure half, in this process: an empty tag is what makes that
     // name. tagFor takes the directory, so a caller that genuinely means the
     // default store can say so without being handed one it may not use.
@@ -52,13 +52,13 @@ describe("tmux session naming", () => {
     // untrustedTmuxServer to follow symlinks, but tagFor kept comparing
     // strings, and sessionName reaches tagFor through dataDirTag. So
     // HIVE_DATA_DIR symlinked at ~/.hive produced a hash-tagged name for the
-    // same project that hive-1 names under the literal path.
+    // same store that hive-main names under the literal path.
     //
     // That is not cosmetic. A session name is the target argument for
     // kill-session and respawn-pane, which is the whole reason dataDirTag was
-    // pulled behind the guard in the first place. One project answering to two
-    // names means agent_close aims at hive-1 while the workers live under
-    // <hash>-1: workers you cannot reach and a session you cannot kill.
+    // pulled behind the guard in the first place. One store answering to two
+    // names means agent_close aims at hive-main while the workers live under
+    // <hash>-main: workers you cannot reach and a session you cannot kill.
     //
     // Safe to run: dist/tmux.js imports dist/dataDir.js and nothing else, so
     // resolving a NAME opens no database. If tmux.ts ever gains a db import,
@@ -69,7 +69,7 @@ describe("tmux session naming", () => {
     const link = join(dir, "aliased-hive");
     symlinkSync(DEFAULT_DATA_DIR, link);
     try {
-      assert.equal(nameUnder(asHuman(link)), "hive-1", "an alias of the default store is untagged");
+      assert.equal(nameUnder(asHuman(link)), "hive-main", "an alias of the default store is untagged");
       // The pure half, in this process. tagFor still takes a directory, so a
       // caller naming one gets an answer about that directory; it just answers
       // about where the directory IS rather than how it is spelled.
@@ -101,10 +101,10 @@ describe("tmux session naming", () => {
   it("refuses to name the default store under a test runner", () => {
     // The hole this closes. A session name is the target argument for
     // kill-session and respawn-pane, so an unisolated test asking for
-    // sessionName(1) used to get "hive-1" -- the live session of whatever real
-    // project is id 1 -- and agent_close would have killed it with its workers
-    // inside. Refusing costs a test nothing: every test that names a session
-    // already sets HIVE_DATA_DIR.
+    // sessionName() used to get "hive-main" -- the live, shared session of the
+    // default store -- and agent_close would have killed it with every real
+    // project's workers inside. Refusing costs a test nothing: every test that
+    // names a session already sets HIVE_DATA_DIR.
     const env = { ...process.env, NODE_TEST_CONTEXT: "child-v8" };
     delete env.HIVE_DATA_DIR;
     let stderr = "";
@@ -120,12 +120,12 @@ describe("tmux session naming", () => {
   });
 
   it("gives an isolated store its own namespace", () => {
-    // Project ids restart at 1 in a scratch store, so without this a scratch
-    // instance resolves to the live session of whatever project is really id
-    // 1 -- which is how a test run once split panes into a live lead window.
+    // Every store's one session is named main, so without this a scratch
+    // instance resolves to the live, shared session of the default store --
+    // which is how a test run once split panes into a live lead window.
     const scratch = sessionNameUnder("/tmp/hive-session-name-a");
-    assert.notEqual(scratch, "hive-1");
-    assert.match(scratch, /^hive-[0-9a-f]{8}-1$/);
+    assert.notEqual(scratch, "hive-main");
+    assert.match(scratch, /^hive-[0-9a-f]{8}-main$/);
   });
 
   it("keeps two different stores apart", () => {
@@ -168,15 +168,15 @@ describe("tmux session naming", () => {
       [
         "-e",
         'import("./dist/tmux.js").then((m) => {' +
-          "  const before = m.sessionName(1);" +
+          "  const before = m.sessionName();" +
           '  process.env.HIVE_DATA_DIR = "/tmp/hive-session-name-a";' +
-          "  process.stdout.write(JSON.stringify({ before, after: m.sessionName(1) }));" +
+          "  process.stdout.write(JSON.stringify({ before, after: m.sessionName() }));" +
           "})",
       ],
       { encoding: "utf8", env: asHuman(null) },
     );
     const seen = JSON.parse(both);
-    assert.equal(seen.before, "hive-1");
-    assert.match(seen.after, /^hive-[0-9a-f]{8}-1$/);
+    assert.equal(seen.before, "hive-main");
+    assert.match(seen.after, /^hive-[0-9a-f]{8}-main$/);
   });
 });

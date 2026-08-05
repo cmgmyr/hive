@@ -77,7 +77,7 @@ describe(
     const project = db
       .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
       .get("lead-pane-target-test", dirs.projectDir);
-    const session = sessionName(project.id);
+    const session = sessionName();
 
     let mcp;
     let workerTarget;

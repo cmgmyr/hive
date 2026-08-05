@@ -61,7 +61,7 @@ describe(
       assert.ok(row.tmux_target.length > 0, "setup bug: the target must have been recorded for this assertion to mean anything");
 
       closeAgentRow(agentId);
-      cleanup(sessionName(project.id));
+      cleanup(sessionName());
     });
   },
 );
@@ -74,7 +74,7 @@ describe(
     const project = db
       .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id, name, path")
       .get("tmux-socket-lead", leadProjectDir);
-    const session = sessionName(project.id);
+    const session = sessionName();
     const fakeClaude = makeFakeClaude(dirs.tmp);
     const claudePath = fakeClaude("sleep 600");
     const PATH = `${dirname(claudePath)}:${process.env.PATH}`;
@@ -105,7 +105,7 @@ describe(
       // the same shape a real restart under a different tmux takes, without
       // faking tmuxSocketPath's own inputs.
       const otherSocketDir = mkdtempSync(join(tmpdir(), "hive-tmux-b-"));
-      const otherSession = sessionName(project.id);
+      const otherSession = sessionName();
       // Computed once, ahead of the try: reused for the assertion below AND
       // for -S in the cleanup's kill-session, instead of a second copy
       // hand-reconstructing tmuxSocketPath's own <base>/tmux-<uid>/default

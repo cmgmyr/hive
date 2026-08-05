@@ -30,7 +30,7 @@ describe("agent_rename refuses the lead", { skip: hasTmux ? false : "tmux is not
 
   after(async () => {
     await mcp.close();
-    cleanup(sessionName(projectId));
+    cleanup(sessionName());
   });
 
   // Same reasoning as agent-close-lead-guard.test.mjs: only one running

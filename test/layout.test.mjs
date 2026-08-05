@@ -11,7 +11,9 @@ import { isolateTmux, scratchDirs } from "./helpers.mjs";
 const { hasTmux, cleanup } = isolateTmux("the layout tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
-const { applyLayout, claimInitialWindow, configureHiveWindow, paneWindow, windowLayout } = await import("../dist/tmux.js");
+const { applyLayout, claimInitialWindow, configureHiveWindow, ensureSession, paneWindow, windowLayout } = await import(
+  "../dist/tmux.js"
+);
 
 function ymlProject(body) {
   const dir = mkdtempSync(join(tmpdir(), "hive-yml-"));
@@ -77,8 +79,11 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", userWindow, "pane-border-status"), "off");
     assert.equal(tmux("display-message", "-p", "-t", userWindow, "#{@hive-owned}"), "");
 
-    tmux("new-session", "-d", "-s", claimedSession, "sleep 600");
-    const { pane, window } = claimInitialWindow(claimedSession, "claimed", dirs.projectDir, [], "sleep 600");
+    // Through ensureSession, which is where the pane and window ids
+    // claimInitialWindow claims now come from (todo 278): it targets what it
+    // was handed rather than asking the session which window is current.
+    const started = ensureSession(claimedSession, dirs.projectDir);
+    const { pane, window } = claimInitialWindow(started, "claimed", dirs.projectDir, [], "sleep 600");
     assert.equal(tmux("show-options", "-w", "-v", "-t", window, "@hive-owned"), "1");
     assert.equal(tmux("show-options", "-p", "-A", "-v", "-t", pane, "allow-passthrough"), "all");
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"), "top");

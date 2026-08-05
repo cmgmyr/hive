@@ -12,6 +12,7 @@ import {
 import {
   capturePane,
   foreignSocket,
+  inputBoxState,
   liveTargets,
   maskChoiceMarker,
   paneAwaitingChoice,
@@ -542,15 +543,54 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 // change that pane's answer, so forgetting the answer after typing is the exact
 // scope of the repair: the batching still holds for panes nothing was delivered
 // to, and for a timer held by a dialog, which is where it was worth having.
-type ChoiceCache = Map<string, boolean | null>;
+//
+// Widened (todo 270) to carry a SECOND, independently-lazy answer alongside
+// the choice one: whether the pane's input box holds real unsubmitted human
+// text. One cache, not two, because both answers are invalidated by the
+// identical event (this tick typed into the pane) and a second Map would
+// just duplicate that invalidation logic for no reason. Each field is
+// computed at most once per pane per tick, the same discipline the choice
+// answer already had - inputBoxState costs its own capture-pane fork (it
+// needs "-e" for the ghost/pending SGR discriminator, which paneAwaitingChoice's
+// plain capture does not carry), so this does not save that fork, only caps
+// it at one per pane per tick rather than one per due timer.
+type ChoiceCache = Map<string, { choice?: boolean | null; inputHeld?: boolean }>;
+
+function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null; inputHeld?: boolean } {
+  let entry = cache.get(pane);
+  if (!entry) {
+    entry = {};
+    cache.set(pane, entry);
+  }
+  return entry;
+}
 
 function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
-  let answer = cache.get(pane);
-  if (answer === undefined) {
-    answer = paneAwaitingChoice(pane);
-    cache.set(pane, answer);
-  }
-  return answer;
+  const entry = cacheEntry(pane, cache);
+  if (entry.choice === undefined) entry.choice = paneAwaitingChoice(pane);
+  return entry.choice;
+}
+
+// Todo 270. inputBoxState's OWN consumer (agent_status/agent_output's
+// input_box field) already tells real unsubmitted text apart from claude's
+// ghost hint and from empty; this reuses that same detector as a HOLD
+// condition, exactly the way paneAwaitingChoice already is one, rather than
+// inventing a second signal. Only "pending" (real, human-typed text) holds -
+// "ghost" and "empty" must not, or every idle pane (which shows the ghost
+// hint) would hold every wake forever, and "unknown" must not either: it
+// means the detector's own chrome-matching drifted (issue #30's shape), and
+// a hold that silently starts firing on every unrecognised screen is worse
+// than a detector that silently stops - the loud failure here is
+// input_box's own receipt field reporting "unknown", not a wake that quietly
+// never fires. A pane with no box at all (null: a modal, or mid-turn) is not
+// this function's concern; the modal case is already held above by
+// awaitingChoice, and mid-turn is not a hold condition (this codebase's own
+// position is well-established: a busy pane is fine to deliver into, only a
+// pane with nowhere to put the paste is not).
+function inputBoxHoldsWake(pane: string, cache: ChoiceCache): boolean {
+  const entry = cacheEntry(pane, cache);
+  if (entry.inputHeld === undefined) entry.inputHeld = inputBoxState(pane)?.state === "pending";
+  return entry.inputHeld;
 }
 
 // Counselors R2-A on the L4 fix round's todo 161. The lead exemption below
@@ -575,6 +615,9 @@ const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust 
 const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
+const HELD_REASON_UNSUBMITTED_INPUT =
+  "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
+  "and submit both as one message";
 
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
   const live = snapshot
@@ -728,6 +771,25 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // write a no-op exactly when a concurrent claim has already moved this row
     // past the state this tick observed.
     holdTimer(timer, HELD_REASON_MODAL_CHOICE);
+    return false;
+  }
+  // Todo 270. The dialog check above guards a MODAL: the input box gone
+  // entirely, replaced by a footer with nowhere to put a paste. This is its
+  // sibling condition, not a reversal of it - a human mid-typing has an
+  // input box very much present, so the modal check above cannot see this
+  // case at all. Held for the identical reason and at the identical point
+  // (ABOVE claimOneShot: after the claim, "not now" and "never" are the
+  // same thing): delivery is a paste followed by Enter, and a box that
+  // already has real text in it gets the wake body pasted onto the END of
+  // that text, then both submitted as one message the instant Enter lands.
+  //
+  // ACCEPTED RESIDUAL, same shape as the dialog hold's own: text left
+  // sitting in a box holds this wake forever, past max_wait_at, for as long
+  // as it sits there. Not a timeout to invent - matching the dialog
+  // precedent (.claude/rules/tmux-and-panes.md, "Open residuals") rather
+  // than building a second policy for "a human is busy with this pane".
+  if (inputBoxHoldsWake(timer.deliver_pane, choices)) {
+    holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
     return false;
   }
   return true;

@@ -234,18 +234,39 @@ say "resolved project: $PROJECT_NAME (id $PROJECT_ID, $PROJECT_PATH)"
 # HIVE_SESSION still overrides, for tests and for a human debugging - when
 # set, it is trusted outright and tmux is never asked.
 resolve_lead_pane() {
-  local row sess
+  local row sess rows
   row=$(db_query "select tmux_target from agents where project_id = $PROJECT_ID and kind = 'lead' and status = 'running' order by id limit 1;")
   PANE=""
   PANE_CMD=""
   [ -n "$row" ] || return 0
   if [ -n "${HIVE_SESSION:-}" ]; then
     sess="$HIVE_SESSION"
+    tmux list-panes -s -t "=$sess" -F '#{pane_id}' 2>/dev/null | grep -qxF "$row" || return 0
   else
-    sess=$(tmux display-message -p -t "$row" -F '#{session_name}' 2>/dev/null) || return 0
+    # `display-message -p -t <pane-id>` is AMBIGUOUS the instant this pane's
+    # window is also linked into a VIEW session (topology-3c, view sessions):
+    # the pane is a member of both sessions in the group, and tmux answers
+    # with whichever one it currently favors - measured against tmux 3.7b,
+    # it favors the view even right after the BASE session's own window was
+    # selected, and stays that way regardless of which one was touched most
+    # recently. That is one failure mode; the other is worse: a view session
+    # can vanish (destroy-unattached) at any moment, so a SESSION resolved to
+    # its name can name a session that no longer exists by the time the next
+    # command uses it, refusing (or worse, reading "no live pane") for a lead
+    # that is perfectly fine.
+    #
+    # `list-panes -a` lists a linked pane once PER SESSION it belongs to
+    # (measured), so every session actually containing this pane is right
+    # there in one query - filter OUT anything shaped like viewSessionName()
+    # (src/tmux.ts) and what remains is the durable base session. The SUFFIX
+    # shape alone ("view-<pid>") is enough to tell the two apart without
+    # reimplementing dataDirTag()'s hash in bash, which is exactly the
+    # hand-copy this file already got bitten by once (see the comment on
+    # SESSION's derivation above) and does not retry.
+    rows=$(tmux list-panes -a -F '#{pane_id}	#{session_name}' 2>/dev/null | awk -F'\t' -v p="$row" '$1 == p { print $2 }')
+    sess=$(printf '%s\n' "$rows" | grep -vE 'view-[0-9]+$' | head -n1)
   fi
   [ -n "$sess" ] || return 0
-  tmux list-panes -s -t "=$sess" -F '#{pane_id}' 2>/dev/null | grep -qxF "$row" || return 0
   PANE="$row"
   PANE_CMD=$(tmux list-panes -s -t "=$sess" -F '#{pane_id}	#{pane_current_command}' 2>/dev/null \
     | awk -F'\t' -v p="$row" '$1 == p { print $2; exit }')
