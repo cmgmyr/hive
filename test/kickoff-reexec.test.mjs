@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -179,6 +179,63 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       assert.equal(code, 1);
       assert.match(stderr, ABI_FAILURE);
       assert.match(stderr, new RegExp(`NODE_MODULE_VERSION ${alt.modules}`));
+    },
+  );
+
+  // The two below pin the SAME invariant from both sides: kickoff.mjs's cheap
+  // gate may only decline for a session dist/kickoff.js would also decline.
+  // They are a pair on purpose. Either one alone passes while the gate is
+  // wrong in the other direction, which is exactly how this shipped broken --
+  // HIVE_AGENT_ID alone read as "worker" here long after issue #27 made it
+  // true of the lead as well.
+  it(
+    "re-execs for a LEAD session, which carries HIVE_AGENT_ID like a worker but must still fire",
+    { skip: alt ? false : "no second Node with a different ABI on this machine" },
+    async () => {
+      // The regression. A lead sets HIVE_AGENT_ID and HIVE_LEAD=1 together
+      // (src/cli.ts), and dist/kickoff.js's own gate lets it through on the
+      // strength of the second. A mirror here that reads only the first skips
+      // the ABI check for the one session type that goes on to open the
+      // store, and the lead loses its entire digest to the mismatch this
+      // re-exec exists to repair.
+      await pinDispatcher(process.execPath);
+      const { code, stdout, stderr } = await runNode(KICKOFF_MJS, [], {
+        ...opts,
+        node: alt.path,
+        env: { HIVE_BIN_DIR: binDir, HIVE_AGENT_ID: "lead:1", HIVE_LEAD: "1" },
+      });
+      assert.equal(code, 0, stderr);
+      assert.match(fired(stdout).additionalContext, /\[hive\] Project/);
+    },
+  );
+
+  it(
+    "does not re-exec for a WORKER session, which dist/kickoff.js declines before it can reach the store",
+    { skip: alt ? false : "no second Node with a different ABI on this machine" },
+    async () => {
+      // Exit code and stdout cannot discriminate here: a worker is silent at
+      // exit 0 whether the gate returned early or dist/kickoff.js's own gate
+      // caught it one import later, so asserting either would be a test that
+      // the suite runs. The pinned interpreter is a script that records being
+      // run instead, which makes "a re-exec happened at all" directly
+      // observable. It exits nonzero so a gate that wrongly re-execs fails
+      // loudly on the code as well, rather than only on the sentinel.
+      const sentinel = join(dirs.tmp, "worker-reexec-happened");
+      const recordingNode = join(dirs.tmp, "recording-node");
+      writeFileSync(recordingNode, `#!/bin/sh\ntouch ${shQuote(sentinel)}\nexit 3\n`, { mode: 0o755 });
+      await pinDispatcher(recordingNode);
+      const { code, stdout, stderr } = await runNode(KICKOFF_MJS, [], {
+        ...opts,
+        node: alt.path,
+        env: { HIVE_BIN_DIR: binDir, HIVE_AGENT_ID: "agent:7" },
+      });
+      assert.equal(
+        existsSync(sentinel),
+        false,
+        "a worker session paid for the dispatcher read and re-exec that its own gate exists to skip",
+      );
+      assert.equal(code, 0, stderr);
+      assert.equal(stdout, "", "a worker gets its brief from agent_spawn, never from this hook");
     },
   );
 });

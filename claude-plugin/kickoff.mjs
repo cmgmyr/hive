@@ -41,7 +41,23 @@ async function reexecUnderPinnedInterpreter() {
   // cheap file and git checks come first"). Mirror the cheapest of those two
   // here, so a directory with no hive.yml pays for neither a dispatcher import
   // nor a file read.
-  if (process.env.HIVE_AGENT_ID) return;
+  //
+  // The condition has to match dist/kickoff.js's gate EXACTLY, not merely
+  // approximate it. This read `HIVE_AGENT_ID` alone until issue #27 gave the
+  // lead an agents row of its own: HIVE_AGENT_ID is set for a lead too now,
+  // and only HIVE_LEAD tells the two apart. The gate over there was updated
+  // and this mirror was not, so every lead session skipped the ABI check
+  // entirely and fell through to dist/kickoff.js -- which correctly does NOT
+  // bail for a lead, and reached dist/db.js under whatever bare `node` the
+  // directory resolved. On a one-Node machine that is harmless, which is why
+  // it went unseen; on a machine running a Node per repo the lead lost its
+  // whole session-start digest to an ABI mismatch the re-exec exists to fix.
+  //
+  // Skipping the guard is only ever safe when the session would ALSO have
+  // been declined downstream. Anything this returns early for must be
+  // something dist/kickoff.js refuses too, or the re-exec is being skipped
+  // for a session that goes on to open the store.
+  if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") return;
   if (!existsSync(join(process.cwd(), "hive.yml"))) return;
 
   // Re-exec is a fix for an ABI mismatch, not for a path difference: this
