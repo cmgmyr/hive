@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
   alternateInterpreter,
+  classicAddonFixture,
   firedSessionStart as fired,
   isolateTmux,
   REPO,
@@ -12,6 +13,7 @@ import {
   runNode,
   scratchDirs,
   scratchGit as git,
+  writeScratchAddon,
 } from "./helpers.mjs";
 
 // hooks.json registers claude-plugin/kickoff.mjs under a bare `node`, which a
@@ -24,6 +26,23 @@ import {
 // whose pin is merely stale must be left alone.
 const KICKOFF_MJS = join(REPO, "claude-plugin", "kickoff.mjs");
 
+// Issue #105 lane B. This whole file is built on alternateInterpreter()
+// finding a real second Node whose ABI the REAL addon cannot load, so
+// running KICKOFF_MJS under it reproduces "started under the wrong
+// interpreter" for real. better-sqlite3 13's N-API prebuilds load under any
+// Node major on this platform/arch, so that premise is gone for the real,
+// currently-installed addon: alt.path can now load it fine too, and nothing
+// below it ever needs to re-exec.
+//
+// The re-exec mechanism itself is unchanged and still needs covering, so the
+// describe block below runs against a SCRATCH checkout (writeScratchAddon)
+// whose addon is test/fixtures/native-addon-abi/'s classic, pre-13 build
+// instead of the real one - the one that matches THIS interpreter's own ABI,
+// so the healthy-path cases still recover, and alt.path still genuinely
+// cannot load it, same as every case here always assumed. Two real
+// interpreters are still required (this reconstructs which one CAN load a
+// given file, not just that loading fails), so `alt` stays load-bearing.
+
 const { cleanup: cleanupTmux } = isolateTmux("the kickoff re-exec tests");
 after(() => cleanupTmux());
 
@@ -31,9 +50,26 @@ const ABI_FAILURE = /^hive: cannot run under this Node\.$/m;
 
 describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () => {
   const alt = alternateInterpreter();
+  const matchingFixture = classicAddonFixture({ matches: true });
+  const SKIP =
+    alt && matchingFixture
+      ? false
+      : alt
+        ? `no pre-N-API better-sqlite3 fixture for ${process.platform}-${process.arch} ABI ${process.versions.modules} - add one (see test/fixtures/native-addon-abi/README.md) or this coverage is silently gone`
+        : "no second Node with a different ABI on this machine";
   const dirs = scratchDirs();
   const binDir = join(dirs.tmp, "bin");
   const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+
+  // Built once, reused by every test below: a scratch checkout whose
+  // better-sqlite3 addon is the classic build matching THIS interpreter's own
+  // ABI, so it behaves exactly like the real pre-13 addon used to - loads
+  // under process.execPath, refuses under alt.path. Skipped entirely when
+  // unavailable (see SKIP above), so this only runs when there is something
+  // real for it to load.
+  const scratch = SKIP
+    ? null
+    : writeScratchAddon(join(dirs.tmp, "scratch-addon"), { prebuild: matchingFixture, classic: true });
 
   // dispatcher.js reads its exec line back out; writing it by hand rather
   // than through dispatcherScript() would silently drift from the format
@@ -55,39 +91,31 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
     assert.equal(init.code, 0, init.stderr);
   });
 
-  it(
-    "recovers when started under the wrong interpreter but a dispatcher pins the right one",
-    { skip: alt ? false : "no second Node with a different ABI on this machine" },
-    async () => {
-      await pinDispatcher(process.execPath);
-      const { code, stdout, stderr } = await runNode(KICKOFF_MJS, [], {
-        ...opts,
-        node: alt.path,
-        env: { HIVE_BIN_DIR: binDir },
-      });
-      assert.equal(code, 0, stderr);
-      assert.match(fired(stdout).additionalContext, /\[hive\] Project/);
-    },
-  );
+  it("recovers when started under the wrong interpreter but a dispatcher pins the right one", { skip: SKIP }, async () => {
+    await pinDispatcher(process.execPath);
+    const { code, stdout, stderr } = await runNode(scratch.kickoffMjs, [], {
+      ...opts,
+      node: alt.path,
+      env: { HIVE_BIN_DIR: binDir },
+    });
+    assert.equal(code, 0, stderr);
+    assert.match(fired(stdout).additionalContext, /\[hive\] Project/);
+  });
 
-  it(
-    "falls through to the unchanged failure when there is no dispatcher to re-exec under",
-    { skip: alt ? false : "no second Node with a different ABI on this machine" },
-    async () => {
-      const { code, stderr } = await runNode(KICKOFF_MJS, [], {
-        ...opts,
-        node: alt.path,
-        env: { HIVE_BIN_DIR: join(dirs.tmp, "no-dispatcher-here") },
-      });
-      assert.equal(code, 1);
-      assert.match(stderr, ABI_FAILURE);
-      assert.match(stderr, new RegExp(`NODE_MODULE_VERSION ${alt.modules}`));
-    },
-  );
+  it("falls through to the unchanged failure when there is no dispatcher to re-exec under", { skip: SKIP }, async () => {
+    const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
+      ...opts,
+      node: alt.path,
+      env: { HIVE_BIN_DIR: join(dirs.tmp, "no-dispatcher-here") },
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, ABI_FAILURE);
+    assert.match(stderr, new RegExp(`NODE_MODULE_VERSION ${alt.modules}`));
+  });
 
   it(
     "falls through to the unchanged failure when the pinned interpreter cannot be executed",
-    { skip: alt ? false : "no second Node with a different ABI on this machine" },
+    { skip: SKIP },
     async () => {
       // This cannot distinguish the existsSync(node) guard in kickoff.mjs
       // from spawnSync's own result.error fallback a few lines later: a
@@ -99,7 +127,7 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       // executed falls through safely rather than crashing or hanging --
       // not which specific guard caught it.
       await pinDispatcher(join(dirs.tmp, "gone-node"));
-      const { code, stderr } = await runNode(KICKOFF_MJS, [], {
+      const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
         ...opts,
         node: alt.path,
         env: { HIVE_BIN_DIR: binDir },
@@ -109,30 +137,26 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
     },
   );
 
-  it(
-    "does not re-exec a second time once the loop guard marker is set",
-    { skip: alt ? false : "no second Node with a different ABI on this machine" },
-    async () => {
-      // A dispatcher pinning a perfectly good interpreter (process.execPath)
-      // would normally recover this, per the first test above. With the
-      // marker already set, as it would be on a re-exec's own child, the
-      // check must refuse to act on it, or a pinned interpreter that also
-      // cannot load the addon re-execs into itself forever.
-      await pinDispatcher(process.execPath);
-      const { code, stderr } = await runNode(KICKOFF_MJS, [], {
-        ...opts,
-        node: alt.path,
-        env: { HIVE_BIN_DIR: binDir, HIVE_KICKOFF_REEXEC: "1" },
-      });
-      assert.equal(code, 1, "the marker should have suppressed the re-exec that would otherwise have fixed this");
-      assert.match(stderr, ABI_FAILURE);
-      assert.match(stderr, new RegExp(`NODE_MODULE_VERSION ${alt.modules}`), "still under the wrong interpreter");
-    },
-  );
+  it("does not re-exec a second time once the loop guard marker is set", { skip: SKIP }, async () => {
+    // A dispatcher pinning a perfectly good interpreter (process.execPath)
+    // would normally recover this, per the first test above. With the
+    // marker already set, as it would be on a re-exec's own child, the
+    // check must refuse to act on it, or a pinned interpreter that also
+    // cannot load the addon re-execs into itself forever.
+    await pinDispatcher(process.execPath);
+    const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
+      ...opts,
+      node: alt.path,
+      env: { HIVE_BIN_DIR: binDir, HIVE_KICKOFF_REEXEC: "1" },
+    });
+    assert.equal(code, 1, "the marker should have suppressed the re-exec that would otherwise have fixed this");
+    assert.match(stderr, ABI_FAILURE);
+    assert.match(stderr, new RegExp(`NODE_MODULE_VERSION ${alt.modules}`), "still under the wrong interpreter");
+  });
 
   it(
     "does not re-exec when the current interpreter is already healthy, even if the pin is stale",
-    { skip: alt ? false : "no second Node with a different ABI on this machine" },
+    { skip: SKIP },
     async () => {
       // The regression this pins: a session running the interpreter that
       // actually built the addon must fire normally even when the dispatcher
@@ -142,7 +166,7 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       // common state (the README's own update recipe warns about it), not an
       // exotic one, and it must not cost this session its kickoff.
       await pinDispatcher(alt.path);
-      const { code, stdout, stderr } = await runNode(KICKOFF_MJS, [], {
+      const { code, stdout, stderr } = await runNode(scratch.kickoffMjs, [], {
         ...opts,
         node: process.execPath,
         env: { HIVE_BIN_DIR: binDir },
@@ -154,7 +178,7 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
 
   it(
     "terminates in one hop instead of hanging when the current interpreter AND the pin are both broken",
-    { skip: alt ? false : "no second Node with a different ABI on this machine", timeout: 10_000 },
+    { skip: SKIP, timeout: 10_000 },
     async () => {
       // The genuine loop risk, reproduced for real rather than asserted from
       // reasoning: process.execPath always reports the RESOLVED real path of
@@ -171,7 +195,7 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       const altAlias = join(dirs.tmp, "alt-node-alias");
       symlinkSync(altReal, altAlias);
       await pinDispatcher(altAlias);
-      const { code, stderr } = await runNode(KICKOFF_MJS, [], {
+      const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
         ...opts,
         node: altReal,
         env: { HIVE_BIN_DIR: binDir },

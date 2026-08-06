@@ -28,14 +28,27 @@ jobs:
         # dead-rule check genuinely wants a filesystem glob, and 22 was
         # chosen as the floor instead.
         #
-        # THE DECLARED FLOOR IS 22.5.0, AND THIS MATRIX CANNOT VERIFY THE
-        # PATCH PART. `node-version: 22` resolves to the latest 22.x, well
-        # past 22.5.0, while path.matchesGlob (scripts/covering-rules.mjs)
-        # landed at exactly 22.5.0 and throws on 22.0 through 22.4. So the
-        # ".5.0" in package.json's engines.node is reasoned from the API's
-        # own history, not exercised here. Pinning a leg to 22.5.0 to prove
-        # it would test a version nobody runs; the honest move is to say
-        # the gap out loud, which is what this comment is.
+        # THE 22 LEG IS PINNED AT THE EXACT DECLARED FLOOR, AND THAT IS A
+        # REVERSAL. This comment used to argue the opposite: that the ".5.0"
+        # in engines.node was reasoned from the API's history, that
+        # `node-version: 22` resolving to the latest 22.x left the patch
+        # component unexercised, and that pinning a leg to the floor "would
+        # test a version nobody runs" so the honest move was to say the gap
+        # out loud. Saying it out loud is what let issue #105 lane B ship a
+        # floor of 22.5.0 against a better-sqlite3 whose addon needs Node
+        # 22.14.0, where every version in the gap segfaults with empty stdout
+        # and empty stderr. A floor nobody runs is a claim, not a constraint,
+        # and this matrix is where the claim gets run.
+        #
+        # So: 22.14.0 exactly, which is where Node-API 10 begins. "Nobody runs
+        # it" was the wrong test - the point is not to cover a popular
+        # version, it is to cover the BOUNDARY, which is the only version
+        # where a floor error is visible. The `floor-boundary` job below
+        # covers the versions this leg cannot: below the floor on two release
+        # lines, and the 23-line start point.
+        #
+        # Latest-22.x coverage is what this gives up, and that is a real cost:
+        # the 24 legs are what carry "new Node still works" now.
         #
         # `alt` is paired explicitly rather than derived, because the only
         # thing that makes an alt VALID is that its NODE_MODULE_VERSION
@@ -56,7 +69,7 @@ jobs:
         # native addon builds there.
         include:
           - os: ubuntu-latest
-            node: 22
+            node: "22.14.0"
             alt: 24
           - os: ubuntu-latest
             node: 24
@@ -126,3 +139,83 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  # THE BOUNDARY, RUN FROM BOTH SIDES OF BOTH RELEASE LINES. This is the only
+  # thing that can catch what issue #105 lane B shipped: a Node that satisfies
+  # engines.node, installs cleanly, and cannot load the addon. On 22.13.1 the
+  # pre-fix tree exits 139 with empty stdout and empty stderr - no error,
+  # nothing to classify, no diagnostic.
+  #
+  # 23.5.0 is here because the FIRST fix had the same defect one release line
+  # over. Node-API 10 is "v22.14.0+, v23.6.0+ and all later versions", so
+  # `">=22.14.0"` admitted 23.0.0 through 23.5.0, every one of them Node-API 9.
+  # A single-version floor cannot express a per-release-line matrix, and a
+  # single-version CI leg cannot catch that it does not.
+  #
+  # 23.6.0 is the positive control. Without it these legs only prove hive says
+  # no, which a guard that refused everything would also satisfy.
+  #
+  # These are fixed historical releases and are meant to stay fixed. They stop
+  # discriminating only if better-sqlite3's NAPI_VERSION moves, which reddens
+  # test/dependency-versions.test.mjs on every other leg first.
+  #
+  # None of them runs the suite. The suite needs a store, and a store is
+  # exactly what a sub-floor Node cannot open.
+  floor-boundary:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 22.13.1
+            expect: refuse
+            why: last 22.x below Node-API 10
+          - node: 23.5.0
+            expect: refuse
+            why: satisfies a bare >=22.14.0 and provides Node-API 9
+          - node: 23.6.0
+            expect: ok
+            why: where Node-API 10 starts on the 23 line
+    name: node ${{ matrix.node }} must ${{ matrix.expect }} (${{ matrix.why }})
+    steps:
+      - uses: actions/checkout@v5
+      # Install and build under a supported Node; only the last step runs
+      # under the boundary one. Building under 22.13.1 would risk failing for
+      # an unrelated toolchain reason and reading as a pass.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - run: echo "HIVE_BOUNDARY_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: hive's answer for this Node matches what its own declaration promises
+        env:
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          set +e
+          out=$("$HIVE_BOUNDARY_NODE" dist/cli.js doctor 2>&1)
+          code=$?
+          set -e
+          printf '%s\n' "$out"
+          echo "exit=$code napi=$("$HIVE_BOUNDARY_NODE" -p process.versions.napi)"
+          if [ "$code" = "139" ]; then
+            echo "FAIL: exit 139 is the segfault these legs exist to catch"
+            exit 1
+          fi
+          if [ "$EXPECT" = "refuse" ]; then
+            [ "$code" = "1" ] || { echo "FAIL: expected exit 1, got $code"; exit 1; }
+            printf '%s\n' "$out" | grep -q "Node-API 10" \
+              || { echo "FAIL: no Node-API level in the diagnostic"; exit 1; }
+            printf '%s\n' "$out" | grep -q "Rebuilding does NOT help" \
+              || { echo "FAIL: the advice reverted to something a rebuild cannot fix"; exit 1; }
+          else
+            # Not the exit code: a runner without `claude` makes doctor fail
+            # correctly and exit 1, which test/CLAUDE.md's standing rule exists
+            # for. The addon's own line is the claim under test.
+            printf '%s\n' "$out" | grep -qE "ok +better-sqlite3: addon loaded" \
+              || { echo "FAIL: the addon should load on this Node"; exit 1; }
+          fi

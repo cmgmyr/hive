@@ -31,7 +31,7 @@ import { REPO } from "./helpers.mjs";
 // move VERIFIED_PAIR to match package.json and say so in the PR body. That is
 // this check doing its job, not a check to route around.
 const VERIFIED_PAIR = {
-  "better-sqlite3": "^12.11.1",
+  "better-sqlite3": "^13.0.3",
   "@types/better-sqlite3": "^9.6.0",
 };
 
@@ -48,5 +48,67 @@ describe("the better-sqlite3 / @types/better-sqlite3 verified pair", () => {
           "store, update VERIFIED_PAIR in this file to match.",
       );
     }
+  });
+});
+
+// Issue #105 lane B1, and the reason this is a test rather than a comment in
+// package.json: engines.node is NOT an independent choice. better-sqlite3 13's
+// addon is built with NAPI_VERSION=10, a Node that does not provide Node-API 10
+// segfaults inside dlopen with no output at all, and hive declared ">=22.5.0"
+// through that whole range because nothing tied the two numbers together.
+//
+// Both sides are read here, neither is derived from the other: the required
+// level comes from the installed dependency's own binding.gyp, and the
+// declaration comes from package.json.
+//
+// THE ASSERTION'S SHAPE IS THE FIX, NOT THE VERSION IN IT. This test first
+// shipped asserting `engines.node === ">=" + <one lowest version>`, which
+// hardcoded the assumption that a Node-API level starts at a single version.
+// It does not - it starts once per release line - so the CORRECT declaration
+// (`^22.14.0 || >=23.6.0`, which excludes the Node-API 9 releases 23.0.0 to
+// 23.5.0) FAILED the test that claimed to keep the numbers in step. A test
+// that has to be edited to accept a correct value was pinning the bug.
+// Comparing against the derived range means the test follows the model
+// instead of restating one case of it.
+describe("the engines declaration and the addon's Node-API requirement", () => {
+  it("package.json admits exactly the Nodes that provide the level the installed addon needs", async () => {
+    const { requiredNodeApi, nodeRangeForNodeApi } = await import("../dist/abi.js");
+    const required = requiredNodeApi();
+    assert.ok(required !== null, "better-sqlite3 stopped stating NAPI_VERSION; src/abi.ts's guard is void without it");
+    const range = nodeRangeForNodeApi(required);
+    assert.ok(
+      range,
+      `no start points recorded for Node-API ${required} - add its per-release-line versions to ` +
+        "NODE_API_STARTS in src/abi.ts, or the guard can report a level and not a fix",
+    );
+    const pkg = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
+    assert.equal(
+      pkg.engines?.node,
+      range,
+      `the addon needs Node-API ${required}, which only Node ${range} provides, but package.json ` +
+        `advertises ${pkg.engines?.node}. A Node the declaration admits and the level excludes installs ` +
+        "cleanly and cannot load the addon.",
+    );
+    // The lockfile carries its own copy of engines and npm only refreshes it
+    // on an install. It was left at ">=22.5.0" for a whole commit after
+    // package.json moved, which is a second declaration saying something
+    // false about the same tree.
+    const lock = JSON.parse(readFileSync(join(REPO, "package-lock.json"), "utf8"));
+    assert.equal(
+      lock.packages?.[""]?.engines?.node,
+      range,
+      "package-lock.json's root engines drifted from package.json - run npm install to refresh it",
+    );
+  });
+
+  it("derives the range from start points rather than restating it", async () => {
+    const { nodeRangeForNodeApi } = await import("../dist/abi.js");
+    // The property, stated where it can fail: every line but the last is
+    // capped at its own major, because the next major sits BELOW the level
+    // until its own start point. Node 23.0.0-23.5.0 is the concrete case -
+    // it satisfies ">=22.14.0" and provides Node-API 9.
+    assert.equal(nodeRangeForNodeApi(10), "^22.14.0 || >=23.6.0");
+    assert.doesNotMatch(nodeRangeForNodeApi(10), /^>=22\.14\.0$/, "a bare >= admits the 23.0-23.5 gap");
+    assert.equal(nodeRangeForNodeApi(99), null, "an unrecorded level gets no invented range");
   });
 });

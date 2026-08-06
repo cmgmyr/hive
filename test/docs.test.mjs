@@ -112,12 +112,31 @@ describe("docs keep up with the CLI", () => {
   it("records why a passing require proves nothing", () => {
     // Moved out of CLAUDE.md into a path-scoped rule, so it now has to be
     // asserted where it actually lives. The claim is the mechanism ("does NOT
-    // load it"), not the consequence: a reader who only learns that require is
-    // insufficient still does not know what to run instead.
+    // load the addon"), not the consequence: a reader who only learns that
+    // require is insufficient still does not know what to run instead.
+    //
+    // Issue #105 lane B. better-sqlite3 13 moved to N-API, which is
+    // deliberately ABI-stable across Node majors, so the addon no longer
+    // cares which interpreter built it - the rule's opening claim changed
+    // with it (see the rule itself for the measurement). The lazy-binding
+    // trap this test exists for is unchanged, so that half is still pinned.
     const rule = readRepo(".claude/rules/native-addon.md");
-    assert.match(rule, /ABI-locked to the interpreter that built it/);
-    assert.match(rule, /does NOT load it: the binding loads lazily inside `new Database\(\)`/);
+    assert.match(rule, /deliberately ABI-stable across Node majors/);
+    assert.match(rule, /does NOT load the addon/);
+    assert.match(rule, /binding loads lazily inside `new Database\(\)`/);
     assert.match(rule, /hive setup/);
+
+    // Issue #105 lane B1. "ABI-stable across Node majors" is true and, left
+    // unscoped, is what the rule used to say - it called the mismatch
+    // unreachable "on any platform" while Node 22.5.0 to 22.13.x segfaulted.
+    // The scope is the claim now, so it is pinned like one.
+    assert.match(rule, /Node-API 10, which begins at Node 22\.14\.0/);
+    assert.match(rule, /unreachable on any Node that clears that floor/);
+    // The other overclaim, which contradicted the issue #51 bullet in the same
+    // list: npm never invokes node-gyp for this package, so nothing falls back
+    // to a source build on its own.
+    assert.doesNotMatch(rule, /which still builds from source/);
+    assert.match(rule, /npm will not build one/i);
   });
 
   it("names the guards that make test isolation structural, and they exist", () => {

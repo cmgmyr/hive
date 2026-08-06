@@ -3,7 +3,17 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { alternateInterpreter, assertScratchStore, CLI, isolateTmux, runCli, scratchDirs, SERVER } from "./helpers.mjs";
+import {
+  assertScratchStore,
+  CLI,
+  classicAddonFixture,
+  isolateTmux,
+  runCli,
+  runNode,
+  scratchDirs,
+  SERVER,
+  writeScratchAddon,
+} from "./helpers.mjs";
 
 // doctor and status both run the janitor, which probes the tmux server; isolate
 // first, or these read the one the lead and its workers are running in.
@@ -42,22 +52,43 @@ function writeUserConfig(config) {
 const OTHER_NODE = `${process.execPath}-some-other-build`;
 
 describe("interpreter and ABI", () => {
-  const alt = alternateInterpreter();
-
   before(async () => {
     const init = await runCli(["init"], doctorOpts);
     assert.equal(init.code, 0, init.stderr);
     writeUserConfig({ mcpServers: {} });
   });
 
-  it("doctor names the interpreter and the ABI the addon was built for", async () => {
+  it("doctor names the interpreter, and does not invent an ABI for the addon", async () => {
     const { stdout } = await runCli(["doctor"], doctorOpts);
     const node = /ok {4}node: (v[\d.]+) \(NODE_MODULE_VERSION (\d+)\) at (\/\S+)/.exec(stdout);
     assert.ok(node, `doctor should report the running interpreter:\n${stdout}`);
-    const addon = /ok {4}better-sqlite3: addon built for NODE_MODULE_VERSION (\d+), matches/.exec(stdout);
-    assert.ok(addon, `doctor should report the addon's ABI:\n${stdout}`);
-    assert.equal(node[2], addon[1], "a passing run must agree on one NODE_MODULE_VERSION");
-    assert.match(stdout, /better_sqlite3\.node/, "name the file, so two checkouts can be compared");
+    // THIS ASSERTION USED TO BE THE OPPOSITE, and it could not fail. It read
+    // "addon built for NODE_MODULE_VERSION (\d+), matches" and checked that
+    // number against the interpreter's - but checkAbi() set it BY COPYING the
+    // interpreter's, so the two agreed by construction whatever the addon
+    // was. Same shape as
+    // dead-ends/2026-07-29-seeding-a-test-row-with-the-value-it-asserts.md.
+    // The statement was also false: an N-API addon is built for no
+    // NODE_MODULE_VERSION at all.
+    assert.doesNotMatch(
+      stdout,
+      /ok {4}better-sqlite3: addon built for NODE_MODULE_VERSION/,
+      "nothing in src/abi.ts reads the addon's build ABI, so success must not claim one",
+    );
+    // What a passing run may say is what was actually compared: the level the
+    // installed package declares, against the level this Node provides. Both
+    // are real reads from independent places.
+    const addon = /ok {4}better-sqlite3: addon loaded; built against Node-API (\d+), this interpreter provides Node-API (\d+)/.exec(
+      stdout,
+    );
+    assert.ok(addon, `doctor should report what the load was decided on:\n${stdout}`);
+    assert.equal(addon[2], process.versions.napi, "the provided level is this interpreter's");
+    assert.ok(Number(addon[2]) >= Number(addon[1]), "a passing run cannot be below the level it names");
+    // better-sqlite3 13's N-API prebuilds are named by platform+arch
+    // (darwin-arm64.node), not the pre-13 build/Release/better_sqlite3.node;
+    // addonPath() (src/abi.ts) falls back to the old name for a platform/arch
+    // with no prebuild, so both are real, current shapes.
+    assert.match(stdout, /(?:better_sqlite3|[a-z0-9]+-(?:x64|arm64))\.node/, "name the file, so two checkouts can be compared");
   });
 
   it("reads the isolated tmux server, not whatever the ambient env points at", {
@@ -91,23 +122,67 @@ describe("interpreter and ABI", () => {
     const { checkAbi } = await import("../dist/abi.js");
     const status = checkAbi();
     assert.equal(status.ok, true, status.error ?? "");
-    assert.equal(status.builtFor, Number(process.versions.modules));
-    assert.match(status.addon, /better_sqlite3\.node$/);
+    // Null, not the running NODE_MODULE_VERSION. checkAbi() never reads the
+    // addon's build ABI, so a number here would be this process's own value
+    // laundered into a claim about the file.
+    assert.equal(status.builtFor, null, "success must not report a build ABI nothing measured");
+    assert.match(status.addon, /(?:better_sqlite3|[a-z0-9]+-(?:x64|arm64))\.node$/);
 
-    // The trap this whole guard exists for: requiring better-sqlite3 does not
-    // pull in the native addon, so a passing require proves nothing about
-    // whether hive can open its store. Checked in a child process because
-    // checkAbi has already loaded the addon into this one.
-    const probe = execFileSync(
+    // The lazy-binding half of this - that requiring the package does not
+    // pull in the addon - is now its own test below, with a positive control.
+    // It used to be an inline probe here, and that probe had gone dead: it
+    // looked for a require.cache key ending "better_sqlite3.node", which is
+    // the PRE-13 filename. v13's prebuild is darwin-arm64.node, so the probe
+    // reported "not-loaded" whether or not the addon had loaded.
+  });
+
+  // ISSUE #105 LANE B1, ROUND 2, ITEM 4. This is the claim the whole guard
+  // design rests on: db.ts's `import Database from "better-sqlite3"` runs
+  // BEFORE guardAbi(), and backup.ts does the same, so if the package's
+  // entrypoint ever loaded the addon itself the check would arrive after the
+  // process was already dead. Nothing in the suite tested it - it is an
+  // empirical fact about better-sqlite3's internals, hive declares ^13.0.3,
+  // and a consumer can resolve any later 13.x.
+  it("importing the package does not load the addon, which is what lets guardAbi run at all", () => {
+    // One child does both halves so the two readings come from one process
+    // and one resolution of the package.
+    const out = execFileSync(
       process.execPath,
       [
+        "--input-type=module",
         "-e",
-        'require("better-sqlite3");' +
-          'console.log(Object.keys(require.cache).some((k) => k.endsWith("better_sqlite3.node")) ? "loaded" : "not-loaded");',
+        'const { createRequire } = await import("node:module");' +
+          'const req = createRequire(process.cwd() + "/probe.mjs");' +
+          'const loaded = () => Object.keys(req.cache).filter((k) => k.endsWith(".node"));' +
+          "const before = loaded();" +
+          // The exact form db.ts uses, not a bare require.
+          'const { default: Database } = await import("better-sqlite3");' +
+          "const afterImport = loaded();" +
+          'new Database(":memory:").exec("create table t(a)");' +
+          "const afterOpen = loaded();" +
+          "console.log(JSON.stringify({ kind: typeof Database, before, afterImport, afterOpen }));",
       ],
       { cwd: REPO, encoding: "utf8" },
-    ).trim();
-    assert.equal(probe, "not-loaded", "if this ever says loaded, the lazy-binding reasoning is stale");
+    );
+    const r = JSON.parse(out.trim());
+    // Without this the test passes when the import silently fails, which is
+    // the shape that makes "nothing was loaded" meaningless.
+    assert.equal(r.kind, "function", "the import has to have really happened");
+    assert.deepEqual(r.before, [], "nothing native is loaded before the import");
+    assert.deepEqual(
+      r.afterImport,
+      [],
+      "better-sqlite3's entrypoint loaded a native addon - db.ts and backup.ts evaluate it above guardAbi(), " +
+        "so the guard can no longer report anything and src/abi.ts's design needs revisiting",
+    );
+    // THE POSITIVE CONTROL, and the reason the assertion above means
+    // something: the same instrument, in the same process, DOES see the addon
+    // once a Database is constructed. Any probe that cannot show this is
+    // reporting "not loaded" about its own blindness - which is exactly what
+    // the inline probe this replaces had started doing, by matching a
+    // filename that no longer exists.
+    assert.equal(r.afterOpen.length, 1, `opening a Database must load exactly one addon, got ${r.afterOpen}`);
+    assert.match(r.afterOpen[0], /better-sqlite3.*\.node$/);
   });
 
   it("explains a mismatch in terms of both interpreters", async () => {
@@ -133,7 +208,16 @@ describe("interpreter and ABI", () => {
       error: "not built",
     };
     assert.match(describeAbi(missing), /not built/);
-    assert.match(abiFixLines(missing).join("\n"), /npm install && npm run build/);
+    // This assertion used to require "npm install && npm run build", which
+    // pinned a remedy that cannot work: v13 declares no install script so npm
+    // invokes no build for it, and hive's `npm run build` is tsc. Neither
+    // produces better_sqlite3.node. A test demanding an ineffective command
+    // is what keeps it in the product.
+    const missingFix = abiFixLines(missing).join("\n");
+    assert.doesNotMatch(missingFix, /npm install && npm run build/, "neither half of that produces the addon");
+    assert.match(missingFix, /^Install it: {2}npm install$/m, "the tarball carries the addon, so the install is the fix");
+    assert.match(missingFix, /npm run build` only compiles TypeScript/, "say why the build is not part of it");
+    assert.match(missingFix, /npm run build-release/, "and where the only real source build lives");
 
     assert.equal(classifyAddonLoadError("Module did not self-register: '/x/better_sqlite3.node'"), "mismatch");
     const linuxMismatch = {
@@ -167,29 +251,204 @@ describe("interpreter and ABI", () => {
     assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /"\/pinned\/node" ".*cli\.js" setup/);
   });
 
-  it("fails doctor under an interpreter that cannot load the addon", {
-    skip: alt ? false : "no second Node with a different ABI on this machine",
+  it("refuses when the interpreter reports no Node-API level, instead of comparing NaN", () => {
+    // `Number(undefined)` is NaN and `NaN < 10` is FALSE, so the level check
+    // read as "high enough" on any runtime omitting process.versions.napi and
+    // fell through to the require - a fail-open in the one comparison this
+    // file exists to hold shut. Anything that cannot report a level cannot
+    // load an N-API addon either, so "absent" has to mean "below".
+    //
+    // A child process, because the level has to be gone before checkAbi runs
+    // and this one has already answered.
+    const abi = new URL("../dist/abi.js", import.meta.url).href;
+    const out = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "delete process.versions.napi;" +
+          `const { checkAbi, describeAbi } = await import(${JSON.stringify(abi)});` +
+          "const s = checkAbi();" +
+          "console.log(JSON.stringify({ failure: s.failure, ok: s.ok, nodeApi: s.nodeApi, text: describeAbi(s) }));",
+      ],
+      { cwd: REPO, encoding: "utf8" },
+    );
+    const status = JSON.parse(out.trim());
+    assert.equal(status.ok, false, "an interpreter with no Node-API level must not reach the require");
+    assert.equal(status.failure, "napi");
+    assert.equal(status.nodeApi, null);
+    assert.match(status.text, /none reported/);
+    assert.doesNotMatch(status.text, /NaN/, "NaN in a diagnostic is the missing check leaking into the message");
+  });
+
+  // Issue #105 lane B1, item 4. addonPath() mirrors
+  // better-sqlite3/lib/binding.js by hand, and had drifted from it twice.
+  // Both drifts are silent in the direction that matters: one refuses a tree
+  // that works, the other just costs.
+  it("finds a debug build, which better-sqlite3's own loader tries before Release", async () => {
+    const { checkAbi } = await import("../dist/abi.js");
+    const real = checkAbi().addon;
+    assert.ok(real, "this test needs the real, working addon");
+    const root = join(dirs.tmp, "debug-build");
+    mkdirSync(root, { recursive: true });
+    // No prebuilds/ entry at all, addon at build/Debug only. binding.js loads
+    // this tree; addonPath() used to skip straight from prebuilds/ to
+    // build/Release and report "missing", so guardAbi exited 1 on a checkout
+    // better-sqlite3 itself would have opened.
+    const { cli } = writeScratchAddon(root, { prebuild: real, layout: "debug" });
+    const { stdout } = await runNode(cli, ["doctor"], { ...doctorOpts, node: process.execPath });
+    assert.match(stdout, /ok {4}better-sqlite3: addon loaded/, `a debug build is a loadable tree:\n${stdout}`);
+    assert.match(stdout, /build\/Debug\/better_sqlite3\.node/, `and doctor should name the file it found:\n${stdout}`);
+  });
+
+  it("does not walk the heap to answer a question only linux asks", () => {
+    // process.report.getReport() builds a full diagnostic report - heap walk,
+    // libuv handle dump - and addonPath() called it unconditionally, on the
+    // module-load path of every hive process and every SessionStart kickoff,
+    // to read a glibc field that exists only on linux. binding.js tests the
+    // platform first; so does this now.
+    //
+    // Counted in a child process, since checkAbi has already run in this one.
+    // This can only fail off linux, which is the macOS leg's job - on linux
+    // the call is correct and expected. Said out loud rather than left as a
+    // test that quietly proves nothing on two of the three CI legs.
+    const abi = new URL("../dist/abi.js", import.meta.url).href;
+    const out = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        "let calls = 0;" +
+          "const real = process.report.getReport.bind(process.report);" +
+          "process.report.getReport = () => { calls++; return real(); };" +
+          `const { checkAbi } = await import(${JSON.stringify(abi)});` +
+          "checkAbi();" +
+          "console.log(JSON.stringify({ calls, platform: process.platform }));",
+      ],
+      { cwd: REPO, encoding: "utf8" },
+    );
+    const { calls } = JSON.parse(out.trim());
+    assert.equal(calls, process.platform === "linux" ? 1 : 0, "getReport() belongs behind the linux test");
+  });
+
+  // Issue #105 lane B1. The Node-API floor, which is what N-API replaced the
+  // NODE_MODULE_VERSION equality with. These two tests are a pair: the first
+  // pins the number hive derives its engines floor from, the second proves
+  // hive refuses rather than dies when an interpreter is below it.
+  it("reads the addon's Node-API level from better-sqlite3's own binding.gyp", async () => {
+    const { requiredNodeApi, nodeRangeForNodeApi } = await import("../dist/abi.js");
+    // 10 is not copied from anything this process knows: it is what
+    // better-sqlite3 13's binding.gyp says, and the whole guard is void if
+    // that read ever silently starts returning null (binding.gyp dropped from
+    // the tarball, the define renamed). Then the guard would pass everything
+    // through to a require that segfaults, in exactly the shape this lane was
+    // opened to fix, and nothing else in the suite would notice.
+    assert.equal(requiredNodeApi(), 10, "if better-sqlite3 raised NAPI_VERSION, raise engines.node with it");
+    assert.equal(nodeRangeForNodeApi(10), "^22.14.0 || >=23.6.0");
+    // The running side of the comparison, so a reader can see both halves are
+    // real values from independent sources rather than one value twice.
+    assert.ok(Number(process.versions.napi) >= 10, "this suite is running below hive's own declared floor");
+  });
+
+  it("refuses with a diagnostic when this Node is below the addon's Node-API level", async () => {
+    const { checkAbi } = await import("../dist/abi.js");
+    const real = checkAbi().addon;
+    assert.ok(real, "this test needs the real, working addon as its control");
+    const root = join(dirs.tmp, "napi-floor");
+    mkdirSync(root, { recursive: true });
+    // ONE variable moves: the addon installed here is the real, working one,
+    // and only the DECLARED Node-API level is impossible. So the scratch tree
+    // runs fine with the guard removed, which is what makes a pass mean
+    // something. 99 cannot be reached by any Node, so this discriminates on
+    // every machine and every CI leg without a sub-floor interpreter -
+    // measured against a real one separately, see the PR body.
+    const { cli } = writeScratchAddon(root, { prebuild: real, napiVersion: 99 });
+
+    const status = await runNode(cli, ["status"], { ...doctorOpts, node: process.execPath });
+    assert.equal(status.code, 1, status.stdout);
+    assert.match(status.stderr, /hive: this Node is too old/);
+    assert.match(status.stderr, /built against Node-API 99/);
+    assert.match(status.stderr, new RegExp(`provides Node-API ${process.versions.napi}`));
+    // The advice that started this: a source build reads the same binding.gyp,
+    // so telling the user to build is telling them to reproduce the problem.
+    assert.doesNotMatch(status.stderr, /npm install && npm run build/);
+    assert.match(status.stderr, /Rebuilding does NOT help/);
+    // stdout is a JSON-RPC stream for the MCP server; the diagnostic stays off it.
+    assert.equal(status.stdout, "");
+
+    const doctor = await runNode(cli, ["doctor"], { ...doctorOpts, node: process.execPath });
+    assert.equal(doctor.code, 1, doctor.stdout);
+    assert.match(doctor.stdout, /^hive doctor/);
+    assert.match(doctor.stdout, /FAIL {2}better-sqlite3: addon is built against Node-API 99/);
+    assert.match(doctor.stdout, /1 problem\(s\) found/);
+  });
+
+  // Issue #105 lane B. better-sqlite3 13's N-API prebuilds load under any
+  // Node major on this platform/arch (measured: the identical darwin-arm64
+  // prebuild opened a database under NODE_MODULE_VERSION 137 and 147), so
+  // alternateInterpreter() can no longer make the REAL addon mismatch - both
+  // of the tests below used to run the real addon under a genuinely
+  // different Node and watch it refuse. There is nothing left in
+  // node_modules capable of refusing that way.
+  //
+  // Rather than document the mismatch as unreachable, these swap in
+  // test/fixtures/native-addon-abi/'s classic (pre-13, NODE_MODULE_VERSION-
+  // locked) build in place of the real prebuild, in a scratch checkout that
+  // does not touch the real node_modules other tests in this suite run
+  // against concurrently. That reconstructs a genuine ERR_DLOPEN_FAILED from
+  // Node itself - not a fabricated error string - so classifyAddonLoadError's
+  // "mismatch" branch (src/abi.ts) still has something real to classify.
+  it("fails doctor when the addon is present but built for a different Node ABI", {
+    skip: classicAddonFixture({ matches: false }) ? false : `no pre-N-API better-sqlite3 fixture for ${process.platform}-${process.arch} ABI ${process.versions.modules} - add one (see test/fixtures/native-addon-abi/README.md) or this coverage is silently gone`,
   }, async () => {
-    const { code, stdout } = await runCli(["doctor"], { ...doctorOpts, node: alt.path });
+    const root = join(dirs.tmp, "wrong-abi-doctor");
+    mkdirSync(root, { recursive: true });
+    const { cli } = writeScratchAddon(root, { prebuild: classicAddonFixture({ matches: false }) });
+    const { code, stdout } = await runNode(cli, ["doctor"], { ...doctorOpts, node: process.execPath });
     assert.equal(code, 1, stdout);
     assert.match(stdout, /^hive doctor/);
-    assert.match(stdout, new RegExp(`FAIL {2}node: .*NODE_MODULE_VERSION ${alt.modules}`));
+    assert.match(stdout, new RegExp(`FAIL {2}node: .*NODE_MODULE_VERSION ${process.versions.modules}`));
     assert.match(
       stdout,
-      new RegExp(`FAIL {2}better-sqlite3: addon built for NODE_MODULE_VERSION ${process.versions.modules}`),
+      /FAIL {2}better-sqlite3: addon built for NODE_MODULE_VERSION \d+, this interpreter needs/,
     );
     assert.match(stdout, /1 problem\(s\) found/);
   });
 
   it("names the interpreter on any other command too, without a stack trace", {
-    skip: alt ? false : "no second Node with a different ABI on this machine",
+    skip: classicAddonFixture({ matches: false }) ? false : `no pre-N-API better-sqlite3 fixture for ${process.platform}-${process.arch} ABI ${process.versions.modules} - add one (see test/fixtures/native-addon-abi/README.md) or this coverage is silently gone`,
   }, async () => {
-    const { code, stdout, stderr } = await runCli(["status"], { ...doctorOpts, node: alt.path });
+    const root = join(dirs.tmp, "wrong-abi-status");
+    mkdirSync(root, { recursive: true });
+    const { cli } = writeScratchAddon(root, { prebuild: classicAddonFixture({ matches: false }) });
+    const { code, stdout, stderr } = await runNode(cli, ["status"], { ...doctorOpts, node: process.execPath });
     assert.equal(code, 1);
     assert.match(stderr, /hive: cannot run under this Node/);
     assert.doesNotMatch(stderr, /ERR_DLOPEN_FAILED/, "the raw dlopen error is what this replaces");
     // stdout is a JSON-RPC stream for the MCP server; the diagnostic stays off it.
     assert.equal(stdout, "");
+  });
+
+  // The other reachable failure (src/abi.ts's AbiStatus["missing"]): nothing
+  // built at all. No fixture or alt interpreter needed - a scratch checkout
+  // with an empty prebuilds/ reaches this on any platform.
+  it("fails doctor and names the remedy when the addon has not been built at all", async () => {
+    const root = join(dirs.tmp, "missing-addon");
+    mkdirSync(root, { recursive: true });
+    const { cli } = writeScratchAddon(root);
+    const { code, stdout } = await runNode(cli, ["doctor"], { ...doctorOpts, node: process.execPath });
+    assert.equal(code, 1, stdout);
+    assert.match(
+      stdout,
+      /FAIL {2}better-sqlite3: better-sqlite3's native addon is missing; it has not been built here/,
+    );
+    // The remedy has to be one that can actually put the file there. See the
+    // unit-level assertions above: `npm run build` is tsc and v13 declares no
+    // install script, so the old "npm install && npm run build" named two
+    // steps, neither of which produces better_sqlite3.node.
+    assert.match(stdout, /Install it: {2}npm install$/m);
+    assert.doesNotMatch(stdout, /npm install && npm run build/);
+    assert.match(stdout, /1 problem\(s\) found/);
   });
 });
 

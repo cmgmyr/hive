@@ -4,7 +4,15 @@ import { mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { DIST, alternateInterpreter, assertScratchStore, clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
+import {
+  alternateInterpreter,
+  assertScratchStore,
+  classicAddonFixture,
+  clearHiveEnv,
+  isolateTmux,
+  scratchDirs,
+  writeScratchAddon,
+} from "./helpers.mjs";
 
 // This file imports shellQuote from dist/tmux.js, which is enough to trip
 // suite-isolation.test.mjs's blanket rule for any dist/tmux.js import, even
@@ -23,13 +31,25 @@ after(() => cleanupTmux());
 // try/catch that always process.exit(0)s, so a hook that silently did nothing
 // looks identical, on exit code alone, to one that worked.
 
-const HOOK = join(DIST, "hook.js");
 const alt = alternateInterpreter();
 
 clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
+
+// Issue #105 lane B. better-sqlite3 13's N-API prebuilds load under any Node
+// major on this platform/arch, so the REAL dist/hook.js this negative
+// control used to point at no longer fails under alt.path - see
+// test/fixtures/native-addon-abi/README.md. The control below runs against a
+// SCRATCH dist/hook.js instead, with a classic (pre-13) build swapped in
+// that genuinely mismatches alt.path's ABI; the "fixed" command a few lines
+// down is unaffected, since it carries an absolute interpreter and never
+// touches the hostile PATH at all.
+const mismatchesAlt = alt ? classicAddonFixture({ matches: false, against: alt.modules }) : null;
+const controlHook = mismatchesAlt
+  ? writeScratchAddon(join(dirs.tmp, "control-addon"), { prebuild: mismatchesAlt }).dist + "/hook.js"
+  : null;
 
 const { db, migrate } = await import("../dist/db.js");
 const { ensureHooksFile } = await import("../dist/hooks.js");
@@ -111,7 +131,14 @@ describe("the generated hook commands carry an absolute interpreter", () => {
 
 describe(
   "the generated hook command survives a PATH whose bare `node` cannot load the addon",
-  { skip: alt ? false : "no second Node with a different ABI on this machine" },
+  {
+    skip:
+      alt && controlHook
+        ? false
+        : alt
+          ? `no pre-N-API better-sqlite3 fixture for ${process.platform}-${process.arch} ABI ${process.versions.modules} - add one (see test/fixtures/native-addon-abi/README.md) or this coverage is silently gone`
+          : "no second Node with a different ABI on this machine",
+  },
   () => {
     it("still writes agent_state and an agent_state_log row, unlike the pre-fix bare-`node` shape", async () => {
       const hooksPath = ensureHooksFile();
@@ -142,13 +169,20 @@ describe(
       // cannot disturb the assertions above, and requires it to fail: a
       // nonzero exit AND an empty log, not just the exit code. Two exit codes
       // compared for an unrelated reason is this project's own false-green
-      // shape 2 (test/CLAUDE.md), so the log has to be checked too. If this
-      // ever starts passing, alternateInterpreter() has stopped returning an
-      // ABI-hostile interpreter on this machine and the control, not the fix,
-      // needs attention.
+      // shape 2 (test/CLAUDE.md), so the log has to be checked too.
+      //
+      // Points at controlHook (a scratch dist/hook.js with a classic addon
+      // swapped in), not the real dist/hook.js: better-sqlite3 13's real,
+      // currently-installed addon loads under alt.path too (see the comment
+      // above controlHook's definition), so the bare-`node` shape would
+      // otherwise succeed here for a reason that has nothing to do with
+      // whether the fix is in place. If this ever starts passing, either
+      // alternateInterpreter() stopped returning a second ABI on this
+      // machine, or the classic fixture stopped mismatching it - either way
+      // the control, not the fix, needs attention.
       const controlActorId = "agent:hook-abi-stop-control";
       agentRow("hook-abi-stop-control");
-      const bareCommand = `node ${shellQuote(HOOK)} stop`;
+      const bareCommand = `node ${shellQuote(controlHook)} stop`;
       const control = await runHookCommand(bareCommand, { actorId: controlActorId, payload, path: binDir });
 
       assert.notEqual(control.code, 0, "the pre-fix bare-`node` shape should fail under a hostile PATH");

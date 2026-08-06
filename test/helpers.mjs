@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -454,6 +467,144 @@ export function alternateInterpreter() {
     }
   }
   return null;
+}
+
+// Issue #105 lane B. better-sqlite3 13's prebuilds are N-API, so the real,
+// currently-installed addon loads under any Node major on darwin/linux/win32
+// x64/arm64 (measured: the same file opened a database under NODE_MODULE_VERSION
+// 137 and 147) - alternateInterpreter() can no longer make it mismatch.
+// test/fixtures/native-addon-abi/ carries better-sqlite3 12.11.1's classic,
+// NODE_MODULE_VERSION-locked build for the two ABIs this project's own CI
+// matrix runs (Node 22 = 127, Node 24 = 137), for the two platform/arch pairs
+// CI runs on. See that directory's README for provenance.
+//
+// matches: true asks for the fixture that loads under `against` (stands in
+// for "the addon", so a test can still assert the healthy path); false asks
+// for one that never does. against defaults to the interpreter running this
+// process, but a test driving a SECOND interpreter (alternateInterpreter())
+// needs a fixture relative to THAT one specifically - CLASSIC_ADDON_ABIS has
+// two values, so "differs from the current process" does not guarantee
+// "differs from some other, unrelated interpreter" too. Both return null
+// when this machine's platform/arch or ABI is not in the fixture set, so a
+// caller skips honestly instead of asserting nothing.
+const CLASSIC_ADDON_ABIS = [127, 137];
+export function classicAddonFixture({ matches, against = process.versions.modules }) {
+  const target = `${process.platform}-${process.arch}`;
+  if (!["darwin-arm64", "linux-x64"].includes(target)) return null;
+  const running = Number(against);
+  const abi = matches
+    ? CLASSIC_ADDON_ABIS.find((a) => a === running)
+    : CLASSIC_ADDON_ABIS.find((a) => a !== running);
+  if (abi === undefined) return null;
+  return join(REPO, "test", "fixtures", "native-addon-abi", `${target}-abi${abi}.node`);
+}
+
+// A scratch checkout that can run the real dist/cli.js (or dist/kickoff.js)
+// with its OWN, independently controlled better-sqlite3 addon, so a test can
+// make guardAbi() see "missing" or "present but wrong ABI" without touching
+// the real, working node_modules other tests in this suite run against
+// concurrently. Symlinking every real package except better-sqlite3 keeps
+// this cheap (dist is the only real copy, a few hundred KB) while still
+// resolving zod/yaml/the SDK/everything else exactly as the real checkout
+// does. better-sqlite3 itself needs a real copy of package.json and lib/ -
+// checkAbi() only touches the addon file directly, but db.ts's static
+// `import Database from "better-sqlite3"` walks the package's own JS before
+// guardAbi() ever runs, and that has to resolve to something real.
+//
+// prebuild: a path to a .node file to install as this platform/arch's addon
+// (typically one of classicAddonFixture()'s), or omitted to leave the addon
+// missing entirely.
+//
+// layout: where the addon goes. "prebuilds" (default) is v13's shipped
+// layout; "debug" is build/Debug/better_sqlite3.node, which
+// better-sqlite3/lib/binding.js tries BEFORE build/Release and which
+// addonPath() (src/abi.ts) once did not look in at all. Only meaningful
+// alongside a working prebuild, since the point is a tree that really loads.
+//
+// napiVersion: the Node-API level the scratch better-sqlite3 DECLARES, via
+// the binding.gyp that requiredNodeApi() (src/abi.ts) reads. Omitted, the
+// real package's binding.gyp is copied so the scratch tree matches reality.
+// Set it above anything Node provides and the Node-API guard must refuse,
+// under any interpreter, on any machine - which is the only way to exercise
+// that guard without keeping a sub-floor Node installed everywhere the suite
+// runs. Note which variable that moves: the ADDON is the real, working one,
+// so a test using this has a genuine control - delete the guard and the
+// command succeeds.
+//
+// classic: install test/fixtures/native-addon-abi/classic-package/ (better-
+// sqlite3 12.11.1's own lib/, plus the bindings + file-uri-to-path it needs
+// to locate the addon - the exact dependency this repo's git history shows
+// were resolved before issue #105 lane B) instead of v13's lib/. Only
+// checkAbi() runs against a "matches: false" scratch addon, and it requires
+// the addon file directly - never through better-sqlite3's own JS - so
+// v13's lib/ paired with a classic .node file is fine there. Anything that
+// goes on to open a real Database needs the JS and the native binary talking
+// the SAME major's calling convention (v13's lib/binding.js calls addon
+// methods v12's binary does not export at all: swapping only the .node file
+// under v13's lib/ throws "addon.initialize is not a function" the moment a
+// query runs), so kickoff-reexec.test.mjs, which needs a "matches" fixture
+// to actually work end to end, passes this.
+export function writeScratchAddon(root, { prebuild, classic = false, napiVersion, layout = "prebuilds" } = {}) {
+  cpSync(DIST, join(root, "dist"), { recursive: true });
+  const scratchModules = join(root, "node_modules");
+  mkdirSync(scratchModules, { recursive: true });
+  const realModules = join(REPO, "node_modules");
+  for (const entry of readdirSync(realModules)) {
+    if (entry === "better-sqlite3") continue;
+    symlinkSync(join(realModules, entry), join(scratchModules, entry));
+  }
+  symlinkSync(join(REPO, "profiles"), join(root, "profiles"));
+  // A real copy, not a symlink: claude-plugin/kickoff.mjs's own header
+  // explains that node realpaths a symlinked MAIN entry script before
+  // setting import.meta.url, which would resolve its "../dist/abi.js" import
+  // straight through to the REAL dist/ and defeat this whole scratch tree.
+  // Small (~20K), so copying is cheap.
+  cpSync(join(REPO, "claude-plugin"), join(root, "claude-plugin"), { recursive: true });
+
+  const scratchAddon = join(scratchModules, "better-sqlite3");
+  mkdirSync(scratchAddon, { recursive: true });
+  if (classic) {
+    const classicPkg = join(REPO, "test", "fixtures", "native-addon-abi", "classic-package");
+    copyFileSync(join(classicPkg, "package.json"), join(scratchAddon, "package.json"));
+    cpSync(join(classicPkg, "lib"), join(scratchAddon, "lib"), { recursive: true });
+    // Fixture files live under vendor/, not node_modules/: .gitignore's
+    // node_modules/ pattern matches ANY directory with that name, anywhere
+    // in the tree, so a fixture actually named that way is silently
+    // untracked. Placed into a real node_modules/ here, in the scratch tree
+    // only, which is exactly where database.js's own `require('bindings')`
+    // needs to find it.
+    for (const dep of readdirSync(join(classicPkg, "vendor"))) {
+      cpSync(join(classicPkg, "vendor", dep), join(scratchModules, dep), { recursive: true });
+    }
+    if (prebuild) {
+      mkdirSync(join(scratchAddon, "build", "Release"), { recursive: true });
+      copyFileSync(prebuild, join(scratchAddon, "build", "Release", "better_sqlite3.node"));
+    }
+  } else {
+    copyFileSync(join(realModules, "better-sqlite3", "package.json"), join(scratchAddon, "package.json"));
+    cpSync(join(realModules, "better-sqlite3", "lib"), join(scratchAddon, "lib"), { recursive: true });
+    // Only the one line requiredNodeApi() reads, so a scratch tree declaring
+    // NAPI_VERSION=99 is a one-variable change against the real package.
+    const realGyp = readFileSync(join(realModules, "better-sqlite3", "binding.gyp"), "utf8");
+    writeFileSync(
+      join(scratchAddon, "binding.gyp"),
+      napiVersion === undefined ? realGyp : realGyp.replace(/NAPI_VERSION=\d+/, `NAPI_VERSION=${napiVersion}`),
+    );
+    mkdirSync(join(scratchAddon, "prebuilds"), { recursive: true });
+    if (prebuild && layout === "debug") {
+      mkdirSync(join(scratchAddon, "build", "Debug"), { recursive: true });
+      copyFileSync(prebuild, join(scratchAddon, "build", "Debug", "better_sqlite3.node"));
+    } else if (prebuild) {
+      copyFileSync(prebuild, join(scratchAddon, "prebuilds", `${process.platform}-${process.arch}.node`));
+    }
+  }
+
+  return {
+    dist: join(root, "dist"),
+    cli: join(root, "dist", "cli.js"),
+    kickoff: join(root, "dist", "kickoff.js"),
+    kickoffMjs: join(root, "claude-plugin", "kickoff.mjs"),
+  };
 }
 
 // git, usable in a throwaway scratch repo. -c commit.gpgsign=false plus a
