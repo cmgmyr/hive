@@ -248,11 +248,38 @@ export const sessionName = () => `${SESSION_PREFIX}${dataDirTag()}main`;
 // with the base one (`new-session -t <base>`), so it borrows the base's
 // windows with its OWN current-window pointer.
 //
-// Named by the invoking process's pid rather than a lowest-free-integer
-// search: a pid cannot collide, so there is no retry loop to get wrong. Kept
-// under the same hive- prefix as sessionName so doctor's three
-// startsWith(SESSION_PREFIX) sweeps see it.
+// Named by the invoking process's pid, which rules out a collision ACROSS
+// processes - two pids are never equal. It does NOT rule out a collision
+// against a view this SAME pid already created and left running: counselors
+// on issue #117 found this reachable two ways. First, ensureAttached runs
+// once per agent_spawn inside the long-lived MCP server process (one pid for
+// the server's whole life), so a second spawn under auto_attach:"on" (which
+// probes only the base session, and reads it as clientless while a human is
+// actually watching through the first view - autoAttachProbe's own comment)
+// issues new-session against the SAME name a moment after the first one
+// created it. Second, the tmux client this name's session gets is a child of
+// iTerm/Terminal, not of the process that named it, so the view can outlive
+// the pid that created it and a later process can be handed that same pid
+// back by the OS. Neither route is a same-process-in-flight race - a single
+// process cannot run ensureAttached twice AT ONCE, since it is fully
+// synchronous - so this is a genuine naming collision, not a concurrency bug.
 export const viewSessionName = () => `${SESSION_PREFIX}${dataDirTag()}view-${process.pid}`;
+
+// The collision-checked wrapper every session-CREATING call site uses.
+// viewSessionName() above stays pure and unguarded (its own callers include
+// tests and doctor's reporting, which need the deterministic first-attempt
+// name, not one that mutates tmux to compute) - this is the only place that
+// probes the live server and only when about to create a session. Bumps with
+// a NUMERIC suffix, not a fresh scheme, so isViewSessionName's pattern only
+// has to grow, not change shape; see that function's own comment.
+function freeViewSessionName(): string {
+  const base = viewSessionName();
+  for (let n = 1; n < 1000; n++) {
+    const candidate = n === 1 ? base : `${base}-${n}`;
+    if (!quietTmux("has-session", "-t", `=${candidate}`)) return candidate;
+  }
+  throw new Error(`could not find a free view session name based on ${base} after 1000 attempts`);
+}
 
 // Recognizes ANY process's view session, not just this one's own -
 // viewSessionName() above only ever builds the CURRENT pid's name. Doctor's
@@ -264,7 +291,13 @@ export const viewSessionName = () => `${SESSION_PREFIX}${dataDirTag()}view-${pro
 // inside it - so this needs no dataDirTag() of its own, unlike viewSessionName.
 // scripts/restart-lead.sh mirrors this exact suffix in bash rather than
 // shelling out to node for it; keep the two in sync by hand if this changes.
-export const isViewSessionName = (name: string): boolean => /view-\d+$/.test(name);
+//
+// The trailing `(-\d+)?` is freeViewSessionName's bump suffix (issue #117):
+// a name like `hive-view-4242-2` still has to read as a view, or
+// restart-lead.sh's EXCLUDE-views filter would mistake a bumped view for the
+// durable base session it is trying to isolate - the dangerous direction,
+// since that filter's whole job is telling the two apart.
+export const isViewSessionName = (name: string): boolean => /view-\d+(-\d+)?$/.test(name);
 
 // Window names double as iTerm tab titles (and notification labels), so they
 // carry the project name: "hive - lead", "hive - worker-1".
@@ -874,6 +907,20 @@ export function createWindow(
 // NEVER on the base session and never globally (pad 76's view-session design,
 // point 3): leads run detached, so a global one would kill the base session
 // and every lead in it the moment the last client detached.
+// The chain both outside-tmux attach paths share, extracted so it is defined
+// once: create (and attach to) a pid-named view session grouped with
+// `session`, then set destroy-unattached on it in the SAME chained
+// invocation - see the comment block above for why that chaining is load-
+// bearing. resolveAttachTarget appends its own select-window clause after
+// this; attachScripts (below) uses it as-is, since it has no projectId to
+// resolve a window with and was never asked to navigate one.
+function viewSessionChain(session: string, view: string): string[] {
+  return [
+    "new-session", "-t", `=${session}`, "-s", view,
+    ";", "set-option", "-t", view, "destroy-unattached", "on",
+  ];
+}
+
 export function resolveAttachTarget(
   session: string,
   projectId: number,
@@ -882,11 +929,10 @@ export function resolveAttachTarget(
 ): string[] {
   const cc = controlMode ? ["-CC"] : [];
   const window = known ?? findProjectWindow(session, projectId);
-  const view = viewSessionName();
+  const view = freeViewSessionName();
   return [
     ...cc,
-    "new-session", "-t", `=${session}`, "-s", view,
-    ";", "set-option", "-t", view, "destroy-unattached", "on",
+    ...viewSessionChain(session, view),
     ...(window ? [";", "select-window", "-t", `${view}:${window.split(":")[1]}`] : []),
   ];
 }
@@ -977,7 +1023,7 @@ export function resolveInTmuxTarget(session: string, window: string | undefined)
   if (caller && windowIdsIn(caller).includes(windowId)) {
     return ["select-window", "-t", `${caller}:${windowId}`];
   }
-  const view = viewSessionName();
+  const view = freeViewSessionName();
   return [
     "new-session", "-d", "-t", `=${session}`, "-s", view,
     ";", "select-window", "-t", `${view}:${windowId}`,
@@ -1553,11 +1599,73 @@ export function controlModeFor(iTermDetected: boolean): boolean {
 // control-mode window. The Terminal fallback never carried -CC and stays
 // that way regardless of mode; it is the fallback for a machine with no
 // iTerm at all, not a second control-mode option.
+//
+// Issue #117. This used to embed a plain `attach -t <session>` in both
+// scripts, so two auto-attaches firing at once both landed a client on
+// `session` and fought over its current window - the exact shape
+// resolveAttachTarget closed for the outside-tmux `hive attach` path (todo
+// 279). Every attach from outside tmux, including this one, now takes its
+// own view session via the shared viewSessionChain above; see its comment
+// for why the chain must stay chained in one invocation.
+//
+// freeViewSessionName(), not the bare viewSessionName(), because
+// ensureAttached (this function's only caller) runs once per agent_spawn
+// inside the long-lived MCP server process, not once per attach - a SECOND
+// spawn can find the FIRST spawn's own view still alive (auto_attach:"on"
+// reads base alone and stays clientless while a human watches through that
+// first view) and try to recreate it under the identical name. See
+// freeViewSessionName's own comment. An earlier version of this paragraph
+// argued the opposite - that ensureAttached's synchrony made any collision
+// here unreachable - and both counselor seats on issue #117 refuted it
+// independently: synchrony rules out two attaches IN FLIGHT AT ONCE, which
+// was never the actual hazard. It says nothing about a later attach finding
+// an earlier one's view still standing.
+//
+// The two scripts run in different contexts - iTerm's profile command with
+// no shell, Terminal's `do script` through the user's login shell - so the
+// rendering was measured on this machine rather than assumed (dead-end
+// 2026-07-16 shipped exactly this bug once already by assuming; see also
+// .claude/rules/tmux-and-panes.md, "No shell does not mean no quoting").
+// Despite having no shell, iTerm's own command tokenizer turned out to strip
+// single quotes and group quoted spans exactly like a POSIX shell would, and
+// never treated a bare `;` as a separator either way; Terminal's shell does
+// treat an unquoted `;` as a real command separator (measured: it splits
+// into a second command) and would path-expand a bare leading `=`. So
+// renderAttachCommand's shell-style quoting is harmless on the iTerm branch
+// and load-bearing on the Terminal branch, for every token these two scripts
+// currently emit - session names and the resolved tmux path, both drawn from
+// shellQuote's safe character set. That is narrower than "one rendering
+// safely serves both" in general: the equivalence is proven for inputs in
+// that safe set, not for an arbitrary future token (a project name, a
+// profile) that might land in these scripts later carrying characters
+// outside it. The two scripts differ in whether `-CC` is present, and in
+// nothing else this function controls.
+//
+// The iTerm branch is exercised by no automated test and cannot be from
+// this suite, which does not drive GUI automation - its coverage is the
+// manual tokenizer measurement above plus the shared-rendering argument,
+// not a running assertion. test/attach-view-race.test.mjs's M4 executes the
+// Terminal branch's actual returned string for exactly this reason, and
+// says so in its own comment rather than implying parity it cannot prove.
 export function attachScripts(tmuxPath: string, session: string): string[] {
-  const cc = controlModeFor(true) ? "-CC " : "";
+  const cc = controlModeFor(true) ? ["-CC"] : [];
+  const argv = viewSessionChain(session, freeViewSessionName());
+  // tmuxPath is a real filesystem path (resolved by `which tmux` at the call
+  // site, src/tmux.ts's ensureAttached), not a fixed literal like every other
+  // token these two scripts embed, so it goes through the same shell-style
+  // quoting as everything renderAttachCommand touches - a space in it (an
+  // account name with one, for instance) would otherwise split the command
+  // into pieces neither branch expects. shellQuote's single-quote wrapping
+  // does NOT protect the enclosing AppleScript double-quoted string itself: a
+  // path containing a literal '"' still breaks the AppleScript literal before
+  // either branch's own quoting is ever reached. Undocumented and unfixed
+  // here deliberately - narrower than "one rendering safely serves both" - a
+  // real tmux install path containing a double quote is not a case this
+  // function defends against.
+  const quotedTmuxPath = shellQuote(tmuxPath);
   return [
-    `tell application "iTerm" to create window with default profile command "${tmuxPath} ${cc}attach -t ${session}"`,
-    `tell application "Terminal" to do script "${tmuxPath} attach -t ${session}"`,
+    `tell application "iTerm" to create window with default profile command "${quotedTmuxPath} ${renderAttachCommand([...cc, ...argv])}"`,
+    `tell application "Terminal" to do script "${quotedTmuxPath} ${renderAttachCommand(argv)}"`,
   ];
 }
 

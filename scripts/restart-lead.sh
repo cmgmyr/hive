@@ -259,12 +259,16 @@ resolve_lead_pane() {
     # (measured), so every session actually containing this pane is right
     # there in one query - filter OUT anything shaped like viewSessionName()
     # (src/tmux.ts) and what remains is the durable base session. The SUFFIX
-    # shape alone ("view-<pid>") is enough to tell the two apart without
-    # reimplementing dataDirTag()'s hash in bash, which is exactly the
-    # hand-copy this file already got bitten by once (see the comment on
-    # SESSION's derivation above) and does not retry.
+    # shape alone ("view-<pid>", or "view-<pid>-<n>" once freeViewSessionName
+    # bumps past a live collision - issue #117 counselors) is enough to tell
+    # the two apart without reimplementing dataDirTag()'s hash in bash, which
+    # is exactly the hand-copy this file already got bitten by once (see the
+    # comment on SESSION's derivation above) and does not retry. Keep this
+    # pattern in sync with isViewSessionName's (src/tmux.ts) by hand - the
+    # EXCLUDE direction here is the dangerous one: a bumped view this pattern
+    # fails to recognize gets mistaken for the durable base session.
     rows=$(tmux list-panes -a -F '#{pane_id}	#{session_name}' 2>/dev/null | awk -F'\t' -v p="$row" '$1 == p { print $2 }')
-    sess=$(printf '%s\n' "$rows" | grep -vE 'view-[0-9]+$' | head -n1)
+    sess=$(printf '%s\n' "$rows" | grep -vE 'view-[0-9]+(-[0-9]+)?$' | head -n1)
   fi
   [ -n "$sess" ] || return 0
   PANE="$row"

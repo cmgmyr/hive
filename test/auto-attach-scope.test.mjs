@@ -58,6 +58,12 @@ if [ "$1" = "list-clients" ]; then
   else cat ${JSON.stringify(SERVER_CLIENTS)} 2>/dev/null
   fi
 fi
+# freeViewSessionName (issue #117 counselors, F1) probes has-session before
+# naming a view - this fixture creates no real sessions, so every candidate
+# name must read as free (exit nonzero) or the probe loops through all 1000
+# and throws. An unconditional "exit 0" below answered has-session as "found"
+# for every name, which is wrong for a fixture with nothing on the server.
+if [ "$1" = "has-session" ]; then exit 1; fi
 exit 0
 `,
 );
@@ -150,7 +156,16 @@ describe("which clients auto-attach counts", () => {
       world({ mode: "on", sessionClients: false, serverClients: true });
       ensureAttached("hive-1");
       assert.equal(openedAWindow(), true);
-      assert.deepEqual(probes(), ["list-clients -t =hive-1"]);
+      // The predicate probe itself is still exactly one call - decision 1
+      // (pad 80, issue #117) requires this list stay byte-identical. The
+      // second entry is freeViewSessionName's has-session check (F1, same
+      // round), which runs AFTER the predicate has already decided to
+      // proceed; it names a pid-random view, so it is matched by shape
+      // rather than pinned as a literal.
+      const seen = probes();
+      assert.equal(seen[0], "list-clients -t =hive-1", "the predicate probe must be unchanged");
+      assert.equal(seen.length, 2, `expected exactly one probe after the predicate; saw: ${JSON.stringify(seen)}`);
+      assert.match(seen[1], /^has-session -t =hive-\S*view-\d+$/, seen[1]);
     },
   );
 

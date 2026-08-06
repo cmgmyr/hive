@@ -889,6 +889,13 @@ describe("restart-lead.sh's view-session filter agrees with src/tmux.ts's isView
       "hive-abc123-notview-4821",
       "hive-abc123view-",
       "hive-abc123view-12x",
+      // Issue #117 counselors: freeViewSessionName bumps past a live
+      // collision with a numeric suffix, so a bumped view still has to read
+      // as a view here - the EXCLUDE direction is the dangerous one, since
+      // this filter's whole job is telling a view apart from the durable
+      // base session it is trying to isolate.
+      "hive-abc123view-4821-2",
+      "hive-view-99-14",
     ];
     for (const name of samples) {
       let bashSays;
