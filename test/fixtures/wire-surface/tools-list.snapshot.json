@@ -1,0 +1,1213 @@
+{
+  "actor_prune": {
+    "description": "Delete every actor that owns no rows anywhere in the store and has not been active in the last minute: agents.actor_id, agents.parent_actor_id, todos.locked_by, todo_comments.author, kv.updated_by, locks.owner, scratchpads.updated_by, timers.owner, timers.deliver_actor, agent_state_log.actor_id. The scan is global across every project, never scoped to the caller's: actors carry no project_id, so an actor can own rows in a project the caller cannot see, and a project-scoped scan would misread that actor as inert and delete it. Never prunes the caller's own actor. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep. Run this after project_prune when sweeping the store: an empty project owns no agents rows either, so today the order cannot orphan an actor, but that stops being true the day project deletion ever covers a non-empty project, and this ordering is the one that stays safe if it does. Immediate, permanent: no dry-run mode.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "agent_close": {
+    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "type": "integer"
+        },
+        "confirm_self": {
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "agent_list": {
+    "description": "List this project's agents with live status.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "include_closed": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "agent_output": {
+    "description": "Read the rendered terminal of an agent (default 50 lines, max 200), addressed by name or agent_id. Read REAL output before declaring a worker done.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "type": "integer"
+        },
+        "lines": {
+          "type": "integer"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "agent_rename": {
+    "description": "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task. Refuses a lead target outright.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "new_name": {
+          "description": "The new display name. No other running worker may have it, case aside.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "new_name"
+      ],
+      "type": "object"
+    }
+  },
+  "agent_send": {
+    "description": "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "type": "integer"
+        },
+        "keys": {
+          "description": "tmux key names, e.g. [\"Escape\"] or [\"C-c\"].",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "submit": {
+          "description": "Append Enter after text. Defaults to true.",
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        },
+        "wait_ms": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "agent_spawn": {
+    "description": "Spawn a worker agent in a tmux window (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt and a short [hive] line is typed into its pane as the visible first turn, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "description": "Agent command to run. Defaults to claude.",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "Working directory, e.g. a git worktree path. Defaults to the project root.",
+          "type": "string"
+        },
+        "extra_args": {
+          "description": "Extra CLI arguments.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "layout": {
+          "description": "How to arrange the lead's window when placement is split. main-vertical gives the lead the left half with workers stacked on the right; tiled (default) splits evenly. Projects can set a default in hive.yml.",
+          "enum": [
+            "tiled",
+            "main-vertical",
+            "main-horizontal",
+            "even-horizontal",
+            "even-vertical"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "description": "Passed as --model to the agent command.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name; defaults to worker-N. This is how you address the worker later.",
+          "type": "string"
+        },
+        "placement": {
+          "description": "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode).",
+          "enum": [
+            "split",
+            "window"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "agent_status": {
+    "description": "Detailed status for one agent, addressed by name (or agent_id), including a short tail of its terminal. include_brief=true returns the exact brief this worker was given; hive keeps that copy because an appended system prompt appears in no transcript.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "type": "integer"
+        },
+        "include_brief": {
+          "description": "Return the full injected brief, not just its path. Defaults to false.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "help": {
+    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, leases.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "topic": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "kv_delete": {
+    "description": "Delete a shared value by key.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    }
+  },
+  "kv_get": {
+    "description": "Get a shared JSON value by key.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    }
+  },
+  "kv_list": {
+    "description": "List shared values, optionally filtered by key prefix.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "kv_set": {
+    "description": "Set a small shared JSON value other sessions can discover. Optional TTL in seconds.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "ttl_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "description": "Any JSON value."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    }
+  },
+  "lease_acquire": {
+    "description": "Try to take a named lease on a shared work area (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Stable and specific, like \"file:src/api/routes.ts\".",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "ttl_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "ttl_seconds"
+      ],
+      "type": "object"
+    }
+  },
+  "lease_release": {
+    "description": "Release a lease you own.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    }
+  },
+  "pad_append": {
+    "description": "Append content to the end of a pad. Optional expected_revision guards against concurrent writes.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer"
+        },
+        "pad_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "pad_archive": {
+    "description": "Archive a pad (or unarchive with archived=false). Archiving frees the name for a new active pad; the old content stays readable by pad_id.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "description": "Default true. Pass false to unarchive.",
+          "type": "boolean"
+        },
+        "pad_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id"
+      ],
+      "type": "object"
+    }
+  },
+  "pad_delete": {
+    "description": "Permanently delete a pad. Irreversible; prefer pad_archive. Optional expected_revision guards against deleting a pad someone just updated.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "type": "integer"
+        },
+        "pad_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id"
+      ],
+      "type": "object"
+    }
+  },
+  "pad_edit": {
+    "description": "Replace one literal occurrence of old_text with new_text in a pad. old_text must match exactly once; include surrounding context to disambiguate.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "expected_revision": {
+          "type": "integer"
+        },
+        "new_text": {
+          "type": "string"
+        },
+        "old_text": {
+          "type": "string"
+        },
+        "pad_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "old_text",
+        "new_text"
+      ],
+      "type": "object"
+    }
+  },
+  "pad_list": {
+    "description": "List pads without full content. query matches names and content (returns a snippet); tags matches any listed tag.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "include_archived": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "pad_read": {
+    "description": "Read a pad's content, revision, and metadata by pad_id or name.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "pad_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "pad_write": {
+    "description": "Create a pad, or fully overwrite one by passing pad_id plus expected_revision. Pad names are unique per project. Prefer pad_append/pad_edit for targeted changes.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "pad_id": {
+          "description": "Pass with expected_revision to overwrite.",
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  "project_add": {
+    "description": "Register a directory as a project. Defaults to the current working directory. Returns the existing project if the path is already registered.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "project_list": {
+    "description": "List registered projects and the currently selected one.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "project_prune": {
+    "description": "Delete every registered project that owns no rows anywhere in the store (scratchpads, todos, kv, locks, agents, timers, command_trust), verified individually before each delete. Never prunes the caller's own project. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "project_select": {
+    "description": "Set which project later tools act on in this session.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_archive": {
+    "description": "Archive a todo (or unarchive with archived=false), mirroring pad_archive. Archived todos are excluded from todo_list by default; todo_get always reaches them by id. Refuses when this todo still blocks another todo that is not completed.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "description": "Default true. Pass false to unarchive.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_block": {
+    "description": "Add a blocker: todo_id cannot start until blocker_id completes. Cycles are rejected.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "blocker_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id",
+        "blocker_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_comment": {
+    "description": "Add a comment to a todo. Use for handoffs: changed files, tests run, decisions, remaining risk.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id",
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_complete": {
+    "description": "Mark a todo complete (or reopen with completed=false). Returns todo ids that this completion newly unblocked.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "completed": {
+          "description": "Defaults to true.",
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_create": {
+    "description": "Create a project-scoped todo. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "blocked_by": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "body": {
+          "description": "Objective, owned files, acceptance criteria.",
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_get": {
+    "description": "Read one todo in full: body, blockers, what it blocks, and optionally comments.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "include_comments": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_list": {
+    "description": "List todo summaries. is_blocked=false finds dispatchable work. query matches title and body. Archived todos are excluded by default; include_archived=true retrieves them too.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "include_archived": {
+          "type": "boolean"
+        },
+        "is_blocked": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "offset": {
+          "type": "integer"
+        },
+        "priority": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "in_progress",
+            "backlog",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "todo_unblock": {
+    "description": "Remove one blocker relationship from a todo.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "blocker_id": {
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id",
+        "blocker_id"
+      ],
+      "type": "object"
+    }
+  },
+  "todo_update": {
+    "description": "Update todo fields. Omitted fields are preserved. Returns a slim receipt.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "priority": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "in_progress",
+            "backlog",
+            "completed"
+          ],
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "todo_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "todo_id"
+      ],
+      "type": "object"
+    }
+  },
+  "wake_cancel": {
+    "description": "Cancel a pending wake-up you own.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "wake_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id"
+      ],
+      "type": "object"
+    }
+  },
+  "wake_get": {
+    "description": "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates body at 120 chars; use this to see exactly what a wake will say, or to confirm what wake_update just changed.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "wake_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id"
+      ],
+      "type": "object"
+    }
+  },
+  "wake_list": {
+    "description": "List pending wake-ups in this project, plus recently_delivered: the last 10 one-shot wakes that have already fired, with their delivery state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the pending list the moment it fires; recently_delivered is where to check whether it was actually typed and, if its target has a confirmation channel, acknowledged.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "wake_set": {
+    "description": "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use instead of polling. Write the body self-contained: ids, context, next action.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "delay_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        "deliver_to": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Deliver to a spawned agent instead of this session."
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "repeat_every_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "delay_seconds",
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  "wake_update": {
+    "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so only body can be edited on one.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "delay_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        },
+        "repeat_every_seconds": {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        "wake_id": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id"
+      ],
+      "type": "object"
+    }
+  },
+  "wake_when_idle": {
+    "description": "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers. Refuses a lead target: a lead has no idle/working state channel.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agents": {
+          "description": "Agents to watch.",
+          "items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Running agent's name (preferred), or its numeric agent id."
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "body": {
+          "type": "string"
+        },
+        "deliver_to": {
+          "$ref": "#/properties/agents/items",
+          "description": "Deliver to a spawned agent instead of this session."
+        },
+        "max_wait_seconds": {
+          "description": "How long to wait for idle before firing anyway. Defaults to 900. Not a hard deadline: delivery holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "description": "Defaults to any.",
+          "enum": [
+            "any",
+            "all"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agents",
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  "whoami": {
+    "description": "Show this session's actor identity and effective project scope. Call this first in a new session.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {},
+      "type": "object"
+    }
+  }
+}

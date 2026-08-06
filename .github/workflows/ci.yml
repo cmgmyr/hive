@@ -107,6 +107,22 @@ jobs:
       # whichever OS this leg is, so a broken branch fails here rather than as
       # a silent wave of skips inside `npm test`.
       - run: tmux -V
+      # Todo 286. Ubuntu's `npm test` measured 191s against macOS's 119s
+      # while Ubuntu's own individual suites measured faster, and Ubuntu
+      # peaked at 2 test files in flight against macOS's 9 - `node --test`
+      # takes its file concurrency from availableParallelism(). The 2-CPU
+      # reading was a hypothesis carried across three board revisions and
+      # never actually checked; this prints the real number so it stops
+      # being one. Not a fix, and `--test-concurrency` is deliberately not
+      # raised here - this suite spawns real tmux servers and real MCP
+      # processes, and more concurrency is exactly what would feed the
+      # unexplained back-to-back full-run flake already on record.
+      #
+      # Unconditional on both OSes (counselors round 2, item 9 - both seats
+      # flagged the Linux-only version): the original comparison is a
+      # RATIO, Ubuntu against macOS, and a Linux-only print gives one side
+      # of it. Costs about a second on the 10x-billed macOS leg.
+      - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
       - run: npm test

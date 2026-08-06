@@ -297,6 +297,20 @@ export class McpClient {
     });
     this.nextId = 1;
     this.pending = new Map();
+    // setEncoding makes Node decode with a StringDecoder that carries partial
+    // multibyte sequences across `data` events. Without it, `chunk` is a
+    // Buffer and `buffer += chunk` implicitly calls chunk.toString("utf8")
+    // PER CHUNK - a UTF-8 sequence that straddles two events gets decoded as
+    // two incomplete halves, each independently replaced with U+FFFD.
+    // Counselors round 2, item 6: caught by name and line. NOT REPRODUCED
+    // EMPIRICALLY - eight runs with this line reverted still passed, because
+    // the payload fixture's multibyte characters never landed on a chunk
+    // boundary on that machine. The fix rests on inspection, which is solid
+    // (decoding each chunk independently is provably wrong for a split
+    // sequence), but the test does not currently demonstrate it and would not
+    // fail if this line were removed. Said plainly so nobody reads the
+    // non-ASCII in that fixture as proof it is covered.
+    this.child.stdout.setEncoding("utf8");
     let buffer = "";
     this.child.stdout.on("data", (chunk) => {
       buffer += chunk;
