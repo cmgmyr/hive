@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { CLI, DIST, isolateTmux, scratchDirs } from "./helpers.mjs";
+import { CLI, DIST, REPO, isolateTmux, scratchDirs } from "./helpers.mjs";
 
 // One case spawns `hive status`, which runs the janitor and probes tmux.
 const { cleanup: cleanupTmux } = isolateTmux("the store isolation tests");
@@ -179,6 +179,18 @@ describe("naming a store is not opening one", () => {
   // not touch the database" is a property of an import graph, and an import
   // graph changes without anyone rereading a test file's header.
   it("cannot open the store from the modules layout.test.mjs imports", () => {
+    // require.cache keys are ABSOLUTE PATHS, and every one of them is rooted
+    // under this checkout, so a loose substring test for "better" and
+    // "sqlite" trips on the CHECKOUT'S OWN PATH rather than on an actual
+    // better-sqlite3 import whenever the repo, a branch, or (as happened for
+    // issue #105's own worktree, named "issue-105-types-better-sqlite3") a
+    // worktree directory happens to contain both words. Every module loaded
+    // from such a checkout — yaml included — would trip it. Match the real
+    // module location instead: a cache key that actually names
+    // node_modules/better-sqlite3/ as a path segment, which only a module
+    // resolved to that package can produce regardless of what the checkout
+    // itself is called.
+    const betterSqlite3Prefix = join(REPO, "node_modules", "better-sqlite3") + sep;
     const { code, stdout, stderr } = runFixture(
       "layout-graph",
       `import { createRequire } from "node:module";\n` +
@@ -189,7 +201,7 @@ describe("naming a store is not opening one", () => {
         `try { session = sessionName(); } catch (e) { session = String(e.message); }\n` +
         `process.stdout.write(JSON.stringify({\n` +
         `  session,\n` +
-        `  sqlite: Object.keys(cache).some((k) => k.includes("better") && k.includes("sqlite")),\n` +
+        `  sqlite: Object.keys(cache).some((k) => k.startsWith(${JSON.stringify(betterSqlite3Prefix)})),\n` +
         `  yml: typeof loadProjectYml,\n` +
         `}));\n`,
       UNDER_RUNNER,
