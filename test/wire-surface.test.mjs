@@ -139,6 +139,61 @@ describe("MCP wire surface", () => {
     assert.deepEqual(names, EXPECTED_TOOL_NAMES);
   });
 
+  it("no integer parameter advertises a negative lower bound", async () => {
+    // Issue #105 lane C, counselors run 22. This is a property over the
+    // GENERATED surface, deliberately not a second snapshot: the snapshot
+    // above pins what the shape IS, and this pins something that must be true
+    // of a shape nobody has written yet. A new tool declaring a bare
+    // z.number().int() emits minimum: -9007199254740991 and fails HERE, which
+    // is what stops the fix from being a sweep that misses the 43rd tool
+    // (.claude/sessions/common-issues/a-fix-applied-to-only-some-call-sites.md).
+    //
+    // The rule, and why it is about the lower bound only: zod 4 emits both
+    // bounds for every integer. The MAXIMUM is a fact about JSON numbers
+    // (past Number.MAX_SAFE_INTEGER they stop round-tripping through a
+    // double) and is correct for every field. The MINIMUM is that same fact
+    // mirrored, and no parameter in this surface has a valid negative value -
+    // they are all ids, counts, offsets, revisions, delays and line counts.
+    // See src/tools/params.ts for the two measured cases that made this
+    // concrete (agent_output lines: -5 reaching tmux, pad_list offset: -1
+    // silently returning the last row).
+    //
+    // Walks the whole schema, not just top-level properties: three of the 80
+    // integer schemas live inside anyOf unions (wake_set.deliver_to,
+    // wake_when_idle.agents.items, wake_when_idle.deliver_to) and a
+    // properties-only walk would skip them.
+    const listed = await mcp.request("tools/list", {});
+    const offenders = [];
+    let integers = 0;
+    const walk = (node, path) => {
+      if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}/${i}`));
+      if (!node || typeof node !== "object") return;
+      if (node.type === "integer") {
+        integers++;
+        // exclusiveMinimum: 0 (from .positive()) and minimum: 0 (from
+        // .nonnegative()) both satisfy this; an ABSENT lower bound does not,
+        // because zod 4 always emits one and its absence would mean the
+        // emitter changed under us.
+        const lower = node.minimum ?? node.exclusiveMinimum;
+        if (typeof lower !== "number" || lower < 0) offenders.push(`${path} -> ${JSON.stringify(node)}`);
+      }
+      for (const [k, v] of Object.entries(node)) walk(v, `${path}/${k}`);
+    };
+    for (const tool of listed.result.tools) walk(tool.inputSchema, tool.name);
+
+    // Guards the assertion against becoming vacuous: if a refactor stopped
+    // integer parameters reaching the wire as type: "integer" at all, the
+    // offenders check would pass over an empty set and report nothing wrong.
+    assert.ok(integers > 0, "no integer schemas found in tools/list; this assertion has nothing to check");
+    assert.deepEqual(
+      offenders,
+      [],
+      `these integer parameters advertise a negative lower bound: ${offenders.join(", ")}. ` +
+        "Give each one .positive(), .nonnegative(), or its real domain bound in src/tools/, then " +
+        "regenerate the snapshot with `node scripts/wire-surface-snapshot.mjs`.",
+    );
+  });
+
   it("every tool's advertised shape matches the committed wire-surface snapshot", async () => {
     const listed = await mcp.request("tools/list", {});
     // toolsByName/renderToolsSnapshot/sortKeysDeep are imported from

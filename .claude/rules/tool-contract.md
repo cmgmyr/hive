@@ -8,7 +8,7 @@ paths:
 
 # The tool contract: lifecycle, naming, and the CLI/MCP split
 
-Issue #82. hive exposes 37 MCP tools and 18 CLI commands with no stated
+Issue #82. hive exposes 42 MCP tools and 18 CLI commands with no stated
 contract for what a resource is supposed to have. Read this before adding a
 tool or a command, not after: a rule fires when you open a file it covers,
 which is the moment a new tool gets its name.
@@ -110,6 +110,34 @@ status and dependency graph, not create/read/update/retire/remove of the
 todo row itself. A new domain operation like these does not need a slot in
 the six verbs above; it needs its own clear name and a description that
 says what state it touches.
+
+## A tool's input schema does not reject unknown keys, and never did
+
+Issue #105 lane C. Until zod 4, every tool with at least one parameter
+advertised `additionalProperties: false` in its `tools/list` schema, and 38
+of the 42 carried it (the four without it are the no-parameter tools:
+`actor_prune`, `project_list`, `project_prune`, `whoami`). zod 4 stops
+emitting the key, so no tool advertises it now.
+
+**The runtime never enforced it, and the advertised guard had value only to
+a validating client.** zod's object parsing strips unknown keys silently by
+default, so a `pad_write` carrying a bogus key returned `revision: 1` with
+no error before the bump and returns `revision: 1` with no error after it.
+Both measured. Server-side, nothing changed.
+
+That is not the same as the change being free. A client that validated
+arguments against the advertised schema before sending would have caught a
+misspelled key, and now will not: `pad_delete({pad_id: 7, expected_revison: 3})`
+is refused by a validating client under the old schema and accepted under
+the new one, where the typo means the revision guard silently does not
+apply. Whether that loss should be answered, and how, is being tracked
+separately; do not answer it here by re-adding strictness on your own, and
+do not read the paragraph above as saying it does not matter.
+
+The practical consequence when you add a tool: a caller who misspells an
+optional parameter gets a silent no-op, not an error. If a tool genuinely
+needs a typo to be loud, that has to be a check in the handler, because the
+schema will not do it for you.
 
 ## The CLI and MCP split
 

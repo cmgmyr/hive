@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
-import { projectIdParam } from "./params.js";
+import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 
 export interface PadRow {
   id: number;
@@ -125,8 +125,8 @@ export function registerPads(server: McpServer): void {
         name: z.string(),
         content: z.string(),
         tags: z.array(z.string()).optional(),
-        pad_id: z.number().int().optional().describe("Pass with expected_revision to overwrite."),
-        expected_revision: z.number().int().optional(),
+        pad_id: idParam.optional().describe("Pass with expected_revision to overwrite."),
+        expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
     },
@@ -160,7 +160,7 @@ export function registerPads(server: McpServer): void {
     {
       description: "Read a pad's content, revision, and metadata by pad_id or name.",
       inputSchema: {
-        pad_id: z.number().int().optional(),
+        pad_id: idParam.optional(),
         name: z.string().optional(),
         project_id: projectIdParam,
       },
@@ -198,9 +198,9 @@ export function registerPads(server: McpServer): void {
       description:
         "Append content to the end of a pad. Optional expected_revision guards against concurrent writes.",
       inputSchema: {
-        pad_id: z.number().int(),
+        pad_id: idParam,
         content: z.string(),
-        expected_revision: z.number().int().optional(),
+        expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
     },
@@ -221,10 +221,10 @@ export function registerPads(server: McpServer): void {
       description:
         "Replace one literal occurrence of old_text with new_text in a pad. old_text must match exactly once; include surrounding context to disambiguate.",
       inputSchema: {
-        pad_id: z.number().int(),
+        pad_id: idParam,
         old_text: z.string(),
         new_text: z.string(),
-        expected_revision: z.number().int().optional(),
+        expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
     },
@@ -254,7 +254,7 @@ export function registerPads(server: McpServer): void {
       description:
         "Archive a pad (or unarchive with archived=false). Archiving frees the name for a new active pad; the old content stays readable by pad_id.",
       inputSchema: {
-        pad_id: z.number().int(),
+        pad_id: idParam,
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
         project_id: projectIdParam,
       },
@@ -287,8 +287,8 @@ export function registerPads(server: McpServer): void {
       description:
         "Permanently delete a pad. Irreversible; prefer pad_archive. Optional expected_revision guards against deleting a pad someone just updated.",
       inputSchema: {
-        pad_id: z.number().int(),
-        expected_revision: z.number().int().optional(),
+        pad_id: idParam,
+        expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
     },
@@ -311,8 +311,8 @@ export function registerPads(server: McpServer): void {
         query: z.string().optional(),
         tags: z.array(z.string()).optional(),
         include_archived: z.boolean().optional(),
-        limit: z.number().int().optional(),
-        offset: z.number().int().optional(),
+        limit: limitParam,
+        offset: offsetParam,
         project_id: projectIdParam,
       },
     },

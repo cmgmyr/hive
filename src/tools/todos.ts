@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
-import { projectIdParam } from "./params.js";
+import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 
 interface TodoRow {
   id: number;
@@ -398,7 +398,7 @@ export function registerTodos(server: McpServer): void {
         body: z.string().optional().describe("Objective, owned files, acceptance criteria."),
         priority: priorityParam.optional(),
         tags: z.array(z.string()).optional(),
-        blocked_by: z.array(z.number().int()).optional(),
+        blocked_by: z.array(idParam).optional(),
         project_id: projectIdParam,
       },
     },
@@ -437,8 +437,8 @@ export function registerTodos(server: McpServer): void {
         query: z.string().optional(),
         tags: z.array(z.string()).optional(),
         include_archived: z.boolean().optional(),
-        limit: z.number().int().optional(),
-        offset: z.number().int().optional(),
+        limit: limitParam,
+        offset: offsetParam,
         project_id: projectIdParam,
       },
     },
@@ -468,7 +468,7 @@ export function registerTodos(server: McpServer): void {
     {
       description: "Read one todo in full: body, blockers, what it blocks, and optionally comments.",
       inputSchema: {
-        todo_id: z.number().int(),
+        todo_id: idParam,
         include_comments: z.boolean().optional(),
         project_id: projectIdParam,
       },
@@ -485,7 +485,7 @@ export function registerTodos(server: McpServer): void {
     {
       description: "Update todo fields. Omitted fields are preserved. Returns a slim receipt.",
       inputSchema: {
-        todo_id: z.number().int(),
+        todo_id: idParam,
         title: z.string().optional(),
         body: z.string().optional(),
         priority: priorityParam.optional(),
@@ -514,7 +514,7 @@ export function registerTodos(server: McpServer): void {
       description:
         "Archive a todo (or unarchive with archived=false), mirroring pad_archive. Archived todos are excluded from todo_list by default; todo_get always reaches them by id. Refuses when this todo still blocks another todo that is not completed.",
       inputSchema: {
-        todo_id: z.number().int(),
+        todo_id: idParam,
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
         project_id: projectIdParam,
       },
@@ -533,7 +533,7 @@ export function registerTodos(server: McpServer): void {
       description:
         "Mark a todo complete (or reopen with completed=false). Returns todo ids that this completion newly unblocked.",
       inputSchema: {
-        todo_id: z.number().int(),
+        todo_id: idParam,
         completed: z.boolean().optional().describe("Defaults to true."),
         project_id: projectIdParam,
       },
@@ -552,7 +552,7 @@ export function registerTodos(server: McpServer): void {
       description:
         "Add a comment to a todo. Use for handoffs: changed files, tests run, decisions, remaining risk.",
       inputSchema: {
-        todo_id: z.number().int(),
+        todo_id: idParam,
         body: z.string(),
         project_id: projectIdParam,
       },
@@ -574,8 +574,8 @@ export function registerTodos(server: McpServer): void {
     {
       description: "Add a blocker: todo_id cannot start until blocker_id completes. Cycles are rejected.",
       inputSchema: {
-        todo_id: z.number().int(),
-        blocker_id: z.number().int(),
+        todo_id: idParam,
+        blocker_id: idParam,
         project_id: projectIdParam,
       },
     },
@@ -593,8 +593,8 @@ export function registerTodos(server: McpServer): void {
     {
       description: "Remove one blocker relationship from a todo.",
       inputSchema: {
-        todo_id: z.number().int(),
-        blocker_id: z.number().int(),
+        todo_id: idParam,
+        blocker_id: idParam,
         project_id: projectIdParam,
       },
     },

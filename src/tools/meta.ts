@@ -12,6 +12,7 @@ import {
 } from "../context.js";
 import { errorMessage, run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
+import { idParam } from "./params.js";
 
 // Counselors round on PR #100, finding 2. project_prune and actor_prune
 // sweep the WHOLE store, across every project and actor - a lead operation.
@@ -262,7 +263,7 @@ export function registerMeta(server: McpServer): void {
     "project_select",
     {
       description: "Set which project later tools act on in this session.",
-      inputSchema: { project_id: z.number().int() },
+      inputSchema: { project_id: idParam },
     },
     ({ project_id }) => run(() => selectProjectById(project_id)),
   );

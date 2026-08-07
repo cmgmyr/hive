@@ -820,7 +820,13 @@ export function registerAgents(server: McpServer): void {
         text: z.string().optional(),
         keys: z.array(z.string()).optional().describe("tmux key names, e.g. [\"Escape\"] or [\"C-c\"]."),
         submit: z.boolean().optional().describe("Append Enter after text. Defaults to true."),
-        wait_ms: z.number().int().optional(),
+        // The bound is the one this tool's own description already states,
+        // "(250-10000)". Before zod 4 the schema said {"type": "integer"} and
+        // the handler clamped, so the wire carried two range statements that
+        // disagreed; after zod 4 it advertised +/-9007199254740991 and made the
+        // disagreement wider. Declaring the real domain is what makes the
+        // description enforceable instead of aspirational. See src/tools/params.ts.
+        wait_ms: z.number().int().min(250).max(10000).optional(),
         project_id: projectIdParam,
       },
     },
@@ -929,7 +935,11 @@ export function registerAgents(server: McpServer): void {
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
-        lines: z.number().int().optional(),
+        // 1-200, the range this tool's description already states ("default 50
+        // lines, max 200"). A negative reached `tmux capture-pane -S "--5"`,
+        // which tmux rejects as an unknown option, so the schema was calling
+        // valid an input the tool could never serve. See src/tools/params.ts.
+        lines: z.number().int().min(1).max(200).optional(),
         project_id: projectIdParam,
       },
     },

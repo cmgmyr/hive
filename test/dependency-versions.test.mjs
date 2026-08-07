@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -48,6 +48,184 @@ describe("the better-sqlite3 / @types/better-sqlite3 verified pair", () => {
           "store, update VERIFIED_PAIR in this file to match.",
       );
     }
+  });
+});
+
+// Issue #105 lane C, and the reason this is NOT a second VERIFIED_PAIR.
+// Counselors round 20 asked for the pair idea to be extended to zod, on the
+// argument that a types package silently describing a different major went
+// unnoticed for sixteen months and zod moves its types substantially between
+// majors. THE PAIR SHAPE DOES NOT TRANSFER, because zod has no second side to
+// drift from: it ships its own types, there is no @types/zod, and a version
+// pin on zod alone would only restate what package.json already says.
+//
+// The event that WOULD go unnoticed for zod is A SECOND COPY OF IT IN THE TREE,
+// and getting the reason right matters more than the check does.
+//
+// THE FIRST VERSION OF THIS COMMENT SAID "instanceof is false across two copies,
+// so the SDK stops recognising hive's schemas". THAT IS FALSE, on both halves,
+// and it is corrected here rather than softened because a load-bearing comment
+// stating a wrong mechanism is how this project keeps getting bitten.
+//   The SDK does NOT use instanceof on the tool path. It detects v4
+//   STRUCTURALLY - `!!schema._zod` in server/zod-compat.js - and dispatches on
+//   shape, so a schema from a different physical copy is recognised normally.
+//   The one instanceof in server/mcp.js (`field instanceof ZodOptional`) is on
+//   the PROMPT path and guards completion detection; hive's registerPrompts
+//   passes no argsSchema at all, so it never runs here.
+//
+// The scarier mechanism proposed in its place - that zod 4 moved .describe()
+// into a module-level singleton, so two copies would look up metadata in the
+// wrong registry and every description would silently vanish from tools/list -
+// IS ALSO NOT WHAT HAPPENS, and it is worth knowing why. The write side
+// (zod/v4/classic/schemas.js) and the read side (zod/v4/core/to-json-schema.js,
+// `params?.metadata ?? globalRegistry`) are both real. But the registry is not
+// module-level. zod/v4/core/registries.js pins it to the REALM:
+//     globalThis.__zod_globalRegistry ??= registry()
+// so every copy in a process shares one registry object, which is zod's own
+// deliberate defence against exactly this hazard. Measured, not reasoned: two
+// physically separate zod 4.4.3 installs, `A.core.globalRegistry ===
+// B.core.globalRegistry` is true in either load order, and converting a
+// B-built schema with A's toJSONSchema keeps the description. Descriptions do
+// not vanish.
+//
+// SO WHAT IS THIS CHECK ACTUALLY FOR, honestly, now that the dramatic version
+// is gone? A second copy has no demonstrated failure mode on hive's tool path
+// today. It is worth failing on anyway, for a smaller and more durable reason:
+// a duplicate means hive's declared zod range and its consumers' have DIVERGED,
+// and the SDK is being handed schemas built by a version it does not declare
+// support for. The compat layer's structural detection works across the pairs
+// tried here, but it is version-sensitive by construction, and the registry
+// sharing that saves the descriptions is an INTERNAL of zod's - an undocumented
+// globalThis key that exists for this hazard and can change without a major.
+// Failing on the divergence is cheap; discovering which internal stopped
+// holding is not. Do not restore the description-loss claim without
+// re-measuring it against the zod actually installed.
+//
+// It is installable today. @modelcontextprotocol/sdk@1.30.0 lists zod in BOTH
+// dependencies and peerDependencies as "^3.25 || ^4.0". While hive's own
+// declaration overlaps that range npm dedupes to one copy at the root; the day
+// hive moves to a zod the SDK's range excludes, npm satisfies the SDK with a
+// NESTED copy and installs cleanly with two.
+//
+// THE CHECK IS DELIBERATELY BROAD: it fails on a second zod ANYWHERE, not only
+// under the SDK's subtree. An unrelated dependency vendoring its own nested zod
+// would redden it even though no schema crosses that boundary, and that is
+// accepted rather than overlooked. Today the SDK subtree is the only candidate
+// producer in this tree, so the false positive is hypothetical; when one
+// arrives, narrow this deliberately and NAME the dependency here, rather than
+// pre-narrowing to a path pattern nobody has needed yet.
+//
+// What this does NOT cover, said plainly: whether a new zod changes the
+// emitted JSON Schema. test/wire-surface.test.mjs covers that, against a
+// committed snapshot, per tool. Do not widen this check to compensate.
+describe("zod resolves to exactly one copy in the tree", () => {
+  const isZod = (p) => p.split("node_modules/").pop() === "zod";
+  const REASON =
+    "A duplicate means hive's zod range and its consumers' have diverged, so the SDK is being handed " +
+    "schemas from a version it does not declare support for. Reconcile the ranges rather than accepting " +
+    "the duplicate; see this file's header for what does and does not actually break.";
+
+  it("package-lock.json records no second zod anywhere", () => {
+    const lock = JSON.parse(readFileSync(join(REPO, "package-lock.json"), "utf8"));
+    const paths = Object.keys(lock.packages ?? {}).filter(isZod);
+    assert.deepEqual(paths, ["node_modules/zod"], `lockfile resolves zod to ${JSON.stringify(paths)}. ${REASON}`);
+  });
+
+  // The lockfile is what CI installs from (`npm ci`), so the check above is
+  // the one that holds on the runner. It is NOT what a developer runs against.
+  // `npm i zod@3 --no-save`, an interrupted install, or a node_modules older
+  // than the lockfile all leave the lockfile assertion green with two copies
+  // actually on disk - and node_modules is the tree the hazard lives in. So
+  // this asserts the same property against the artifact rather than the record
+  // of it. Same derived shape, no version number.
+  it("node_modules contains no second zod on disk", () => {
+    // Walks PACKAGE POSITIONS ONLY, never a package's own source tree. The
+    // first version of this walk claimed to do that in a comment and did not:
+    // its guard read `!rel.includes("node_modules")`, which is TRUE at the top
+    // level and TRUE again one level into every package, so it only stopped
+    // descending after already stepping through a directory literally named
+    // node_modules. Measured on this tree: 627 directories visited, including
+    // @modelcontextprotocol/sdk/dist/cjs/client. A bare `mkdir -p
+    // node_modules/better-sqlite3/lib/zod` - an EMPTY directory, not a package
+    // - was enough to fail the test. Found by the PR review gate on #123.
+    //
+    // The structure below follows npm's layout instead of guessing at it. A
+    // node_modules directory holds exactly two kinds of entry: a scope
+    // directory (@scope), whose children are packages, and a package
+    // directory, which may hold a nested node_modules of its own. Nothing
+    // else is a place a package can be, so nothing else is descended into.
+    //
+    // Two things follow, and the second is why this is not just tidier. A
+    // directory named zod that is not a package can no longer match, because
+    // matching happens only at a package position. And the cost is now bounded
+    // by the number of INSTALLED PACKAGES rather than by every directory in
+    // every package - which is the reason the original comment gave for not
+    // walking everything, correct about the cost and about the false match,
+    // wrong only in the code under it.
+    //
+    // A scoped package named zod (node_modules/@scope/zod) is deliberately NOT
+    // a match: that is the package `@scope/zod`, a different package, not a
+    // second copy of `zod`. The lockfile check above already draws the same
+    // line, since its `split("node_modules/").pop()` yields "@scope/zod".
+    //
+    // Measured on this tree after the fix: 101 package positions visited where
+    // the old walk visited 627 directories, same single result, and the test
+    // went from ~14ms to ~2ms.
+    const found = [];
+    const dirsIn = (dir) => {
+      try {
+        return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name !== ".bin");
+      } catch {
+        // A missing directory is not an error here: every package having no
+        // nested node_modules is the normal, fully-deduped case. node_modules
+        // missing entirely surfaces as an empty `found` and fails the
+        // assertion below, which is the right report for "nothing installed".
+        return [];
+      }
+    };
+    // scan() enumerates one node_modules directory; visitPackage() handles one
+    // package and descends into its own node_modules if it has one. Mutually
+    // recursive, which is what makes nesting depth fall out rather than being
+    // a case to handle.
+    const visitPackage = (dir, rel, scoped) => {
+      // Only an UNSCOPED package directory named zod is the zod package.
+      if (!scoped && rel.split("/").pop() === "zod") found.push(rel);
+      scan(join(dir, "node_modules"), `${rel}/node_modules`);
+    };
+    const scan = (nmDir, nmRel) => {
+      for (const e of dirsIn(nmDir)) {
+        if (e.name.startsWith("@")) {
+          for (const pkg of dirsIn(join(nmDir, e.name))) {
+            visitPackage(join(nmDir, e.name, pkg.name), `${nmRel}/${e.name}/${pkg.name}`, true);
+          }
+        } else {
+          visitPackage(join(nmDir, e.name), `${nmRel}/${e.name}`, false);
+        }
+      }
+    };
+    scan(join(REPO, "node_modules"), "node_modules");
+    assert.deepEqual(found, ["node_modules/zod"], `node_modules holds zod at ${JSON.stringify(found)}. ${REASON}`);
+  });
+
+  it("a package other than hive still declares a zod range, so a duplicate is still reachable", () => {
+    // Without this, the checks above turn into a tautology the day nothing but
+    // hive depends on zod: hive's own copy would be the only one possible,
+    // nothing could produce a second, and passing would mean nothing. This
+    // pins the PREMISE, not a version.
+    //
+    // It reads the whole lockfile rather than only the SDK's manifest, because
+    // the SDK is not the only path: it also depends on zod-to-json-schema,
+    // which declares its OWN zod peer range, so a second copy stays reachable
+    // even if the SDK itself dropped zod. Pinning the SDK alone would have
+    // read narrower than the premise actually is.
+    const lock = JSON.parse(readFileSync(join(REPO, "package-lock.json"), "utf8"));
+    const declarers = Object.entries(lock.packages ?? {})
+      .filter(([path, meta]) => path !== "" && !isZod(path) && (meta.dependencies?.zod || meta.peerDependencies?.zod))
+      .map(([path]) => path);
+    assert.ok(
+      declarers.length > 0,
+      "nothing but hive declares a zod dependency any more; the single-copy checks above may now be vacuous",
+    );
   });
 });
 

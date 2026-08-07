@@ -5,13 +5,13 @@ import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
 import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
 import { ACTIVE_TIMER_WHERE, LOG_RETENTION, type TimerRow } from "../scheduler.js";
-import { projectIdParam } from "./params.js";
+import { idParam, projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { liveTargets } from "../tmux.js";
 import { LEAD_KIND } from "../spawn.js";
 
 const agentRefParam = z
-  .union([z.number().int(), z.string()])
+  .union([idParam, z.string()])
   .describe("Running agent's name (preferred), or its numeric agent id.");
 
 function resolveAgentRef(projectId: number, ref: number | string): AgentRow {
@@ -380,7 +380,7 @@ export function registerWakes(server: McpServer): void {
         "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
         "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
         "wake_update just changed.",
-      inputSchema: { wake_id: z.number().int(), project_id: projectIdParam },
+      inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>
       run(() => {
@@ -416,7 +416,7 @@ export function registerWakes(server: McpServer): void {
         "wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so " +
         "only body can be edited on one.",
       inputSchema: {
-        wake_id: z.number().int(),
+        wake_id: idParam,
         delay_seconds: z.number().int().positive().optional(),
         body: z.string().optional(),
         repeat_every_seconds: z.number().int().positive().optional(),
@@ -527,7 +527,7 @@ export function registerWakes(server: McpServer): void {
     "wake_cancel",
     {
       description: "Cancel a pending wake-up you own.",
-      inputSchema: { wake_id: z.number().int(), project_id: projectIdParam },
+      inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>
       run(() => {
