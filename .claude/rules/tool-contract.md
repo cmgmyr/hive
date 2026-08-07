@@ -4,6 +4,7 @@ paths:
   - "src/cli.ts"
   - "src/help.ts"
   - "src/context.ts"
+  - "src/strictInput.ts"
 ---
 
 # The tool contract: lifecycle, naming, and the CLI/MCP split
@@ -13,15 +14,24 @@ contract for what a resource is supposed to have. Read this before adding a
 tool or a command, not after: a rule fires when you open a file it covers,
 which is the moment a new tool gets its name.
 
-**Unlike the project's other rules, nothing here is enforced by code.**
-This file is a naming convention and a matrix, not a guard. `docs.test.mjs`
-pins that it exists, that its `paths` globs still match a real file, that
-every path it cites is real, and that it stays indexed in `CLAUDE.md` and
-`src/AGENTS.md`, the same four checks every rule file gets. None of that
-pins its CONTENT against the code: nothing fails if the matrix drifts from
-what `src/tools/*.ts` actually registers, or if the naming convention stops
-matching what a new tool was actually named. Treat the matrix as verified
-at the time #82 wrote it, not as self-maintaining.
+**Unlike the project's other rules, almost nothing here is enforced by
+code.** This file is a naming convention and a matrix, not a guard.
+`docs.test.mjs` pins that it exists, that its `paths` globs still match a
+real file, that every path it cites is real, and that it stays indexed in
+`CLAUDE.md` and `src/AGENTS.md`, the same four checks every rule file gets.
+None of that pins its CONTENT against the code: nothing fails if the matrix
+drifts from what `src/tools/*.ts` actually registers, or if the naming
+convention stops matching what a new tool was actually named. Treat the
+matrix as verified at the time #82 wrote it, not as self-maintaining.
+
+Two claims in the unknown-key section below are the exception, and only two.
+`test/wire-surface.test.mjs` pins that every object in the generated surface
+advertises `additionalProperties: false`, and that a `pad_delete` carrying
+the misspelled `expected_revison` is refused at runtime with a -32602 naming
+the key. Those two fail a test when they stop being true. **Everything else
+in that section is prose like the rest of this file** - the one-object-level
+claim, the cost to a still-running server, the list of no-parameter tools,
+the bypass paths. Verify before relying on any of them.
 
 **Renaming any existing tool or command is out of scope, permanently.**
 Pads, runbooks, profile docs, the board, and merged PR bodies all name tools
@@ -111,33 +121,74 @@ todo row itself. A new domain operation like these does not need a slot in
 the six verbs above; it needs its own clear name and a description that
 says what state it touches.
 
-## A tool's input schema does not reject unknown keys, and never did
+## Every tool rejects an unknown argument key, and you get that for free
 
-Issue #105 lane C. Until zod 4, every tool with at least one parameter
-advertised `additionalProperties: false` in its `tools/list` schema, and 38
-of the 42 carried it (the four without it are the no-parameter tools:
-`actor_prune`, `project_list`, `project_prune`, `whoami`). zod 4 stops
-emitting the key, so no tool advertises it now.
+Todo 298, from counselors run 22. All 42 tools advertise
+`additionalProperties: false` and refuse an undeclared key at runtime with a
+-32602 that names it. Both halves come from `src/strictInput.ts`, which wraps
+`registerTool` once on the single `McpServer` in `src/index.ts` and rebuilds
+each raw shape as a `z.strictObject`. **No `src/tools/*.ts` call site
+participates, so a new tool registered the way the other 42 are is strict
+without its author doing anything.** `test/wire-surface.test.mjs` walks the
+generated surface and requires `additionalProperties: false` on every object
+in it, so a tool that escaped the wrapper fails there rather than depending
+on anyone reading this paragraph.
 
-**The runtime never enforced it, and the advertised guard had value only to
-a validating client.** zod's object parsing strips unknown keys silently by
-default, so a `pad_write` carrying a bogus key returned `revision: 1` with
-no error before the bump and returns `revision: 1` with no error after it.
-Both measured. Server-side, nothing changed.
+**Three ways to write a tool that is NOT strict**, listed because this
+section fires when you open `src/tools/*.ts` to write the 43rd one, which is
+exactly when they apply:
 
-That is not the same as the change being free. A client that validated
-arguments against the advertised schema before sending would have caught a
-misspelled key, and now will not: `pad_delete({pad_id: 7, expected_revison: 3})`
-is refused by a validating client under the old schema and accepted under
-the new one, where the typo means the revision guard silently does not
-apply. Whether that loss should be answered, and how, is being tracked
-separately; do not answer it here by re-adding strictness on your own, and
-do not read the paragraph above as saying it does not matter.
+- **Omit `inputSchema` entirely.** The SDK then skips `validateToolInput`
+  altogether and the tool accepts anything. Verified by registering one and
+  calling it with `{typo: true}`; the handler ran. hive's four no-parameter
+  tools avoid this by declaring `inputSchema: {}`, an empty raw shape the SDK
+  treats as a shape, which the wrapper rebuilds strict like any other. Caught
+  by the wire test (the SDK advertises a bare `{type: "object"}` for it).
+- **Declare a nested object parameter with `z.object`.** Strictness is one
+  object level; the wrapper makes the root strict and cannot reach a shape's
+  values. Use `z.strictObject` for the nested one. Caught by the wire test,
+  which walks rather than reading the root.
+- **Use `server.tool(...)` (deprecated) or `RegisteredTool.update({paramsSchema})`.**
+  Both go around `registerTool`: `tool()` calls `_createRegisteredTool`
+  directly, and `update()` rebuilds a LOOSE object through `objectFromShape`.
+  hive calls neither. `tool()` is caught by the wire test; a runtime
+  `update()` is caught by nothing, which is a reason not to reach for it.
 
-The practical consequence when you add a tool: a caller who misspells an
-optional parameter gets a silent no-op, not an error. If a tool genuinely
-needs a typo to be loud, that has to be a check in the handler, because the
-schema will not do it for you.
+`kv_set`'s `value` is `z.any()` on purpose and is NOT one of these - arbitrary
+keys there sit inside a declared parameter rather than beside it, which is
+what the tool is for. It emits `{}` with no `type`, so the wire walk never
+tests it and needs no exemption list.
+
+**A parameter may not be named `_def` or `_zod`.** The wrapper tells a raw
+shape from a built schema by looking for those keys on the container, so a
+shape carrying one is refused at registration. That is a naming constraint,
+not a bug to work around: the failure is loud, at startup, with a message
+naming the tool, and no parameter in this surface is plausibly named either.
+
+The history, because the fix reads as a revert otherwise. Until zod 4, 38 of
+the 42 advertised `additionalProperties: false` (the four without it were the
+no-parameter tools: `actor_prune`, `project_list`, `project_prune`,
+`whoami`), **and the runtime never enforced it** - zod strips unknown keys
+silently by default, so the advertised guard had value only to a client that
+validated arguments before sending, which Claude Code does not. Issue #105
+lane C's zod 4 bump stopped emitting the key and was accepted on that basis.
+What made it worth answering rather than accepting is the shape underneath:
+`pad_delete({pad_id: 7, expected_revison: 3})` - one letter wrong - reached
+the handler as `{pad_id: 7}`, and `checkRevision` returns SILENTLY when the
+expected revision is absent and not required, so the pad was permanently
+deleted while the tool's description promised the caller was guarded. The
+typo and a deliberate omission produced the identical call.
+
+The practical consequence when you add a tool: **declare every parameter a
+caller may pass**, because anything you leave out is now refused rather than
+ignored. And adding an optional parameter is no longer backward compatible
+against a RUNNING server: it used to be ignored by a session on older
+`dist/`, and is now refused until that session restarts. See
+`.claude/sessions/common-issues/stale-mcp-server-runs-old-code.md`. That cost
+was weighed and accepted (todo 298 comment 556): bounded by one restart, and
+loud rather than silent. A refusal is per call, not per session - the SDK
+turns it into an `isError` tool result carrying the -32602, so the caller
+reads which key was wrong and corrects it.
 
 ## The CLI and MCP split
 

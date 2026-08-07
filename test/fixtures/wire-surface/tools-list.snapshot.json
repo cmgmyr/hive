@@ -6,6 +6,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     }
@@ -17,6 +18,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agent_id": {
           "description": "Numeric agent id. Use name instead unless you have the id to hand.",
@@ -48,6 +50,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "include_closed": {
           "type": "boolean"
@@ -69,6 +72,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agent_id": {
           "description": "Numeric agent id. Use name instead unless you have the id to hand.",
@@ -102,6 +106,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agent_id": {
           "description": "Numeric agent id. Use name instead unless you have the id to hand.",
@@ -137,6 +142,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agent_id": {
           "description": "Numeric agent id. Use name instead unless you have the id to hand.",
@@ -184,6 +190,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "command": {
           "description": "Agent command to run. Defaults to claude.",
@@ -244,6 +251,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agent_id": {
           "description": "Numeric agent id. Use name instead unless you have the id to hand.",
@@ -276,6 +284,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "topic": {
           "type": "string"
@@ -291,6 +300,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string"
@@ -315,6 +325,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string"
@@ -339,6 +350,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "prefix": {
           "type": "string"
@@ -360,6 +372,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string"
@@ -393,6 +406,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "key": {
           "description": "Stable and specific, like \"file:src/api/routes.ts\".",
@@ -424,6 +438,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "key": {
           "type": "string"
@@ -448,6 +463,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "content": {
           "type": "string"
@@ -483,6 +499,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "archived": {
           "description": "Default true. Pass false to unarchive.",
@@ -513,6 +530,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "expected_revision": {
           "exclusiveMinimum": 0,
@@ -544,6 +562,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "expected_revision": {
           "exclusiveMinimum": 0,
@@ -583,6 +602,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "include_archived": {
           "type": "boolean"
@@ -623,6 +643,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
@@ -649,6 +670,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "content": {
           "type": "string"
@@ -694,6 +716,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
@@ -712,6 +735,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     }
@@ -723,6 +747,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     }
@@ -734,6 +759,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "project_id": {
           "exclusiveMinimum": 0,
@@ -754,6 +780,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "archived": {
           "description": "Default true. Pass false to unarchive.",
@@ -784,6 +811,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "blocker_id": {
           "exclusiveMinimum": 0,
@@ -816,6 +844,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -846,6 +875,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "completed": {
           "description": "Defaults to true.",
@@ -876,6 +906,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "blocked_by": {
           "items": {
@@ -926,6 +957,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "include_comments": {
           "type": "boolean"
@@ -955,6 +987,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "include_archived": {
           "type": "boolean"
@@ -1015,6 +1048,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "blocker_id": {
           "exclusiveMinimum": 0,
@@ -1047,6 +1081,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -1102,6 +1137,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
@@ -1128,6 +1164,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
@@ -1154,6 +1191,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
@@ -1172,6 +1210,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -1220,6 +1259,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "body": {
           "type": "string"
@@ -1259,6 +1299,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {
         "agents": {
           "description": "Agents to watch.",
@@ -1329,6 +1370,7 @@
     },
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
       "properties": {},
       "type": "object"
     }

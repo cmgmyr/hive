@@ -194,6 +194,95 @@ describe("MCP wire surface", () => {
     );
   });
 
+  it("no object anywhere in the surface accepts undeclared keys", async () => {
+    // Todo 298. Same posture as the integer-bounds assertion above and for the
+    // same reason: a property over the GENERATED surface, so a 43rd tool that
+    // somehow escaped src/strictInput.ts fails HERE rather than relying on
+    // anyone reading that file's comment
+    // (.claude/sessions/common-issues/a-fix-applied-to-only-some-call-sites.md).
+    // The snapshot below would also catch it, but only as "the wire surface
+    // changed"; this names the missing guarantee.
+    //
+    // WALKS THE WHOLE SCHEMA, NOT JUST THE ROOT, and that is the difference
+    // between this assertion and a version of it that could not fail in the
+    // direction that matters. src/strictInput.ts makes the ROOT object strict;
+    // strictness is a property of one object level, so a nested object
+    // parameter is loose inside a strict parent. Counselors run 23 named the
+    // concrete case: add `metadata: z.object({owner, reason})` to todo_create
+    // and a caller sending {"owner": "impl", "resaon": "handoff"} gets `resaon`
+    // stripped silently - todo 298's exact bug, one level down, with a
+    // root-only assertion still green. Same reason the integer walk twelve
+    // lines up recurses: the thing you are looking for hides below the top.
+    //
+    // kv_set's `value` is z.any() and emits {} with no `type` key, so the walk
+    // never tests it. That preserves the deliberate carve-out (arbitrary keys
+    // there sit INSIDE a declared parameter) with no exemption list to keep in
+    // sync - see the audit in src/strictInput.ts.
+    const listed = await mcp.request("tools/list", {});
+    assert.equal(listed.result.nextCursor, undefined, "tools/list is paginating; this assertion only saw page one");
+    const offenders = [];
+    let objects = 0;
+    const walk = (node, path) => {
+      if (Array.isArray(node)) return node.forEach((v, i) => walk(v, `${path}/${i}`));
+      if (!node || typeof node !== "object") return;
+      if (node.type === "object") {
+        objects++;
+        if (node.additionalProperties !== false) offenders.push(path);
+      }
+      for (const [k, v] of Object.entries(node)) walk(v, `${path}/${k}`);
+    };
+    for (const tool of listed.result.tools) walk(tool.inputSchema, tool.name);
+
+    // Guards against a vacuous pass the same way the integer test does: zero
+    // object schemas satisfies an every-object property trivially, and one per
+    // tool is the floor (each tool's own root), so a tool whose root stopped
+    // being emitted as an object fails here too.
+    assert.ok(
+      objects >= listed.result.tools.length && listed.result.tools.length > 0,
+      `found ${objects} object schemas across ${listed.result.tools.length} tools; expected at least one root each`,
+    );
+    assert.deepEqual(
+      offenders,
+      [],
+      `these object schemas do not advertise additionalProperties: false: ${offenders.join(", ")}. ` +
+        "A ROOT means something bypassed the wrapper in src/strictInput.ts, applied to the server in " +
+        "src/index.ts. A NESTED one means a parameter was declared with z.object; declare it with " +
+        "z.strictObject instead, since the wrapper only reaches the root.",
+    );
+  });
+
+  it("refuses a misspelled optional parameter instead of silently dropping it", async () => {
+    // THE counselors run 22 case, as a real client call rather than an
+    // anecdote. pad_delete's expected_revision guards against deleting a pad
+    // someone just updated, and checkRevision(pad, undefined, false) returns
+    // SILENTLY. Before todo 298, zod stripped the misspelled key and the pad
+    // was permanently deleted while the caller believed they were guarded -
+    // the typo and a deliberate omission produced the identical call.
+    //
+    // Driven through the real registered surface, not a unit test over
+    // z.strictObject: that would prove a fact about ZOD and would still pass
+    // with src/strictInput.ts deleted
+    // (.claude/sessions/dead-ends/2026-08-05-helper-whose-parameters-cannot-disagree.md).
+    const pad = await mcp.call("pad_write", { name: "strict-input-typo-case", content: "guarded" });
+
+    await assert.rejects(
+      () => mcp.call("pad_delete", { pad_id: pad.pad_id, expected_revison: pad.revision }),
+      /MCP error -32602:.*Unrecognized key: "expected_revison"/,
+      "a misspelled expected_revision must be refused with -32602 naming the key, not stripped",
+    );
+
+    // The refusal has to have STOPPED the delete, not merely reported one.
+    // Without this, a strict schema that refused after the handler ran would
+    // pass the assertion above and still have destroyed the pad.
+    const survived = await mcp.call("pad_read", { pad_id: pad.pad_id });
+    assert.equal(survived.content, "guarded");
+
+    // The control: the correctly spelled parameter still works. Without it,
+    // "pad_delete refuses everything" also passes the two assertions above.
+    const deleted = await mcp.call("pad_delete", { pad_id: pad.pad_id, expected_revision: survived.revision });
+    assert.equal(deleted.deleted, true);
+  });
+
   it("every tool's advertised shape matches the committed wire-surface snapshot", async () => {
     const listed = await mcp.request("tools/list", {});
     // toolsByName/renderToolsSnapshot/sortKeysDeep are imported from
