@@ -574,7 +574,23 @@ export function writeScratchAddon(root, { prebuild, classic = false, napiVersion
     // only, which is exactly where database.js's own `require('bindings')`
     // needs to find it.
     for (const dep of readdirSync(join(classicPkg, "vendor"))) {
-      cpSync(join(classicPkg, "vendor", dep), join(scratchModules, dep), { recursive: true });
+      // rmSync FIRST. The loop above symlinked every real node_modules entry
+      // except better-sqlite3 into this directory, so if a future dependency
+      // reintroduces `bindings` or `file-uri-to-path` to the lock - both
+      // dropped out when 13 stopped needing them - this destination is a
+      // SYMLINK POINTING AT THE REAL node_modules.
+      //
+      // Measured rather than assumed, in both directions, because "a test
+      // suite might write into the real node_modules" would be the alarming
+      // version of this and it is not what happens: cpSync onto a symlinked
+      // directory throws ERR_FS_CP_DIR_TO_NON_DIR and touches the target not
+      // at all. So this line buys a confusing failure NOT happening, not a
+      // corrupted checkout - and rmSync unlinks the symlink rather than
+      // following it, which is the half that would have been alarming if it
+      // went the other way. One line, and the question stops being one.
+      const dest = join(scratchModules, dep);
+      rmSync(dest, { recursive: true, force: true });
+      cpSync(join(classicPkg, "vendor", dep), dest, { recursive: true });
     }
     if (prebuild) {
       mkdirSync(join(scratchAddon, "build", "Release"), { recursive: true });

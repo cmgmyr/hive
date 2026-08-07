@@ -14,7 +14,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { checkAbi, describeAbi, describeInterpreter } from "./abi.js";
+import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
 import { claudeConfigDir } from "./claudeDir.js";
 import {
   ATTACH_MODES,
@@ -1895,8 +1895,33 @@ function cmdSetup(argv: string[]): void {
   console.log(`  interpreter  ${node}`);
   console.log(`               ${process.version}, NODE_MODULE_VERSION ${process.versions.modules}`);
   console.log(`  runs         ${cli}`);
-  console.log("\nThat is the interpreter that built better-sqlite3 here, so the dispatcher");
-  console.log("and the addon cannot disagree about the ABI.");
+  // WHAT THIS SENTENCE USED TO SAY WAS FALSE TWICE OVER, and it was printed at
+  // every setup: "That is the interpreter that built better-sqlite3 here, so
+  // the dispatcher and the addon cannot disagree about the ABI." Nothing built
+  // better-sqlite3 here - 13 ships a prebuild and the install picks a file -
+  // and they CAN still disagree, through the Node-API floor rather than a
+  // NODE_MODULE_VERSION.
+  //
+  // The pin survives that correction with a better justification than the one
+  // it lost, which is why this is rewritten rather than deleted. A version
+  // manager resolves a bare `node` per directory, and a directory can pin a
+  // Node below the addon's Node-API level; under one of those the addon does
+  // not raise anything hive could report, the process dies inside dlopen. So
+  // the pin is what stops a `cd` from producing a hive that segfaults.
+  //
+  // The range is DERIVED, never written here. Same reason abi.ts reads the
+  // level out of better-sqlite3's own binding.gyp: a constant in hive would
+  // keep printing 22.14.0 the day the dependency raises NAPI_VERSION, and
+  // being confidently specific is worse than being unspecific.
+  const need = requiredNodeApi();
+  const range = need === null ? null : nodeRangeForNodeApi(need);
+  console.log("\n`hive` now runs under that interpreter from any directory, whatever `node` a");
+  console.log("version manager resolves there. better-sqlite3's addon needs a Node providing");
+  console.log(
+    range
+      ? `Node-API ${need} (${range}); below that it does not fail, it dies inside dlopen.`
+      : `Node-API ${need ?? "the level its binding.gyp names"}; below that it does not fail, it dies inside dlopen.`,
+  );
 
   // An absent --attach leaves the stored value alone; setup only ever writes
   // it when asked. README:238 tells everyone to run this after every update,

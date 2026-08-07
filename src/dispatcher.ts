@@ -1,8 +1,21 @@
-// The dispatcher: a two-line shell script that runs hive's CLI under the
-// interpreter that built it, instead of whatever `node` the working directory
-// resolves to. `npm link` cannot do this. It writes its shim into the ACTIVE
-// Node's global bin, which a version manager reshims per directory, so `hive`
-// vanishes wherever another version is pinned.
+// The dispatcher: a two-line shell script that runs hive's CLI under one fixed
+// interpreter, instead of whatever `node` the working directory resolves to.
+// `npm link` cannot do this. It writes its shim into the ACTIVE Node's global
+// bin, which a version manager reshims per directory, so `hive` vanishes
+// wherever another version is pinned.
+//
+// "the interpreter that built it" is what this said, and issue #105 lane B
+// retired the claim under it: better-sqlite3 13 ships a prebuilt N-API addon,
+// so nothing builds it here and it is not tied to one Node major. The pin is
+// still the fix, for the OTHER half of the same sentence - a Node resolved per
+// directory can be one the addon cannot load, which after the N-API move means
+// one below its Node-API floor.
+//
+// The generated header below states that without a version range on purpose.
+// The range lives in abi.ts, derived from better-sqlite3's own binding.gyp,
+// and abi.ts imports THIS file for the escape hatch it prints - so naming the
+// range here would either invert that dependency or hardcode a number that
+// goes stale silently on a file already written to a user's disk.
 //
 // Everything here is pure filesystem and string work, with no store access, so
 // abi.ts can name the escape hatch out of an ABI mismatch before the store is
@@ -32,9 +45,10 @@ export function dispatcherScript(node: string, cli: string): string {
   return [
     "#!/bin/sh",
     DISPATCHER_MARKER,
-    "# Written by `hive setup`. The interpreter below is the one that built",
-    "# better-sqlite3 for this checkout, so it cannot disagree with the addon's",
-    "# ABI. Regenerate after every update: npm install && npm run build && hive setup",
+    "# Written by `hive setup`. It runs hive under one fixed interpreter, so a",
+    "# version manager resolving `node` per directory cannot land hive on a Node",
+    "# better-sqlite3's addon refuses to load under.",
+    "# Regenerate after every update: npm install && npm run build && hive setup",
     `exec ${shQuote(node)} ${shQuote(cli)} "$@"`,
     "",
   ].join("\n");
@@ -115,8 +129,32 @@ export function durabilityLines(node: string): string[] {
       `  that version is removed: uninstalling it through ${manager} later breaks the`,
       "  dispatcher with a confusing exec error. A Homebrew or system Node cannot be",
       "  removed that way.",
-      "  To pin one instead, rebuild under it and re-run setup:",
-      "    /opt/homebrew/bin/node --version && npm install && npm run build && hive setup",
+      // TWO THINGS WERE WRONG WITH THE ADVICE THIS REPLACED, and one of them
+      // could not work at all. It read "rebuild under it and re-run setup:
+      // /opt/homebrew/bin/node --version && npm install && npm run build &&
+      // hive setup".
+      //
+      // The rebuild is from the retired model. better-sqlite3 13 ships a
+      // prebuilt N-API addon and hive's own `npm run build` is tsc, so
+      // neither step changes which Node can run hive; the pin is the only
+      // thing being moved here.
+      //
+      // The trailing `hive setup` LOOPED. `hive` on PATH is this dispatcher,
+      // still pinned to the interpreter the user is trying to move off, so
+      // setup ran under it and re-pinned exactly the Node the advice exists to
+      // replace. abi.ts's fix lines already carry this rule - setup pins
+      // whatever Node runs it, so the way out always names an interpreter
+      // explicitly - and this branch did not follow it.
+      "  To pin a different one, run setup WITH it - setup pins whatever Node",
+      "  runs it, so naming it is the whole instruction:",
+      // QUOTED, like abi.ts's two copies of this instruction. cliPath() is an
+      // absolute path from import.meta.url, so a checkout under a directory
+      // with a space produces a command that breaks when pasted. The test
+      // below pins the quotes rather than the shape, because the obvious
+      // assertion (\S* between the interpreter and dist/cli.js) passes only
+      // while no path has a space in it and would fail on the very case it is
+      // meant to protect.
+      `    /opt/homebrew/bin/node "${cliPath()}" setup`,
     ];
   }
   // Only ever a hedge. The detection is a list of known install paths, so it

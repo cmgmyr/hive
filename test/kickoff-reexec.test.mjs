@@ -21,9 +21,22 @@ import {
 // the Node hive was built under (issue #50). This exercises the plugin entry
 // point itself, not dist/kickoff.js (kickoff.test.mjs's target), because the
 // re-exec has to happen before dist/kickoff.js -> dist/db.js is ever imported.
-// It only fires on a genuine ABI mismatch (checkAbi().ok === false), never on
-// a bare path difference from the dispatcher's pin -- a healthy interpreter
-// whose pin is merely stale must be left alone.
+// It only fires when this interpreter cannot load the addon at all
+// (checkAbi().ok === false), never on a bare path difference from the
+// dispatcher's pin -- a healthy interpreter whose pin is merely stale must be
+// left alone.
+//
+// "a genuine ABI mismatch" is what that said, and it under-described the gate
+// after issue #105 lane B (hive todo 297 item 3). `ok === false` has always
+// covered every failure branch, and the NODE_MODULE_VERSION mismatch it named
+// is the one branch the shipped package can no longer reach. What reaches it
+// in production now is "napi", a Node below better-sqlite3's Node-API floor,
+// which is precisely what re-execing under a pinned interpreter cures - so
+// the gate is doing more work than the old sentence claimed, not less. The
+// cases below still drive the mismatch branch, because that is what a
+// classic fixture plus a second real interpreter can reproduce on a machine
+// with no sub-floor Node installed; the mechanism under test is the re-exec
+// decision, which is the same one for either failure.
 const KICKOFF_MJS = join(REPO, "claude-plugin", "kickoff.mjs");
 
 // Issue #105 lane B. This whole file is built on alternateInterpreter()
@@ -67,6 +80,18 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
   // under process.execPath, refuses under alt.path. Skipped entirely when
   // unavailable (see SKIP above), so this only runs when there is something
   // real for it to load.
+  //
+  // WHAT THAT COSTS, named rather than discovered later (hive todo 297 item
+  // 4): the recovery cases here open a REAL hive store through
+  // better-sqlite3 12.11.1's driver, which production never runs. So these
+  // tests carry a dependency on 12.x's JS staying compatible with what
+  // src/db.ts asks for. The day db.ts uses an API only 13 has, these fail
+  // together, and the failure will point at re-exec while the cause is the
+  // fixture's driver. Accepted rather than fixed: the alternative is a second
+  // set of prebuilt binaries per ABI, and the fixture directory's README is
+  // explicit that this pair has to stay self-consistent. If you are here
+  // because six re-exec tests went red at once and the re-exec code did not
+  // change, check what db.ts started calling before looking anywhere else.
   const scratch = SKIP
     ? null
     : writeScratchAddon(join(dirs.tmp, "scratch-addon"), { prebuild: matchingFixture, classic: true });

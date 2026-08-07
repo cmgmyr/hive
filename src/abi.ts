@@ -183,11 +183,16 @@ function isLinuxMusl(): boolean {
   return !report?.header?.glibcVersionRuntime;
 }
 
-// better-sqlite3 13 dropped the node-gyp build in favour of N-API prebuilds
-// shipped in the npm package: one file per platform+arch, picked by
-// better-sqlite3/lib/binding.js#getPrebuildPath, never per Node version. This
-// mirrors that lookup rather than importing it, because the subpath is not in
-// the package's "exports" map.
+// better-sqlite3 13 leads with N-API prebuilds shipped in the npm package: one
+// file per platform+arch, picked by better-sqlite3/lib/binding.js#getPrebuildPath,
+// never per Node version. This mirrors that lookup rather than importing it,
+// because the subpath is not in the package's "exports" map.
+//
+// "dropped the node-gyp build entirely" is what this said, and it is not what
+// 13 did. The package still ships binding.gyp, still declares build-release
+// and build-debug, and still builds from source when asked. What changed is
+// what the source build TARGETS - N-API rather than the V8 ABI - so a build is
+// no longer the thing that ties an addon to one Node major.
 //
 // MIRRORS IT IN ORDER, WHICH IS THE POINT OF THE LOOP BELOW. binding.js falls
 // back to build/Debug FIRST and only then build/Release, so a tree carrying a
@@ -197,9 +202,29 @@ function isLinuxMusl(): boolean {
 // up as hive refusing to start on a tree that works, which is a worse failure
 // than the one the guard prevents.
 //
-// The build/* fallback is a real layout, not a source-build promise: v13 sets
-// gypfile:false and ships no install script, so npm never invokes node-gyp
-// for this package. Something has to have run the build by hand.
+// The build/* fallback is a real layout, and what puts something there is
+// worth stating exactly, because the obvious reading is wrong in both
+// directions. MEASURED against 13.0.3, npm 11.16.0:
+//
+//   `npm install` DOES invoke node-gyp for this package. v13 declares no
+//   install script and sets gypfile:false, and npm synthesises
+//   `install: node-gyp rebuild` anyway, because binding.gyp is in the tarball.
+//   An earlier version of this comment concluded "npm never invokes node-gyp"
+//   from the declaration, which is the right premise and the wrong conclusion.
+//
+//   That run compiles nothing when a prebuild for the host exists.
+//   binding.gyp gates both targets on `force_build==1 or prebuild_exists==0`
+//   and makes them 'type': 'none' otherwise, so build/ ends up holding
+//   makefiles and two .stamp files. Deliberate upstream, and commented as
+//   such in binding.gyp.
+//
+//   With no host prebuild, the same implicit run IS a full source build and
+//   lands here. So this fallback is reached by an ordinary `npm install` on a
+//   platform the tarball does not cover, not only by a hand build.
+//
+// A hand build (`npm run build-release` inside the package) passes
+// --force_build=1 and lands here too, which is the route abiFixLines names
+// when a platform has no prebuild and the implicit build did not happen.
 function addonPath(): string | null {
   try {
     const root = dirname(requireFromHere.resolve("better-sqlite3/package.json"));
@@ -359,23 +384,45 @@ export function abiFixLines(status: AbiStatus, pinned?: string | null): string[]
       `  ${good} "${cliPath()}" setup`,
     ];
   }
-  // "npm install && npm run build" was wrong here and the wrongness was
-  // load-bearing, not cosmetic: NEITHER HALF CAN PRODUCE THE ADDON. v13
-  // declares no install script, so npm never invokes node-gyp for it, and
-  // hive's own `npm run build` is tsc. What restores the addon is the tarball
-  // itself, which is why the install stands alone and the build does not
-  // appear at all.
+  // THIS BRANCH HAS NOW BEEN WRONG TWICE, in opposite directions, and both
+  // versions were reasoned from a package.json field instead of measured.
+  //
+  // It first said "npm install && npm run build", and neither half produces
+  // better_sqlite3.node. It was corrected to a bare "npm install" plus "The
+  // package declares no install script, so npm builds nothing for it" - the
+  // premise true, the conclusion false, and the ADVICE ITSELF INEFFECTIVE.
+  // Measured against 13.0.3 with npm 11.16.0:
+  //
+  //   Delete the prebuild from an installed tree and run `npm install`: it
+  //   prints "up to date, audited 102 packages" and does NOT restore the file.
+  //   npm reconciles the tree against the lockfile; a package that is present
+  //   at the right version is not re-examined, and the addon is inside it.
+  //   So the one command this branch offered is the one that cannot work in
+  //   the situation it fires in.
+  //   Remove the package DIRECTORY and run `npm install`: restored in under a
+  //   second, from the tarball, with no compiler.
+  //   npm also runs an implicit `node-gyp rebuild` for this package on every
+  //   install (see addonPath's comment). It compiles nothing where a prebuild
+  //   exists and does a real source build where none does, so "npm builds
+  //   nothing for it" is not a sentence to put in front of a user either.
+  //
+  // The remedy names the reinstall, and says why the obvious command is not
+  // it, because a user who has already tried `npm install` needs to be told
+  // that trying it again is not the missing step.
   if (status.failure === "missing") {
     return [
-      "Install it:  npm install",
+      "Reinstall the package:  rm -rf node_modules/better-sqlite3 && npm install",
       "",
-      "better-sqlite3 13 ships the addon prebuilt, so a normal install puts the file",
-      "in place. The package declares no install script, so npm builds nothing for it,",
-      "and hive's own `npm run build` only compiles TypeScript - neither one can",
-      "produce better_sqlite3.node.",
+      "better-sqlite3 13 ships the addon prebuilt, so the file comes out of the",
+      "tarball rather than a build. A plain `npm install` will NOT bring it back:",
+      "with the package already unpacked at the locked version, npm reports `up to",
+      "date` without ever looking at the addon. Removing the directory first is what",
+      "makes npm fetch it again. `npm ci` does the same for the whole tree.",
+      "hive's own `npm run build` only compiles TypeScript and is not part of this.",
       "",
-      "If install has already run, this platform/arch has no prebuild in the tarball.",
-      "The only route left is a source build by hand, inside the package itself:",
+      "If it is still missing after that, this platform/arch has no prebuild in the",
+      "tarball, and the source build npm attempts during install did not succeed.",
+      "Run it by hand inside the package, where its output is readable:",
       "  cd node_modules/better-sqlite3 && npm run build-release    (needs node-gyp)",
     ];
   }

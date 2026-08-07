@@ -225,23 +225,27 @@ To receive wake-ups, a lead must itself run inside tmux (workers always can). Le
 
 ## Setup
 
-Requirements: macOS, Node 18+, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. Everything except spawning workers runs without tmux.
+Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. Everything except spawning workers runs without tmux.
+
+That Node range is `better-sqlite3`'s, not hive's own code's, and it is two ranges rather than one floor because a Node-API level starts once per release line: the addon needs Node-API 10, which begins at 22.14.0 on the 22 line and 23.6.0 on the 23 line. Node 23.0.0 through 23.5.0 satisfy a plain "22.14 or newer" and cannot load the addon.
 
 ```bash
 git clone <repo-url> hive && cd hive
-npm install          # if npm blocks the better-sqlite3 build script, run: npm approve-scripts better-sqlite3
+npm install
 npm run build
 npm link             # puts the hive command on your PATH
-hive setup           # pins that command to the Node you just built with
+hive setup           # pins that command to one interpreter, whatever `node` resolves to later
 brew install tmux
 claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
 ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
 hive doctor         # verify: node, ABI, tmux, claude, database, hooks all green
 ```
 
-Both `hive setup` and the `mcp add` line exist for the same reason: hive must not let the working directory pick its interpreter. `better-sqlite3` ships a native addon that only loads under the Node that compiled it, and a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory. A `cd` is then enough to break hive.
+`npm install` needs no compiler. `better-sqlite3` 13 ships its addon prebuilt, one file per platform and architecture, and the install picks the right one out of the tarball. npm does run a node-gyp step for the package, because its tarball contains a `binding.gyp`. On a platform with a prebuild that step compiles nothing, and on one without it builds from source, which is the only case where a toolchain matters. `package.json` DENIES that script (`"allowScripts": {"better-sqlite3@13.0.3": false}`), so npm skips it and prints nothing. That is safe wherever a prebuild exists, which is every platform this project runs on, and it means no dependency code executes during install. On a platform with no prebuild it is the denial that leaves you without an addon; `hive doctor` names that case and the repair.
 
-`hive setup` writes a two-line dispatcher to `~/.local/bin/hive` that execs hive's CLI under an absolute interpreter, taken from the Node running setup, which is the Node that just built the addon. Put that directory ahead of your version manager's shims, since those usually prepend themselves. Both lines prepend, so whichever runs last ends up first, and hive's has to sit below the version manager's block in the file:
+Both `hive setup` and the `mcp add` line exist for the same reason: hive must not let the working directory pick its interpreter. The addon is not tied to one Node version; it is N-API, so it loads under any Node in the range above. But a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory, and a directory can pin one *below* that range. Under such a Node the addon does not report an error. It kills the process inside `dlopen`, with no stack trace and no output at all. Pinning is what stops a `cd` from doing that.
+
+`hive setup` writes a two-line dispatcher to `~/.local/bin/hive` that execs hive's CLI under an absolute interpreter, taken from the Node running setup. Put that directory ahead of your version manager's shims, since those usually prepend themselves. Both lines prepend, so whichever runs last ends up first, and hive's has to sit below the version manager's block in the file:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"     # in ~/.zshrc, below the version manager's block
@@ -305,16 +309,23 @@ Both entry points are live pointers into this checkout: the `hive` command runs 
 cd <this checkout>
 git pull --ff-only            # refuses instead of merging or rebasing over local changes it should not touch
 npm install                   # only matters when dependencies changed; harmless otherwise
-npm rebuild better-sqlite3    # npm install can report "up to date" without checking the addon still exists
 npm run build
 node dist/cli.js setup        # not `hive setup`: that runs through the OLD dispatcher, which may no
-                               # longer be able to load the addon this just rebuilt
+                               # longer point at a Node that can load the addon
 hive doctor                   # required: confirms the addon, the pin, and the registration all agree
 ```
 
-The pin is the part that can drift. `npm install` rebuilds `better-sqlite3` against whatever Node is active in that shell, and if that is not the Node your dispatcher and MCP registration name, the addon and the interpreters no longer agree. Re-running `hive setup` costs nothing when nothing changed, and `hive doctor` says so either way: it warns when the dispatcher points at a different build than the one running, and fails outright on an ABI mismatch. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
+The pin is the part that can drift, and the way it drifts changed with `better-sqlite3` 13. The addon is no longer built here, so it is no longer built *against* a particular Node, and an update cannot leave the addon and the interpreter disagreeing about a compiled ABI. What can still happen is that the interpreter running setup is not the one you want pinned, or that a version manager retires the Node your dispatcher names. Re-running setup costs nothing when nothing changed, and `hive doctor` says so either way. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
 
-`npm install` deciding a package is up to date is not proof its native build artifact still exists: delete `node_modules/better-sqlite3/build/Release/better_sqlite3.node` and run a plain `npm install` and it reports `up to date` without recreating the file. `npm rebuild better-sqlite3` catches that gap explicitly, and costs nothing when the addon was already fine. Run `hive doctor` last, every time: it is the step that actually verifies the addon, the pin, and the registration agree, rather than assuming the steps above got there.
+`npm install` deciding a package is up to date is not proof the addon file is still there, and this is measured rather than assumed: delete `node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node`, run a plain `npm install`, and it prints `up to date` without restoring it. The repair is to make npm reinstall the package rather than re-examine it:
+
+```bash
+rm -rf node_modules/better-sqlite3 && npm install    # ~1s, no compiler; npm ci does the same for the whole tree
+```
+
+`npm rebuild better-sqlite3` also repairs it, and is the wrong tool: with the prebuild gone it does a full source build into `build/Release/`, which works and which hive will load, but it needs node-gyp, Python and a C++ toolchain to reproduce a file the tarball already contains. This step used to be in the list above for exactly this case. It is gone because on a healthy tree it can accomplish nothing: the package's own `binding.gyp` makes npm's node-gyp step a no-op whenever a prebuild for the host is present.
+
+Run `hive doctor` last, every time: it is the step that actually verifies the addon, the pin, and the registration agree, rather than assuming the steps above got there.
 
 The plugin symlink is a live pointer too, so the session-start hook and the shipped profile defaults update with the same pull. Files you forked into `~/.hive/profiles/` are yours and are never touched; `hive doctor` tells you when hive's version of one moved.
 
@@ -351,11 +362,13 @@ Then revoke the automation permission under System Settings > Privacy & Security
 ## Troubleshooting
 
 - `hive doctor` is the first stop. It checks node and its ABI, the dispatcher and its place on PATH, the MCP registration, tmux, claude, the database, and the hooks file, sweeps dead agents and undeliverable wake-ups, and prints one ok/warn/fail line per check with the reason.
-- `ERR_DLOPEN_FAILED`, or `NODE_MODULE_VERSION 137 ... requires 147`: hive is running under a different Node than the one that built it. `hive doctor` names both numbers. Fix it by running hive through its dispatcher (`hive setup`), or rebuild for the Node you are on (`npm install && npm run build`). Rebuilding per Node treats the symptom; pinning treats the cause.
+- `hive: this Node is too old for better-sqlite3's native addon`: the Node running hive is below the range in Setup. `hive doctor` names the Node-API level the addon needs and the one this interpreter provides. Run hive under a Node in that range and re-pin to it, naming that interpreter: `"<that node>" <checkout>/dist/cli.js setup`. Setup pins whatever Node runs it and the `hive` on your PATH is the one that just failed. Rebuilding does not help: `better-sqlite3`'s own build asks for the same Node-API level a fresh install does.
+- `hive: better-sqlite3's native addon is not built here`: the addon file is missing. `rm -rf node_modules/better-sqlite3 && npm install` restores it from the tarball. If it is still missing after that, this platform and architecture have no prebuild, and the only route left is a source build inside the package: `cd node_modules/better-sqlite3 && npm run build-release`.
+- `ERR_DLOPEN_FAILED`, or `NODE_MODULE_VERSION 137 ... requires 147`: an addon compiled for one Node major, loaded under another. `better-sqlite3` 13's prebuilds are N-API and cannot produce this, so on a current install it means something put a pre-13 addon in the tree. `hive doctor` names both numbers.
 - `No version is set for command hive`, or `hive: command not found` in one repo but not another: you are getting `npm link`'s shim, which only exists under the Node version that was active when you linked. Run `hive setup` and put `~/.local/bin` ahead of your version manager's shims.
 - "This session cannot receive wake-ups: it is not running inside tmux": the lead was started with bare `claude` instead of `hive`. Start it with `hive` (or inside tmux) and wake-ups deliver.
 - An idle background iTerm window after attaching (control mode only): enable the gateway bury setting from Setup. Don't close that window by hand; it detaches the session. `hive setup --attach raw` avoids this window entirely, since it never runs a control-mode client.
-- `npm install` fails on better-sqlite3: run `npm approve-scripts better-sqlite3` (newer npm blocks build scripts by default), then `npm install` again.
+- `npm warn allow-scripts   better-sqlite3@13.0.3 (install: node-gyp rebuild)`: npm 11 lists install scripts it has not been told about. `package.json`'s `allowScripts` already carries a decision for this one, so the warning means that decision no longer matches the installed version. A bump re-requires it, deliberately. Edit the entry to the new version rather than running `npm approve-scripts`, which writes `true`; this project ships `false`. If you are on a platform with no prebuild, `true` is the entry you want, because there the script is the only thing that produces an addon.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
 ## Tools (40)

@@ -60,11 +60,22 @@ async function reexecUnderPinnedInterpreter() {
   if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") return;
   if (!existsSync(join(process.cwd(), "hive.yml"))) return;
 
-  // Re-exec is a fix for an ABI mismatch, not for a path difference: this
-  // interpreter may already be able to load the addon fine even if it is not
-  // the one the dispatcher happens to name (a rebuild that has not been
-  // re-pinned yet, for instance). checkAbi() really dlopens the addon rather
-  // than trusting a require(), same reasoning as .claude/rules/native-addon.md.
+  // Re-exec is a fix for AN ADDON THIS INTERPRETER CANNOT LOAD, not for a path
+  // difference: this interpreter may already be able to load the addon fine
+  // even if it is not the one the dispatcher happens to name (a rebuild that
+  // has not been re-pinned yet, for instance). checkAbi() really dlopens the
+  // addon rather than trusting a require(), same reasoning as
+  // .claude/rules/native-addon.md.
+  //
+  // "ABI mismatch" is what this said before issue #105 lane B, and it named a
+  // case that is now unreachable for the shipped package. What actually
+  // reaches this line is checkAbi()'s "napi" branch - a Node below
+  // better-sqlite3's Node-API floor - and that is the case a different
+  // interpreter is exactly the cure for, so the guard is more load-bearing
+  // than the old wording implied rather than less. "missing" reaches it too
+  // and a re-exec cannot cure that; it is not special-cased, because the
+  // child prints the same diagnostic this process would have and the cost of
+  // finding that out is one spawn at session start.
   // When it IS ok, this returns and dist/kickoff.js goes on to run in this
   // same process; if it later reaches db.js, that require() hits the cache
   // entry checkAbi() just created, so this costs nothing extra there.

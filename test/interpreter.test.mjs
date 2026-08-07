@@ -21,9 +21,14 @@ const { hasTmux, cleanup: cleanupTmux } = isolateTmux("the interpreter and docto
 after(() => cleanupTmux());
 
 // hive lets the working directory pick its interpreter unless something stops
-// it, and better-sqlite3's addon only loads under the Node that compiled it.
-// These cover the diagnostic half: doctor naming the ABI, and the guard that
-// turns an ERR_DLOPEN_FAILED out of an import into a sentence.
+// it, and better-sqlite3's addon does not load under every Node. What that
+// second clause means changed with 13 (issue #105 lane B): "only loads under
+// the Node that compiled it" was true of the classic node-gyp build and is not
+// true of the N-API prebuild, which loads under any Node providing Node-API 10
+// and, below that, kills the process inside dlopen instead of refusing. These
+// cover the diagnostic half: doctor naming what it compared, and the guard
+// that turns a failure inside an import into a sentence rather than a stack
+// trace - or, for the sub-floor case, into a refusal rather than exit 139.
 const dirs = scratchDirs();
 const configDir = join(dirs.tmp, "claude-config");
 mkdirSync(configDir, { recursive: true });
@@ -208,16 +213,25 @@ describe("interpreter and ABI", () => {
       error: "not built",
     };
     assert.match(describeAbi(missing), /not built/);
-    // This assertion used to require "npm install && npm run build", which
-    // pinned a remedy that cannot work: v13 declares no install script so npm
-    // invokes no build for it, and hive's `npm run build` is tsc. Neither
-    // produces better_sqlite3.node. A test demanding an ineffective command
-    // is what keeps it in the product.
+    // THIS ASSERTION HAS PINNED TWO REMEDIES THAT COULD NOT WORK, which is
+    // the reason it is worth this much comment. First "npm install && npm run
+    // build" - neither half produces better_sqlite3.node. Then a bare "Install
+    // it: npm install", which reads correct and is not: measured against
+    // 13.0.3, deleting the prebuild from an installed tree and running `npm
+    // install` prints "up to date" and restores nothing, because npm does not
+    // re-examine a package already present at the locked version. A test
+    // demanding a command is what keeps that command in the product, so the
+    // test has to know which command actually restores the file.
     const missingFix = abiFixLines(missing).join("\n");
     assert.doesNotMatch(missingFix, /npm install && npm run build/, "neither half of that produces the addon");
-    assert.match(missingFix, /^Install it: {2}npm install$/m, "the tarball carries the addon, so the install is the fix");
-    assert.match(missingFix, /npm run build` only compiles TypeScript/, "say why the build is not part of it");
-    assert.match(missingFix, /npm run build-release/, "and where the only real source build lives");
+    assert.match(
+      missingFix,
+      /^Reinstall the package: {2}rm -rf node_modules\/better-sqlite3 && npm install$/m,
+      "removing the package is what makes npm fetch the tarball again",
+    );
+    assert.match(missingFix, /A plain `npm install` will NOT bring it back/, "and say why the obvious command is not it");
+    assert.match(missingFix, /npm run build` only compiles TypeScript/, "say why hive's build is not part of it");
+    assert.match(missingFix, /npm run build-release/, "and where the source build lives when there is no prebuild");
 
     assert.equal(classifyAddonLoadError("Module did not self-register: '/x/better_sqlite3.node'"), "mismatch");
     const linuxMismatch = {
@@ -442,12 +456,13 @@ describe("interpreter and ABI", () => {
       stdout,
       /FAIL {2}better-sqlite3: better-sqlite3's native addon is missing; it has not been built here/,
     );
-    // The remedy has to be one that can actually put the file there. See the
-    // unit-level assertions above: `npm run build` is tsc and v13 declares no
-    // install script, so the old "npm install && npm run build" named two
-    // steps, neither of which produces better_sqlite3.node.
-    assert.match(stdout, /Install it: {2}npm install$/m);
+    // The remedy has to be one that can actually put the file there, and this
+    // is the end-to-end half of the unit assertions above: `npm run build` is
+    // tsc, and a plain `npm install` over an already-unpacked package reports
+    // "up to date" without restoring the addon. Both were once printed here.
+    assert.match(stdout, /Reinstall the package: {2}rm -rf node_modules\/better-sqlite3 && npm install$/m);
     assert.doesNotMatch(stdout, /npm install && npm run build/);
+    assert.doesNotMatch(stdout, /^Install it: {2}npm install$/m, "the bare install does not restore a missing addon");
     assert.match(stdout, /1 problem\(s\) found/);
   });
 });
@@ -479,9 +494,13 @@ describe("hive setup writes a dispatcher", () => {
       script.includes(`exec '${process.execPath}' '${CLI}' "$@"`),
       `dispatcher should exec this interpreter, got:\n${script}`,
     );
-    // Derived from process.execPath, never a literal: the Node running setup
-    // is the Node that built better-sqlite3, so the pin and the ABI cannot
-    // disagree.
+    // Derived from process.execPath, never a literal, and the reason is no
+    // longer the one this comment gave ("the Node running setup is the Node
+    // that built better-sqlite3, so the pin and the ABI cannot disagree").
+    // Nothing builds better-sqlite3 here now. What is asserted is the property
+    // that survived: setup pins the interpreter it is RUNNING UNDER, which is
+    // what makes "run setup with the Node you want pinned" the whole
+    // instruction everywhere hive gives it.
     // includes, not a regex built from a path: a checkout or a Node install
     // under a directory with a regex metacharacter in it would otherwise fail
     // here for a reason that has nothing to do with hive.
@@ -536,7 +555,19 @@ describe("hive setup writes a dispatcher", () => {
       );
       assert.match(text, /The pin is stable until\n {2}that version is removed/);
       assert.match(text, new RegExp(`uninstalling it through ${manager} later breaks the`));
-      assert.match(text, /npm install && npm run build && hive setup/);
+      // The escape hatch has to NAME an interpreter. This asserted
+      // `npm install && npm run build && hive setup` until issue #105's
+      // cleanup lane, which is advice that cannot work: `hive` on PATH is the
+      // dispatcher pinned to the very Node being moved away from, so setup ran
+      // under it and re-pinned it. Pin the property rather than the sentence -
+      // an absolute interpreter, then setup, with no bare `hive` anywhere.
+      // The path is QUOTED, and that is asserted rather than assumed. This
+      // read `\S*dist/cli.js` until the review gate pointed out it can never
+      // cross a space, so it passed only because this checkout has none and
+      // would have failed on the space-containing path it was supposed to
+      // cover. Pinning the quotes is the property; the shape was an accident.
+      assert.match(text, /\/opt\/homebrew\/bin\/node "[^"]*dist\/cli\.js" setup/);
+      assert.doesNotMatch(text, /(^|[^/\w])hive setup/, `the fix must not route through the pinned hive:\n${text}`);
     }
   });
 

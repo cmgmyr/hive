@@ -67,16 +67,22 @@ jobs:
         # one leg on the NEWEST supported Node. What that macOS leg is really
         # for is the platform, not the version: hive is a macOS tool and the
         # native addon builds there.
+        #
+        # `skipped` is this leg's EXACT skip budget, enforced after `npm test`
+        # rather than described near it. See the comment on the tmux step.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
+            skipped: 4
           - os: ubuntu-latest
             node: 24
             alt: 22
+            skipped: 4
           - os: macos-latest
             node: 24
             alt: 22
+            skipped: 0
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
@@ -104,7 +110,7 @@ jobs:
       # without it, and a skipped classification test is how a tmux wording
       # change would reach main: hive would read the new wording as "unknown"
       # and stop sweeping, which is issue #14 all over again. Keep this step,
-      # and keep `npm test` reporting `skipped 0` ON THIS LEG.
+      # and keep `npm test` reporting this leg's `matrix.skipped` NUMBER.
       #
       # That guarantee is per-OS, not global: test/auto-attach-scope.test.mjs
       # skips four darwin-only cases on both ubuntu legs by design (ensureAttached
@@ -112,6 +118,12 @@ jobs:
       # is the correct number on Linux. Do not chase that number to 0 on
       # Linux by making those cases runnable there - see that file's own
       # comment for why that would be the false green, not a fix.
+      #
+      # It is an ASSERTION now, not this paragraph (hive todo 297 item 6). The
+      # rule two comments up says a matrix that hides its own skips is worse
+      # than one leg, and the thing enforcing it was a comment - so the day a
+      # fixture stops being available and its cases start skipping, every leg
+      # stayed green and said so. The gate is in the `npm test` step below.
       - if: runner.os == 'macOS'
         run: brew install tmux
       - if: runner.os == 'Linux'
@@ -138,7 +150,36 @@ jobs:
       - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
-      - run: npm test
+      # The skip budget is an assertion here, not a comment on the tmux step.
+      # An EXACT match in both directions on purpose: a leg skipping MORE than
+      # its budget is the failure this exists for (a fixture or a binary went
+      # missing and the cases quietly vanished), and a leg skipping FEWER
+      # means the budget is stale and nobody would ever notice, which is how
+      # a number stops meaning anything. Whichever direction it moves, the
+      # answer is to change matrix.skipped deliberately and say why.
+      #
+      # `set -o pipefail` is load-bearing: GitHub's default shell is `bash -e`
+      # WITHOUT it, so `npm test | tee` would report tee's exit status and a
+      # red suite would pass this step. The gate would then only ever measure
+      # the skips of a suite it could no longer fail on.
+      - name: npm test, with this leg's skip budget enforced
+        env:
+          EXPECTED_SKIPPED: ${{ matrix.skipped }}
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
+          skipped="$(grep -E '[[:space:]]skipped [0-9]+$' "$RUNNER_TEMP/test-output.txt" | tail -1 | awk '{print $NF}')"
+          if [ -z "$skipped" ]; then
+            echo "::error::could not read a skip count out of node --test's summary; the gate cannot run"
+            exit 1
+          fi
+          if [ "$skipped" != "$EXPECTED_SKIPPED" ]; then
+            echo "::error::this leg skipped $skipped tests, budget is $EXPECTED_SKIPPED. A skip that nobody"
+            echo "::error::chose is coverage leaving silently. Find which cases moved, then change the"
+            echo "::error::matrix's skipped: for this leg deliberately - see .github/workflows/ci.yml."
+            exit 1
+          fi
+          echo "skipped $skipped, budget $EXPECTED_SKIPPED"
 
   # THE BOUNDARY, RUN FROM BOTH SIDES OF BOTH RELEASE LINES. This is the only
   # thing that can catch what issue #105 lane B shipped: a Node that satisfies

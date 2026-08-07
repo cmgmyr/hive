@@ -39,17 +39,45 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
 
 // Issue #105 lane B. better-sqlite3 13's N-API prebuilds load under any Node
-// major on this platform/arch, so the REAL dist/hook.js this negative
-// control used to point at no longer fails under alt.path - see
-// test/fixtures/native-addon-abi/README.md. The control below runs against a
-// SCRATCH dist/hook.js instead, with a classic (pre-13) build swapped in
-// that genuinely mismatches alt.path's ABI; the "fixed" command a few lines
-// down is unaffected, since it carries an absolute interpreter and never
-// touches the hostile PATH at all.
-const mismatchesAlt = alt ? classicAddonFixture({ matches: false, against: alt.modules }) : null;
-const controlHook = mismatchesAlt
-  ? writeScratchAddon(join(dirs.tmp, "control-addon"), { prebuild: mismatchesAlt }).dist + "/hook.js"
-  : null;
+// major on this platform/arch, so the REAL dist/hook.js the negative control
+// used to point at no longer fails under alt.path - see
+// test/fixtures/native-addon-abi/README.md. The two controls below run
+// against a SCRATCH dist/hook.js instead, carrying a classic (pre-13) build;
+// the "fixed" command a few lines down is unaffected, since it carries an
+// absolute interpreter and never touches the hostile PATH at all.
+//
+// THE FIXTURE MATCHES THIS INTERPRETER, not merely "differs from alt", and
+// that is the whole repair (issue #105 cleanup lane, todo 297 item 1). A
+// fixture chosen only to differ from alt says nothing about whether it loads
+// HERE: measured on this machine, alt is ABI 147, so the old
+// `{ matches: false, against: alt.modules }` handed back the ABI 127 build,
+// which the suite's own ABI 137 cannot load either. The control was then
+// running a tree that nothing in the file ever required to WORK, so a
+// half-built scratch checkout satisfied it exactly as well as an ABI refusal
+// did. `{ matches: true }` gives a build that loads under process.execPath
+// and, because alternateInterpreter() only ever returns an interpreter whose
+// NODE_MODULE_VERSION differs from this one, cannot load under alt.path. One
+// tree, one variable: the interpreter. Same fixture choice, and same reason,
+// as test/kickoff-reexec.test.mjs.
+//
+// classic: true because the positive control has to open a real database.
+// v13's lib/ over a v12 binary loads and then throws "addon.initialize is not
+// a function" on the first query, which src/hook.ts swallows into exit 0 with
+// no row - a green negative control and a positive one that can never pass.
+const matchingFixture = classicAddonFixture({ matches: true });
+const controlHook =
+  alt && matchingFixture
+    ? join(
+        writeScratchAddon(join(dirs.tmp, "control-addon"), { prebuild: matchingFixture, classic: true }).dist,
+        "hook.js",
+      )
+    : null;
+
+// guardAbi()'s headline for failure === "mismatch" (src/abi.ts). Anchored and
+// multiline so it matches the line hive prints and not a substring of some
+// other message. Same constant, spelled the same way, as
+// test/kickoff-reexec.test.mjs.
+const ABI_FAILURE = /^hive: cannot run under this Node\.$/m;
 
 const { db, migrate } = await import("../dist/db.js");
 const { ensureHooksFile } = await import("../dist/hooks.js");
@@ -160,23 +188,45 @@ describe(
       assert.equal(state?.agent_state, "idle");
       assert.deepEqual(logFor(actorId), [{ event: "stop", state: "idle" }]);
 
-      // NEGATIVE CONTROL. Without this, the assertions above have zero
-      // discriminating power: the fixed command carries an absolute
-      // interpreter, so `sh` never consults PATH at all, and deleting binDir,
-      // the symlink and the `path` option above leaves the test passing
-      // byte-identically. This runs the PRE-FIX shape, a bare `node`, through
-      // the exact same hostile PATH and payload, on a separate actor so it
-      // cannot disturb the assertions above, and requires it to fail: a
-      // nonzero exit AND an empty log, not just the exit code. Two exit codes
-      // compared for an unrelated reason is this project's own false-green
-      // shape 2 (test/CLAUDE.md), so the log has to be checked too.
+      // THE TWO CONTROLS BELOW ARE ONE EXPERIMENT. Without them the
+      // assertions above have zero discriminating power: the fixed command
+      // carries an absolute interpreter, so `sh` never consults PATH at all,
+      // and deleting binDir, the symlink and the `path` option above leaves
+      // the test passing byte-identically. Both run the SAME scratch
+      // dist/hook.js, through the SAME hostile PATH, with the SAME payload,
+      // each on its own actor so neither can disturb the other. The only
+      // thing that differs between them is which interpreter runs the file.
       //
-      // Points at controlHook (a scratch dist/hook.js with a classic addon
-      // swapped in), not the real dist/hook.js: better-sqlite3 13's real,
-      // currently-installed addon loads under alt.path too (see the comment
-      // above controlHook's definition), so the bare-`node` shape would
-      // otherwise succeed here for a reason that has nothing to do with
-      // whether the fix is in place. If this ever starts passing, either
+      // They run controlHook, not the real dist/hook.js, because
+      // better-sqlite3 13's real installed addon loads under alt.path too
+      // (see the comment above controlHook's definition), so a bare `node`
+      // against the real hook would succeed here for a reason that has
+      // nothing to do with whether the fix is in place.
+      //
+      // POSITIVE CONTROL FIRST, and it is the half that was missing. A
+      // scratch tree that is merely BROKEN - MODULE_NOT_FOUND, a dangling
+      // symlink, a half-run cpSync - exits nonzero and writes no row, which
+      // is precisely what the negative control below demands, so on its own
+      // that control passes green while proving nothing. This one requires
+      // the same file, in the same tree, to WRITE A ROW under an interpreter
+      // whose ABI the fixture matches. A malformed tree cannot satisfy both.
+      const scratchActorId = "agent:hook-abi-stop-scratch";
+      agentRow("hook-abi-stop-scratch");
+      const scratchCommand = `${shellQuote(process.execPath)} ${shellQuote(controlHook)} stop`;
+      const scratchRun = await runHookCommand(scratchCommand, { actorId: scratchActorId, payload, path: binDir });
+
+      assert.equal(scratchRun.code, 0, `the scratch hook must work under an interpreter it fits: ${scratchRun.stderr}`);
+      assert.deepEqual(
+        logFor(scratchActorId),
+        [{ event: "stop", state: "idle" }],
+        "the scratch tree must be able to write a row, or the control below proves only that it is broken",
+      );
+
+      // NEGATIVE CONTROL: the PRE-FIX shape, a bare `node`, resolved through
+      // the hostile PATH to alt.path. It must fail, and it must fail for the
+      // ABI: a nonzero exit alone is this project's false-green shape 2
+      // (test/CLAUDE.md), so the stderr has to name hive's own refusal and
+      // the log has to stay empty. If this ever starts passing, either
       // alternateInterpreter() stopped returning a second ABI on this
       // machine, or the classic fixture stopped mismatching it - either way
       // the control, not the fix, needs attention.
@@ -186,6 +236,11 @@ describe(
       const control = await runHookCommand(bareCommand, { actorId: controlActorId, payload, path: binDir });
 
       assert.notEqual(control.code, 0, "the pre-fix bare-`node` shape should fail under a hostile PATH");
+      assert.match(
+        control.stderr,
+        ABI_FAILURE,
+        `and it must fail because the addon refused, not for some other reason: ${control.stderr}`,
+      );
       assert.deepEqual(logFor(controlActorId), [], "and it must write nothing, not just exit nonzero");
     });
   },
