@@ -276,6 +276,14 @@ describe(
       const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
       const init = await runCli(["init"], opts);
       assert.equal(init.code, 0, init.stderr);
+      // Todo 294. sessionName() reads process.env.HIVE_DATA_DIR in THIS
+      // process, not the runCli child's own env (that gets it only via
+      // opts.dataDir below) - every sibling case in this file sets it here
+      // before computing session for exactly that reason. Omitting it left
+      // `session` computed against whatever the previous case's assignment
+      // happened to leave behind, so cleanup(session) below killed the wrong
+      // name and the real session (and its server) outlived the file.
+      process.env.HIVE_DATA_DIR = dirs.dataDir;
       const session = sessionName();
       try {
         // `new-session -t`, not `attach -t`: todo 279 collapsed the two attach

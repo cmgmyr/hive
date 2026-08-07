@@ -24,11 +24,17 @@ const TEST_DIR = join(REPO, "test");
 const files = readdirSync(TEST_DIR)
   .filter((f) => f.endsWith(".test.mjs"))
   .sort();
-// Read once. Both describes below want every file's text, and the second one
-// wants helpers.mjs too.
-const sources = new Map(
-  [...files, "helpers.mjs"].map((f) => [f, readFileSync(join(TEST_DIR, f), "utf8")]),
-);
+// Todo 294 counselors. Broader than `files`: the kill-server checks below
+// need every .mjs under test/, not just *.test.mjs, or a future non-test
+// helper file (a second one alongside helpers.mjs) with a bare kill-server
+// would be covered by NEITHER check - files excludes it by suffix, and the
+// helpers.mjs-specific check below excludes it by name.
+const allMjs = readdirSync(TEST_DIR)
+  .filter((f) => f.endsWith(".mjs"))
+  .sort();
+// Read once. Every describe below wants some file's text; allMjs is the
+// superset, so reading it once here covers every describe.
+const sources = new Map(allMjs.map((f) => [f, readFileSync(join(TEST_DIR, f), "utf8")]));
 
 // Anything that starts a hive process, plus a direct import of the module that
 // runs tmux. Every hive command can reach the server: `hive status` and
@@ -109,23 +115,78 @@ describe("every test file that can reach tmux isolates its server first", () => 
 });
 
 describe("the isolation helpers say what they are for", () => {
-  it("never tears down with kill-server", () => {
-    // CLAUDE.md's invariant, and the one mistake in this area that is not
-    // recoverable. Code under test resolves its server from the env, so a test
-    // cannot pin one with -L; a bare kill-server takes down whatever the
-    // ambient env points at, which during development is the session running
-    // the suite.
+  it("no test file tears down with kill-server", () => {
+    // CLAUDE.md's invariant for every FILE in the suite, still absolute here:
+    // code under test resolves its server from the env, so a test cannot pin
+    // one with -L, and a bare kill-server takes down whatever the ambient env
+    // points at, which during development is the session running the suite.
+    // helpers.mjs itself is checked separately below, for a narrower rule -
+    // see that test for why isolateTmux() is now allowed exactly one.
     //
-    // Quoted, because probe.test.mjs and helpers.mjs both name it in a comment
-    // explaining why they do not call it, and a check that cannot tell those
-    // apart from a call gets deleted rather than obeyed.
-    for (const file of [...files, "helpers.mjs"]) {
+    // Quoted, because probe.test.mjs names it in a comment explaining why it
+    // does not call it, and a check that cannot tell that apart from a call
+    // gets deleted rather than obeyed.
+    //
+    // Iterates allMjs minus helpers.mjs, not `files`: a future non-test .mjs
+    // helper alongside helpers.mjs (a second shared-code file, not matching
+    // *.test.mjs) needs to be covered here too, or it escapes both this
+    // check and the narrower one below by not matching either's selector.
+    for (const file of allMjs) {
+      if (file === "helpers.mjs") continue;
       const source = sources.get(file);
       assert.ok(
         !/["']kill-server["']/.test(source),
         `${file} must tear down with kill-session -t =<name>, never kill-server`,
       );
     }
+  });
+
+  it("helpers.mjs's own kill-server, added for todo 294, stays singular and pinned to -S", () => {
+    // Todo 294. cleanup()'s by-name kill-session left any session a describe
+    // forgot to name (or named from stale env - the actual bug this todo
+    // found, test/attach-mode.test.mjs) outliving the file: the SERVER that
+    // `new-session -d` forks on a cold socket setsid()s away from this
+    // process tree entirely, so nothing here dies with a parent, and it kept
+    // running after its own socket directory was rm -rf'd out from under it,
+    // unreachable and never asked to exit again. isolateTmux()'s exit handler
+    // now kills that server too, before removing the directory.
+    //
+    // This does not weaken the rule above. The general check still forbids a
+    // BARE kill-server, which resolves through the ambient env and can reach
+    // the shared server; the whole reason this one is safe is that it is not
+    // bare. An EARLIER version of this call scoped itself by passing
+    // TMUX_TMPDIR: tmuxTmp in the child's env instead of -S, and counselors
+    // caught why that was still not safe: TMUX_TMPDIR names a directory tmux
+    // must be able to REACH, not a pinned server, and tmuxSocketPath()'s own
+    // fallback rule (src/tmux.ts) means an unreachable directory resolves
+    // silently to the SHARED socket - an env-scoped call could still become
+    // a bare one under the right failure, which is exactly what this test
+    // could not have caught, because it only looked for TMUX_TMPDIR nearby,
+    // not for whether the call could ever fall through it. -S has no
+    // fallback to fall through: it names the socket FILE directly, so this
+    // is checked against -S now, a stronger claim than the env token ever
+    // was. Checked structurally rather than trusted: kill-server must appear
+    // EXACTLY once in helpers.mjs (one call site, not a second one added
+    // without this same scoping in mind), and an explicit -S flag must sit
+    // within a few lines of it, not just somewhere else in the file.
+    const source = sources.get("helpers.mjs");
+    const occurrences = source.match(/["']kill-server["']/g) ?? [];
+    assert.equal(
+      occurrences.length,
+      1,
+      "helpers.mjs must call kill-server exactly once (isolateTmux's exit handler); " +
+        "a second call site needs its own explicit -S scoping, not a copy of this exemption",
+    );
+    const lines = source.split("\n");
+    const at = lines.findIndex((line) => /["']kill-server["']/.test(line));
+    const window = lines.slice(Math.max(0, at - 5), at + 5).join("\n");
+    assert.match(
+      window,
+      /["']-S["']/,
+      "helpers.mjs's kill-server call must pass an explicit -S <socket> nearby, " +
+        "not rely on TMUX_TMPDIR/ambient env resolution - that is the one thing standing between " +
+        "this and a call that can fall through to the shared server",
+    );
   });
 
   it("never asks the server for every pane it has", () => {
@@ -143,7 +204,10 @@ describe("the isolation helpers say what they are for", () => {
     //
     // Scope with -s -t =<session> instead: all panes in that session, across
     // its windows, and nothing else.
-    for (const file of [...files, "helpers.mjs"]) {
+    //
+    // allMjs, not [...files, "helpers.mjs"]: the same future-file gap the
+    // kill-server check above closes applies here identically.
+    for (const file of allMjs) {
       const source = sources.get(file);
       assert.ok(
         !/["']list-panes["']\s*,\s*["']-a["']/.test(source),

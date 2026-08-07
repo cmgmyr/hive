@@ -180,6 +180,17 @@ jobs:
             exit 1
           fi
           echo "skipped $skipped, budget $EXPECTED_SKIPPED"
+      # Todo 294. Must run after npm test, not folded into it: it can only
+      # tell a real leak from an in-flight test process once every test file
+      # has actually exited, since isolateTmux()'s own exit-time cleanup
+      # (test/helpers.mjs) runs at that same moment.
+      #
+      # if: always() - without it GitHub skips this step whenever the npm
+      # test step above fails, which is exactly the run most likely to have
+      # left a server behind (a crashed or killed test file's exit handler
+      # may never have run at all).
+      - if: always()
+        run: ./scripts/tmux-leak-guard.sh
 
   # THE BOUNDARY, RUN FROM BOTH SIDES OF BOTH RELEASE LINES. This is the only
   # thing that can catch what issue #105 lane B shipped: a Node that satisfies

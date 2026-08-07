@@ -188,9 +188,14 @@ export function makeFakeClaude(tmp) {
 // is what a test actually wants.
 //
 // Returns { hasTmux, cleanup }. cleanup(...sessionNames) kills ONLY the named
-// sessions. Never kill-server: the code under test resolves its server from the
-// ambient env, so the suite cannot pin one with -L, and a bare kill-server takes
-// down whatever that env points at.
+// sessions and is still the right tool mid-file (see below for why exit is
+// different). Never call kill-server from cleanup() itself: it has no socket
+// path of its own to pin, so it resolves through whatever the AMBIENT env
+// currently points at, which a test can legitimately have repointed mid-file
+// to exercise a second socket - a bare kill-server there takes down whichever
+// server that happens to be. The exit handler below also calls kill-server,
+// but against an explicit `-S <socket>`, never the ambient env; that is what
+// makes it safe where a bare call here would not be.
 //
 // cleanup deliberately does NOT remove the socket directory, and that is the
 // whole reason this comment exists. It used to, and a file with more than one
@@ -225,6 +230,62 @@ export function isolateTmux(suite) {
   }
 
   process.on("exit", () => {
+    // Todo 294. cleanup() only ever reaches a session BY NAME, so any session
+    // a describe created but never threaded through to a cleanup(...) call -
+    // a forgotten argument, a name computed from stale env, a code path
+    // nobody tracked - outlives the file. `new-session -d` on a cold socket
+    // forks a server that setsid()s into its own session, detached from this
+    // process tree entirely; nothing here dies with a parent, and `ps` still
+    // shows the ORIGINAL new-session argv forever since fork() carries it
+    // forward with no exec. rmSync below then deletes the directory backing
+    // that server's own listening socket out from under it, and the server -
+    // still alive, just now unreachable by any new client - never gets asked
+    // to exit again. This is a leak of the SERVER, not of a stuck client.
+    //
+    // -S names the socket FILE directly, mirroring src/tmux.ts's own
+    // socketUnder() (same join shape, same process.getuid?.() ?? 0 fallback).
+    // A first version of this used TMUX_TMPDIR: tmuxTmp in the child's env
+    // instead, and counselors caught the real hazard in it: TMUX_TMPDIR
+    // names a DIRECTORY tmux must be able to REACH, not a pinned server -
+    // tmuxSocketPath()'s own fallback rule (src/tmux.ts, DEFAULT_TMUX_TMPDIR
+    // = "/tmp", pinned live by test/server-store-mismatch.test.mjs) means
+    // that if tmuxTmp is ever unreachable when this runs, an env-based call
+    // resolves silently to the SHARED socket instead of erroring - a bare
+    // kill-server there takes down every lead and worker on the machine.
+    // Stripping TMUX does not close that; only naming the socket file
+    // directly does, since -S has no fallback to fall back TO - a missing
+    // file is just ENOENT, caught below like any other absent server.
+    const socket = join(tmuxTmp, `tmux-${process.getuid?.() ?? 0}`, "default");
+
+    // Named before killed: reports which SESSIONS this file left running,
+    // not just an anonymous pid a separate sweep discovers after the fact.
+    try {
+      // stdio must be explicit: execFileSync's own default sends a failing
+      // child's stderr straight to THIS process's stderr (unlike spawn's
+      // default), so an ordinary "no server on this socket" answer would
+      // otherwise print into every suite run's own output as noise.
+      const left = execFileSync("tmux", ["-S", socket, "list-sessions", "-F", "#{session_name}"], {
+        encoding: "utf8",
+        timeout: 5000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+      if (left) {
+        console.error(`${suite}: left tmux session(s) behind on its own private socket: ${left.split("\n").join(", ")}`);
+        process.exitCode = 1;
+      }
+    } catch {
+      // No server ever started on this socket, or it is already gone: nothing leaked.
+    }
+
+    // timeout is part of this call, not a nicety: execFileSync defaults to
+    // no timeout, so a wedged server would block this exit handler forever.
+    // node --test has already printed its green summary by then, so the job
+    // would hang silently to its CI timeout with no diagnostic pointing here.
+    try {
+      execFileSync("tmux", ["-S", socket, "kill-server"], { stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
+    } catch {
+      // No server was ever started on this socket, or it is already gone.
+    }
     try {
       rmSync(tmuxTmp, { recursive: true, force: true });
     } catch {
