@@ -151,7 +151,13 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       // is the observable contract -- a pinned interpreter that cannot be
       // executed falls through safely rather than crashing or hanging --
       // not which specific guard caught it.
-      await pinDispatcher(join(dirs.tmp, "gone-node"));
+      //
+      // Todo 307's NAMING of that missing interpreter is asserted where it
+      // lives, which is guardAbi()'s banner rather than this file: kickoff
+      // stays silent here, because a session can decline at a later gate and
+      // never reach a banner at all (test/doctor-session-abi.test.mjs).
+      const gone = join(dirs.tmp, "gone-node");
+      await pinDispatcher(gone);
       const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
         ...opts,
         node: alt.path,
@@ -159,6 +165,10 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       });
       assert.equal(code, 1);
       assert.match(stderr, ABI_FAILURE);
+      assert.doesNotMatch(stderr, /^\[hive\]/m, "kickoff itself says nothing on this branch");
+      // The banner is what names it, and it does so because it is the thing
+      // that actually printed.
+      assert.match(stderr, new RegExp(`dispatcher pins ${gone}, which is not on disk`));
     },
   );
 

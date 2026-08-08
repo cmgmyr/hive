@@ -61,6 +61,12 @@ import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
 import {
+  probeSessionInterpreter,
+  reexecTarget,
+  type ReexecTarget,
+  sessionStartVerdict,
+} from "./sessionProbe.js";
+import {
   backupHealth,
   backupNow,
   backupsDir,
@@ -171,7 +177,9 @@ Usage:
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
   hive setup --attach <mode> auto|raw|control: whether tmux attaches carry -CC
-  hive doctor                check the environment and clean up stale state
+  hive doctor [--strict]     check the environment and clean up stale state;
+                             --strict also exits non-zero on warnings that mean
+                             this install is wrong (dispatcher, registration, ABI)
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
   hive pad <name> --edit     export to a temp file and open your markdown editor
@@ -1835,7 +1843,44 @@ const report = (level: string, label: string, lines: string[]) => {
   for (const line of lines.slice(1)) console.log(`        ${line}`);
 };
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
-const warn = (label: string, ...lines: string[]) => report("warn", label, lines);
+// TWO WARN FUNCTIONS, WHICH IS THE ONE BIT OF CLASSIFICATION `--strict` NEEDS,
+// and the split is deliberately expressed as a name rather than a boolean
+// argument: `gatingWarn(...)` at a call site is greppable, and a new check
+// written as plain `warn(...)` is non-gating without its author deciding
+// anything.
+//
+// THAT DEFAULT IS THE LOAD-BEARING HALF, not a convenience. Doctor's warns
+// divide into "this install is wrong" and "something is true about your
+// machine that you may not care about", and `--strict` promoting both is a
+// flag that cannot return 0 on the machines it exists for: doctor warns about
+// the lead row after EVERY normal session exit, and a registered project
+// pinning a sub-floor Node warns on every run by design. The README tells you
+// to put --strict in an update chain, so as first shipped it broke that chain
+// on a healthy machine. Both counselors seats found it independently.
+//
+// Defaulting to non-gating also closes the ordering hazard this lane was built
+// around, structurally instead of by remembering it: a warn added by a future
+// lane cannot start failing somebody's update script the day it lands. Its
+// author has to opt in.
+//
+// Two counters rather than one because the summary line reports both: every
+// warn is printed and counted, and only the gating ones become problems under
+// --strict. Module-level for the same reason report/info/warn are -
+// reportDispatcher and friends sit outside cmdDoctor's closure - and doctor
+// runs once per process and exits, so they live exactly as long as the run.
+let warnings = 0;
+let gatingWarnings = 0;
+const warn = (label: string, ...lines: string[]) => {
+  warnings += 1;
+  report("warn", label, lines);
+};
+// For a state where hive itself is misconfigured: the dispatcher, the MCP
+// registration, the addon. README calls these "the whole reason you ran
+// doctor", and they are what an update script exists to catch.
+const gatingWarn = (label: string, ...lines: string[]) => {
+  gatingWarnings += 1;
+  warn(label, ...lines);
+};
 
 function cmdSetup(argv: string[]): void {
   const dirFlag = argv.indexOf("--dir");
@@ -1995,6 +2040,14 @@ function reportSetupRegistrations(pinned: string): void {
 // typing `hive` actually run. Warn, never fail: hive works without a
 // dispatcher on a machine with one Node, and the dispatcher is worth having
 // only where the working directory can change the answer.
+//
+// EVERY WARN HERE GATES (todo 292, Chris's call). This is the check an update
+// script is running doctor FOR: each of these four says the dispatcher does
+// not do its job - written by a version this one cannot read, pinning an
+// interpreter that is gone, pinning a build this CLI is not, or losing on PATH
+// to something else. None of them is routine and none clears itself. The
+// motivating incident is one of these exactly: a dispatcher re-pinned
+// backwards with ambient node, caught only by a human reading doctor's middle.
 function reportDispatcher(): void {
   const onPath = firstHiveOnPath();
   // Whatever wins on PATH is the honest answer, including a dispatcher written
@@ -2012,27 +2065,147 @@ function reportDispatcher(): void {
   }
   info("dispatcher", `${dispatcher.file} -> ${dispatcher.node ?? "an exec line hive cannot parse"}`);
   if (!dispatcher.node || !dispatcher.cli) {
-    warn("dispatcher", "written by another version of hive; re-run `hive setup` to refresh it.");
+    gatingWarn("dispatcher", "written by another version of hive; re-run `hive setup` to refresh it.");
   } else if (!existsSync(dispatcher.node)) {
-    warn(
+    // Todo 307. NAMES THE PATH IN THE WARN ITSELF, not only on the info line
+    // above it: this is the check that has to survive being read on its own,
+    // in a grep of an update script's output, on the day a version manager
+    // pruned one Node out of twenty-two.
+    //
+    // THE ADVICE THIS REPLACED COULD NOT WORK, in both of its halves.
+    // "npm install && npm run build" is from the retired model where the
+    // addon was built here; nothing about a rebuild puts the missing
+    // interpreter back. And the trailing bare `hive setup` is the loop
+    // .claude/rules/native-addon.md names - except worse here than where that
+    // rule found it, because `hive` on PATH IS this dispatcher and its exec
+    // line points at a file that no longer exists, so the command does not
+    // re-pin the wrong Node, it fails outright with an exec error naming a
+    // path the user has never heard of.
+    // Same fallback wording abi.ts's own fix lines use, rather than a fourth
+    // phrasing of one fact.
+    const need = requiredNodeApi();
+    const range = (need === null ? null : nodeRangeForNodeApi(need)) ?? "that Node-API level";
+    gatingWarn(
       "dispatcher",
-      "that interpreter is gone (a version manager can remove one).",
-      "Rebuild and re-pin: npm install && npm run build && hive setup",
+      `the interpreter it pins is gone: ${dispatcher.node}`,
+      "A version manager can remove one. Typing `hive` now fails with an exec error, and the",
+      "SessionStart hook loses the interpreter it re-execs into when a project's own `node`",
+      "cannot load the addon - a session there prints the addon banner instead.",
+      "Re-pin by naming a Node that exists (setup pins whatever Node runs it, and the `hive`",
+      "on PATH is this dispatcher):",
+      `  <a Node matching ${range}> "${cliPath()}" setup`,
     );
   } else if (dispatcher.node !== process.execPath || dispatcher.cli !== cliPath()) {
-    warn(
+    gatingWarn(
       "dispatcher",
       "pinned to a different build than this CLI is running.",
       `this run: ${process.execPath} ${cliPath()}`,
       "Re-pin after a rebuild: npm run build && hive setup",
     );
   }
-  if (onPath !== dispatcher.file) warn("dispatcher", ...pathAdvice(dispatcherDir(), dispatcher.file));
+  if (onPath !== dispatcher.file) gatingWarn("dispatcher", ...pathAdvice(dispatcherDir(), dispatcher.file));
+}
+
+// Todo 306. The one question doctor never asked, and the reason a sub-floor
+// project sat unnoticed for as long as it existed: can a session STARTING IN
+// ANOTHER PROJECT load the addon? Everything above this point is about the
+// machine hive is installed on and the directory doctor was run from.
+//
+// THIS CHANGES WHAT DOCTOR IS, from "how is it here" to "how is it on this
+// machine", and that is the biggest thing in the todo rather than a check
+// bolted onto an existing loop. cmdDoctor had no project loop at all -
+// listProjects() is imported in this file for `hive status`, which is the
+// other command that already reports every project regardless of scope, so
+// this is consistent with what a diagnostic surface does here rather than a
+// new posture. Nothing project-scoped is read: only each project's own
+// directory is touched, by spawning an interpreter in it.
+//
+// ONLY PROJECTS WITH A hive.yml, because that is kickoff's own gate on both
+// sides - claude-plugin/kickoff.mjs returns before its ABI check without one,
+// and src/kickoff.ts's gate 2 returns before it can reach the store. A
+// registered project with no hive.yml never reaches the addon at session
+// start, so a warning about its interpreter would be a warning about nothing.
+// The residual runs the other way and cannot be closed from here: a directory
+// that HAS a hive.yml but was never registered does reach the addon, and
+// doctor can only enumerate what the store knows about.
+//
+// COSTS ONE CHILD PROCESS PER PROJECT, which is what asking about another
+// interpreter costs - checkAbi() answers for the process it runs in, so there
+// is no in-process version of this question. Doctor is the tool a human runs
+// to look closely, not one in a polling loop; the same trade is already made
+// for the per-worker capture-pane forks below.
+//
+// TWO COSTS THAT ARE ACCEPTED RATHER THAN UNNOTICED, both raised by counselors:
+//
+// The `existsSync` below is a SYNCHRONOUS stat per registered project, and it
+// runs BEFORE any timeout can apply - PROBE_TIMEOUT_MS bounds the spawn, not
+// this. A project recorded on a hard-mounted unresponsive share blocks it
+// uninterruptibly and doctor never returns. Accepted: every project in this
+// store is a local checkout, and a mount in that state breaks the store's own
+// worktrees and every other hive command long before doctor reaches this line.
+// Worth reconsidering the day a project path can be a network mount.
+//
+// The loop is SERIAL, so the cost is N spawns end to end (~27ms each here, see
+// sessionProbe.ts) and, in the pathological case, N times the probe timeout
+// behind hung shims. Concurrency would cap the second number at one timeout;
+// it is not built because it makes cmdDoctor async for a quarter second on a
+// human-invoked command, and doctor already forks tmux serially throughout.
+function reportSessionInterpreters(): void {
+  // PROJECT LOCK, and it is the reason this loop can shrink to one row. Every
+  // spawned worker gets HIVE_PROJECT_LOCK=1, CLAUDE.md says that disables
+  // cross-project access entirely, and doctor is a command workers run. Before
+  // this lane doctor was cwd-scoped, so the lock had nothing here to
+  // constrain; a machine-wide loop that prints every project's absolute path
+  // and spawns a process in each is new reach into a locked context. Under a
+  // lock, report only the project the session is pinned to. Not an argument
+  // that the invariant does not apply to a diagnostic - it is cheaper to obey
+  // it than to carve out an exception, and `hive status`'s own machine-wide
+  // listing is not a precedent this lane needs to lean on.
+  const locked = process.env.HIVE_PROJECT_LOCK === "1";
+  const here = locked ? findProjectForCwd() : null;
+  const registered = locked ? (here ? [here] : []) : listProjects();
+  const projects = registered.filter((p) => existsSync(join(p.path, "hive.yml")));
+  if (projects.length === 0) return;
+  info(
+    "session interpreters",
+    "one `node` resolved per project directory, with this process's own environment.",
+    "That is how a version manager resolves the bare `node` the SessionStart hook runs under;",
+    "a session started from a different environment can resolve a different interpreter.",
+    ...(locked ? ["this project only: HIVE_PROJECT_LOCK is set for this session."] : []),
+  );
+  // Resolved at most once per doctor run, and only if some project needs it.
+  // reexecTarget() now PROBES the pinned interpreter rather than stat'ing it,
+  // so it costs a spawn; a machine where every project loads the addon never
+  // pays for it.
+  let resolved: ReexecTarget | undefined;
+  const target = () => (resolved ??= reexecTarget());
+  for (const project of projects) {
+    const verdict = sessionStartVerdict(probeSessionInterpreter(project.path), target);
+    // The path is in the LABEL, not the first line: a healthy project is then
+    // one line naming the directory, the interpreter and the verdict, and the
+    // report stays readable with ten projects on it.
+    //
+    // NON-GATING (todo 292), which is the plain `warn` below and not an
+    // oversight: sessionProbe.ts's own header says ALWAYS A WARN, NEVER A
+    // FAIL, because a project pinning a Node below the addon's floor is
+    // another project's legitimate business. It also warns on EVERY run for as
+    // long as that project exists, so gating it would make --strict
+    // permanently non-zero on the exact machine todo 306 was built for.
+    const emit = verdict.level === "warn" ? warn : info;
+    emit(`project ${project.name} (${project.path})`, ...verdict.lines);
+  }
 }
 
 // Warn, never fail. A machine with no version manager is fine with a bare
 // `node`, and doctor must not fail over a registration it cannot see: hive
 // can be perfectly installed and never registered from this directory.
+//
+// The registration warn GATES (todo 292): a registration that disagrees with
+// the pin is the single most consequential thing doctor reports for an update
+// flow - it is what says the dispatcher and the MCP server now name different
+// Nodes - and it is the condition an update script exists to catch. The
+// "nothing is registered" line above it stays an info, because that is a fresh
+// install partway through the README rather than a fault.
 function reportMcpRegistrations(project: Project | null): void {
   const registrations = hiveRegistrations(project?.path ?? null);
   if (registrations.length === 0) {
@@ -2049,11 +2222,35 @@ function reportMcpRegistrations(project: Project | null): void {
     const where = `mcp registration (${r.scope} scope)`;
     info(where, [r.command, ...r.args].join(" "));
     const problem = registrationProblem(r, process.execPath);
-    if (problem) warn(where, ...problem);
+    if (problem) gatingWarn(where, ...problem);
   }
 }
 
-function cmdDoctor(): void {
+// --strict promotes GATING warns to problems for the EXIT CODE. Bare `hive
+// doctor` keeps its old semantics exactly - 0 clean, 1 on failures, warns
+// count for nothing - because doctor warns during ordinary healthy operation,
+// and an exit code that fires on a benign expected condition is one a script's
+// author learns to ignore. That is the failure mode todo 292 exists to fix.
+//
+// The gating/non-gating split is what makes the flag usable at all, and it is
+// the correction to this lane's first shape: promoting EVERY warn made
+// --strict exit 1 after any normal session exit, and permanently on a machine
+// with a registered sub-floor project. See the two warn functions above.
+//
+// The unknown-argument refusal is not decoration: `hive doctor --stict` has to
+// fail loudly rather than run a non-gating doctor and report success. That is
+// the same shape todo 298 closed on the MCP surface, where a misspelled key
+// silently disarmed a guard, and an update script gating on --strict is
+// exactly the caller that would never notice.
+function cmdDoctor(argv: string[]): void {
+  const strict = argv.includes("--strict");
+  const unknown = argv.find((a) => a !== "--strict");
+  if (unknown !== undefined) {
+    // stderr: doctor's stdout is the report, and a script reads its summary
+    // line off that (.claude/sessions/decisions/2026-08-05-cli-notices-go-to-stderr.md).
+    console.error(`hive doctor: unknown argument "${unknown}". The only flag is --strict.`);
+    process.exit(1);
+  }
   let failures = 0;
   // Same counting and FAIL formatting as check()'s catch below, split out for
   // a failure that is not the result of a thrown probe (issue #43's profile
@@ -2106,6 +2303,7 @@ function cmdDoctor(): void {
   const here = findProjectForCwd();
   reportDispatcher();
   reportMcpRegistrations(here);
+  reportSessionInterpreters();
   // Counselors review on PR #47, finding 3. `here` is null on a fresh clone:
   // nothing has registered the project yet, which is issue #43's own opening
   // scenario -- a lead has not started here before, so no project row exists.
@@ -2113,6 +2311,9 @@ function cmdDoctor(): void {
   // checks 1 and 2 below must not gate on `here`. Only check 3 needs it, for
   // here.id's pad lookup.
   const loaded = loadProjectYml(here?.path ?? process.cwd());
+  // NON-GATING: a malformed key in a project's committed config is not this
+  // install being wrong, and hive cannot tell a deliberately omitted var from
+  // a forgotten one.
   for (const w of loaded.warnings) warn("hive.yml", w);
   const config = loaded.config;
   const profile = activeProfile(config);
@@ -2165,6 +2366,9 @@ function cmdDoctor(): void {
     const usable = resolved.filter((f) => readable(f.file));
     info("profile", `${name} (${usable.map((f) => `${f.file}: ${f.source}`).join(", ")})`);
     for (const f of resolved) {
+      // NON-GATING, and todo 292's own body names this one as the example of
+      // an advisory warn: a fork that has diverged from hive's default is a
+      // decision left to the human, not a broken install.
       if (f.upstreamMoved) warn("profile", `hive's default ${f.file} changed since you forked it`);
     }
     // Both files the project supplies vars to. worker.md is left out on
@@ -2278,6 +2482,11 @@ function cmdDoctor(): void {
         // restoring, rather than adding a CLI verb whose only job would be
         // reaching a tool that already exists (see this todo's own comment
         // for the fuller argument).
+        // NON-GATING (todo 292), and this is the warn that decided the
+        // whole shape. It fires after EVERY normal session exit, by design -
+        // the janitor deliberately leaves lead rows alone - and it clears
+        // itself on the next `hive lead`. Promoting it under --strict is what
+        // made that flag unable to return 0 on a healthy machine.
         warn(
           "lead",
           "the lead's row is running but its pane is not live. The janitor leaves lead rows alone on " +
@@ -2610,8 +2819,29 @@ function cmdDoctor(): void {
       }
     }
   }
-  console.log(failures === 0 ? "\nAll good." : `\n${failures} problem(s) found.`);
-  process.exit(failures === 0 ? 0 : 1);
+  // THE SUMMARY LINE CARRIES BOTH COUNTS, and that is what makes this
+  // testable. Exit codes saturate at 1, so a test comparing two of them
+  // proves nothing on a box where an unrelated check already fails - the
+  // recorded dead-end is a doctor test that would have gone green on the
+  // regression it existed to catch
+  // (.claude/sessions/dead-ends/2026-07-28-exit-code-comparison-as-environment-proof.md).
+  // Counts do not saturate: a --strict run and a bare run of the same doctor
+  // differ by exactly the warn count, on any machine, however many unrelated
+  // checks are failing on it.
+  //
+  // "All good." now means what it says. It used to print with warns on
+  // screen, which is half of what todo 292 reported.
+  // ONLY THE GATING WARNS ARE PROMOTED. Every warn still prints and still
+  // counts on the line below; --strict decides which ones become problems.
+  // See the two warn functions above for why the default is non-gating.
+  const problems = failures + (strict ? gatingWarnings : 0);
+  const tail = strict
+    ? `${warnings} warning(s), ${gatingWarnings} promoted by --strict.`
+    : `${warnings} warning(s).`;
+  console.log(
+    failures === 0 && warnings === 0 ? "\nAll good." : `\n${problems} problem(s) found, ${tail}`,
+  );
+  process.exit(problems === 0 ? 0 : 1);
 }
 
 // One-line store summary for embedding in a shell prompt or Claude Code
@@ -3178,7 +3408,7 @@ try {
       cmdSetup(rest);
       break;
     case "doctor":
-      cmdDoctor();
+      cmdDoctor(rest);
       break;
     case "pads":
       cmdPads();

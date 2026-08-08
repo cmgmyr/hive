@@ -3,7 +3,15 @@ import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, liveAgentRow, McpClient, runCli, scratchDirs } from "./helpers.mjs";
+import {
+  failureCount,
+  isolateTmux,
+  liveAgentRow,
+  McpClient,
+  runCli,
+  scratchDirs,
+  warningCount,
+} from "./helpers.mjs";
 
 // A malformed hive.yml must reach the caller that can act on it. `hive lead`
 // and `hive start` already print loadProjectYml's warnings; these cover the two
@@ -83,8 +91,8 @@ describe("hive doctor config warnings", () => {
   const doctorOpts = { cwd: doctorDirs.projectDir, dataDir: doctorDirs.dataDir, tmp: doctorDirs.tmp };
   const doctorYml = join(doctorDirs.projectDir, "hive.yml");
   // doctor fails on a missing claude or tmux, which says nothing about this
-  // change. Compare the summary line across runs instead of the exit code.
-  const summary = (stdout) => stdout.trim().split("\n").pop();
+  // change. Compare the counts the summary line carries, across runs, instead
+  // of the exit code.
 
   // One doctor run per config state, shared by the assertions about it.
   let noYml;
@@ -107,7 +115,14 @@ describe("hive doctor config warnings", () => {
   });
 
   it("does not count a warning as a failed check", () => {
-    assert.equal(summary(broken.stdout), summary(noYml.stdout));
+    // The PROBLEM count, not the whole summary line: todo 292 put the warn
+    // count on that line as well, so the line legitimately differs between
+    // these two runs - by the warning this test is about - while the claim
+    // being made is only about the problem count.
+    assert.equal(failureCount(broken.stdout), failureCount(noYml.stdout));
+    // Without this, the equality above is vacuous if the malformed hive.yml
+    // somehow produced no warning at all.
+    assert.equal(warningCount(broken.stdout) - warningCount(noYml.stdout), 1);
   });
 
   it("says nothing when hive.yml parses clean", async () => {

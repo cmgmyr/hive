@@ -478,6 +478,23 @@ export const failureCount = (stdout) => {
   const m = summaryLine(stdout).match(/^(\d+) problem/);
   return m ? Number(m[1]) : 0;
 };
+// The other half of the same line, since todo 292 put the warn count on it.
+// Compare THIS across two runs, never the whole summary line: the line now
+// moves when either count moves, so a test claiming "X is not counted as a
+// problem" has to read the problem count specifically or it fails on a warn
+// it never cared about.
+export const warningCount = (stdout) => {
+  const m = summaryLine(stdout).match(/(\d+) warning\(s\)/);
+  return m ? Number(m[1]) : 0;
+};
+// How many of those warnings --strict turned into problems. Present only on a
+// --strict run, and 0 there is a real answer rather than a missing field: it
+// is what a run whose warns are all non-gating says, and it is the number that
+// makes "this flag can still exit 0" checkable without touching an exit code.
+export const promotedCount = (stdout) => {
+  const m = summaryLine(stdout).match(/(\d+) promoted by --strict/);
+  return m ? Number(m[1]) : 0;
+};
 
 // node defaults to whatever the suite is running under. Pass another
 // interpreter to test what happens when hive is run by one it was not built

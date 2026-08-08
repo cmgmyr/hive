@@ -451,6 +451,36 @@ function workingInterpreterFromDispatcher(): string | null {
   return node && node !== process.execPath && existsSync(node) ? node : null;
 }
 
+// Todo 307's naming, at the place the banner actually prints.
+//
+// The SessionStart hook is registered under a bare `node` (hooks.json is
+// tracked in git and cannot carry an absolute path), so in a directory pinning
+// a Node that cannot load the addon, the one thing standing between a session
+// and this banner is claude-plugin/kickoff.mjs re-execing into the interpreter
+// the dispatcher pins. When a version manager retires that interpreter the
+// re-exec has nothing to run, and the banner returns on a machine where the
+// fix is still in place - nothing undone, and no way to tell from the banner
+// that the fix ever existed. That is the most confusing shape a regression can
+// take, so the banner says it.
+//
+// HERE RATHER THAN IN kickoff.mjs, and that placement is the correction. The
+// hook tried printing this itself for one commit, on the argument that the
+// banner follows anyway; it does not always - db.js is imported lazily inside
+// digest(), behind gates for the profile and the branch - so the hook could
+// print into a session that was about to decline silently. This line cannot:
+// it is part of the banner, so it exists exactly when the banner does, and it
+// covers every command rather than one hook.
+function prunedPinLines(): string[] {
+  const node = readDispatcher(dispatcherPath())?.node;
+  if (!node || existsSync(node)) return [];
+  return [
+    "",
+    `The \`hive\` dispatcher pins ${node}, which is not on disk. A version manager can`,
+    "remove one. That is also the interpreter hive's SessionStart hook re-execs into when a",
+    "directory's own `node` cannot load the addon, so with it gone nothing caught this.",
+  ];
+}
+
 // Called by db.ts before it opens the store. Prints and exits rather than
 // throwing: the alternative a caller sees is an ERR_DLOPEN_FAILED stack trace
 // from inside an import, which is the thing this exists to prevent.
@@ -475,9 +505,16 @@ export function guardAbi(): void {
     `  FAIL  node: ${describeInterpreter()}`,
     `  FAIL  better-sqlite3: ${describeAbi(status)}`,
     ...(status.addon ? [`        ${status.addon}`] : []),
+    ...prunedPinLines(),
     "",
     ...abiFixLines(status, workingInterpreterFromDispatcher()),
-    ...(doctor ? ["", "1 problem(s) found."] : []),
+    // The same shape cmdDoctor's own summary line has since todo 292, warn
+    // count included. This path emits no warns and never can - it runs during
+    // db.ts's import, before any check exists to warn - so the zero is a fact
+    // rather than a placeholder. It matters because the README now tells a
+    // script to read a result off that line, and this is the renderer that
+    // fires on exactly the run where the environment is broken.
+    ...(doctor ? ["", "1 problem(s) found, 0 warning(s)."] : []),
   ];
   // doctor's report belongs on stdout with the rest of its output. Every
   // other command is failing, and one of them is the MCP server, whose stdout

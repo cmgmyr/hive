@@ -7,11 +7,13 @@ import {
   assertScratchStore,
   CLI,
   classicAddonFixture,
+  failureCount,
   isolateTmux,
   runCli,
   runNode,
   scratchDirs,
   SERVER,
+  warningCount,
   writeScratchAddon,
 } from "./helpers.mjs";
 
@@ -712,11 +714,23 @@ describe("doctor reads the MCP registration", () => {
     // an unrelated reason, both runs are 1 and the comparison proves nothing.
     // The summary line carries the count, so it keeps its power everywhere.
     // config-warnings.test.mjs compares the same line for the same reason.
-    const summary = (out) => out.trim().split("\n").pop();
+    //
+    // THE PROBLEM COUNT, not the whole line. Todo 292 put the warn count on
+    // that line too, so comparing the line whole now fails on the one thing
+    // these two runs are SUPPOSED to differ by - the registration warning
+    // itself - and says nothing about whether it was counted as a problem.
     assert.equal(
-      summary(bare.stdout),
-      summary(clean.stdout),
+      failureCount(bare.stdout),
+      failureCount(clean.stdout),
       `a registration warning must not be counted as a problem\n${context}`,
+    );
+    // The positive control for the comparison above: if the two runs did not
+    // actually differ in their warnings, the equal problem counts would be
+    // vacuous - two identical runs always agree.
+    assert.equal(
+      warningCount(bare.stdout) - warningCount(clean.stdout),
+      1,
+      `the bare registration should have produced exactly one extra warning\n${context}`,
     );
   });
 

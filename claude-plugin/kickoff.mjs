@@ -93,7 +93,24 @@ async function reexecUnderPinnedInterpreter() {
   // under, so fall through to the current interpreter unchanged.
   if (!node) return;
   // Already running under it, or the pinned interpreter no longer exists on
-  // disk (a version manager removed it): nothing to gain from re-execing.
+  // disk (a version manager removed it): nothing to gain from re-execing, and
+  // NOTHING IS PRINTED HERE.
+  //
+  // THIS FILE PRINTED FOUR LINES ON THE MISSING-PIN BRANCH FOR ONE COMMIT, and
+  // the argument for it was wrong in a way worth keeping: "a banner prints
+  // downstream anyway, so this only replaces a misleading message with an
+  // accurate one". dist/db.js - which is what prints that banner, through
+  // guardAbi() - is imported LAZILY inside digest() (src/kickoff.ts), and two
+  // gates return before it: a profile this machine does not have, and a
+  // session on a non-lead branch. On a worktree on a feature branch with a
+  // sub-floor `node` and a pruned pin, all of which is this repo's own shape,
+  // those four lines printed and no banner ever followed. That is net-new
+  // output on a session that was silent and working, which is the one thing
+  // this hook's contract forbids.
+  //
+  // The naming that todo 307 asked for now lives in guardAbi() (src/abi.ts),
+  // which is where the banner actually is: it prints if and only if the banner
+  // prints, and it covers every command rather than this hook alone.
   if (node === process.execPath || !existsSync(node)) return;
 
   const result = spawnSync(node, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], {
