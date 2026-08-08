@@ -789,9 +789,24 @@ export function createWindow(
   envFlags: string[],
   command: string,
   projectId: number | null,
+  // Todo 316: an undetached new-window switches the session's (and any
+  // attached client's) current window to it, which is the
+  // placement="window" half of that todo - a human looking at one tab gets
+  // yanked onto the worker's the instant it spawns. launchAgent's two
+  // callers (src/spawn.ts) pass true so a background spawn cannot move a
+  // human's tab. Defaults to false: cmdLead's fresh-lead-window caller
+  // (src/cli.ts) does not need it either way, since it always runs its own
+  // explicit attach()/select-window right after regardless of which window
+  // new-window left current - but changing the default would still break
+  // callers that build multi-window fixtures on top of it and depend on the
+  // unchanged behaviour: initial-window-claim.test.mjs's intruder-window
+  // fixture (todo 278, its own "fixture check" test asserts new-window's
+  // default directly) and view-session.test.mjs/attach-view-race.test.mjs's
+  // multi-window setups.
+  detach = false,
 ): { pane: string; window: string } {
   const created = tmux(
-    "new-window", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
+    "new-window", ...(detach ? ["-d"] : []), "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
     "-t", `=${session}`, "-n", windowName, "-c", cwd,
   );
   const [pane, window] = created.split("\t");

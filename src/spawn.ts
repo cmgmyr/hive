@@ -430,8 +430,14 @@ export function launchAgent(
       if (spec.placement === "split") {
         const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
         if (found) {
+          // -d: a split without it makes the new pane active, so a human
+          // typing into whatever pane had focus gets their keystrokes stolen
+          // by the worker mid-sentence (todo 316, confirmed in real use).
+          // applyLayout and the spawn announcement both target this pane by
+          // its returned id, never by "the active pane", so nothing here
+          // depends on the split leaving it active.
           const pane = tmux(
-            "split-window", "-P", "-F", "#{pane_id}",
+            "split-window", "-d", "-P", "-F", "#{pane_id}",
             "-t", found, "-c", spec.cwd, ...envFlags, commandString,
           );
           applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
@@ -444,14 +450,18 @@ export function launchAgent(
         // job; it is a pure lookup now, so the create-and-launch this
         // project's window needs lives at the one call site that reaches
         // it). A single-pane window, same as claimInitialWindow's own result
-        // above, so there is nothing yet to applyLayout.
-        return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId).pane;
+        // above, so there is nothing yet to applyLayout. detach: true (todo
+        // 316) - a human watching some OTHER project's window in this shared
+        // session must not get switched onto this one.
+        return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId, true).pane;
       }
       // placement="window": this worker's own dedicated window, never a
       // project's shared one, so it must never carry the ownership stamp
       // (item 1's defect, one branch over from this one) - createWindow's
-      // null is that choice stated explicitly.
-      return createWindow(session, title, spec.cwd, envFlags, commandString, null).window;
+      // null is that choice stated explicitly. detach: true (todo 316) - a
+      // worker's own tab must not steal focus from whatever the human was
+      // looking at.
+      return createWindow(session, title, spec.cwd, envFlags, commandString, null, true).window;
     });
     paneUp = true;
     // Past this line the pane is up and its command has already started

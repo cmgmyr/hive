@@ -90,9 +90,12 @@ describe(
       await mcp.start();
 
       // A split worker lands in the lead's own window (splitTargetWindow
-      // finds it by title), and by default tmux makes the new split the
-      // window's ACTIVE pane - exactly the layout that exposes DECISION 1's
-      // bug and DECISION 2's "window survives the lead" scenario.
+      // finds it by title) - the layout DECISION 2's "window survives the
+      // lead" scenario needs. Todo 316 made the split land WITHOUT taking
+      // pane focus, so DECISION 1's negative control below (which needs the
+      // worker pane active, to prove a window-shaped target misdelivers to
+      // whichever pane is) now sets that up explicitly instead of getting it
+      // for free from the split.
       const spawned = await mcp.call("agent_spawn", {
         name: "split-worker",
         command: fakeClaude("sleep 600"),
@@ -100,6 +103,14 @@ describe(
         placement: "split",
       });
       workerTarget = spawned.tmux_target;
+      // A tmux target that is EMPTY means "the current pane", not "nothing" -
+      // `select-pane -t ""` silently retargets whatever is focused, and
+      // `capture-pane -t ""` reads it. This file does both with workerTarget,
+      // so an empty value here would not fail: it would quietly assert about
+      // the wrong pane and pass. Todo 316 added the select-pane below, which
+      // is the first one in this repo, so pin the precondition here rather
+      // than leaving the trap for whoever copies that line next.
+      assert.match(workerTarget, /^%\d+$/, "the worker's pane id must be a real target, never empty");
     });
 
     after(async () => {
@@ -138,6 +149,13 @@ describe(
       ])
         .toString()
         .trim();
+      // Todo 316 stopped the split above from taking pane focus, so a
+      // window-shaped target would otherwise still resolve to the lead
+      // pane's own default focus rather than exercising the misdelivery this
+      // control exists to prove. Select the worker pane explicitly to
+      // reconstruct the pre-316 layout this control needs, without touching
+      // the fixed delivery path itself.
+      execFileSync("tmux", ["select-pane", "-t", workerTarget]);
       db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(windowTarget, row.id);
       try {
         const oldShapeMarker = `OLD-SHAPE-${row.id}`;
