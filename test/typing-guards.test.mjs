@@ -239,6 +239,42 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     assert.doesNotMatch(output, /\/rename/);
   });
 
+  // Todo 317. agent_rename cannot reach the LEAD - the kind='lead' refusal
+  // throws before any typing - but it types into a live WORKER pane, and a
+  // human attached to one is ordinary. The failure is worse here than a plain
+  // merge: a slash command only runs at the start of a line, so "/rename foo"
+  // pasted onto a half-typed sentence submits the human's unfinished text
+  // with the command glued on, the retitle never happens, and the receipt
+  // used to say retitled: true anyway.
+  //
+  // Two cases only, not the five agent_send carries: the classifier itself is
+  // pinned against every fixture in test/input-box.test.mjs, so what is worth
+  // proving here is the WIRING - that this call site reads "pending" and not
+  // "box is non-null". ghost-suggestion.txt is the control that catches that
+  // exact confusion, and it is the destructive direction besides.
+  it("refuses to type /rename onto real unsubmitted input, and renames the row anyway", async () => {
+    const receipt = await renamed("rename-pending", "real-input.txt");
+    assert.equal(receipt.retitled, false);
+    assert.match(receipt.note, /unsubmitted text/);
+    // The note has to name a rename that still resolves: the row is already
+    // the NEW name by this point, so "retry your original call" would send a
+    // caller at a name nothing answers to.
+    assert.match(receipt.note, /rename-pending-renamed/);
+    const { output } = await mcp.call("agent_output", { name: "rename-pending-renamed" });
+    assert.doesNotMatch(output, /\/rename/, "the command must never have been typed");
+    // Deliberately not asserting the fixture's own text is still on screen:
+    // the pane cats it, so that can never fail. See the matching note in the
+    // agent_send block below.
+  });
+
+  it("still retitles against a ghost suggestion - the box is claude's own, not a human's", async () => {
+    const receipt = await renamed("rename-ghost", "ghost-suggestion.txt");
+    assert.equal(receipt.retitled, true);
+    assert.equal(receipt.note, undefined);
+    const { output } = await mcp.call("agent_output", { name: "rename-ghost-renamed" });
+    assert.match(output, /\/rename rename-ghost-renamed/, "retitled: true must mean the command actually landed");
+  });
+
   // D5, the grep case, same reasoning as agent_spawn's: the marker alone is
   // not enough, since paneChoiceCheck backs every dialog-refusal call site.
   it("still retitles when the marker is grepped text, not a real dialog", async () => {
@@ -319,6 +355,110 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
     spawned.push(spawn.agent_id);
     const receipt = await mcp.call("agent_send", { name, text: "hello", submit: false });
     assert.equal(receipt.sent, true);
+  });
+
+  // Todo 317. agent_send's text path guarded a DIALOG and nothing else, so a
+  // pane holding real unsubmitted human text got the send pasted onto the end
+  // of it and Enter submitted both as one message. Not hypothetical: three
+  // clobbers of exactly this shape were captured on the SCHEDULER's path
+  // before its own hold shipped (todo 317 comment 635, from
+  // agent_state_log/transcript payloads), and this path has been recorded in
+  // the project's `lessons` pad as observed three times since 2026-07-29
+  // ("the next agent_send appends to it"), answered with a human procedure
+  // rather than a check because hive was capturing without "-e" back then and
+  // throwing the ghost/real signal away.
+  //
+  // The refusal is scoped to "pending" alone. The five no-refusal cases below
+  // are what stops it becoming worse than the bug: ghost and the queued hint
+  // render in every idle claude pane, so refusing on those refuses every send
+  // forever.
+  describe("unsubmitted human text in the box", () => {
+    it("refuses to submit onto real unsubmitted input, and nothing reaches the pane", async () => {
+      const name = await showing("send-pending", "real-input.txt");
+      const receipt = await mcp.call("agent_send", { name, text: "CLOBBERING TEXT" });
+      assert.equal(receipt.sent, false);
+      assert.match(receipt.note, /unsubmitted text/);
+      // The receipt must name the condition well enough to act on, and
+      // report the box that DECIDED the refusal rather than a second read.
+      assert.equal(receipt.input_box.state, "pending");
+      assert.equal(receipt.input_box.text, "REAL UNSUBMITTED INPUT");
+      const { output } = await mcp.call("agent_output", { name });
+      assert.doesNotMatch(output, /CLOBBERING TEXT/, "the text must never have been typed");
+      // NOT asserting that "REAL UNSUBMITTED INPUT" is still on screen. It
+      // is, unconditionally, because the pane cats the fixture and nothing
+      // re-renders that row - so the assertion passes with the guard deleted
+      // and on main, while its message claims the property this lane exists
+      // to protect. That is test/CLAUDE.md's shape 7, and counselors caught
+      // it here. doesNotMatch above is the live half.
+    });
+
+    // submit=false is exempt on purpose, and the reason is the ENTER, not
+    // compose-then-send: see src/tools/agents.ts, where the compose argument
+    // is recorded as FACTUALLY WRONG. The guard is on the submitting call,
+    // which is the SECOND call, so two text calls genuinely do refuse at the
+    // second one. A compose is finished with keys:["Enter"] instead, and the
+    // refusal note says so. These two tests pin the documented flow end to
+    // end rather than only its first step, which is how the old single-step
+    // version passed while the flow it cited was dead.
+    it("still appends with submit=false, and the text really lands", async () => {
+      const name = await showing("send-pending-nosubmit", "real-input.txt");
+      const receipt = await mcp.call("agent_send", { name, text: "APPENDED ON PURPOSE", submit: false });
+      assert.equal(receipt.sent, true);
+      const { output } = await mcp.call("agent_output", { name });
+      assert.match(output, /APPENDED ON PURPOSE/, "sent: true must mean the characters actually reached the pane");
+    });
+
+    it("refuses a SECOND submitting text call over a pending box, and keys:[\"Enter\"] is the way out", async () => {
+      const name = await showing("send-compose-finish", "real-input.txt");
+      // The pane already shows real pending text, which is the state a
+      // compose leaves behind. WHAT THIS RIG CANNOT STAGE, said out loud so
+      // nobody reads more into it than is here: an actual submit=false call
+      // does NOT change what inputBoxState sees, because the pane is a catted
+      // static screen and typed characters echo BELOW the fixture's box row
+      // rather than into it. So this asserts the same decision the real
+      // compose hits - a submitting call over a pending box - reached by a
+      // fixture instead of by a prior call.
+      const refused = await mcp.call("agent_send", { name, text: "SECOND HALF" });
+      assert.equal(refused.sent, false);
+      assert.match(refused.note, /keys: \["Enter"\]/, "the note must name the only way to finish a compose");
+      const { output: before } = await mcp.call("agent_output", { name });
+      assert.doesNotMatch(before, /SECOND HALF/);
+      // And the remedy the note gives has to actually be reachable: keys is
+      // unguarded against this condition by design, on a non-lead target.
+      const finished = await mcp.call("agent_send", { name, keys: ["Enter"] });
+      assert.equal(finished.sent, true);
+    });
+
+    // The negative controls. Each of these renders in an ORDINARY pane -
+    // ghost and the queued hint are what an idle claude draws by itself - so
+    // a refusal on any of them takes agent_send off the air for good. If one
+    // of these ever starts failing, the classifier widened, not this guard.
+    //
+    // EACH ASSERTS DELIVERY, NOT JUST THE RECEIPT (counselors, codex seat).
+    // sent: true is a claim the handler makes about itself: a mutation that
+    // returns {sent: true} without ever calling sendText kept every one of
+    // these green, and the headline refusal green too, while agent_send
+    // delivered nothing at all. Reading the text back off the pane is what
+    // makes these end-to-end paths through capture, classify and type on five
+    // different sets of real bytes, rather than five ways of asking the same
+    // predicate the same question.
+    for (const [file, why] of [
+      ["ghost-suggestion.txt", "claude's own dim suggestion is not something a human typed"],
+      ["queued-hint.txt", "the queued-messages hint is chrome, not input"],
+      ["ready-idle.txt", "an empty box is the ordinary case and must always send"],
+      ["busy-mid-turn.txt", "busy is not a hold condition and never has been"],
+      ["drifted-prompt-glyph.txt", "\"unknown\" means the detector drifted; refusing on it would refuse every screen"],
+    ]) {
+      it(`still sends against ${file} (${why})`, async () => {
+        // The fixture name minus ".txt": a literal dot is tmux's own
+        // window.pane separator, so it has no business in a target name.
+        const name = await showing(`send-nohold-${file.replace(/\.txt$/, "")}`, file);
+        const receipt = await mcp.call("agent_send", { name, text: "ORDINARY SEND" });
+        assert.equal(receipt.sent, true);
+        const { output } = await mcp.call("agent_output", { name });
+        assert.match(output, /ORDINARY SEND/, "sent: true must mean the text actually reached the pane");
+      });
+    }
   });
 
   // Decision D2. text and keys are not the same operation and are not guarded

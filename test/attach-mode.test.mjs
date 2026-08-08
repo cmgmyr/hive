@@ -34,6 +34,74 @@ const { attachScripts, controlModeFor, createWindow, ensureSession, sessionName,
 // every case that sets it so a later, unrelated case does not inherit it.
 const withEnvAttachMode = (value, fn) => withEnv({ HIVE_ATTACH_MODE: value }, fn);
 
+// FOUND BY CI ON PR #132, one red macOS leg against a diff that could not have
+// caused it. The two negative assertions over CLI stdout below were
+// `doesNotMatch(stdout, /-CC/)`, and `hive attach` prints the project's own
+// path in its first line, so the regex was reading the SCRATCH DIRECTORY NAME:
+//
+//   'Session ... for project "project-wBTbTT" (/T/hive-test-CC2fL1/project-wBTbTT).
+//    Attach from a terminal with: tmux new-session -t ...'
+//
+// `scratchDirs()` builds that root with `mkdtemp(tmpdir() + "hive-test-")`,
+// whose six random characters are drawn from a set that includes upper case,
+// so roughly one run in a few thousand produces a suffix starting "CC" and
+// this test fails on the name alone. Latent since it was written; nothing to
+// do with control mode, and no `-CC` flag anywhere in that output.
+//
+// WHY A TOKEN TEST RATHER THAN A NARROWER REGEX. The obvious repair is to
+// copy the positive assertions and look for /-CC new-session/, and that trades
+// a false red for a FALSE GREEN, which is the worse direction and the one this
+// project keeps re-shipping: `-CC` also legitimately precedes `attach` (see
+// the already-attached case near the bottom of this file, which matches
+// /tmux (-CC )?attach -t /), so a negative scoped to new-session would stop
+// catching a `-CC attach` regression entirely and say nothing.
+//
+// Splitting on whitespace and asking for an exact token is immune to whatever
+// the path contains, because a path is one token and can never equal "-CC" -
+// it is absolute, so it always carries a "/". It catches the flag in every
+// position it can appear, including ones nobody has written a test for yet,
+// which is the property a NEGATIVE assertion needs: it is asserting the
+// absence of something, so it must not depend on knowing where it would be.
+// Pinned by its own cases in "the -CC negative assertion itself" below, which
+// need no tmux and no subprocess.
+const CONTROL_MODE_FLAG = "-CC";
+
+const carriesControlModeFlag = (output) => output.split(/\s+/).includes(CONTROL_MODE_FLAG);
+
+const assertNoControlModeFlag = (output, what) =>
+  assert.equal(
+    carriesControlModeFlag(output),
+    false,
+    `${what} must not carry the ${CONTROL_MODE_FLAG} flag as its own argument; output was:\n${output}`,
+  );
+
+describe("the -CC negative assertion itself", () => {
+  // The reproduction, kept as a fixture rather than as a story: this is the
+  // real stdout from the CI failure's shape, with the scratch path that broke
+  // it. `/-CC/` matches this string; the token test must not.
+  const STDOUT_WITH_CC_IN_THE_SCRATCH_PATH =
+    'Session hive-main is ready for project "project-uScUZM" (/private/tmp/hive-test-CC2fL1/project-uScUZM).\n' +
+    "Attach from a terminal with: tmux new-session -t '=hive-main' -s hive-view-13169 ';' set-option -t hive-view-13169 destroy-unattached on\n";
+
+  it("ignores -CC inside a path component, which is what made this flake", () => {
+    assert.match(STDOUT_WITH_CC_IN_THE_SCRATCH_PATH, /-CC/, "the old assertion really did match this");
+    assert.equal(carriesControlModeFlag(STDOUT_WITH_CC_IN_THE_SCRATCH_PATH), false);
+  });
+
+  // BOTH positions, because a negative that only knew about one of them would
+  // be a false green rather than a false red. These are the two subcommands
+  // the flag is ever printed in front of.
+  for (const [what, line] of [
+    ["new-session", "Attach from a terminal with: tmux -CC new-session -t '=hive-main' -s hive-view-1\n"],
+    ["attach", "Attach from a terminal with: tmux -CC attach -t '=hive-main'\n"],
+  ]) {
+    it(`still catches a real -CC before ${what}`, () => {
+      assert.equal(carriesControlModeFlag(line), true);
+      assert.throws(() => assertNoControlModeFlag(line, "this"), /must not carry the -CC flag/);
+    });
+  }
+});
+
 describe("controlModeFor", () => {
   it("auto follows iTerm detection with no config file", () => {
     process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
@@ -296,7 +364,7 @@ describe(
 
         const plain = await runCli(["attach"], { ...opts, env: { TERM_PROGRAM: "" } });
         assert.match(plain.stdout, /Attach from a terminal with: tmux new-session -t /);
-        assert.doesNotMatch(plain.stdout, /-CC/);
+        assertNoControlModeFlag(plain.stdout, "a non-iTerm terminal under auto");
       } finally {
         cleanup(session);
       }
@@ -315,7 +383,7 @@ describe(
       const session = sessionName();
       try {
         const result = await runCli(["attach"], { ...opts, env: { TERM_PROGRAM: "iTerm.app" } });
-        assert.doesNotMatch(result.stdout, /-CC/);
+        assertNoControlModeFlag(result.stdout, "raw mode, even under iTerm");
       } finally {
         cleanup(session);
       }

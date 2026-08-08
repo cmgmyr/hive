@@ -1209,6 +1209,58 @@ export interface InputBoxState {
   text: string;
 }
 
+// THE POLICY, IN ONE PLACE, over a box some caller has already read. Three
+// call sites decide "is a human mid-sentence at this pane" - the scheduler's
+// wake hold, agent_send's text refusal, and agent_rename's - and todo 317
+// found the first two had already written `?.state === "pending"` twice by
+// hand. That is the shape CHOICE_DIALOG's own comment (below) exists to
+// prevent for the sibling signal: "One function so paneAwaitingChoice and
+// paneChoiceCheck cannot drift onto two different definitions of dialog."
+// The same argument applies here and had not been made yet.
+//
+// It takes an already-read box rather than a target on purpose, so it adds
+// no capture: agent_send and agent_rename need the InputBoxState itself for
+// their receipts, and the scheduler reads through its own per-tick cache.
+// Deciding the policy and performing the read are separate jobs, and only
+// the policy is shared.
+//
+// ONLY "pending". "ghost" must not, or every idle claude pane holds or
+// refuses forever, since an idle claude draws its own dim hint in the same
+// box. "empty" is the ordinary case. "unknown" must not either: it means the
+// chrome-matching drifted (issue #30's shape), and a check that silently
+// starts firing on every unrecognised screen would hold every wake and refuse
+// every send. null is "no box to report on" and is not this predicate's
+// business. Full reasoning: .claude/rules/tmux-and-panes.md.
+//
+// THE "unknown" EXEMPTION IS FAIL-SAFE IN DIRECTION AND SILENT IN PRACTICE,
+// AND BOTH HALVES HAVE TO BE SAID (counselors on todo 317, both seats
+// independently). The direction is right: classifyInputBox's dangerous
+// failure is reading real typed text as a ghost (see leadingRunIsFaint,
+// above, which calls it "the destructive direction"), and every
+// misclassification here makes a caller MISS - i.e. behave as it did before
+// any of these guards existed - rather than fire wrongly.
+//
+// What this comment used to claim, and what is NOT true: that the loud
+// failure is `input_box` reporting "unknown" on a receipt. THERE IS NO SUCH
+// CHANNEL ON THE PATHS THAT CLOBBER. A successful agent_send with no wait_ms
+// returns {agent_id, name, sent} and no input_box at all; a delivered wake
+// reports nothing; agent_rename's success carries no box either. `input_box`
+// appears on agent_status/agent_output, which nobody polls while sends look
+// fine, and on the refusals that would have STOPPED happening. So if claude
+// changes its prompt glyph while INPUT_BOX_PRESENT still matches, every pane
+// reads "unknown", all three call sites revert to pre-guard behaviour, and
+// nothing anywhere says so. No test catches it either: test/input-box.test.mjs
+// replays frozen captures that still carry the old glyph, so a real chrome
+// change cannot turn this suite red.
+//
+// That is an argument for BUILDING the channel, not for widening this
+// predicate - widening trades a fail-safe direction for a fail-loud one at
+// all three call sites at once, which is the thing .claude/rules/tmux-and-
+// panes.md refuses. The channel is filed separately (a doctor check for a
+// running claude worker whose box reads "unknown"); until it exists, read
+// this exemption as a known silent revert, not as a guarded one.
+export const holdsHumanInput = (box: InputBoxState | null): boolean => box?.state === "pending";
+
 // The horizontal rule claude draws as the input box's own top and bottom
 // edge (see e.g. test/fixtures/panes/ready-idle.txt lines 45 and 47). A
 // multi-line box grows DOWNWARD, pushing this rule further down the screen

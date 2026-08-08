@@ -17,6 +17,7 @@ import {
 import {
   capturePane,
   foreignSocket,
+  holdsHumanInput,
   inputBoxState,
   liveTargets,
   maskChoiceMarker,
@@ -913,21 +914,20 @@ function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
 // input_box field) already tells real unsubmitted text apart from claude's
 // ghost hint and from empty; this reuses that same detector as a HOLD
 // condition, exactly the way paneAwaitingChoice already is one, rather than
-// inventing a second signal. Only "pending" (real, human-typed text) holds -
-// "ghost" and "empty" must not, or every idle pane (which shows the ghost
-// hint) would hold every wake forever, and "unknown" must not either: it
-// means the detector's own chrome-matching drifted (issue #30's shape), and
-// a hold that silently starts firing on every unrecognised screen is worse
-// than a detector that silently stops - the loud failure here is
-// input_box's own receipt field reporting "unknown", not a wake that quietly
-// never fires. A pane with no box at all (null: a modal, or mid-turn) is not
-// this function's concern; the modal case is already held above by
-// awaitingChoice, and mid-turn is not a hold condition (this codebase's own
-// position is well-established: a busy pane is fine to deliver into, only a
-// pane with nowhere to put the paste is not).
+// inventing a second signal. Which states count is holdsHumanInput's call,
+// not this function's (src/tmux.ts, next to InputBoxState) - todo 317 added
+// two more callers of the same policy and pulled it to one place before the
+// three could drift onto three definitions of "a human is typing here".
+//
+// What is local here is the CACHING and the hold-vs-refuse choice. A pane
+// with no box at all (null: a modal, or mid-turn) is not this function's
+// concern; the modal case is already held above by awaitingChoice, and
+// mid-turn is not a hold condition (this codebase's own position is
+// well-established: a busy pane is fine to deliver into, only a pane with
+// nowhere to put the paste is not).
 function inputBoxHoldsWake(pane: string, cache: ChoiceCache): boolean {
   const entry = cacheEntry(pane, cache);
-  if (entry.inputHeld === undefined) entry.inputHeld = inputBoxState(pane)?.state === "pending";
+  if (entry.inputHeld === undefined) entry.inputHeld = holdsHumanInput(inputBoxState(pane));
   return entry.inputHeld;
 }
 

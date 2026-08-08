@@ -23,6 +23,7 @@ import {
   DEFAULT_LAYOUT,
   describePaneChoice,
   ensureAttached,
+  holdsHumanInput,
   inputBoxState,
   isPaneTarget,
   liveTargets,
@@ -690,9 +691,44 @@ export function registerAgents(server: McpServer): void {
         let heldTail: string | undefined;
         if (live && isClaudeCommand(agent.command)) {
           const { awaitingChoice, tail } = paneChoiceCheck(agent.tmux_target);
+          // Todo 317, found by the lane's own /simplify altitude pass rather
+          // than by the capture that opened it. This path cannot reach the
+          // LEAD - the kind='lead' refusal above throws before any typing -
+          // which is what made it look exempt. It types into a live WORKER
+          // pane, and a human attached to a worker pane is ordinary: the
+          // `lessons` pad's "unsubmitted pane text has happened three times"
+          // is about worker panes specifically.
+          //
+          // THE FAILURE IS WORSE HERE THAN A PLAIN MERGE, which is why this
+          // is worth a fork on a rare call. A slash command only executes
+          // when it starts the line. Pasted onto a half-typed sentence,
+          // "/rename foo" is submitted as ordinary prose along with whatever
+          // the human was writing: the human's unfinished text goes as a
+          // message, the retitle silently does not happen, and this function
+          // still returns retitled: true. The receipt lies about the one
+          // thing it exists to report.
+          //
+          // Same predicate and same narrowness as agent_send's, and it reuses
+          // this path's existing refusal shape (heldNote/heldTail/retitled
+          // false) rather than adding one - the row is still renamed either
+          // way, exactly as it is for the dialog case; only the keystroke is
+          // skipped.
+          const box = awaitingChoice === true ? null : inputBoxState(agent.tmux_target);
           if (awaitingChoice === true) {
             heldNote =
               "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
+            heldTail = tail;
+          } else if (holdsHumanInput(box)) {
+            // "rename again" has to name the NEW name, not the one the caller
+            // typed: renameAgent already ran, so the old name resolves to
+            // nothing and a caller retrying its original call gets "no agent
+            // named <old>". requireNameFree excludes self, so renaming a row
+            // to the name it already has is allowed and is exactly the
+            // retry that retitles the pane. Counselors caught this in
+            // passing on todo 317; the dialog branch above has never had the
+            // problem because it says nothing about retrying.
+            heldNote =
+              `Not retitled: the pane's input box holds unsubmitted text, so /rename would be pasted onto the end of it and submitted as prose rather than run as a command. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Clear the line with agent_send(keys: ["C-a", "C-k"]) once you can attribute the text, then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
             heldTail = tail;
           } else {
             try {
@@ -889,7 +925,110 @@ export function registerAgents(server: McpServer): void {
               tail,
             };
           }
-          await sendText(target, args.text, args.submit !== false);
+          // Todo 317. The sibling of the dialog check above: a modal REPLACES
+          // the input box, so that check needs it ABSENT and cannot see this
+          // case at all, while a human mid-sentence has a box very much
+          // PRESENT with real text in it. Which states count is
+          // holdsHumanInput's call (src/tmux.ts); the rest of that argument,
+          // and why this path had no such check for a full release, is in
+          // .claude/rules/tmux-and-panes.md, which fires on this file.
+          //
+          // Local to this call site, and not stated anywhere else:
+          //
+          // REFUSES rather than holds. The scheduler holds because a wake is
+          // a timer that retries; every typing path in this file has a
+          // synchronous caller standing right there, so it returns a receipt
+          // naming the condition and carrying the pane tail instead.
+          //
+          // SUBMIT=FALSE IS EXEMPT ON PURPOSE, and this exemption exists
+          // nowhere else because no other typing path has the parameter. The
+          // destructive event is the ENTER, not the paste: a submitted merge
+          // sends a human's half-written sentence as a message he never
+          // finished, which he cannot take back, while submit=false leaves
+          // characters in a box where they are visible and editable - the
+          // `keys` category, drive this TUI deliberately, not the
+          // inject-a-user-turn category this guard is for. That argument is
+          // the whole of it and stands on its own.
+          //
+          // IT USED TO REST ON A SECOND ARGUMENT THAT WAS FACTUALLY WRONG,
+          // and the correction is worth keeping because the wrong version is
+          // the intuitive one. It claimed that guarding submit=false would
+          // break compose-then-send, since the second call would refuse on
+          // the first call's own text. Backwards: the guard is on the
+          // SUBMITTING call, and the submitting call IS the second one. So
+          // agent_send(text:"a", submit:false) then agent_send(text:"b")
+          // refuses at "b" - the exact failure the wrong argument was used to
+          // justify avoiding. Text typed by send-keys -l carries no faint
+          // attribute (it is how test/fixtures/panes/real-input.txt was
+          // produced), so classifyInputBox correctly calls it "pending" and
+          // cannot tell a composing caller's own fragment from a human's.
+          //
+          // SO COMPOSE-THEN-SEND IS TWO TEXT CALLS NO LONGER. It is
+          // agent_send(text, submit:false), as many times as needed, then
+          // agent_send(keys:["Enter"]) to submit what was composed. The note
+          // below says so, because a caller that discovers the refusal has no
+          // way to work this out. Accepted rather than fixed: distinguishing
+          // "text this caller put there" from "text a human typed" needs
+          // provenance the pane does not carry, and getting it wrong in the
+          // permissive direction is exactly the clobber. A composing caller
+          // knows it is composing; a human mid-sentence does not know anyone
+          // is about to type over them.
+          //
+          // COST, measured on this project's own machine rather than
+          // estimated (tmux 3.7b, 200x50 pane, 54-row window, through the
+          // same execFileSync path): a capture-pane fork is 3.5ms median,
+          // 4.2ms p90, with plain and -e indistinguishable. It is spent only
+          // when submitting, which is exactly the branch that already sleeps
+          // ENTER_DELAY_MS (300ms) between paste and Enter, so it is ~1.2% of
+          // a call that path already pays for. The submit=false path, which
+          // has no sleep and would wear the overhead worst, skips it
+          // entirely. Order matters too and is deliberate: the dialog check
+          // runs FIRST so a modal still refuses on one fork, and reversing
+          // would cost two there, since a modal makes INPUT_BOX_PRESENT false
+          // and inputBoxState can never short-circuit a dialog.
+          //
+          // The receipt reports the box that DECIDED rather than a fresh read
+          // of the same pane: re-reading to fill input_box would fork twice
+          // and could report a box that had already changed, so a caller
+          // shown "pending" could not trust it as the reason for its own
+          // refusal.
+          const submitting = args.submit !== false;
+          if (submitting) {
+            const box = inputBoxState(target);
+            if (holdsHumanInput(box)) {
+              return {
+                agent_id: agent.id,
+                name: agent.name,
+                sent: false,
+                // THE REMEDY BRANCHES ON WHETHER THE KEYS PATH WOULD ACTUALLY
+                // WORK FOR THIS CALLER, tested with the identical predicate
+                // that path uses a few lines above, so the two can never
+                // disagree: telling a worker to clear a LEAD's line sends it
+                // straight into that path's throw. src/scheduler.ts's
+                // howToClearIt makes the same branch for the same reason, on
+                // isLead alone, because a wake body is written before anyone
+                // knows who will read it; here the caller is known, so the
+                // condition can be the real one.
+                //
+                // It does NOT mention submit=false as a remedy, deliberately.
+                // That is a one-step path to arming the very clobber this
+                // refusal just prevented: the append lands on the human's
+                // half-typed line, and the next thing he does is press Enter
+                // on a line that starts with his own words. submit=false is
+                // discoverable from the schema by a caller that means to
+                // compose; it has no business being suggested to one that
+                // has just been told a human is mid-sentence.
+                note:
+                  "The pane's input box holds unsubmitted text, so text was NOT sent: it would be pasted onto the end of that text and Enter would submit both as one message. Someone is mid-sentence at this terminal, or an earlier agent_send used submit=false and has not been submitted yet. " +
+                  (agent.kind === LEAD_KIND && !isRunningLeadActor(currentActor())
+                    ? "That target is a LEAD session, so agent_send's keys path is refused against it from a non-lead caller: you cannot clear or submit that line yourself. A human at that terminal, or another lead, has to. Leave it and try again later."
+                    : "Read the pane with agent_output first. If the text is your own composition, submit it with agent_send(keys: [\"Enter\"]). If it is a human's, leave it alone, or clear the line with agent_send(keys: [\"C-a\", \"C-k\"]) once you can attribute it, then retry."),
+                tail,
+                input_box: box,
+              };
+            }
+          }
+          await sendText(target, args.text, submitting);
         } else {
           throw new Error("Pass text or keys.");
         }
