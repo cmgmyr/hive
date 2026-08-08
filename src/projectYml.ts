@@ -11,6 +11,10 @@ import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 //   lead: claude --model opus      # optional command for the lead window
 //   profile: orchestration         # standing instructions this project runs under
 //   lead_branches: [main, master]  # branches where a lead gets the kickoff
+//   dashboard: true                # write a generated, auto-refreshing HTML
+//                                   # dashboard to .claude/dashboard/index.html.
+//                                   # Default false; absent, null, and false
+//                                   # all mean off.
 //   vars:                          # substituted into the profile runbook
 //     repo: owner/name
 //   processes:
@@ -42,6 +46,13 @@ export interface ProjectYml {
   // Branches where a lead session gets the kickoff. null means unset, and
   // callers apply DEFAULT_LEAD_BRANCHES.
   lead_branches: string[] | null;
+  // Whether the scheduler writes .claude/dashboard/index.html for this
+  // project. Always a concrete boolean, never null: absent, null, and false
+  // in the YAML all collapse to the same false here, so a caller never has
+  // to ask "is null falsy" the way profile's own null/none distinction
+  // requires - Chris asked for false to be the answer in every one of those
+  // cases, with no third state to carry.
+  dashboard: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
 }
@@ -124,6 +135,21 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
+  // != null covers both absent (undefined) and explicit `null` in one check,
+  // so neither has to be special-cased to reach the same false default -
+  // Chris called out `null` specifically as a case that must not slip
+  // through to a truthy path, and a `!= null` guard is the same guard that
+  // already keeps every other optional key here from acting on an absent
+  // one, not a new pattern invented for this key.
+  let dashboard = false;
+  if (root.dashboard != null) {
+    if (typeof root.dashboard === "boolean") {
+      dashboard = root.dashboard;
+    } else {
+      warnings.push(`dashboard must be true or false; ignoring "${String(root.dashboard)}".`);
+    }
+  }
+
   const vars: Record<string, string> = {};
   if (root.vars != null) {
     if (typeof root.vars !== "object" || Array.isArray(root.vars)) {
@@ -177,7 +203,7 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
-  return { config: { lead, placement, layout, profile, lead_branches, vars, processes }, warnings };
+  return { config: { lead, placement, layout, profile, lead_branches, dashboard, vars, processes }, warnings };
 }
 
 // A command's trust is tied to everything that affects what it executes.

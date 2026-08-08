@@ -1,6 +1,11 @@
 import type { Statement } from "better-sqlite3";
+import { existsSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
+import { renderDashboardForWrite } from "./dashboard.js";
+import { loadProjectYml } from "./projectYml.js";
+import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
 import {
   ageSecondsSince,
@@ -326,6 +331,307 @@ function pruneStateLog(): void {
   }
 }
 
+// Todo 309, step 2 of the dashboard lane. Writes src/dashboard.ts's
+// renderDashboard() output to <project root>/.claude/dashboard/index.html
+// for every project that has opted in, on the same "must never throw" terms
+// as maybeBackupHourly above: file IO is a new throw surface in a function
+// that had none before this lane, so every failure mode below is caught at
+// the narrowest point that can catch it, never allowed to reach tick()'s own
+// try/catch as the thing that actually protects the interval.
+//
+// THE ENABLE GATE IS hive.yml's `dashboard` KEY, not a directory's presence.
+// Chris's own call, superseding plan-dashboard-v1's original decision 3 (a
+// directory switch) after the pad was already written - the pad has since
+// been corrected and this comment states the current design, not the
+// abandoned one. src/projectYml.ts resolves absent, null, and false all to
+// the same `false`, so this is a plain truthy check with no null-handling
+// of its own to get wrong. Because the KEY is now the switch, this function
+// CREATES the directory (recursive mkdir) the first time it finds the key
+// true and the directory missing - the opposite of the old directory-switch
+// design, where creating it was forbidden. Absence now means "first run",
+// never "not enabled".
+const DASHBOARD_MIN_INTERVAL_SECONDS = 5;
+
+// Counselors (brief-dashboard-successor, item A). Every tick's loop below
+// calls loadProjectYml - a real readFileSync - for every registered project,
+// dashboard-enabled or not, synchronously on the scheduler's own interval
+// callback. A registered project on a stalled network mount blocks that
+// callback for as long as the mount is stuck, and unref() does not help
+// while a callback is already executing: it only lets the PROCESS exit early,
+// not the callback return early. ACCEPTED, not fixed: every project this
+// tool runs against today is local, and a stalled mount already breaks the
+// store, the worktrees and the tmux paths (untrusted-server checks, pane
+// probes) long before it would reach this read. Building async IO into the
+// scheduler for a residual with no known instance is not worth the
+// complexity. Honest addendum: the gate-before-claim ordering below widens
+// this slightly versus claiming first - claim-first would rate-limit
+// loadProjectYml to roughly once per DASHBOARD_MIN_INTERVAL_SECONDS per
+// project (only after a successful claim), where gate-first pays it on every
+// ~3s tick, for every project, forever. That trade was made deliberately,
+// for the reason spelled out at the gate's own call site below: the
+// alternative cost (a permanent periodic WAL write for a project that will
+// never render) was judged worse than a slightly wider window on a residual
+// that requires a stalled local filesystem to matter at all.
+
+// Atomic conditional UPDATE, the same shape maybeBackupHourly (src/backup.ts)
+// already uses for its own hourly claim and timers already use for wake
+// claims (claimOneShot, above) - only the instance whose UPDATE actually
+// changes a row proceeds, so N concurrent server instances ticking the same
+// store never all regenerate the same project's file in the same window.
+// Five seconds, not backup's hour: this is rate-limiting a cheap, harmless
+// disk write, not a whole-store copy, and the page's own 10s meta-refresh
+// only ever asks for one write for every two of its own reloads at most.
+//
+// Counselors (brief-dashboard-successor, item B). This is a RATE LIMIT, not
+// mutual exclusion: a process paused past DASHBOARD_MIN_INTERVAL_SECONDS
+// after winning this claim lets another instance win the next claim and
+// regenerate concurrently, and if a store change lands in between, the
+// second (newer) write can land before the first (older, stalled) one
+// finishes and then be overwritten by it. TRUE, and accepted rather than
+// fixed: with the content-hash dirty check below (dashboardMark's
+// successor), the NEXT tick after either write sees a hash mismatch against
+// what is actually on disk versus what the store now says, and re-renders -
+// so the artefact self-corrects within one more claim window, and the page
+// is a read-only view that is at worst a few seconds stale, never wrong in a
+// way nothing fixes. This self-correction is the reason the residual is
+// acceptable, and it only holds once the dirty check is a real hash of what
+// was rendered rather than a hand-maintained shadow of it (see
+// renderDashboardForWrite's own comment in src/dashboard.ts).
+function claimDashboardAttempt(projectId: number): boolean {
+  bestEffortRun("INSERT OR IGNORE INTO dashboard_meta (project_id) VALUES (?)", projectId);
+  return (
+    stmt(
+      `UPDATE dashboard_meta SET last_attempt_at = datetime('now')
+       WHERE project_id = ? AND (last_attempt_at IS NULL
+         OR last_attempt_at <= datetime('now', '-${DASHBOARD_MIN_INTERVAL_SECONDS} seconds'))`,
+    ).run(projectId).changes === 1
+  );
+}
+
+// Write a temp file in the SAME directory as the target, then rename over
+// it. Meta refresh (src/dashboard.ts's own <meta http-equiv="refresh">) reads
+// this file at arbitrary times with no coordination with hive at all, and a
+// rename is the one write mode POSIX guarantees a concurrent reader can never
+// observe as partial - a reader either sees the old complete file or the new
+// complete one, never a half-written one. Same directory is required for the
+// rename to be atomic in the first place: renaming across a filesystem
+// boundary silently degrades to copy-then-delete on some platforms, which
+// reopens exactly the half-written window this exists to close.
+//
+// A failed write or rename must not leave the temp file sitting in the
+// dashboard directory for the next attempt to trip over, or for a human
+// browsing the folder to wonder about. The unlink is itself best-effort and
+// swallowed: a cleanup failure must never hide the original error, which is
+// what the caller actually needs to see.
+function writeDashboardAtomically(dashboardDir: string, html: string): void {
+  const target = join(dashboardDir, "index.html");
+  const temp = join(dashboardDir, `.index.html.tmp-${process.pid}`);
+  try {
+    writeFileSync(temp, html);
+    renameSync(temp, target);
+  } catch (e) {
+    try {
+      unlinkSync(temp);
+    } catch {
+      // Best effort; the original error below is what matters.
+    }
+    throw e;
+  }
+}
+
+// Counselors P1 (both seats, brief-dashboard-successor item 1). A repo can
+// commit `dashboard: true` in hive.yml plus `.claude/dashboard` as a SYMLINK
+// pointing outside the project - `.claude/` is only gitignored by pattern
+// (.gitignore:10), which does not stop an already-tracked or force-added
+// path from being committed. mkdirSync/writeFileSync/renameSync all follow a
+// directory symlink with no containment check of their own, so a cloned repo
+// could redirect hive's write to an arbitrary path outside the project.
+//
+// The precedent for this check already exists in this file's neighbour
+// rather than being invented here: src/projectYml.ts's resolveCommandDir
+// does `realpathSync(resolve(projectPath, dir))` then refuses unless the
+// result equals projectPath or starts with `projectPath + sep`. CLAUDE.md
+// states the same invariant for hive.yml's `dir`; this lane's directory
+// simply never inherited it.
+//
+// UNLIKE resolveCommandDir, BOTH sides of the comparison are realpath'd
+// here, not just the child. resolveCommandDir can assume its projectPath
+// argument is already canonical; this function cannot make that same
+// assumption project-wide, and measured directly on this machine: macOS
+// resolves os.tmpdir() under `/var`, itself a symlink to `/private/var`, so
+// a project whose registered path is the un-canonicalised `/var/...` spelling
+// would realpath its OWN dashboard directory to `/private/var/...` and fail
+// this comparison every time, even with no attacker involved at all - a
+// false positive that would silently disable every such project's
+// dashboard. Comparing two realpaths keeps this "canonicalise the
+// COMPARISON" per the dead-end below, never "canonicalise a path a caller
+// hands back": the value this function RETURNS is still the plain
+// join()-built dashboardDir, untouched.
+//
+// MUST NOT CREATE ANYTHING BEFORE THE CHECK. realpathSync requires every
+// path component to already exist, so a naive "mkdir then realpath" order
+// would let a symlinked ANCESTOR (say `.claude` itself, committed as a
+// symlink with no `dashboard` entry inside it yet) be silently walked INTO
+// by mkdirSync's own recursive creation before this function ever gets a
+// chance to refuse - the escape would happen at mkdir time, not write time.
+// So this walks UP from the target to the nearest already-existing ancestor
+// first, realpath-checks only that ancestor, and returns null (refuse, skip,
+// never mkdir) before any directory this project does not already have gets
+// created. Once an existing, safe ancestor is confirmed, every path
+// component below it is guaranteed absent, so the caller's own
+// `mkdirSync(dir, { recursive: true })` can only ever create plain
+// directories under a location already proven to be inside the project
+// root.
+//
+// See .claude/sessions/dead-ends/2026-07-29-canonicalising-resolvedatadir.md
+// before touching this: canonicalise the COMPARISON only. The value this
+// function returns is the plain `join()`-built path, never `realpathSync`'s
+// output, so every consumer downstream (writeDashboardAtomically, the tests)
+// keeps seeing the same spelling it always has.
+function resolveDashboardDir(projectPath: string): string | null {
+  const dashboardDir = join(projectPath, ".claude", "dashboard");
+  let ancestor = dashboardDir;
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) break; // filesystem root; existsSync(projectPath) should stop this first
+    ancestor = parent;
+  }
+  const resolvedAncestor = realpathSync(ancestor);
+  const resolvedProjectPath = realpathSync(projectPath);
+  if (resolvedAncestor !== resolvedProjectPath && !resolvedAncestor.startsWith(resolvedProjectPath + sep)) {
+    return null;
+  }
+  return dashboardDir;
+}
+
+function maybeGenerateDashboard(project: { id: number; path: string }): void {
+  try {
+    // THE GATE MUST RUN BEFORE THE CLAIM. This was inverted once already by
+    // an earlier /simplify pass, on the reasoning that claiming first saves
+    // loadProjectYml's readFileSync+parse on ticks the claim would have
+    // rejected anyway - true, but it measures the wrong side. Apply "when
+    // does the optimisation pay": for an ENABLED project both orderings do
+    // the same work, so the saving is real but small. For a DISABLED
+    // project (dashboard: false, or no hive.yml at all - the common case
+    // for most registered projects), claiming first replaces "one file
+    // read, zero writes, zero rows" with "a dashboard_meta row plus a
+    // successful UPDATE every DASHBOARD_MIN_INTERVAL_SECONDS, forever" -
+    // a permanent periodic WRITE to the WAL store every hive session on
+    // the machine shares, to accomplish nothing. It pays least where it is
+    // safe and costs most where no work should happen at all - the exact
+    // shape named in .claude/sessions/decisions/2026-08-05-simplify-can-
+    // move-a-line-across-a-guard.md: "it paid nothing when it was safe and
+    // paid only when it was risky." Pinned by test/dashboard.test.mjs's
+    // "never claims ... for a project the gate has already rejected" -
+    // confirmed to fail red under the inverted ordering before this
+    // comment existed, not merely written to pass.
+    //
+    // ACCEPTED RESIDUAL: loadProjectYml (a real readFileSync + YAML parse)
+    // runs on every ~3s scheduler tick, for every registered project, gate
+    // or no gate. At the project counts this tool runs at (single digits)
+    // that cost is nothing; if it ever matters, cache the parsed config
+    // keyed by hive.yml's mtime rather than reordering past this gate
+    // again. See this file's own comment above claimDashboardAttempt (item
+    // A) for the honest cost of this ordering versus claim-first.
+    if (!loadProjectYml(project.path).config?.dashboard) return;
+    // Already safe on its own: loadProjectYml catches its own read and
+    // parse failures internally and returns { config: null, warnings }
+    // rather than throwing, the same way every other caller in src/ treats
+    // it (src/tools/agents.ts, src/cli.ts) - never wrapped, always called
+    // plain. A project with no hive.yml at all resolves config to null
+    // here, and `config?.dashboard` reads that exactly like an absent key:
+    // false.
+    //
+    // Path containment runs BEFORE mkdir and BEFORE the claim, same
+    // reasoning as the gate above: a project whose directory escapes the
+    // root must never get a dashboard_meta row or a periodic write either,
+    // it must simply never be touched again until the symlink is gone. See
+    // resolveDashboardDir's own comment for the full mechanism.
+    const dashboardDir = resolveDashboardDir(project.path);
+    if (dashboardDir === null) return;
+    // mkdirSync is what makes the key the switch rather than the
+    // directory: the first tick after `dashboard: true` lands creates the
+    // directory that used to be the opt-in itself. recursive: true makes a
+    // second call a no-op, so this costs nothing on every later tick.
+    // Inside the try, same reasoning as the claim below - a permissions
+    // error or a plain file already sitting at .claude/dashboard must cost
+    // only this project, not the tick. Safe to create here: resolveDashboardDir
+    // has already proven every path component between the nearest existing
+    // ancestor and this target is absent, so recursive mkdir can only
+    // create plain directories inside the project root.
+    mkdirSync(dashboardDir, { recursive: true });
+    // The claim runs AFTER the gate, for the reason spelled out above it.
+    // It runs a real statement (stmt(...).run(...), not just
+    // bestEffortRun's own already-guarded INSERT OR IGNORE above it), so
+    // it can throw - a store that has not run this dist's migration yet is
+    // one live way - and a throw from outside this try would escape to
+    // maybeGenerateDashboards' loop-level catch, aborting every REMAINING
+    // project's attempt for the rest of this tick over one project's
+    // failure.
+    if (!claimDashboardAttempt(project.id)) return;
+    // Counselors (brief-dashboard-successor items 2-4, both seats). Render
+    // unconditionally - the claim above already rate-limits this to once
+    // per DASHBOARD_MIN_INTERVAL_SECONDS per project - then compare the
+    // rendered content's own hash to what was last WRITTEN. See
+    // renderDashboardForWrite's own comment in src/dashboard.ts for why a
+    // content hash replaced the old hand-maintained column-mark, and for
+    // the stamp-exclusion trap it has to dodge to avoid being dirty on
+    // every single render.
+    const { html, contentHash } = renderDashboardForWrite(project.id);
+    const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(project.id) as {
+      last_mark: string | null;
+    };
+    // existsSync(target): closes counselors P2 (a deleted index.html is
+    // never regenerated). An unchanged store with a hash match used to be
+    // sufficient to skip the write outright; now it is sufficient only when
+    // the file is ALSO still there, so `git clean -xdf` (routine after a
+    // lane; .gitignore:10 makes .claude/* ignored) removing the directory
+    // gets it rewritten on the very next tick that finds it missing, not
+    // held back until some unrelated store change happens to land.
+    const target = join(dashboardDir, "index.html");
+    if (known.last_mark === contentHash && existsSync(target)) return;
+    writeDashboardAtomically(dashboardDir, html);
+    bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", contentHash, project.id);
+  } catch {
+    // A broken generator (bad row shape, a future migration this dist has
+    // not seen), a broken filesystem (permissions, disk full, the directory
+    // removed between mkdirSync above and the write), or a failed claim
+    // must cost only this project's file, never the scheduler tick, and
+    // never another project's file in the same tick - every one of this
+    // function's own operations is caught right here, never left to escape
+    // the loop in maybeGenerateDashboards below.
+    //
+    // Counselors (brief-dashboard-successor item C). A PERSISTENT failure
+    // here - an unwritable directory, a full disk - is swallowed forever by
+    // this same catch, and the browser keeps refreshing a stale-but-complete
+    // page that looks identical to an idle project with nothing to report.
+    // Accepted: this is the honest cost of CLAUDE.md's "the scheduler must
+    // never throw", the same trade maybeBackupHourly already makes for
+    // backup failures. See dashboard_meta's own migration comment in
+    // src/db.ts for why no last_error/last_error_at column was added here,
+    // and todo 311 (hive doctor should report PTY headroom) for the proposal
+    // to teach `hive doctor` to surface exactly this class of silent
+    // per-project failure, rather than a column nothing reads.
+  }
+}
+
+// Every hive server instance ticks the WHOLE store, not just one project
+// (tick()'s own candidates query below carries no project filter either) -
+// so this iterates every registered project and lets each one's own
+// hive.yml and claim decide independently whether it has anything to do.
+// listProjects() (src/context.ts) is the same "for every project" lookup
+// src/cli.ts and src/tools/meta.ts already use, rather than a third
+// hand-written copy of the same SELECT.
+function maybeGenerateDashboards(): void {
+  try {
+    for (const project of listProjects()) {
+      maybeGenerateDashboard(project);
+    }
+  } catch {
+    // The scheduler must never throw.
+  }
+}
+
 // Issue #27. Confirmation is an OBSERVATION - a UserPromptSubmit (event
 // 'prompt') row in agent_state_log for deliver_actor, at or after typed_at -
 // never inferred from an absent row. A busy pane queues a paste for minutes,
@@ -488,6 +794,11 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // architectural change - reordering, or moving the vacuum off this
     // synchronous path entirely - not a fix that belongs in this diff.
     maybeBackupHourly(db, dataDir);
+    // Todo 309. Same placement logic as maybeBackupHourly immediately above:
+    // per-project housekeeping that must run regardless of whether tmux
+    // answered this tick, rate-limited internally (claimDashboardAttempt) so
+    // this call is cheap on every tick where nothing is due.
+    maybeGenerateDashboards();
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
     // LEFT JOIN for deliver_socket (issue #73, D6): see TimerRow's own comment
     // on the field. timers.* keeps every bare column reference below

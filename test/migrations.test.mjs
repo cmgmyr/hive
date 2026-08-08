@@ -164,9 +164,17 @@ describe("issue #15: archived_at arriving on a v10 store", () => {
     assert.equal(after.status, before.status);
     assert.equal(after.created_at, before.created_at);
 
-    assert.equal(
-      db.prepare("SELECT MAX(version) AS v FROM migrations").get().v,
-      ARCHIVED_AT_VERSION,
+    // Not MAX(version): that only ever meant "v11 was applied" while v11
+    // happened to be the newest migration that existed. Todo 309 added a
+    // v12 (dashboard_meta) that this rewind never touches - v12 stays
+    // recorded as applied throughout, so MAX(version) reads 12 here
+    // regardless of whether v11's own replay worked, and would keep reading
+    // as whatever the newest migration is forever after, silently stopping
+    // this assertion from checking anything. What the test actually means -
+    // v11 itself got applied via its own real replay, not skipped - is a
+    // membership check, not a maximum.
+    assert.ok(
+      db.prepare("SELECT 1 FROM migrations WHERE version = ?").get(ARCHIVED_AT_VERSION),
       "the migrations table must record v11 as applied, not skip past it",
     );
   });

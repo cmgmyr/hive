@@ -456,6 +456,76 @@ CREATE INDEX idx_agents_actor_id ON agents(actor_id);
   `
 ALTER TABLE todos ADD COLUMN archived_at TEXT;
 `,
+  // Todo 309 (dashboard v1 step 2). Bookkeeping for the scheduler's dashboard
+  // generator, mirroring backup_meta's shape (an atomic conditional UPDATE
+  // rate-limits which of N concurrent server instances actually acts) but
+  // per PROJECT rather than one singleton row: each project opts into the
+  // dashboard independently (hive.yml's `dashboard` key, superseding this
+  // comment's original directory-presence design after Chris's later call -
+  // see plan-dashboard-v1's decision 3), and its own file needs its own
+  // claim so one busy project's writes cannot starve or rate-limit an idle
+  // one's.
+  //
+  // last_mark is a project-scoped "did anything the dashboard renders
+  // actually change" signal. It has gone through three designs, in order,
+  // each measured rather than assumed and each wrong for reasons only
+  // visible once tried:
+  //
+  //   1. PRAGMA data_version, the pad's own suggestion. Measured directly:
+  //      two fresh connections with no intervening write read the identical
+  //      value, and a second connection's reading visibly advances the
+  //      moment a DIFFERENT connection commits - so far, as described. But a
+  //      connection's OWN write never advances what that SAME connection
+  //      reads back afterward, which the pad did not anticipate. A single
+  //      active hive session editing its own project would then never see
+  //      its own edits as dirty by this column alone.
+  //   2. SQLite total_changes(), tried as a per-process supplement to cover
+  //      exactly that gap. This one failed a real test, not a thought
+  //      experiment: total_changes() counts every row this CONNECTION has
+  //      ever changed, on every table, which includes the claim UPDATE this
+  //      very generator issues on every attempt it wins. That UPDATE is a
+  //      real, successful write, so it moved the counter every time,
+  //      permanently pinning "something changed" to true after the first
+  //      write ever succeeded - the dirty check was defeated by its own
+  //      bookkeeping, forever, for any project that had been written once.
+  //   3. A hand-picked set of per-column MAX() sweeps (one per table/column
+  //      the render functions read), which shipped and then failed
+  //      counselors: it was a SHADOW of what src/dashboard.ts's five render
+  //      functions actually read, and the shadow was already wrong in
+  //      several ways a real edit could hit (a body-only wake_update, an
+  //      unstamped agent_rename, a hard pad_delete, two writes landing in
+  //      one whole-second timestamp) - and its most expensive clause,
+  //      state_log_mark, ran the same costly join the render itself does,
+  //      once per agent_state_log row, defeating the entire point of a
+  //      cheap pre-check.
+  //
+  // Replaced with a hash of the RENDERED CONTENT itself
+  // (renderDashboardForWrite, src/dashboard.ts) - correct by construction,
+  // since there is no second query that can drift out of sync with what
+  // actually gets rendered. See that function's own comment for how it
+  // deliberately excludes the page's "generated at" stamp from the hash, to
+  // avoid repeating exactly the self-defeating-bookkeeping failure design 2
+  // above already shipped once.
+  //
+  // No last_error/last_error_at the way backup_meta carries: a failed
+  // generate-and-write is retried practically for free on the very next
+  // claim window (five seconds, not backup's hour), and CLAUDE.md already
+  // requires the write path to swallow its own failures rather than take the
+  // scheduler down, so there is no operator-facing signal here worth a
+  // column - unlike a failed backup, nothing is lost by a dashboard staying
+  // one cycle stale. Counselors raised this again (brief-dashboard-successor
+  // item C: a persistent failure is indistinguishable from an idle
+  // project) and it is still accepted rather than fixed, for the same
+  // reason; todo 311 (hive doctor should report PTY headroom) is the
+  // proposed place for a doctor-level signal instead of a column nothing
+  // reads.
+  `
+CREATE TABLE dashboard_meta (
+  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  last_attempt_at TEXT,
+  last_mark TEXT
+);
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

@@ -184,6 +184,10 @@ lead: claude --model opus     # optional command for the lead window
 placement: split              # optional worker placement: split (panes, default) or window (tabs)
 layout: main-vertical         # optional pane arrangement for split: tiled (default),
                               # main-vertical, main-horizontal, even-horizontal, even-vertical
+dashboard: true               # optional; default false. Writes a generated, auto-refreshing
+                              # HTML dashboard to .claude/dashboard/index.html on every tick:
+                              # the board pad, open todos, running agents, pending wakes, and
+                              # recent activity. Read-only, self-contained, opens from file://.
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
   typecheck:                  # expanded form

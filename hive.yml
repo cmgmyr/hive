@@ -13,6 +13,7 @@ lead: claude --model opus       # custom command for the lead window (default: c
 
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
+dashboard: true                 # write .claude/dashboard/index.html (hive dogfoods its own feature)
 vars:
   repo: cmgmyr/hive
   install: npm install && npm run build
