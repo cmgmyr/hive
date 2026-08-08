@@ -325,6 +325,33 @@ function pruneStateLog(): void {
     if (hi != null && lo != null && hi - lo >= LOG_MAX_ROWS) {
       stmt("DELETE FROM agent_state_log WHERE id <= ?").run(hi - LOG_MAX_ROWS);
     }
+    // Todo 314. wake_block_notices grows by one row per (wake, blocked
+    // agent, block episode) and nothing else ever deletes from it - timers
+    // rows are never deleted in src/, so its ON DELETE CASCADE is hygiene
+    // rather than a live path. LOG_RETENTION, the same window as the rows
+    // above, because the two answer the same kind of question about the same
+    // window of work and a second retention constant is a second thing to
+    // reason about. The one behaviour this buys, stated so it reads as a
+    // choice: a worker blocked continuously for longer than the retention
+    // window has its key pruned and its owner told a second time, which is
+    // the right direction for a notice nobody acted on in seven days. So
+    // "one notice per real block" has one stated exception - a block that
+    // outlives the retention window is reported again, once per window.
+    //
+    // READ BEFORE WRITE, the rule this function states forty lines above and
+    // that this DELETE broke on its first version (counselors round 2, both
+    // seats). A DELETE matching nothing still opens a write transaction and
+    // takes SQLite's single machine-wide writer slot, and this table is
+    // empty on nearly every machine while every session's scheduler runs
+    // this every three seconds. notified_at is not indexed either (the PK is
+    // the episode key), so the matching case is a scan - which is fine once
+    // a week and not fine as an unconditional per-tick write.
+    const staleNotices = stmt(
+      "SELECT 1 AS hit FROM wake_block_notices WHERE notified_at < datetime('now', ?) LIMIT 1",
+    ).get(LOG_RETENTION);
+    if (staleNotices) {
+      stmt("DELETE FROM wake_block_notices WHERE notified_at < datetime('now', ?)").run(LOG_RETENTION);
+    }
   } catch {
     // Housekeeping. It must never take a tick down, and a store that has not
     // run this migration yet is one of the ways it can throw.
@@ -930,6 +957,569 @@ const HELD_REASON_UNSUBMITTED_INPUT =
   "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
   "and submit both as one message";
 
+// Todo 314, issue #28's fourth path. hive already DETECTS this condition -
+// the hold below records HELD_REASON_MODAL_CHOICE and wake_get/wake_list
+// already report it. What was missing is the PUSH: a lead sets a wake, goes
+// quiet because the runbook tells it to, and is never told that the worker it
+// is waiting on is sitting on a dialog waiting for a human. Nobody is told
+// without asking, and the lead has been told not to ask.
+//
+// WHY THIS IS NOT THE WITHDRAWN also_when_stuck
+// (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md,
+// whose closing constraint is "a wake must not fire on a state the worker
+// will leave on its own within a turn"). That design fired a wake on
+// `waiting`, a LATCHED store state nothing clears, so ten-minutes-stale and
+// live were byte-identical in the store. This fires on a LIVE PANE READ that
+// every tick re-evaluates, self-clearing by construction, and - the
+// load-bearing half - it does not change when the ORIGINAL wake fires at all.
+// That wake is not fired, not cancelled, not rescheduled: it stays pending
+// and delivers on its own once the dialog goes, exactly as before. Anything
+// that changes the original's firing condition is the withdrawn design coming
+// back; stop and say so on todo 314 rather than building it.
+// The one residual, stated rather than hidden: the pane read and the
+// notification landing are seconds apart, so a human who answers the dialog
+// in that gap gets told about a dialog that is already gone. Seconds of
+// staleness on a self-clearing read, against the withdrawn design's
+// unbounded staleness on a latch that nothing clears.
+//
+// THE NOTIFICATION IS A REAL WAKE ROW, due now, and that IS the mechanism.
+// The next tick delivers it through fireDelay -> deliverable() ->
+// claimOneShot -> deliver(), the same path every other wake takes, so it
+// inherits deliverable()'s guards instead of re-stating them: if the OWNER's
+// own pane is on a dialog or holds unsubmitted human text, the notification
+// HOLDS rather than pasting into it, and retries on its own afterwards.
+// Calling deliver() directly would have skipped exactly those guards -
+// deliver() types, deliverable() decides - and "held" only means anything for
+// a row a later tick can pick up again. No fifth path types into a pane
+// (.claude/rules/tmux-and-panes.md): this adds none, it queues work for the
+// one path that already exists.
+// kind, not just the name (counselors round on this lane, opus 5). The held
+// target can BE a lead - a worker is allowed to set a wake on the lead's own
+// pane - and agent_send refuses `keys` on a kind='lead' target when the
+// caller is a worker (.claude/rules/tmux-and-panes.md, R8/todo 175). Telling
+// a worker to make a call hive will reject is worse than telling it nothing,
+// so the body below says something different for that case.
+function heldTarget(timer: TimerRow): {
+  name: string;
+  isLead: boolean;
+  agentId: number | null;
+  blockedSince: string;
+} {
+  const row = stmt(
+    `SELECT id, name, kind, COALESCE(state_changed_at, '') AS blocked_since FROM agents WHERE actor_id = ?
+      ORDER BY (status = 'running') DESC, id DESC LIMIT 1`,
+  ).get(timer.deliver_actor) as
+    | { id: number; name: string; kind: string; blocked_since: string }
+    | undefined;
+  return {
+    name: row?.name ?? timer.deliver_actor,
+    isLead: row?.kind === LEAD_KIND,
+    // The other half of the block-notice key (see wake_block_notices in
+    // src/db.ts). null means this delivery target has no agents row at all -
+    // a plain `user:` session - and there is no key to de-duplicate against,
+    // so the narrow path's held_reason claim is the whole debounce there.
+    agentId: row?.id ?? null,
+    blockedSince: row?.blocked_since ?? "",
+  };
+}
+
+// Wake bodies are delivered VERBATIM into a terminal
+// (.claude/rules/worker-state.md), so this is written to stand on its own for
+// a reader with none of the context that produced it: which target, what is
+// wrong with it, what happens to the wake, and the one action that fixes it.
+// `keys` is named explicitly because it is the ONLY supported way out of a
+// dialog - agent_send's `text` path refuses a pane sitting on one - and a
+// lead that has been quiet for an hour will not remember that.
+//
+// IT SAYS "look first", and that ordering is load-bearing rather than polite
+// (counselors, codex 1). This body is a snapshot of what hive saw at one
+// tick, and it can be delivered late - the notification itself holds while
+// the OWNER's pane is busy with a dialog of its own, and the target's dialog
+// can be answered by a human in the meantime. A reader who sends keys without
+// looking would be typing them into a pane that has moved on. Every wake body
+// in hive is stale by nature; this one names the check that resolves it.
+const howToClearIt = (name: string, isLead: boolean): string =>
+  isLead
+    ? `That target is a LEAD session, so agent_send's keys path is refused against it from a worker: a human ` +
+      `at that terminal, or another lead, has to answer the dialog.`
+    : `Read its pane with agent_output(agent: "${name}") FIRST, since this notice can arrive after the dialog ` +
+      `was already answered, and if it is still up answer it with agent_send(agent: "${name}", keys: ["1", ` +
+      `"Enter"]) or whichever keys that dialog wants - keys is the only supported way to answer one, because ` +
+      `agent_send's text path refuses a pane that is on a dialog.`;
+
+function holdNoticeBody(timer: TimerRow, target: { name: string; isLead: boolean }): string {
+  return (
+    `"${target.name}" has a dialog up in its pane and is waiting for a human to answer it. hive is HOLDING ` +
+    `wake #${timer.id} for it rather than typing the wake body into the dialog. That wake is not lost: it ` +
+    `stays pending and delivers on its own once the dialog clears. ${howToClearIt(target.name, target.isLead)}`
+  );
+}
+
+// The WIDE half's body (todo 314, amendment 1). Different situation, so a
+// different sentence: this wake is not held, it is not even due. A
+// wake_when_idle fires when a watched worker goes IDLE, and a worker sitting
+// on a dialog is `waiting` forever - so without this the owner waits out
+// max_wait_seconds (fifteen minutes by default) to be told that nothing
+// happened, which is what amendment 1 exists to fix.
+function blockNoticeBody(timer: TimerRow, name: string): string {
+  return (
+    `"${name}" is stopped on a dialog in its pane, waiting for a human to answer it, so it cannot go idle. ` +
+    `wake #${timer.id} is waiting for exactly that, so it will not fire until the dialog is answered (or its ` +
+    `max wait runs out, if it has one). The wake is not lost and nothing has been typed into the dialog. ` +
+    `${howToClearIt(name, false)}`
+  );
+}
+
+// Who to tell, and the three shapes of "nobody".
+//
+// THE FIRST IS THE RECURSION GUARD, and it is the only one that is genuinely
+// structural: a notification is inserted with owner === deliver_actor (the
+// INSERT below sets both to the held wake's owner), so a wake whose owner is
+// also its delivery target is either a notification or a wake a session set
+// for its own pane. Neither has anyone to tell - the reader would be told
+// about the pane it is reading from - and the check holds no matter what
+// happens to panes afterwards.
+//
+// The pane comparison under it is the SAME rule reached by value, and it is
+// the weaker of the two: `timer.deliver_pane` was frozen when that row was
+// written while the lookup below re-resolves the owner's pane now, so a lead
+// restart or the two-running-lead-rows shape this file documents above
+// (DELIVER_SOCKET_JOIN's own comment) can make them disagree. Counselors
+// found the chain that opens - a notification whose owner row moved panes
+// files a second notification - which is why the actor check above was added
+// and is stated as the guard rather than this one. This still earns its place
+// for the case the actor check cannot see: two different actors whose rows
+// name one pane.
+//
+// The third is a wake whose owner has no running agents row at all - a plain
+// `user:` session that set one from a bare terminal, or a lead mid-restart -
+// which names no pane hive can reach. See noteModalHold on what that costs.
+//
+// Liveness is deliberately NOT checked here. deliverable() asks that question
+// about this pane on the notification's own tick, off the snapshot the tick
+// already has, so asking it here would buy nothing and cost a tmux fork in
+// the hottest loop hive has.
+// The raw lookup: the pane of the session that SET this wake, or null if it
+// has no running agents row to name one. The running filter, ORDER BY id DESC
+// and LIMIT 1 are resolveDelivery's own convention (src/tools/wakes.ts) - one
+// rule for which row speaks for an actor, not two that can disagree.
+function ownerPane(timer: TimerRow): string | null {
+  const row = stmt(
+    `SELECT tmux_target FROM agents WHERE actor_id = ? AND status = 'running'
+      ORDER BY id DESC LIMIT 1`,
+  ).get(timer.owner) as { tmux_target: string } | undefined;
+  return row?.tmux_target || null;
+}
+
+// THE HELD-WAKE PATH'S version, with that path's two guards on top.
+//
+// The owner === deliver_actor check belongs to THIS path only, and the
+// distinction is the whole reason the two are separate functions rather than
+// one with a flag. Here the thing being reported IS the delivery pane, so a
+// wake whose owner is also its target has nobody to tell - the reader would
+// be told about the pane it is reading from. The wide path below reports on a
+// WATCHED agent's pane instead, and there `owner === deliver_actor` is the
+// ordinary shape of every wake a lead sets for itself, so applying it there
+// would silently disable the feature for its own main case.
+function ownerPaneToTell(timer: TimerRow): string | null {
+  if (timer.owner === timer.deliver_actor) return null;
+  const pane = ownerPane(timer);
+  if (pane === null || pane === timer.deliver_pane) return null;
+  return pane;
+}
+
+// THE DEBOUNCE, and it has to be atomic rather than in-process: one scheduler
+// instance runs per session and they all tick against the same store, so a
+// guard that is correct only inside one process is not correct at all
+// (CLAUDE.md: "wake-up claims are atomic conditional updates so concurrent
+// scheduler instances never double-fire"). It does not exist for free either
+// - holdTimer's own UPDATE rewrites held_at unconditionally on EVERY tick the
+// condition holds, and a dialogged pane re-forks that check every three
+// seconds for as long as the dialog is up, so a notification hung off that
+// write would type into the lead's pane every three seconds forever.
+//
+// Same claim shape as claimOneShot: the UPDATE matches only while
+// held_reason is not ALREADY the modal reason, so at most one instance on at
+// most one tick sees changes === 1 per hold condition, however many instances
+// are running and however long the dialog stays up. A hold condition ENDS
+// when the wake finally delivers (deliver() clears held_at/held_reason), when
+// a different hold reason takes over, or when `hive lead` restarts and clears
+// held_at/held_reason for every wake aimed at the lead's pane (src/cli.ts's
+// restart CAS - a third writer, found by counselors, and one per human
+// restart rather than per tick). A dialog after any of those is a new
+// condition and notifies again.
+//
+// AT MOST ONCE, NOT EXACTLY ONCE, and the difference is three cases where
+// nobody is told at all. The latch this claim sets records that the row was
+// CLAIMED, not that a notification was delivered, and holdTimer's fallback
+// sets the same string, so:
+//   - nobody to tell at the transition tick (ownerPaneToTell answers null -
+//     most often a lead mid-restart with no running row), and the owner
+//     coming back a tick later gets nothing, because the reason already reads
+//     MODAL;
+//   - the notification names a pane that dies before its first delivery, so
+//     deliverable() cancels it (a non-lead target) and nothing retries;
+//   - sendText throws on the notification, spending a one-shot that is never
+//     retried.
+// All three fail SILENT, which is exactly what this whole area did before
+// this lane, so each is a narrower improvement rather than a regression -
+// and none of them can produce a SECOND notification, which is the direction
+// that costs a human's terminal. Closing them means recording delivery
+// separately from the hold: a notified_at (or notice_timer_id) column, i.e.
+// the schema migration todo 314 was scoped to avoid. REOPEN TRIGGER, not a
+// judgement call: a real lane where a stuck worker went unreported through
+// one of these three, observed rather than imagined.
+//
+// One more thing this is not: it is one notification per HELD WAKE, not per
+// stuck worker. Three wakes set on the same worker produce three notices on
+// the tick its dialog appears, each naming its own wake. De-duplicating
+// across rows would need state that spans them, which is the same column
+// above by another name.
+//
+// held_at STILL MEANS "last held at", unchanged by this lane, and that is a
+// decision rather than an accident. This conditional claim on its own stops
+// rewriting held_at every tick, which would quietly turn the column into
+// "first held at" for a continuing hold - a behaviour change to a column
+// wake_get/wake_list already report and test/wake-hold-unsubmitted-input.
+// test.mjs already reads across ticks. So noteModalHold below falls back to
+// holdTimer's unconditional write on every tick this claim does not match,
+// which is every tick after the first: one write per tick either way, the
+// same value in the column as before, and nothing that reads it has anything
+// to notice.
+//
+// ONE TRANSACTION, because the claim IS the record that the notification was
+// sent. Split in two, a throwing INSERT after a committed claim loses the
+// notification permanently - held_reason already reads MODAL, so no later
+// tick ever claims again. `.immediate()` for the reason withWindowClaim
+// (src/spawn.ts) uses it, and this section obeys that lock's own rules
+// (.claude/rules/store-and-datadir.md): two trivial writes, no subprocess,
+// nothing that can block on a human, so the store's single machine-wide
+// writer slot is held for microseconds.
+// One INSERT, two callers (the held-wake path below and the blocked-watched
+// path under it), because the row they write is the same row and a second
+// copy of these six columns is a second thing to keep true.
+//
+// project_id is the WAKE's, not the owner's own: this notification is about
+// that wake and belongs where a lead reading the project's wakes will see it,
+// even in the cross-project case where a lead's agents row is scoped
+// elsewhere (.claude/rules/project-scoping.md).
+//
+// owner and deliver_actor are BOTH the wake's owner, and the fact that they
+// are equal is what ownerPaneToTell's first line turns into the recursion
+// guard. Do not set one without the other.
+//
+// ACCEPTED RESIDUAL (counselors, opus 7): if the owner's row is on a foreign
+// tmux socket, deliverable() answers null for this notification on every tick
+// and the janitor's rowAlive answers null too, so it is never delivered and
+// never cancelled - one permanently pending row per condition, visible in
+// wake_list. That is issue #69/#73's existing accepted shape reached by a new
+// door, not a new class of problem, and it costs a row rather than a pane
+// being typed into.
+function insertNotice(timer: TimerRow, pane: string, body: string): void {
+  stmt(
+    `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+     VALUES (?, ?, ?, 'delay', ?, ?, datetime('now'))`,
+  ).run(timer.project_id, timer.owner, body, timer.owner, pane);
+}
+
+// The block-notice claim, and the reason both halves of this feature route
+// through it: it is the ONE place that records "the owner has been told that
+// this agent is blocked, in this episode". INSERT OR IGNORE against the
+// primary key is the atomic claim (changes === 1 exactly once across every
+// concurrent instance), the same discipline as claimOneShot's conditional
+// UPDATE, in the shape a table takes.
+//
+// THE TWO PATHS MUST NOT BOTH FIRE FOR ONE BLOCK, and this is what makes that
+// structural rather than an argument about ordering. A wake_when_idle
+// watching the same worker it delivers to reaches them ACROSS ticks: the wide
+// path speaks while the wake is not ready, and later, once some other watched
+// agent goes idle, the wake becomes ready and the held-wake path sees the
+// same dialog on the same pane. (Within ONE tick they can no longer both run
+// - maybeFireIdle skips the wide path when the wake is ready, counselors
+// round 2 - so this claim is what covers the sequence, not the instant.) Both
+// compute the same (timer, agent, episode) key, so the second one loses.
+//
+// ACCEPTED, SELF-CLOSING (counselors round 2, opus 5 / codex 1): a session
+// still running the PREVIOUS commit ticks against the new schema with old
+// code, and its held-wake path has no claim here at all. It can file a narrow
+// notice and leave this key unclaimed, so a new-code instance's wide path
+// then files a second one about the same block. Same family as the
+// mixed-version windows this file already accepts for #71 and #75, it costs a
+// duplicate paragraph in a pane rather than a lost wake, and it is gone once
+// every session has restarted onto this code.
+function claimBlockNotice(timerId: number, agentId: number, blockedSince: string): boolean {
+  return (
+    stmt(
+      `INSERT OR IGNORE INTO wake_block_notices (timer_id, agent_id, blocked_since)
+       VALUES (?, ?, ?)`,
+    ).run(timerId, agentId, blockedSince).changes === 1
+  );
+}
+
+const claimModalHoldWithNotice = db.transaction(
+  (timer: TimerRow, pane: string, body: string, target: { agentId: number | null; blockedSince: string }): boolean => {
+    // The optimistic token is EVERY field wake_update can change, not just
+    // due_at, for the reason claimOneShot's own comment gives at length
+    // (counselors on this lane, opus 4 / codex 3, and it is stricter than
+    // holdTimer's guard on purpose): a wake_update landing between tick()'s
+    // candidates SELECT and this write leaves holdTimer recording a wrong
+    // column, but would leave THIS write typing a paragraph into a human's
+    // pane about a wake that is no longer due for an hour. `IS` throughout,
+    // never `=`: an idle_any/idle_all timer always has a NULL due_at and a
+    // one-shot always has a NULL repeat_every_ms, and `= NULL` is never true.
+    const claimed =
+      stmt(
+        `UPDATE timers SET held_at = datetime('now'), held_reason = ?
+          WHERE id = ? AND cancelled_at IS NULL
+            AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
+            AND held_reason IS NOT ?`,
+      ).run(
+        HELD_REASON_MODAL_CHOICE,
+        timer.id,
+        timer.due_at,
+        timer.body,
+        timer.repeat_every_ms,
+        HELD_REASON_MODAL_CHOICE,
+      ).changes === 1;
+    if (!claimed) return false;
+    // The held_reason claim above is this path's own debounce and is enough
+    // on its own. This second claim is the INTEGRATION with the wide path:
+    // when the delivery target has an agents row, the block episode is a key
+    // both paths can compute, and losing it here means the owner has already
+    // been told about this exact block by the other half. Returning false
+    // after the hold has been recorded is deliberate - the hold is true and
+    // belongs in the row; only the notification is a duplicate.
+    //
+    // A target with no agents row (a plain `user:` session) has no key, so
+    // there is nothing to integrate with: the wide path only ever fires for
+    // WATCHED AGENTS, which by definition have rows.
+    //
+    // AN EMPTY blockedSince IS NOT AN EPISODE and must not be claimed
+    // (counselors round 2, opus 4). src/hook.ts writes state_changed_at only
+    // `WHERE ... kind = 'agent'`, so a kind='lead' or kind='command' row
+    // carries NULL for its whole life and coalesces to "" here. Claimed, that
+    // constant key is consumed by the FIRST modal hold on this timer and
+    // never re-armed, so every later hold on the same wake would win the
+    // held_reason claim, lose this one, and say nothing - the exact silence
+    // this lane exists to remove, aimed at the target most likely to have a
+    // dialog up (a lead's fresh pane after `hive lead` restarts it, which
+    // clears held_reason and re-arms the other claim). No key means nothing
+    // to integrate with, the same rule as the rowless case above.
+    if (
+      target.agentId !== null &&
+      target.blockedSince !== "" &&
+      !claimBlockNotice(timer.id, target.agentId, target.blockedSince)
+    ) {
+      return false;
+    }
+    insertNotice(timer, pane, body);
+    return true;
+  },
+);
+
+// The whole attempt is best-effort in exactly the sense bestEffortRun is: a
+// failure anywhere here must cost the notification, never the hold and never
+// the rest of this tick's candidates. Every path that does not notify falls
+// through to the same holdTimer call this function replaced, so the hold
+// itself behaves precisely as it did before todo 314 - including for a wake
+// with nobody to tell, which is most of them.
+function noteModalHold(timer: TimerRow): void {
+  // Counselors, codex 4. A CONTINUING hold - the overwhelmingly common case,
+  // one per held wake per tick for as long as a dialog is up - must not pay
+  // for the claim at all. `.immediate()` takes the store's single
+  // machine-wide writer slot, so running it before every fallback would
+  // double the writer acquisitions in the hottest loop hive has to learn
+  // something this tick's own SELECT already read. This is a fast path, NOT
+  // the guard: the row below is what this tick read, so it can be stale, and
+  // a stale one costs one no-op claim exactly as before. The atomicity that
+  // makes the debounce correct across instances is still the UPDATE's own
+  // WHERE and nothing else.
+  if (timer.held_reason !== HELD_REASON_MODAL_CHOICE) {
+    try {
+      const pane = ownerPaneToTell(timer);
+      if (pane !== null) {
+        const target = heldTarget(timer);
+        const body = holdNoticeBody(timer, target);
+        if (claimModalHoldWithNotice.immediate(timer, pane, body, target)) return;
+      }
+    } catch {
+      // Falls through to the plain hold below.
+    }
+  }
+  holdTimer(timer, HELD_REASON_MODAL_CHOICE);
+}
+
+// THE WIDE HALF (todo 314, amendment 1), and the reason the narrow half above
+// is not the fix on its own: maybeFireIdle gates on `ready` BEFORE it ever
+// consults deliverable(), and for a wake_when_idle `ready` means a watched
+// agent went IDLE. A worker stopped on a dialog is `waiting`, never idle, so
+// that wake never becomes due, the hold above never happens, and the owner
+// hears nothing until max_wait_seconds runs out - fifteen minutes by default.
+// The narrow half turns "never told" into "told late"; this one tells the
+// owner while it still matters.
+//
+// WHY THIS IS NOT THE WITHDRAWN also_when_stuck, which fired a wake on
+// `waiting` and was withdrawn because a stale `waiting` and a live one are
+// byte-identical in the store. THE LATCH NEVER DECIDES ANYTHING HERE. It
+// decides only whether it is worth LOOKING; the pane read is what answers. A
+// worker that resumed and is busy still reads `waiting` (nothing clears that
+// latch) and produces a pane with no dialog on it, so nothing is sent. The
+// store is never asked to tell a stale block from a live one, which is the
+// exact question it cannot answer. And no wake fires on `waiting`: the
+// original wake's firing condition is untouched, so the dead-end's closing
+// constraint - a wake must not fire on a state the worker will leave on its
+// own within a turn - is satisfied by construction rather than by argument.
+//
+// The failure direction is worth stating too. A latch that is stale the OTHER
+// way (a dialog raised with no Notification hook, so the row still says
+// working) means hive never looks and nobody is told - silence, which is what
+// this whole area did before. Staleness here can cost a notification; it can
+// never manufacture one.
+//
+// COST. Ordered so the cheap questions kill the expensive ones:
+//   1. nobody to tell -> return, having read one indexed row;
+//   2. no watched agent flagged `waiting` -> return, having read one indexed
+//      query that the WHERE clause filters in SQL;
+//   3. already told about this agent's current block -> skip, no pane read;
+//   4. only then capture the pane, through the tick's own ChoiceCache, so one
+//      tick never forks twice for the same pane no matter how many wakes
+//      watch it.
+// Step 3 matters more than it looks: without it a permanently stuck worker
+// costs a capture-pane fork every three seconds forever, which is the version
+// amendment 1 exists to avoid.
+//
+// WHAT STEP 3 DOES NOT COVER, said plainly because the first version of this
+// comment read as if it did (counselors round 2, opus 2). Only a REPORTED
+// block is recorded, so an agent whose latch says `waiting` while its pane
+// has NO dialog on it - a worker that answered its prompt and carried on,
+// which is the ordinary stale latch this design is built to tolerate, or
+// issue #38's row stuck forever - is re-read on every tick, by every running
+// instance, for as long as that latch and a pending idle wake on it both
+// last. That is one capture-pane fork per such agent per tick per session.
+// The alternative is recording the NEGATIVE observation under the same key,
+// and it was rejected rather than missed: a "looked, no dialog" row would
+// suppress a REAL dialog appearing later in the same episode, trading a
+// bounded cost for a silent false negative, which is the wrong direction for
+// a feature whose whole point is that silence is the bug. REOPEN TRIGGER: a
+// project where this fork rate is actually measured as a problem, not
+// imagined - the set is bounded by watched agents with a pending idle wake,
+// which is small by construction.
+//
+// ONE MORE HONEST LIMIT ON THE EPISODE KEY (counselors round 2, both seats).
+// state_changed_at is "when the state was last WRITTEN", not "when the block
+// began": src/hook.ts rewrites it on every state-writing hook, and it writes
+// `waiting` for any notification hive does not recognise as idle_prompt. If
+// Claude Code emits two such notifications during ONE continuous dialog, the
+// key moves and the owner is told twice about one block. Unmeasured - todo
+// 313's capture saw exactly one Notification per prompt across seven blocks -
+// and hive pins no Claude Code version, so this is the thing to watch rather
+// than a fix to build now.
+function blockedWatchedAgents(
+  timer: TimerRow,
+  snapshot: AliveSnapshot,
+): { id: number; name: string; pane: string; blockedSince: string }[] {
+  const ids = JSON.parse(timer.watch) as number[];
+  if (ids.length === 0) return [];
+  const rows = stmt(
+    `SELECT id, name, tmux_target, tmux_socket, COALESCE(state_changed_at, '') AS blocked_since
+       FROM agents
+      WHERE id IN (${ids.map(() => "?").join(",")})
+        AND status = 'running' AND agent_state = 'waiting'`,
+  ).all(...ids) as {
+    id: number;
+    name: string;
+    tmux_target: string;
+    tmux_socket: string;
+    blocked_since: string;
+  }[];
+  return rows
+    // Issue #73's discipline, the same one watchedTail applies before its own
+    // capture: never read a pane on a socket this process cannot see into,
+    // and treat unknown as "no fact" rather than as a live pane.
+    .filter((r) => rowAlive(r.tmux_socket, r.tmux_target, snapshot) === true)
+    .map((r) => ({ id: r.id, name: r.name, pane: r.tmux_target, blockedSince: r.blocked_since }));
+}
+
+// The optimistic token this path needs, and counselors round 2 (opus 1) is
+// right that it had none at all. Nothing else here re-reads the timer: this
+// tick's candidates SELECT can be many timers and several of deliver()'s real
+// 300ms Enter sleeps old by the time this runs, so a concurrent instance can
+// have fired the wake, or wake_cancel can have cancelled it, in between. The
+// held-wake path carries the full wake_update guard for exactly this reason;
+// this one asks the narrower question that matches what its body claims -
+// that the wake is still pending - inside the same transaction as the claim.
+const stillPending = (timerId: number): boolean =>
+  stmt(
+    `SELECT 1 AS hit FROM timers WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+  ).get(timerId) !== undefined;
+
+const claimBlockNoticeWithNotice = db.transaction(
+  (timer: TimerRow, agentId: number, blockedSince: string, pane: string, body: string): boolean => {
+    if (!stillPending(timer.id)) return false;
+    if (!claimBlockNotice(timer.id, agentId, blockedSince)) return false;
+    insertNotice(timer, pane, body);
+    return true;
+  },
+);
+
+// Never throws, for the same reason nothing else in this file does: this runs
+// inside tick()'s candidate loop, and an exception escaping here would cost
+// every timer after it in the tick. It also writes nothing to the timer
+// itself - not held_at, not held_reason, not fired_at - because this wake is
+// neither due nor held, and marking it either would make wake_list and `hive
+// status` report a delivery hive never attempted.
+function noteBlockedWatched(timer: TimerRow, snapshot: AliveSnapshot, choices: ChoiceCache): void {
+  try {
+    const tellPane = ownerPane(timer);
+    if (tellPane === null) return;
+    for (const agent of blockedWatchedAgents(timer, snapshot)) {
+      // Telling a session about its own pane, reached here through the watch
+      // list rather than through delivery: a session watching itself would
+      // otherwise be told to answer the dialog it is looking at, by a paste
+      // into that dialog.
+      //
+      // A CHAIN IS IMPOSSIBLE ON THIS PATH regardless, and structurally so: a
+      // notification is inserted with kind 'delay' and the default empty
+      // watch list, so it is never a candidate for maybeFireIdle at all and
+      // blockedWatchedAgents would answer [] for it even if it were.
+      if (agent.pane === tellPane) continue;
+      if (alreadyToldAbout(timer.id, agent.id, agent.blockedSince)) continue;
+      if (awaitingChoice(agent.pane, choices) !== true) continue;
+      claimBlockNoticeWithNotice.immediate(
+        timer,
+        agent.id,
+        agent.blockedSince,
+        tellPane,
+        blockNoticeBody(timer, agent.name),
+      );
+    }
+  } catch {
+    // Reporting about a block, never the block itself: same precedent as
+    // holdTimer's own write and src/hook.ts's record().
+  }
+}
+
+// The cheap half of the claim, run before the pane fork. The claim itself is
+// still the authority - this is a read, so it can be stale, and a stale one
+// costs one wasted fork and then loses the INSERT OR IGNORE.
+function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string): boolean {
+  return (
+    stmt(
+      `SELECT 1 AS hit FROM wake_block_notices
+        WHERE timer_id = ? AND agent_id = ? AND blocked_since = ?`,
+    ).get(timerId, agentId, blockedSince) !== undefined
+  );
+}
+
+// NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION (counselors, both seats).
+// noteModalHold below opens one with `.immediate()` to take the store's
+// writer slot, and better-sqlite3 turns a nested transaction into a SAVEPOINT
+// rather than throwing - so a caller that wrapped its own tick in a
+// transaction would silently remove the exclusion this depends on, with
+// nothing failing to say so (.claude/rules/store-and-datadir.md names this
+// hazard for withWindowClaim; it is the same one). tick() holds no
+// transaction, and it is the only caller today.
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
   const live = snapshot
     ? rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot)
@@ -1081,7 +1671,13 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // cycle, potentially the whole repeat period. WHERE due_at = ? makes the
     // write a no-op exactly when a concurrent claim has already moved this row
     // past the state this tick observed.
-    holdTimer(timer, HELD_REASON_MODAL_CHOICE);
+    //
+    // Todo 314: the same hold write, now routed through noteModalHold so the
+    // TRANSITION into this reason also tells the wake's owner (above). The
+    // write itself is unchanged whenever there is nobody to tell, and this
+    // still returns false either way - what a notification changes is who
+    // hears about the hold, never the hold.
+    noteModalHold(timer);
     return false;
   }
   // Todo 270. The dialog check above guards a MODAL: the input box gone
@@ -1292,6 +1888,18 @@ async function maybeFireIdle(
       timer.kind === "idle_any"
         ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
         : states.length > 0 && states.every((s) => s.idle);
+    // Todo 314, amendment 1, and it sits AFTER `ready` on purpose - the first
+    // version ran it above and counselors round 2 (opus 1) found the false
+    // alarm that opens. A mode=any wake watching A and B, where B is on a
+    // dialog and A goes idle in this very tick, is READY: it fires this tick.
+    // Filing a notice first means the owner is told "wake #N will not fire
+    // until that dialog is answered" one tick after wake #N already fired.
+    // The BLOCK question does not depend on whether the wake is about to
+    // fire, but the notice's own sentence does, and it is a claim about this
+    // wake. A ready wake needs no notice anyway: it is about to wake its
+    // owner, and if its delivery pane is the dialogged one, the held-wake
+    // path above says so with the right words.
+    if (!ready) noteBlockedWatched(timer, snapshot, choices);
   }
   if (ready && deliverable(timer, snapshot, choices) && claimOneShot(timer)) {
     await deliver(timer, timedOut ? "max wait reached" : "", choices);

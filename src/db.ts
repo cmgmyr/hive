@@ -526,6 +526,46 @@ CREATE TABLE dashboard_meta (
   last_mark TEXT
 );
 `,
+  // Todo 314, issue #28. One row per (wake, blocked agent, block episode) the
+  // scheduler has told the wake's owner about. It exists to answer exactly
+  // one question - "have we already said this?" - across the concurrent
+  // scheduler instances that each session runs, which is why it is a table
+  // with a primary key rather than a flag in a process.
+  //
+  // WHY NOT AN EXISTING COLUMN. The narrow half of this feature (a DUE wake
+  // held on a dialogged pane) keys its debounce off timers.held_reason, and
+  // that is genuinely all it needs. The wide half fires for a wake that is
+  // NOT due and NOT held - a wake_when_idle whose watched worker is sitting
+  // on a dialog, which is why it never becomes due at all - so there is no
+  // hold to hang a marker on, and writing held_at for it would make
+  // wake_list and `hive status` report "(1 held)" for a wake nothing ever
+  // attempted to deliver. That is precisely the class of misreporting #69,
+  // #70 and #75 exist to stop, so this pays for a table instead.
+  //
+  // blocked_since IS THE RE-ARM, and it is the whole reason this is not a
+  // boolean. It is the agent's own state_changed_at at the moment hive saw
+  // the dialog, so blocked -> answered -> blocked again produces a DIFFERENT
+  // key (the answer moves the agent's state, and the next block stamps a new
+  // time), the owner is told again, and nothing has to remember to clear a
+  // flag. A boolean would report the first block of a worker's life and then
+  // go quiet forever. COALESCE'd to '' by the writer for an agent whose
+  // state_changed_at is NULL, so the key is never NULL and the PRIMARY KEY
+  // still de-duplicates.
+  //
+  // ON DELETE CASCADE on both sides is bookkeeping hygiene rather than a
+  // live path: nothing in src/ deletes a timers row today, and agents rows
+  // are closed rather than deleted. Retention is by age, in the scheduler's
+  // own pruner - see pruneStateLog (src/scheduler.ts) for why the window
+  // is the state log's rather than something new.
+  `
+CREATE TABLE wake_block_notices (
+  timer_id INTEGER NOT NULL REFERENCES timers(id) ON DELETE CASCADE,
+  agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  blocked_since TEXT NOT NULL,
+  notified_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (timer_id, agent_id, blocked_since)
+);
+`,
 ];
 
 function readAppliedVersions(): Set<number> {
