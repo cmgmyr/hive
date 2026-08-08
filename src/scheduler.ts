@@ -62,7 +62,22 @@ export interface TimerRow {
   // the '' "no fact recorded" case at every call site - D2 - with one
   // representation of "unset" instead of two.
   deliver_socket: string;
+  // Todo 315. NULL for every wake but a standing watch; see src/db.ts's own
+  // migration for why this is a flag on an idle_any row rather than a kind.
+  watch_scope: string | null;
+  // Todo 315. Set on a notice a standing watch filed, NULL on everything
+  // else including todo 314's own notices.
+  parent_timer_id: number | null;
 }
+
+// Todo 315. The one value watch_scope takes today. Membership is a PARAMETER
+// - project, group or list (.claude/sessions/decisions/2026-08-08-watch-
+// membership-is-a-parameter.md) - and only the crew ships, so the membership
+// query below has no branch in it. Groups are blocked on agent labels, which
+// do not exist; list scope is what a one-shot already does.
+export const WATCH_SCOPE_PROJECT = "project";
+
+const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
 // Shared by the janitor's timers sweep and tick()'s candidates query, the
 // same reason ACTIVE_TIMER_WHERE (below) is named rather than retyped in
@@ -352,6 +367,20 @@ function pruneStateLog(): void {
     ).get(LOG_RETENTION);
     if (staleNotices) {
       stmt("DELETE FROM wake_block_notices WHERE notified_at < datetime('now', ?)").run(LOG_RETENTION);
+    }
+    // Todo 315. wake_idle_notices grows by one row per (standing watch, crew
+    // member, condition, episode) and nothing else deletes from it. Same
+    // window and same read-before-write discipline as the table above, for
+    // the same reasons - and with the same one stated consequence: a finish
+    // whose cursor row is pruned can be reported a second time. That needs a
+    // watch to outlive the retention window, which a lifetime measured in
+    // hours does not, so it is a bound rather than a behaviour anyone will
+    // meet.
+    const staleIdleNotices = stmt(
+      "SELECT 1 AS hit FROM wake_idle_notices WHERE notified_at < datetime('now', ?) LIMIT 1",
+    ).get(LOG_RETENTION);
+    if (staleIdleNotices) {
+      stmt("DELETE FROM wake_idle_notices WHERE notified_at < datetime('now', ?)").run(LOG_RETENTION);
     }
   } catch {
     // Housekeeping. It must never take a tick down, and a store that has not
@@ -1215,11 +1244,34 @@ function ownerPaneToTell(timer: TimerRow): string | null {
 // wake_list. That is issue #69/#73's existing accepted shape reached by a new
 // door, not a new class of problem, and it costs a row rather than a pane
 // being typed into.
-function insertNotice(timer: TimerRow, pane: string, body: string): void {
-  stmt(
-    `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
-     VALUES (?, ?, ?, 'delay', ?, ?, datetime('now'))`,
-  ).run(timer.project_id, timer.owner, body, timer.owner, pane);
+//
+// Todo 315 added parent_timer_id, a returned id, and an explicit DELIVERY
+// ACTOR, and left every other column exactly as todo 314 wrote it. The two
+// todo 314 callers pass timer.owner and null, which is byte-for-byte what they
+// wrote before, so nothing about their notices changes.
+//
+// THE DELIVERY ACTOR IS A PARAMETER BECAUSE A STANDING WATCH HAS A REAL
+// TARGET (counselors, both seats, P1). todo 314's notices are always "tell the
+// session that set this wake", so owner and deliver_actor being the same value
+// was not a choice there, it was the only thing they could be. A standing
+// watch resolves a delivery target at CREATION - its own session by default,
+// or deliver_to - stores it, and echoes it in the receipt, so filing its
+// notices at the owner instead sends them somewhere the caller was told they
+// would not go. Passing it in is what lets the two differ where they should.
+function insertNotice(
+  timer: TimerRow,
+  deliverActor: string,
+  pane: string,
+  body: string,
+  parentTimerId: number | null,
+): number {
+  return (
+    stmt(
+      `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id)
+       VALUES (?, ?, ?, 'delay', ?, ?, datetime('now'), ?)
+       RETURNING id`,
+    ).get(timer.project_id, timer.owner, body, deliverActor, pane, parentTimerId) as { id: number }
+  ).id;
 }
 
 // The block-notice claim, and the reason both halves of this feature route
@@ -1313,7 +1365,7 @@ const claimModalHoldWithNotice = db.transaction(
     ) {
       return false;
     }
-    insertNotice(timer, pane, body);
+    insertNotice(timer, timer.owner, pane, body, null);
     return true;
   },
 );
@@ -1458,7 +1510,7 @@ const claimBlockNoticeWithNotice = db.transaction(
   (timer: TimerRow, agentId: number, blockedSince: string, pane: string, body: string): boolean => {
     if (!stillPending(timer.id)) return false;
     if (!claimBlockNotice(timer.id, agentId, blockedSince)) return false;
-    insertNotice(timer, pane, body);
+    insertNotice(timer, timer.owner, pane, body, null);
     return true;
   },
 );
@@ -1510,6 +1562,655 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
         WHERE timer_id = ? AND agent_id = ? AND blocked_since = ?`,
     ).get(timerId, agentId, blockedSince) !== undefined
   );
+}
+
+// ===========================================================================
+// TODO 315, THE STANDING WATCH.
+//
+// wake_when_idle is a one-shot: it fires once and stops watching. Between the
+// fire and a re-arm nobody is watched, and the re-arm depends on the lead
+// remembering. Observed with ONE worker and an attentive lead on 2026-08-08;
+// at the three to five workers this tool is run with elsewhere it is close to
+// a guarantee that a finish goes unseen. A standing watch never fires itself.
+// It stays a candidate for its whole life and, on each tick, FILES a due-now
+// notice to its owner naming every crew member that has finished or gone away
+// since it last spoke.
+//
+// THE MECHANISM IS TODO 314's, POINTED AT A SECOND CONDITION, and the pieces
+// that carry over are named so the next reader does not look for a second
+// design: the atomic claim (INSERT OR IGNORE against a primary key), the
+// read-gate in front of that claim so the common case never takes SQLite's
+// single machine-wide writer slot, and delivery through a real timer row so
+// no FIFTH path types into a pane (.claude/rules/tmux-and-panes.md). What
+// todo 314 does NOT supply, and what the rest of this section is, is: a batch
+// identity across agents, a cursor that survives a delivery failure, a parent
+// link, a lifetime, a key for a worker that DIES, and the discrimination
+// between a block notice and a finish notice.
+//
+// WHAT THIS IS NOT: the withdrawn also_when_stuck
+// (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md).
+// That design fired on `waiting`, a latch nothing clears, so a stale block and
+// a live one were byte-identical in the store. Nothing here fires on
+// `waiting` at all. It fires on `idle`, which src/hook.ts writes on a Stop
+// hook and then MOVES again on the next prompt, so the store is never asked to
+// tell a stale one from a live one - and the /goal discriminator below is
+// there precisely because the one case where `idle` CAN be restated without a
+// real transition is the one case this design must not trust.
+// ===========================================================================
+
+const CONDITION_IDLE = "idle";
+const CONDITION_GONE = "gone";
+
+// A claim records "a notice was FILED", not "the owner was told" - counselors
+// C3 on this design, and todo 314 accepted exactly this residual for a
+// stuck-worker notice. THE ACCEPTANCE DOES NOT TRANSFER, because the thing
+// lost here is the finish this whole feature exists to report. So a claim
+// whose notice was spent WITHOUT EVER BEING TYPED - fired_at set (a claim
+// committed), typed_at still NULL (sendText threw), not cancelled - stops
+// counting as "already told" and the episode is reported again.
+//
+// THE AGE BOUND IS WHAT MAKES THAT SAFE ACROSS INSTANCES. Delivery is not
+// atomic with the claim: instance A claims a notice and types it 300ms later
+// (sendText's own ENTER_DELAY_MS), and instance B ticks in that gap. Without
+// a bound, B would read a perfectly healthy in-flight delivery as failed and
+// file a duplicate.
+//
+// WHAT SIXTY SECONDS HAS TO CLEAR, stated at the real worst case rather than
+// the happy one. The claim-to-typed path is a handful of tmux forks plus
+// sendText's own 300ms ENTER_DELAY_MS, which is milliseconds - but it can also
+// queue behind SQLite's single machine-wide writer slot, and db.ts sets
+// busy_timeout to FIVE SECONDS, so the bound this must sit above is seconds,
+// not milliseconds. An earlier version of this comment said "two orders of
+// magnitude above the whole claim-to-typed path", which is true only of the
+// uncontended case and is the kind of margin that reads as proven and is not.
+// Sixty seconds is an order of magnitude above the contended one. An in-flight
+// notice cannot be re-armed, and a genuinely dead one is repaired within a
+// minute.
+//
+// A HELD notice is NOT re-armed and needs no special case: deliverable()
+// holds ABOVE claimOneShot, so a notice waiting on a dialogged owner pane has
+// fired_at NULL and never matches this at all.
+const NOTICE_RETRY_AFTER = "-60 seconds";
+
+// The valid-until half of the parent link (counselors C4). wake_cancel now
+// cascades to a watch's filed notices, but cancellation is not the only way a
+// notice goes stale: `hive lead` re-points EVERY active lead-owned timer at
+// the fresh pane on restart (src/cli.ts), and a lead-owned notice held on a
+// dead pane is exempt from the janitor's cancel sweep, so one can sit pending
+// indefinitely and then be delivered days later into a session that has moved
+// on. An hour is well past any lane that a "worker X just finished" sentence
+// is still true for, and this bound applies ONLY to rows that carry a parent
+// - todo 314's notices have none, so their behaviour is untouched.
+const NOTICE_MAX_AGE = "-1 hours";
+
+// How many still-running crew members the roster names before summarising.
+// The point of naming them at all is that a lead reading "2 finished" wants
+// to know what is left without asking, which is the reason it stops polling;
+// past a handful it is a wall of text pasted into a terminal.
+const ROSTER_STILL_GOING = 8;
+
+// The note delivered when the lifetime runs out. A silent expiry is the
+// original bug with a timer on it - watched, then quietly not, with nothing
+// saying so - so the expiry SPEAKS, through the existing max-wait branch.
+const STANDING_EXPIRED_NOTE =
+  "this standing watch has expired and nothing is watching now; set a new one if the crew is still working";
+
+// The cursor read, stated once and shared by both conditions. It is a
+// read-gate, not the authority: the claim below is, and a stale read here
+// costs one losing INSERT OR IGNORE rather than a wrong answer. The
+// join-and-NOT clause is the delivery-failure re-arm described at
+// NOTICE_RETRY_AFTER; a row with no notice_timer_id yet (claimed inside a
+// transaction that has not filed its notice) reads as reported, which is
+// correct - it is about to be.
+const unreported = (condition: string, episode: string): string => `NOT EXISTS (
+    SELECT 1 FROM wake_idle_notices n LEFT JOIN timers nt ON nt.id = n.notice_timer_id
+     WHERE n.timer_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
+       AND NOT (nt.fired_at IS NOT NULL AND nt.typed_at IS NULL AND nt.cancelled_at IS NULL
+                AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
+
+// What stateNowClause needs plus what the liveness filter and the claim need,
+// selected identically by both membership queries below. One list rather than
+// two, because the two are only allowed to differ in the WHERE clause: they
+// both produce a CrewRow, so a column added to one and not the other is a
+// silent undefined at a call site that reads it.
+//
+// `episode` is aliased per query - state_changed_at for a finish, closed_at
+// for a death - which is exactly the difference the alias exists to hide from
+// everything downstream.
+const CREW_COLUMNS =
+  `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.agent_state,
+   a.state_changed_at, a.status, a.command, a.kind`;
+
+interface CrewRow {
+  id: number;
+  name: string;
+  actor_id: string;
+  tmux_target: string;
+  tmux_socket: string;
+  agent_state: string;
+  state_changed_at: string | null;
+  status: string;
+  command: string;
+  kind: string;
+  episode: string;
+}
+
+// No `episode` of its own: it is always the row's, and a second copy is a
+// second thing that can disagree with the value actually written to the
+// cursor.
+interface StandingCandidate {
+  condition: string;
+  row: CrewRow;
+}
+
+// THE MEMBERSHIP QUERY, AND IT HAS NO BRANCH IN IT. Scope is a parameter with
+// one value today; if you are about to add a second membership shape here,
+// read comment 631 on todo 315 first - groups are blocked on agent labels
+// that do not exist AND on an undecided overlap-dedup rule, and neither is
+// smuggled in as a WHERE clause.
+//
+// kind = 'agent': a lead writes no agent_state at all (src/hook.ts's UPDATE
+// is scoped to kind='agent', .claude/rules/worker-state.md), so a lead could
+// never be reported idle, and a kind='command' background process is not a
+// worker anyone is waiting on. This is the same allowlist hook.ts uses, for
+// the same reason: a future third kind defaults to silence.
+//
+// a.actor_id != the watch's DELIVERY ACTOR, not its owner: the exclusion
+// exists so a session is never told about itself, and the session being told
+// is the delivery target. Those are the same actor for the ordinary lead
+// watching its own crew; they differ the moment deliver_to names a crew
+// member, and it is that case the exclusion is actually for - a worker being
+// told it went idle, by a paste into the pane it is reading from.
+function standingIdleRows(timer: TimerRow): CrewRow[] {
+  return stmt(
+    `SELECT ${CREW_COLUMNS}, a.state_changed_at AS episode
+       FROM agents a
+      WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
+        AND a.agent_state = 'idle' AND a.state_changed_at IS NOT NULL
+        AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
+      ORDER BY a.id`,
+  ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[];
+}
+
+// A WORKER THAT DIED, and this is the case project scope makes worse rather
+// than better. Under the explicit-list wake this replaces, a watched worker
+// that goes away still fires: it is still IN the list, and watchedStates
+// answers GONE for it. Under project scope, membership is a query over
+// RUNNING agents, so a dead worker does not merely lack a fresh latch - it
+// DROPS OUT OF THE SET ENTIRELY and there is nothing left to ask about. That
+// would be a strict regression on the exact case that makes watching from
+// outside worth doing at all: a turn that dies mid-response (issue #38) is
+// precisely the worker that cannot report itself.
+//
+// closed_at is the key, because it is the only value that moves. GONE's own
+// `since` is null by construction, and agent_close/closeAgentRow never touch
+// state_changed_at - src/hook.ts is its only writer. Re-arm is by
+// construction too: a replacement worker is a new agents row with a new id,
+// so its own death is a new key with nothing to clear.
+//
+// A DEATH BEFORE THE WATCH EXISTED IS NOT NEWS, and the way that bound is
+// drawn is the fix rather than a preference (counselors, codex P2). It used to
+// be `closed_at >= the watch's created_at`, and BOTH stamps are whole seconds
+// (datetime('now')): a worker closed at 12:00:00.100 and a watch created at
+// 12:00:00.900 store the identical value, so an already-dead worker was
+// reported on the first tick despite the bound. Flipping to `>` is not the
+// fix and was worked through before being rejected - it loses the opposite
+// case, a worker that died 0.8s AFTER the watch was set, one the receipt had
+// just named in watching_now, so the lead believed it was watched. Losing a
+// real death is the worse direction.
+//
+// SO THERE IS NO TIMESTAMP COMPARISON HERE AT ALL. seedGoneCursor below runs
+// in the same transaction as the watch's INSERT and writes a cursor row for
+// every already-closed worker in the project, so "already dead when this
+// watch was set" is a FACT RECORDED AT CREATION rather than a bound
+// re-derived on every tick at a resolution that cannot carry it. Anything
+// closed and not in the cursor is news, at any resolution. This deletes a
+// class of reasoning instead of tuning it, which is why it is worth an
+// INSERT..SELECT over a bounded set at creation.
+//
+// A CLOSE FROM `idle` IS NOT A DEATH, and this discriminator is what stops
+// the intended loop from alarming (counselors, both seats). Worker finishes ->
+// idle notice -> lead reads it, completes the todo, calls agent_close: without
+// this the next tick files a SECOND notice about the same worker, saying it
+// went away and its unwritten work is lost. At three to five workers that is
+// two notices per worker lifecycle, half of them frightening and wrong, and
+// the standing watch does it per close where the one-shot did it once.
+//
+// WHY THE ROW'S OWN STATE CAN ANSWER THAT. src/hook.ts is the ONLY writer of
+// agents.agent_state (.claude/rules/worker-state.md, "enumerate every writer
+// before picking one" - checked, not assumed: closeAgentRow in src/spawn.ts
+// writes status and closed_at and never this column). So a closed row's state
+// is FROZEN at whatever the worker last reported on its way out. `idle` means
+// it had finished and this watch has already said so; `working` or `waiting`
+// is the real death this half exists for - the turn that died mid-response
+// (issue #38), which is precisely the worker that cannot report itself.
+// An uninstrumented row reads 'unknown', which is not 'idle', so it still
+// reports: the conservative direction, and it is safe from the NULL trap that
+// silently inverts `!=` because src/db.ts declares this column NOT NULL
+// DEFAULT 'unknown'.
+//
+// THE RESIDUAL, WHICH IS A JUDGEMENT AND NOT AN OVERSIGHT: a worker that goes
+// idle and whose row closes before any tick REPORTED that idle is now silent
+// - the pane died within the same three-second tick, say. The tighter-looking
+// fix is to key on the cursor instead ("suppress only if we already filed an
+// idle notice for its current episode"), and it is WRONG in two directions
+// that matter more. The idle half is gated on a non-null tmux snapshot, so
+// where the probe persistently fails no idle is ever reported, no cursor row
+// exists, and every deliberate close alarms again - this defect back in full,
+// in the exact environment the gone half was built to keep answering in. And
+// a worker that finished, was told about, was sent more work and THEN died
+// mid-turn has a cursor row from its earlier finish, so the cursor rule
+// silences the issue #38 death this half exists to catch. Do not swap them.
+//
+// NO TMUX IS CONSULTED HERE, deliberately. The idle half needs the snapshot
+// (a running row whose pane is dead should not be believed about its state),
+// but this half is a store-and-clock question, so it still answers when the
+// tmux probe cannot - which is a partial answer to the hole where a null
+// snapshot means the standing watch observes nothing and says nothing. The
+// janitor is what turns a dead pane into a closed row, so under a persistent
+// null snapshot this reports only explicit closes; that is strictly more than
+// silence, not a claim that it covers the case.
+function standingGoneRows(timer: TimerRow): CrewRow[] {
+  return stmt(
+    `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
+       FROM agents a
+      WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
+        AND a.agent_state != 'idle'
+        AND a.closed_at IS NOT NULL
+        AND ${unreported(CONDITION_GONE, "a.closed_at")}
+      ORDER BY a.id`,
+  ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[];
+}
+
+// The other half of the bound above, run ONCE, inside the same transaction as
+// the watch's own INSERT (src/tools/wakes.ts) so a worker cannot die in the
+// gap between them and be counted as history.
+//
+// A seeded row carries notice_timer_id NULL, and that is exactly right rather
+// than a placeholder: the read-gate reads a NULL notice as "reported" (there
+// is no spent claim to re-arm from), and the claim's re-arm DELETE fires only
+// when notice_timer_id IS NOT NULL, so a seeded row is never deleted and
+// never re-armed. It simply says "this death is not this watch's news".
+//
+// DELIBERATELY A SUPERSET of what standingGoneRows can return - it does not
+// repeat that query's deliver_actor or agent_state filters - because its job
+// is to suppress, and suppressing a row the reader would have skipped anyway
+// costs one row and cannot go wrong. Repeating the filters would make two
+// queries that have to agree forever.
+//
+// ONLY 'gone'. There is no matching seed for 'idle', and adding one would
+// silently revert decision A (todo 315 comment 638): a worker already idle
+// when the watch was set IS reported on the first tick, on purpose, because
+// that is the finish the one-shot loses.
+//
+// The one case it does not cover: LOG_RETENTION eventually prunes cursor rows,
+// so a watch whose caller asked for a lifetime longer than that could see a
+// seeded row expire and report an ancient death. The default lifetime is four
+// hours against a seven-day retention, and every other cursor row in this
+// table has the same property.
+export function seedGoneCursor(timerId: number, projectId: number): void {
+  stmt(
+    `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+       SELECT ?, a.id, '${CONDITION_GONE}', a.closed_at
+         FROM agents a
+        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed'
+          AND a.closed_at IS NOT NULL`,
+  ).run(timerId, projectId);
+}
+
+// THE CURSOR CANNOT BE "THE TIMESTAMP MOVED", and this is the finding that
+// most shapes this design (counselors C6). src/hook.ts writes
+// `agent_state = ?, state_changed_at = datetime('now')` in one UPDATE
+// whenever stateFor returns non-null - INCLUDING when the state it is writing
+// is the one already there. Under a /goal, Claude Code fires Stop after every
+// turn while immediately starting another, and .claude/rules/worker-state.md
+// records nine consecutive false idles on agent:53 in fifty seconds with no
+// prompt|working between them. Each one is a NEW timestamp, so each is a
+// fresh key. A one-shot can emit at most one wake from that; a standing watch
+// would emit nine and keep going.
+//
+// So the question is not "is this timestamp new" but "did this agent enter
+// idle FROM something else". agent_state_log answers it: it is append-only,
+// carries the event that decided each state, and is the reader this project
+// already reaches for when a latch cannot be trusted
+// (.claude/sessions/decisions/2026-07-29-append-only-state-transition-log.md).
+// Used as a DISCRIMINATOR, not as the cursor - as the cursor it would
+// re-report every false idle issue #24 produced, because the log records them
+// and the latch self-corrects.
+//
+// TWO PLACES THIS DELIBERATELY FAILS OPEN, and both are the same rule: for a
+// feature whose entire defect is silence, an unanswerable question must
+// resolve to "report it".
+//   - NO PREVIOUS EPISODE. There is no interval to look in, so there is
+//     nothing to discriminate, and the first tick of a standing watch reports
+//     a worker that was ALREADY idle when it was set. That is a deliberate
+//     difference from mode=any's `state_changed_at >= timers.created_at`
+//     test, decided on todo 315 (comment 638, decision A) rather than
+//     inherited: that test is listed in the todo's own body as one of the
+//     three ways the one-shot fails at N workers, and a design that fixes two
+//     of three and re-ships the third is not the fix. The asymmetry decides
+//     it - reporting a stale idle costs ONE EXTRA LINE in a notice; not
+//     reporting it costs a silently missed finish.
+//   - THE LOG CANNOT ANSWER FOR THIS INTERVAL, because retention truncated
+//     its start. This is the case the FIRST version of this function got
+//     wrong, and counselors found it on both seats. It failed open only when
+//     the log held NO row after the previous episode - and pruneStateLog
+//     deletes a PREFIX (`WHERE id <= hi - LOG_MAX_ROWS`, and by age), which is
+//     the one shape that cannot produce. A prefix delete removes the OLDER
+//     prompt|working row and KEEPS the newer stop|idle row, so the probe below
+//     found no work, returned false, and the finish was lost for the watch's
+//     whole life while wake_list showed it healthy. The test seeded a store
+//     with zero log rows, pinning the unreachable branch.
+//     THE CONDITION THAT ACTUALLY DECIDES IT is whether the log still covers
+//     the interval's own start: if the oldest surviving row in the whole table
+//     is NEWER than the previous episode, everything this probe would have
+//     needed has been pruned, and the answer is unknowable. Global rather than
+//     per-actor deliberately - the row-count bound deletes across every actor
+//     by id, so an unrelated actor's churn is what evicts a quiet worker's
+//     evidence, and a per-actor MIN would read a quiet worker's natural
+//     silence as truncation. Indexed by idx_agent_state_log_created, so it is
+//     a seek, and it REPLACES the old probe rather than adding a read.
+//     THE OTHER DIRECTION IS NOW TIGHTER, and that is deliberate too
+//     (counselors, codex P2): an INTACT log that simply records no work is
+//     evidence, not absence of it, so a latch that moved with nothing logged
+//     behind it is no longer reported as a finish. Untrusted log -> report;
+//     trusted log with no work in it -> stay quiet.
+//
+// The upper bound is `< episode + 1 second`, not `<= episode`, because
+// state_changed_at is whole seconds (datetime('now')) while this log carries
+// milliseconds: a working row at 12:00:05.100 and an idle latch stamped
+// 12:00:05 are a real transition that a plain `<=` would discard.
+function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
+  const previous = (
+    stmt(
+      `SELECT MAX(episode) AS episode FROM wake_idle_notices
+        WHERE timer_id = ? AND agent_id = ? AND condition = '${CONDITION_IDLE}'`,
+    ).get(timerId, row.id) as { episode: string | null }
+  ).episode;
+  if (previous === null) return true;
+  // THE SAME WHOLE-SECOND-VERSUS-MILLISECONDS TRAP the upper bound above
+  // dodges, and it bit this check on its first version. `previous` is an
+  // episode, i.e. a state_changed_at, written by datetime('now') in whole
+  // seconds; this log's created_at carries milliseconds. The row that RECORDED
+  // that episode therefore reads as newer than the episode itself, so a plain
+  // `oldest > previous` calls a perfectly intact log truncated whenever its
+  // oldest surviving row is the previous episode's own event - which is every
+  // young store, and which silently turned the /goal suppression back off. The
+  // bound is the END of previous's own second: a log starting inside that
+  // second still covers the interval.
+  const log = stmt(
+    "SELECT MIN(created_at) AS oldest, datetime(?, '+1 seconds') AS bound FROM agent_state_log",
+  ).get(previous) as { oldest: string | null; bound: string };
+  if (log.oldest === null || log.oldest >= log.bound) return true;
+  return (
+    stmt(
+      `SELECT 1 AS hit FROM agent_state_log
+        WHERE actor_id = ? AND state IN ('working', 'waiting')
+          AND created_at > ? AND created_at < datetime(?, '+1 seconds') LIMIT 1`,
+    ).get(row.actor_id, previous, row.episode) !== undefined
+  );
+}
+
+// A ROSTER, NOT AN EVENT, and the still-going half is what makes a batched
+// body worth more than one line per worker: it is the crew status, which is
+// the thing that removes the reason to poll in the first place.
+//
+// NOT `watch` REUSED (counselors C9). A notice carries the default EMPTY
+// watch list, so deliver()'s watchedTail() answers "" for it and no
+// capture-pane runs. Putting the crew in a notice's watch list instead would
+// embed up to three worker SCREENS in a body typed into the lead's own pane,
+// plus three tmux forks per notice in the hottest loop hive has - the exact
+// outcome a compact roster exists to avoid.
+//
+// Wake bodies are delivered VERBATIM into a terminal
+// (.claude/rules/worker-state.md), so this is written to stand on its own for
+// a reader with none of the context that produced it: what happened, what is
+// still running, what to read before acting, and how to stop it.
+function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): string {
+  const lines = [
+    `${finished.length} worker(s) in this project have finished or gone away since standing watch ` +
+      `#${timer.id} last spoke:`,
+  ];
+  for (const c of finished) {
+    lines.push(
+      c.condition === CONDITION_GONE
+        ? // WHAT HIVE OBSERVED, NOT WHAT IT INFERS WAS LOST. The gone half now
+          // only fires for a row frozen mid-work (see standingGoneRows), so a
+          // stronger sentence would be defensible - and it still must not be
+          // written, because "its work is lost" is a claim about a branch, a
+          // todo and a pad that this code has not looked at, and a notice that
+          // asserts a fact hive cannot see is the shape
+          // .claude/rules/worker-state.md rules out. Two observations and a
+          // next action instead.
+          `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
+          `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any pad it ` +
+          "was writing for what landed before it stopped."
+        : `  ${c.row.name}: ${stateNowClause(c.row)}`,
+    );
+  }
+  let shown: string[] = [];
+  let more = 0;
+  let asked = false;
+  try {
+    // Exactly the columns stateNowClause reads, and typed as those - the cast
+    // used to claim a whole CrewRow, four fields of which this query does not
+    // select at all, so a future reader could take id or tmux_target off it
+    // and get undefined with the compiler agreeing.
+    const rows = stmt(
+      `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind
+         FROM agents a
+        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
+          AND a.agent_state != 'idle' AND a.actor_id != ?
+        ORDER BY a.id`,
+    ).all(timer.project_id, timer.deliver_actor) as {
+      name: string;
+      actor_id: string;
+      agent_state: string;
+      state_changed_at: string | null;
+      status: string;
+      command: string;
+      kind: string;
+    }[];
+    // SLICE BEFORE MAPPING. stateNowClause runs its own lastLogEvent query per
+    // agent, so rendering the whole crew and then keeping eight throws away a
+    // SELECT per worker past the cap - paid on every notice, in a project big
+    // enough for the cap to matter, for text nobody reads. The full count is
+    // still needed for "and N more", which is why the query keeps no LIMIT.
+    more = Math.max(0, rows.length - ROSTER_STILL_GOING);
+    shown = rows.slice(0, ROSTER_STILL_GOING).map((r) => `${r.name} (${stateNowClause(r)})`);
+    // LAST, not before the map. `asked` is what licenses the "nothing else is
+    // running" sentence below, and that sentence is a claim about the crew -
+    // so it may only be said once this really did look at the crew and
+    // finish looking. Set above the map, a throw halfway through rendering
+    // would print it with several workers running.
+    asked = true;
+  } catch {
+    // The roster's optional half: a failure here costs this clause, never the
+    // notice, matching watchedTail's own contract for the same kind of read.
+  }
+  if (shown.length > 0) {
+    lines.push(`Still going: ${shown.join("; ")}${more > 0 ? `, and ${more} more` : ""}.`);
+  } else if (asked) {
+    lines.push("Nothing else in this project is running right now.");
+  }
+  lines.push(
+    'Read each finished worker with agent_output(agent: "<name>") before acting on it. hive fires this on ' +
+      "each worker's own hook state, so a terminal still showing work means that worker is NOT finished. A " +
+      "worker reading `waiting` may be stopped on a dialog nobody has answered; read its pane.",
+  );
+  // THE CALLER'S OWN BODY, ON EVERY NOTICE (counselors, both seats, P1). body
+  // is a REQUIRED parameter, help.ts teaches leads to write one, and
+  // .claude/rules/worker-state.md tells them to make it self-contained - the
+  // ids, the context, the next action. The first version of this function
+  // never read timer.body at all, so a lead that wrote "read its diff,
+  // complete its todo, and dispatch the one it unblocks" got a generic roster
+  // on every finish and its own instruction exactly once, four hours later,
+  // attached to the expiry. A required parameter that surfaces only when the
+  // feature ends is a broken contract, and wake_update(body:) reporting
+  // success while changing nothing anyone will read is worse.
+  //
+  // LAST, AND LABELLED. The roster above is hive's generated account of what
+  // happened; this is the caller's own sentence, and the two must not read as
+  // one voice. Last because it is the thing to ACT on once the news has been
+  // read.
+  lines.push(`--- what you asked to be told when this happened ---\n${timer.body}`);
+  lines.push(
+    `Wake #${timer.id} is STILL WATCHING this project and speaks again on the next finish - you do not have ` +
+      `to re-arm it. It expires at ${timer.max_wait_at ?? "an unrecorded time"}; stop it with ` +
+      `wake_cancel(wake_id: ${timer.id}).`,
+  );
+  return lines.join("\n");
+}
+
+// ONE TRANSACTION, ONE BATCH, ONE NOTICE. Everything about this claim is the
+// shape claimBlockNoticeWithNotice already uses, with one addition: the batch.
+// Every candidate this tick is claimed inside the same transaction, the body
+// is rendered from the WINNERS ONLY, and the single notice's id is stamped
+// back onto each winning cursor row - which is what gives a batch a durable
+// identity, and what the delivery-failure re-arm above reads.
+//
+// PER-TICK COALESCING IS NOT STRUCTURAL ACROSS INSTANCES (counselors C5), and
+// that is accepted rather than hidden. Every session runs its own scheduler
+// against this store, so two instances can claim two DIFFERENT agents in the
+// same tick and each file a notice naming its own. The claim still guarantees
+// each finish is reported exactly once; what is not guaranteed is that two
+// finishes in one tick arrive as one paste. The cost is an extra paragraph in
+// a terminal, never a lost finish or a repeated one, and the alternative is a
+// second lock over a batch that nothing else in this file takes.
+//
+// stillPending() is the read-gate the wake_cancel and expiry races need: the
+// candidates SELECT that produced `timer` can be several deliveries and their
+// real 300ms Enter sleeps old by the time this runs, so the watch may have
+// been cancelled or expired in between. Inside the transaction, so a claim
+// cannot outlive the watch it belongs to.
+const claimStandingBatch = db.transaction(
+  (timer: TimerRow, candidates: StandingCandidate[]): boolean => {
+    if (!stillPending(timer.id)) return false;
+    const won: StandingCandidate[] = [];
+    for (const c of candidates) {
+      // The re-arm, run unconditionally rather than only when the read-gate
+      // above said the row was stale: the read is a hint, the claim is the
+      // authority, and this is inside a transaction that only ever opens when
+      // there is work to do - so it costs nothing on the quiet path and
+      // cannot disagree with what the INSERT below then sees.
+      stmt(
+        `DELETE FROM wake_idle_notices
+          WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?
+            AND notice_timer_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM timers t WHERE t.id = wake_idle_notices.notice_timer_id
+                          AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
+                          AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
+      ).run(timer.id, c.row.id, c.condition, c.row.episode);
+      const claimed =
+        stmt(
+          `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+           VALUES (?, ?, ?, ?)`,
+        ).run(timer.id, c.row.id, c.condition, c.row.episode).changes === 1;
+      if (claimed) won.push(c);
+    }
+    if (won.length === 0) return false;
+    const noticeId = insertNotice(
+      timer,
+      timer.deliver_actor,
+      timer.deliver_pane,
+      standingNoticeBody(timer, won),
+      timer.id,
+    );
+    for (const c of won) {
+      stmt(
+        `UPDATE wake_idle_notices SET notice_timer_id = ?
+          WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?`,
+      ).run(noticeId, timer.id, c.row.id, c.condition, c.row.episode);
+    }
+    return true;
+  },
+);
+
+// Never throws, and writes nothing to the watch itself - not fired_at, not
+// held_at, not held_reason. A standing watch is never due and never held, and
+// marking it either would make wake_list and `hive status` report a delivery
+// hive never attempted, which is the class of misreporting #69, #70 and #75
+// exist to stop.
+//
+// COST, ordered so the cheap questions kill the expensive ones. On a tick
+// where nothing has finished this is two indexed SELECTs and no write at all,
+// which is the case that runs every three seconds in every session forever.
+// The claim - which takes SQLite's single machine-wide writer slot even when
+// it IGNOREs - is reached only when there is something to report. That
+// read-before-write ordering is the rule pruneStateLog states forty lines
+// above its own DELETE, and it is not a redundant read to collapse: a
+// /simplify pass looking at this will see a SELECT whose answer the INSERT OR
+// IGNORE would give anyway.
+//
+// IT FILES AT timer.deliver_pane, NOT AT ownerPane(), AND THAT WAS A REAL
+// DEFECT (counselors, both seats, P1). ownerPane() is `SELECT tmux_target FROM
+// agents WHERE actor_id = ? AND status = 'running'`, so it answers null for a
+// session with no agents row - and resolveDelivery (src/tools/wakes.ts)
+// DELIBERATELY supports exactly that caller, falling back to the TMUX_PANE the
+// session itself is running in. A plain claude session, or anything driving
+// hive through the documented HIVE_AGENT_ID identity, therefore got a
+// successful receipt listing the crew it was now watching, heard NOTHING for
+// four hours, and was then told by the expiry - which reads deliver_pane and
+// so worked - that the watch had ended. The same line silently discarded
+// deliver_to: the target is resolved at creation, stored, and echoed in the
+// receipt, and every notice went to the owner instead.
+//
+// So the pane is the one the wake ITSELF resolved. It is already validated at
+// creation (resolveDelivery refuses a session it cannot deliver to at all),
+// and `hive lead` re-points it on restart, which ownerPane's live lookup was
+// the informal substitute for. The row.tmux_target skip below is what stops
+// this telling a crew member about its own idle by pasting into its own pane -
+// which only means anything now that the delivery target can BE a crew member.
+function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null): void {
+  try {
+    const pane = timer.deliver_pane;
+    const candidates: StandingCandidate[] = [];
+    for (const row of standingGoneRows(timer)) {
+      candidates.push({ condition: CONDITION_GONE, row });
+    }
+    // The idle half is the only one that needs tmux, and it needs it for the
+    // reason watchedStates does: a running row whose pane this process cannot
+    // see, or cannot see into (issue #73's foreign socket), must read as "no
+    // fact" rather than as a finished worker.
+    if (snapshot !== null) {
+      for (const row of standingIdleRows(timer)) {
+        if (row.tmux_target === pane) continue;
+        if (rowAlive(row.tmux_socket, row.tmux_target, snapshot) !== true) continue;
+        if (!idleIsAFreshTransition(timer.id, row)) continue;
+        candidates.push({ condition: CONDITION_IDLE, row });
+      }
+    }
+    if (candidates.length === 0) return;
+    claimStandingBatch.immediate(timer, candidates);
+  } catch {
+    // Reporting about the crew, never the crew itself: same precedent as
+    // noteBlockedWatched above and src/hook.ts's record().
+  }
+}
+
+// A notice a standing watch filed is deliverable only while the watch that
+// filed it still stands and the notice is still recent. Both halves are
+// scoped to rows that CARRY a parent, so every wake that existed before this
+// lane - including todo 314's own notices - answers true here and behaves
+// exactly as it did.
+//
+// Fails OPEN on a throw, and that direction is deliberate: this runs between
+// tick()'s candidates SELECT and a delivery, and an exception escaping it
+// would cost every candidate after it in this tick. Delivering a notice that
+// might be stale is a paragraph in a terminal; aborting the tick is every
+// other wake in the store not firing.
+function noticeStillDeliverable(timer: TimerRow): boolean {
+  if (timer.parent_timer_id === null) return true;
+  try {
+    return (
+      stmt(
+        `SELECT 1 AS hit FROM timers p
+          WHERE p.id = ? AND p.cancelled_at IS NULL AND ? >= datetime('now', ?)`,
+      ).get(timer.parent_timer_id, timer.created_at, NOTICE_MAX_AGE) !== undefined
+    );
+  } catch {
+    return true;
+  }
 }
 
 // NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION (counselors, both seats).
@@ -1707,6 +2408,27 @@ async function fireDelay(
   snapshot: AliveSnapshot | null,
   choices: ChoiceCache,
 ): Promise<void> {
+  // Todo 315. A notice whose standing watch was cancelled, or that has sat
+  // pending long enough to be about a lane that has moved on, is cancelled
+  // rather than typed. Above deliverable() for the same reason every other
+  // decision in that function sits above claimOneShot: after the claim, "not
+  // now" and "never" are the same thing.
+  //
+  // THE CANCEL IS BEST-EFFORT, and that is the "the scheduler must never
+  // throw" invariant rather than a style choice (CLAUDE.md; counselors,
+  // codex). fireDelay is called from tick()'s candidate loop, so an exception
+  // escaping here - SQLITE_BUSY outliving db.ts's 5s busy_timeout, an I/O
+  // error - is caught by the outer catch and every LATER candidate in that
+  // tick is skipped. A notice that keeps failing this write would starve every
+  // unrelated wake in the store, on every tick, forever. Swallowing it costs
+  // one row staying pending until the next tick tries again, and the next tick
+  // will: it is still a candidate, and noticeStillDeliverable will still
+  // refuse it. bestEffortRun is this file's existing precedent for exactly
+  // this trade (see its own comment).
+  if (!noticeStillDeliverable(timer)) {
+    bestEffortRun("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?", timer.id);
+    return;
+  }
   if (!deliverable(timer, snapshot, choices)) return;
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
@@ -1869,6 +2591,51 @@ async function maybeFireIdle(
   choices: ChoiceCache,
 ): Promise<void> {
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
+  // Todo 315. A standing watch shares this row shape and this dispatch, and
+  // nothing else: it never becomes "ready", it files notices instead, and the
+  // only thing that ever claims its own row is the expiry below.
+  //
+  // max_wait_at IS THE LIFETIME, reusing the column every idle wake already
+  // carries rather than adding a second lifetime parameter that could
+  // contradict it (counselors C2). That is not only cheaper, it is REQUIRED:
+  // the timedOut branch below sets ready unconditionally for any non-delay
+  // kind, so without this the max-wait firing would claim a standing watch
+  // fifteen minutes in, set fired_at, drop it from the candidates query, and
+  // leave a lead with one wake that looked healthy and a crew nobody was
+  // watching - this todo's own defect, delivered by its own fix.
+  //
+  // THE EXPIRY SPEAKS, because a silent one is that same defect with a timer
+  // on it. What it CANNOT do is speak in the one case it exists for: an
+  // abandoned lead-owned notice is held on a dead pane (HELD_REASON_LEAD_
+  // PANE_DEAD) and exempt from the janitor's cancel, so it sits pending and
+  // unread. That costs a row rather than a pane being typed into, and it is
+  // stated here rather than claimed away.
+  //
+  // REPORTING RUNS FIRST AND RUNS UNCONDITIONALLY, and the ordering is the
+  // fix rather than a preference (counselors, opus 6). The first version read
+  // `if (timedOut) { ...deliver...; return; }` ABOVE the reporting call, and
+  // the expiry branch only completes when deliverable() says yes. So: max_wait
+  // passes while the lead's input box holds unsubmitted human text.
+  // deliverable() holds - indefinitely, by design
+  // (.claude/rules/tmux-and-panes.md) - claimOneShot never runs, and from that
+  // tick onward the early return meant no finish was ever reported again,
+  // while wake_list still showed the watch pending. The crew unwatched, the
+  // lead untold, and a wake that looks healthy: this todo's own defect, with a
+  // timer on it, produced by the very branch STANDING_EXPIRED_NOTE exists to
+  // prevent.
+  //
+  // A watch is done watching when its own row is CLAIMED, not when its clock
+  // passes: fired_at is what removes it from tick()'s candidates, so as long
+  // as it is still a candidate it still reports. That also closes the smaller
+  // version of the same hole in the clean case - a finish landing in the very
+  // tick that expires the watch used to be dropped with no final sweep.
+  if (isStandingWatch(timer)) {
+    noteStandingTransitions(timer, snapshot);
+    if (timedOut && deliverable(timer, snapshot, choices) && claimOneShot(timer)) {
+      await deliver(timer, STANDING_EXPIRED_NOTE, choices);
+    }
+    return;
+  }
   let ready = false;
   if (timedOut) {
     ready = true;

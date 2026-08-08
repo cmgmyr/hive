@@ -4,7 +4,13 @@ import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
 import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
-import { ACTIVE_TIMER_WHERE, LOG_RETENTION, type TimerRow } from "../scheduler.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  LOG_RETENTION,
+  WATCH_SCOPE_PROJECT,
+  seedGoneCursor,
+  type TimerRow,
+} from "../scheduler.js";
 import { idParam, projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { liveTargets } from "../tmux.js";
@@ -209,13 +215,162 @@ const truncateBody = (body: string): string => (body.length > 120 ? `${body.slic
 // are all supposed to report identically. truncate defaults to true for
 // wake_list's two sections; wake_get passes false, since an untruncated body
 // is its whole reason to exist.
+// Todo 315. scope and parent_wake_id appear only when they are set, rather
+// than as two nulls on every wake in every list: a standing watch and a
+// notice it filed are both a small minority of rows, and "write tools return
+// slim receipts; token cost is a design input" (.claude/rules/tool-contract.md)
+// applies hardest to wake_list, which a lead calls repeatedly across a wave.
+// A reader that sees `scope` knows this wake keeps watching; a reader that
+// sees `parent_wake_id` knows this row was filed BY a watch rather than set
+// by a human, which is otherwise indistinguishable from an ordinary wake.
 const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   wake_id: t.id,
   kind: t.kind,
   body: truncate ? truncateBody(t.body) : t.body,
   owner: t.owner,
   deliver_to: t.deliver_actor,
+  ...(t.watch_scope ? { scope: t.watch_scope, standing: true } : {}),
+  ...(t.parent_timer_id != null ? { parent_wake_id: t.parent_timer_id } : {}),
 });
+
+// Todo 315, decision B, made by the lead on 2026-08-08 and RECORDED HERE AS A
+// JUDGEMENT rather than left in a pad, because a number the code depends on
+// must not live only in a comment thread. FOUR HOURS IS A GUESS, not a
+// measurement, and it is the design's own proposal accepted as a default: it
+// is roughly the length of the lanes this tool is actually run for, long
+// enough that a lead does not have to think about it and short enough that a
+// watch nobody cancelled stops typing into a pane the same day it was set. Do
+// not read it as derived from anything. If it turns out wrong, the evidence
+// is a real lane where a watch expired while its crew was still working, or
+// one that outlived its lead by long enough to be a nuisance - and the fix is
+// this constant, not a redesign.
+const STANDING_WATCH_LIFETIME_SECONDS = 4 * 60 * 60;
+
+// A standing watch stores NO explicit list. Its membership is a query over
+// the project's running kind='agent' rows, evaluated on every tick, which is
+// the entire point: a worker spawned after the watch was set is watched
+// without anyone re-declaring anything. Chris's own reason for choosing the
+// crew over a named set is that his work pattern spins workers up and down
+// mid-flight, so a named set re-introduces this todo's bug just later in the
+// sequence.
+//
+// So `watch` keeps its '[]' default. What that buys is NOT mixed-version
+// safety - see src/db.ts's migration for why that argument was false, and for
+// the true reason kind stays 'idle_any'. What it does buy is real: deliver()
+// calls watchedTail() unconditionally, and for a NON-empty list that runs
+// capture-pane for up to three agents and embeds their screens in the body.
+// An empty list is what keeps a compact roster from arriving as three worker
+// terminals pasted into a lead's pane, plus three tmux forks per notice in the
+// hottest loop hive has.
+// THE WATCH AND ITS OWN STARTING CURSOR ARE ONE WRITE. seedGoneCursor records
+// every worker already dead when this watch was set, which is what lets
+// standingGoneRows drop its `closed_at >= created_at` bound entirely - both
+// stamps are whole seconds, so that comparison reported a worker that died
+// 0.9s before the watch and had no correct direction to be flipped to (see
+// standingGoneRows in src/scheduler.ts). One transaction, because a worker
+// that dies BETWEEN the INSERT and the seed would otherwise be written into
+// the cursor as history and never reported at all - the failure this replaced
+// the comparison to avoid.
+//
+// ONE STANDING WATCH PER (PROJECT, OWNER), refused rather than allowed. Two
+// watches over one crew report every finish twice for four hours and leave two
+// wake ids to find before the pasting stops, and the way a lead gets there is
+// not exotic: calling again after a restart, or having forgotten. The refusal
+// names the existing id so the answer is one call.
+//   SCOPED TO THE OWNER, NOT THE PROJECT, and that boundary is deliberate.
+//   Refusing project-wide would stop a SECOND LEAD from watching a crew it
+//   shares, which decides the cross-lead question todo 315 comment 631 item 4
+//   records as explicitly UNANSWERED - and this lane does not get to settle it
+//   by picking a WHERE clause.
+//   Not narrowed to (project, owner, deliver_actor) either, which would allow
+//   one lead to watch its crew and have a reviewer told as well: a second
+//   watch is a second full report and a second cursor, and a caller that wants
+//   a different target can cancel and re-set with deliver_to. Refusing more is
+//   the safer direction for a defect whose complaint is "nothing refuses".
+// INSIDE THE TRANSACTION, so two concurrent calls cannot both read "none" and
+// both insert. .immediate() takes SQLite's writer slot up front, which is what
+// makes that check and the INSERT one decision.
+const openStandingWatch = db.transaction(
+  (
+    projectId: number,
+    owner: string,
+    body: string,
+    deliverActor: string,
+    deliverPane: string,
+    maxWait: number,
+  ): { id: number; max_wait_at: string } => {
+    const existing = db
+      .prepare(
+        `SELECT id, max_wait_at FROM timers
+          WHERE project_id = ? AND owner = ? AND watch_scope IS NOT NULL AND ${ACTIVE_TIMER_WHERE}
+          ORDER BY id LIMIT 1`,
+      )
+      .get(projectId, owner) as { id: number; max_wait_at: string | null } | undefined;
+    if (existing !== undefined) {
+      throw new Error(
+        `You already have a standing watch on this project: wake #${existing.id}, which expires at ` +
+          `${existing.max_wait_at ?? "an unrecorded time"}. It is still watching the whole crew, including ` +
+          "workers spawned since you set it, so a second one would report every finish twice and leave two " +
+          `wake ids to cancel. Use it, or wake_cancel(wake_id: ${existing.id}) first if you want to change ` +
+          "its body, its lifetime or its deliver_to.",
+      );
+    }
+    const row = db
+      .prepare(
+        `INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at)
+         VALUES (?, ?, ?, 'idle_any', ?, ?, ?, datetime('now', printf('+%d seconds', ?)))
+         RETURNING id, max_wait_at`,
+      )
+      .get(projectId, owner, body, WATCH_SCOPE_PROJECT, deliverActor, deliverPane, maxWait) as {
+      id: number;
+      max_wait_at: string;
+    };
+    seedGoneCursor(row.id, projectId);
+    return row;
+  },
+);
+
+function createStandingWatch(
+  projectId: number,
+  args: { body: string; max_wait_seconds?: number; deliver_to?: number | string },
+): Record<string, unknown> {
+  const delivery = resolveDelivery(projectId, args.deliver_to);
+  const maxWait = args.max_wait_seconds ?? STANDING_WATCH_LIFETIME_SECONDS;
+  const row = openStandingWatch.immediate(
+    projectId,
+    currentActor(),
+    args.body,
+    delivery.actor,
+    delivery.pane,
+    maxWait,
+  );
+  // The crew AS IT STANDS, names only: a lead needs to know what it just
+  // started watching, and a slim receipt cannot confirm what it does not echo
+  // (.claude/rules/tool-contract.md). Deliberately not the provenance block
+  // the one-shot returns - that is per-agent decoration for a fixed list,
+  // and this list is not fixed. It is a snapshot, not the watch's membership.
+  const crew = db
+    .prepare(
+      `SELECT name FROM agents
+        WHERE project_id = ? AND kind = 'agent' AND status = 'running' AND actor_id != ?
+        ORDER BY id`,
+    )
+    .all(projectId, currentActor()) as { name: string }[];
+  return {
+    wake_id: row.id,
+    scope: WATCH_SCOPE_PROJECT,
+    standing: true,
+    watching_now: crew.map((c) => c.name),
+    expires_at: row.max_wait_at,
+    max_wait_seconds: maxWait,
+    deliver_to: delivery.actor,
+    note:
+      "Standing watch: it reports EACH crew member as it finishes or goes away, including workers spawned " +
+      "after this call, and keeps watching until it expires or you wake_cancel it. Agents already idle now " +
+      "DO count and are reported on the first tick - unlike mode=any, deliberately, because a worker that " +
+      "finished before the watch was set is exactly the finish a one-shot loses. Go quiet.",
+  };
+}
 
 export function registerWakes(server: McpServer): void {
   server.registerTool(
@@ -263,18 +418,41 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). mode=any fires on the first fresh idle transition; mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now). Use instead of polling workers. Refuses a lead target: a lead has no idle/working state channel.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over this project's whole crew, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
       inputSchema: {
-        agents: z.array(agentRefParam).min(1).describe("Agents to watch."),
+        agents: z
+          .array(agentRefParam)
+          .min(1)
+          .optional()
+          .describe("Agents to watch, as a ONE-SHOT. Mutually exclusive with scope."),
         body: z.string(),
-        mode: z.enum(["any", "all"]).optional().describe("Defaults to any."),
+        mode: z.enum(["any", "all"]).optional().describe("Defaults to any. Only meaningful with agents."),
+        // Todo 315. A single-value enum is the shape on purpose, not a
+        // placeholder: a watch is (owner, SCOPE, lifetime), and scope takes
+        // project / group / list (.claude/sessions/decisions/2026-08-08-
+        // watch-membership-is-a-parameter.md). Only the crew ships. Groups
+        // are blocked on agent labels, which do not exist - an agent has a
+        // name, a kind and a project, nothing to group by - and on an
+        // undecided overlap-dedup rule; list scope is what agents=[...]
+        // already is. Widening this enum is the extension, and a boolean
+        // `standing: true` here would have to be replaced by one.
+        scope: z
+          .enum(["project"])
+          .optional()
+          .describe(
+            "Watch this project's whole crew as a STANDING watch that keeps watching after each finish, " +
+              "including workers spawned later. Mutually exclusive with agents.",
+          ),
         max_wait_seconds: z
           .number()
           .int()
           .positive()
           .optional()
           .describe(
-            "How long to wait for idle before firing anyway. Defaults to 900. Not a hard deadline: delivery holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
+            "For agents=[...]: how long to wait for idle before firing anyway, default 900. For " +
+              "scope=\"project\": THE WATCH'S LIFETIME, default 14400 (4 hours), after which it delivers one " +
+              "last wake saying it has expired and stops watching. Not a hard deadline either way: delivery " +
+              "holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
           ),
         deliver_to: agentRefParam.optional().describe("Deliver to a spawned agent instead of this session."),
         project_id: projectIdParam,
@@ -283,8 +461,33 @@ export function registerWakes(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
+        // The two shapes are refused LOUDLY rather than resolved by a
+        // precedence rule, because every way of resolving them silently is a
+        // wake that watches something other than what the caller asked for.
+        // A standing watch computes its membership on every tick, so an
+        // `agents` list passed alongside it would simply be ignored - the
+        // caller would read a receipt naming the workers it asked for and get
+        // a watch over a different set.
+        if ((args.agents == null) === (args.scope == null)) {
+          throw new Error(
+            "wake_when_idle needs exactly one of agents=[...] (a one-shot over a named list) or " +
+              'scope="project" (a standing watch over this project\'s crew). ' +
+              (args.agents == null
+                ? "You passed neither."
+                : "You passed both, and they mean different things: a standing watch computes its own " +
+                  "membership every tick, so the list would be ignored."),
+          );
+        }
+        if (args.scope != null && args.mode != null) {
+          throw new Error(
+            `mode="${args.mode}" has no meaning for a standing watch: a standing watch reports EACH crew ` +
+              "member as it finishes, rather than firing once on the first (any) or once on the last (all). " +
+              "Drop mode, or use agents=[...] if you want one of those two.",
+          );
+        }
+        if (args.scope != null) return createStandingWatch(projectId, args);
         const mode = args.mode ?? "any";
-        const watched = args.agents.map((ref) => resolveAgentRef(projectId, ref));
+        const watched = (args.agents ?? []).map((ref) => resolveAgentRef(projectId, ref));
         // Issue #27's L4 fix round, DECISION 4/5. The lead's hook writes only
         // its append-only log row, never agents.agent_state (worker-state.md,
         // src/hook.ts's UPDATE is scoped to kind = 'agent') - so watchedStates
@@ -526,7 +729,9 @@ export function registerWakes(server: McpServer): void {
   server.registerTool(
     "wake_cancel",
     {
-      description: "Cancel a pending wake-up you own.",
+      description:
+        "Cancel a pending wake-up you own. Cancelling a standing watch also cancels any notices it has " +
+        "already filed but not yet delivered.",
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>
@@ -538,7 +743,31 @@ export function registerWakes(server: McpServer): void {
              WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
           )
           .run(args.wake_id, projectId, currentActor());
-        return { wake_id: args.wake_id, cancelled: info.changes > 0 };
+        // Todo 315. A standing watch files notices as separate timer rows, and
+        // before parent_timer_id existed they were ORPHANS: this UPDATE
+        // touches only the row it was given, so a notice filed ten seconds
+        // before the cancel still typed into the owner's pane afterwards. The
+        // scheduler carries the matching check at delivery (a notice whose
+        // parent is cancelled is cancelled rather than typed), and this is the
+        // other half of it - without this the row would stay in wake_list
+        // looking pending until a tick got round to it.
+        //
+        // Not owner-scoped a second time: the parent has already been proven
+        // to belong to this caller by the UPDATE above, and a notice carries
+        // its parent's owner by construction (insertNotice, src/scheduler.ts).
+        // Only runs when the parent was actually cancelled, so a miss - wrong
+        // id, not yours, already cancelled - takes the store's writer slot for
+        // nothing exactly as it did before.
+        const notices =
+          info.changes > 0
+            ? db
+                .prepare(
+                  `UPDATE timers SET cancelled_at = datetime('now')
+                   WHERE parent_timer_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                )
+                .run(args.wake_id).changes
+            : 0;
+        return { wake_id: args.wake_id, cancelled: info.changes > 0, cancelled_notices: notices };
       }),
   );
 

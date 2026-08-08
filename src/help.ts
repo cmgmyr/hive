@@ -80,10 +80,15 @@ The operating pattern:
   6. Workers set status="in_progress", do the work, then todo_comment the
      handoff: changed files, tests run, remaining risk. Then todo_complete.
      Completing returns newly_unblocked todo ids.
-  7. Do not poll. Set wake_when_idle(agents=[...], body="...") and go
-     quiet; hive wakes you when a worker goes idle. Read REAL output
-     (agent_output) before declaring a lane done. The human can watch live
-     with tmux attach -t hive-main.
+  7. Do not poll. Running MORE THAN ONE worker, set
+     wake_when_idle(scope="project", body="...") ONCE and go quiet: it is a
+     STANDING watch over the whole crew, it reports each worker as it
+     finishes, it covers workers you spawn later, and you never re-arm it.
+     wake_when_idle(agents=[...], body="...") is the one-shot: it fires on
+     the first finish and STOPS WATCHING the rest, so at three or more
+     workers it will lose one. Either way, read REAL output (agent_output)
+     before declaring a lane done. The human can watch live with
+     tmux attach -t hive-main.
   8. The lead reviews real diffs and output, not just summaries, then
      integrates one lane at a time.
   9. Capture handoffs in pads/todo comments BEFORE agent_close; terminal
@@ -177,10 +182,20 @@ its turn), waiting (needs permission or input). Non-claude commands show
 
   wake_set(delay_seconds, body, deliver_to?, repeat_every_seconds?) —
     one-shot or repeating wake-up
-  wake_when_idle(agents, body, mode?, max_wait_seconds?, deliver_to?) —
-    fire when watched agents go idle. mode=any (default) fires on the first
-    fresh idle transition; mode=all fires when every watched agent is idle
-    and returns already_satisfied instead of scheduling if they already are.
+  wake_when_idle(agents | scope, body, mode?, max_wait_seconds?,
+    deliver_to?) — fire when workers go idle. Pass exactly one of:
+      scope="project" — a STANDING watch over this project's whole crew.
+        It reports EACH worker as it finishes or its window dies, covers
+        workers spawned after you set it, and keeps watching until
+        max_wait_seconds (default 4 hours) or wake_cancel. Workers already
+        idle DO count, deliberately. Use this whenever more than one worker
+        is running. ONE PER PROJECT: setting a second is refused and names
+        the one already running, so calling twice costs nothing.
+      agents=[...] — a ONE-SHOT over a named list. mode=any (default) fires
+        on the first fresh idle transition and then STOPS WATCHING the
+        others; mode=all fires when every watched agent is idle and returns
+        already_satisfied instead of scheduling if they already are.
+        Agents already idle when it was set do not count.
   wake_get(wake_id) — read one wake-up by id, with its untruncated body
     (wake_list truncates at 120 chars)
   wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?) — edit

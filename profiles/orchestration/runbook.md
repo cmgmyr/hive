@@ -53,7 +53,10 @@ COLD BOOT (after a crash, a reboot, or a closed terminal)
   what the previous session was mid-way through.
 
 STANDING RULES
-- Do not poll workers. wake_when_idle(agents=[...]) and go quiet.
+- Do not poll workers. wake_when_idle(scope="project") once and go quiet:
+  it reports each worker as it finishes and keeps watching, including ones
+  spawned later. wake_when_idle(agents=[...]) is the one-shot and stops
+  watching the rest after the first finish.
 - Read real diffs and agent_output before calling a lane done.
 - Capture handoffs in todo comments or pads BEFORE agent_close.
 - Anything outward-facing waits for explicit human approval.

@@ -566,6 +566,141 @@ CREATE TABLE wake_block_notices (
   PRIMARY KEY (timer_id, agent_id, blocked_since)
 );
 `,
+  // Todo 315, the standing watch. wake_when_idle is a one-shot: it fires once
+  // and stops watching, so at three to five workers a lead that sets one and
+  // goes quiet - which is what the runbook tells it to do - is structurally
+  // guaranteed to miss a finish. These three schema changes are what a watch
+  // that KEEPS watching needs.
+  //
+  // watch_scope IS A NULLABLE FLAG ON AN idle_any ROW, deliberately NOT a new
+  // timers.kind value. THE REASON IS THE SCHEMA CHANGE, AND THE FIRST VERSION
+  // OF THIS COMMENT GAVE A DIFFERENT REASON THAT WAS FALSE - corrected here
+  // rather than quietly reworded, because it was attached to a test assertion
+  // and a false reason in that position is permanent.
+  //
+  // THE TRUE REASON. kind carries CHECK (kind IN ('delay','idle_any',
+  // 'idle_all')) above. SQLite cannot ALTER a CHECK constraint, so a new kind
+  // needs the full 12-step table rebuild - on `timers`, which carries a
+  // partial index and has live writers in every concurrent session, mid-flight,
+  // while this migration runs. That alone is enough, and it is the whole
+  // argument.
+  //
+  // WHAT THE FIRST VERSION CLAIMED, AND WHY IT WAS WRONG. It said an old
+  // scheduler treats any non-idle_any kind as idle_all and would therefore
+  // claim a standing watch as a one-shot "the moment every watched agent read
+  // idle", losing every later finish. The premise is true and the conclusion
+  // does not follow: maybeFireIdle's idle_all branch reads
+  // `states.length > 0 && states.every(...)`, and that length guard predates
+  // this lane. A standing watch stores watch='[]' under EITHER design, because
+  // its membership is a query rather than a list, so an old scheduler computes
+  // an empty states array and the length guard is false. Both designs degrade
+  // identically: no early firing at all, one late wake at max_wait_at. The
+  // flag buys nothing here that a new kind would not also buy.
+  //
+  // WHAT AN OLD SCHEDULER ACTUALLY DOES WORSE, which is the honest
+  // mixed-version cost and is NOT about kind at all: it has no
+  // noticeStillDeliverable (src/scheduler.ts), so it will type a notice whose
+  // parent watch was already cancelled, or one that has sat pending for hours,
+  // into a lead's pane - the exact orphan the parent link below exists to
+  // prevent. That window is self-closing and ends when every session has
+  // restarted onto this code, the same family as the mixed-version windows
+  // #71 and #75 already accept.
+  //
+  // ONE COLUMN, NOT A `standing` FLAG PLUS A SCOPE. Membership is a parameter
+  // - project / group / list (.claude/sessions/decisions/2026-08-08-watch-
+  // membership-is-a-parameter.md) - and only 'project' ships. Two columns
+  // could disagree with each other (standing with no scope, a scope that is
+  // not standing) and would need a rule for what that means; one column cannot.
+  // NULL means "the explicit list in `watch`, fire once", which is every row
+  // written before this migration and every one-shot written after it. No
+  // CHECK constraint, because ALTER TABLE cannot add one; src/tools/wakes.ts
+  // is the single writer and validates the value there.
+  //
+  // parent_timer_id: a standing watch never fires itself, it FILES a due-now
+  // notice timer to its owner. Those notices were orphans in todo 314's
+  // version of this mechanism - wake_cancel updates only the row it is given,
+  // and `hive lead`'s restart re-points every active lead-owned timer at the
+  // fresh pane (src/cli.ts), so a stale notice could type into a lead's pane
+  // days after the watch that filed it was cancelled. The link is what lets
+  // wake_cancel reach the children and lets delivery refuse a notice whose
+  // parent is gone. Nullable, and NULL for every notice todo 314 files, so
+  // that path is unchanged. The partial index exists because the cascade in
+  // wake_cancel looks rows up BY this column.
+  //
+  // wake_idle_notices is the CURSOR, and it is a separate table from
+  // wake_block_notices rather than a fourth column on it, for two reasons.
+  // Widening that table's PRIMARY KEY needs a 12-step rebuild, and - the real
+  // one - a block notice and a finish notice about the same (wake, agent) in
+  // the same second would collide on a shared key and one of them would be
+  // silently dropped. Two tables make the discrimination structural. The
+  // `condition` column then discriminates WITHIN this table, between the two
+  // things a standing watch reports:
+  //   'idle'  episode = the agent's own state_changed_at, the same latch
+  //           wake_block_notices keys on and for the same reason: blocked ->
+  //           answered -> blocked again, or working -> idle -> working ->
+  //           idle, produces a different key with nothing to clear.
+  //   'gone'  episode = the agent's closed_at. THIS IS THE KEY A DYING WORKER
+  //           WOULD OTHERWISE NOT HAVE, and it is not optional polish: under
+  //           the explicit-list wake this replaces, a watched worker that goes
+  //           away fires the wake through watchedStates' GONE branch, so
+  //           shipping without it would be a STRICT REGRESSION on the case
+  //           that motivated watching a worker from outside at all (a turn
+  //           that dies mid-response cannot report itself). Project scope
+  //           makes it sharper: membership is a query over RUNNING agents, so
+  //           a dead worker does not merely lack a fresh latch, it drops out
+  //           of the watched set entirely. GONE's own `since` is null by
+  //           construction (src/scheduler.ts) and agent_close never touches
+  //           state_changed_at, so closed_at is the only moving value there
+  //           is.
+  // notice_timer_id records WHICH notice carried this episode, so a claim that
+  // was spent without ever being typed can be told apart from one that was
+  // delivered. Nullable only for the instant between the claim and the notice
+  // insert inside one transaction; nothing outside that transaction ever
+  // observes it NULL.
+  `
+ALTER TABLE timers ADD COLUMN watch_scope TEXT;
+ALTER TABLE timers ADD COLUMN parent_timer_id INTEGER REFERENCES timers(id) ON DELETE CASCADE;
+CREATE INDEX idx_timers_parent ON timers(parent_timer_id) WHERE parent_timer_id IS NOT NULL;
+
+CREATE TABLE wake_idle_notices (
+  timer_id INTEGER NOT NULL REFERENCES timers(id) ON DELETE CASCADE,
+  agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  condition TEXT NOT NULL,
+  episode TEXT NOT NULL,
+  notice_timer_id INTEGER,
+  notified_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (timer_id, agent_id, condition, episode)
+);
+`,
+  // Todo 315, from the /simplify pass on this lane's own diff, and A SEPARATE
+  // ENTRY RATHER THAN A LINE ADDED TO THE ONE ABOVE because MIGRATIONS is
+  // append-only (.claude/rules/store-and-datadir.md). The entry above has
+  // already been applied to real stores; editing it would leave those stores
+  // without this index forever, since a version already in the migrations
+  // table is never re-run.
+  //
+  // WHAT IT FIXES. pruneStateLog's retention gate reads
+  // "SELECT 1 FROM wake_idle_notices WHERE notified_at < ... LIMIT 1" on every
+  // tick, in every session on the machine. Without an index that is a SCAN,
+  // and with it a SEARCH on a covering index - checked with EXPLAIN QUERY PLAN
+  // over a 5,000-row scratch store, which is the whole argument. An earlier
+  // version of this comment also carried a millisecond figure for the scan;
+  // it was relayed from a /simplify agent rather than measured by anyone who
+  // wrote this line (.claude/sessions/decisions/2026-08-06-a-relayed-finding-
+  // is-not-a-verified-one.md), and a number that reads as evidence and is not
+  // is worse here than no number. The plan difference is the evidence. The
+  // wake_block_notices gate beside it has the same shape and no index, and
+  // that was fine on the evidence available: its own migration comment says
+  // notified_at is not indexed and the matching case is a scan, accepted
+  // because the table is empty on nearly every machine. THIS TABLE IS THE ONE
+  // WHERE THAT ARGUMENT DOES NOT HOLD - a standing watch writes a row per
+  // crew member per finish for its whole life, and retention keeps them for
+  // seven days, so the table is designed to be non-empty during exactly the
+  // workflow this lane is asking leads to adopt. The scan would grow with
+  // adoption, which is the wrong direction for a per-tick read.
+  `
+CREATE INDEX idx_wake_idle_notices_notified ON wake_idle_notices(notified_at);
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

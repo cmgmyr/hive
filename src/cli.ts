@@ -1286,7 +1286,10 @@ board and write a fresh "board" carrying forward only what is still live.
 History stays readable with pad_list(include_archived=true).
 
 STANDING RULES
-- Do not poll workers. Use wake_when_idle and go quiet.
+- Do not poll workers. With more than one running, set
+  wake_when_idle(scope="project") once and go quiet: it reports each worker
+  as it finishes and keeps watching. The agents=[...] form is a one-shot and
+  stops watching the rest after the first finish.
 - Read real diffs and agent_output before calling a lane done.
 - Record decisions in pads or todo comments; sessions die, the store lives.
 - Anything outward-facing (pushes, published PRs, posted reviews) waits

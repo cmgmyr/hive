@@ -33,7 +33,7 @@ lead  ▸ reads the runbook and board pads, lists open todos, proposes lanes
 you   ▸ approve the plan
 lead  ▸ agent_spawn("api"), agent_send(task + todo 12)
         agent_spawn("ui"),  agent_send(task + todo 14)
-        wake_when_idle(["api", "ui"]) … goes quiet
+        wake_when_idle(scope="project") … goes quiet, and stays watched
         (both workers visible in tmux panes; watch or take over any of them)
 lead  ▸ [hive wake #3] "api" went idle: reads the diff and the handoff comment,
         completes todo 12, dispatches the todo it just unblocked
@@ -223,7 +223,7 @@ tmux -CC attach -t hive-main  # iTerm native windows/tabs
 
 ### Wake-ups, not polling
 
-Spawned `claude` workers carry Claude Code hooks (wired via `--settings`, nothing written into your repo) that report exact state into the store the moment it changes: `working`, `idle`, or `waiting` for permission. The lead sets `wake_when_idle` on its workers and goes quiet; when a worker goes idle, the wake-up body is typed into the lead's terminal as a fresh user turn, prefixed `[hive wake #N]`. `wake_set` gives plain delayed or repeating wake-ups. The scheduler runs inside every hive server instance with atomic claims, so there is no daemon; wake-ups fire as long as any session is open.
+Spawned `claude` workers carry Claude Code hooks (wired via `--settings`, nothing written into your repo) that report exact state into the store the moment it changes: `working`, `idle`, or `waiting` for permission. The lead sets `wake_when_idle` and goes quiet; when a worker goes idle, the wake-up body is typed into the lead's terminal as a fresh user turn, prefixed `[hive wake #N]`. `wake_when_idle(scope: "project")` is a **standing watch** over the whole crew: it reports each worker as it finishes or its window dies, it covers workers spawned after it was set, and it keeps watching until it expires or is cancelled, so a lead running several workers never has to re-arm it and cannot miss a finish in the gap. `wake_when_idle(agents: [...])` is the one-shot version over a named list, which stops watching the others once it fires. `wake_set` gives plain delayed or repeating wake-ups. The scheduler runs inside every hive server instance with atomic claims, so there is no daemon; wake-ups fire as long as any session is open.
 
 To receive wake-ups, a lead must itself run inside tmux (workers always can). Leads started with `hive` get this automatically.
 
@@ -404,7 +404,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_close` | Kills the worker's window and marks it closed | After capturing handoffs; terminal output is not retained |
 | **wake-ups** | | |
 | `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action) |
-| `wake_when_idle` | Fires when watched workers go idle, using exact hook state | The lead's main loop: dispatch, set this, go quiet; never poll |
+| `wake_when_idle` | Fires when workers go idle, using exact hook state. `scope="project"` is a standing watch over the whole crew that keeps watching and covers workers spawned later; `agents=[...]` is a one-shot over a named list | The lead's main loop: dispatch, set the standing watch once, go quiet; never poll |
 | `wake_list` | Lists pending wake-ups, plus recently delivered ones with their typed/held/confirmed state | To see what is scheduled, and whether a fired wake actually landed |
 | `wake_get` | Reads one wake-up by id, with its untruncated body | To see exactly what a wake will say, past `wake_list`'s 120-char cap |
 | `wake_update` | Edits a pending wake-up you own in place, keeping its id | To reschedule (`delay_seconds`, relative to now) or edit the body/repeat interval without cancel-and-reset |
