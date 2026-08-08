@@ -47,6 +47,7 @@ import {
 } from "./mcpConfig.js";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate } from "./db.js";
+import { isLowHeadroom, ptyHeadroom } from "./ptys.js";
 import {
   agentProjectPin,
   currentActor,
@@ -2242,6 +2243,83 @@ function reportMcpRegistrations(project: Project | null): void {
 // the same shape todo 298 closed on the MCP surface, where a misspelled key
 // silently disarmed a guard, and an update script gating on --strict is
 // exactly the caller that would never notice.
+// Todo 311. The 2026-08-07 morning incident: a box hit its PTY ceiling (518
+// allocated against kern.tty.ptmx_max=511), every tmux new-session/split/
+// respawn failed with "fork failed: Device not configured", and that string
+// named nothing a human could act on -- the path from it to "you are out of
+// PTYs" took five separate probes across a whole morning while both lanes
+// stalled. This is the check that string should have pointed at.
+//
+// Not `check()`: ptyHeadroom() never throws (see src/ptys.ts), and an
+// unsupported platform or a probe failure both mean "say nothing", a third
+// outcome `check()`'s ok/FAIL pair has no room for.
+function reportPtyHeadroom(): void {
+  const headroom = ptyHeadroom();
+  if (!headroom) {
+    // Unmeasurable platform (anything but darwin/linux) or a probe failure
+    // (missing sysctl, unreadable /proc, no `ps` on PATH). Silence,
+    // deliberately -- this is one additive, read-only check inside a
+    // command that already has plenty of other reasons to be red.
+    return;
+  }
+  const free = headroom.max - headroom.allocated;
+  // "in use", not "allocated", and the word is load-bearing on darwin: what
+  // was measured there is ttys with a live process on them, which is a LOWER
+  // BOUND on what the kernel has allocated, not the allocation itself. See
+  // ptyHeadroom's own comment for why that is the best available probe (macOS
+  // publishes kern.tty.ptmx_max and NO counter to go with it -- checked, the
+  // whole `sysctl -a` tty namespace on this box is that one key) and for the
+  // direction the error runs in. Linux's number IS the kernel's count, from
+  // /proc/sys/kernel/pty/nr, so one field carries two different KINDS of
+  // number and the honest word covers both.
+  if (!isLowHeadroom(headroom)) {
+    info("ptys", `${headroom.allocated} of ${headroom.max} in use (${free} free)`);
+    return;
+  }
+  // NON-GATING (plain warn(), never gatingWarn()): this names a machine
+  // condition worth a look, not a broken hive install, the same distinction
+  // todo 292's decision draws for the sub-floor interpreter and hive.yml
+  // warns elsewhere in this function.
+  //
+  // THIS WARN IS MACHINE-STATE-DEPENDENT, and two tests diff doctor's
+  // aggregate warning count across two runs and assume the delta is exactly
+  // the one warn under test (test/config-warnings.test.mjs,
+  // test/interpreter.test.mjs). Accepted, not overlooked, and recorded here
+  // because it is this line that would break them: for the delta to move,
+  // the box would have to cross the pty threshold in the seconds BETWEEN the
+  // two doctor runs, and the only box that does is one already at its
+  // ceiling -- where the suite is failing far louder with "fork failed:
+  // Device not configured" on every tmux create, which is the incident at
+  // the top of this comment. This warn also joins a class rather than
+  // creating one: the lead-row warn, stuck foreign-socket rows and a stray
+  // view session are all machine-state-dependent already and carry the same
+  // exposure. Fixing it would mean teaching the shared warningCount() helper
+  // to stop meaning "the number on the summary line", which is the contract
+  // two other test files read it for.
+  //
+  // The orphan count is a CANDIDATE count, not reclaimable capacity, and the
+  // reason is NOT that some of them are live -- by construction none of them
+  // are, because a live pane's shell is parented to the tmux server and
+  // never to launchd (src/ptys.ts, and the dead-end it cites). Measured on a
+  // swept box on 2026-08-08: 26 ttys in use, 14 ppid-1 `-zsh`, all dated the
+  // previous afternoon, and every live pane's shell parented to a tmux
+  // server pid instead. The two real reasons to keep it a candidate count: a
+  // DETACHED TERMINAL A HUMAN STILL WANTS also reads as ppid 1, so orphaned
+  // is not the same as unwanted; and NOT EVERY PTY IS HELD BY A SHELL, so
+  // this is a lower bound on one class of holder rather than headroom you
+  // would get back. Worded as "worth looking at", never "you can free N",
+  // and left out of the line entirely when it is zero.
+  warn(
+    "ptys",
+    `${headroom.allocated} of ${headroom.max} in use (${free} free), below the safety margin`,
+    "worth looking at: orphaned tmux servers on scratch sockets; login shells reparented to " +
+      `launchd (ppid 1)${headroom.orphanLoginShells > 0 ? `, ${headroom.orphanLoginShells} resident right now` : ""}`,
+    "resolve the live socket with `tmux display-message -p '#{socket_path}'` and kill others BY " +
+      "SOCKET: `tmux -S <path> kill-server`. Never by pid -- a pid-to-socket mapping has been " +
+      "observed ambiguous on a real row, and getting one wrong kills the live server.",
+  );
+}
+
 function cmdDoctor(argv: string[]): void {
   const strict = argv.includes("--strict");
   const unknown = argv.find((a) => a !== "--strict");
@@ -2279,6 +2357,7 @@ function cmdDoctor(argv: string[]): void {
     return [describeAbi(status), status.addon].join("\n        ");
   });
   check("tmux", () => execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim());
+  reportPtyHeadroom();
   check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
