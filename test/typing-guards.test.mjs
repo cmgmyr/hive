@@ -158,6 +158,15 @@ describe("agent_spawn's [hive] announcement", { skip: hasTmux ? false : "tmux is
     assert.match(receipt.note, /waiting on a choice/);
     assert.match(receipt.tail, /trust this folder/, "the tail is what proves this hit the dialog branch");
     const { output } = await mcp.call("agent_output", { name: "spawn-trust" });
+    // Immune, not just designed-safe: `output` is the pane's rendered
+    // screen, and this pane never held anything but `cat folder-trust-dialog.txt;
+    // sleep 600` plus whatever this test typed, so a false negative would need
+    // the literal bracketed "[hive]" text sitting inside that STATIC, checked-in
+    // fixture. Verified by grep across every fixture in test/fixtures/panes/ -
+    // none carry it, only bare "hive" inside cwd paths (folder-trust-dialog.txt
+    // itself has one, in its own scratch-path line). A fixture later re-recorded
+    // from a real session that happened to scroll another agent's own [hive]
+    // announcement into view would silently defeat this check.
     assert.doesNotMatch(output, /\[hive\]/, "nothing may have been typed at the dialog");
   });
 
@@ -168,6 +177,8 @@ describe("agent_spawn's [hive] announcement", { skip: hasTmux ? false : "tmux is
     assert.match(receipt.note, /waiting on a choice/);
     assert.match(receipt.tail, /Esc to cancel/, "the tail is what proves this hit the dialog branch");
     const { output } = await mcp.call("agent_output", { name: "spawn-model" });
+    // Same immunity as the folder-trust case above: model-picker-dialog.txt is
+    // static and grepped clean of "[hive]".
     assert.doesNotMatch(output, /\[hive\]/);
   });
 
@@ -229,6 +240,10 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     assert.match(receipt.note, /waiting on a choice/);
     assert.match(receipt.tail, /trust this folder/, "the receipt must show what it is being asked");
     const { output } = await mcp.call("agent_output", { name: "rename-trust" });
+    // Immune: folder-trust-dialog.txt is a static, checked-in fixture, grepped
+    // clean of "rename" in any case (a real trust prompt has no reason to say
+    // it). The only way "/rename" lands in this pane is agent_rename actually
+    // typing it, which is exactly the regression this guards.
     assert.doesNotMatch(output, /\/rename/);
   });
 
@@ -236,6 +251,7 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     const receipt = await renamed("rename-model", "model-picker-dialog.txt");
     assert.equal(receipt.retitled, false);
     const { output } = await mcp.call("agent_output", { name: "rename-model" });
+    // Same immunity as the folder-trust case above.
     assert.doesNotMatch(output, /\/rename/);
   });
 
@@ -261,6 +277,8 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     // caller at a name nothing answers to.
     assert.match(receipt.note, /rename-pending-renamed/);
     const { output } = await mcp.call("agent_output", { name: "rename-pending-renamed" });
+    // Immune: real-input.txt is also grepped clean of "rename" (see the two
+    // dialog cases above for the same reasoning).
     assert.doesNotMatch(output, /\/rename/, "the command must never have been typed");
     // Deliberately not asserting the fixture's own text is still on screen:
     // the pane cats it, so that can never fail. See the matching note in the
@@ -325,6 +343,11 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
       /Pass text or keys, not both/,
     );
     const { output } = await mcp.call("agent_output", { name });
+    // Immune: ready-idle.txt is static and grepped clean of "hello", and
+    // send-both gets its own tmux window (spawnShowing's placement: "window"),
+    // so there is no other test's typing to bleed into this pane either. A
+    // fixture edited to include example text containing "hello" (a worked
+    // example in a transcript, say) would silently defeat this check.
     assert.doesNotMatch(output, /hello/, "neither the text nor the keys may have reached the pane");
   });
 
@@ -504,6 +527,12 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
         /this project's lead session.*no.*supervisor above it.*non-lead caller/s,
       );
       const { output } = await mcp.call("agent_output", { name });
+      // Immune: ready-idle.txt is static and grepped clean of a literal "^C"
+      // (Claude Code's idle chrome does not print one). This pane also gets
+      // its own tmux window, so no earlier test's own Ctrl-C echo can bleed
+      // in. A fixture recaptured from a screen that shows "^C to exit"-style
+      // chrome, or a real Ctrl-C echoed by something upstream of this test,
+      // would silently defeat this check.
       assert.doesNotMatch(output, /\^C/, "the C-c must never have reached the pane");
     });
 

@@ -59,6 +59,12 @@ describe("hive start refuses a process named \"lead\"", { skip: hasTmux ? false 
     const { code, stdout } = await runCli(["start", "lead"], opts);
 
     assert.equal(code, 0, stdout);
+    // IMMUNE to generated data: stdout also carries this run's scratch
+    // project path, but that path (and every other generated value in this
+    // file - session name, pids) is built from mkdtemp's alnum-only random
+    // suffix or a numeric pid, neither of which can ever produce a SPACE.
+    // "already running" is only ever printed by cmdStart's own reservedName
+    // guard (src/cli.ts ~line 359); nothing generated here can spell it.
     assert.doesNotMatch(stdout, /already running/, "the real lead's row must not stand in for the process");
     assert.match(stdout, /reserved/);
 

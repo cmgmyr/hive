@@ -127,6 +127,35 @@ function reset() {
   db.exec("DELETE FROM agent_state_log; DELETE FROM agents;");
 }
 
+// Todo 323 audit (generated-data assertions). EVERY describe in this file
+// that asserts against the FULL stdout of `hive status` or `hive doctor` -
+// not just the two immediately below; also "hive doctor names a
+// foreign-socket row it cannot sweep" further down, and any other doctor-
+// asserting block added to this file later - is covered by this note.
+// Corrected by counselors review from an earlier version that said "the two
+// describes below," which undersold its own scope and would have read as
+// file-wide to a reader while actually applying only to the first two.
+// Both commands print real scratch paths as part of their own, unrelated
+// output: `hive status` prints `${project.name}  (${project.path})`, and
+// `hive doctor` prints `database: ${dataDir} (schema vN)` plus a
+// `project ${project.name} (${project.path}): ...` line - project.path,
+// project.name and dataDir are all built from scratchDirs()'s
+// mkdtempSync() calls (helpers.mjs), so the haystack every doesNotMatch
+// in this file runs against genuinely can carry generated data.
+//
+// What makes almost every doesNotMatch in this file safe anyway: mkdtempSync's
+// random six-character suffix is drawn only from node's own alphabet,
+// [0-9a-zA-Z] - it can never contain a space, ':', '(', ')', or '-' (those
+// characters only appear in the FIXED "hive-test-"/"project-" prefixes
+// around the random suffix, and neither prefix ever ends in text a pattern
+// below also requires immediately before one of those characters). Every
+// doesNotMatch pattern in this file's doctor/status describes is anchored on
+// at least one such character, so the random suffix alone cannot satisfy it
+// - this was checked at each site, not assumed, including the foreign-socket
+// describe's own two hits. The one pattern with no such
+// anchor at all, `/STOP/` in the sanitizeTail cap test below, is fixed
+// separately by scoping it to the worker's own report section instead of
+// relying on this fact.
 describe("hive status decorates worker lines with provenance", () => {
   it("renders a normal claude worker with its event and age, columns intact", async () => {
     reset();
@@ -239,6 +268,51 @@ describe("hive status decorates worker lines with provenance", () => {
 
     assert.equal(code, 0, stdout);
     assert.doesNotMatch(stdout, /last log event/);
+  });
+});
+
+// Todo 323. The trailing-marker cap test below used to assert a bare
+// `doesNotMatch(stdout, /STOP/)` against the whole doctor report, which (per
+// the file-level note above) has no punctuation anchor to protect it from a
+// scratch path's random suffix. Pinned here in the shape
+// test/attach-mode.test.mjs uses: prove the OLD pattern really would match a
+// realistic string with "STOP" landing in the scratch path rather than the
+// tail, and the NEW one, scoped to the worker's own report section, does
+// not; then prove the new one still catches the real trailing marker it
+// exists to catch.
+//
+// Counselors review (both seats, independently): a first attempt scoped the
+// pattern with `[\s\S]*?`, a NON-greedy "anything up to the next STOP" -
+// which has no upper bound, so it happily matches past worker-long's own
+// block into whatever doctor prints afterward (sessions, backups, a LATER
+// worker's own tail). That is the identical defect this lane exists to
+// close, just moved down the string. Fixed by bounding the match to
+// worker-long's own CONTINUATION LINES: report() (src/cli.ts:1845-1848)
+// indents every line after a block's first with exactly 8 spaces, and the
+// next top-level entry always starts at column 2, so
+// `(\n {8}[^\n]*)*` cannot cross into the next block or worker.
+describe("the /STOP/ negative assertion itself", () => {
+  const STDOUT_WITH_STOP_IN_THE_SCRATCH_PATH =
+    "database: /private/tmp/hive-test-STOPxy/hive.db (schema v9)\n" +
+    "  info  worker worker-long: last log event: 5s ago\n        tail:\n        | LINE-05-...\n";
+
+  it("ignores STOP inside an earlier line's scratch path, which random mkdtemp characters can produce", () => {
+    assert.match(STDOUT_WITH_STOP_IN_THE_SCRATCH_PATH, /STOP/, "the old assertion really did match this");
+    assert.doesNotMatch(STDOUT_WITH_STOP_IN_THE_SCRATCH_PATH, /worker worker-long:[^\n]*(\n {8}[^\n]*)*STOP/);
+  });
+
+  it("still catches a real uncapped trailing marker in the worker's own section", () => {
+    const withRealStop =
+      "  info  worker worker-long: last log event: 5s ago\n        tail:\n        | LINE-05-...STOP\n";
+    assert.match(withRealStop, /worker worker-long:[^\n]*(\n {8}[^\n]*)*STOP/);
+  });
+
+  it("does NOT bleed into a later worker's own tail, which the un-scoped [\\s\\S]*? version would have", () => {
+    const laterWorkerHasStop =
+      "  info  worker worker-long: last log event: 5s ago\n        tail:\n        | LINE-05-...\n" +
+      "  ok    sessions: hive-main\n" +
+      "  info  worker worker-other: last log event: 5s ago\n        tail:\n        | LINE-05-...STOP\n";
+    assert.doesNotMatch(laterWorkerHasStop, /worker worker-long:[^\n]*(\n {8}[^\n]*)*STOP/);
   });
 });
 
@@ -396,7 +470,20 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     for (const n of [1, 2, 3, 4]) {
       assert.doesNotMatch(stdout, new RegExp(`LINE-0${n}-`), `line ${n} of 10 is older than the 6-line cap`);
     }
-    assert.doesNotMatch(stdout, /STOP/, "each line is padded past 160 chars; the trailing marker must be cut off");
+    // Scoped to worker-long's own report section, not the whole stdout: an
+    // unscoped /STOP/ has no punctuation anchor at all (see the note above
+    // this describe), so unlike its neighbors here it would, in principle,
+    // also match a bare "STOP" spelled by random characters in the
+    // dataDir/project path doctor prints earlier in the same report.
+    // Genuinely bounded to worker-long's own block (counselors review,
+    // see "the /STOP/ negative assertion itself" above): report()'s 8-space
+    // continuation indent is what stops this from also matching a LATER
+    // worker's own leaked tail, which the earlier `[\s\S]*?` version did not.
+    assert.doesNotMatch(
+      stdout,
+      /worker worker-long:[^\n]*(\n {8}[^\n]*)*STOP/,
+      "each line is padded past 160 chars; the trailing marker must be cut off",
+    );
   });
 
   it("never fails or warns doctor's overall verdict on a worker's age alone", async () => {

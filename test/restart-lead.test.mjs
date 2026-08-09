@@ -553,6 +553,14 @@ describe(
             "then creates a brand-new one that carries none of this session's prior state, including this option",
         );
 
+        // IMMUNE to the placeholder window's own generated data: the script
+        // names it "restart-lead-placeholder-$$" (its own shell pid,
+        // scripts/restart-lead.sh), a value this test never controls or
+        // predicts. The pattern is deliberately unanchored to that suffix -
+        // it only asks whether the fixed "restart-lead-placeholder" prefix
+        // is gone - so the pid cannot cause a false pass here either way. A
+        // future caller matching the FULL name (prefix plus pid) would have
+        // to thread the pid through, which is exactly the trap this avoids.
         const windowsAfter = execFileSync("tmux", ["list-windows", "-t", `=${projSession}`, "-F", "#{window_name}"]).toString();
         assert.doesNotMatch(windowsAfter, /restart-lead-placeholder/, "the placeholder must be removed once a live lead pane is confirmed, on the success path");
 

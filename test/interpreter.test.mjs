@@ -58,6 +58,50 @@ function writeUserConfig(config) {
 // invert. Derived from execPath, so it cannot collide with it.
 const OTHER_NODE = `${process.execPath}-some-other-build`;
 
+// A NOTE ON THIS FILE'S doesNotMatch ASSERTIONS, checked against the shape
+// that broke test/attach-mode.test.mjs (see its header): a negative assertion
+// whose haystack is wider than the thing under test can match GENERATED DATA
+// for a reason unrelated to what the test names. Audited (todo 323): every
+// doesNotMatch below was traced to its haystack's construction and none is
+// exposed, but for THREE different reasons worth stating rather than
+// assuming (counselors review: an earlier version of this note claimed
+// "every pattern here" fell into the first reason, which was false for at
+// least two sites - correcting that here rather than leaving a universal
+// claim a reader would trust file-wide).
+//
+// Most of the real CLI stdout/stderr checked here (doctor, setup) DOES carry
+// generated data elsewhere in the string - dirs.tmp and dirs.projectDir are
+// mkdtemp() paths, and writeScratchAddon()'s root and status.addon can appear
+// in a diagnostic line. What makes MOST of those assertions immune is that
+// their pattern is a multi-word literal ("npm install && npm run build",
+// "claude mcp add", the OFFER sentence) or a column-aligned marker
+// ("warn {2}dispatcher", "ok {4}better-sqlite3: ..."), and mkdtemp's random
+// suffix is six characters from a plain alphanumeric set - no spaces, no
+// "&&", no underscores. A path built from that suffix plus this file's own
+// (also space-free) literal segments structurally cannot spell any of these
+// patterns, the way attach-mode's scratch suffix could spell "-CC": that flag
+// was two characters wholly inside the alphanumeric charset a path can
+// produce.
+//
+// One site does NOT fit that shape and needs its own reason: the
+// `durabilityLines()` check (`/cannot be removed|is yours to keep\b|safe/`)
+// includes the bare word "safe", four letters fully inside mkdtemp's own
+// alphabet - the same size of exposure as the "gone" this lane fixed
+// elsewhere, not covered by the punctuation argument above. It is immune
+// anyway, but for the THIRD reason below: durabilityLines()'s "unowned"
+// branch (src/dispatcher.ts) returns a fixed literal string regardless of
+// its input, and every path this call site passes it is a hand-typed
+// fixture (`/opt/homebrew/bin/node`, etc.), never one resolved at run time -
+// so no generated data reaches this haystack at all, the same shape as the
+// AbiStatus fixtures below.
+//
+// The rest never have generated data in the specific string being matched at
+// all: the "mismatch"/"missing"/"linuxMismatch" AbiStatus objects the
+// abi.ts-unit-level tests build by hand carry a literal "/x/..." addon path
+// the test itself wrote, not one resolved at run time, and describeAbi()'s
+// "napi" branch (the /NaN/ check) never reads status.addon in the first
+// place, so no path - generated or not - reaches that string.
+
 describe("interpreter and ABI", () => {
   before(async () => {
     const init = await runCli(["init"], doctorOpts);
@@ -387,6 +431,11 @@ describe("interpreter and ABI", () => {
     assert.match(status.stderr, new RegExp(`provides Node-API ${process.versions.napi}`));
     // The advice that started this: a source build reads the same binding.gyp,
     // so telling the user to build is telling them to reproduce the problem.
+    // status.stderr DOES carry generated data here - the scratch addon path
+    // under root (dirs.tmp's mkdtemp suffix) prints on its own line above
+    // this check - but the pattern needs a literal space and "&&", which no
+    // path built from that suffix or this file's own literal segments can
+    // contain. See the file-level note near OTHER_NODE.
     assert.doesNotMatch(status.stderr, /npm install && npm run build/);
     assert.match(status.stderr, /Rebuilding does NOT help/);
     // stdout is a JSON-RPC stream for the MCP server; the diagnostic stays off it.
@@ -440,6 +489,11 @@ describe("interpreter and ABI", () => {
     const { code, stdout, stderr } = await runNode(cli, ["status"], { ...doctorOpts, node: process.execPath });
     assert.equal(code, 1);
     assert.match(stderr, /hive: cannot run under this Node/);
+    // stderr also carries the scratch addon path (status.addon, under root)
+    // on its own line, same as the napi-floor case above. Still immune: an
+    // mkdtemp suffix and this file's own literal path segments are plain
+    // alphanumeric, never underscores, so nothing generated here can spell
+    // "ERR_DLOPEN_FAILED". See the file-level note near OTHER_NODE.
     assert.doesNotMatch(stderr, /ERR_DLOPEN_FAILED/, "the raw dlopen error is what this replaces");
     // stdout is a JSON-RPC stream for the MCP server; the diagnostic stays off it.
     assert.equal(stdout, "");

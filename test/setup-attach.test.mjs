@@ -109,6 +109,14 @@ describe("hive doctor's attach mode line", () => {
     assert.equal(init.code, 0, init.stderr);
     const doctor = await runCli(["doctor"], opts);
     assert.match(doctor.stdout, /attach mode: auto \(default; set with `hive setup --attach`\)/);
+    // IMMUNE to generated data: doctor.stdout also carries this run's scratch
+    // dataDir/projectDir path, but mkdtemp's random suffix is alnum-only, so
+    // it can never spell a hyphenated, multi-word literal like
+    // "allow-passthrough" or "pane-border-status" by accident. Those two
+    // strings are only ever printed by doctor's raw-attach-options report
+    // (src/cli.ts, inside `if (mode === "raw")`), which this case never
+    // reaches because no tmux server is up. Same reasoning applies to the two
+    // doesNotMatch calls below in this describe block.
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });
 
@@ -121,6 +129,7 @@ describe("hive doctor's attach mode line", () => {
     assert.equal(setup.code, 0, setup.stderr);
     const doctor = await runCli(["doctor"], opts);
     assert.match(doctor.stdout, /attach mode: control \(set with `hive setup --attach`\)/);
+    // IMMUNE, same reasoning as above.
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });
 
@@ -157,6 +166,7 @@ describe("hive doctor's attach mode line", () => {
 
     const doctor = await runCli(["doctor"], opts);
     assert.match(doctor.stdout, /attach mode: raw/);
+    // IMMUNE, same reasoning as the first case in this describe block above.
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });
 });

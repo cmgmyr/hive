@@ -284,6 +284,10 @@ describe("agent_spawn refuses a cwd belonging to a different project", () => {
         assert.match(err.message, namedAs(projA));
         assert.match(err.message, namedAs(projB));
         assert.match(err.message, new RegExp(`locked to project ${projA.id}\\b`));
+        // Immune: err.message can carry generated mkdtemp path segments
+        // (see the escapeRegex/namedAs comment above for the class of bug
+        // that guards against), but "Pass project_id" is a fixed, capitalised,
+        // underscore-joined phrase no random alnum path fragment can spell.
         assert.doesNotMatch(err.message, /Pass project_id/);
         return true;
       });
@@ -742,6 +746,12 @@ describe(
       assert.ok(content, `env dump never appeared at ${envFile}`);
       assert.match(content, new RegExp(`HIVE_PROJECT_PATH=${escapeRegex(pinProject.path)}$`, "m"));
       assert.match(content, /^HIVE_PROJECT_LOCK=1$/m);
+      // Immune: content is a real dumped process env, so it does carry
+      // generated scratch paths (HIVE_DATA_DIR, pinProject.path, etc.), but
+      // "forged-project-path-63" is a literal this test itself invented for
+      // the bogus override a few lines up - unique text nothing else in the
+      // suite could generate, so this can only fail if the override actually
+      // survived into the child's environment, which is the real regression.
       assert.doesNotMatch(content, /forged-project-path-63/);
     });
 

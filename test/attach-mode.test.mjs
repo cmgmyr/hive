@@ -171,9 +171,20 @@ describe("attachScripts (ensureAttached's AppleScript)", () => {
       `tell application "Terminal" to do script "/opt/homebrew/bin/tmux new-session -t '=hive-1' -s ${v} ';' set-option -t ${v} destroy-unattached on"`,
     );
     // M1 (pad 80): reverting either script back to a plain `attach -t hive-1`
-    // must fail here, since neither string would match the assertions above.
-    assert.doesNotMatch(iterm, /\bmux attach -t hive-1"/);
-    assert.doesNotMatch(terminal, /\bmux attach -t hive-1"/);
+    // is what this case exists to catch. Counselors review (both seats,
+    // independently) on the todo-323 audit: a `doesNotMatch(iterm/terminal,
+    // /\bmux attach -t hive-1"/)` pair used to sit here, annotated as
+    // immune. Removed instead, for the same reason as the sibling deletion
+    // in "sets destroy-unattached on the view, not on base" directly below,
+    // which this project already used once as precedent for exactly this
+    // shape: node asserts in order, and the two exact-string `assert.equal`
+    // calls above already pin BOTH scripts character-for-character,
+    // including `new-session` where M1's regression would have printed
+    // `attach`. Any output the removed pattern could have caught already
+    // fails those equality checks first, so it could never independently be
+    // the assertion that caught a real regression - keeping it annotated as
+    // "immune" rather than removing it would have left two contradictory
+    // precedents in one file for the identical shape.
   });
 
   it("sets destroy-unattached on the view, not on base", () => {
@@ -200,6 +211,16 @@ describe("attachScripts (ensureAttached's AppleScript)", () => {
     process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
     setAttachMode("raw");
     const [iterm, terminal] = attachScripts("/opt/homebrew/bin/tmux", "hive-1");
+    // Todo 323: immune to generated data, but for a narrower reason than M1
+    // above - iterm/terminal DO embed a generated view name (dataDirTag() +
+    // process.pid). It is immune only because that generator's charset
+    // cannot produce "-CC": dataDirTag() (src/dataDir.ts) is a sha256 hex
+    // digest, and Node's digest("hex") is always lowercase, and pid is
+    // decimal digits - neither can ever contain an uppercase "CC". This is
+    // the same trap as the found bug (attach-mode's own header comment,
+    // mkdtemp's uppercase-inclusive suffix), inverted: it holds here only
+    // because THIS generator's alphabet excludes upper case. A future
+    // dataDirTag() that used base62 or uuid would inherit the bug.
     assert.doesNotMatch(iterm, /-CC/);
     assert.match(iterm, /create window with default profile command "\/opt\/homebrew\/bin\/tmux new-session/);
     assert.doesNotMatch(terminal, /-CC/);
@@ -245,6 +266,10 @@ describe(
       tmux("new-session", "-d", "-t", `=${session}`, "-s", firstView);
       try {
         const [, terminal] = attachScripts("/opt/homebrew/bin/tmux", session);
+        // Todo 323: immune to generated data by construction, not by luck -
+        // the pattern is built FROM firstView, the same generated value the
+        // haystack would contain, so the two cannot diverge for an unrelated
+        // reason the way a hand-written literal could.
         assert.doesNotMatch(
           terminal,
           new RegExp(`-s ${firstView} `),

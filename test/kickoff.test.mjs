@@ -30,6 +30,46 @@ const git = (cwd, ...args) =>
 
 const yml = (body, dir = dirs.projectDir) => writeFileSync(join(dir, "hive.yml"), body);
 
+// Todo 323 audit. "heads WORKERS as unprobed, not confirmed" below used to
+// assert `doesNotMatch(additionalContext, /gone/)` against the WHOLE digest.
+// additionalContext interpolates the seeded worker's own cwd verbatim
+// (src/kickoff.ts: `  ${a.name} [${describeForHuman(...)}] ${a.cwd}`), and
+// that test's cwd is dirs.projectDir - a real mkdtempSync() path (see
+// scratchDirs() in helpers.mjs) whose random six-character suffix is drawn
+// from [0-9a-zA-Z]. That suffix can, in principle, spell "gone" as a
+// substring, which the old bare pattern would misread as the real
+// tmux-probe state the test means to rule out - the same shape as the -CC
+// scratch-path flake in test/attach-mode.test.mjs, just far less likely
+// (four specific letters, not two). Scoping the pattern to the bracketed
+// state text right after the worker's own name removes the cwd from the
+// haystack entirely, since the cwd is only ever printed AFTER the closing
+// bracket.
+// Counselors review (both seats, independently): the fixture below had two
+// faithfulness bugs, neither of which broke the proof but both of which
+// misrepresented the real render. mkdtempSync's random suffix is always
+// exactly six characters (scratchDirs(), test/helpers.mjs), not seven
+// ("abcgone" is seven). And this describe's own seeded row (kind='agent',
+// command='claude', no state_changed_at) is reportsAgentStateLog()-true
+// (src/stateProvenance.ts:306-308), so deriveProvenance takes the no-record
+// branch, not not-instrumented: describeForHuman renders it as
+// "unknown (no record)", never "unknown (not instrumented)" (that branch is
+// for a non-claude command or non-agent kind, which this row is neither).
+describe("the 'gone' negative assertion itself", () => {
+  const CONTEXT_WITH_GONE_IN_THE_CWD_PATH =
+    "WORKERS (per the store, NOT probed; agent_list to confirm they are alive)\n" +
+    "  seeded [unknown (no record)] /private/tmp/hive-test-abgone/project-xyz123\n";
+
+  it("ignores 'gone' inside the cwd path, which is what a scratch dir's random suffix can produce", () => {
+    assert.match(CONTEXT_WITH_GONE_IN_THE_CWD_PATH, /gone/, "the old assertion really did match this");
+    assert.doesNotMatch(CONTEXT_WITH_GONE_IN_THE_CWD_PATH, /seeded \[[^\]]*gone/);
+  });
+
+  it("still catches a real 'gone' state inside the bracket", () => {
+    const withRealGone = "  seeded [gone] /private/tmp/hive-test-xxxxxx/project-yyyyyy\n";
+    assert.match(withRealGone, /seeded \[[^\]]*gone/);
+  });
+});
+
 describe("hive kickoff gates", () => {
   before(async () => {
     const init = await runCli(["init"], opts);
@@ -239,7 +279,23 @@ describe("hive kickoff gates", () => {
     // T3). tmux_target '%1' names no real pane on this isolated server, so a
     // real probe would render "gone" (src/stateProvenance.ts) - the seeded
     // row is the discriminator this assertion needs to be able to fail.
-    assert.doesNotMatch(additionalContext, /gone/);
+    //
+    // Scoped to the bracketed state text right after "seeded", not the
+    // whole digest: additionalContext also prints this worker's own cwd
+    // (dirs.projectDir, a real mkdtempSync() scratch path) immediately
+    // after the closing bracket, and that path's random suffix can in
+    // principle contain "gone" as a substring for a reason that has
+    // nothing to do with tmux-probe state. See "the 'gone' negative
+    // assertion itself" above.
+    assert.doesNotMatch(additionalContext, /seeded \[[^\]]*gone/);
+    // Counselors review: the negative alone is coupled to a row shape
+    // nothing else here pins - it would go silently vacuous forever if
+    // kickoff.ts's WORKERS render ever gained a second space before the
+    // bracket (e.g. column-alignment, matching how `hive status` already
+    // pads its own worker rows, src/cli.ts). Pin the actual current render
+    // positively too, so a reformat is caught here rather than only by
+    // this describe's own header-only /seeded/ check above.
+    assert.match(additionalContext, /seeded \[unknown \(no record\)\]/);
   });
 
   // Issue #27, step 5: confirming rather than assuming that the WORKERS

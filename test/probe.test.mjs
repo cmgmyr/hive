@@ -629,6 +629,11 @@ describe("the tools that changed how they refuse", { skip: hasTmux ? false : "tm
 
     const message = await rejects("agent_send", { name: "send-unknown", text: "hello" }, "%9402");
 
+    // Immune to generated data: probeFailed() interpolates only agent.id (a
+    // deterministic autoincrement int) and agent.name into PROBE_FAILED_NOTE,
+    // and "send-unknown" is a hardcoded literal, not a random/generated
+    // name. A caller that started reusing a randomly-generated agent name
+    // here would inherit the risk this pattern is otherwise blind to.
     assert.match(message, /could not be probed/);
     assert.doesNotMatch(message, /agent_close/, "must not tell the caller to close a live worker");
     assert.doesNotMatch(message, /spawn a new one/);
@@ -693,11 +698,19 @@ describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is no
     // outside captureFailPath (which only fails capture-pane for the MCP
     // server child, not for this test process's own PATH), so a no-op send
     // cannot pass silently.
+    //
+    // The sent text is unique to this test, not the shared "hello": livePane
+    // is one pane reused for the whole file, submit: false means no Enter is
+    // ever sent to clear it, and this describe block's other test sends its
+    // own literal text into the same pane. A generic "hello" would still be
+    // sitting on screen from that other send regardless of test order, so a
+    // shared marker would pass even if THIS test's send never reached the
+    // pane - it would just be reading the other test's leftovers.
     const id = agentRow("wait-ms-tail", livePane);
 
     const receipt = await callTool(
       "agent_send",
-      { agent_id: id, text: "hello", submit: false, wait_ms: 250 },
+      { agent_id: id, text: "hello-tail-fail", submit: false, wait_ms: 250 },
       { PATH: captureFailPath },
     );
 
@@ -706,19 +719,28 @@ describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is no
     assert.match(receipt.note, /tail could not be read/);
 
     const rendered = execFileSync("tmux", ["capture-pane", "-p", "-t", livePane], { encoding: "utf8" });
-    assert.match(rendered, /hello/, "sent: true must mean the keystrokes actually reached the pane");
+    assert.match(rendered, /hello-tail-fail/, "sent: true must mean the keystrokes actually reached the pane");
   });
 
   it("still returns the tail on the happy path, unaffected by the wrap", async () => {
+    // Its own marker text too (see the sibling test above): livePane is
+    // shared across this whole describe block, so "hello" left over from the
+    // other test would satisfy a generic match without this send having
+    // happened at all.
     const id = agentRow("wait-ms-happy", livePane);
 
-    const receipt = await callTool("agent_send", { agent_id: id, text: "hello", submit: false, wait_ms: 250 });
+    const receipt = await callTool("agent_send", {
+      agent_id: id,
+      text: "hello-happy-path",
+      submit: false,
+      wait_ms: 250,
+    });
 
     assert.equal(receipt.sent, true);
     // A hard-coded empty string would satisfy `typeof tail === "string"`
     // without proving capture happened at all, or that it captured what was
     // actually sent (counselors review on PR #47, finding 1).
-    assert.match(receipt.tail, /hello/, "the captured tail must actually show what was just sent");
+    assert.match(receipt.tail, /hello-happy-path/, "the captured tail must actually show what was just sent");
     assert.equal(receipt.note, undefined);
   });
 });

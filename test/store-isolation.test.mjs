@@ -108,6 +108,10 @@ describe("the hoist-order trap that lost a live store", () => {
     // body reaches the user as a stack trace with hive's sentence buried in
     // it, which is the shape CLAUDE.md says to avoid, and a bare
     // /refused to use its real store/ match cannot tell the two apart.
+    // Immune: stderr here is either the plain-text refusal or a genuine
+    // uncaught-exception stack trace - no scratch path, pid, or session name
+    // this suite prints is ever indented behind a leading "at ", so this can
+    // only match the real failure shape it exists to catch.
     assert.doesNotMatch(stderr, /^\s+at /m, `the refusal must not arrive as a stack trace:\n${stderr}`);
   });
 

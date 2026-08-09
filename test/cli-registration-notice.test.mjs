@@ -48,6 +48,14 @@ describe("the CLI half of the registration notice", () => {
     // unregistered directory must not put the notice into the redirected
     // file. stdout still carries cmdInit's own "Project: ..." line, so this
     // checks specifically for the notice's own text, not stdout in general.
+    //
+    // IMMUNE to generated data: stdout does carry dirs.projectDir (a scratch
+    // mkdtemp path), but the pattern is a multi-word literal with a colon and
+    // spaces. mkdtemp's random suffix is alnum-only, so no generated value in
+    // this stream can ever spell "hive: no registered project" by accident -
+    // this differs from the -CC case (test/attach-mode.test.mjs), where the
+    // colliding pattern was short enough to be drawn from the SAME alphabet
+    // as the random data.
     assert.doesNotMatch(stdout, /hive: no registered project/, "the notice must not land on stdout");
   });
 
@@ -64,6 +72,9 @@ describe("the CLI half of the registration notice", () => {
     // way to prove the SECOND call does not repeat it.
     const { code, stderr } = await runCli(["runbook"], cliOpts);
     assert.equal(code, 0, stderr);
+    // IMMUNE for the same reason as the doesNotMatch above: the pattern is a
+    // multi-word literal with a colon and spaces, which no alnum-only
+    // generated value (dirs.projectDir, dirs.dataDir) can ever spell.
     assert.doesNotMatch(stderr, /hive: no registered project/, "an already-registered cwd must not be announced again");
   });
 });

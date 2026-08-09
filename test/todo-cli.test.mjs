@@ -284,6 +284,16 @@ describe("hive todos", () => {
     assert.equal(code, 0);
     // Must NOT narrate "completed" only: --all means every status was
     // actually searched, so the message must not name one narrower than that.
+    // IMMUNE to generated data, but not "plainly": the message DOES carry a
+    // generated value (project.name, basename() of scratchDirs()'
+    // mkdtemp-random projectDir - e.g. "project-wBTbTT"). It cannot produce
+    // this match only because of WHERE it lands: cmdTodos always writes
+    // `No ${statusDesc}todos in project "${project.name}"...`, and this
+    // whole test's premise is statusDesc === "" when --all wins, so the
+    // random name sits after the fixed "todos in project \"" delimiter and
+    // can never fuse with "No " to spell "No completed todos". A future
+    // caller that moved the project name BEFORE statusDesc, or dropped the
+    // delimiter between them, would inherit this exact bug.
     assert.doesNotMatch(stdout, /No completed todos/);
     assert.match(stdout, /No todos in project/);
   });

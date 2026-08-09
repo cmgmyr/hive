@@ -430,6 +430,24 @@ describe("control characters in a name", { skip: hasTmux ? false : "tmux is not 
     // Nothing may have been typed, and the label must be untouched.
     assert.equal((await mcp.call("agent_status", { name: "typist" })).name, "typist");
     const { output } = await mcp.call("agent_output", { name: "typist" });
+    // Todo 323 audit, corrected on counselors review: an EARLIER version of
+    // this comment anchored on the literal "/rename" agent_rename actually
+    // types, reasoning that "the slash is never part of" the pane's [hive]
+    // announcement (which embeds the project's scratch directory name,
+    // mkdtemp's random suffix under scratchDirs()). That reasoning was
+    // backwards - the announcement's cwd is a PATH, so it is full of
+    // slashes as separators - and the anchor traded away real coverage for
+    // no benefit: a future regression that changed sendText's call at
+    // src/tools/agents.ts:735 to omit the literal "/" would go undetected
+    // by the anchored pattern while still typing an unwanted keystroke.
+    // Reverted to the bare check. IMMUNE anyway, by the actual property:
+    // every generated segment in this pane's announcement (scratchDirs()'s
+    // two mkdtemp suffixes, six alphanumeric characters each) is preceded
+    // by a FIXED literal prefix ("hive-test-" or "project-"), never by a
+    // bare "/", so "rename" can only appear here as a full 6-character
+    // random suffix equal to that exact word - on mkdtemp's alphabet,
+    // ~2.7e-11 per suffix, well below the 1e-9 bar this project already
+    // accepts elsewhere (see the tmux-socket-foreign.test.mjs alias check).
     assert.doesNotMatch(output, /rename/);
   });
 
@@ -590,6 +608,12 @@ describe("the database enforces name uniqueness too", { skip: hasTmux ? false : 
 
     const translated = asNameClash(raw, "raced");
     assert.match(translated.message, /A running agent named "raced" already exists/);
+    // Immune: on the clash branch, asNameClash (src/spawn.ts) returns a BRAND
+    // NEW Error built from a fixed template plus only the caller-supplied
+    // `name` ("raced", a hardcoded literal here, never SQLite's own error
+    // text) - raw's message is never read into the result. A future edit that
+    // started forwarding part of the original error (e.g. for debugging)
+    // would reintroduce exactly what this line checks for.
     assert.doesNotMatch(translated.message, /SQLITE|constraint/i);
 
     // Anything else has to pass through untouched, or a real fault would be
@@ -610,6 +634,10 @@ describe("the database enforces name uniqueness too", { skip: hasTmux ? false : 
     const translated = asNameClash(raw, "lead");
     assert.match(translated.message, /won the race/);
     assert.match(translated.message, /re-run `hive lead`/i);
+    // Immune, same fact as the sibling test above: the LEAD_NAME branch
+    // returns a fully fixed string with no interpolation at all, so "pick
+    // another name" can only appear here if that branch's own wording
+    // regresses to include it.
     assert.doesNotMatch(translated.message, /pick another name/i);
   });
 });

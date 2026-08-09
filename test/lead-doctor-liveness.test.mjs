@@ -53,6 +53,14 @@ after(() => cleanup(session));
 
 describe("hive doctor reports a lead row whose pane is not live", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   it("the no-lead-row baseline itself stays quiet about the lead", () => {
+    // Immune: "lead:" is only ever printed by the two warn("lead", ...) call
+    // sites in src/cli.ts (a not-live pane, or a probe that could not
+    // answer), and both sit inside `if (a running lead row exists)`, which
+    // this baseline has none of. Nothing else in doctor's report is labeled
+    // "lead", and dirs.projectDir's scratch suffix (mkdtemp) is alphanumeric
+    // only, so it cannot itself spell out "lead:". A future doctor check
+    // that reused the "lead" label for something unrelated would inherit
+    // this false-quiet risk.
     assert.doesNotMatch(baseline.stdout, /lead:/, "nothing to report without a lead row");
   });
 
@@ -118,6 +126,9 @@ describe("hive doctor reports a lead row whose pane is not live", { skip: hasTmu
     assert.equal(first.code, 0, first.stderr);
 
     const out = await runCli(["doctor"], opts);
+    // Immune, same fact as the no-lead-row baseline case above: "lead:" only
+    // comes from the two gated warn("lead", ...) sites, and this pane is
+    // genuinely live so neither fires.
     assert.doesNotMatch(out.stdout, /lead:/, "a genuinely live lead must not be reported as dead");
     assert.equal(failureCount(out.stdout), failureCount(baseline.stdout));
 

@@ -165,6 +165,10 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
       });
       assert.equal(code, 1);
       assert.match(stderr, ABI_FAILURE);
+      // Immune: stderr does carry generated scratch paths (`gone`'s tmp
+      // path, printed a few lines below), but no such path ever contains a
+      // literal "[" or "]" - mkdtemp/join produce plain path characters only
+      // - so nothing but a real "[hive]"-prefixed line can start with it.
       assert.doesNotMatch(stderr, /^\[hive\]/m, "kickoff itself says nothing on this branch");
       // The banner is what names it, and it does so because it is the thing
       // that actually printed.

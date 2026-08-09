@@ -278,6 +278,11 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         const result = await runCli(["lead"], cliOpts);
         const output = result.stdout + result.stderr;
         assert.notEqual(result.code, 0, "a name clash on the reset must not silently succeed");
+        // Immune: output can carry generated data (projectDir's mkdtemp
+        // suffix, actor ids, pane targets), but mkdtemp's random component is
+        // six characters, far short of either literal here - "SQLITE_CONSTRAINT"
+        // and "idx_agents_running_name" are 17+ characters including
+        // underscores, so no scratch path fragment can ever spell either out.
         assert.doesNotMatch(output, /SQLITE_CONSTRAINT|idx_agents_running_name/, "must not surface the raw SQLite constraint");
         // Issue #27's L4 fix round R9, todo 179 item 2 (codex F4). Was
         // missing the /i flag: both candidate messages (src/spawn.ts's
@@ -286,6 +291,9 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         // message actually fired - unpinned in exactly the direction that
         // matters, since a regression back to asNameClash's wrong-for-this-
         // case message would have passed silently.
+        // Immune: a full English sentence with backticks: no combination of
+        // generated identifiers this suite produces (mkdtemp suffixes,
+        // autoincrement ids, pane numbers) can spell it out by coincidence.
         assert.doesNotMatch(
           output,
           /another `hive lead` won the race/i,
@@ -344,6 +352,8 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
           /agent:name-thief-mixed-case/,
           "must name the actual holder even though its name's casing differs from the reserved \"lead\"",
         );
+        // Immune: a fixed English phrase, longer than any random component
+        // (mkdtemp's six-character suffix) this suite's scratch paths carry.
         assert.doesNotMatch(output, /could not find which one/, "must not fall back when the holder is findable");
       } finally {
         cleanup(session);
@@ -829,6 +839,10 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         assert.equal(result.code, 0, result.stderr);
         const row = leadRow(db, project.id);
         assert.match(row.command, /--settings /, "a claude lead must get the hooks file");
+        // Immune, though result.stdout is exactly the risky shape from the
+        // attach-mode -CC bug (cli.ts's non-TTY attach() prints "Session ...
+        // for project ... (<scratch project path>)" here too): the fixed
+        // phrase "skipping hooks" cannot appear inside a bare mkdtemp path.
         assert.doesNotMatch(result.stdout, /skipping hooks/);
       } finally {
         cleanup(session);

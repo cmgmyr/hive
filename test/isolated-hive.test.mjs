@@ -412,6 +412,11 @@ describe("isolated-hive CLI lifecycle", () => {
       const second = run(["up"]);
       assert.equal(second.code, 0, second.stdout);
       assert.match(second.stderr, /isolated hive instance up at/);
+      // Immune: second.stderr does carry generated scratch paths (data dir,
+      // tmux tmp dir, hash-tagged state file name), but this is a full,
+      // multi-word English sentence with spaces at fixed word boundaries -
+      // no run of random path characters (mkdtemp's alnum suffix, or the
+      // hex statePath() hash) can ever spell it out.
       assert.doesNotMatch(
         second.stderr,
         /claimed the instance pointer first/,

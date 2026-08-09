@@ -107,6 +107,10 @@ describe("hive doctor config warnings", () => {
   });
 
   it("says nothing about hive.yml when there is none", () => {
+    // Immune: noYml.stdout does carry generated scratch paths (dataDir,
+    // hooksPath, etc. printed by other doctor checks), but mkdtemp's random
+    // path segments are plain alnum with no "." in them, so the literal,
+    // period-bearing "hive.yml" can never appear inside one by coincidence.
     assert.doesNotMatch(noYml.stdout, /hive\.yml/);
   });
 
@@ -128,6 +132,9 @@ describe("hive doctor config warnings", () => {
   it("says nothing when hive.yml parses clean", async () => {
     writeFileSync(doctorYml, "layout: main-vertical\n");
     const { stdout } = await runCli(["doctor"], doctorOpts);
+    // Immune, same reason as the "no hive.yml" case above: no generated path
+    // segment in this suite ever contains a literal ".", so nothing but a
+    // real warn("hive.yml", ...) call can produce this substring.
     assert.doesNotMatch(stdout, /warn {2}hive\.yml/);
   });
 });

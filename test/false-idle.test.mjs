@@ -725,6 +725,12 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
     const text = delivered();
     assert.match(text, /hive-yml-process \(hive state now: working\)/, "the state itself still shows");
+    // Immune: delivered() only ever carries hive's own template text plus the
+    // worker name and wake body hard-coded in this file, and the watched
+    // pane's captured screen, which this describe's `before()` fills with a
+    // static printf'd MARKER, never a scratch path, pid, or session name. No
+    // generated identifier ever reaches this string, so a real regression
+    // (a kind='command' row growing a clause) is the only way this matches.
     assert.doesNotMatch(
       text,
       /last log event/,
@@ -782,6 +788,10 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
       /closed-frozen-latch \(hive state now: working, last log event: stop \(1h ago\)\): closed, so there is no terminal left to read\./,
       `a closed row's history must still be reported, but its latch must not be aged; got: ${JSON.stringify(text)}`,
     );
+    // Immune: same reasoning as the "last log event" check above - delivered()
+    // carries only hive's template text, the worker name/wake body literals
+    // this file wrote, and a static captured screen, none of which is
+    // generated data that could spell out "working for" by coincidence.
     assert.doesNotMatch(
       text,
       /working for/,
@@ -929,6 +939,10 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     await until(() => delivered().includes(`hive wake #${wake}`));
 
     const text = delivered();
+    // Immune: delivered() carries no generated data (see the "last log
+    // event" note above), and the only numeric-looking substrings that ever
+    // land here are hive's own computed ages, which is exactly the value
+    // under test - there is no unrelated source of a literal "NaN".
     assert.doesNotMatch(text, /NaN/, `a malformed timestamp must never render as NaN; got: ${JSON.stringify(text)}`);
     assert.match(
       text,
@@ -1059,6 +1073,10 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     // saw" while production emits "what hive sees", so a tail leaking onto
     // plain delay wakes would have passed. Anchored on the stable half of the
     // sentence rather than the whole thing.
+    // Both immune for the same reason as the checks above: a plain delay
+    // wake's delivered text is only ever "[hive wake #N] plain body" (all
+    // literals from this test), with no watched-pane tail and so no
+    // generated data of any kind to accidentally spell out either phrase.
     assert.doesNotMatch(text, /what hive se[ae]/, "nothing is watched, so nothing is reported");
     assert.doesNotMatch(text, /read agent_output before acting/, "and no tail footer either");
   });

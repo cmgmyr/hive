@@ -47,6 +47,13 @@ describe(
       const { code, stdout } = await runCli(["status"], opts);
       assert.equal(code, 0, stdout);
       assert.match(stdout, new RegExp(`window: ${window.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+      // Todo 323 audit. `hive status` prints project.path (a real
+      // mkdtempSync() scratch path, see scratchDirs() in helpers.mjs)
+      // elsewhere in this same stdout, so the haystack here genuinely can
+      // carry generated data. This needle is immune anyway: it is built
+      // from `session`, this SAME process's own real, already-computed
+      // session name, not a generic pattern - so it can only ever match the
+      // literal old-format line it names, never an unrelated scratch path.
       assert.doesNotMatch(
         stdout,
         new RegExp(`session: ${session}`),
@@ -183,6 +190,11 @@ describe("hive status with no tmux binary reachable at all", () => {
     const { code, stdout, stderr } = await runCli(["status"], { ...opts, env: { PATH } });
     assert.equal(code, 0, `hive status must not crash with no tmux on PATH; stderr: ${stderr}`);
     assert.match(stdout, /window: none yet/);
+    // Todo 323 audit. Same haystack concern as the /session: ${session}/
+    // check above: stdout also carries project.path (a real mkdtempSync()
+    // scratch path). This pattern is immune because it requires a literal
+    // space and parenthesis ("unknown (tmux unreachable)"), and mkdtempSync's
+    // random alnum suffix can never contain either.
     assert.doesNotMatch(
       stdout,
       /unknown \(tmux unreachable\)/,

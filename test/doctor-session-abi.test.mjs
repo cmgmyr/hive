@@ -304,6 +304,12 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
       report.stdout.includes(`"${cliPath}" setup`),
       `the repair has to name the CLI by path:\n${report.stdout}`,
     );
+    // IMMUNE to generated data: report.stdout does carry scratch paths (this
+    // describe block's goneNode/leadProject/featureProject), but every
+    // segment of them comes from mkdtempSync/join - alphanumeric and hyphens
+    // only, never a space or "&" - so they can never reproduce this literal,
+    // space-and-&&-laden phrase. A match here can only mean doctor's own
+    // code actually emitted the old, retired remediation advice.
     assert.doesNotMatch(report.stdout, /npm install && npm run build && hive setup/);
   });
 
@@ -335,6 +341,12 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
       tmp: goneDirs.tmp,
       env: { HIVE_BIN_DIR: okBin },
     });
+    // IMMUNE to generated data, same reasoning as the "npm install && npm run
+    // build && hive setup" check above: "is not on disk" is a fixed suffix in
+    // sessionProbe.ts's own template (the dynamic part, `${pinned.path}`, is
+    // interpolated BEFORE it), and every scratch path in this describe block
+    // is alphanumeric-and-hyphen only, so it can never contain the space
+    // characters this phrase requires.
     assert.doesNotMatch(stderr, /is not on disk/);
     assert.match(stderr, /hive: this Node is too old/, "the banner is still the control");
   });
@@ -587,6 +599,11 @@ describe("hive doctor reports a project that genuinely cannot load the addon", (
     const text = stdout.split("\n").slice(from, from + 8).join("\n");
     assert.match(text, /CANNOT load the addon either/);
     assert.match(text, /does not rescue this/);
+    // IMMUNE to generated data, same reasoning as the unit-level version of
+    // this same assertion above: "survives this" is a fixed phrase inside
+    // sessionProbe.ts's own hard-coded sentence, and this describe block's
+    // scratch paths (good/bad/pinGood/pinSame/pinCannot, all mkdtempSync +
+    // join) never contain a space, so they cannot supply it.
     assert.doesNotMatch(text, /survives this/);
   });
 

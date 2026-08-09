@@ -150,6 +150,16 @@ describe(
       // A raw uncaught exception prints its own trace to stderr with these
       // markers; their absence is what "clean message" actually means here,
       // not just that stdout also happened to carry a nicer string.
+      // IMMUNE to generated data, and more strongly than that: cmdTodos's
+      // bad-pin path throws out of agentProjectPin() before ever reaching
+      // resolveProjectAndNotify (src/cli.ts), the ONLY call site that writes
+      // to stderr for a CLI command (a registration notice, which is the one
+      // place a generated project path can land in output at all) - so
+      // stderr here is always the empty string, not merely a string these
+      // four alternates happen not to match. A future caller that reaches
+      // this assertion through a path where stderr is non-empty would
+      // inherit an unexamined assumption, not a bug this comment already
+      // covers.
       assert.doesNotMatch(stderr, /at Object|at process|node:internal|Error:\s*\n\s*at /);
     });
 
@@ -267,6 +277,11 @@ describe("agentProjectPin resolves the RUNNING row when actor_id names two (issu
     });
     assert.equal(code, 0, stdout);
     assert.match(stdout, /running-project-todo-170/, "must resolve to the RUNNING row's project");
+    // IMMUNE to generated data: "closed-project-todo-170" is a hard-coded
+    // literal this test itself INSERTed as the todo's title two lines above
+    // it, not a scratch path or any other value hive generated. It can only
+    // appear in stdout by naming the actual todo it identifies, which is
+    // exactly the regression this line exists to catch.
     assert.doesNotMatch(stdout, /closed-project-todo-170/, "must not resolve to the closed row's project");
   });
 });

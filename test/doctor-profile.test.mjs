@@ -57,6 +57,14 @@ before(async () => {
 // delta-based assertion in this file keeps passing unchanged. Pin the
 // baseline itself, once, so that mutation is caught here rather than nowhere.
 it("the no-profile-key baseline itself stays quiet", () => {
+  // IMMUNE to generated data, for every `/FAIL {2}profile/` check in this
+  // file (six total): baseline.stdout does carry a generated project path
+  // elsewhere in doctor's report, but this exact phrase is not composed
+  // with it. `report()` in src/cli.ts prints `  ${level}  ${label}: ...`,
+  // and every call site in the profile checks passes the LITERAL strings
+  // "FAIL" and "profile" as level/label - nothing interpolated ever lands
+  // between them. A match here can only mean doctor genuinely emitted a
+  // profile failure line, never a coincidence of scratch-path text.
   assert.doesNotMatch(baseline.stdout, /FAIL {2}profile/, "no profile: key is a legitimate quiet default");
 });
 
@@ -194,6 +202,8 @@ describe("check 2: a profile resolving no readable content, or none for runbook.
 
     const out = await runCli(["doctor"], freshOpts);
 
+    // IMMUNE to generated data; see the baseline test at the top of this
+    // file for why.
     assert.doesNotMatch(out.stdout, /FAIL {2}profile/);
     assert.match(out.stdout, /info {2}profile: simple \(posture\.md: shipped\)/);
   });
@@ -207,6 +217,8 @@ describe("check 2: a profile resolving no readable content, or none for runbook.
     writeFileSync(ymlPath, "profile: custom-partial\n");
     const out = await runCli(["doctor"], opts);
 
+    // IMMUNE to generated data; see the baseline test at the top of this
+    // file for why.
     assert.doesNotMatch(out.stdout, /FAIL {2}profile/);
     assert.match(out.stdout, /info {2}profile: custom-partial \(posture\.md: user, runbook\.md: user\)/);
     assert.equal(failureCount(out.stdout), failureCount(baseline.stdout));
@@ -223,6 +235,8 @@ describe("check 2: a profile resolving no readable content, or none for runbook.
     writeFileSync(ymlPath, "profile: orchestration\n");
     const out = await runCli(["doctor"], opts);
 
+    // IMMUNE to generated data; see the baseline test at the top of this
+    // file for why.
     assert.doesNotMatch(out.stdout, /FAIL {2}profile/);
     assert.match(
       out.stdout,
@@ -239,6 +253,8 @@ describe("check 3: profile: none with no runbook pad", () => {
     // any profile is chosen), so profile: none is not yet the reportable
     // state; a project with a real, un-archived runbook pad must stay quiet.
     const withPad = await runCli(["doctor"], opts);
+    // IMMUNE to generated data; see the baseline test at the top of this
+    // file for why.
     assert.doesNotMatch(withPad.stdout, /FAIL {2}profile/, "hive init already seeded a runbook pad");
 
     db.prepare("UPDATE scratchpads SET archived = 1 WHERE project_id = ? AND name = 'runbook'").run(projectId);
@@ -262,6 +278,8 @@ describe("check 3: profile: none with no runbook pad", () => {
     // step above; only hive.yml changes.
     writeFileSync(ymlPath, "{}\n");
     const noKeyNoPad = await runCli(["doctor"], opts);
+    // IMMUNE to generated data; see the baseline test at the top of this
+    // file for why.
     assert.doesNotMatch(
       noKeyNoPad.stdout,
       /FAIL {2}profile/,

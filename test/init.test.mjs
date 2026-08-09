@@ -17,6 +17,15 @@ const optsFor = () => {
 
 const ymlOf = (dirs) => readFileSync(join(dirs.projectDir, "hive.yml"), "utf8");
 
+// Todo 323 audit (generated-data assertions). `hive init` unconditionally
+// prints `Project: ${project.name} (${project.path})` as its first line
+// (src/cli.ts, cmdInit), and both project.name and project.path are built
+// from scratchDirs()'s mkdtempSync() calls (helpers.mjs), so `stdout` below
+// genuinely can carry generated data. The `/ln -s/` doesNotMatch checks
+// further down are safe anyway only because mkdtempSync's random
+// six-character suffix is drawn from [0-9a-zA-Z] and can never contain a
+// space: a pattern requiring one (like the literal space in "ln -s") cannot
+// be satisfied by the random segment alone, whatever it happens to spell.
 describe("hive init profile selection", () => {
   it("writes the profile and skips the runbook pad", async () => {
     const { dirs, cli } = optsFor();

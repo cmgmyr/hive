@@ -398,7 +398,17 @@ describe("tmuxSocketPath: counselors F3 - an unlinked socket file must not read 
     const viaReal = tmuxSocketPath(`${realSocket},123,0`, undefined);
     const viaAlias = tmuxSocketPath(`${aliasedSocket},123,0`, undefined);
     assert.equal(viaReal, viaAlias, "both name the identical real directory and must canonicalise to one string");
-    assert.doesNotMatch(viaAlias, /hive-f3-alias/, "the alias's own path segment must not survive canonicalisation");
+    // Counselors review (both seats, independently): a `doesNotMatch(viaAlias,
+    // /hive-f3-alias/)` used to sit here, annotated as immune-by-probability.
+    // Removed rather than kept: it added no protection this equality does
+    // not already give. Any regression that left the alias segment in
+    // viaAlias also makes it disagree with expectedSocket (built
+    // independently from `scratch`, which never carries that segment), so
+    // the exact-equality check below already catches the identical failure
+    // - more informatively, since it names both strings instead of just
+    // ruling one substring out. Node asserts run in order, so the removed
+    // check could only ever have failed FIRST and masked this one; it could
+    // never be the assertion that alone caught a real regression.
     assert.equal(viaAlias, expectedSocket, "must canonicalise to the actual real path, not merely agree with itself");
   });
 

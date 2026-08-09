@@ -114,6 +114,16 @@ describe(
 
     it("says nothing about a view session that is in active use", async () => {
       const out = await runCli(["doctor"], opts);
+      // IMMUNE to generated data: out.stdout also carries this run's scratch
+      // project path and its real session/view names (sessionName(),
+      // viewSessionName()), but none of those can ever spell the literal
+      // "view session" (two words joined by a space) - tmux session names are
+      // built from SESSION_PREFIX + dataDirTag() + a suffix, all alnum/hyphen,
+      // and dataDirTag() hashes the data dir rather than embedding it, so no
+      // generated name here can ever contain a space. The only place doctor
+      // prints this exact two-word literal is the stray-view warn() call
+      // (src/cli.ts, `warn("view session", ...)`), which this case's setup
+      // never triggers.
       assert.doesNotMatch(
         out.stdout,
         /view session/,
