@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { isolateTmux, McpClient, scratchDirs } from "./helpers.mjs";
+import { isolateTmux, McpClient, REPO, scratchDirs } from "./helpers.mjs";
 import { renderToolsSnapshot, SNAPSHOT_PATH, sortKeysDeep, toolsByName } from "../scripts/wire-surface-snapshot.mjs";
 
 // Issue #105 lane W. This file exists to BE the fixed point every later
@@ -191,6 +192,80 @@ describe("MCP wire surface", () => {
       `these integer parameters advertise a negative lower bound: ${offenders.join(", ")}. ` +
         "Give each one .positive(), .nonnegative(), or its real domain bound in src/tools/, then " +
         "regenerate the snapshot with `node scripts/wire-surface-snapshot.mjs`.",
+    );
+  });
+
+  // TODO 321. hive TELLS ITS READER WHICH CALL TO MAKE, in wake bodies typed
+  // verbatim into a terminal, in refusal notes, and in help text - and three
+  // of those instructions named a parameter that does not exist
+  // (`agent_output(agent: "w1")`; the parameter is `name`). That is not a typo
+  // that degrades into a coercion: every tool advertises
+  // additionalProperties: false and REFUSES an undeclared key with a -32602
+  // (.claude/rules/tool-contract.md, and the assertion right below this one),
+  // so the remedy in a block notice - the entire value of the notice - was a
+  // call the reader could not run. Two of the three shipped in todo 314 and
+  // todo 315 and survived both of their reviews.
+  //
+  // DERIVED FROM tools/list, NEVER FROM A LITERAL IN THIS FILE. A hardcoded
+  // list of good parameter names would be a second copy of the schema, free to
+  // drift from it the same way the bodies did - the identical failure one
+  // level up. This asks the running server what each tool actually declares.
+  //
+  // It scans COMMENTS as well as strings, on purpose: this project treats a
+  // comment as an assertion (.claude/sessions/decisions/2026-08-09-a-comment-
+  // is-an-assertion.md), and a comment teaching the wrong call is wrong in the
+  // same way a body is, just cheaper.
+  it("every tool call hive suggests in its own source names real parameters", async () => {
+    const listed = await mcp.request("tools/list", {});
+    const declared = new Map(
+      listed.result.tools.map((t) => [t.name, new Set(Object.keys(t.inputSchema?.properties ?? {}))]),
+    );
+    // RECURSIVE, not src/ plus src/tools/ by hand. A hardcoded directory
+    // layout rots exactly the way a hardcoded parameter list would, and the
+    // `checked > 10` guard below cannot see it: the first src/<newdir>/*.ts
+    // would teach a refused call to a lead's terminal with this test green.
+    const dir = join(REPO, "src");
+    const files = readdirSync(dir, { recursive: true })
+      .filter((f) => f.endsWith(".ts"))
+      .map((f) => join(dir, f));
+    // THE ONE DELIBERATE COUNTER-EXAMPLE IN THE TREE. src/strictInput.ts's own
+    // comment quotes `pad_delete({pad_id: 7, expected_revison: 3})` - the
+    // misspelling that motivated strict parsing - so it is a bad key on
+    // purpose, and it is prose ABOUT a refused call rather than an instruction
+    // to make one. Exempted by exact string, and asserted to still be present
+    // below: an allowlist that silently covers nothing after a rewording is
+    // the same rot as a stale comment.
+    const DELIBERATE = "src/strictInput.ts: pad_delete(expected_revison: ...)";
+    const offenders = [];
+    let checked = 0;
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
+      for (const call of source.matchAll(/\b([a-z]+_[a-z_]+)\(\{?\s*(?=\w+\s*:)/g)) {
+        const tool = call[1];
+        if (!declared.has(tool)) continue;
+        // Up to the first close paren, which for every shape in this codebase
+        // ends the argument list - including the ones split across a string
+        // concatenation, where the array literal's own "])" is that paren.
+        const args = source.slice(call.index, source.indexOf(")", call.index));
+        for (const key of args.matchAll(/[({,]\s*(\w+)\s*:/g)) {
+          checked++;
+          if (!declared.get(tool).has(key[1])) {
+            offenders.push(`${file.slice(REPO.length + 1)}: ${tool}(${key[1]}: ...)`);
+          }
+        }
+      }
+    }
+    // Guards against a vacuous pass: a regex that stopped matching anything at
+    // all would report no offenders and look exactly like a clean tree.
+    assert.ok(checked > 10, `only ${checked} suggested parameters found; this assertion has stopped matching`);
+    assert.ok(
+      offenders.includes(DELIBERATE),
+      `the deliberate counter-example in ${DELIBERATE.split(":")[0]} is no longer found; re-read it and update or drop the exemption`,
+    );
+    assert.deepEqual(
+      offenders.filter((o) => o !== DELIBERATE),
+      [],
+      `these suggested calls name parameters no tool declares, and would be refused with a -32602: ${offenders.join(", ")}`,
     );
   });
 

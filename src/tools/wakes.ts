@@ -730,8 +730,10 @@ export function registerWakes(server: McpServer): void {
     "wake_cancel",
     {
       description:
-        "Cancel a pending wake-up you own. Cancelling a standing watch also cancels any notices it has " +
-        "already filed but not yet delivered.",
+        "Cancel a pending wake-up you own. Cancelling a standing watch also cancels the FINISH notices it has " +
+        "already filed but not yet delivered. It does NOT cancel a block notice (a worker stopped on a dialog): " +
+        "those carry no parent link, so one already filed still delivers, and it may still be true - the worker " +
+        "is probably still on that dialog - but its sentence about the watch itself will not be.",
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>

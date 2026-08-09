@@ -35,6 +35,18 @@ Only the COMPARISON canonicalises symlinks. `resolveDataDir` keeps returning the
 
 Neither can tell one scratch directory from another, so `assertScratchStore()` still earns its place in a destructive file. `test/store-isolation.test.mjs` reproduces the original mistake and pins all of it. The rest of the suite's rules are in `test/CLAUDE.md`.
 
+**All of that covers the SUITE, and the runbook requires every lane to write something none of it can see.** Step 11 - exercise the change against a real server rather than the tests - is a hand-rolled driver script, and all three guards miss it: `storeDir()`'s refusal keys on `NODE_TEST_CONTEXT`, which a plain `node driver.mjs` does not set; `assertScratchStore()` is a helper such a script never calls; and `test/suite-isolation.test.mjs` reads the SUITE's own source, so a driver outside `test/` is invisible to it. The mechanism is the one stated above, reached from the other side: **`src/db.ts` opens the store in its module body from the CALLING process's environment, so `await import(dist/db.js)` IS the act of choosing a store.** Setting `HIVE_DATA_DIR` in the env you hand a CHILD process does nothing for the parent that imports `db.js` to seed or inspect rows - which is the natural way to write such a driver, because a scratch store starts empty and the thing you are exercising usually needs a row in it.
+
+Found on todo 321, where exactly that driver ran `UPDATE agents SET agent_state = 'waiting' WHERE name = 'impl'` against `~/.hive`, the live store. It changed nothing only because no live agent happened to be named `impl` - a name this project uses constantly. The preamble for any script that imports from `dist/`:
+
+```js
+process.env.HIVE_DATA_DIR = scratchDataDir;   // BEFORE any dist import
+const { db } = await import(join(DIST, "db.js"));
+if (!db.name.startsWith(scratchDataDir)) throw new Error(`refusing: opened ${db.name}`);
+```
+
+The refusal is the load-bearing half, since the assignment can be defeated by an import that is hoisted above it - which is the original 2026-07-28 bug in a new file.
+
 A symlink pointing at `~/.hive` is the case that defeats both guards at once, which is why the comparison follows symlinks: `storeDir()` would not refuse it under a test runner, and `untrustedTmuxServer()` would read "scratch store" and let a private tmux server write pane ids into the live database.
 
 ## Migrations are append-only
