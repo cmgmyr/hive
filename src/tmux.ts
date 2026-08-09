@@ -1256,9 +1256,19 @@ export interface InputBoxState {
 // That is an argument for BUILDING the channel, not for widening this
 // predicate - widening trades a fail-safe direction for a fail-loud one at
 // all three call sites at once, which is the thing .claude/rules/tmux-and-
-// panes.md refuses. The channel is filed separately (a doctor check for a
-// running claude worker whose box reads "unknown"); until it exists, read
-// this exemption as a known silent revert, not as a guarded one.
+// panes.md refuses. Todo 319 built the channel: `hive doctor` (src/cli.ts)
+// now reads inputBoxState() for every running, non-foreign-socket claude
+// worker and warns, by name, on "unknown".
+//
+// SAY PRECISELY WHAT THAT CLOSES, because a broader claim here already shipped
+// once and was wrong (lead triage on this lane's own PR, after counselors
+// found it): this guards the PARTIAL-drift case only - INPUT_BOX_PRESENT
+// still matches (a box is genuinely on screen) and the prompt row inside it
+// cannot be found. A TOTAL drift, where INPUT_BOX_PRESENT itself stops
+// matching, returns null here (see the check above) and is exactly as silent
+// to the three callers as before this lane existed. Full reasoning and the
+// reopen trigger for closing that gap: .claude/rules/tmux-and-panes.md, the
+// "unknown exemption" section.
 export const holdsHumanInput = (box: InputBoxState | null): boolean => box?.state === "pending";
 
 // The horizontal rule claude draws as the input box's own top and bottom

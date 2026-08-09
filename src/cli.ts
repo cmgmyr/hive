@@ -99,6 +99,7 @@ import {
   ensureSession,
   findProjectWindow,
   foreignSocket,
+  inputBoxState,
   isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
@@ -2652,6 +2653,42 @@ function cmdDoctor(argv: string[]): void {
       tmux_target: string;
       tmux_socket: string;
     }[];
+    // Todo 319. Nothing told you `inputBoxState`'s chrome-matching had
+    // drifted, and every guard resting on it (the scheduler's wake hold,
+    // agent_send's text refusal, agent_rename's refusal) fails SILENTLY when
+    // it does - it reverts to pre-guard behaviour with no receipt field to
+    // read, because a successful send/wake/rename carries no `input_box` at
+    // all (`input_box` only appears on agent_status/agent_output, and on the
+    // refusal that has by definition stopped firing). Full argument:
+    // .claude/rules/tmux-and-panes.md's "unknown exemption" section.
+    //
+    // "unknown" is a SPECIFIC fact, not "the pane could not be read": it
+    // means INPUT_BOX_PRESENT matched (claude has control, a box is on
+    // screen) but findInputBoxRow could not find the prompt row inside it -
+    // i.e. the box is there and the glyph/NBSP marker that finds it is not.
+    // `null` (mid-turn, a real dialog, an unreadable pane, OR INPUT_BOX_PRESENT
+    // itself no longer matching at all) is none of that and must not be
+    // counted here - collapsing the two was rejected once already for a
+    // sibling probe (.claude/sessions/dead-ends/2026-07-28-null-on-any-probe-
+    // failure.md) and the reasoning transfers.
+    //
+    // COUNSELORS ON THIS LANE'S OWN PR, BOTH SEATS INDEPENDENTLY: the first
+    // version incremented a single "checked" counter before classifying, so a
+    // null read was silently counted as "classified cleanly" alongside a real
+    // clean read. The dangerous case: a TOTAL chrome drift - INPUT_BOX_PRESENT
+    // itself stops matching (src/tmux.ts's own `if (!INPUT_BOX_PRESENT.test
+    // (raw)) return null`) - makes every worker read null, never "unknown",
+    // and the old counter reported "N of N classified cleanly" during the
+    // exact failure this check exists to catch. Three states now, reported
+    // separately, each incremented only after the read: `inputBoxClean`,
+    // `inputBoxDrifted` (the PARTIAL-drift case this check can actually
+    // catch: a box is on screen, its prompt row is not), and
+    // `inputBoxUnclassified` (null - nothing this check can say about it).
+    // See the rule-file correction next to `inputBoxDrifted > 0` below for
+    // what this does and does not close.
+    let inputBoxClean = 0;
+    let inputBoxDrifted = 0;
+    let inputBoxUnclassified = 0;
     for (const w of workers) {
       if (!reportsAgentStateLog(w)) continue;
       // Issue #73 counselors F2. This used to call paneChoiceCheck
@@ -2724,7 +2761,102 @@ function cmdDoctor(argv: string[]): void {
               ? ["tail: (pane rendered nothing)"]
               : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
       );
+      // A SECOND capture-pane fork per worker, deliberately not fused with
+      // paneChoiceCheck's read above it: that read is plain, this one needs
+      // `-e` for the ghost/pending discriminator, and the two serializers
+      // disagree about which rows are blank (tmux-and-panes.md, "the two
+      // pane reads are deliberately NOT fused"). Measured cost (same file):
+      // 3.5ms median per fork, plain and `-e` indistinguishable - the same
+      // precedent that already justifies the FIRST fork a few lines up
+      // (doctor is a close-look tool a human runs, not a polling loop), so a
+      // second one here is affordable on the same grounds rather than a new
+      // argument.
+      if (!foreign) {
+        const box = inputBoxState(w.tmux_target);
+        // ONLY the observation, not a claim about the rest of the project -
+        // that claim needs the RATIO across every probed worker, computed
+        // once the loop ends, below. A single unknown pane against otherwise
+        // clean ones is pane-specific noise, not the chrome-change signature;
+        // saying "every pane" here from one data point was wrong the moment
+        // a second worker classified cleanly in the same run and is the
+        // exact "right about the code, wrong about why" shape this project
+        // keeps re-shipping. Lead review on commit 1f323cf caught it before it
+        // merged. NAMING A CAUSE was still wrong even after that fix -
+        // counselors on this PR: INPUT_BOX_PRESENT is an unanchored match
+        // over up to 18 captured rows (tailCaptureLines), so boxed tool
+        // output sitting above a genuine dialog can satisfy it with no prompt
+        // row below - "unknown" with no chrome change at all. State only what
+        // was observed; the ratio below is what earns any conclusion.
+        if (box === null) {
+          inputBoxUnclassified += 1;
+        } else if (box.state === "unknown") {
+          inputBoxDrifted += 1;
+          warn(
+            `worker ${w.name}`,
+            "input box classifies 'unknown': an input box is on screen (INPUT_BOX_PRESENT matched) but its prompt " +
+              "row could not be found inside it (.claude/rules/tmux-and-panes.md, the 'unknown exemption' section).",
+          );
+        } else {
+          inputBoxClean += 1;
+        }
+      }
     }
+    // THE POSITIVE CASE, UNCONDITIONALLY, when any worker was actually
+    // probed above: a check silent on a clean run is indistinguishable from
+    // a check that never ran, which is this whole todo's defect restated one
+    // level up. THREE STATES, ARITHMETIC NOT INFERENCE: clean, drifted
+    // ("unknown"), and unclassified (null - nothing this check can say about
+    // why). Counselors' fix: reporting only clean-vs-checked let a null read
+    // launder into "classified cleanly" (see the counter comment above).
+    const inputBoxChecked = inputBoxClean + inputBoxDrifted + inputBoxUnclassified;
+    // ACCEPT AND RECORD (lead triage on this PR): silence here is deliberate,
+    // not a residual of the null bug above. inputBoxChecked is 0 only when
+    // every running claude worker was foreign-socket (none reachable to
+    // probe) or there were no running claude workers at all - doctor already
+    // names the running crew, if any, in the per-worker loop above, so there
+    // is genuinely nothing left to report for this check specifically.
+    if (inputBoxChecked > 0) {
+      info(
+        "input box classifier",
+        `${inputBoxChecked} running claude worker box(es) probed: ${inputBoxClean} classified cleanly, ` +
+          `${inputBoxDrifted} classified 'unknown', ${inputBoxUnclassified} not classified (no box currently on ` +
+          "screen to classify - a dialog, mid-turn, or an unreadable pane)",
+      );
+      // THE PROJECT-SCOPED CLAIM BELONGS HERE, ON THE RATIO, NOT ON A SINGLE
+      // WORKER'S WARN ABOVE. Only when EVERY probed box came back unknown is
+      // that the chrome-change signature the three guards' silent-revert
+      // argument is actually about; some-but-not-all is a per-pane fact
+      // (a genuinely busy/oddly-drawn screen this instant), not chrome drift.
+      //
+      // "IN THIS PROJECT", NEVER "MACHINE-WIDE" (lead triage on this PR,
+      // correcting counselors' own finding on this same sentence): `workers`
+      // above is `WHERE project_id = ?` - this check has never seen past one
+      // project, so "machine-wide" misdescribed its own scope regardless of
+      // how many workers were probed. Say only what was observed.
+      if (inputBoxDrifted > 0) {
+        warn(
+          "input box classifier",
+          inputBoxDrifted === inputBoxChecked
+            ? "every probed input box in this project classified 'unknown' - the chrome-change signature, not " +
+                "pane-specific noise. The wake hold, agent_send's text refusal and agent_rename's refusal have " +
+                "likely reverted to pre-guard behaviour across every probed worker in this project " +
+                "(.claude/rules/tmux-and-panes.md, the 'unknown exemption' section)."
+            : `${inputBoxDrifted} of ${inputBoxChecked} probed input boxes in this project classified 'unknown' - ` +
+                "some but not all, so this reads as pane-specific rather than project-wide drift; the guards " +
+                "above still work on the other worker(s)' panes.",
+        );
+      }
+    }
+    // ACCEPT AND RECORD (lead triage on this PR), NOT WIDENED IN THIS LANE: a
+    // lead's own pane is never probed here - `workers` above is `kind =
+    // 'agent'` only - though the guards this check exists to protect DO reach
+    // it (agent_send's text path and the scheduler's wake hold both can type
+    // into a lead's pane, .claude/rules/tmux-and-panes.md's "three of the
+    // five" paragraph). REOPEN TRIGGER: probing the lead's row too is a
+    // separate change with its own blast radius (a different `kind`, a
+    // different liveness path already resolved a few hundred lines up in this
+    // function) - do not fold it into this counter set without deciding that
+    // on its own.
   }
   // One store-scoped session now, not one per project (pad 76, "3a's SCOPE
   // WIDENED"), so a hive- prefixed session on this server is either THE base
