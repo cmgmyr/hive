@@ -460,6 +460,7 @@ Conventions borrowed from tools that got this right:
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box before typing its `[hive]` line. On timeout the line is skipped, not sent blindly; the worker's brief is unaffected either way | `45000` |
 | `HIVE_BIN_DIR` | Overrides where `hive setup` writes and PATH-checks the dispatcher shim | `~/.local/bin` |
 | `HIVE_LEAD` | Set to `1` by `hive lead` so the SessionStart kickoff hook still fires for the lead's own session even though `HIVE_AGENT_ID` is also set (the lead has an `agents` row too) | unset |
+| `HIVE_ALLOW_DEFAULT_STORE` | Set to `1` to let a process that is not hive's own CLI, MCP server, or hooks open the real store (`~/.hive`) anyway. For a human's deliberate one-off against live data, not for a script or a driver you spawn: point those at `HIVE_DATA_DIR` set to a scratch directory instead, and pass it to every process the run spawns. Cannot override the test-runner refusal, which is checked first and always wins | unset |
 
 ## Development
 
