@@ -27,11 +27,14 @@ It cannot be a prompt: an MCP server has no channel to a human. It surfaces in t
 
 `todo_create(project_id: <B>)`, which a lead can do because leads are never locked. Nothing else tells B that anything touched its repo. If B's lead is running you now have two leads on one checkout with nothing between them, and the todo is the only thing that makes that discoverable.
 
-## Two accepted residuals
+## Accepted residuals
 
-Both are real and deliberately unfixed. Do not rediscover either as a defect.
+All three are real and deliberately unfixed. Do not rediscover any of them as a defect.
 
 - **The refusal only fires when B is ALREADY REGISTERED**, since `findProjectForDir` never registers a project it has not seen.
 - **Nothing stops a running worker from `cd`-ing into another repo through Bash.** That happens outside hive entirely, and it is the same class as the `agent_send` `keys` residual in `.claude/rules/tmux-and-panes.md`: a path deliberately left unguarded because guarding it would cost more than it buys.
+- **A foreign worktree nested inside a registered project crosses silently.** Containment (`src/context.ts`'s `gitPrimaryRoot` logic) picks a project for a nested worktree of an unrelated repo and writes to that store without saying so - unlike the deliberate cross-project path above, which refuses and makes the caller pass `project_id`. Accepted because containment is the only principled tie-breaker available across trees and it has never fired here: every worktree in use is of hive itself, where `gitPrimaryRoot` resolves to an ancestor and the answer is the same either way. The fix, if the trigger below ever fires, is to surface the crossing rather than to change what it resolves to.
+
+What would change the answer: the first worktree of something other than hive.
 
 `HIVE_PROJECT_LOCK=1` disables cross-project access entirely, and every spawned worker gets it.
