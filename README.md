@@ -380,7 +380,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `npm warn allow-scripts   better-sqlite3@13.0.3 (install: node-gyp rebuild)`: npm 11 lists install scripts it has not been told about. `package.json`'s `allowScripts` already carries a decision for this one, so the warning means that decision no longer matches the installed version. A bump re-requires it, deliberately. Edit the entry to the new version rather than running `npm approve-scripts`, which writes `true`; this project ships `false`. If you are on a platform with no prebuild, `true` is the entry you want, because there the script is the only thing that produces an addon.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
-## Tools (40)
+## Tools (42)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -458,6 +458,8 @@ Conventions borrowed from tools that got this right:
 | `HIVE_ATTACH_MODE` | `auto`, `raw`, or `control`: a one-off testing override for the stored attach mode. Not the way to configure this -- use `hive setup --attach` for that. It does not reliably reach auto-attach, which runs inside the MCP server process, so setting it in your shell will not change what a spawned worker's terminal pops open in | unset |
 | `HIVE_SPAWN_PLACEMENT` | `split` (workers tile as panes in the lead's window) or `window` (tab per worker) | `split` |
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box before typing its `[hive]` line. On timeout the line is skipped, not sent blindly; the worker's brief is unaffected either way | `45000` |
+| `HIVE_BIN_DIR` | Overrides where `hive setup` writes and PATH-checks the dispatcher shim | `~/.local/bin` |
+| `HIVE_LEAD` | Set to `1` by `hive lead` so the SessionStart kickoff hook still fires for the lead's own session even though `HIVE_AGENT_ID` is also set (the lead has an `agents` row too) | unset |
 
 ## Development
 

@@ -4,6 +4,7 @@ paths:
   - "src/spawn.ts"
   - "src/scheduler.ts"
   - "src/tools/agents.ts"
+  - "docs/*.md"
 ---
 
 # tmux, panes, and typing into them

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, globSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { CLI, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { CLI, isolateTmux, registeredToolNames, runCli, scratchDirs, toolRegistrationsByFile } from "./helpers.mjs";
 
 // runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
 const { cleanup: cleanupTmux } = isolateTmux("the docs tests");
@@ -252,5 +252,140 @@ describe("docs keep up with the CLI", () => {
     for (const path of cited) {
       assert.ok(existsSync(join(REPO, path)), `test/CLAUDE.md cites ${path}, which does not exist`);
     }
+  });
+});
+
+// Issue #83. The CLI half above has been pinned for a while; this is the same
+// idiom applied to the MCP half, which never had it: 42 tools registered
+// across src/tools/*.ts, a README table describing them, and src/help.ts
+// naming them in prose, with nothing connecting the three before this.
+//
+// toolRegistrationsByFile() and registeredToolNames() (test/helpers.mjs) do
+// the parsing, shared with test/tool-registration.test.mjs, so this file and
+// that one read one list rather than keeping two copies of the same regex
+// that could silently agree on the same wrong answer. See that function's own
+// comment for why a second copy of the pattern is the exact risk this lane
+// exists to remove.
+//
+// THE HONEST LIMIT, stated here because this is where a reader lands after
+// trusting a green run: every assertion below is ONE-DIRECTIONAL. It catches
+// "the registration names something the docs never mention" (or the reverse,
+// where the two-way checks below say so explicitly). It cannot catch a doc
+// paragraph that is simply WRONG about what a tool does or how a variable
+// behaves - that is a prose-accuracy question, and no regex answers it. A
+// green suite here means the surface is not silently omitted, not that the
+// words next to it are correct.
+describe("docs keep up with the MCP surface", () => {
+  const TOOL_REGISTRATIONS = toolRegistrationsByFile();
+  const REGISTERED_TOOLS = registeredToolNames();
+
+  // The Tools section only, between its own heading and the next one.
+  // Scoping this way keeps a backtick-quoted word in an unrelated table (the
+  // attach-mode options table above it uses the identical "| `auto` | ... |"
+  // row shape) from being misread as a tool name.
+  const toolsSection = (readme) => {
+    const match = /^## Tools.*\n([\s\S]*?)\n^## /m.exec(readme);
+    assert.ok(match, "README has no ## Tools section (or no ## heading after it)");
+    return match[1];
+  };
+  // A tool row is "| `tool_name` | ...". The group header rows ("|
+  // **pads** | | |") carry no backtick name and never match this pattern.
+  const readmeToolNames = (section) => [...section.matchAll(/^\| `([a-z_]+)` \|/gm)].map((m) => m[1]);
+
+  it("parsed at least one registered tool, with the parse verified complete", () => {
+    // Guard the extraction before trusting it, matching the loop-over-empty-
+    // array shape test/CLAUDE.md names as the first false-green.
+    assert.ok(REGISTERED_TOOLS.length > 0, "no registered tools found; did src/tools/ move?");
+    // The same blind spot tool-registration.test.mjs guards against: a tool
+    // name this regex cannot see (a digit or hyphen in the literal) makes
+    // registerTool( occurrences outnumber parsed names. Checked independently
+    // here so this file's own pin does not depend on that file having run.
+    for (const { file, src, names } of TOOL_REGISTRATIONS) {
+      const occurrences = [...src.matchAll(/registerTool\(/g)].length;
+      assert.equal(occurrences, names.length, `${file}: registerTool( occurrences do not match parsed tool names`);
+    }
+  });
+
+  it("documents every registered tool in the README table, and names nothing extra", () => {
+    // Two-way, or the check rots: a one-way "every tool is documented" still
+    // passes after a tool is deleted and its row left behind, same as the
+    // CLI shape above.
+    const documented = readmeToolNames(toolsSection(readRepo("README.md")));
+    for (const name of REGISTERED_TOOLS) {
+      assert.ok(documented.includes(name), `${name} is registered but has no row in README's Tools table`);
+    }
+    for (const name of documented) {
+      assert.ok(REGISTERED_TOOLS.includes(name), `README's Tools table names "${name}", which is not a registered tool`);
+    }
+  });
+
+  it("pins the Tools heading count to the parsed registration count, not a literal", () => {
+    const readme = readRepo("README.md");
+    const heading = /^## Tools \((\d+)\)/m.exec(readme);
+    assert.ok(heading, "README has no `## Tools (N)` heading");
+    assert.equal(
+      Number(heading[1]),
+      REGISTERED_TOOLS.length,
+      `README says ${heading[1]} tools, src/tools/*.ts registers ${REGISTERED_TOOLS.length}`,
+    );
+  });
+
+  // Issue #83 item 3. Every HIVE_* variable actually read from process.env
+  // under src/ has to appear in README or src/help.ts, or be on the
+  // exemption list below with a reason. The exemption list is the feature:
+  // it turns an undocumented variable into a line someone deliberately
+  // wrote, rather than a gap nobody saw.
+  const HIVE_ENV_VARS = (() => {
+    const names = new Set();
+    for (const file of globSync("src/**/*.ts", { cwd: REPO })) {
+      const src = readRepo(file);
+      for (const m of src.matchAll(/process\.env\.(HIVE_[A-Z0-9_]+)/g)) names.add(m[1]);
+      for (const m of src.matchAll(/process\.env\[\s*["'](HIVE_[A-Z0-9_]+)["']\s*\]/g)) names.add(m[1]);
+      // src/backup.ts's envInt(name, fallback) reads process.env[name] where
+      // name arrives as a string literal one call away; a bare
+      // process.env.HIVE_X scan never sees through that indirection, so it
+      // is matched here by the call site instead.
+      for (const m of src.matchAll(/envInt\(\s*["'](HIVE_[A-Z0-9_]+)["']/g)) names.add(m[1]);
+    }
+    return [...names].sort();
+  })();
+
+  // HIVE_PROJECT_ID is deliberately undocumented (issue #63): src/context.ts
+  // and src/spawn.ts mention it only inside comments explaining why a
+  // worker's project pin does NOT come from it. It is never actually read
+  // from process.env, so HIVE_ENV_VARS above never contains it today - the
+  // negative assertion below checks that directly, so the day someone wires
+  // it up for real the exemption stops applying instead of grandfathering
+  // the omission in silently.
+  const EXEMPT_HIVE_ENV_VARS = new Set(["HIVE_PROJECT_ID"]);
+
+  it("documents every HIVE_* variable read from process.env, or exempts it explicitly", () => {
+    assert.ok(HIVE_ENV_VARS.length > 0, "no HIVE_* env reads found under src/; did the sweep pattern break?");
+    for (const name of EXEMPT_HIVE_ENV_VARS) {
+      assert.ok(
+        !HIVE_ENV_VARS.includes(name),
+        `${name} is on the exemption list as deliberately undocumented, but IS now read from process.env - ` +
+          "document it and drop the exemption",
+      );
+    }
+    const docs = readRepo("README.md") + readRepo("src/help.ts");
+    for (const name of HIVE_ENV_VARS) {
+      if (EXEMPT_HIVE_ENV_VARS.has(name)) continue;
+      assert.match(
+        docs,
+        new RegExp(name),
+        `${name} is read from process.env under src/ but appears in neither README.md nor src/help.ts`,
+      );
+    }
+  });
+
+  it("states what CLAUDE.md's architecture table is: curated, not exhaustive", () => {
+    // Issue #83 item 4. The table names 13 of the 30 files under src/*.ts,
+    // and always has, including files (src/spawn.ts, src/strictInput.ts)
+    // other rules treat as load-bearing - an exhaustive table would need
+    // every file added since, which this project does not do at this
+    // granularity anywhere else. Curated is the decision; this line is what
+    // stops an absent file from reading as an oversight.
+    assert.match(readRepo("CLAUDE.md"), /Curated, not exhaustive/);
   });
 });

@@ -17,6 +17,8 @@ hive doctor       # environment check + stale-state sweep
 
 ## Architecture
 
+Curated, not exhaustive: the modules that shape decisions, not every file under `src/`. An absence here is not a gap to file; see `src/*.ts` for the full set.
+
 | Path | Role |
 |---|---|
 | `src/index.ts` | MCP server entry: registers tools, starts the scheduler |

@@ -952,3 +952,34 @@ __hiveBarrierWrite(${JSON.stringify(barrierDir)} + "/" + process.pid, "");
     ),
   );
 }
+
+// Issue #83. The one parser for tool names registered via
+// server.registerTool() across src/tools/*.ts, so test/tool-registration.
+// test.mjs (every handler routes through run()) and test/docs.test.mjs
+// (README's table matches what's registered) read the same list rather than
+// keeping two copies of the same regex that could silently diverge. Grouped
+// by file, with the file's own source text, so a per-file consistency check
+// (registerTool( occurrences vs matched names) stays possible without a
+// second read of the source.
+export function toolRegistrationsByFile() {
+  const dir = join(REPO, "src/tools");
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".ts") && f !== "params.ts") // params.ts declares no tools
+    .sort()
+    .map((file) => {
+      const src = readFileSync(join(dir, file), "utf8");
+      const names = [...src.matchAll(/registerTool\(\s*"([a-zA-Z_]+)"/g)].map((m) => m[1]);
+      return { file, src, names };
+    });
+}
+
+// Every registered tool name, flattened and sorted. A name this regex cannot
+// see (a digit or hyphen in the literal) is invisible here too - a caller
+// that needs to know the parse was complete should also compare
+// registerTool( occurrences against names.length per file, the way
+// tool-registration.test.mjs does, rather than trusting this list alone.
+export function registeredToolNames() {
+  return toolRegistrationsByFile()
+    .flatMap((f) => f.names)
+    .sort();
+}

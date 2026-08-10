@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, it } from "node:test";
+import { toolRegistrationsByFile } from "./helpers.mjs";
 
 // Issue #49. run() in src/result.ts is the ONLY guarded entry point for the
 // tool layer: the design's whole argument against per-tool read/write checks
@@ -13,19 +12,11 @@ import { describe, it } from "node:test";
 // chosen to avoid - fails loudly here instead of silently reading stale
 // state off an orphaned store forever.
 
-const REPO = new URL("..", import.meta.url).pathname;
-const TOOLS_DIR = join(REPO, "src/tools");
-
-const TOOL_FILES = readdirSync(TOOLS_DIR)
-  .filter((f) => f.endsWith(".ts") && f !== "params.ts") // params.ts declares no tools
-  .sort();
+const TOOL_REGISTRATIONS = toolRegistrationsByFile();
 
 describe("every registered tool routes through run()", () => {
-  for (const file of TOOL_FILES) {
+  for (const { file, src, names } of TOOL_REGISTRATIONS) {
     it(`${file}: each registerTool() call has a matching run() call in its handler`, () => {
-      const src = readFileSync(join(TOOLS_DIR, file), "utf8");
-
-      const names = [...src.matchAll(/registerTool\(\s*"([a-zA-Z_]+)"/g)].map((m) => m[1]);
       if (names.length === 0) return;
 
       // One chunk per registered tool: from this registerTool( call up to
@@ -66,8 +57,7 @@ describe("every registered tool routes through run()", () => {
     // test's directory scan.
     let totalTools = 0;
     let totalRunCalls = 0;
-    for (const file of TOOL_FILES) {
-      const src = readFileSync(join(TOOLS_DIR, file), "utf8");
+    for (const { src } of TOOL_REGISTRATIONS) {
       totalTools += [...src.matchAll(/registerTool\(/g)].length;
       totalRunCalls += [...src.matchAll(/(?<!\.)\brun\(/g)].length;
     }
