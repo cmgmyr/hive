@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
@@ -26,6 +26,7 @@ const ymlPath = join(dirs.projectDir, "hive.yml");
 // before dist/db.js loads.
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+const { shippedProfilesDir } = await import("../dist/profiles.js");
 
 // TEST CAVEAT (issue #43, non-negotiable, also in test/CLAUDE.md): never
 // assert doctor's global exit code. Two recorded instances of that shape have
@@ -285,5 +286,57 @@ describe("check 3: profile: none with no runbook pad", () => {
       /FAIL {2}profile/,
       "no profile: key means the runbook pad is not where the process lives, so its absence is not this check's business",
     );
+  });
+});
+
+// Todo 326 comment 721: "hive's default changed since you forked it" cannot
+// ever clear for a fork that is a deliberate rewrite, because it fires again
+// every time hive's shipped default moves -- 100% of this project's own
+// doctor warning output, permanently, on a fork the board says must never be
+// reconciled by copying. Below, both cases fake "upstream moved" the same way
+// profiles.test.mjs does (a bogus recorded origin hash), because the two
+// checks under test -- warn survives small drift, info replaces it past the
+// rewrite threshold -- only ever fire once upstreamMoved is already true;
+// what should change is which of the two this codepath picks, not whether it
+// fires at all.
+describe("profile divergence: warn survives small drift, info replaces a rewrite (todo 326)", () => {
+  function fakeUpstreamMoved(dataDir, file) {
+    writeFileSync(
+      join(dataDir, "profiles", "orchestration", ".hive-origin.json"),
+      JSON.stringify({ [file]: "0000000000000000" }),
+    );
+  }
+
+  it("keeps warn, with a percentage, for a lightly edited fork", async () => {
+    const fresh = scratchDirs();
+    const freshOpts = { cwd: fresh.projectDir, dataDir: fresh.dataDir, tmp: fresh.tmp };
+    mkdirSync(join(fresh.dataDir, "profiles", "orchestration"), { recursive: true });
+    const shipped = readFileSync(join(shippedProfilesDir, "orchestration", "posture.md"), "utf8");
+    const lightlyEdited = shipped.replace(/^./, (c) => c.toUpperCase());
+    writeFileSync(join(fresh.dataDir, "profiles", "orchestration", "posture.md"), lightlyEdited);
+    fakeUpstreamMoved(fresh.dataDir, "posture.md");
+    writeFileSync(join(fresh.projectDir, "hive.yml"), "profile: orchestration\n");
+
+    const out = await runCli(["doctor"], freshOpts);
+
+    assert.match(out.stdout, /warn {2}profile: hive's default posture\.md changed since you forked it \(\d+% diverged\)/);
+    assert.doesNotMatch(out.stdout, /profile: posture\.md is a \d+% rewrite/);
+  });
+
+  it("drops to info, past the rewrite threshold, for a fork sharing almost no lines with hive's default", async () => {
+    const fresh = scratchDirs();
+    const freshOpts = { cwd: fresh.projectDir, dataDir: fresh.dataDir, tmp: fresh.tmp };
+    mkdirSync(join(fresh.dataDir, "profiles", "orchestration"), { recursive: true });
+    writeFileSync(
+      join(fresh.dataDir, "profiles", "orchestration", "runbook.md"),
+      "this runbook is written from scratch for this project and shares nothing with hive's shipped default\n",
+    );
+    fakeUpstreamMoved(fresh.dataDir, "runbook.md");
+    writeFileSync(join(fresh.projectDir, "hive.yml"), "profile: orchestration\n");
+
+    const out = await runCli(["doctor"], freshOpts);
+
+    assert.match(out.stdout, /info {2}profile: runbook\.md is a \d+% rewrite of hive's default, not an edited copy of it/);
+    assert.doesNotMatch(out.stdout, /warn {2}profile: hive's default runbook\.md changed since you forked it/);
   });
 });

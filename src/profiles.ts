@@ -130,7 +130,55 @@ export interface ProfileFileStatus extends ResolvedFile {
   // True when this file is forked AND hive's shipped version changed after
   // the fork. Reported, never acted on: the fork is the user's.
   upstreamMoved: boolean;
+  // Fraction (0..1) of lines with no match between your fork and hive's
+  // CURRENT shipped file. null when this file is not forked, or the shipped
+  // side is unreadable. Independent of upstreamMoved/origins: upstreamMoved
+  // compares a hash recorded at fork time against hive's default today, which
+  // says whether hive moved but nothing about how far your fork is from it.
+  // This compares live content instead, so a doctor check can tell "you
+  // edited a few lines" from "this is a different document" - see todo 326
+  // comment 721.
+  divergence: number | null;
 }
+
+function readFileSafe(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// Order-blind, O(n+m): counts lines with no match on the other side rather
+// than aligning them positionally (an LCS-based diff would, at O(n*m)).
+// Exact alignment buys nothing here - the only question this feeds is
+// whether a fork reads as an edited copy or a different document, and that
+// distinction survives reordering fine. doctor runs often and a profile file
+// has no size ceiling, so the cheap approximation is the deliberate choice.
+function lineDivergence(a: string, b: string): number {
+  const linesA = a.split("\n");
+  const linesB = b.split("\n");
+  const counts = new Map<string, number>();
+  for (const line of linesA) counts.set(line, (counts.get(line) ?? 0) + 1);
+  let common = 0;
+  for (const line of linesB) {
+    const n = counts.get(line) ?? 0;
+    if (n > 0) {
+      common += 1;
+      counts.set(line, n - 1);
+    }
+  }
+  const total = linesA.length + linesB.length;
+  return total === 0 ? 0 : 1 - (2 * common) / total;
+}
+
+// Past this fraction of lines with no match on either side, a fork reads as a
+// different document rather than an edited copy of hive's default: below it,
+// most lines are still shared (drift); above it, most are not (rewrite). The
+// midpoint is the natural place to draw that line and is not tuned to any one
+// project's numbers - hive's own orchestration fork measures 77-99% per file,
+// well clear of either side of it either way.
+export const REWRITE_THRESHOLD = 0.5;
 
 export function profileStatus(name: string): { name: string; files: ProfileFileStatus[] } {
   const origins = readOrigins(name);
@@ -138,11 +186,19 @@ export function profileStatus(name: string): { name: string; files: ProfileFileS
   for (const file of PROFILE_FILES) {
     const resolved = resolveProfileFile(name, file);
     if (!resolved) continue;
-    const shippedNow = contentHash(candidate(shippedProfilesDir, name, file));
+    const shippedPath = candidate(shippedProfilesDir, name, file);
+    const shippedNow = contentHash(shippedPath);
+    let divergence: number | null = null;
+    if (resolved.source === "user") {
+      const userText = readFileSafe(resolved.path);
+      const shippedText = readFileSafe(shippedPath);
+      if (userText != null && shippedText != null) divergence = lineDivergence(userText, shippedText);
+    }
     files.push({
       ...resolved,
       upstreamMoved:
         resolved.source === "user" && origins[file] != null && shippedNow != null && shippedNow !== origins[file],
+      divergence,
     });
   }
   return { name, files };

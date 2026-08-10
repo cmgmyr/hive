@@ -148,9 +148,11 @@ import {
   readProfileFile,
   renderProfileFile,
   resolveProfileFile,
+  REWRITE_THRESHOLD,
   templateVars,
   userProfilesDir,
   type ProfileFile,
+  type ProfileFileStatus,
 } from "./profiles.js";
 import {
   getTodoDetail,
@@ -1584,6 +1586,24 @@ function asProfileFile(value: string | undefined): ProfileFile | undefined {
   return value as ProfileFile;
 }
 
+// Shared by `hive doctor` and `hive profile list`: one sentence and one
+// number for a fork's drift from hive's shipped default, so the two surfaces
+// cannot disagree about the same file. Todo 326 comment 723 - doctor's own
+// diff introduced exactly that gap by adding the percentage and the
+// warn/info split to doctor alone, leaving list's older, plainer sentence
+// behind it. null once the file has not moved since the fork.
+function profileDriftText(f: ProfileFileStatus): { rewrite: boolean; text: string } | null {
+  if (!f.upstreamMoved) return null;
+  const pct = f.divergence != null ? Math.round(f.divergence * 100) : null;
+  if (f.divergence != null && f.divergence >= REWRITE_THRESHOLD) {
+    return { rewrite: true, text: `${f.file} is a ${pct}% rewrite of hive's default, not an edited copy of it` };
+  }
+  return {
+    rewrite: false,
+    text: `hive's default ${f.file} changed since you forked it${pct != null ? ` (${pct}% diverged)` : ""}`,
+  };
+}
+
 function cmdProfile(argv: string[]): void {
   const [sub, ...rest] = argv;
   const positional = rest.filter((a) => !a.startsWith("--"));
@@ -1605,8 +1625,8 @@ function cmdProfile(argv: string[]): void {
           const status = profileStatus(profile);
           console.log(`${profile === current ? "*" : " "} ${profile}`);
           for (const f of status.files) {
-            const drift = f.upstreamMoved ? "   (hive's default changed since you forked)" : "";
-            console.log(`    ${f.file.padEnd(11)} ${f.source.padEnd(7)} ${f.path}${drift}`);
+            const drift = profileDriftText(f);
+            console.log(`    ${f.file.padEnd(11)} ${f.source.padEnd(7)} ${f.path}${drift ? `   (${drift.text})` : ""}`);
           }
         }
         if (current) console.log(`\n* is this project's profile.`);
@@ -2475,7 +2495,20 @@ function cmdDoctor(argv: string[]): void {
       // NON-GATING, and todo 292's own body names this one as the example of
       // an advisory warn: a fork that has diverged from hive's default is a
       // decision left to the human, not a broken install.
-      if (f.upstreamMoved) warn("profile", `hive's default ${f.file} changed since you forked it`);
+      //
+      // Todo 326 comment 721: for a fork that is a deliberate REWRITE rather
+      // than drift, this warn can never clear - it fires again every time
+      // hive's shipped default moves, forever, regardless of how the fork got
+      // there or how good it is. Measured on this project's own orchestration
+      // fork: 100% of doctor's warning output, permanently, and it got LOUDER
+      // the night a real improvement landed in the fork. Past
+      // REWRITE_THRESHOLD the fork shares too few lines with hive's default
+      // to read as an edited copy of it, so this drops to `info` and says so
+      // instead of repeating a warning that was never actionable. Wording and
+      // the percentage come from profileDriftText, shared with `hive profile
+      // list` so the two never disagree about the same file.
+      const drift = profileDriftText(f);
+      if (drift) (drift.rewrite ? info : warn)("profile", drift.text);
     }
     // Both files the project supplies vars to. worker.md is left out on
     // purpose: its vars include the agent identity hive fills in per spawn,

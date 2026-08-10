@@ -24,6 +24,8 @@ const {
   readProfileFile,
   renderTemplate,
   resolveProfileFile,
+  REWRITE_THRESHOLD,
+  shippedProfilesDir,
   templateVars,
 } = await import("../dist/profiles.js");
 const { loadProjectYml } = await import("../dist/projectYml.js");
@@ -98,6 +100,77 @@ describe("profile fork", () => {
     writeFileSync(join(scratch, "profiles", "simple", ".hive-origin.json"), JSON.stringify(origins));
 
     assert.equal(profileStatus("simple").files.find((f) => f.file === "posture.md").upstreamMoved, true);
+  });
+});
+
+describe("profile divergence", () => {
+  // Own data dir, isolated from `scratch`: forking "orchestration" here would
+  // otherwise shadow the shipped runbook.md/worker.md content that later
+  // describe blocks in this file read back (e.g. "renders hive's shipped
+  // runbook without leaving markers behind"), since resolution is per-file
+  // copy-on-write and HIVE_DATA_DIR is read at call time, not import time.
+  const divergenceScratch = mkdtempSync(join(tmpdir(), "hive-profiles-divergence-"));
+  after(() => rmSync(divergenceScratch, { recursive: true, force: true }));
+
+  function withDivergenceDataDir(fn) {
+    const prev = process.env.HIVE_DATA_DIR;
+    process.env.HIVE_DATA_DIR = divergenceScratch;
+    try {
+      return fn();
+    } finally {
+      process.env.HIVE_DATA_DIR = prev;
+    }
+  }
+
+  it("reports null for a file that has never been forked", () => {
+    withDivergenceDataDir(() => {
+      const status = profileStatus("orchestration").files.find((f) => f.file === "worker.md");
+      assert.equal(status.source, "shipped");
+      assert.equal(status.divergence, null);
+    });
+  });
+
+  it("stays well below the rewrite threshold for a one-line edit", () => {
+    withDivergenceDataDir(() => {
+      mkdirSync(join(divergenceScratch, "profiles", "orchestration"), { recursive: true });
+      const shipped = readFileSync(join(shippedProfilesDir, "orchestration", "posture.md"), "utf8");
+      const lines = shipped.split("\n");
+      lines[0] = `${lines[0]} -- one word added`;
+      writeFileSync(join(divergenceScratch, "profiles", "orchestration", "posture.md"), lines.join("\n"));
+
+      const status = profileStatus("orchestration").files.find((f) => f.file === "posture.md");
+      assert.equal(status.source, "user");
+      assert.ok(
+        status.divergence > 0 && status.divergence < REWRITE_THRESHOLD,
+        `expected drift below ${REWRITE_THRESHOLD}, got ${status.divergence}`,
+      );
+    });
+  });
+
+  it("crosses the rewrite threshold for a fork sharing almost no lines with hive's default", () => {
+    withDivergenceDataDir(() => {
+      mkdirSync(join(divergenceScratch, "profiles", "orchestration"), { recursive: true });
+      writeFileSync(
+        join(divergenceScratch, "profiles", "orchestration", "runbook.md"),
+        "this runbook is written from scratch for this project and shares nothing with hive's shipped default\n",
+      );
+
+      const status = profileStatus("orchestration").files.find((f) => f.file === "runbook.md");
+      assert.equal(status.source, "user");
+      assert.ok(status.divergence >= REWRITE_THRESHOLD, `expected a rewrite, got ${status.divergence}`);
+    });
+  });
+
+  it("is symmetric and near zero for an identical copy", () => {
+    withDivergenceDataDir(() => {
+      mkdirSync(join(divergenceScratch, "profiles", "orchestration"), { recursive: true });
+      const shipped = readFileSync(join(shippedProfilesDir, "orchestration", "worker.md"), "utf8");
+      writeFileSync(join(divergenceScratch, "profiles", "orchestration", "worker.md"), shipped);
+
+      const status = profileStatus("orchestration").files.find((f) => f.file === "worker.md");
+      assert.equal(status.source, "user");
+      assert.equal(status.divergence, 0);
+    });
   });
 });
 
@@ -243,6 +316,38 @@ describe("hive runbook and hive profile", () => {
     assert.match(stdout, /\* orchestration/);
     assert.match(stdout, /posture\.md\s+shipped/);
     assert.match(stdout, /^\s+simple/m);
+  });
+
+  it("names a fork's drift the same way doctor does (todo 326 comment 723)", async () => {
+    // Own scratch, isolated from `dirs`: a later test in this describe
+    // ("forks into the data dir...") forks orchestration/posture.md into
+    // `dirs.dataDir` itself and asserts on the CLI's "forked posture.md"
+    // wording, which this must not race or pre-empt.
+    const fresh = scratchDirs();
+    const freshOpts = { cwd: fresh.projectDir, dataDir: fresh.dataDir, tmp: fresh.tmp };
+    mkdirSync(join(fresh.dataDir, "profiles", "orchestration"), { recursive: true });
+    writeFileSync(
+      join(fresh.dataDir, "profiles", "orchestration", "runbook.md"),
+      "this runbook is written from scratch for this project and shares nothing with hive's shipped default\n",
+    );
+    // upstreamMoved also requires an origin recorded at fork time that no
+    // longer matches hive's current shipped hash; a bogus one stands in
+    // (same fixture shape as "reports when hive's default moved after a
+    // fork" above).
+    writeFileSync(
+      join(fresh.dataDir, "profiles", "orchestration", ".hive-origin.json"),
+      JSON.stringify({ "runbook.md": "0000000000000000" }),
+    );
+    writeFileSync(join(fresh.projectDir, "hive.yml"), "profile: orchestration\n");
+
+    const { code, stdout } = await runCli(["profile", "list"], freshOpts);
+
+    assert.equal(code, 0);
+    // Identical sentence to what `hive doctor` prints for the same file and
+    // the same fork - see the "profile divergence: warn survives small
+    // drift, info replaces a rewrite" describe in doctor-profile.test.mjs.
+    assert.match(stdout, /runbook\.md is a \d+% rewrite of hive's default, not an edited copy of it/);
+    assert.doesNotMatch(stdout, /changed since you forked/);
   });
 
   it("forks into the data dir and then resolves the fork", async () => {
