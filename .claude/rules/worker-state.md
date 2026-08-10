@@ -30,15 +30,15 @@ Two full lanes of #24 reasoned from an observed value to a presumed writer and n
 
 Any time you have "the system recorded X", the first question is which writer wrote it, not why the writer you have in mind would have.
 
-## Three known ways worker state is wrong today
+## Three ways worker state has been wrong, and how each was closed
 
-All open, all the same class, and hive reports something it cannot observe:
+Same class each time: hive reported something it could not observe, or had the fact and did not say it plainly.
 
-- **#28**: a state that CANNOT be written. A worker blocked on a permission prompt cannot be reported, because "waiting" is latched and nothing clears it.
-- **#38**: a state NEVER updated. A turn that dies mid-response leaves the worker on `working` forever and `wake_when_idle` never fires. Observed for 36 minutes after an API 529, caught only because a lead was polling.
-- **#46**: no canary over the payload contract, so a field changing shape would not be noticed at all.
+- **#28** (closed 2026-08-08): a state that could not be written. A worker blocked on a permission prompt could not be reported, because `waiting` was latched with nothing to clear it. `noteBlockedWatched` (`src/scheduler.ts`) closed it: when a watched agent's state is `waiting` it reads that agent's pane directly and tells the wake's owner if a dialog is up, instead of waiting on a state hive cannot observe. Mechanism and edge cases in `.claude/rules/tmux-and-panes.md`.
+- **#38** (closed 2026-08-02): filed as "a turn that dies mid-response leaves the worker on `working` forever and `wake_when_idle` never fires." That framing did not survive contact with the code: `max_wait_seconds` (900s default) already timed the wake out before this issue was filed, so it was never true that the wake waits forever. The real gap was narrower - `watchedTail` already embedded the agent's state and its pane tail in the wake body, but not the interpretation, so a lead reading "state now: working" next to a dead pane had to already know to distrust it. The fix folds that interpretation into the wake body directly. The paragraph below is that diagnostic; it stays true and worth knowing even with the fix shipped, since recognizing the shape on sight is still the fast path.
+- **#46** (closed 2026-07-31): no canary over the payload contract, so a field changing shape would not have been noticed at all. `test/payload-canary.test.mjs`, plus its committed corpus, is that canary now.
 
-Spotting #38 is cheap: a worker whose last `agent_state_log` row is a `prompt|working` with no `stop` after it, whose pane shows an error and an empty input box, and whose branch has not moved. A `working` older than the lane's rhythm is suspicious; `working` is not self-evidently healthy. Recovery is to send it a message, and to tell it what state you found, because after an API error it does not reliably remember what it was doing.
+Spotting the pattern is still cheap: a worker whose last `agent_state_log` row is a `prompt|working` with no `stop` after it, whose pane shows an error and an empty input box, and whose branch has not moved. A `working` older than the lane's rhythm is suspicious; `working` is not self-evidently healthy. Recovery is to send it a message, and to tell it what state you found, because after an API error it does not reliably remember what it was doing.
 
 ## A debounce is not an inference
 
