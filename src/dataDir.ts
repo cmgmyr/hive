@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // Resolved on its own, with no database side effects, so tmux.ts can derive
 // session names without opening the store.
@@ -75,6 +76,52 @@ export function underTestRunner(): boolean {
   return process.env.NODE_TEST_CONTEXT != null || process.execArgv.includes("--test");
 }
 
+// Absolute paths to hive's own scripts, computed from where THIS module was
+// loaded rather than hardcoded, so a checkout at any path -- or a worktree --
+// matches its own build. cli.js, index.js and hook.js are dist/'s other three
+// entry points (the CLI, the MCP server, and the Claude Code hook that writes
+// worker state); kickoff.js is dist/kickoff.js's own documented direct-entry
+// mode (see its header). claude-plugin/kickoff.mjs is the one that lives
+// OUTSIDE dist/: Claude Code's SessionStart hook runs it directly, before it
+// dynamically imports dist/kickoff.js, which is what makes it a distinct
+// entry point rather than an alias for one already in the list above.
+function productEntryPoints(): string[] {
+  const dist = dirname(fileURLToPath(import.meta.url));
+  return [
+    join(dist, "cli.js"),
+    join(dist, "index.js"),
+    join(dist, "hook.js"),
+    join(dist, "kickoff.js"),
+    join(dist, "..", "claude-plugin", "kickoff.mjs"),
+  ];
+}
+
+// True when this process's OWN entry point -- process.argv[1], set by node
+// before any user code runs, so no import order can move it the way an env
+// var the CLI or server set at the top of its own file could (that would be
+// the 2026-07-28 hoisting bug in a new hat: by the time such a line ran,
+// db.ts's module body may already have chosen a store) -- is one of hive's
+// own scripts, rather than something a person wrote to drive or inspect one.
+//
+// Compared as a resolved path, not a basename. A basename check would call
+// any unrelated file named "index.js" a match, which is a wider hole than an
+// exact path needs to accept; canonicalised on both sides so an npm bin
+// symlink, or the plugin's own ~/.claude/skills/hive symlink, still resolves
+// to the file this is actually asking about (same reason isDefaultStore
+// follows links, above).
+//
+// This is a guardrail against a confused author, not a security boundary --
+// nobody is attacking this, people are writing a seed script at 1am -- and
+// HIVE_ALLOW_DEFAULT_STORE (see storeDir, below) is the deliberate escape
+// hatch for the legitimate case this cannot see: a one-off human inspection
+// that is not any of the five paths above.
+export function isProductEntryPoint(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  const entry = canonical(argv1);
+  return productEntryPoints().some((p) => canonical(p) === entry);
+}
+
 // The data dir for anything that opens or writes the store, as opposed to
 // merely naming something after it.
 //
@@ -115,9 +162,8 @@ export function underTestRunner(): boolean {
 // import and needs the other treatment: see guardStoreDir below.
 export function storeDir(): string {
   const dir = resolveDataDir();
-  if (isDefaultStore(dir) && underTestRunner()) {
-    throw new Error(refusal());
-  }
+  const reason = defaultStoreRefusal(dir);
+  if (reason) throw new Error(refusal(reason));
   return dir;
 }
 
@@ -132,22 +178,55 @@ export function storeDir(): string {
 // a protocol stream.
 export function guardStoreDir(): string {
   const dir = resolveDataDir();
-  if (isDefaultStore(dir) && underTestRunner()) {
-    console.error(`hive: ${refusal()}`);
+  const reason = defaultStoreRefusal(dir);
+  if (reason) {
+    console.error(`hive: ${refusal(reason)}`);
     process.exit(1);
   }
   return dir;
 }
 
-// One wording for both, so a test that pins the sentence pins both paths.
-// Written for someone who has never read hive's source: the way out is an env
-// var, and it is named before anything else.
-function refusal(): string {
+// The one decision storeDir() and guardStoreDir() both make, so they cannot
+// drift apart. Two refusals, checked in order, and the order is load-bearing:
+//
+// A test runner is refused OUTRIGHT, with nothing below able to un-refuse it.
+// HIVE_ALLOW_DEFAULT_STORE is an override for a HUMAN's one-off script, never
+// for a test process; folding the two checks into one would let a test that
+// sets it (by accident, by copying an example, by a future author reaching
+// for the obvious-looking fix) reach live state, which is the exact failure
+// this file exists to prevent.
+//
+// Below that: anything that is not hive's own CLI, MCP server, or hooks
+// (isProductEntryPoint, above) is refused too, UNLESS the human running it
+// set HIVE_ALLOW_DEFAULT_STORE=1 -- the deliberate opt-in for a legitimate
+// one-off against the real store, which isProductEntryPoint cannot itself
+// recognise. This is the todo 324 gap: a hand-rolled driver script that sets
+// HIVE_DATA_DIR for a child it spawns, then imports dist/db.js in ITSELF to
+// seed or inspect a row, was never a test runner and was never refused.
+function defaultStoreRefusal(dir: string): "test-runner" | "not-product-entry" | null {
+  if (!isDefaultStore(dir)) return null;
+  if (underTestRunner()) return "test-runner";
+  if (isProductEntryPoint()) return null;
+  if (process.env.HIVE_ALLOW_DEFAULT_STORE === "1") return null;
+  return "not-product-entry";
+}
+
+// One wording per reason, so a test that pins a sentence pins the path that
+// produced it. Written for someone who has never read hive's source: the way
+// out is named before anything else, whichever reason fired.
+function refusal(reason: "test-runner" | "not-product-entry"): string {
+  const why =
+    reason === "test-runner"
+      ? "hive refuses the real store whenever a test runner is the entry point " +
+        "(NODE_TEST_CONTEXT is set), because a suite that reaches it can destroy live state."
+      : "hive refuses the real store from any process that is not its own CLI, MCP server, " +
+        "or hooks, because a hand-rolled script that opens it to seed or inspect a row can " +
+        "write to live state by accident. Set HIVE_ALLOW_DEFAULT_STORE=1 if this really is a " +
+        "deliberate one-off against the real store.";
   return (
     `refused to use its real store at ${DEFAULT_DATA_DIR}. Set HIVE_DATA_DIR to a directory ` +
     "this run may write to, and pass it to every process spawned from here. " +
-    "hive refuses the real store whenever a test runner is the entry point " +
-    "(NODE_TEST_CONTEXT is set), because a suite that reaches it can destroy live state."
+    why
   );
 }
 

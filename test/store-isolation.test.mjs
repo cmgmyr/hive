@@ -147,19 +147,28 @@ describe("the hoist-order trap that lost a live store", () => {
     assert.equal(stdout, dirs.dataDir);
   });
 
-  it("leaves a human running hive outside a test runner alone", () => {
-    // The check is "a test runner is the entry point", not "HIVE_DATA_DIR is
-    // unset", so `hive doctor` in a terminal still gets ~/.hive. Asked for as
-    // a path rather than by opening it: storeDir touches no disk, and a test
-    // proving the real store is reachable must not reach it.
+  it("no longer leaves an arbitrary script outside a test runner alone (todo 324)", () => {
+    // This test used to assert the OPPOSITE: that any script run outside a
+    // test runner reached ~/.hive, on the theory that "a test runner is the
+    // entry point" was the only thing worth refusing. Todo 324 found the gap
+    // in that theory directly: a hand-rolled step-11 driver is ALSO not a
+    // test runner, and it reached ~/.hive just as easily. The guard now asks
+    // a narrower question -- is this process one of hive's own entry points?
+    // -- and an arbitrary script answers no. See test/store-entry-guard.test.mjs
+    // for the full behaviour: which five paths ARE recognised, and
+    // HIVE_ALLOW_DEFAULT_STORE as the deliberate opt-in this case is missing.
     const { code, stdout, stderr } = runFixture(
       "human",
       `const { storeDir, underTestRunner } = await import("${DIST}/dataDir.js");\n` +
-        `process.stdout.write(JSON.stringify({ dir: storeDir(), test: underTestRunner() }));\n`,
+        `let dir; try { dir = storeDir(); } catch (e) { dir = e.message; }\n` +
+        `process.stdout.write(JSON.stringify({ dir, test: underTestRunner() }));\n`,
       {},
     );
     assert.equal(code, 0, stderr);
-    assert.deepEqual(JSON.parse(stdout), { dir: join(homedir(), ".hive"), test: false });
+    const seen = JSON.parse(stdout);
+    assert.equal(seen.test, false, "this process is genuinely not a test runner");
+    assert.notEqual(seen.dir, join(homedir(), ".hive"), "an arbitrary script must not reach the real store");
+    assert.match(seen.dir, /refused to use its real store/);
   });
 });
 

@@ -25,11 +25,16 @@ const nameUnder = (env) =>
 const sessionNameUnder = (dataDir) => nameUnder({ ...process.env, HIVE_DATA_DIR: dataDir });
 
 // The default store is reachable only when a test runner is NOT the entry
-// point, so the cases that want it ask the way a human at a terminal does.
-// This process cannot ask: hive refuses to name a store it would refuse to
-// open, because the name is what kill-session gets pointed at.
+// point AND (todo 324) the caller is one of hive's own entry points or has
+// said explicitly that it means to touch the real store anyway, so the cases
+// that want it ask the way a human at a terminal does. This process cannot
+// ask: hive refuses to name a store it would refuse to open, because the
+// name is what kill-session gets pointed at. A `node -e` one-liner is not
+// hive's CLI, its MCP server, or its hooks, so HIVE_ALLOW_DEFAULT_STORE is
+// the deliberate opt-in that makes this the human case rather than the
+// step-11-driver case those five paths exist to catch.
 function asHuman(dataDir) {
-  const env = { ...process.env };
+  const env = { ...process.env, HIVE_ALLOW_DEFAULT_STORE: "1" };
   delete env.NODE_TEST_CONTEXT;
   if (dataDir === null) delete env.HIVE_DATA_DIR;
   else env.HIVE_DATA_DIR = dataDir;
