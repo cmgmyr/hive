@@ -701,6 +701,143 @@ CREATE TABLE wake_idle_notices (
   `
 CREATE INDEX idx_wake_idle_notices_notified ON wake_idle_notices(notified_at);
 `,
+  // Todo 331. 2026-08-10: a hand-rolled python3+sqlite3 heredoc ran
+  //   UPDATE scratchpads SET content=?, revision=revision+1 WHERE name='board'
+  // against the live store, twice, with no project_id predicate. Pad names
+  // are unique PER PROJECT, not globally, so it matched every project's
+  // board and overwrote sideproj's with hive's own. Every hive tool that
+  // changes content stamps updated_at in the SAME statement (bumpPad,
+  // src/tools/pads.ts:57; updateTodo, src/tools/todos.ts:325; kv_set's
+  // INSERT ... ON CONFLICT DO UPDATE, src/tools/kv.ts:49), so the row this
+  // incident produced carried a tell no legitimate write can leave:
+  // revision moved, content changed, updated_at did not. This migration
+  // turns that tell into a refusal, at the row level, for any writer in any
+  // language - a python heredoc, a bare sqlite3 CLI call, a future tool
+  // that forgets the column - not only for callers that go through Node.
+  //
+  // WHAT THIS DOES NOT DO, AND MUST NOT BE DESCRIBED AS DOING. It catches
+  // reaching PAST the tool layer. It does NOT catch a missing project_id
+  // (or, for kv, a missing project_id+key pair) predicate: a script that
+  // stamps updated_at correctly and still addresses rows by a non-unique
+  // name can still clobber the wrong project's row, and nothing at the
+  // database level can require a WHERE clause to be selective. That is a
+  // distinct hazard; todo 331's other lane (a PreToolUse hook denying a
+  // Bash command that writes to the store) is the one aimed at it, not this
+  // trigger. Do not let a PR body or a doctor message claim cross-project
+  // writes are now impossible - they are not.
+  //
+  // SCOPE: scratchpads.content, todos.title/body, kv.value - the three
+  // "content" columns on the three tables carrying an updated_at audit
+  // column. todos.status, priority and tags are deliberately NOT guarded:
+  // they are short enums or small JSON arrays nobody hand-edits with a
+  // heredoc, every write to them already goes through updateTodo/touch
+  // (which always stamp updated_at together with everything else in one
+  // UPDATE), and the incident this guards against is specifically the
+  // large-blob-overwrite shape - the reason an agent reached for raw SQL at
+  // all was that pad_edit round-trips on an 84KB pad are painful, which has
+  // no analogue for flipping a status.
+  //
+  // VERIFIED SAFE BEFORE WRITING THIS, rather than assumed (todo 331's own
+  // instruction):
+  //   - No earlier entry in this array UPDATEs scratchpads.content,
+  //     todos.title/body, or kv.value. The one existing UPDATE anywhere in
+  //     MIGRATIONS is `UPDATE agents SET name = ...` (the running-name
+  //     backfill, above), and agents carries no updated_at column at all,
+  //     so this trigger could not fire against it even if it targeted
+  //     agents.
+  //   - Every legitimate writer stamps updated_at in the SAME UPDATE as the
+  //     content change: bumpPad (src/tools/pads.ts:57-62 - pad_write,
+  //     pad_edit, pad_append, and `hive pad --save` via
+  //     overwritePadContent all go through it); updateTodo
+  //     (src/tools/todos.ts:309-348, the only writer of todos.title/body);
+  //     kv_set's INSERT ... ON CONFLICT DO UPDATE
+  //     (src/tools/kv.ts:49-64). touch(), archiveTodo and completeTodo
+  //     (src/tools/todos.ts) change updated_at alone or alongside
+  //     archived_at/status/completed_at, never title/body, so they can
+  //     never trip this trigger.
+  //   - Neither backup nor restore issues an UPDATE against these tables.
+  //     takeSnapshot (src/backup.ts) is VACUUM INTO plus filesystem copies;
+  //     restoreSnapshot is cpSync/renameSync against hive.db as a whole
+  //     file, never SQL. Both operate below the row layer entirely, so no
+  //     trigger in this schema can ever see either one fire.
+  //
+  // KNOWN COST, accepted, and recorded again next to the append-only rule
+  // in .claude/rules/store-and-datadir.md: any FUTURE migration that
+  // rewrites scratchpads.content, todos.title/body, or kv.value for
+  // existing rows must stamp updated_at in the same statement, or it
+  // aborts against its own trigger. Migrations are append-only, so this
+  // cannot be relaxed retroactively once a store has applied it - a
+  // migration that needs to touch one of these columns has to know this
+  // rule going in.
+  //
+  // WHY THE WHEN CLAUSE COMPARES NEW.updated_at TO A FRESH datetime('now'),
+  // NOT TO OLD.updated_at - measured, not assumed, after the first version
+  // of this migration (comparing against OLD) shipped and immediately
+  // failed its own legitimate-write test. updated_at is stamped with plain
+  // datetime('now'), whole-SECOND resolution, by every writer in
+  // pads.ts/todos.ts/kv.ts. Two genuine writes to the SAME row less than a
+  // second apart - pad_write immediately followed by pad_append, which is
+  // ordinary usage, not a contrived case - produce an OLD.updated_at and a
+  // NEW.updated_at that are textually IDENTICAL despite the second write
+  // correctly re-stamping "now": both statements' datetime('now') calls
+  // landed in the same wall-clock second. Comparing to OLD made that
+  // indistinguishable from the incident and aborted a real pad_append.
+  // Comparing to a fresh datetime('now') in the WHEN clause instead asks a
+  // different, correct question: does this write's own updated_at actually
+  // say "now"? SQLite reads the clock once per top-level statement and
+  // reuses that value for every datetime('now') call within it, INCLUDING
+  // ones evaluated inside a trigger the statement fires (measured directly
+  // against a real connection before writing this, not inferred from docs:
+  // a BEFORE UPDATE trigger's own datetime('now') read back byte-identical
+  // to the value a concurrent SET updated_at = datetime('now') had just
+  // written, same statement). So a legitimate write's NEW.updated_at and
+  // the trigger's own datetime('now') are the same cached read and compare
+  // equal every time, not merely most of the time - this is not a
+  // reduction in collision probability, it is the same-statement caching
+  // making the two calls provably identical. A bypass write that never
+  // touches updated_at at all leaves NEW.updated_at at whatever OLD value
+  // it was, which will not equal the fresh read except in the one-in-a-
+  // billion case where the bypass itself lands in the exact same second the
+  // row was last legitimately stamped - a narrower, more honest residual
+  // than a guard that reliably blocked ordinary rapid usage.
+  //
+  // EVERY COMPARISON BELOW USES IS NOT, NOT !=. In SQLite, != against a NULL
+  // on either side evaluates to NULL, not TRUE, so a WHEN clause built from
+  // != silently does not fire when a compared column is NULL - measured: a
+  // row with a NULL body, updated with a stale updated_at, slipped straight
+  // through a != version of this trigger. All five guarded columns
+  // (scratchpads.content, todos.title/body, kv.value) are NOT NULL today, so
+  // this is not a live gap, and IS NOT costs nothing (it behaves identically
+  // to != for every non-NULL comparison, which is all of them right now).
+  // It is here because migrations are append-only: a future migration that
+  // relaxes one of these NOT NULL constraints would otherwise silently
+  // reopen this exact hole, with no test able to go red about it since
+  // nothing here could be edited to catch it after the fact.
+  `
+CREATE TRIGGER guard_scratchpads_content_update
+BEFORE UPDATE ON scratchpads
+FOR EACH ROW
+WHEN NEW.content IS NOT OLD.content AND NEW.updated_at IS NOT datetime('now')
+BEGIN
+  SELECT RAISE(ABORT, 'Refused: this UPDATE changes scratchpads.content but leaves updated_at unchanged, which every hive pad tool (pad_write, pad_edit, pad_append) stamps in the same statement. To overwrite a large pad, use hive pad <name> --save <file>, which does this correctly. If you must run SQL directly, address the row BY PRIMARY KEY (id), never by name: pad names are unique per project, not globally, so a name-only WHERE clause matches every project''s pad with that name and silently overwrites the wrong project''s data.');
+END;
+
+CREATE TRIGGER guard_todos_content_update
+BEFORE UPDATE ON todos
+FOR EACH ROW
+WHEN (NEW.title IS NOT OLD.title OR NEW.body IS NOT OLD.body) AND NEW.updated_at IS NOT datetime('now')
+BEGIN
+  SELECT RAISE(ABORT, 'Refused: this UPDATE changes todos.title or todos.body but leaves updated_at unchanged, which todo_update stamps in the same statement. Use todo_update, or if you must run SQL directly, address the row BY PRIMARY KEY (id) and stamp updated_at yourself.');
+END;
+
+CREATE TRIGGER guard_kv_content_update
+BEFORE UPDATE ON kv
+FOR EACH ROW
+WHEN NEW.value IS NOT OLD.value AND NEW.updated_at IS NOT datetime('now')
+BEGIN
+  SELECT RAISE(ABORT, 'Refused: this UPDATE changes kv.value but leaves updated_at unchanged, which kv_set stamps in the same statement. kv''s primary key is (project_id, key), not key alone: a key-only WHERE clause matches every project''s row with that key. Use kv_set, or if you must run SQL directly, filter on project_id too and stamp updated_at yourself.');
+END;
+`,
 ];
 
 function readAppliedVersions(): Set<number> {
