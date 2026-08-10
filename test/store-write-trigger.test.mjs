@@ -121,6 +121,42 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     assert.equal(padRow(padId).content, "v2");
   });
 
+  it("KNOWN RESIDUAL: does not catch a bypass landing in the same second as the row's own last legitimate write", () => {
+    // Negative control, not a regression test - it pins a documented limit
+    // rather than a bug. A smoke test replaying the incident against a
+    // freshly seeded store found this the same day PR #140 merged: the
+    // migration's own comment originally called this gap "one-in-a-billion",
+    // and it is not. Seed a row through a legitimate-shaped write (content
+    // set alongside updated_at = datetime('now'), as pad_write/todo_create/
+    // kv_set all do), then rewrite it with raw SQL a few milliseconds later
+    // - the natural shape of a hand-rolled driver script that seeds a row
+    // and then mutates it directly (the todo 324 family). Both statements'
+    // updated_at read the same wall-clock second, so the bypass's
+    // NEW.updated_at (carried forward, untouched) reads as "now" too and the
+    // WHEN clause never fires.
+    //
+    // If this test starts FAILING (the bypass throws), that means someone
+    // narrowed or removed the same-second window - a real improvement, not
+    // a break. Update this test and the migration's own comment together
+    // rather than deleting either silently: the documented limit and the
+    // checked one must not drift apart.
+    //
+    // This residual is exactly what todo 331's other lane (a PreToolUse
+    // hook denying a Bash command that writes to the store) is for: it does
+    // not care what second it is.
+    const projectId = seedProject("/scratch/seed-then-rewrite");
+    const padId = db
+      .prepare(
+        "INSERT INTO scratchpads (project_id, name, content, updated_at) VALUES (?, 'board', 'seeded', datetime('now')) RETURNING id",
+      )
+      .get(projectId).id;
+    assert.doesNotThrow(
+      () => db.prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE id = ?").run("BYPASSED", padId),
+      "if this throws, the same-second gap has closed - update the migration comment too, do not just delete this test",
+    );
+    assert.equal(padRow(padId).content, "BYPASSED");
+  });
+
   it("does not fire when content is unchanged, however updated_at moves", () => {
     const projectId = seedProject("/scratch/touch-only");
     const padId = seedPad(projectId, "board", "same content throughout");

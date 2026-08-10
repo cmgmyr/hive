@@ -794,12 +794,28 @@ CREATE INDEX idx_wake_idle_notices_notified ON wake_idle_notices(notified_at);
   // the trigger's own datetime('now') are the same cached read and compare
   // equal every time, not merely most of the time - this is not a
   // reduction in collision probability, it is the same-statement caching
-  // making the two calls provably identical. A bypass write that never
-  // touches updated_at at all leaves NEW.updated_at at whatever OLD value
-  // it was, which will not equal the fresh read except in the one-in-a-
-  // billion case where the bypass itself lands in the exact same second the
-  // row was last legitimately stamped - a narrower, more honest residual
-  // than a guard that reliably blocked ordinary rapid usage.
+  // making the two calls provably identical.
+  //
+  // THE RESIDUAL, STATED BY SHAPE, NOT BY PROBABILITY - an earlier version
+  // of this comment called it "one-in-a-billion" and a smoke test replaying
+  // the incident against a freshly seeded store showed that framing is
+  // wrong in the direction that matters. A bypass write that never touches
+  // updated_at leaves NEW.updated_at at whatever OLD value it was. This
+  // trigger refuses it when OLD.updated_at reads as an EARLIER second than
+  // the fresh read - the incident's own shape, a row last touched minutes
+  // or hours before the bypass. It does NOT refuse a bypass that lands in
+  // the SAME second as the row's own last legitimate write: seed a row
+  // through pad_write/todo_create/kv_set, then rewrite it with raw SQL a
+  // few milliseconds later, and NEW.updated_at (still OLD's value) reads as
+  // "now" too, so the WHEN clause never fires. That seed-then-rewrite
+  // pattern is not exotic - it is the natural shape of a hand-rolled driver
+  // script (seed a row to exercise something, then mutate it directly),
+  // the same family todo 324 traces to and the one this todo's own incident
+  // came from. Against a stale row the gap is negligible; against a row
+  // this process just wrote it is close to certain. Todo 331's other lane
+  // (a PreToolUse hook denying a Bash command that writes to the store)
+  // does not care what second it is and is what actually closes this
+  // residual - this trigger alone does not.
   //
   // EVERY COMPARISON BELOW USES IS NOT, NOT !=. In SQLite, != against a NULL
   // on either side evaluates to NULL, not TRUE, so a WHEN clause built from
