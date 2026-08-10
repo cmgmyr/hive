@@ -7,6 +7,7 @@ import {
   ensureSession,
   crossServerRefusal,
   findProjectWindow,
+  panePid,
   paneWindow,
   rowLive,
   sessionName,
@@ -478,7 +479,17 @@ export function launchAgent(
     // INSERT; leave it there and just rethrow, so the caller sees the
     // failure while the worker it already spawned stays reachable by
     // actor_id, just without a recorded tmux_target.
-    db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?").run(target, socket, agentId);
+    // Todo 336: panePid(target) here rather than left '', so the row this
+    // spawn just created can tell "my pane" from "whatever a later server
+    // restart reissues this pane id to" - see src/db.ts's migration and
+    // deliverable()'s own comment (src/scheduler.ts). Read against the pane
+    // this statement just wrote, which is live by construction (paneUp).
+    db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?").run(
+      target,
+      socket,
+      panePid(target),
+      agentId,
+    );
     return { agentId, actorId, target, landedInProjectId };
   } catch (e) {
     if (paneUp) throw e;

@@ -23,7 +23,9 @@ import {
   maskChoiceMarker,
   paneAwaitingChoice,
   rowAlive,
+  rowAliveProbe,
   rowLive,
+  rowLiveProbe,
   sanitizeTail,
   sendText,
   tailCaptureLines,
@@ -62,6 +64,15 @@ export interface TimerRow {
   // the '' "no fact recorded" case at every call site - D2 - with one
   // representation of "unset" instead of two.
   deliver_socket: string;
+  // Todo 336. Joined from agents.pane_pid via deliver_actor, the same shape
+  // as deliver_socket immediately above and for the same reason: a pane id
+  // only means something relative to the tmux GENERATION that issued it, and
+  // nothing on a timer row said which generation until this join. '' means
+  // "no fact recorded" (a pre-migration row, or a deliver_actor with no
+  // agents row at all) and must never read as a mismatch - see
+  // deliverable()'s own use of it. Coalesced to '' in SQL for the identical
+  // join-miss reason deliver_socket already is.
+  deliver_pane_pid: string;
   // Todo 315. NULL for every wake but a standing watch; see src/db.ts's own
   // migration for why this is a flag on an idle_any row rather than a kind.
   watch_scope: string | null;
@@ -861,11 +872,13 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // this call is cheap on every tick where nothing is due.
     maybeGenerateDashboards();
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
-    // LEFT JOIN for deliver_socket (issue #73, D6): see TimerRow's own comment
-    // on the field. timers.* keeps every bare column reference below
-    // unambiguous against agents' own id/project_id/kind/created_at columns.
+    // LEFT JOIN for deliver_socket (issue #73, D6) and deliver_pane_pid
+    // (todo 336): see TimerRow's own comments on both fields. timers.* keeps
+    // every bare column reference below unambiguous against agents' own
+    // id/project_id/kind/created_at columns.
     const candidates = stmt(
-      `SELECT timers.*, COALESCE(agents.tmux_socket, '') AS deliver_socket
+      `SELECT timers.*, COALESCE(agents.tmux_socket, '') AS deliver_socket,
+              COALESCE(agents.pane_pid, '') AS deliver_pane_pid
          FROM timers ${DELIVER_SOCKET_JOIN}
         WHERE timers.cancelled_at IS NULL AND (
          (timers.kind = 'delay' AND timers.due_at <= datetime('now')
@@ -1129,6 +1142,10 @@ const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust 
 const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
+const HELD_REASON_LEAD_PANE_REISSUED =
+  "the pane id recorded for this wake now belongs to a different pane than the one it was set " +
+  "against (its pid no longer matches, most likely a tmux server restart reissuing the id); held " +
+  "rather than typed into the wrong pane - run `hive lead` to re-point it at the live one";
 const HELD_REASON_UNSUBMITTED_INPUT =
   "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
   "and submit both as one message";
@@ -2789,9 +2806,20 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // hazard for withWindowClaim; it is the same one). tick() holds no
 // transaction, and it is the only caller today.
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
-  const live = snapshot
-    ? rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot)
-    : rowLive(timer.deliver_socket, timer.deliver_pane);
+  // Todo 336. *Probe rather than plain rowAlive/rowLive: the pane-identity
+  // check below (isLeadActorId branch) needs the pane's CURRENT pid, and it
+  // has to come from this exact same tmux read - a second probe taken later
+  // could observe a different pane entirely if something closed and
+  // recreated it in between. Computed unconditionally, including for a
+  // non-lead row that will never read `.pid`: for the snapshot path it is a
+  // map lookup already paid for by the same list-panes call `live` reads;
+  // for the no-snapshot path it rides on the one list-panes fork
+  // targetLiveProbe already makes to answer `live`. Either way there is no
+  // second fork to avoid by gating this on isLeadActorId first.
+  const probe = snapshot
+    ? rowAliveProbe(timer.deliver_socket, timer.deliver_pane, snapshot)
+    : rowLiveProbe(timer.deliver_socket, timer.deliver_pane);
+  const live = probe.live;
   // Issue #69, accepted 2026-08-02, not fixed. live === null means the tmux
   // probe could not answer, and every due wake renders byte-identical to one
   // that is not due yet for as long as that holds - this branch records
@@ -2875,6 +2903,57 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
       // repeating wake.
       cancelTimer(timer.id);
     }
+    return false;
+  }
+  // Todo 336. `live` above answers "does a pane with this id exist", never
+  // "is it the pane we meant" - tmux pane ids restart from %0 whenever the
+  // server that issued them is gone (a reboot, an explicit kill-server, or
+  // simply the last session in the store's namespace closing, all measured
+  // - see the migration's own comment, src/db.ts), and the NEXT server hands
+  // a low id straight to whatever pane it creates next. HELD_REASON_LEAD_
+  // PANE_DEAD above only fires when the recorded pane reads DEAD; a
+  // reissued pane reads live, so without this check a pending lead-owned
+  // wake sails through and types into a stranger's pane.
+  //
+  // Gated on isLeadActorId, matching the dead-pane exemption immediately
+  // above and for the same stated reason (the lead's plan pad, todo 336
+  // comment 717): worker rows are already reaped by janitor()'s sweep at
+  // the top of every tick (kind != LEAD_KIND there has no counterpart
+  // here), so the live exposure is specifically the two lead exemptions
+  // this file already documents. Widening to worker rows later is a
+  // condition to add here, not a second migration - deliver_pane_pid is
+  // already written for every pane hive records.
+  //
+  // deliver_pane_pid === "" (no fact recorded: a pre-migration row, or a
+  // deliver_actor with no agents row) and probe.pid === null (this exact
+  // probe could not read a pid even though live read true - theoretically
+  // possible if the pane closed in the gap between the two tmux reads
+  // inside targetLiveProbe, though snapshot.pids is populated by the same
+  // list-panes line that populates snapshot.panes and cannot disagree with
+  // it) both mean "cannot judge identity" and MUST proceed exactly as
+  // before this check existed, never read as a mismatch - an upgrade must
+  // not hold or cancel every pre-existing wake in every store.
+  //
+  // HOLD, not cancel, matching HELD_REASON_LEAD_PANE_DEAD immediately
+  // above: a hold is recoverable and visible in wake_list, a cancel
+  // destroys a wake a human asked for, and the two conditions
+  // ("temporarily gone" and "reissued to someone else") are close enough in
+  // shape - both symptoms of the same restart - to deserve the same
+  // recoverable treatment rather than one silently outranking the other in
+  // severity.
+  //
+  // PIDS WRAP. A reissued pane can in principle land on its predecessor's
+  // exact pid, and this check passes and delivers wrongly exactly as it
+  // does with no column at all. Guardrail against a confused machine, not a
+  // guarantee and not a security boundary - do not read this as making
+  // misdelivery impossible.
+  if (
+    isLeadActorId(timer.deliver_actor) &&
+    timer.deliver_pane_pid !== "" &&
+    probe.pid !== null &&
+    probe.pid !== timer.deliver_pane_pid
+  ) {
+    holdTimer(timer, HELD_REASON_LEAD_PANE_REISSUED);
     return false;
   }
   // Todo 65. A pane sitting on a modal choice eats the paste and reads the

@@ -496,13 +496,42 @@ export function untrustedTmuxServer(): boolean {
 // guard too - an empty target is never live regardless of which server
 // answers.
 export function targetLive(target: string): Liveness {
-  if (target === "") return false;
-  if (untrustedTmuxServer()) return null;
+  return targetLiveProbe(target).live;
+}
+
+// Todo 336. { live, pid } from ONE list-panes call, not two: the pid a
+// caller needs to tell a reissued pane from its predecessor (see
+// PaneProbe's own comment) is answered by the same probe that already
+// decides liveness, so a caller that wants both never pays for a second
+// fork. pid is null whenever live is not true - there is nothing to read a
+// pid off of, and a stale pid from a PRIOR probe would be exactly the kind
+// of fact this file exists to stop rows from carrying.
+export interface PaneProbe {
+  live: Liveness;
+  pid: string | null;
+}
+
+export function targetLiveProbe(target: string): PaneProbe {
+  if (target === "") return { live: false, pid: null };
+  if (untrustedTmuxServer()) return { live: null, pid: null };
   try {
-    tmux("list-panes", "-t", target);
-    return true;
+    // `list-panes -t <pane>` lists every pane in that PANE'S WINDOW, not just
+    // the one target - measured directly after this looked right and was not
+    // (a two-pane window returned two rows, and the naive `[0]` picked
+    // whichever pane tmux happened to list first, silently reporting a
+    // SIBLING pane's pid). #{pane_id} in the format string is what tells the
+    // rows apart; isPaneTarget matches targetAlive's own pane-vs-window
+    // split immediately below. A window target has no single pane's pid to
+    // report at all - null, the same "cannot judge" this file already
+    // returns for a foreign socket, not a guess at which pane in it would
+    // count.
+    const rows = tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_pid}")
+      .split("\n")
+      .map((line) => line.split(" "));
+    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] ?? null) : null;
+    return { live: true, pid };
   } catch (e) {
-    return tmuxSaysNothingThere(e) ? false : null;
+    return { live: tmuxSaysNothingThere(e) ? false : null, pid: null };
   }
 }
 
@@ -512,6 +541,11 @@ export function targetLive(target: string): Liveness {
 export interface AliveSnapshot {
   panes: Set<string>;
   windows: Set<string>;
+  // Todo 336. Populated from the same list-panes call as panes/windows, so a
+  // caller that already has a snapshot gets every pane's current pid for
+  // free - no second fork. Absent from the map (not just falsy) for any
+  // pane not in the snapshot at all, i.e. dead or foreign.
+  pids: Map<string, string>;
 }
 
 // An empty snapshot means tmux answered and nothing is alive; callers may act
@@ -522,11 +556,14 @@ export function liveTargets(): AliveSnapshot | null {
   // A server this process must not draw conclusions from is the same answer as
   // a server that did not answer: unknown. See untrustedTmuxServer.
   if (untrustedTmuxServer()) return null;
-  const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set() };
+  const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set(), pids: new Map() };
   try {
-    for (const line of tmux("list-panes", "-a", "-F", "#{pane_id} #{session_name}:#{window_id}").split("\n")) {
-      const [pane, window] = line.split(" ");
+    for (const line of tmux(
+      "list-panes", "-a", "-F", "#{pane_id} #{pane_pid} #{session_name}:#{window_id}",
+    ).split("\n")) {
+      const [pane, pid, window] = line.split(" ");
       if (pane) snapshot.panes.add(pane);
+      if (pane && pid) snapshot.pids.set(pane, pid);
       if (window) snapshot.windows.add(window);
     }
   } catch (e) {
@@ -537,6 +574,39 @@ export function liveTargets(): AliveSnapshot | null {
 
 export function targetAlive(target: string, snapshot: AliveSnapshot): boolean {
   return isPaneTarget(target) ? snapshot.panes.has(target) : snapshot.windows.has(target);
+}
+
+// Todo 336. Read time, for a pane already confirmed live: the pane's
+// CURRENT pid, straight from a snapshot's own map, no second probe.
+//
+// `snapshot.pids?.` rather than a bare `snapshot.pids.`, deliberately: many
+// existing tests (standing-watch, wake-hold-notify, delivery-state, probe,
+// scheduler, tmux-socket-foreign) construct a synthetic `{panes, windows}`
+// snapshot literal by hand and pass it straight to `tick()`, a convention
+// this file's own comments call out as deliberate (see liveTargets()'s
+// docstring and test/scheduler.test.mjs). TypeScript's AliveSnapshot type
+// requires `pids`, but an untyped .mjs literal can still omit it, the same
+// tension `configureHiveWindow`'s `projectId` argument already has - and the
+// resolution is the same: a caller that never mentions pid identity reads as
+// "no fact recorded" for every pane, not as a crash. Measured: without the
+// `?.`, four pre-existing suites threw `Cannot read properties of undefined
+// (reading 'get')` inside deliverable(), caught by tick()'s own per-candidate
+// guard, and the SYMPTOM was an unrelated assertion failing several lines
+// later - the thrown TypeError itself never surfaced in any of those diffs.
+export function targetPid(target: string, snapshot: AliveSnapshot): string | null {
+  return snapshot.pids?.get(target) ?? null;
+}
+
+// Todo 336. Write time: capture a just-recorded pane's pid to store
+// alongside its id, so a LATER read can tell the pane apart from whatever a
+// server restart reissues its id to. list-panes, not display-message - see
+// targetLiveProbe/paneWindow's own comments on why display-message silently
+// answers for the wrong target on a dead one. "" (never null) matches the
+// column's own DEFAULT '' convention (src/db.ts): a failed read here must
+// read exactly like a pre-migration row, "no fact recorded", not "recorded
+// as absent".
+export function panePid(target: string): string {
+  return targetLiveProbe(target).pid ?? "";
 }
 
 // Issue #73, D2/D6. A ROW's own recorded socket disagreeing with the one this
@@ -575,6 +645,22 @@ export function rowLive(recordedSocket: string, target: string): Liveness {
 
 export function rowAlive(recordedSocket: string, target: string, snapshot: AliveSnapshot): Liveness {
   return foreignSocket(recordedSocket) ? null : targetAlive(target, snapshot);
+}
+
+// Todo 336. The row-level, pid-aware counterparts of the pair above, for a
+// caller that needs to tell "the pane we meant" from "a pane the server
+// reissued this id to" - see deliverable()'s own comment in src/scheduler.ts
+// for the one caller today. Same foreign-socket bias as rowLive/rowAlive: a
+// row this process cannot honestly judge answers { live: null, pid: null },
+// never a pid read against the wrong server's pane.
+export function rowLiveProbe(recordedSocket: string, target: string): PaneProbe {
+  return foreignSocket(recordedSocket) ? { live: null, pid: null } : targetLiveProbe(target);
+}
+
+export function rowAliveProbe(recordedSocket: string, target: string, snapshot: AliveSnapshot): PaneProbe {
+  if (foreignSocket(recordedSocket)) return { live: null, pid: null };
+  const live = targetAlive(target, snapshot);
+  return { live, pid: live ? targetPid(target, snapshot) : null };
 }
 
 // tmux layout presets hive can apply to a window of split-placed workers.

@@ -770,7 +770,10 @@ describe(
       const project = addProject(dir, "pin-finding5");
       const originalPrepare = db.prepare.bind(db);
       db.prepare = (sql) => {
-        if (sql === "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?") {
+        // Todo 336 added pane_pid to this exact UPDATE (src/spawn.ts) - the
+        // string this test intercepts has to track that literal SQL, or the
+        // patch below silently stops matching and launchAgent just succeeds.
+        if (sql === "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?") {
           return {
             run: () => {
               throw new Error("SQLITE_BUSY: simulated for finding 5");

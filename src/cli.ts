@@ -104,6 +104,7 @@ import {
   isViewSessionName,
   listOwnedWindows,
   paneChoiceCheck,
+  panePid,
   RAW_ATTACH_TMUX_CONFIG,
   renderAttachCommand,
   resolveAttachTarget,
@@ -672,9 +673,14 @@ function ensureLeadRow(
       // Issue #73: recorded at creation, same as launchAgent's INSERT
       // (src/spawn.ts) - the fact is a property of THIS process and does not
       // wait on the CAS below to land it.
+      // pane_pid seeded '' alongside tmux_target's own '', for the identical
+      // reason (todo 180's comment above, restated for the newer column):
+      // there is no live pane yet at INSERT time, and '' is this column's
+      // own "no fact recorded" - never a pid to compare against. The CAS
+      // below records the real one once a pane actually exists.
       const info = db
         .prepare(
-          "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_target, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_target, tmux_socket, pane_pid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .run(
           project.id,
@@ -685,6 +691,7 @@ function ensureLeadRow(
           currentActor(),
           "",
           tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+          "",
         );
       const agentId = Number(info.lastInsertRowid);
       const actorId = priorClosed?.actor_id ?? mintLeadActorId(agentId);
@@ -1111,11 +1118,27 @@ async function cmdLead(path?: string): Promise<void> {
       // Issue #73: a restart under a different tmux server must re-record the
       // socket here, in the same statement as the pane, or the row keeps
       // advertising a socket it no longer lives on.
+      //
+      // Todo 336: pane_pid re-recorded here too, in the same statement, for
+      // the identical reason and the case this whole function exists to
+      // handle - a tmux server restart is exactly when a pane id can be
+      // reissued to a different pane, and leadPane here is confirmed live
+      // (either just created, or the adopted branch's rowLive === true
+      // check above) so there is a real pid to read. Any lead-owned wake
+      // pointing at this actor picks up the fresh value through
+      // deliverable()'s join, with no separate write needed - see that
+      // function's own comment (src/scheduler.ts).
       const updated = db
         .prepare(
-          "UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
         )
-        .run(leadPane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), leadAgentId, casExpected).changes;
+        .run(
+          leadPane,
+          tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+          panePid(leadPane),
+          leadAgentId,
+          casExpected,
+        ).changes;
       if (updated === 0) return false;
       db.prepare(
         `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL

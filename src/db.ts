@@ -854,6 +854,53 @@ BEGIN
   SELECT RAISE(ABORT, 'Refused: this UPDATE changes kv.value but leaves updated_at unchanged, which kv_set stamps in the same statement. kv''s primary key is (project_id, key), not key alone: a key-only WHERE clause matches every project''s row with that key. Use kv_set, or if you must run SQL directly, filter on project_id too and stamp updated_at yourself.');
 END;
 `,
+  // Todo 336. A pane id only means something relative to the tmux server
+  // GENERATION it came from: tmux hands ids out from %0 again after a
+  // restart, so a row recording %3 does not point at a dead pane once the
+  // server that issued it is gone - it points at whatever pane the NEXT
+  // server hands %3 to. deliverable()'s lead-pane-dead hold
+  // (HELD_REASON_LEAD_PANE_DEAD) only fires when the recorded pane reads
+  // dead; a reissued pane reads LIVE, so that hold never sees this case and
+  // a pending lead-owned wake can be typed into a stranger's pane.
+  //
+  // #{pane_pid} is the fix: it differs on a reissued pane even when the pane
+  // id is identical (measured: %0's pid was 50926 before a restart, 50942
+  // after). #{pane_start_time} was measured EMPTY in the tmux version this
+  // was checked against - unavailable, not usable. pane_pid is also cheaper
+  // than the socket-inode alternative discussed alongside this migration
+  // (pad 111 entry 1): it is per-PANE, read from the same list-panes probe
+  // that already answers liveness, and needs no unrun experiment to justify.
+  //
+  // DEFAULT '' means "no fact recorded", the same convention tmux_socket
+  // above already set: every row written before this migration, and any
+  // row written by an old-code server still running after it lands (see
+  // that migration's own comment for why a restart is required, not
+  // optional), reads '' here. Read-side callers must treat '' as unknown,
+  // not as a mismatch - the whole point is that an upgrade must not hold or
+  // cancel every pre-existing wake in every store.
+  //
+  // Written for EVERY pane hive records (src/spawn.ts's launchAgent,
+  // src/cli.ts's ensureLeadRow and cmdLead's restart CAS), not only for
+  // leads. The mismatch CHECK this column exists to support is scoped to
+  // lead-owned wakes only (src/scheduler.ts's deliverable(), gated on
+  // isLeadActorId) - worker rows are already reaped by janitor()'s sweep at
+  // the top of every tick, so the live exposure this todo closes is
+  // specifically the two lead exemptions (kind != LEAD_KIND and
+  // deliver_actor NOT LIKE 'lead:%', both cited on this todo). Writing the
+  // column for everyone means widening the check to worker rows later is a
+  // condition to change, not a second migration to write.
+  //
+  // PIDS WRAP. A reissued pane can in principle land on the exact pid its
+  // predecessor held, and the check this column supports would then pass
+  // and deliver into the wrong pane exactly as it does today with no
+  // column at all. This is a guardrail against a confused machine, not a
+  // guarantee and not a security boundary - the same bar
+  // .claude/rules/tmux-and-panes.md already sets for the untrusted-server
+  // refusal and todo 324's entry-point check accepted. Do not read this
+  // column's presence as making misdelivery impossible.
+  `
+ALTER TABLE agents ADD COLUMN pane_pid TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {
