@@ -109,7 +109,9 @@ import {
   renderAttachCommand,
   resolveAttachTarget,
   resolveInTmuxTarget,
+  paneReissued,
   rowLive,
+  rowLiveProbe,
   SESSION_PREFIX,
   sessionName,
   shellQuote,
@@ -529,7 +531,14 @@ function asLeadNameReuseClash(e: unknown, projectId: number, leadRowId: number):
 function ensureLeadRow(
   project: Project,
   command: string,
-): { agentId: number; actorId: string; previousTarget: string; previousSocket: string; casExpected: string } {
+): {
+  agentId: number;
+  actorId: string;
+  previousTarget: string;
+  previousSocket: string;
+  previousPanePid: string;
+  casExpected: string;
+} {
   // Keyed on kind='lead' + running, not on name (issue #27's L4 fix round,
   // DECISION 5). Keying on name too would only give a rename somewhere to
   // hide behind - and agent_rename now refuses a lead target outright
@@ -553,9 +562,11 @@ function ensureLeadRow(
   // this function acts on deterministic rather than accidental.
   const existing = db
     .prepare(
-      "SELECT id, actor_id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      "SELECT id, actor_id, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
     )
-    .get(project.id, LEAD_KIND) as { id: number; actor_id: string; tmux_target: string; tmux_socket: string } | undefined;
+    .get(project.id, LEAD_KIND) as
+    | { id: number; actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string }
+    | undefined;
   // One reuse branch for a found running row, healing two independent kinds
   // of damage another process or version may have left on it - merged from
   // two near-identical branches in /simplify, since both ran the identical
@@ -630,6 +641,7 @@ function ensureLeadRow(
       actorId,
       previousTarget: existing.tmux_target,
       previousSocket: existing.tmux_socket,
+      previousPanePid: existing.pane_pid,
       casExpected: existing.tmux_target,
     };
   }
@@ -640,9 +652,11 @@ function ensureLeadRow(
   // row still knows where its pane was, and throwing that away was the bug.
   const priorClosed = db
     .prepare(
-      "SELECT actor_id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
+      "SELECT actor_id, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
     )
-    .get(project.id, LEAD_KIND) as { actor_id: string; tmux_target: string; tmux_socket: string } | undefined;
+    .get(project.id, LEAD_KIND) as
+    | { actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string }
+    | undefined;
   // The INSERT, its actor_id UPDATE and upsertActor used to be three
   // separate writes, which is exactly the gap this whole comment block is
   // about - one transaction now, so a process dying anywhere in here leaves
@@ -740,6 +754,7 @@ function ensureLeadRow(
     actorId: result.actorId,
     previousTarget: priorClosed?.tmux_target ?? "",
     previousSocket: priorClosed?.tmux_socket ?? "",
+    previousPanePid: priorClosed?.pane_pid ?? "",
     casExpected: "",
   };
 }
@@ -829,6 +844,7 @@ async function cmdLead(path?: string): Promise<void> {
       actorId: leadActorId,
       previousTarget,
       previousSocket,
+      previousPanePid,
       casExpected,
     } = ensureLeadRow(project, leadCommand);
     // HIVE_LEAD marks this session as the lead, distinctly from HIVE_AGENT_ID
@@ -990,8 +1006,20 @@ async function cmdLead(path?: string): Promise<void> {
         // socket cannot be confirmed dead, which is the common case after any
         // reboot or crash, not the rare one. Deliberate bias, not an
         // oversight.
+        // Issue #157. rowLive/adoptableWindow above answer "is the pane
+        // alive" and "is it in a window this project owns" - neither asks
+        // WHICH process is in it, so a bare shell cmdAttach left in %0 used
+        // to pass both and get adopted, with nothing ever respawning
+        // leadCommand into it. paneReissued (src/tmux.ts, added by #152 for
+        // deliverable()'s identical comparison) is the primitive that closes
+        // this: it already encodes "cannot judge" (previousPanePid === "", a
+        // pre-migration row, or probe.pid === null) as false, so an upgrade
+        // still adopts every existing lead's own window exactly as before -
+        // only a pane that is genuinely live AND genuinely a different
+        // process refuses.
+        const probe = rowLiveProbe(previousSocket, previousTarget);
         const adopted =
-          isPaneTarget(previousTarget) && rowLive(previousSocket, previousTarget) === true
+          isPaneTarget(previousTarget) && probe.live === true && !paneReissued(previousPanePid, probe)
             ? adoptableWindow(session, project.id, previousTarget)
             : null;
         if (adopted) {

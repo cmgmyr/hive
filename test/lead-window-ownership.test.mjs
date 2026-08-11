@@ -136,9 +136,26 @@ describe(
       // look like if the old and new topologies happened to share a socket.
       // Getting a live tmux server into this state through the ordinary
       // `hive lead` path would need an actual topology upgrade to fake.
-      db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE id = ?").run(
+      //
+      // Issue #157 (todo 352, counselors claude-opus-5). pane_pid copied
+      // alongside target/socket now too, not just the two - without it, B's
+      // row keeps naming B's OWN pane's pid, which disagrees with A's pane's
+      // real pid this row now points at, and the adopt check's new
+      // paneReissued() conjunct (src/cli.ts) short-circuits adopted to null
+      // on the pid mismatch alone, BEFORE adoptableWindow's ownership
+      // exclusion (src/tmux.ts) is ever reached. This test's whole claim is
+      // that exclusion refusing a foreign-owned window, so a fixture that
+      // never reaches it passes for an unrelated reason - test/CLAUDE.md
+      // shape 7, an assertion satisfied by two indistinguishable causes.
+      // Copying pane_pid too makes the row internally consistent (the pane
+      // it names is A's, so the pid it records must be A's pane's real pid),
+      // which is what a genuine cross-upgrade stale row would look like
+      // anyway - it never had two independent facts to disagree with each
+      // other in the first place.
+      db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?").run(
         rowA.tmux_target,
         rowA.tmux_socket,
+        rowA.pane_pid,
         rowBBefore.id,
       );
 

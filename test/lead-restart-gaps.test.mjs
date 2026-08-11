@@ -128,6 +128,38 @@ function dumpBehaviour1Diagnostics(session, pane, fakeClaude) {
   }
 }
 
+// Shared by BEHAVIOUR 4/5/6 below: each manufactures one bad fact onto an
+// otherwise-ordinary lead row (a foreign socket, a mismatched pid, an empty
+// pid) after a real first `hive lead` boot, then re-runs `hive lead` and
+// asserts on what THAT run did. This is the boot half only, identical across
+// all three until /simplify flagged the duplication this lane's own two new
+// tests added on top of BEHAVIOUR 4's pre-existing copy; what gets
+// manufactured and what the second run is expected to do stays in each test.
+async function bootSinglePaneLead(name) {
+  const fakeClaude = makeFakeClaude(dirs.tmp);
+  const claudePath = fakeClaude("sleep 600");
+  const projectDir = newProjectDir();
+  const cliOpts = {
+    cwd: projectDir,
+    dataDir: dirs.dataDir,
+    tmp: dirs.tmp,
+    env: { PATH: `${dirname(claudePath)}:${process.env.PATH}` },
+  };
+  const project = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get(name, projectDir);
+  const session = sessionName();
+  const first = await runCli(["lead"], cliOpts);
+  assert.equal(first.code, 0, first.stderr);
+  const before = leadRow(db, project.id);
+  return {
+    cliOpts,
+    project,
+    session,
+    before,
+    pane: before.tmux_target,
+    windowTarget: windowTargetOf(before.tmux_target),
+  };
+}
+
 describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   it(
     "BEHAVIOUR 1 (half): a fresh session claims tmux's own initial window, not a second one, and no idle shell survives",
@@ -377,27 +409,9 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
   it(
     "BEHAVIOUR 4: unknown liveness (a foreign tmux_socket on the row) is treated as not-still-there, so hive lead proceeds with a fresh pane",
     async () => {
-      const fakeClaude = makeFakeClaude(dirs.tmp);
-      const claudePath = fakeClaude("sleep 600");
-      const projectDir = newProjectDir();
-      const cliOpts = {
-        cwd: projectDir,
-        dataDir: dirs.dataDir,
-        tmp: dirs.tmp,
-        env: { PATH: `${dirname(claudePath)}:${process.env.PATH}` },
-      };
-      const project = db
-        .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
-        .get("lead-unknown-liveness-test", projectDir);
-      const session = sessionName();
+      const { cliOpts, project, session, before, pane: originalPane, windowTarget } =
+        await bootSinglePaneLead("lead-unknown-liveness-test");
       try {
-        const first = await runCli(["lead"], cliOpts);
-        assert.equal(first.code, 0, first.stderr);
-
-        const before = leadRow(db, project.id);
-        const originalPane = before.tmux_target;
-        const windowTarget = windowTargetOf(originalPane);
-
         // Manufacture the unknown case by writing a foreign recorded socket
         // onto the row - previousSocket's own source (ensureLeadRow's
         // `existing.tmux_socket`), read straight off the row rather than
@@ -457,6 +471,96 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
         // The CAS heals tmux_socket back to this process's own real socket,
         // not left naming the foreign one this test seeded.
         assert.equal(after.tmux_socket, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR));
+      } finally {
+        cleanup(session);
+      }
+    },
+  );
+
+  it(
+    "BEHAVIOUR 5 (issue #157): a live pane whose recorded pid disagrees with tmux's own reads as reissued, so hive lead does not adopt it",
+    async () => {
+      const { cliOpts, project, session, before, pane: originalPane, windowTarget } =
+        await bootSinglePaneLead("lead-pid-mismatch-test");
+      try {
+        // Manufacture the mismatch by writing a pid the running server did
+        // not actually hand out onto the row - not by tearing down tmux. The
+        // pane, the socket and the window stamp all stay genuinely correct;
+        // only the DATABASE's claim about which process is in the pane is
+        // now wrong, which is the exact shape issue #157 describes: cmdAttach
+        // leaves a bare shell in the recorded pane and the row still names
+        // the old server's pid.
+        //
+        // Derived from the REAL pid rather than a fixed literal (counselors,
+        // codex-5.6-sol-high / claude-fable-5, both independently): a fixed
+        // "999999" is a real, assignable pid on a Linux host with a raised
+        // pid_max (default 4194304), so on such a host the fixture could
+        // coincidentally NOT mismatch and this test would wrongly go red
+        // against CORRECT code. before.pane_pid + 1 is guaranteed to differ
+        // from itself by construction, no matter what value tmux handed out.
+        const mismatchedPid = String(Number(before.pane_pid) + 1);
+        db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(mismatchedPid, before.id);
+
+        const second = await runCli(["lead"], cliOpts);
+        assert.equal(second.code, 0, second.stderr, "a pid mismatch must not refuse the restart outright");
+
+        const after = leadRow(db, project.id);
+        // THE MUTATION THIS FAILS AGAINST: the pre-fix adopt condition, which
+        // asks only isPaneTarget(previousTarget) && rowLive(...) === true and
+        // never compares pane_pid. Against that code this assertion goes red:
+        // the mismatched pid is never consulted, adoptableWindow finds the
+        // window by its stamp alone, and cmdLead adopts originalPane as-is -
+        // recording the SAME pane the fix below must instead treat as
+        // reissued and refuse to take back.
+        assert.notEqual(after.tmux_target, originalPane, "a fresh pane must be recorded, not the pid-mismatched one");
+        assert.ok(isPaneTarget(after.tmux_target), `expected a pane id (%N), got ${after.tmux_target}`);
+
+        // THE STRANGER'S PANE (plan-352-lead-adopt-pid): left running, not
+        // killed - it is not hive's pane to kill, and the found-window branch
+        // this falls through to already splits a fresh pane in beside
+        // whatever is there rather than replacing it.
+        assert.ok(paneAlive(originalPane), "the original pane must survive untouched, not be killed");
+        const panesAfter = panesIn(windowTarget);
+        assert.deepEqual(
+          panesAfter.sort(),
+          [originalPane, after.tmux_target].sort(),
+          "both the stranger's pane and the fresh lead pane must be present in the SAME window - " +
+            "the window stamp matched, so this must not open a second window",
+        );
+
+        // The CAS records the fresh pane's real pid, not the manufactured one.
+        assert.notEqual(after.pane_pid, mismatchedPid);
+        assert.notEqual(after.pane_pid, "");
+      } finally {
+        cleanup(session);
+      }
+    },
+  );
+
+  it(
+    "BEHAVIOUR 6 (issue #157): a recorded pane_pid of '' (no fact recorded) still adopts exactly as today",
+    async () => {
+      const { cliOpts, project, session, before, pane, windowTarget } =
+        await bootSinglePaneLead("lead-nullpid-adopt-test");
+      try {
+        // '' is pane_pid's own DEFAULT and "no fact recorded" reading
+        // (src/db.ts's migration, panePid's own comment) - every row written
+        // before todo 336's migration landed reads this way. #152's own
+        // fix-round finding (test/lead-pane-reissued.test.mjs) closed this
+        // gap for deliverable() and the janitor sweep; this is the third call
+        // site of the same idea (issue #157), so it needs the identical
+        // control.
+        db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run("", before.id);
+
+        const second = await runCli(["lead"], cliOpts);
+        assert.equal(second.code, 0, second.stderr);
+
+        const after = leadRow(db, project.id);
+        assert.equal(after.tmux_target, pane, "an absent recorded pid must still adopt the SAME pane, exactly as today");
+
+        const panesAfter = panesIn(windowTarget);
+        assert.deepEqual(panesAfter, [pane], "no second pane may be created - this is the adopt path, not the fresh-pane path");
+        assert.notEqual(after.pane_pid, "", "the CAS must record a real pid now that the pane is confirmed live");
       } finally {
         cleanup(session);
       }
