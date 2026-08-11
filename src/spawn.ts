@@ -55,20 +55,22 @@ import {
 //     the transaction back on connection loss), which is precisely why this
 //     is a transaction and not a leases-table claim with a TTL to get wrong.
 //
-// THE HAZARD THAT SILENTLY REMOVES THE EXCLUSION, not merely a limit of it:
-// better-sqlite3 nests a transaction inside another one via SAVEPOINT rather
-// than throwing. A `claim` called from inside an already-open, DEFERRED outer
-// transaction would take no writer slot at all here - the outer transaction
-// already holds (or will lazily acquire) whatever lock SQLite gives it, and
-// this call becomes a no-op savepoint riding along inside it. Nothing fails:
-// no error, no test goes red, the exclusion is just gone and the read-then-
-// create race this function exists to close is back. Verified at review
-// (pad 79 T5), not merely asserted: every db.transaction call in src/ that
-// runs before a withWindowClaim call site sits outside it. cmdLead's two
-// (ensureLeadRow, src/cli.ts:594 and :643) both run before cmdLead's own
-// claim (src/cli.ts:895); the CAS at src/cli.ts:1100 runs after it. If a
-// future caller ever wraps ITS OWN call to launchAgent, cmdLead, or cmdAttach
-// in a transaction, that is what it breaks, silently.
+// THE HAZARD THAT WOULD SILENTLY REMOVE THE EXCLUSION, not merely a limit of
+// it, and now REFUSED rather than merely watched for: better-sqlite3 nests a
+// transaction inside another one via SAVEPOINT rather than throwing. A
+// `claim` called from inside an already-open, DEFERRED outer transaction
+// would take no writer slot at all here - the outer transaction already
+// holds (or will lazily acquire) whatever lock SQLite gives it, and this
+// call would become a no-op savepoint riding along inside it, with the
+// read-then-create race this function exists to close back and nothing to
+// say so. Until todo 346 this was only checked at review (pad 79 T5) - every
+// db.transaction call in src/ that ran before a withWindowClaim call site
+// confirmed to sit outside it - and a review-time check protects only the
+// code as it stood that day, with nothing enforcing it going forward. The
+// guard below closes that: it throws on `db.inTransaction` before
+// db.transaction is ever entered, so a future caller wrapping its own call
+// to launchAgent, cmdLead, or cmdAttach in a transaction gets a loud refusal
+// instead of a silent race. Pinned by test/window-claim-guard.test.mjs.
 //
 // THE CLAIM MUST NEVER CONTAIN ANYTHING THAT BLOCKS ON A HUMAN. It holds the
 // store's only writer slot (BEGIN IMMEDIATE), so a prompt inside it would
@@ -82,6 +84,16 @@ import {
 // the failure mode a blocking prompt would create here is the identical one
 // that rule already warns against admitting.
 export function withWindowClaim<T>(claim: () => T): T {
+  if (db.inTransaction) {
+    throw new Error(
+      "withWindowClaim was called from inside an already-open transaction. better-sqlite3 nests a " +
+        "transaction inside another one as a no-op SAVEPOINT rather than throwing, so this call would " +
+        "take no writer slot of its own and the machine-wide window-claim exclusion would silently " +
+        "disappear - no error, no failing test, just the read-then-create race back. Move the outer " +
+        "transaction so it does not wrap this call, or move the work it does inside this claim instead: " +
+        "withWindowClaim must be the outermost transaction on its call stack.",
+    );
+  }
   return db.transaction(claim).immediate();
 }
 
