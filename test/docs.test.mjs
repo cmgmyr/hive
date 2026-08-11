@@ -203,6 +203,21 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
+  it("keeps docs/reviewer-preamble.md naming every rule file", () => {
+    // Todo 342. The preamble named four rule topics in prose when six rule
+    // files existed, and a reviewer who trusts that list as complete never
+    // opens the two it omits - one of which, project-scoping.md, covers
+    // src/context.ts, src/spawn.ts and src/tools/agents.ts. Pin the list
+    // itself, not a count, so a seventh rule file added later fails this
+    // test until the preamble names it too.
+    const ruleFiles = globSync("*.md", { cwd: join(REPO, ".claude/rules") });
+    assert.ok(ruleFiles.length > 0, "no rules found; did .claude/rules move?");
+    const preamble = readRepo("docs/reviewer-preamble.md");
+    for (const name of ruleFiles) {
+      assert.ok(preamble.includes(`\`${name}\``), `docs/reviewer-preamble.md does not name ${name}`);
+    }
+  });
+
   it("keeps AGENTS.md pointing at the same instructions Claude reads", () => {
     // Codex is a counselors review seat and reads AGENTS.md, not CLAUDE.md.
     // Verified empirically: it loads both the root and the nested one without

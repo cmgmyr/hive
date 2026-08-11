@@ -43,13 +43,26 @@ short form:
   an oversight, and it holds only because this is a single-user tool trusting
   its own workspace. Do not raise it as a finding without engaging that
   reasoning.
+- **Every tool refuses an unknown argument key rather than stripping it.**
+  A caller's typo (`expected_revison` for `expected_revision`) reaches the
+  handler as if the field were omitted, not as an error; `src/strictInput.ts`
+  closes that. Read a new tool's schema as strict, not as a loose shape that
+  quietly drops what it doesn't recognize.
+- **A hand-rolled driver can't write to the default store.** The entry point
+  must be the CLI or the server; `HIVE_ALLOW_DEFAULT_STORE=1` is the
+  deliberate opt-in for a one-off script, never something to add casually.
+- **A content write that doesn't stamp `updated_at` is refused at the
+  database**, not accepted silently: `src/db.ts`'s
+  `guard_scratchpads_content_update`, `guard_todos_content_update`, and
+  `guard_kv_content_update` triggers. Read a matching column update as a
+  live invariant, not an ordinary write.
 - Rule files under `.claude/rules/*.md`, where present in the checkout, tighten
   these invariants for the exact paths named in each file's frontmatter:
-  tmux/pane delivery, the store and data-dir guards, worker-state logging,
-  and the native-addon interpreter pin. Open the one covering any changed
-  path before reviewing it. A change against these often looks correct at
-  the diff level and is wrong only against the invariant it exists to
-  protect.
+  `native-addon.md`, `project-scoping.md`, `store-and-datadir.md`,
+  `tmux-and-panes.md`, `tool-contract.md`, `worker-state.md`. Open the one
+  covering any changed path before reviewing it. A change against these
+  often looks correct at the diff level and is wrong only against the
+  invariant it exists to protect.
 
 ## 2. The finding bar
 
@@ -115,7 +128,7 @@ section 3 draw on `.claude/sessions/common-issues/`. That directory is
 gitignored on purpose, so it may be absent from the checkout you are reading
 this in. Nothing above depends on it being present; those paths are cited as
 provenance for a reader working from this project's own history, not as
-links this file expects anyone else to follow. `CLAUDE.md`, the four
+links this file expects anyone else to follow. `CLAUDE.md`, the
 `.claude/rules/*.md` files, and `test/CLAUDE.md` are tracked and are the
 sources every invariant claim in section 1 and every test shape in section 3
 actually traces to.
