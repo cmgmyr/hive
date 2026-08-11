@@ -4,6 +4,21 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly macOS canary (todo 350), plus a manual trigger. Both feed the
+  # `test-macos` job below, not `test` or `floor-boundary` - see the `if:` on
+  # each of those for why adding these triggers here does not also fire them.
+  schedule:
+    # Monday 08:42 UTC. WEEKLY, NOT NIGHTLY, and that is Chris's call made
+    # against nightly: roughly $0.06/day this way against roughly $8.60/day
+    # under the old every-push every-PR schedule, and during a cost-conscious
+    # stretch a 7-day worst case beats a 1-day one at 7x the price (todo 350).
+    # A worst case of "macOS-only breakage sits undetected for up to a week"
+    # is the trade being made; the four darwin-only tests below explain what
+    # that breakage could be. Off the hour on purpose - GitHub throttles
+    # scheduled runs and recommends avoiding :00 to reduce queuing at peak
+    # load.
+    - cron: "42 8 * * 1"
+  workflow_dispatch:
 
 # A superseded run used to continue to completion. On a 10x macOS runner that
 # is the most expensive possible way to learn nothing, and a lane that pushes
@@ -14,6 +29,11 @@ concurrency:
 
 jobs:
   test:
+    # Linux only now - see `test-macos` below for the canary. Gated to the
+    # same two events this job always ran on, so adding `schedule` and
+    # `workflow_dispatch` to the triggers above (for the macOS canary) does
+    # not also give this job two new ways to fire.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       # Every version reports, rather than the first failure hiding the rest.
@@ -57,16 +77,26 @@ jobs:
         # where 22 IS the primary, and the tests that need it would skip
         # while still reporting green.
         #
-        # THE OS SPLIT IS A BILLING DECISION, AND IT IS WRITTEN DOWN BECAUSE
-        # THE NUMBERS ARE NOT OBVIOUS. A private repo bills macOS at 10x, so
-        # a macOS job that really takes 2.6 minutes is charged 26. Two macOS
-        # legs were 1,360 of this account's 1,425 billed minutes in the first
-        # four days of August, against 55 for the whole Claude review gate.
+        # THE OS SPLIT WAS A BILLING DECISION, AND STILL IS - THE CONCLUSION
+        # CHANGED, THE REASONING DIDN'T (todo 350). A private repo bills
+        # macOS at 10x, so a macOS job that really takes 2.6 minutes is
+        # charged 26. Two macOS legs were 1,360 of this account's 1,425
+        # billed minutes in the first four days of August. A later sample of
+        # the 30 most recent CI runs measured the same shape at larger scale:
+        # macOS was 77% of billed minutes (28 jobs, 150 wall minutes, 1,504
+        # billed) against 413 for both Linux legs combined and 31 for
+        # floor-boundary - macOS ran FEWER wall minutes than Linux (5.37 vs
+        # 7.38) and still cost ~3.5x both Linux legs combined, purely from the
+        # multiplier. That is what moved macOS off every push and every PR and
+        # onto the weekly canary below (`test-macos`): the platform coverage
+        # is the same, the price of getting it on every commit was not
+        # buyable at the moment this was decided.
+        #
         # Linux carries both Node versions, which is where the version signal
-        # the comment above argues for actually comes from, and macOS keeps
-        # one leg on the NEWEST supported Node. What that macOS leg is really
-        # for is the platform, not the version: hive is a macOS tool and the
-        # native addon builds there.
+        # the comment above argues for actually comes from. This job no
+        # longer carries a macOS leg at all - `test-macos` below is where
+        # "hive is a macOS tool and the native addon builds there" now lives,
+        # on its own schedule.
         #
         # `skipped` is this leg's EXACT skip budget, enforced after `npm test`
         # rather than described near it. See the comment on the tmux step.
@@ -79,10 +109,6 @@ jobs:
             node: 24
             alt: 22
             skipped: 4
-          - os: macos-latest
-            node: 24
-            alt: 22
-            skipped: 0
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
@@ -114,23 +140,20 @@ jobs:
       #
       # That guarantee is per-OS, not global: test/auto-attach-scope.test.mjs
       # skips four darwin-only cases on both ubuntu legs by design (ensureAttached
-      # is a no-op off darwin), so `skipped 0` holds on macOS and `skipped 4`
-      # is the correct number on Linux. Do not chase that number to 0 on
-      # Linux by making those cases runnable there - see that file's own
-      # comment for why that would be the false green, not a fix.
+      # is a no-op off darwin), so those four are what `test-macos` covers and
+      # this job cannot - see that job's own comment. Do not chase that number
+      # to 0 on Linux by making those cases runnable there - see that file's
+      # own comment for why that would be the false green, not a fix.
       #
       # It is an ASSERTION now, not this paragraph (hive todo 297 item 6). The
       # rule two comments up says a matrix that hides its own skips is worse
       # than one leg, and the thing enforcing it was a comment - so the day a
       # fixture stops being available and its cases start skipping, every leg
       # stayed green and said so. The gate is in the `npm test` step below.
-      - if: runner.os == 'macOS'
-        run: brew install tmux
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y tmux
-      # Unconditional on purpose: it proves the install above actually ran on
-      # whichever OS this leg is, so a broken branch fails here rather than as
-      # a silent wave of skips inside `npm test`.
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      # Unconditional on purpose: it proves the install above actually ran,
+      # so a broken branch fails here rather than as a silent wave of skips
+      # inside `npm test`.
       - run: tmux -V
       # Todo 286. Ubuntu's `npm test` measured 191s against macOS's 119s
       # while Ubuntu's own individual suites measured faster, and Ubuntu
@@ -142,11 +165,6 @@ jobs:
       # raised here - this suite spawns real tmux servers and real MCP
       # processes, and more concurrency is exactly what would feed the
       # unexplained back-to-back full-run flake already on record.
-      #
-      # Unconditional on both OSes (counselors round 2, item 9 - both seats
-      # flagged the Linux-only version): the original comparison is a
-      # RATIO, Ubuntu against macOS, and a Linux-only print gives one side
-      # of it. Costs about a second on the 10x-billed macOS leg.
       - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
@@ -192,6 +210,75 @@ jobs:
       - if: always()
         run: ./scripts/tmux-leak-guard.sh
 
+  # THE macOS CANARY (todo 350). Everything this job runs used to be a third
+  # entry in `test`'s matrix, running on every push and every PR; it is a
+  # separate job now because GitHub Actions has no way to gate one matrix
+  # entry on a different set of trigger events than its siblings - `if:` is a
+  # job- or step-level primitive, not a per-`include`-entry one. Splitting the
+  # job is what let this move to its own schedule without touching the Linux
+  # legs' steps or their `if:` at all.
+  #
+  # WHAT THIS COVERS THAT `test` NOW CANNOT: test/auto-attach-scope.test.mjs's
+  # four darwin-only cases (ensureAttached is a no-op off darwin, so Linux
+  # skips them by design - `skipped: 4` there, `skipped: 0` here), and a
+  # clean-environment build of the native addon on the platform hive actually
+  # ships on. Everything else - the addon's ABI logic, the CLI, the MCP tools
+  # - is architecture-general and the Linux legs already cover it on every
+  # push and PR.
+  #
+  # WHEN THIS RUNS: the weekly `schedule:` above, or by hand via
+  # `workflow_dispatch:` before a release or before anything touching
+  # src/tmux.ts, src/spawn.ts, src/abi.ts, src/abiProbe.ts, src/db.ts, or
+  # src/dispatcher.ts. It does NOT run on `push` or `pull_request` - that is
+  # the saving. Re-enabling it there is a one-line change: fold this job's
+  # `if:` and matrix entry back into `test`'s, the way it was before todo 350.
+  test-macos:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: 24
+            alt: 22
+            skipped: 0
+    name: test (macos-latest, node ${{ matrix.node }}) [canary]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.alt }}
+      - run: echo "HIVE_TEST_ALT_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: brew install tmux
+      - run: tmux -V
+      - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
+      - run: npm ci
+      - run: npm run build
+      - name: npm test, with this leg's skip budget enforced
+        env:
+          EXPECTED_SKIPPED: ${{ matrix.skipped }}
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee "$RUNNER_TEMP/test-output.txt"
+          skipped="$(grep -E '[[:space:]]skipped [0-9]+$' "$RUNNER_TEMP/test-output.txt" | tail -1 | awk '{print $NF}')"
+          if [ -z "$skipped" ]; then
+            echo "::error::could not read a skip count out of node --test's summary; the gate cannot run"
+            exit 1
+          fi
+          if [ "$skipped" != "$EXPECTED_SKIPPED" ]; then
+            echo "::error::this leg skipped $skipped tests, budget is $EXPECTED_SKIPPED. A skip that nobody"
+            echo "::error::chose is coverage leaving silently. Find which cases moved, then change the"
+            echo "::error::matrix's skipped: for this leg deliberately - see .github/workflows/ci.yml."
+            exit 1
+          fi
+          echo "skipped $skipped, budget $EXPECTED_SKIPPED"
+      - if: always()
+        run: ./scripts/tmux-leak-guard.sh
+
   # THE BOUNDARY, RUN FROM BOTH SIDES OF BOTH RELEASE LINES. This is the only
   # thing that can catch what issue #105 lane B shipped: a Node that satisfies
   # engines.node, installs cleanly, and cannot load the addon. On 22.13.1 the
@@ -214,6 +301,11 @@ jobs:
   # None of them runs the suite. The suite needs a store, and a store is
   # exactly what a sub-floor Node cannot open.
   floor-boundary:
+    # Unchanged behavior (todo 350): still push/PR only. Gated explicitly so
+    # that adding `schedule` and `workflow_dispatch` above, for the macOS
+    # canary, does not also hand this job two new ways to fire - it is 1x and
+    # cheap, but it is not what those triggers were added for.
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
