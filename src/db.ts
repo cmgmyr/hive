@@ -909,6 +909,35 @@ END;
   `
 ALTER TABLE agents ADD COLUMN pane_pid TEXT NOT NULL DEFAULT '';
 `,
+  // Issue #154 (todo 353). hive already receives every worker's Claude Code
+  // session id in every hook payload and could not hand it back - closing a
+  // worker looked like losing it, when `claude --resume <id>` makes the
+  // conversation fully recoverable. Recorded here so agent_status/agent_list
+  // can report it and agent_resume (src/tools/agents.ts) can act on it.
+  //
+  // DEFAULT '' means "no fact recorded", the same convention tmux_socket and
+  // pane_pid already set two migrations up: every row written before this
+  // migration reads '', and read-side callers gate on isClaudeCommand (the
+  // plan pad's D4) the same way transcript_dir already does, so codex or
+  // aider - which have no such id - never get a confidently wrong one.
+  //
+  // TWO WRITERS, DELIBERATELY, NOT ONE (D1). agent_spawn (src/tools/agents.ts)
+  // generates a UUID and passes it as claude's own `--session-id`, written on
+  // the row in the SAME statement that INSERTs it (src/spawn.ts's
+  // launchAgent) - correct even for a worker that dies before its first hook
+  // fires. src/hook.ts then parses session_id off EVERY payload and
+  // reconciles: when what the hook reports differs from what the row holds,
+  // THE HOOK WINS and the row is corrected. That reconcile is what makes the
+  // CLI flag non-load-bearing rather than redundant: if `--session-id` is
+  // ever ignored, renamed or dropped by a future claude, the flag silently
+  // stops working and the row self-corrects on the worker's first hook event
+  // - a brief optimistic window, not a broken feature - and the identical
+  // reconcile is what makes `--fork-session` (which mints a NEW id on
+  // resume) work for free, since the row just follows whatever the hook
+  // reports next.
+  `
+ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

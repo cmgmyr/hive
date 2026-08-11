@@ -135,6 +135,35 @@
       "type": "object"
     }
   },
+  "agent_resume": {
+    "description": "Resume a CLOSED claude worker from its recorded Claude Code session id (claude --resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
   "agent_send": {
     "description": "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
     "execution": {

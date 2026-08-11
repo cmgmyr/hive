@@ -380,7 +380,7 @@ Then revoke the automation permission under System Settings > Privacy & Security
 - `npm warn allow-scripts   better-sqlite3@13.0.3 (install: node-gyp rebuild)`: npm 11 lists install scripts it has not been told about. `package.json`'s `allowScripts` already carries a decision for this one, so the warning means that decision no longer matches the installed version. A bump re-requires it, deliberately. Edit the entry to the new version rather than running `npm approve-scripts`, which writes `true`; this project ships `false`. If you are on a platform with no prebuild, `true` is the entry you want, because there the script is the only thing that produces an addon.
 - Claude writes todos or kv to the wrong store: two MCP servers with overlapping tool names are loaded in one session. See the MCP scope note in Setup.
 
-## Tools (42)
+## Tools (43)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -401,6 +401,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_send` | Types text or key presses into a worker's terminal | To give a worker its task, answer a prompt, or press Enter/Escape for it |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
 | `agent_rename` | Changes a worker's display name; `actor_id` stays the same | When a worker's job becomes clear after you started it |
+| `agent_resume` | Resumes a closed claude worker from its recorded session id (`claude --resume`), reusing the same actor_id | To get a closed worker's full prior context back instead of briefing a fresh one |
 | `agent_close` | Kills the worker's window and marks it closed | After capturing handoffs; terminal output is not retained |
 | **wake-ups** | | |
 | `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action) |

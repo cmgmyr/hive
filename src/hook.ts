@@ -9,6 +9,7 @@ interface HookPayload {
   message?: unknown;
   notification_type?: unknown;
   background_tasks?: unknown;
+  session_id?: unknown;
 }
 
 // stdin is a one-shot read, so every consumer below shares this one read.
@@ -30,13 +31,20 @@ function readRaw(): string | null {
   return raw;
 }
 
+// Memoized the same way readRaw() is, and for the identical reason: stateFor
+// and reconcileSessionId (issue #154) both call this for the same event, and
+// with no cache each call re-parses the same bytes.
+let payload: HookPayload | undefined;
 function readPayload(): HookPayload {
-  try {
-    return JSON.parse(readRaw() ?? "") as HookPayload;
-  } catch {
-    // stdin unavailable or not JSON.
-    return {};
+  if (payload === undefined) {
+    try {
+      payload = JSON.parse(readRaw() ?? "") as HookPayload;
+    } catch {
+      // stdin unavailable or not JSON.
+      payload = {};
+    }
   }
+  return payload;
 }
 
 // How much of a payload is kept. Stop and Notification payloads are one or two
@@ -223,6 +231,35 @@ function stateForNotification(payload: HookPayload): string | null {
   return idlePrompt ? null : "waiting";
 }
 
+// Issue #154, D1 (todo 353's plan pad). agent_spawn writes a UUID onto the
+// row at spawn time via claude's own --session-id, so this is a RECONCILE,
+// not the primary write: the hook is the authority, and this is what makes
+// the CLI flag non-load-bearing rather than redundant. If --session-id is
+// ever ignored, renamed or dropped by a future claude, the row just carries
+// '' until the worker's first hook event, and this function corrects it the
+// same way it corrects a `--fork-session` resume (which mints a NEW id) -
+// the row simply follows whatever the hook reports.
+//
+// Scoped to kind = 'agent', matching the state write's own allowlist below
+// rather than a bare actor_id match: a lead's actor_id is deliberately
+// REUSED across a restart (ensureLeadRow, src/cli.ts), so an unqualified
+// match could hit a stale closed row sharing the same actor_id instead of
+// the current running one. Workers never share an actor_id (each spawn
+// mints a fresh one), so this scoping costs nothing there and removes the
+// ambiguity for the lead case.
+//
+// The WHERE clause's own session_id check is a no-op guard, not a
+// correctness requirement: it just skips writing when the row already
+// agrees, so an already-correct row costs no write on every one of a
+// worker's hook events.
+function reconcileSessionId(actorId: string, payload: HookPayload): void {
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+  if (!sessionId) return;
+  db.prepare(
+    "UPDATE agents SET session_id = ? WHERE actor_id = ? AND kind = 'agent' AND session_id IS NOT ?",
+  ).run(sessionId, actorId, sessionId);
+}
+
 // One dispatch, so each event's whole answer is in one place. The previous
 // shape picked a default in a ternary chain and then overrode it in an if/else
 // nine lines below, which meant "notify defaults to waiting" and "notify
@@ -285,6 +322,10 @@ try {
         "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
       ).run(state, actorId);
     }
+    // Every event carries session_id, not only the ones stateFor reads a
+    // payload for, so this runs unconditionally rather than folded into the
+    // branch above.
+    reconcileSessionId(actorId, readPayload());
     // Outside the branch above: the event proves the session is alive whether or
     // not it said anything about what the session is doing.
     db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);

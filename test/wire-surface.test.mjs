@@ -39,6 +39,7 @@ const EXPECTED_TOOL_NAMES = [
   "agent_list",
   "agent_output",
   "agent_rename",
+  "agent_resume",
   "agent_send",
   "agent_spawn",
   "agent_status",

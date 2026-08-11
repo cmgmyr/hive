@@ -117,6 +117,12 @@ export interface LaunchSpec {
   // How the lead's window is arranged when placement is "split".
   layout?: WindowLayout;
   parentActor: string;
+  // Issue #154, D1. The UUID agent_spawn generated and passed as claude's
+  // own --session-id, written on the row in the SAME statement that inserts
+  // it - correct even for a worker that dies before its first hook fires.
+  // '' for anything that is not a claude worker (D4's gate), matching the
+  // "no fact recorded" convention tmux_socket and pane_pid already use.
+  sessionId?: string;
 }
 
 // Where a split-placed worker's TARGET WINDOW is: THE SPAWNING LEAD's own
@@ -209,6 +215,48 @@ export function buildEnvFlags(env: Record<string, string>): string[] {
   return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 }
 
+// The identity/scope vars every kind='agent' worker gets, whether it is a
+// fresh spawn (launchAgent) or a revived one (resumeAgent) - factored out
+// for the identical reason buildEnvFlags' own comment above states: a var
+// added to one path and not the other is a future bug with nothing to catch
+// it. HIVE_PROJECT_LOCK, HIVE_PROJECT_PATH and HIVE_DATA_DIR are a worker's
+// identity and scope, not a caller's to override (see launchAgent's own
+// call site for why spec.env spreads first, this second).
+function agentIdentityEnv(actorId: string, name: string, projectPath: string): Record<string, string> {
+  return {
+    HIVE_AGENT_ID: actorId,
+    HIVE_AGENT_NAME: name,
+    HIVE_PROJECT_LOCK: "1",
+    HIVE_PROJECT_PATH: projectPath,
+    HIVE_DATA_DIR: dataDir,
+    // Issue #27's L4 fix round, DECISION 7b. Never set true here, but never
+    // explicitly cleared either, and tmux panes inherit the server's global
+    // environment - so a worker launched on a server whose environment
+    // happens to carry HIVE_LEAD=1 (nothing reachable sets it that way
+    // today) would pass kickoff's === "1" check as if it were the lead.
+    // Cheap insurance against a path that does not exist yet rather than
+    // one that does.
+    HIVE_LEAD: "",
+  };
+}
+
+// The final write shared by launchAgent and resumeAgent once a pane is
+// confirmed up: past this point the pane is live and its command has
+// already started (respawn-pane/split-window/new-window launch it, not this
+// statement). Todo 336: panePid(target) here rather than left '', so the row
+// can tell "my pane" from "whatever a later server restart reissues this
+// pane id to" - see src/db.ts's migration and deliverable()'s own comment
+// (src/scheduler.ts). Read against the pane this statement's caller just
+// confirmed live.
+function recordPane(agentId: number, target: string, socket: string): void {
+  db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?").run(
+    target,
+    socket,
+    panePid(target),
+    agentId,
+  );
+}
+
 // Issue #27's L4 fix round R10, todo 182 item 3 (opus, orphaned-comment
 // finding). This paragraph describes idx_agents_running_name, which
 // asNameClash (below) turns a SQLITE_CONSTRAINT hit on into hive's own
@@ -294,6 +342,51 @@ export function upsertActor(actorId: string, name: string, kind: string): void {
   ).run(actorId, name, kind);
 }
 
+// The pane/window placement shared by a fresh spawn and a resumed one:
+// given a command already resolved to a string and the session it targets,
+// decide where the pane lands under withWindowClaim's cross-process lock
+// (see its own comment). Split out of launchAgent so resumeAgent (below)
+// can share the identical placement logic against an EXISTING row instead
+// of duplicating it - the placement rules (session bootstrap, split into
+// the spawning lead's window, project window creation) do not care whether
+// the row behind the pane is new or reused.
+function placeAgentPane(
+  session: string,
+  spec: Pick<LaunchSpec, "projectId" | "projectName" | "projectPath" | "cwd" | "placement" | "layout" | "parentActor">,
+  envFlags: string[],
+  commandString: string,
+  title: string,
+): { target: string; landedInProjectId: number | null } {
+  let landedInProjectId: number | null = null;
+  const target = withWindowClaim((): string => {
+    const started = ensureSession(session, spec.projectPath);
+    if (started.created) {
+      const windowName = spec.placement === "split" ? spec.projectName : title;
+      const { pane, window } = claimInitialWindow(
+        started, windowName, spec.cwd, envFlags, commandString,
+        spec.placement === "split" ? spec.projectId : null,
+      );
+      return spec.placement === "split" ? pane : window;
+    }
+    if (spec.placement === "split") {
+      const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
+      if (found) {
+        const pane = tmux(
+          "split-window", "-d", "-P", "-F", "#{pane_id}",
+          "-t", found, "-c", spec.cwd, ...envFlags, commandString,
+        );
+        applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
+        const owner = windowOwner(found);
+        if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
+        return pane;
+      }
+      return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId, true).pane;
+    }
+    return createWindow(session, title, spec.cwd, envFlags, commandString, null, true).window;
+  });
+  return { target, landedInProjectId };
+}
+
 export function launchAgent(
   spec: LaunchSpec,
 ): { agentId: number; actorId: string; target: string; landedInProjectId: number | null } {
@@ -323,7 +416,7 @@ export function launchAgent(
   try {
     info = db
       .prepare(
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         spec.projectId,
@@ -337,6 +430,7 @@ export function launchAgent(
         spec.kind,
         spec.parentActor,
         socket,
+        spec.sessionId ?? "",
       );
   } catch (e) {
     // The very first statement, before any tmux work, so losing the race
@@ -372,22 +466,7 @@ export function launchAgent(
     // that lookup, not the source - see projectPathGuard's comment.
     const env =
       spec.kind === "agent"
-        ? {
-            ...spec.env,
-            HIVE_AGENT_ID: actorId,
-            HIVE_AGENT_NAME: spec.name,
-            HIVE_PROJECT_LOCK: "1",
-            HIVE_PROJECT_PATH: spec.projectPath,
-            HIVE_DATA_DIR: dataDir,
-            // Issue #27's L4 fix round, DECISION 7b. Never set true here, but
-            // never explicitly cleared either, and tmux panes inherit the
-            // server's global environment - so a worker launched on a server
-            // whose environment happens to carry HIVE_LEAD=1 (nothing
-            // reachable sets it that way today) would pass kickoff's === "1"
-            // check as if it were the lead. Cheap insurance against a path
-            // that does not exist yet rather than one that does.
-            HIVE_LEAD: "",
-          }
+        ? { ...spec.env, ...agentIdentityEnv(actorId, spec.name, spec.projectPath) }
         : spec.env;
     const envFlags = buildEnvFlags(env);
 
@@ -401,81 +480,40 @@ export function launchAgent(
     // spec.projectId itself, so there is nothing to disagree with, and
     // placement="window" never carries an ownership stamp to disagree
     // through. Populated below only in the one branch that can diverge.
-    let landedInProjectId: number | null = null;
-    // Todo 277: ensureSession and every branch below it read whether this
-    // project already has a window and then create one when it does not, so
-    // the whole read-then-create runs under withWindowClaim's cross-process
-    // lock (see its own comment). It covers ensureSession too, deliberately:
-    // "does this session exist" is the same shape of question one level up,
-    // and todo 278's interleaving lives in the gap between that answer and
-    // the window claim that follows it.
-    const target = withWindowClaim((): string => {
-      const started = ensureSession(session, spec.projectPath);
-      if (started.created) {
-        // A project's window is named for the project alone, matching
-        // splitTargetWindow's own create path below and cmdLead's
-        // (decisions/2026-08-05-tmux-topology-windows-not-sessions.md): once
-        // placement="split" makes this window hold the lead AND its workers,
-        // it is the project's tab, not this worker's. A placement="window"
-        // worker's OWN dedicated window keeps windowTitle - unaffected here.
-        // This is the very first thing to run in a brand-new store, before any
-        // `hive lead` for this project, so it is stamped for the same reason
-        // it is named right: a later `hive lead` must find this window rather
-        // than create a second one for the same project.
-        // The stamp is gated on placement exactly like the name, and for the
-        // identical reason: a placement="window" worker's window is ITS OWN,
-        // never the project's. Stamping it anyway hands a later `hive lead` or
-        // split-placed worker a private window to land in through
-        // cmdLead's/splitTargetWindow's ownership lookup, defeating
-        // placement="window" outright - the defect this comment now prevents
-        // from being re-introduced (found in /simplify review, one layer
-        // below the window-NAMING version of the same mistake, review round
-        // 1). Verified live: without this gate,
-        // test/worker-first-window-stamp.test.mjs fails with `'1' !== ''`,
-        // the worker's window carrying the stamp it must not have.
-        const windowName = spec.placement === "split" ? spec.projectName : title;
-        const { pane, window } = claimInitialWindow(
-          started, windowName, spec.cwd, envFlags, commandString,
-          spec.placement === "split" ? spec.projectId : null,
-        );
-        return spec.placement === "split" ? pane : window;
-      }
-      if (spec.placement === "split") {
-        const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
-        if (found) {
-          // -d: a split without it makes the new pane active, so a human
-          // typing into whatever pane had focus gets their keystrokes stolen
-          // by the worker mid-sentence (todo 316, confirmed in real use).
-          // applyLayout and the spawn announcement both target this pane by
-          // its returned id, never by "the active pane", so nothing here
-          // depends on the split leaving it active.
-          const pane = tmux(
-            "split-window", "-d", "-P", "-F", "#{pane_id}",
-            "-t", found, "-c", spec.cwd, ...envFlags, commandString,
-          );
-          applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
-          const owner = windowOwner(found);
-          if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
-          return pane;
-        }
-        // No window for this project yet in the shared session - create and
-        // claim one directly (item 5: this used to be splitTargetWindow's own
-        // job; it is a pure lookup now, so the create-and-launch this
-        // project's window needs lives at the one call site that reaches
-        // it). A single-pane window, same as claimInitialWindow's own result
-        // above, so there is nothing yet to applyLayout. detach: true (todo
-        // 316) - a human watching some OTHER project's window in this shared
-        // session must not get switched onto this one.
-        return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId, true).pane;
-      }
-      // placement="window": this worker's own dedicated window, never a
-      // project's shared one, so it must never carry the ownership stamp
-      // (item 1's defect, one branch over from this one) - createWindow's
-      // null is that choice stated explicitly. detach: true (todo 316) - a
-      // worker's own tab must not steal focus from whatever the human was
-      // looking at.
-      return createWindow(session, title, spec.cwd, envFlags, commandString, null, true).window;
-    });
+    // Todo 277: ensureSession and every branch inside placeAgentPane read
+    // whether this project already has a window and then create one when it
+    // does not, so the whole read-then-create runs under withWindowClaim's
+    // cross-process lock (see its own comment). It covers ensureSession too,
+    // deliberately: "does this session exist" is the same shape of question
+    // one level up, and todo 278's interleaving lives in the gap between
+    // that answer and the window claim that follows it.
+    //
+    // A project's window is named for the project alone, matching
+    // splitTargetWindow's own create path and cmdLead's
+    // (decisions/2026-08-05-tmux-topology-windows-not-sessions.md): once
+    // placement="split" makes this window hold the lead AND its workers, it
+    // is the project's tab, not this worker's. A placement="window" worker's
+    // OWN dedicated window keeps windowTitle. The stamp inside
+    // placeAgentPane is gated on placement exactly like the name, and for
+    // the identical reason: a placement="window" worker's window is ITS
+    // OWN, never the project's. Stamping it anyway hands a later `hive lead`
+    // or split-placed worker a private window to land in through
+    // cmdLead's/splitTargetWindow's ownership lookup, defeating
+    // placement="window" outright - the defect this comment prevents from
+    // being re-introduced. Verified live:
+    // test/worker-first-window-stamp.test.mjs fails with `'1' !== ''`, the
+    // worker's window carrying the stamp it must not have.
+    //
+    // -d on the split path: a split without it makes the new pane active, so
+    // a human typing into whatever pane had focus gets their keystrokes
+    // stolen by the worker mid-sentence (todo 316, confirmed in real use).
+    // applyLayout and the spawn announcement both target this pane by its
+    // returned id, never by "the active pane", so nothing depends on the
+    // split leaving it active. detach: true on both create-window paths
+    // (todo 316) - a human watching some OTHER project's window in this
+    // shared session must not get switched onto this one, and a worker's own
+    // tab must not steal focus from whatever the human was looking at.
+    const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, commandString, title);
     paneUp = true;
     // Past this line the pane is up and its command has already started
     // (respawn-pane/split-window/new-window above launch it, not this
@@ -491,21 +529,172 @@ export function launchAgent(
     // INSERT; leave it there and just rethrow, so the caller sees the
     // failure while the worker it already spawned stays reachable by
     // actor_id, just without a recorded tmux_target.
-    // Todo 336: panePid(target) here rather than left '', so the row this
-    // spawn just created can tell "my pane" from "whatever a later server
-    // restart reissues this pane id to" - see src/db.ts's migration and
-    // deliverable()'s own comment (src/scheduler.ts). Read against the pane
-    // this statement just wrote, which is live by construction (paneUp).
-    db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?").run(
-      target,
-      socket,
-      panePid(target),
-      agentId,
-    );
+    recordPane(agentId, target, socket);
     return { agentId, actorId, target, landedInProjectId };
   } catch (e) {
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
+    throw e;
+  }
+}
+
+// Issue #154, D2 (todo 353's plan pad). agent_resume REUSES the row and its
+// actor_id rather than minting a new one - a resumed worker is the SAME
+// lane continuing, and there is direct precedent in this codebase:
+// ensureLeadRow (src/cli.ts) reuses a lead's closed row and its actor_id
+// across a restart, for the same reason. The actor id is the handle every
+// wake, todo comment and agent_state_log row already addresses it by;
+// minting a new one would split a worker's state history across two actors
+// and orphan its comments' authorship.
+//
+// THE COST, stated rather than left implicit: 'closed' is no longer a
+// terminal status once this exists - a caller cannot assume a closed row
+// stays closed. Callers that swept only status='running' rows are
+// unaffected (a resumed row reads 'running' again, same as any other);
+// what would break is anything that assumed a row, once closed, never
+// changes again - nothing in this codebase does today (the janitor and
+// agent_list's filters both key on 'running', not on "closed forever"), but
+// a future caller adding such an assumption would be building on a premise
+// this function now falsifies.
+export interface ResumeSpec {
+  agentId: number;
+  actorId: string;
+  name: string;
+  projectId: number;
+  projectName: string;
+  projectPath: string;
+  cwd: string;
+  // A plain string, unlike LaunchSpec's callback variant: that callback
+  // shape exists only because launchAgent's ids do not exist until its own
+  // INSERT runs. A resume's agentId and actorId are already known from the
+  // closed row before this is ever called, so there is nothing for a
+  // callback to wait on.
+  commandString: string;
+  placement: "split" | "window";
+  layout?: WindowLayout;
+  parentActor: string;
+}
+
+export function resumeAgent(
+  spec: ResumeSpec,
+): { target: string; landedInProjectId: number | null } {
+  // Refuse ABOVE the row flip, mirroring launchAgent's own INSERT-above-
+  // refusal ordering: a rejection here must never leave the row half-resumed.
+  if (untrustedTmuxServer()) throw crossServerRefusal("resume");
+  const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+  // One UPDATE, not two - unlike launchAgent, whose command is not known
+  // until after its own INSERT allocates an id, spec.commandString is
+  // already resolved here, so the flip and the command write land in the
+  // same statement. Conditional on status = 'closed', not merely on id: a
+  // caller who reads a closed row and then calls this can race a concurrent
+  // resume of the SAME row, and the changes count is how this tells
+  // "flipped it" from "someone already did".
+  //
+  // Counselors (all three seats, independently): this flip used to leave
+  // tmux_target/pane_pid pointing at the PANE agent_close already killed,
+  // with status now reading 'running'. In the gap between this statement
+  // and recordPane() below - which spans placeAgentPane's tmux forks and
+  // withWindowClaim's machine-wide lock, up to seconds under contention -
+  // that row matches every predicate of janitor()'s agents sweep
+  // (src/scheduler.ts): running, non-empty tmux_target, past the settle
+  // window (created_at is the row's ORIGINAL creation time, not this
+  // resume, so a resumed row is never inside it). rowAlive reads false for
+  // the dead pane, the janitor closes the row out from under this call, and
+  // recordPane then writes the fresh pane onto a row the store says is
+  // closed - live, unaddressable by name, and resumable a second time onto
+  // a THIRD pane of the same session. Cleared here for the identical reason
+  // launchAgent's fresh INSERT is immune to this by construction (its own
+  // tmux_target starts ''): an empty tmux_target is what takes a row out of
+  // the sweep's `tmux_target != ''` predicate, so the resumed row gets the
+  // same protection a brand-new spawn already has, for the same gap.
+  //
+  // Counselors (opus): agent_state/state_changed_at are the hook's alone to
+  // write (src/hook.ts) and closeAgentRow never touches them, so they were
+  // left holding whatever the worker last reported before it closed -
+  // 'idle' if it happened to close mid-idle, hours or days stale. Read on a
+  // 'running' row (which this flip makes true before the resumed claude has
+  // drawn a frame), a stale 'idle' satisfies standingIdleRows'
+  // status='running' AND agent_state='idle' filter with no bound against
+  // when the resume itself happened, so a wake_when_idle set any time after
+  // resuming reports the worker finished on its very first scheduler tick.
+  // Reset to 'unknown'/NULL - literally agents.agent_state's own DEFAULT for
+  // a fresh row (src/db.ts) - so a resumed row starts exactly where a freshly
+  // spawned one does: no claim about liveness until the first real hook event
+  // makes one.
+  //
+  // D2's own named cost, checked rather than assumed (the plan pad): a
+  // resumed row can collide with idx_agents_running_name if a different
+  // worker has since taken the closed row's name (findClosedAgent's own
+  // name search only excludes running rows, not closed ones - the exact gap
+  // launchAgent's requireNameFree exists to prevent for a fresh spawn, and
+  // has no equivalent here since there is no NEW name for a resume to
+  // validate). The agent_resume tool calls requireNameFree itself before
+  // ever reaching this function (closing the gap opus separately found:
+  // idx_agents_running_name's COLLATE NOCASE folds ASCII only, while
+  // requireNameFree folds in JS); this catch is the backstop for the
+  // TOCTOU race between that check and this write, with a remedy this
+  // caller can actually reach, rather than asNameClash's "pick another
+  // name" - a resumed row's name is not the caller's to change.
+  let flipped: number;
+  try {
+    flipped = db
+      .prepare(
+        "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
+          "agent_state = 'unknown', state_changed_at = NULL, tmux_socket = ?, command = ? " +
+          "WHERE id = ? AND status = 'closed'",
+      )
+      .run(socket, spec.commandString, spec.agentId).changes;
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    const message = err.message ?? "";
+    if (
+      err.code === "SQLITE_CONSTRAINT_UNIQUE" &&
+      (message.includes("agents.name") || message.includes("idx_agents_running_name"))
+    ) {
+      throw new Error(
+        `Cannot resume agent ${spec.agentId}: a running agent already has the name "${spec.name}". Rename or ` +
+          "close that one first, or resume a different agent_id.",
+      );
+    }
+    throw e;
+  }
+  if (flipped === 0) {
+    throw new Error(`Agent ${spec.agentId} is not closed - another caller may have resumed it first.`);
+  }
+  let paneUp = false;
+  try {
+    // Gate finding (PR #161): this used to run BETWEEN the flip and this
+    // try, so a throw here (SQLITE_BUSY past busy_timeout under
+    // contention with a concurrent withWindowClaim holder is the
+    // realistic case) skipped the catch below entirely and stranded the
+    // row 'running' with tmux_target='' forever - the same empty string
+    // the flip deliberately writes to dodge the janitor's race window is
+    // exactly what excludes a stranded row from ever being swept, since
+    // janitor()'s agents sweep requires tmux_target != ''. Inside the try,
+    // paneUp is still false, so the existing catch reverts the flip the
+    // same as any other pre-pane failure.
+    upsertActor(spec.actorId, spec.name, "agent");
+    // A resumed row is always kind='agent' - agent_resume refuses a lead
+    // target before this is ever reached - so this is the unconditional
+    // half of launchAgent's own env ternary, not a second copy of it.
+    const envFlags = buildEnvFlags(agentIdentityEnv(spec.actorId, spec.name, spec.projectPath));
+    const session = sessionName();
+    const title = windowTitle(spec.projectName, spec.name);
+    const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
+    paneUp = true;
+    recordPane(spec.agentId, target, socket);
+    return { target, landedInProjectId };
+  } catch (e) {
+    // launchAgent DELETEs a fresh row on a pre-pane failure; there is no
+    // fresh row here to discard, so the equivalent is reverting the flip -
+    // a failure before the pane exists must not strand the row 'running'
+    // with no pane to back it. Once paneUp is true the row stays 'running'
+    // with whatever tmux_target it last recorded, same as launchAgent past
+    // its own identical point: the worker is live either way, and closing
+    // the row out from under a live pane would be the worse failure.
+    if (!paneUp) {
+      db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(spec.agentId);
+    }
     throw e;
   }
 }

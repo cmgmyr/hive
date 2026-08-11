@@ -1,4 +1,5 @@
 import { existsSync, statSync, realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
@@ -15,7 +16,7 @@ import { currentActor, findProjectForDir, getProject, resolveProject } from "../
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
-import { closeAgentRow, isReservedAgentName, isRunningLeadActor, launchAgent, LEAD_KIND, renameAgent } from "../spawn.js";
+import { closeAgentRow, isReservedAgentName, isRunningLeadActor, launchAgent, LEAD_KIND, renameAgent, resumeAgent } from "../spawn.js";
 import { resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
@@ -65,26 +66,44 @@ export interface AgentRow {
   agent_state: string;
   state_changed_at: string | null;
   kind: string;
+  session_id: string;
 }
 
 // The most recently closed agent whose name matches, folded the same way the
 // running passes fold. Only reached when no running agent answered, so the
 // scan over a project's dead agents stays off the hot path.
+//
+// closed_at, not id (same reasoning as findClosedAgent's identical ordering
+// below, now that agent_resume can reopen and reclose a row out of id
+// order): this function only feeds an error message naming which closed
+// agent to spawn a replacement for, so getting it wrong is cosmetic here,
+// not a resume gone to the wrong session - kept consistent anyway so the
+// same query does not read two different ways in one file.
 function closedAgentNamed(projectId: number, needle: string): { id: number; name: string; kind: string } | undefined {
   return (
     db
-      .prepare("SELECT id, name, kind FROM agents WHERE project_id = ? AND status != 'running' ORDER BY id DESC")
+      .prepare(
+        "SELECT id, name, kind FROM agents WHERE project_id = ? AND status != 'running' ORDER BY closed_at DESC, id DESC",
+      )
       .all(projectId) as { id: number; name: string; kind: string }[]
   ).find((r) => r.name.toLowerCase() === needle);
 }
 
+// Shared by findAgent and findClosedAgent's own agent_id branch below - one
+// row-by-id lookup and one not-found sentence, parameterized on the hint
+// each caller wants ("Call agent_list." vs "...(include_closed: true)."),
+// rather than the identical SELECT and not-found shape written out twice.
+function getAgentRow(projectId: number, id: number, notFoundHint: string): AgentRow {
+  const row = db.prepare("SELECT * FROM agents WHERE project_id = ? AND id = ?").get(projectId, id) as
+    | AgentRow
+    | undefined;
+  if (!row) throw new Error(`No agent ${id} in project ${projectId}. ${notFoundHint}`);
+  return row;
+}
+
 export function findAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
   if (ref.agent_id != null) {
-    const row = db
-      .prepare("SELECT * FROM agents WHERE project_id = ? AND id = ?")
-      .get(projectId, ref.agent_id) as AgentRow | undefined;
-    if (!row) throw new Error(`No agent ${ref.agent_id} in project ${projectId}. Call agent_list.`);
-    return row;
+    return getAgentRow(projectId, ref.agent_id, "Call agent_list.");
   }
   if (ref.name) {
     const rows = db
@@ -134,6 +153,45 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
       );
     }
     throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
+  }
+  throw new Error("Pass agent_id or name.");
+}
+
+// agent_resume's own resolver: findAgent above only ever returns a RUNNING
+// row (the "closed" case is a helpful error, not a result), and that is the
+// wrong default for a tool whose whole job is to act on a closed one.
+// Exact, case-insensitive match only, no partial fallback - unlike
+// findAgent, closed rows are not a namespace anything else has to
+// disambiguate against, so a caller who does not remember the exact name
+// gets pointed at agent_list rather than a guess.
+//
+// Most-recently-closed wins on a shared name, ordered by closed_at, NOT id
+// (counselors, codex): a resumed row keeps its id but gets a FRESH closed_at
+// if it is closed again, so id order and close order can disagree the
+// moment agent_resume exists - id 10 resumed and reclosed after id 11 first
+// closed is more recently closed despite the lower id. id DESC is only a
+// tie-break for two closes landing in the same whole second. A name is only
+// unique among RUNNING rows (idx_agents_running_name), so "impl" spawned,
+// closed, and spawned again leaves two closed rows sharing it.
+function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
+  if (ref.agent_id != null) {
+    const row = getAgentRow(projectId, ref.agent_id, "Call agent_list(include_closed: true).");
+    if (row.status !== "closed") {
+      throw new Error(`Agent ${row.id} ("${row.name}") is not closed (status: ${row.status}).`);
+    }
+    return row;
+  }
+  if (ref.name) {
+    const needle = ref.name.toLowerCase();
+    const match = (
+      db
+        .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'closed' ORDER BY closed_at DESC, id DESC")
+        .all(projectId) as AgentRow[]
+    ).find((r) => r.name.toLowerCase() === needle);
+    if (!match) {
+      throw new Error(`No closed agent matching "${ref.name}" in project ${projectId}. Call agent_list(include_closed: true).`);
+    }
+    return match;
   }
   throw new Error("Pass agent_id or name.");
 }
@@ -205,6 +263,27 @@ function requireNameFree(projectId: number, name: string, exceptAgentId?: number
   if (taken) {
     throw new Error(`A running agent named "${taken.name}" already exists. Pick another name.`);
   }
+}
+
+// Counselors (fable): agent_spawn's auto-generated --session-id used to be
+// injected unconditionally for a claude command, on the reasoning that a
+// duplicated flag gets claude's own last-flag-wins behaviour. That reasoning
+// does not reach this case: --session-id and --resume/--fork-session are
+// DIFFERENT flags, not two copies of the same one, so there is no
+// duplicate for claude's parser to resolve between - what actually happens
+// with both present is unverified. The pre-#154 manual resume workflow
+// (.claude/sessions/workflows/resume-a-closed-worker.md) is exactly
+// `agent_spawn(command: "claude", extra_args: ["--resume", "<id>"])`, still
+// documented and still callable, so this has to keep working rather than
+// silently gain a second, conflicting flag.
+function requestsExistingSession(extraArgs: string[] | undefined): boolean {
+  return (extraArgs ?? []).some(
+    (arg) =>
+      arg === "--resume" ||
+      arg.startsWith("--resume=") ||
+      arg === "--fork-session" ||
+      (arg.startsWith("-r") && !arg.startsWith("--")),
+  );
 }
 
 // A name is not just a label: it gets typed into a terminal, as the pane
@@ -296,17 +375,33 @@ function inputBoxField(target: string): { input_box: InputBoxState } | Record<st
   return box ? { input_box: box } : {};
 }
 
-// Issue #5. Resolution is purely a function of the stored cwd string (D7):
-// recreating a removed worktree at the same path makes `claude --resume`
-// work there again, since Claude Code keys its transcript directory on cwd
-// alone. Gated on the same predicate --settings hooks already uses (D4), so
-// codex or aider -- which have no such directory -- never get a confidently
-// wrong path. One policy, like inputBoxField above: present (possibly null)
-// for a claude worker, absent for anything else. Callers decide WHEN to call
-// it, the same way they already decide when to call inputBoxField, rather
-// than this function carrying two inclusion policies itself.
-function transcriptDirField(row: AgentRow): { transcript_dir: string | null } | Record<string, never> {
-  return isClaudeCommand(row.command) ? { transcript_dir: resolveTranscriptDir(row.cwd) } : {};
+// Issue #5 (transcript_dir) and issue #154, D4 (session_id): two facts that
+// share one inclusion gate, so they are one field function rather than two.
+// isClaudeCommand is the gate both need - codex or aider have neither a
+// transcript directory nor a session id, and must not get a confidently
+// wrong value for either - and both are called at the identical two sites
+// below, so splitting them would only add a duplicated ternary at each call
+// site (as it once did) for no discrimination anything actually uses.
+// Contrast lastLogEventField/paneField further down, which stay two
+// functions because their gates genuinely differ.
+//
+// transcript_dir: resolution is purely a function of the stored cwd string
+// (D7) - recreating a removed worktree at the same path makes `claude
+// --resume` work there again, since Claude Code keys its transcript
+// directory on cwd alone.
+// session_id: '' is "no fact recorded" (the same convention tmux_socket and
+// pane_pid already use) and is reported as null here so a caller does not
+// have to know that convention to read the field.
+//
+// Callers decide WHEN to call this, the same way they already decide when
+// to call inputBoxField, rather than this function carrying an inclusion
+// policy of its own beyond the one isClaudeCommand gate.
+function claudeOnlyFields(
+  row: AgentRow,
+): { transcript_dir: string | null; session_id: string | null } | Record<string, never> {
+  return isClaudeCommand(row.command)
+    ? { transcript_dir: resolveTranscriptDir(row.cwd), session_id: row.session_id || null }
+    : {};
 }
 
 // Issue #72. Two more reports, neither derived from agent_state/provenance
@@ -321,11 +416,11 @@ function transcriptDirField(row: AgentRow): { transcript_dir: string | null } | 
 // SIGSTOPped, produce byte-identical last_log_event and pane. They do not
 // distinguish those two states; this lane's own rule is report, do not
 // infer, and a field that actually discriminated every cause would be doing
-// the inferring. Two functions, not one, matching
-// inputBoxField/transcriptDirField above: each field owns exactly one
-// inclusion gate, and the two gates here are genuinely different
-// (reportsAgentStateLog vs. liveness), so fusing them into one helper would
-// be this file's only multi-gate field function.
+// the inferring. Two functions, not one, matching inputBoxField above: each
+// field owns exactly one inclusion gate, and the two gates here are
+// genuinely different (reportsAgentStateLog vs. liveness) - unlike
+// claudeOnlyFields above, whose two facts share one gate and are fused for
+// exactly that reason.
 //
 // last_log_event: the actor's log, independent of whether the latch moved
 // (stateProvenance.ts's lastLogEvent -- see its own comment for why this is
@@ -482,6 +577,16 @@ export function registerAgents(server: McpServer): void {
 
         const baseCommand = args.command ?? "claude";
         const isClaude = isClaudeCommand(baseCommand);
+        // Issue #154, D1. Generated here rather than left to the hook to
+        // discover, so the id is known at spawn time and correct even for a
+        // worker that dies before its first hook fires - src/hook.ts
+        // reconciles from the payload afterward, which is what makes this
+        // flag non-load-bearing rather than redundant (see its own comment,
+        // and the migration in src/db.ts). '' for a non-claude command (D4's
+        // gate, since codex or aider have no such id) and for a caller
+        // already requesting --resume/--fork-session in extra_args (see
+        // requestsExistingSession's own comment).
+        const sessionId = isClaude && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
         // The brief names the agent, so it can only be written once the row
         // exists; launchAgent calls this back with the ids it just allocated.
         const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
@@ -505,7 +610,16 @@ export function registerAgents(server: McpServer): void {
             command: baseCommand,
             displayName: name,
             model: args.model,
-            extraArgs: args.extra_args,
+            // --session-id first when generated, caller-supplied extra_args
+            // after: sessionId is already '' (skipped) for a caller
+            // requesting --resume/--fork-session, so this never doubles up
+            // on those flags - see requestsExistingSession's own comment for
+            // why that pair cannot rely on claude's last-flag-wins behaviour
+            // the way an actually-duplicated flag (e.g. two --session-id)
+            // could.
+            extraArgs: isClaude
+              ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
+              : args.extra_args,
             settingsPath: isClaude ? ensureHooksFile() : undefined,
             briefPath,
           });
@@ -528,6 +642,7 @@ export function registerAgents(server: McpServer): void {
           placement,
           layout,
           parentActor: parent,
+          sessionId,
         });
         ensureAttached(sessionName());
 
@@ -627,6 +742,124 @@ export function registerAgents(server: McpServer): void {
             : {
                 instructions: workerBrief(briefFor(actorId)),
               }),
+        };
+      }),
+  );
+
+  server.registerTool(
+    "agent_resume",
+    {
+      description:
+        "Resume a CLOSED claude worker from its recorded Claude Code session id (claude --resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+      inputSchema: {
+        name: agentNameParam,
+        agent_id: agentIdParam,
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(async () => {
+        const project = resolveProject(args.project_id);
+        const agent = findClosedAgent(project.id, args);
+        // agent_resume is for workers; a lead's restart path is `hive lead`
+        // (ensureLeadRow, src/cli.ts), which already reuses its row and
+        // actor_id the same way D2 has this tool do for a worker - a second,
+        // unrelated mechanism for the identical row, not a gap.
+        if (agent.kind === LEAD_KIND) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is this project's lead session. agent_resume is for workers; ` +
+              "start a lead session with `hive lead`.",
+          );
+        }
+        if (!isClaudeCommand(agent.command)) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") was not a claude worker (command: "${agent.command}"), so it ` +
+              "has no session id to resume from.",
+          );
+        }
+        if (!agent.session_id) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") has no recorded session id, so it cannot be resumed. It may ` +
+              "predate this feature, or it may have closed before its first hook event ever fired. Spawn a new " +
+              "worker instead.",
+          );
+        }
+        // Counselors (opus): idx_agents_running_name's COLLATE NOCASE folds
+        // ASCII only, so it alone would let a resumed "café" and a running
+        // "CAFÉ" both stay running - the exact pair requireNameFree exists to
+        // refuse for a fresh spawn, folded in JS for that reason. The closed
+        // row this call resumes was never checked against it (findClosedAgent
+        // only excludes RUNNING rows by name, not closed ones), so this is
+        // the resume path's own equivalent call, not a redundant one.
+        // resumeAgent's own SQL-level catch (src/spawn.ts) is the backstop
+        // for the TOCTOU race between this check and its write, the same
+        // two-layer shape launchAgent + asNameClash already use.
+        requireNameFree(project.id, agent.name);
+
+        const { config: projectConfig } = loadProjectYml(project.path);
+        const placement =
+          projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
+
+        // No brief file and no pane announcement here, unlike agent_spawn:
+        // the resumed session already carries its original brief and its
+        // prior conversation in its own transcript, and typing an
+        // assignment into the pane is lane B's job (issues #154/#156's plan
+        // pad), not this tool's - it hands back a live pane and lets the
+        // caller send the next instruction with agent_send.
+        //
+        // Counselors (all three seats): this used to hardcode command:
+        // "claude", discarding the original binary path a caller may have
+        // spawned with (e.g. an absolute path needed because a bare `claude`
+        // does not resolve on the pane's PATH - the exact class
+        // .claude/rules/tmux-and-panes.md documents for iTerm's own minimal
+        // PATH). The binary is recovered from the closed row's own recorded
+        // command, the one fact this tool has about how it actually ran.
+        // --model and any other extra_args (permission mode, --add-dir, ...)
+        // are NOT recovered - hive does not record them separately from the
+        // command string they were folded into, and re-parsing arbitrary
+        // flags out of that string is its own hazard. This is the same
+        // "settings can drift on resume" limitation
+        // .claude/sessions/workflows/resume-a-closed-worker.md already
+        // documents for the brief; recorded here as a known residual for the
+        // same reason, not silently reintroduced.
+        //
+        // A plain string, not a callback: agent.id and agent.actor_id are
+        // already known here, unlike agent_spawn's buildCommand above, whose
+        // callback shape exists because launchAgent's ids do not exist until
+        // its own INSERT runs.
+        const claudeBinary = agent.command.trim().split(/\s+/)[0] || "claude";
+        const commandString = workerCommandString({
+          command: claudeBinary,
+          displayName: agent.name,
+          extraArgs: ["--resume", agent.session_id],
+          settingsPath: ensureHooksFile(),
+        });
+
+        const { target, landedInProjectId } = resumeAgent({
+          agentId: agent.id,
+          actorId: agent.actor_id,
+          name: agent.name,
+          projectId: project.id,
+          projectName: project.name,
+          projectPath: project.path,
+          cwd: agent.cwd,
+          commandString,
+          placement,
+          layout,
+          parentActor: currentActor(),
+        });
+        ensureAttached(sessionName());
+
+        return {
+          agent_id: agent.id,
+          actor_id: agent.actor_id,
+          name: agent.name,
+          tmux_target: target,
+          resumed_session_id: agent.session_id,
+          ...(landedInProjectId != null
+            ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }
+            : {}),
         };
       }),
   );
@@ -798,7 +1031,7 @@ export function registerAgents(server: McpServer): void {
             const summary = agentSummary(r, snapshot);
             return {
               ...summary,
-              ...(summary.alive !== true ? transcriptDirField(r) : {}),
+              ...(summary.alive !== true ? claudeOnlyFields(r) : {}),
               // agent_list only -- see paneField's own comment for why this
               // is not inside agentSummary (agent_status must not get a
               // second, independently-timed pane snapshot).
@@ -847,7 +1080,7 @@ export function registerAgents(server: McpServer): void {
           // D2: always present for a claude worker here, unlike agent_list's
           // D3 gating -- this is the single-agent query a lead reaches for
           // once a pane is already gone.
-          ...transcriptDirField(agent),
+          ...claudeOnlyFields(agent),
         };
       }),
   );
