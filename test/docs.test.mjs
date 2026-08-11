@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, globSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { parseRulePaths } from "../scripts/covering-rules.mjs";
 import { CLI, isolateTmux, registeredToolNames, runCli, scratchDirs, toolRegistrationsByFile } from "./helpers.mjs";
 
 // runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
@@ -14,6 +15,16 @@ after(() => cleanupTmux());
 const dirs = scratchDirs();
 const REPO = new URL("..", import.meta.url).pathname;
 const readRepo = (file) => readFileSync(join(REPO, file), "utf8");
+// Shared by the CLAUDE.md-table-vs-frontmatter pin below and its red-proof:
+// both pull the list of backtick-quoted globs out of one table cell's text.
+const backtickPaths = (cell) => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]).sort();
+// Also shared by both: the row-splitting regex that captures a rule's path
+// and its Fires-on CELL separately. The red-proof below exists specifically
+// because an earlier version ran backtickPaths() over a whole row string
+// instead of through this regex first, and silently included the row's own
+// `.claude/rules/x.md` path-cell as a phantom extra glob - see that test's
+// own comment.
+const RULE_ROW_RE = /^\| `(\.claude\/rules\/[\w.-]+\.md)` \| ([^|]+) \|/gm;
 
 const COMMANDS = (() => {
   const table = /const COMMANDS = \[([\s\S]*?)\];/.exec(readFileSync(CLI, "utf8"));
@@ -201,6 +212,87 @@ describe("docs keep up with the CLI", () => {
       // and planning happens before that.
       assert.match(claudeMd, new RegExp(`\\.claude/rules/${name.replace(".", "\\.")}`), `CLAUDE.md does not index ${name}`);
     }
+  });
+
+  // Todo 354, the third recorded failure: PR #159's first doc commit
+  // (61b6f6d) added src/cli.ts to tmux-and-panes.md's own frontmatter but
+  // left CLAUDE.md's table (the "Fires on" column, a second hand-maintained
+  // copy of the same list) naming the old four files. Nothing caught it --
+  // test/docs.test.mjs pinned the frontmatter's STRUCTURE, not its
+  // agreement with the table, and covering-rules.mjs can't see CLAUDE.md's
+  // table either, since a table cell isn't `paths:` frontmatter. A second
+  // commit (0caa3fc) fixed just that row by hand.
+  //
+  // THE DESIGN CHOICE the todo asks for, made here rather than left silent:
+  // PIN the two hand-maintained copies against each other, don't GENERATE
+  // the column from frontmatter. Generating would delete the drift outright
+  // (this project's stated preference: 2026-08-05, "remove the decision
+  // rather than guard it") and was considered, but the table's "Covers"
+  // column is prose no generator can produce, so a generated "Fires on"
+  // would still sit beside a hand-maintained "Covers" in the same row --
+  // half-generated, not drift-proof, and the row-rewriting script that
+  // would require is a second surface this deliberately narrow lane (one
+  // script plus tests, per the todo) does not need. A test that fails loudly
+  // when the two disagree costs one assertion and pins both columns exactly
+  // like every other doc-consistency check already in this file.
+  it("keeps CLAUDE.md's rules table Fires-on column in sync with each rule's own frontmatter", () => {
+    const claudeMd = readRepo("CLAUDE.md");
+    const rows = [...claudeMd.matchAll(RULE_ROW_RE)];
+    assert.ok(rows.length > 0, "no rule rows found in CLAUDE.md's table; did its format change?");
+
+    const ruleFiles = globSync("*.md", { cwd: join(REPO, ".claude/rules") });
+    for (const name of ruleFiles) {
+      assert.ok(
+        rows.some(([, rulePath]) => rulePath === `.claude/rules/${name}`),
+        `CLAUDE.md's table has no row for .claude/rules/${name}`,
+      );
+    }
+
+    for (const [, rulePath, firesOnCell] of rows) {
+      const tableGlobs = backtickPaths(firesOnCell);
+      const frontmatterGlobs = parseRulePaths(readRepo(rulePath)).sort();
+      assert.deepEqual(
+        tableGlobs,
+        frontmatterGlobs,
+        `${rulePath}: CLAUDE.md's Fires-on column says ${JSON.stringify(tableGlobs)}, frontmatter says ${JSON.stringify(frontmatterGlobs)}`,
+      );
+    }
+  });
+
+  // Red-proof (todo 354): this is the real row and the real frontmatter as
+  // they stood at 61b6f6d, one commit before 0caa3fc fixed the row -- copied
+  // by hand from `git show 61b6f6d:CLAUDE.md` and `git show
+  // 61b6f6d:.claude/rules/tmux-and-panes.md` (verified interactively, not
+  // re-derived live here: both commits are unreachable from any branch or
+  // tag after PR #159's squash-merge, so a `git show` against them would not
+  // survive a fresh clone or a `git gc`, and this suite runs from exactly
+  // those). The point of freezing it as a fixture is that the comparison
+  // above is proven to fire on the actual historical miss, not just on a
+  // case built to satisfy it.
+  //
+  // Counselors (todo 354) found this test's first version was itself a
+  // false green (test/CLAUDE.md shape 7): it ran backtickPaths() over the
+  // whole `preFixRow` string, including column 1, so `tableGlobs` always
+  // carried the row's own `.claude/rules/tmux-and-panes.md` path as an extra
+  // element neither list could ever share -- `notDeepEqual` passed on that
+  // artifact alone, even with a Fires-on cell rigged to hold the exact,
+  // correct six-glob answer (verified by hand: swapping the cell for the
+  // fully-fixed one still left the assertion green). Fixed by running the
+  // fixture through the SAME `RULE_ROW_RE` the live test above uses, so this
+  // proves the extraction, not just a hand-picked pair of arrays.
+  it("would have failed against the real pre-fix row from PR #159 (commit 61b6f6d)", () => {
+    const preFixRow =
+      "| `.claude/rules/tmux-and-panes.md` | `src/tmux.ts`, `src/spawn.ts`, `src/scheduler.ts`, `src/tools/agents.ts` | " +
+      "why a private tmux server plus the default store is refused |";
+    const preFixFrontmatterGlobs = ["src/tmux.ts", "src/spawn.ts", "src/scheduler.ts", "src/tools/agents.ts", "src/cli.ts", "docs/*.md"];
+
+    const [row] = [...preFixRow.matchAll(RULE_ROW_RE)];
+    assert.ok(row, "precondition: the fixture row must match the production row regex");
+    const [, rulePath, firesOnCell] = row;
+    assert.equal(rulePath, ".claude/rules/tmux-and-panes.md");
+
+    const tableGlobs = backtickPaths(firesOnCell);
+    assert.notDeepEqual(tableGlobs, [...preFixFrontmatterGlobs].sort(), "precondition: the pre-fix row and frontmatter must disagree");
   });
 
   it("keeps docs/reviewer-preamble.md naming every rule file", () => {

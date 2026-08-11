@@ -16,13 +16,15 @@ which is the moment a new tool gets its name.
 
 **Unlike the project's other rules, almost nothing here is enforced by
 code.** This file is a naming convention and a matrix, not a guard.
-`docs.test.mjs` pins that it exists, that its `paths` globs still match a
-real file, that every path it cites is real, and that it stays indexed in
-`CLAUDE.md` and `src/AGENTS.md`, the same four checks every rule file gets.
-None of that pins its CONTENT against the code: nothing fails if the matrix
-drifts from what `src/tools/*.ts` actually registers, or if the naming
-convention stops matching what a new tool was actually named. Treat the
-matrix as verified at the time #82 wrote it, not as self-maintaining.
+`test/docs.test.mjs` pins that it exists, that its `paths` globs still match
+a real file, that every path it cites is real, that it stays indexed in
+`CLAUDE.md` and `src/AGENTS.md`, and that `CLAUDE.md`'s table names the exact
+same globs its own frontmatter does (todo 354) - the same five checks every
+rule file gets. None of that pins its CONTENT against the code: nothing
+fails if the matrix drifts from what `src/tools/*.ts` actually registers, or
+if the naming convention stops matching what a new tool was actually named.
+Treat the matrix as verified at the time #82 wrote it, not as
+self-maintaining.
 
 Two claims in the unknown-key section below are the exception, and only two.
 `test/wire-surface.test.mjs` pins that every object in the generated surface
