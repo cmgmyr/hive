@@ -445,3 +445,72 @@ describe("wake_get / wake_update", () => {
     },
   );
 });
+
+// Issue #150. deliver() (src/scheduler.ts) types a wake's body verbatim into
+// a pane via sendText, exactly as agent_send's text path does, so an
+// unvalidated body is the identical text-becomes-keys breach one door over
+// (.claude/rules/tmux-and-panes.md). No live pane needed here: the check
+// runs before resolveDelivery and before the INSERT/UPDATE, so these tests
+// never touch tmux.
+describe("control bytes in a wake body (issue #150)", () => {
+  it("wake_set refuses a body carrying a raw control byte, names it, and its offset", async () => {
+    await assert.rejects(
+      mcp.call("wake_set", { delay_seconds: 60, body: "helloworld" }),
+      /BEL, 0x07.*at offset 5/,
+    );
+  });
+
+  it("wake_set still accepts tab and newline - a wake body is multi-line prose", async () => {
+    // This test session runs outside tmux, so wake_set still fails - but only
+    // at delivery-target resolution, which runs AFTER body validation. That
+    // proves a clean multi-line, tabbed body passed the control-byte check
+    // rather than a passing assertion of convenience: a regression that
+    // started rejecting tab or newline would fail here with a body-shaped
+    // message instead of this one.
+    await assert.rejects(
+      mcp.call("wake_set", { delay_seconds: 60, body: "line one\nline two\twith a tab" }),
+      /cannot receive wake-ups/,
+    );
+  });
+
+  it("wake_set refuses CR specifically: it is the byte a literal Enter keypress sends", async () => {
+    await assert.rejects(
+      mcp.call("wake_set", { delay_seconds: 60, body: "part one\rpart two" }),
+      /CR, 0x0D/,
+    );
+  });
+
+  it("names agent_send(keys) as the remedy, not a way to keep the raw byte in a wake body", async () => {
+    await assert.rejects(
+      mcp.call("wake_set", { delay_seconds: 60, body: "bad byte" }),
+      /agent_send\(keys/,
+    );
+  });
+
+  it("nothing is inserted when wake_set refuses a bad body", async () => {
+    const before = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    await assert.rejects(mcp.call("wake_set", { delay_seconds: 60, body: "bad byte" }));
+    const after = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    assert.equal(after, before, "a refused body must never reach the INSERT");
+  });
+
+  it("wake_update refuses the same way, on the same field, and leaves the existing body untouched", async () => {
+    const seeded = seedTimer({ body: "clean body" });
+    await assert.rejects(
+      mcp.call("wake_update", { wake_id: seeded.id, body: "onetwo" }),
+      /ESC, 0x1B/,
+    );
+    assert.equal(
+      db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body,
+      "clean body",
+      "a refused update must not partially land",
+    );
+  });
+
+  it("wake_when_idle refuses a control byte in its body before watching anything", async () => {
+    await assert.rejects(
+      mcp.call("wake_when_idle", { scope: "project", body: "status" }),
+      /ETX \(Ctrl-C\), 0x03/,
+    );
+  });
+});

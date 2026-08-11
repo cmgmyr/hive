@@ -1998,6 +1998,90 @@ const nextBufferName = () => `hive-input-${process.pid}-${++bufferSeq}`;
 // shrinking the margin that fixture depends on (issue #55, todo 126 item 3).
 export const ENTER_DELAY_MS = 300;
 
+// Issue #150. Neither branch above types a control byte the way it types
+// everything else. NUL reaches execFileSync's argument array, which Node
+// rejects outright. Every other C0 byte or DEL reaches tmux AS A KEYSTROKE
+// rather than as literal text - verified against a real tmux for exactly
+// this class of byte by agent_rename's identical guard
+// (src/tools/agents.ts: send-keys -l stops tmux interpreting key NAMES but
+// passes a raw control byte straight through to the TUI, so 0x03 sends
+// Ctrl-C mid-task). So a caller passing `text` silently gets the `keys`
+// path (.claude/rules/tmux-and-panes.md's text/keys distinction) with
+// nobody choosing that. One detector here, reused by every caller that
+// types free text into a pane, so two call sites cannot drift onto two
+// definitions of "unsafe byte" the way CHOICE_DIALOG/INPUT_BOX_PRESENT
+// above do not.
+//
+// Tab and newline are the only bytes this file exempts for free text. A
+// wake body is written as multi-line prose by every caller in this project
+// (worker-state.md), so rejecting newline would break the feature outright.
+// CR is deliberately NOT exempted alongside it: CR is the byte a literal
+// Enter keypress sends, so letting it through would let a pasted body press
+// Enter partway through itself - the identical keys-path breach this guard
+// exists to close, just spelled with a different byte. A caller that wants
+// an actual keystroke has `agent_send(keys: [...])`; that path is unguarded
+// by design (see the file above) because driving a TUI on purpose is the
+// job it exists for.
+export const TEXT_ALLOWED_CONTROL_CHARS = new Set(["\t", "\n"]);
+
+const CONTROL_CHAR_NAMES: Record<number, string> = {
+  0: "NUL",
+  1: "SOH",
+  2: "STX",
+  3: "ETX (Ctrl-C)",
+  4: "EOT (Ctrl-D)",
+  5: "ENQ",
+  6: "ACK",
+  7: "BEL",
+  8: "BS",
+  11: "VT",
+  12: "FF",
+  13: "CR",
+  14: "SO",
+  15: "SI",
+  16: "DLE",
+  17: "DC1",
+  18: "DC2",
+  19: "DC3",
+  20: "DC4",
+  21: "NAK",
+  22: "SYN",
+  23: "ETB",
+  24: "CAN",
+  25: "EM",
+  26: "SUB (Ctrl-Z)",
+  27: "ESC",
+  28: "FS",
+  29: "GS",
+  30: "RS",
+  31: "US",
+  127: "DEL",
+};
+
+export interface UnsafeControlChar {
+  code: number;
+  index: number;
+  label: string;
+}
+
+// Finds the first byte unsafe to type into a pane as literal text: every C0
+// control byte and DEL, except whatever `allowed` names (agent_rename passes
+// none - a name has no legitimate newline; the wake/agent_send text callers
+// pass TEXT_ALLOWED_CONTROL_CHARS above).
+export function findUnsafeControlChar(text: string, allowed: Set<string>): UnsafeControlChar | null {
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (allowed.has(ch)) continue;
+    const code = text.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      const name = CONTROL_CHAR_NAMES[code];
+      const hex = `0x${code.toString(16).padStart(2, "0").toUpperCase()}`;
+      return { code, index: i, label: name ? `${name}, ${hex}` : hex };
+    }
+  }
+  return null;
+}
+
 export async function sendText(target: string, text: string, submit = true): Promise<void> {
   if (text.includes("\n")) {
     const buffer = nextBufferName();

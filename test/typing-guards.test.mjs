@@ -380,6 +380,42 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
     assert.equal(receipt.sent, true);
   });
 
+  // Issue #150. A control byte in `text` reaches tmux as a keystroke instead
+  // of as literal text - `send-keys -l` stops tmux interpreting key NAMES but
+  // not raw control bytes, agent_rename's own guard verified this against a
+  // real tmux - so an unvalidated `text` argument silently becomes the `keys`
+  // path .claude/rules/tmux-and-panes.md deliberately keeps unguarded against
+  // a dialog. Checked before any pane read (no tmux fork spent on a call that
+  // is refused outright), so a genuinely idle pane still proves nothing
+  // reached it.
+  describe("control bytes in text (issue #150)", () => {
+    it("refuses a control byte, names it and its offset, before any pane read", async () => {
+      const name = await showing("send-control-byte", "ready-idle.txt");
+      await assert.rejects(
+        mcp.call("agent_send", { name, text: "zzsentinelzz" }),
+        /ETX \(Ctrl-C\), 0x03.*at offset 10/,
+      );
+      const { output } = await mcp.call("agent_output", { name });
+      assert.doesNotMatch(output, /zzsentinel/, "a refused text must never reach the pane");
+    });
+
+    it("names keys as the remedy for an actual keystroke, not embedding the byte in text", async () => {
+      const name = await showing("send-control-byte-remedy", "ready-idle.txt");
+      await assert.rejects(mcp.call("agent_send", { name, text: "xy" }), /use keys instead/);
+    });
+
+    it("still sends text containing a literal tab and newline - both are allowed", async () => {
+      const name = await showing("send-tab-newline", "ready-idle.txt");
+      const receipt = await mcp.call("agent_send", { name, text: "one\ttwo\nthree", submit: false });
+      assert.equal(receipt.sent, true);
+    });
+
+    it("refuses CR specifically: it is the byte a literal Enter keypress sends", async () => {
+      const name = await showing("send-cr", "ready-idle.txt");
+      await assert.rejects(mcp.call("agent_send", { name, text: "one\rtwo" }), /CR, 0x0D/);
+    });
+  });
+
   // Todo 317. agent_send's text path guarded a DIALOG and nothing else, so a
   // pane holding real unsubmitted human text got the send pasted onto the end
   // of it and Enter submitted both as one message. Not hypothetical: three

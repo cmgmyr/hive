@@ -13,7 +13,7 @@ import {
 } from "../scheduler.js";
 import { idParam, projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
-import { liveTargets } from "../tmux.js";
+import { findUnsafeControlChar, liveTargets, TEXT_ALLOWED_CONTROL_CHARS } from "../tmux.js";
 import { isRunningLeadActor, LEAD_KIND } from "../spawn.js";
 
 const agentRefParam = z
@@ -210,6 +210,27 @@ function deliveryState(
 
 const truncateBody = (body: string): string => (body.length > 120 ? `${body.slice(0, 120)}…` : body);
 
+// Issue #150. A wake body is delivered verbatim into a pane by sendText
+// (worker-state.md: "Wake-up bodies are delivered verbatim"), so an
+// unvalidated body is the identical text/keys breach agent_send.text guards
+// against, one door over. Shared across every write path into `timers.body`
+// - wake_set, wake_when_idle, and wake_update all reach the same column and
+// the same deliver() -> sendText call, so all three need it, not only the
+// tool issue #150 names; leaving any one unvalidated reopens the hole
+// through a second door.
+function rejectUnsafeBody(body: string): void {
+  const bad = findUnsafeControlChar(body, TEXT_ALLOWED_CONTROL_CHARS);
+  if (bad) {
+    throw new Error(
+      `body cannot contain ${bad.label} at offset ${bad.index}: it is typed literally into the target pane ` +
+        "when the wake fires, and a raw control byte reaches tmux as a keystroke instead of as text, " +
+        "silently turning the delivery into a keys call nobody chose. Tab and newline are the only control " +
+        "characters allowed - every wake in this project is multi-line prose. To send an actual keystroke " +
+        'on purpose, call agent_send(keys: [...]) against the target directly instead of scheduling it here.',
+    );
+  }
+}
+
 // The five fields every wake carries regardless of which section it appears
 // in, factored out so the callers below cannot drift apart on a field they
 // are all supposed to report identically. truncate defaults to true for
@@ -388,6 +409,7 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
+        rejectUnsafeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
         const delivery = resolveDelivery(projectId, args.deliver_to);
         const row = db
@@ -460,6 +482,7 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
+        rejectUnsafeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
         // The two shapes are refused LOUDLY rather than resolved by a
         // precedence rule, because every way of resolving them silently is a
@@ -686,8 +709,14 @@ export function registerWakes(server: McpServer): void {
         // so nothing here needs the sanitize-the-field discipline that
         // applies to a value hive itself derives, like describeLastLogEvent's
         // event column (.claude/sessions/dead-ends/2026-08-02-capping-the-
-        // sentence-not-the-field.md). Matches wake_set exactly; adds nothing.
+        // sentence-not-the-field.md). Matches wake_set exactly, which is why
+        // it reuses wake_set's own rejectUnsafeBody (issue #150) rather than
+        // a second definition: this writes the identical column through the
+        // identical delivery path, so a body clean at wake_set and dirty at
+        // wake_update would just be the guard reopened through its own edit
+        // door.
         if (args.body != null) {
+          rejectUnsafeBody(args.body);
           sets.push("body = ?");
           params.push(args.body);
         }

@@ -23,6 +23,7 @@ import {
   DEFAULT_LAYOUT,
   describePaneChoice,
   ensureAttached,
+  findUnsafeControlChar,
   holdsHumanInput,
   inputBoxState,
   isPaneTarget,
@@ -35,6 +36,7 @@ import {
   sendText,
   sessionName,
   sleep,
+  TEXT_ALLOWED_CONTROL_CHARS,
   tmux,
   waitForPaneInput,
   WINDOW_LAYOUTS,
@@ -212,14 +214,19 @@ function requireNameFree(projectId: number, name: string, exceptAgentId?: number
 // worker mid-task. Verified directly against tmux rather than reasoned about:
 // send-keys -l -- with a literal 0x03 interrupts a running foreground
 // process. Both doors validate, because both doors type.
-const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
-
+//
+// findUnsafeControlChar is the same detector issue #150's wake/agent_send
+// text guard uses (src/tmux.ts); a name passes no exceptions, unlike that
+// guard's tab/newline allowance, because a name has no legitimate newline.
 function normalizeAgentName(raw: string, field: "name" | "new_name"): string {
   const name = raw.trim();
   if (!name) throw new Error(`${field} cannot be empty.`);
-  if (CONTROL_CHARS.test(name)) {
+  const bad = findUnsafeControlChar(name, new Set());
+  if (bad) {
     throw new Error(
-      `${field} cannot contain control characters, including newlines: it is typed into the worker's terminal.`,
+      `${field} cannot contain ${bad.label} at offset ${bad.index}: it is typed into the worker's terminal, ` +
+        "where a raw control byte reaches tmux as a keystroke instead of as text. No control characters are " +
+        "allowed in a name, including tabs and newlines.",
     );
   }
   return name;
@@ -915,6 +922,20 @@ export function registerAgents(server: McpServer): void {
           }
           tmux("send-keys", "-t", target, "--", ...args.keys);
         } else if (args.text != null) {
+          // Issue #150. Checked before any pane read, both because it is the
+          // cheapest possible rejection (no tmux fork) and because a bad byte
+          // means send it via keys instead - not "read the pane and try
+          // anyway". src/tmux.ts's own comment on this detector explains why
+          // a control byte reaches tmux as a keystroke rather than as text.
+          const badChar = findUnsafeControlChar(args.text, TEXT_ALLOWED_CONTROL_CHARS);
+          if (badChar) {
+            throw new Error(
+              `text cannot contain ${badChar.label} at offset ${badChar.index}: it is typed literally into ` +
+                "the pane, and a raw control byte reaches tmux as a keystroke instead of as text, silently " +
+                "turning a text call into a keys call. Tab and newline are the only control characters " +
+                'allowed. To send an actual keystroke on purpose, use keys instead (e.g. keys: ["C-c"]).',
+            );
+          }
           const { awaitingChoice, tail } = paneChoiceCheck(target);
           if (awaitingChoice === true) {
             return {
