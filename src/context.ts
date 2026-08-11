@@ -105,6 +105,20 @@ export function getProject(id: number): Project | undefined {
   return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Project | undefined;
 }
 
+// A plain SELECT first (the overwhelmingly common case: the project is
+// already registered), falling back to INSERT ... ON CONFLICT DO NOTHING
+// then SELECT only when that first read finds nothing - not
+// SELECT-then-plain-INSERT. Two sessions resolving the same unseen checkout
+// at once used to both find nothing and both plain-INSERT; the second hit
+// projects.path's UNIQUE constraint and its whole call failed even though
+// the project now exists. The race is still closed the same way: the
+// fallback's ON CONFLICT DO NOTHING makes a loser's INSERT a no-op instead
+// of an error, and the SELECT after it reads whichever row actually won -
+// its own if it inserted, the other session's if it lost the race - so both
+// callers converge on the same canonical row instead of one of them
+// throwing. The fast SELECT above it is a pure optimization: it cannot
+// itself observe a stale answer that matters, since a miss there always
+// falls through to the race-safe path.
 export function addProject(path?: string, name?: string): Project {
   let resolved: string;
   try {
@@ -112,14 +126,13 @@ export function addProject(path?: string, name?: string): Project {
   } catch {
     throw new Error(`Path does not exist: ${path}`);
   }
-  const existing = db.prepare("SELECT * FROM projects WHERE path = ?").get(resolved) as
-    | Project
-    | undefined;
+  const existing = db.prepare("SELECT * FROM projects WHERE path = ?").get(resolved) as Project | undefined;
   if (existing) return existing;
-  const info = db
-    .prepare("INSERT INTO projects (name, path) VALUES (?, ?)")
-    .run(name ?? basename(resolved), resolved);
-  return getProject(Number(info.lastInsertRowid))!;
+  db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) ON CONFLICT(path) DO NOTHING").run(
+    name ?? basename(resolved),
+    resolved,
+  );
+  return db.prepare("SELECT * FROM projects WHERE path = ?").get(resolved) as Project;
 }
 
 // The single gate for reaching a project by id: it must exist, and a locked
