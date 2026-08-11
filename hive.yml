@@ -17,6 +17,10 @@ dashboard: true                 # write .claude/dashboard/index.html (hive dogfo
 vars:
   repo: cmgmyr/hive
   install: npm install && npm run build
+  test_one: npm run build && node --test test/<file>.test.mjs
+  test_all: npm run build && npm test
+  rules_check: node scripts/covering-rules.mjs
+  smoke: npm run build && hive setup && hive doctor
 
 processes:
 #  watch: npm run watch         # recompile dist/ on every save
