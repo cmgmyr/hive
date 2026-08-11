@@ -663,6 +663,28 @@ export function rowAliveProbe(recordedSocket: string, target: string, snapshot: 
   return { live, pid: live ? targetPid(target, snapshot) : null };
 }
 
+// Issue #149 (todo 348). Shared by src/scheduler.ts's janitor() agents sweep
+// and its deliverable() pane-identity check: a pane the current tmux server
+// reissued to someone else after a restart reads LIVE, not dead, so
+// `rowAlive(...) === false` cannot see it - the fact PIDs exist to catch.
+// One function, defined next to PaneProbe/rowAliveProbe rather than in a
+// consumer file, so a future caller of this file's pane-identity primitives
+// finds it here instead of re-deriving the same comparison - the same
+// reasoning CHOICE_DIALOG's own comment gives for the sibling dialog/
+// input-box discriminators (.claude/rules/tmux-and-panes.md).
+//
+// True only when a pane genuinely EXISTS but is not the one this row was
+// recorded against - never when it is simply gone (probe.live is false or
+// null, the ordinary dead/unknown branches handle those) and never when
+// either side has no fact to compare: recordedPid === "" is a pre-migration
+// row or one written before this column existed, and probe.pid === null
+// means live did not read true or the read raced a close. Both must stay
+// "cannot judge, proceed as before this check existed" - an upgrade must not
+// start holding or closing every pre-existing row in every store.
+export function paneReissued(recordedPid: string, probe: PaneProbe): boolean {
+  return probe.live === true && recordedPid !== "" && probe.pid !== null && probe.pid !== recordedPid;
+}
+
 // tmux layout presets hive can apply to a window of split-placed workers.
 // The tmux settings raw attach mode needs, and the doc that explains them.
 //

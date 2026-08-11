@@ -92,8 +92,31 @@ function insertDueLeadWake(projectId, actorId, pane, body) {
     .get(projectId, actorId, body, actorId, pane).id;
 }
 
+// Issue #149 (todo 348). Same shape as insertLeadRow, kind='agent' instead of
+// 'lead' - the whole point of this lane is that the janitor and the
+// pane-identity hold both used to treat this row differently from a lead's.
+// RETURNING id, unlike insertLeadRow, because the worker-owned test below
+// also checks that the widened janitor sweep reaps this row. created_at is
+// backdated past janitor()'s own SETTLE_WINDOW (-15 seconds, src/scheduler.ts)
+// for the identical reason insertDueLeadWake backdates its timer: that grace
+// period exists to stop a freshly-spawned worker racing its own window
+// creation, and this row is not that race - a row created "now" would be
+// skipped by the sweep for a reason that has nothing to do with what this
+// test proves.
+function insertWorkerRow(projectId, actorId, pane, panePid) {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status, created_at)
+       VALUES (?, ?, 'worker', 'agent', ?, ?, ?, 'claude', '/tmp', 'running', datetime('now', '-60 seconds'))
+       RETURNING id`,
+    )
+    .get(projectId, actorId, pane, ownSocket, panePid).id;
+}
+
 const timerRow = (id) =>
-  db.prepare("SELECT fired_at, typed_at, held_at, held_reason FROM timers WHERE id = ?").get(id);
+  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, cancelled_at FROM timers WHERE id = ?").get(id);
+
+const agentStatus = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
 
 describe("todo 336: a lead-owned wake must not type into a pane a tmux restart reissued", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   it("DEFECT, reproduced for real: a wake held against a pane a fresh tmux server reissued to a stranger", async () => {
@@ -216,6 +239,208 @@ describe("todo 336: a lead-owned wake must not type into a pane a tmux restart r
 
       const settled = await until(() => capture(pane).includes("wake-336-nullpid-should-deliver"), 5000);
       assert.ok(settled, `expected the wake body to land on the pane; last capture:\n${capture(pane)}`);
+    } finally {
+      cleanup(session);
+    }
+  });
+});
+
+// Issue #149 (todo 348). Todo 336's fix above gated the pid-mismatch check to
+// LEAD-owned wakes on the claim that a worker row is already reaped by
+// janitor()'s sweep before a reissued pane matters. That claim was false: both
+// janitor sweeps only ever acted on `rowAlive(...) === false`, and a reissued
+// pane reads LIVE, so a worker's wake could sail straight through into
+// whatever pane inherited its id after a restart. Same real-sequence shape as
+// the DEFECT test above (kill every session, start a fresh one on the same
+// socket) - a hand-built snapshot would only prove the condition this lane
+// wrote, not the defect issue #149 describes.
+describe("issue #149: a worker-owned wake must not type into a pane a tmux restart reissued", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  it("DEFECT, reproduced for real: a worker-owned wake held against a reissued pane, and its agents row reaped in the same tick", async () => {
+    const project = seedProject();
+    const actorId = "agent:149001";
+
+    const gen1Session = `hive-149-gen1-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", gen1Session, "sleep", "600"], { stdio: "ignore" });
+    const gen1Pane = paneIdOf(`=${gen1Session}`);
+    const gen1Pid = panePidOf(gen1Pane);
+
+    const agentRowId = insertWorkerRow(project, actorId, gen1Pane, gen1Pid);
+    const wakeBody = "echo wake-149-should-not-land-here";
+    const timerId = insertDueLeadWake(project, actorId, gen1Pane, wakeBody);
+
+    execFileSync("tmux", ["kill-session", "-t", `=${gen1Session}`], { stdio: "ignore" });
+    const gone = await until(serverGone, 5000);
+    assert.ok(gone, "the tmux server must fully exit before the next session starts a fresh one");
+
+    const gen2Session = `hive-149-gen2-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", gen2Session, "sleep", "600"], { stdio: "ignore" });
+    const gen2Pane = paneIdOf(`=${gen2Session}`);
+    const gen2Pid = panePidOf(gen2Pane);
+
+    try {
+      // THE FIXTURE'S OWN SANITY CHECK, matching the lead test above.
+      assert.equal(gen2Pane, gen1Pane, "gen2's first pane must reuse gen1's exact id for this fixture to mean anything");
+      assert.notEqual(gen2Pid, gen1Pid, "the reissued pane must genuinely be a different process, not the same one");
+
+      await tick();
+
+      const timer = timerRow(timerId);
+      assert.equal(timer.fired_at, null, "deliverable() must hold before claimOneShot, not deliver into the stranger");
+      assert.equal(timer.typed_at, null, "nothing may have been typed at all - this is the case that used to execute");
+      assert.ok(timer.held_at, "the hold must be RECORDED, not just silently applied");
+      assert.match(
+        timer.held_reason,
+        /now belongs to a different pane/,
+        "held_reason must name the pane-identity mismatch, not read as an ordinary not-due-yet or dead-pane hold",
+      );
+      assert.match(
+        timer.held_reason,
+        /nothing re-points a worker's wake automatically/,
+        "a worker-owned hold must not point the reader at `hive lead`, which does not rescue this wake",
+      );
+
+      const onScreen = capture(gen2Pane);
+      assert.ok(
+        !onScreen.includes("wake-149-should-not-land-here"),
+        `the stranger's pane must show no trace of the wake body, got:\n${onScreen}`,
+      );
+
+      // Step 4 of issue #149, same tick: the widened agents sweep must reap
+      // this row rather than leave it reporting "running" - agent_list,
+      // agent_send's requireLive and watchedTail all still poisoned by a
+      // surviving row even with delivery itself held.
+      assert.equal(
+        agentStatus(agentRowId),
+        "closed",
+        "a reissued worker row must be reaped by the janitor, not left reporting running",
+      );
+    } finally {
+      cleanup(gen2Session);
+    }
+  });
+
+  // Fix round 1, finding 1 (counselors, both seats). A hold for pane-reissue
+  // used to be only a ONE-TICK promise: once the pane the wake was reissued
+  // to also exits - a transient shell, often within minutes - the janitor's
+  // timers sweep saw rowAlive === false and cancelled the timer outright for
+  // a non-lead actor, exactly as it always has for an ordinary dead pane.
+  // The wake then left ACTIVE_TIMER_WHERE with no fired_at, dropping out of
+  // wake_list's pending section and hive status's heldWakes with nothing in
+  // recently_delivered either - silently gone, through the door on the OTHER
+  // side of the hold-vs-cancel decision.
+  //
+  // A THIRD session on gen2's server is required so killing gen2Session
+  // alone leaves the server reachable: killing the server's only session
+  // makes it exit entirely, and a probe against an unreachable server reads
+  // `null` (unknown), never `false` (confirmed dead) - the janitor never
+  // acts on null. Killing one session while another survives on the same
+  // server is what makes list-panes answer "can't find pane" for gen2Pane
+  // specifically, the CONFIRMED-dead case this fix is about.
+  it("a hold for pane-reissue survives the reissued pane later going dead too, instead of being silently cancelled", async () => {
+    const project = seedProject();
+    const actorId = "agent:149003";
+
+    const gen1Session = `hive-149c-gen1-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", gen1Session, "sleep", "600"], { stdio: "ignore" });
+    const gen1Pane = paneIdOf(`=${gen1Session}`);
+    const gen1Pid = panePidOf(gen1Pane);
+
+    insertWorkerRow(project, actorId, gen1Pane, gen1Pid);
+    const timerId = insertDueLeadWake(project, actorId, gen1Pane, "echo wake-149c-should-not-execute");
+
+    execFileSync("tmux", ["kill-session", "-t", `=${gen1Session}`], { stdio: "ignore" });
+    assert.ok(await until(serverGone, 5000), "the tmux server must fully exit before the next one starts");
+
+    const gen2Session = `hive-149c-gen2-${process.pid}`;
+    const gen2AnchorSession = `hive-149c-gen2-anchor-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", gen2Session, "sleep", "600"], { stdio: "ignore" });
+    execFileSync("tmux", ["new-session", "-d", "-s", gen2AnchorSession, "sleep", "600"], { stdio: "ignore" });
+    const gen2Pane = paneIdOf(`=${gen2Session}`);
+
+    try {
+      assert.equal(gen2Pane, gen1Pane, "gen2's first pane must reuse gen1's exact id for this fixture to mean anything");
+
+      await tick();
+      const heldForReissue = timerRow(timerId);
+      assert.ok(heldForReissue.held_at, "sanity check: the reissue hold from the earlier test's own shape must apply here too");
+      assert.match(heldForReissue.held_reason, /now belongs to a different pane/);
+
+      // The reissued pane's own session exits - the SAME kind of event that
+      // reissued gen1Pane in the first place, now happening to gen2Pane. The
+      // anchor session keeps the server itself reachable.
+      execFileSync("tmux", ["kill-session", "-t", `=${gen2Session}`], { stdio: "ignore" });
+      const paneGone = await until(() => {
+        try {
+          execFileSync("tmux", ["list-panes", "-t", gen2Pane], { stdio: "ignore" });
+          return false;
+        } catch {
+          return true;
+        }
+      }, 5000);
+      assert.ok(paneGone, "gen2Pane itself must read as gone before the next tick, or this test proves nothing");
+
+      await tick();
+      const afterPaneDied = timerRow(timerId);
+      assert.equal(
+        afterPaneDied.cancelled_at,
+        null,
+        "a wake already held for pane-reissue must not be silently cancelled once that pane also dies - " +
+          "it must keep holding, visibly",
+      );
+      assert.ok(afterPaneDied.held_at, "the hold must still be recorded");
+      assert.match(
+        afterPaneDied.held_reason,
+        /now belongs to a different pane/,
+        "held_reason must keep naming the original reissue - the reason string carries the pane- " +
+          "identity mismatch that made this a reissue hold in the first place",
+      );
+      assert.match(
+        afterPaneDied.held_reason,
+        /has since gone dead too/,
+        "held_reason must ALSO name the second fact - the reissued pane has now died too - not " +
+          "silently revert to an ordinary dead-pane reading with no memory of the reissue",
+      );
+    } finally {
+      cleanup(gen2AnchorSession);
+    }
+  });
+
+  // Fix round 1, finding 3 (counselors). The "no fact recorded" case for
+  // pane_pid = '' is already pinned for deliverable() (the "todo 336" describe
+  // block above, "a pre-migration row (pane_pid = '') is never treated as a
+  // mismatch"), but that test seeds a kind='lead' row - the janitor's agents
+  // sweep filters `kind != LEAD_KIND`, so a lead row never reaches the branch
+  // this lane added there. Nothing in the suite proved the SAME "no fact,
+  // don't touch" reading holds on the agents-sweep side for a worker row,
+  // which is exactly the row every pre-todo-336 store is full of. Drop
+  // `recordedPid !== ""` from paneReissued (src/tmux.ts) and this test goes
+  // red: the first tick after upgrade would read every pre-migration worker
+  // row's live, non-empty current pid as a "mismatch" against its recorded
+  // '' and close every one of them - the exact hazard src/db.ts's migration
+  // comment warns about, reached through the sweep this lane added rather
+  // than through deliverable().
+  it("a pre-migration worker row (pane_pid = '') is never treated as a mismatch by the widened agents sweep", async () => {
+    const project = seedProject();
+    const actorId = "agent:149002";
+    const session = `hive-149-nullpid-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", session, "sleep", "600"], { stdio: "ignore" });
+    const pane = paneIdOf(`=${session}`);
+
+    try {
+      // '' is this column's own DEFAULT and its "no fact recorded" reading
+      // (src/db.ts's migration, TimerRow's own comment) - the pane is
+      // genuinely alive and has never been restarted, so this is exactly the
+      // ordinary case for a row hive wrote before todo 336's migration ran.
+      const agentRowId = insertWorkerRow(project, actorId, pane, "");
+
+      await tick();
+
+      assert.equal(
+        agentStatus(agentRowId),
+        "running",
+        "an absent recorded pid must proceed exactly as before this migration - a live pane with no " +
+          "recorded pid is not evidence of a reissue",
+      );
     } finally {
       cleanup(session);
     }

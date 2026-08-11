@@ -881,14 +881,22 @@ END;
   //
   // Written for EVERY pane hive records (src/spawn.ts's launchAgent,
   // src/cli.ts's ensureLeadRow and cmdLead's restart CAS), not only for
-  // leads. The mismatch CHECK this column exists to support is scoped to
-  // lead-owned wakes only (src/scheduler.ts's deliverable(), gated on
-  // isLeadActorId) - worker rows are already reaped by janitor()'s sweep at
-  // the top of every tick, so the live exposure this todo closes is
-  // specifically the two lead exemptions (kind != LEAD_KIND and
-  // deliver_actor NOT LIKE 'lead:%', both cited on this todo). Writing the
-  // column for everyone means widening the check to worker rows later is a
-  // condition to change, not a second migration to write.
+  // leads.
+  //
+  // CORRECTED by issue #149 (todo 348): this paragraph originally scoped the
+  // mismatch CHECK to lead-owned wakes only (src/scheduler.ts's
+  // deliverable(), gated on isLeadActorId), on the claim that worker rows
+  // are already reaped by janitor()'s sweep at the top of every tick. That
+  // claim is false for exactly the condition this column exists to detect:
+  // both janitor sweeps acted only on `rowAlive(...) === false`, and a
+  // reissued pane - the whole reason pane_pid was added, two paragraphs
+  // above - reads LIVE, not dead. The sweep the gate leaned on was blind to
+  // the one case pane_pid exists to catch, so a worker's wake could sail
+  // through into whatever pane inherited its id after a restart. The check
+  // now runs for every deliver_actor, and the agents janitor sweep
+  // (src/scheduler.ts's janitor(), via the shared paneReissued() predicate)
+  // reaps a reissued row the same way it already reaped a dead one - closing
+  // the gap this paragraph used to claim was already closed.
   //
   // PIDS WRAP. A reissued pane can in principle land on the exact pid its
   // predecessor held, and the check this column supports would then pass

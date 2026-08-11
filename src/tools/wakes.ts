@@ -14,7 +14,7 @@ import {
 import { idParam, projectIdParam } from "./params.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { liveTargets } from "../tmux.js";
-import { LEAD_KIND } from "../spawn.js";
+import { isRunningLeadActor, LEAD_KIND } from "../spawn.js";
 
 const agentRefParam = z
   .union([idParam, z.string()])
@@ -730,21 +730,47 @@ export function registerWakes(server: McpServer): void {
     "wake_cancel",
     {
       description:
-        "Cancel a pending wake-up you own. Cancelling a standing watch also cancels the FINISH notices it has " +
-        "already filed but not yet delivered. It does NOT cancel a block notice (a worker stopped on a dialog): " +
-        "those carry no parent link, so one already filed still delivers, and it may still be true - the worker " +
-        "is probably still on that dialog - but its sentence about the watch itself will not be.",
+        "Cancel a pending wake-up you own, or - if you are a running lead - any pending wake-up in this " +
+        "project. Cancelling a standing watch also cancels the FINISH notices it has already filed but not " +
+        "yet delivered. It does NOT cancel a block notice (a worker stopped on a dialog): those carry no " +
+        "parent link, so one already filed still delivers, and it may still be true - the worker is probably " +
+        "still on that dialog - but its sentence about the watch itself will not be.",
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        const info = db
-          .prepare(
-            `UPDATE timers SET cancelled_at = datetime('now')
-             WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
-          )
-          .run(args.wake_id, projectId, currentActor());
+        // Issue #149 (todo 348) comment 763, fix round 1, finding 2. Owner-only
+        // used to mean literally unreachable for a wake whose owner is also its
+        // deliver_actor (the common case for a plain wake_set with no
+        // deliver_to) once that actor's own agents row is closed - no session
+        // can ever call currentActor() and get that actor_id back, since
+        // identity comes from the caller's own environment (HIVE_AGENT_ID),
+        // never something one session can assume on another's behalf. That is
+        // exactly the shape HELD_REASON_PANE_REISSUED_WORKER's remedy text
+        // points at: a worker's row gets reaped by the widened janitor sweep
+        // (src/scheduler.ts), and the hold's whole argument is that a lead
+        // ends up watching it in wake_list - so the lead needs the power to
+        // act on what it can already see. isRunningLeadActor is the same
+        // row-verified check agent_close's lead-target refusal uses, not a
+        // string prefix on HIVE_AGENT_ID (src/spawn.ts's own comment on why
+        // isLeadActorId alone is not enough). Ownership is still the only
+        // route for anyone who is not a running lead - this does not open
+        // cross-worker cancellation.
+        const isLead = isRunningLeadActor(currentActor());
+        const info = isLead
+          ? db
+              .prepare(
+                `UPDATE timers SET cancelled_at = datetime('now')
+                 WHERE id = ? AND project_id = ? AND cancelled_at IS NULL`,
+              )
+              .run(args.wake_id, projectId)
+          : db
+              .prepare(
+                `UPDATE timers SET cancelled_at = datetime('now')
+                 WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
+              )
+              .run(args.wake_id, projectId, currentActor());
         // Todo 315. A standing watch files notices as separate timer rows, and
         // before parent_timer_id existed they were ORPHANS: this UPDATE
         // touches only the row it was given, so a notice filed ten seconds

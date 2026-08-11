@@ -22,6 +22,7 @@ import {
   liveTargets,
   maskChoiceMarker,
   paneAwaitingChoice,
+  paneReissued,
   rowAlive,
   rowAliveProbe,
   rowLive,
@@ -232,16 +233,32 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // re-records a live pane, and `hive doctor` reports that rather than this
   // sweep hiding it.
   const agents = stmt(
-    `SELECT id, tmux_target, tmux_socket FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
+    `SELECT id, tmux_target, tmux_socket, pane_pid FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
      AND created_at < datetime('now', ?)`,
-  ).all(LEAD_KIND, SETTLE_WINDOW) as { id: number; tmux_target: string; tmux_socket: string }[];
+  ).all(LEAD_KIND, SETTLE_WINDOW) as {
+    id: number;
+    tmux_target: string;
+    tmux_socket: string;
+    pane_pid: string;
+  }[];
   for (const agent of agents) {
     // Issue #73, D2/D4/D6: a foreign socket reads unknown (null), never dead,
     // so this loop must sweep only an explicit `false` - the same trap the
     // old `!targetAlive(...)` truthiness check would otherwise fall into the
     // moment rowAlive starts answering null for a row this process cannot
     // honestly judge.
-    if (rowAlive(agent.tmux_socket, agent.tmux_target, snapshot) === false) {
+    //
+    // Issue #149 (todo 348). rowAliveProbe rather than plain rowAlive: a
+    // reissued pane reads `live: true` (see paneReissued's own comment,
+    // src/tmux.ts), so a row whose recorded pane_pid no longer matches the
+    // live pane at that target is reaped here too, not only a row whose pane
+    // is dead outright. Without this half, a reissued worker row kept
+    // reporting "running" to agent_list, let agent_send's requireLive type
+    // into a stranger's pane, and let watchedTail capture-pane a stranger's
+    // screen into a wake body - all true even once deliverable() (below)
+    // holds the delivery itself.
+    const probe = rowAliveProbe(agent.tmux_socket, agent.tmux_target, snapshot);
+    if (probe.live === false || paneReissued(agent.pane_pid, probe)) {
       closeAgentRow(agent.id);
       closedAgents += 1;
     }
@@ -275,20 +292,52 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // miss as '' (the same "no fact recorded" case), so there is one
   // representation of "unset" for callers, not NULL from the join and '' from
   // the column.
+  // Issue #149 (todo 348). Deliberately NOT widened with paneReissued the way
+  // the agents sweep above was. A reissued pane is not gone - deliverable()
+  // (below) now holds a timer in that state for every actor, lead or not,
+  // rather than cancelling it, specifically because a hold is recoverable
+  // and visible in wake_list while a cancel silently destroys a wake a human
+  // asked for. Cancelling it HERE, before it is even due, would reach the
+  // identical outcome the hold decision was chosen to avoid, by a route that
+  // never lets deliverable() make the call. The dead-pane cancellation this
+  // sweep already performs is for a genuinely different condition - a pane
+  // that reads unambiguously gone - and stays, with one exemption directly
+  // below.
+  //
+  // Fix round 1, finding 1 (counselors). That dead-pane cancellation used to
+  // be unconditional, and it reaches a timer this SAME sweep held for
+  // pane-reissue on an earlier tick just as easily as it reaches an ordinary
+  // one: the pane the wake was reissued to is its own process, and nothing
+  // stops IT from exiting too, often within minutes for a transient shell.
+  // When that happens the hold above becomes a cancel one tick later,
+  // through this exact branch - the silent-disappearance outcome the hold
+  // decision was chosen to avoid, reached by a different door. held_reason
+  // is the durable signal that tells the two conditions apart: a timer whose
+  // last hold names the reissue condition (wasHeldForPaneReissue) is not
+  // "back to ordinary dead", it is the same incident continuing, so it stays
+  // held - now with an updated reason naming both facts - rather than being
+  // cancelled with no trace.
   const timers = stmt(
-    `SELECT timers.id, timers.deliver_pane, COALESCE(agents.tmux_socket, '') AS deliver_socket
+    `SELECT timers.id, timers.due_at, timers.held_reason, timers.deliver_pane,
+            COALESCE(agents.tmux_socket, '') AS deliver_socket
        FROM timers ${DELIVER_SOCKET_JOIN}
       WHERE ${ACTIVE_TIMER_WHERE} AND timers.deliver_actor NOT LIKE ?
         AND timers.created_at < datetime('now', ?)`,
   ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as {
     id: number;
+    due_at: string | null;
+    held_reason: string | null;
     deliver_pane: string;
     deliver_socket: string;
   }[];
   for (const timer of timers) {
     if (rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot) === false) {
-      cancelTimer(timer.id);
-      cancelledTimers += 1;
+      if (wasHeldForPaneReissue(timer.held_reason)) {
+        holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
+      } else {
+        cancelTimer(timer.id);
+        cancelledTimers += 1;
+      }
     }
   }
   return { closed_agents: closedAgents, cancelled_timers: cancelledTimers, probed: true };
@@ -1127,7 +1176,11 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
 // ambiguity #27 shipped held_at/held_reason to remove. Recorded through the
 // same guarded write the modal-choice hold below uses, not a second
 // mechanism, with its own reason string.
-function holdTimer(timer: TimerRow, reason: string): void {
+// Pick<TimerRow, "id" | "due_at">, not the full TimerRow: janitor()'s timers
+// sweep (issue #149, todo 348, fix round 1) selects a narrower row shape than
+// the scheduler's own due-timer candidates query does, and holding it there
+// needs no field this signature does not already ask for.
+function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void {
   bestEffortRun(
     `UPDATE timers SET held_at = datetime('now'), held_reason = ?
      WHERE id = ? AND cancelled_at IS NULL
@@ -1142,10 +1195,60 @@ const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust 
 const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
-const HELD_REASON_LEAD_PANE_REISSUED =
+// Issue #149 (todo 348). Two reasons, not one, because the remedy differs:
+// `hive lead` re-points every pending LEAD-owned wake to its fresh pane
+// (issue #27 L4 R6, todo 166), so that remedy is honest to name. Nothing
+// re-points a worker's wake the same way, so the worker-facing text says
+// that plainly instead of pointing at a command that would not help -
+// naming a remedy the caller cannot actually reach is exactly what
+// tmux-and-panes.md's "a refusal has to name a remedy the caller can
+// actually reach" already argues against for a synchronous refusal, and the
+// same courtesy applies to a hold a human will eventually read in
+// wake_list.
+const HELD_REASON_PANE_REISSUED_PREFIX =
   "the pane id recorded for this wake now belongs to a different pane than the one it was set " +
   "against (its pid no longer matches, most likely a tmux server restart reissuing the id); held " +
-  "rather than typed into the wrong pane - run `hive lead` to re-point it at the live one";
+  "rather than typed into the wrong pane - ";
+const HELD_REASON_PANE_REISSUED_LEAD =
+  `${HELD_REASON_PANE_REISSUED_PREFIX}run \`hive lead\` to re-point it at the live one`;
+const HELD_REASON_PANE_REISSUED_WORKER =
+  `${HELD_REASON_PANE_REISSUED_PREFIX}nothing re-points a worker's wake automatically, so cancel ` +
+  "it with wake_cancel and set a fresh one once the worker's pane is confirmed live, or leave it: " +
+  "it will keep holding rather than deliver wrongly";
+
+// Issue #149 (todo 348) comment 763, fix round 1, finding 1 (counselors, both
+// seats). Without this, a hold for pane-reissue was only ever a ONE-TICK
+// promise: if the pane the wake was reissued to later exits on its own (a
+// transient shell, minutes away for the common case), the janitor's timers
+// sweep and deliverable()'s own dead-pane branch both see rowAlive === false
+// and cancel the timer outright for a non-lead actor - unconditionally,
+// because that branch predates this lane and knows nothing about a prior
+// reissue hold. The wake then leaves ACTIVE_TIMER_WHERE with no fired_at, so
+// it drops out of wake_list's pending section and hive status's heldWakes
+// with nothing in recently_delivered either - gone silently, through the
+// other door from the one the hold-vs-cancel decision was chosen to close.
+//
+// wasHeldForPaneReissue reads the durable signal both call sites already
+// have for free: held_reason from the LAST tick this timer was held for
+// exactly this condition. Recorded fact, not re-derived - a pane that was
+// once reissued and has since gone fully dead is not "back to ordinary
+// dead", it is the same incident continuing, and both sweeps now say so
+// rather than erasing it.
+// Built from HELD_REASON_PANE_REISSUED_PREFIX, not a fourth independent
+// string: this reason has to keep satisfying wasHeldForPaneReissue on every
+// later tick too, or the very next re-evaluation (deliverable() runs again
+// this same tick, since a held-not-cancelled timer is still due and still
+// active) reads its OWN just-written reason as an ordinary dead pane and
+// cancels it right back - proven red by exactly that mutation before this
+// comment was written.
+const HELD_REASON_PANE_REISSUED_THEN_DEAD =
+  `${HELD_REASON_PANE_REISSUED_PREFIX}the pane it was reissued to has since gone dead too; nothing ` +
+  "re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may do " +
+  "this even though the wake is not theirs) if it is no longer needed";
+function wasHeldForPaneReissue(heldReason: string | null): boolean {
+  return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
+}
+
 const HELD_REASON_UNSUBMITTED_INPUT =
   "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
   "and submit both as one message";
@@ -2806,16 +2909,15 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // hazard for withWindowClaim; it is the same one). tick() holds no
 // transaction, and it is the only caller today.
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
-  // Todo 336. *Probe rather than plain rowAlive/rowLive: the pane-identity
-  // check below (isLeadActorId branch) needs the pane's CURRENT pid, and it
-  // has to come from this exact same tmux read - a second probe taken later
-  // could observe a different pane entirely if something closed and
-  // recreated it in between. Computed unconditionally, including for a
-  // non-lead row that will never read `.pid`: for the snapshot path it is a
-  // map lookup already paid for by the same list-panes call `live` reads;
-  // for the no-snapshot path it rides on the one list-panes fork
-  // targetLiveProbe already makes to answer `live`. Either way there is no
-  // second fork to avoid by gating this on isLeadActorId first.
+  // Todo 336, widened by issue #149 (todo 348). *Probe rather than plain
+  // rowAlive/rowLive: the pane-identity check below needs the pane's CURRENT
+  // pid, for every target now, and it has to come from this exact same tmux
+  // read - a second probe taken later could observe a different pane
+  // entirely if something closed and recreated it in between. For the
+  // snapshot path it is a map lookup already paid for by the same list-panes
+  // call `live` reads; for the no-snapshot path it rides on the one
+  // list-panes fork targetLiveProbe already makes to answer `live`. Either
+  // way there is no second fork paid for reading `.pid` unconditionally.
   const probe = snapshot
     ? rowAliveProbe(timer.deliver_socket, timer.deliver_pane, snapshot)
     : rowLiveProbe(timer.deliver_socket, timer.deliver_pane);
@@ -2901,28 +3003,53 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
       // (plain unconfirmed), never a stale busy claim. ACCEPT AND RECORD;
       // reopen under the same trigger as #70, above: this project's first
       // repeating wake.
-      cancelTimer(timer.id);
+      //
+      // Fix round 1, finding 1 (counselors), same exemption janitor()'s own
+      // timers sweep now carries and for the identical reason: a timer this
+      // very function held for pane-reissue on an earlier tick, whose target
+      // has since gone from reissued to genuinely dead, is not an ordinary
+      // dead-pane timer - cancelling it here erases that history exactly as
+      // silently as the janitor sweep used to. Reached only in the narrow
+      // window the janitor sweep's own SETTLE_WINDOW leaves open (a timer
+      // younger than 15 seconds that is already due), so in practice the
+      // janitor sweep is the one that usually gets here first; this stays as
+      // the second, defensive copy of the identical check rather than a
+      // second definition - both read wasHeldForPaneReissue over the same
+      // held_reason column.
+      if (wasHeldForPaneReissue(timer.held_reason)) {
+        holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
+      } else {
+        cancelTimer(timer.id);
+      }
     }
     return false;
   }
-  // Todo 336. `live` above answers "does a pane with this id exist", never
-  // "is it the pane we meant" - tmux pane ids restart from %0 whenever the
-  // server that issued them is gone (a reboot, an explicit kill-server, or
-  // simply the last session in the store's namespace closing, all measured
-  // - see the migration's own comment, src/db.ts), and the NEXT server hands
-  // a low id straight to whatever pane it creates next. HELD_REASON_LEAD_
-  // PANE_DEAD above only fires when the recorded pane reads DEAD; a
-  // reissued pane reads live, so without this check a pending lead-owned
-  // wake sails through and types into a stranger's pane.
+  // Todo 336, widened by issue #149 (todo 348). `live` above answers "does a
+  // pane with this id exist", never "is it the pane we meant" - tmux pane
+  // ids restart from %0 whenever the server that issued them is gone (a
+  // reboot, an explicit kill-server, or simply the last session in the
+  // store's namespace closing, all measured - see the migration's own
+  // comment, src/db.ts), and the NEXT server hands a low id straight to
+  // whatever pane it creates next. HELD_REASON_LEAD_PANE_DEAD above only
+  // fires when the recorded pane reads DEAD; a reissued pane reads live, so
+  // without this check a pending wake sails through and types into a
+  // stranger's pane.
   //
-  // Gated on isLeadActorId, matching the dead-pane exemption immediately
-  // above and for the same stated reason (the lead's plan pad, todo 336
-  // comment 717): worker rows are already reaped by janitor()'s sweep at
-  // the top of every tick (kind != LEAD_KIND there has no counterpart
-  // here), so the live exposure is specifically the two lead exemptions
-  // this file already documents. Widening to worker rows later is a
-  // condition to add here, not a second migration - deliver_pane_pid is
-  // already written for every pane hive records.
+  // NO LONGER GATED ON isLeadActorId. Todo 336 gated this to leads on the
+  // stated grounds that "worker rows are already reaped by janitor()'s
+  // sweep at the top of every tick" - true for a DEAD pane
+  // (`rowAlive(...) === false`, the condition that sweep actually checks),
+  // false for a REISSUED one, which reads live and is exactly the case this
+  // check exists to catch. That gap is issue #149: the sweep cited to make
+  // the gate safe was blind to precisely the condition pane_pid was added to
+  // detect, so a worker's wake could sail through into whatever pane
+  // inherited its id, and if that pane was a shell rather than claude the
+  // paste would execute. deliver_pane_pid is written for every pane hive
+  // records (src/spawn.ts), so the fact needed to refuse was already read
+  // every tick and simply discarded for non-lead targets. paneReissued(),
+  // above janitor(), is the same predicate both this check and the agents
+  // sweep now share, so the two cannot drift onto different definitions of
+  // "reissued".
   //
   // deliver_pane_pid === "" (no fact recorded: a pre-migration row, or a
   // deliver_actor with no agents row) and probe.pid === null (this exact
@@ -2932,28 +3059,40 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // list-panes line that populates snapshot.panes and cannot disagree with
   // it) both mean "cannot judge identity" and MUST proceed exactly as
   // before this check existed, never read as a mismatch - an upgrade must
-  // not hold or cancel every pre-existing wake in every store.
+  // not hold or cancel every pre-existing wake in every store. paneReissued
+  // already encodes both.
   //
   // HOLD, not cancel, matching HELD_REASON_LEAD_PANE_DEAD immediately
-  // above: a hold is recoverable and visible in wake_list, a cancel
-  // destroys a wake a human asked for, and the two conditions
-  // ("temporarily gone" and "reissued to someone else") are close enough in
-  // shape - both symptoms of the same restart - to deserve the same
-  // recoverable treatment rather than one silently outranking the other in
-  // severity.
+  // above, and now for every target, not only a lead's: a hold is
+  // recoverable and visible in wake_list (project-scoped, not
+  // owner-scoped - any session in the project can see it, and it also
+  // widens `hive status`'s heldWakes count), a cancel destroys a wake a
+  // human asked for with nothing left to show for it, and the two
+  // conditions ("temporarily gone" and "reissued to someone else") are
+  // close enough in shape - both symptoms of the same restart - to deserve
+  // the same recoverable treatment rather than one silently outranking the
+  // other in severity. Argued explicitly because the mechanism that makes
+  // this safe for a lead does NOT exist for a worker: `hive lead`
+  // re-points every pending lead-owned wake to its fresh pane in the same
+  // transaction that records it (issue #27 L4 R6, todo 166); nothing does
+  // the equivalent for a worker, so a held worker wake has no rescue and
+  // sits until a human notices it in wake_list, cancels it, or its own
+  // max_wait_at passes. Judged the better default anyway: silence (a
+  // cancelled wake, gone with no trace once its owner stops watching) is
+  // worse than a visible, if unrescued, loose end.
   //
   // PIDS WRAP. A reissued pane can in principle land on its predecessor's
   // exact pid, and this check passes and delivers wrongly exactly as it
   // does with no column at all. Guardrail against a confused machine, not a
   // guarantee and not a security boundary - do not read this as making
   // misdelivery impossible.
-  if (
-    isLeadActorId(timer.deliver_actor) &&
-    timer.deliver_pane_pid !== "" &&
-    probe.pid !== null &&
-    probe.pid !== timer.deliver_pane_pid
-  ) {
-    holdTimer(timer, HELD_REASON_LEAD_PANE_REISSUED);
+  if (paneReissued(timer.deliver_pane_pid, probe)) {
+    holdTimer(
+      timer,
+      isLeadActorId(timer.deliver_actor)
+        ? HELD_REASON_PANE_REISSUED_LEAD
+        : HELD_REASON_PANE_REISSUED_WORKER,
+    );
     return false;
   }
   // Todo 65. A pane sitting on a modal choice eats the paste and reads the
