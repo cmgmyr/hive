@@ -321,6 +321,48 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     db.prepare("UPDATE agents SET cwd = ? WHERE id = ?").run(dirs.projectDir, live.agent_id);
   });
 
+  // Todo 369. agent_park kills the pane, then takes parkAgentRow's own
+  // conditional write - same shape and same reporting gap as agent_close's
+  // (test/agent-close-honest-cas.test.mjs's own header explains why the real
+  // race has no hook to interject on, and why targeting by agent_id against
+  // a row pre-mutated to look already-retired reaches the identical
+  // lost-CAS code path a genuine race would).
+  it("reports parked:true, not a denial, when a concurrent agent_park already parked the row first", async () => {
+    await mcp.call("agent_spawn", { name: "park-already-parked", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "park-already-parked");
+
+    // The exact write shape parkAgentRow itself performs - stands in for a
+    // concurrent agent_park winning the race this call is about to lose.
+    db.prepare(
+      `UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'),
+         parked_branch = 'raced-in-by-a-concurrent-park' WHERE id = ?`,
+    ).run(live.agent_id);
+
+    const receipt = await mcp.call("agent_park", { agent_id: live.agent_id });
+    assert.equal(receipt.parked, true, "the row IS parked - just not by this call");
+    assert.equal(receipt.parked_branch, "raced-in-by-a-concurrent-park", "the racer's branch, not this call's own");
+    assert.match(receipt.note, /Already parked by a concurrent agent_park/);
+    assert.ok(receipt.board_line, "the board line is still owed - the caller still needs it to resume the lane");
+  });
+
+  it("refuses honestly when an ordinary agent_close, not a park, already retired the row", async () => {
+    await mcp.call("agent_spawn", { name: "park-already-closed", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "park-already-closed");
+
+    // Stands in for a concurrent PLAIN close winning the race - the row is
+    // retired, but not as a park, so no branch was recorded through this
+    // call and the old "row changed, nothing was parked" message would have
+    // been silent about which of those two very different outcomes happened.
+    db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(live.agent_id);
+
+    await assert.rejects(mcp.call("agent_park", { agent_id: live.agent_id }), (e) => {
+      assert.match(e.message, /was closed by someone else, not parked/);
+      assert.match(e.message, /no recorded branch through this call/);
+      return true;
+    });
+    assert.equal(rowOf(live.agent_id).parked_at, "", "the row really is unparked - the refusal did not lie either");
+  });
+
   it("agent_list(include_closed) reports a parked lane as parked and an ordinary close as not", async () => {
     await mcp.call("agent_spawn", { name: "park-listed", command: fakeClaude() });
     await liveAgentRow(mcp, "park-listed");

@@ -84,16 +84,26 @@ export interface AgentRow {
   resumed_at: string;
 }
 
+// One ordering rule, one string, shared by closedAgentNamed here and
+// findClosedAgent below - both scan a project's non-running rows for a name
+// match, and until todo 364 their ORDER BY clauses were independent, hand-
+// copied literals that happened to agree. Todo 364 added parked-first
+// priority to findClosedAgent alone; leaving closedAgentNamed's copy
+// unchanged would have silently broken the "kept consistent anyway" promise
+// closedAgentNamed's own comment below already makes. PARKED FIRST
+// ((parked_at != '') reads as 1/0 in SQLite, DESC puts 1 first), then
+// most-recently-closed within each group - closed_at, not id, because
+// agent_resume can reopen and reclose a row out of id order.
+const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
+
 // The most recently closed agent whose name matches, folded the same way the
 // running passes fold. Only reached when no running agent answered, so the
 // scan over a project's dead agents stays off the hot path.
 //
-// closed_at, not id (same reasoning as findClosedAgent's identical ordering
-// below, now that agent_resume can reopen and reclose a row out of id
-// order): this function only feeds an error message naming which closed
-// agent to spawn a replacement for, so getting it wrong is cosmetic here,
-// not a resume gone to the wrong session - kept consistent anyway so the
-// same query does not read two different ways in one file.
+// This function only feeds an error message naming which closed agent to
+// spawn a replacement for, so getting it wrong is cosmetic here, not a
+// resume gone to the wrong session - CLOSED_ROW_ORDER is shared anyway so
+// the same query does not read two different ways in one file.
 function closedAgentNamed(
   projectId: number,
   needle: string,
@@ -101,7 +111,7 @@ function closedAgentNamed(
   return (
     db
       .prepare(
-        "SELECT id, name, kind, parked_at FROM agents WHERE project_id = ? AND status != 'running' ORDER BY closed_at DESC, id DESC",
+        `SELECT id, name, kind, parked_at FROM agents WHERE project_id = ? AND status != 'running' ORDER BY ${CLOSED_ROW_ORDER}`,
       )
       .all(projectId) as { id: number; name: string; kind: string; parked_at: string }[]
   ).find((r) => r.name.toLowerCase() === needle);
@@ -117,6 +127,49 @@ function getAgentRow(projectId: number, id: number, notFoundHint: string): Agent
     | undefined;
   if (!row) throw new Error(`No agent ${id} in project ${projectId}. ${notFoundHint}`);
   return row;
+}
+
+// Todo 369. agent_close and agent_park both kill a pane and then take a
+// conditional write (closeAgentRow / parkAgentRow) on id + status='running' +
+// tmux_target - the same CAS shape, same failure mode. When the CAS loses,
+// the row itself already says what actually happened; re-reading it turns a
+// guess ("nothing was closed/parked", blaming a fixed cause) into a fact.
+// Exactly two things can be true of a row a lost CAS did not write:
+// something else already retired it (closed, or closed+parked - the caller's
+// real question, and the ONLY case where "nothing changed" is honest), or it
+// is running again on a fresh pane (a genuine loss - the only case that
+// deserves a refusal). No third status exists (schema CHECK, src/db.ts).
+//
+// Pure and exported so this is testable by construction: the real race
+// this reports on cannot be triggered through the live MCP surface any more
+// than closeAgentRow's own CAS can (see test/close-agent-row-target-guard.
+// test.mjs's own comment on why), so the outcome this computes is pinned
+// directly against a synthetic row rather than a live tmux race.
+export type LostCasReport = { outcome: "retired"; parked: boolean } | { outcome: "revived" };
+
+export function classifyLostCas(row: Pick<AgentRow, "status" | "parked_at">): LostCasReport {
+  return row.status !== "running" ? { outcome: "retired", parked: !!row.parked_at } : { outcome: "revived" };
+}
+
+// The "revived" half of a lost-CAS report, shared by agent_close and
+// agent_park (/simplify, todo 364): both name the plausible cause and the
+// verb-specific remedy, so only those two fragments vary by caller.
+//
+// "is running again", not "...on a different pane" (counselors, opus, same
+// fix round as classifyLostCas's own retired-branch fix above): this
+// classification only knows status='running' again, not that a pane is
+// already attached to it. resumeAgent's own flip (src/spawn.ts) commits
+// status='running' with tmux_target='' for the span of the resume, so a
+// re-read landing in that gap would have asserted a pane that does not yet
+// exist. Dropping the clause makes the sentence true in both cases instead
+// of only the common one.
+function revivedError(agent: { id: number; name: string }, live: boolean, cause: string, remedy: string): Error {
+  return new Error(
+    `Agent ${agent.id} ("${agent.name}") is running again: its row changed since this call probed it, most ` +
+      `likely ${cause}` +
+      (live ? " after this call's kill-pane took the old one down" : "") +
+      `. ${remedy}`,
+  );
 }
 
 export function findAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
@@ -197,14 +250,22 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
 // disambiguate against, so a caller who does not remember the exact name
 // gets pointed at agent_list rather than a guess.
 //
-// Most-recently-closed wins on a shared name, ordered by closed_at, NOT id
-// (counselors, codex): a resumed row keeps its id but gets a FRESH closed_at
-// if it is closed again, so id order and close order can disagree the
-// moment agent_resume exists - id 10 resumed and reclosed after id 11 first
-// closed is more recently closed despite the lower id. id DESC is only a
-// tie-break for two closes landing in the same whole second. A name is only
-// unique among RUNNING rows (idx_agents_running_name), so "impl" spawned,
-// closed, and spawned again leaves two closed rows sharing it.
+// Todo 364, CLOSED_ROW_ORDER's own mechanics comment above. closed_at, NOT
+// id, is what breaks a tie within a priority group (counselors, codex): a
+// resumed row keeps its id but gets a FRESH closed_at if it is closed
+// again, so id order and close order can disagree the moment agent_resume
+// exists - id 10 resumed and reclosed after id 11 first closed is more
+// recently closed despite the lower id. A name is only unique among RUNNING
+// rows (idx_agents_running_name), so "impl" spawned, closed, and spawned
+// again leaves two closed rows sharing it - and PARKING one of them does
+// not free the name (a parked row is still status='closed'), so "impl"
+// parked at 18:00 then spawned and ORDINARILY closed at 09:00 used to have
+// closed_at alone pick the 09:00 row: `agent_resume(name: "impl")` silently
+// resumed the wrong lane, with no error to notice by. Lead triage on todo
+// 364: a parked lane is a promise this project already makes legible
+// (agent_park's whole point), and closed_at ordering it alongside an
+// ordinary close breaks that promise the moment the two ever collide on a
+// name.
 function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: string }): AgentRow {
   if (ref.agent_id != null) {
     const row = getAgentRow(projectId, ref.agent_id, "Call agent_list(include_closed: true).");
@@ -217,7 +278,7 @@ function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: str
     const needle = ref.name.toLowerCase();
     const match = (
       db
-        .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'closed' ORDER BY closed_at DESC, id DESC")
+        .prepare(`SELECT * FROM agents WHERE project_id = ? AND status = 'closed' ORDER BY ${CLOSED_ROW_ORDER}`)
         .all(projectId) as AgentRow[]
     ).find((r) => r.name.toLowerCase() === needle);
     if (!match) {
@@ -349,6 +410,34 @@ function parkedBoardLine(fields: {
   );
 }
 
+// The full agent_park receipt, shared by the ordinary success path and the
+// "someone else already parked it first" branch of the lost-CAS report
+// below: both describe a row that IS parked, one because this call parked
+// it and one because a concurrent agent_park won the race, and a caller
+// reading the receipt needs the same facts either way. `note` is the one
+// field that tells them apart.
+function buildParkReceipt(
+  project: { id: number },
+  agent: { id: number; name: string; actor_id: string; cwd: string; session_id: string },
+  parkedAt: string,
+  branch: string,
+  note?: string,
+) {
+  const todoIds = laneTodoIds(project.id, agent.actor_id);
+  return {
+    agent_id: agent.id,
+    name: agent.name,
+    parked: true,
+    parked_at: parkedAt,
+    parked_branch: branch,
+    cwd: agent.cwd,
+    session_id: agent.session_id,
+    todo_ids: todoIds,
+    board_line: parkedBoardLine({ parkedAt, name: agent.name, agentId: agent.id, branch, cwd: agent.cwd, todoIds }),
+    ...(note ? { note } : {}),
+  };
+}
+
 export function isLive(agent: AgentRow): Liveness {
   if (agent.status !== "running") return false;
   return rowLive(agent.tmux_socket, agent.tmux_target);
@@ -391,6 +480,28 @@ function requireLive(agent: AgentRow): void {
 // outside ASCII: "café" and "CAFÉ" passed this check as different names and
 // then collided at resolution, producing the exact pair this exists to
 // prevent. One rule needs one implementation.
+// The one query requireNameFree and agent_resume's own collision message
+// both need: which RUNNING row, if any, already holds this name. Split out
+// (todo 364, /simplify altitude pass) because requireNameFree's OWN refusal
+// ("Pick another name") is impossible advice for a resume - the whole
+// reported bug ("Park 'impl', spawn a fresh 'impl', try to resume the
+// parked one: told to pick another name, but resume does not take one") -
+// so a caller-specific message for one caller out of three does not belong
+// growing requireNameFree's own signature. Pure and throwless on purpose:
+// the two callers below decide what a collision MEANS for them.
+function runningAgentNamed(
+  projectId: number,
+  name: string,
+  exceptAgentId?: number,
+): { id: number; name: string } | undefined {
+  const needle = name.toLowerCase();
+  return (
+    db
+      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+      .all(projectId) as { id: number; name: string }[]
+  ).find((r) => r.id !== exceptAgentId && r.name.toLowerCase() === needle);
+}
+
 function requireNameFree(projectId: number, name: string, exceptAgentId?: number): void {
   const needle = name.toLowerCase();
   // Issue #27's L4 fix round, DECISION 7c. "lead" is reserved, not merely
@@ -401,14 +512,16 @@ function requireNameFree(projectId: number, name: string, exceptAgentId?: number
   // hit SQLITE_CONSTRAINT_UNIQUE on idx_agents_running_name, and throw out of
   // ensureLeadRow BEFORE ensureSession or attach - the lead does not start,
   // and nothing about that failure names a worker as the cause.
+  //
+  // Not re-checked at agent_resume's own call site below: a kind='agent' row
+  // can never legitimately be named "lead" (this check already refused it at
+  // spawn and at rename, its only two doors), and agent_resume refuses any
+  // kind='lead' target before it ever reaches a name check at all - so this
+  // branch is unreachable from resume by construction, not merely untested.
   if (isReservedAgentName(needle)) {
     throw new Error(`"${name}" is reserved for this project's lead session and cannot be used as a worker name.`);
   }
-  const taken = (
-    db
-      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-      .all(projectId) as { id: number; name: string }[]
-  ).find((r) => r.id !== exceptAgentId && r.name.toLowerCase() === needle);
+  const taken = runningAgentNamed(projectId, name, exceptAgentId);
   if (taken) {
     throw new Error(`A running agent named "${taken.name}" already exists. Pick another name.`);
   }
@@ -992,7 +1105,20 @@ export function registerAgents(server: McpServer): void {
         // resumeAgent's own SQL-level catch (src/spawn.ts) is the backstop
         // for the TOCTOU race between this check and its write, the same
         // two-layer shape launchAgent + asNameClash already use.
-        requireNameFree(project.id, agent.name);
+        //
+        // Todo 364. runningAgentNamed, not requireNameFree: this call's own
+        // message, not the generic "Pick another name" - see
+        // runningAgentNamed's own comment for why that split exists.
+        const collision = runningAgentNamed(project.id, agent.name);
+        if (collision) {
+          throw new Error(
+            `Cannot resume agent ${agent.id} ("${agent.name}") under its recorded name: a running agent ` +
+              `(agent ${collision.id}) already has it. agent_resume does not rename on your behalf - the ` +
+              `${agent.parked_at ? "parked" : "closed"} lane is not lost, it just cannot come back under a name ` +
+              "someone else is using. Free the name first (agent_rename or agent_close on the running one), " +
+              `then retry agent_resume(agent_id: ${agent.id}).`,
+          );
+        }
 
         const { config: projectConfig } = loadProjectYml(project.path);
         const placement =
@@ -1049,6 +1175,23 @@ export function registerAgents(server: McpServer): void {
         });
         ensureAttached(sessionName());
 
+        // ACCEPTED RESIDUAL, todo 365. This receipt can name a session that
+        // has already exited by the time the caller reads it: `claude
+        // --resume <id>` against a transcript that is gone (pruned past
+        // Claude Code's own cleanupPeriodDays, default 30 - measured against
+        // the installed binary, not assumed) errors loudly ("No conversation
+        // found with session ID: <id>", exit 1) within about a second, and
+        // nothing here sets tmux's remain-on-exit, so the pane closes right
+        // behind it. Accepted rather than pre-flighted, because the failure
+        // is loud and SELF-CORRECTING: isLive/agent_status/agent_list all
+        // read the row fresh on their own next probe, and the janitor sweeps
+        // it within its normal cadence regardless. A one-second window where
+        // a receipt can be stale is a different animal from a row that reads
+        // running forever over a dead pane - which is the shape this whole
+        // lane exists to refuse. REOPEN TRIGGER: `claude --resume` ceasing
+        // to error loudly on a missing transcript (empty session, or a fresh
+        // one) would turn this from "corrects itself in a beat" into exactly
+        // that shape, and would need a pre-flight transcript check here.
         return {
           agent_id: agent.id,
           actor_id: agent.actor_id,
@@ -1180,33 +1323,48 @@ export function registerAgents(server: McpServer): void {
         // strength of a probe that is no longer true.
         const parkedAt = parkAgentRow(agent.id, agent.tmux_target, branch);
         if (parkedAt === undefined) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s row changed since this call probed it. Nothing was parked. ` +
-              "Re-read it with agent_status and try again.",
+          // Todo 369. This call may already have killed a live pane above -
+          // that cannot be undone by a lost CAS, and the message must not
+          // pretend otherwise. Re-read the row (classifyLostCas's own
+          // comment) rather than assume "nothing happened".
+          const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
+          const report = classifyLostCas(after);
+          if (report.outcome === "retired") {
+            if (report.parked) {
+              // A concurrent agent_park already parked this exact row -
+              // the caller's goal was reached, just not by this call.
+              return buildParkReceipt(
+                project,
+                agent,
+                after.parked_at,
+                after.parked_branch,
+                `Already parked by a concurrent agent_park before this call's own write landed` +
+                  (live ? " (this call's kill-pane already took the pane down)." : "."),
+              );
+            }
+            // Closed, but not as a park: an ordinary agent_close (or the
+            // janitor) won the race instead. The end state is NOT what this
+            // call promised - no branch was recorded through this path, so
+            // resuming it may not work the way a park would have set up.
+            throw new Error(
+              `Agent ${agent.id} ("${agent.name}") was closed by someone else, not parked, before this call's ` +
+                `own write landed` +
+                (live ? " - this call's kill-pane already took the pane down" : "") +
+                ". It is closed, but has no recorded branch through this call, so resuming it may not work the " +
+                "way this park was meant to. Check how it was actually closed with agent_list(include_closed: true).",
+            );
+          }
+          throw revivedError(
+            agent,
+            live,
+            "a concurrent agent_resume reviving it",
+            "Nothing was parked. Re-read it with agent_status and try again.",
           );
         }
-        const todoIds = laneTodoIds(project.id, agent.actor_id);
-        return {
-          agent_id: agent.id,
-          name: agent.name,
-          parked: true,
-          parked_at: parkedAt,
-          parked_branch: branch,
-          cwd: agent.cwd,
-          session_id: agent.session_id,
-          todo_ids: todoIds,
-          // The one fact a slim receipt cannot leave to the caller to
-          // reconstruct (.claude/rules/tool-contract.md): this string IS the
-          // deliverable half of issue #156. Paste it onto the board.
-          board_line: parkedBoardLine({
-            parkedAt,
-            name: agent.name,
-            agentId: agent.id,
-            branch,
-            cwd: agent.cwd,
-            todoIds,
-          }),
-        };
+        // The one fact a slim receipt cannot leave to the caller to
+        // reconstruct (.claude/rules/tool-contract.md): the board_line IS the
+        // deliverable half of issue #156. Paste it onto the board.
+        return buildParkReceipt(project, agent, parkedAt, branch);
       }),
   );
 
@@ -1862,10 +2020,58 @@ export function registerAgents(server: McpServer): void {
         // see the refusal above), so the only thing this guards is the row
         // write itself.
         if (!closeAgentRow(agent.id, agent.tmux_target)) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s row changed since this call probed it - most likely a ` +
-              "concurrent `hive lead` recording a fresh pane on it. Nothing was closed. Re-run agent_close " +
-              "if the agent is still not what you want.",
+          // Todo 369, measured live tearing down issue #156's own lane. This
+          // call may have just killed a live pane above (`if (live)
+          // killAgentPane(...)`), and that cannot be undone by a lost CAS -
+          // the old message here claimed "Nothing was closed" over exactly
+          // that case, which is false: the pane this call killed stayed
+          // killed. Re-read the row (classifyLostCas's own comment) rather
+          // than assume, and name the janitor as the plausible winner when
+          // this call's own kill is what gave it something to reap - the old
+          // message named only a concurrent `hive lead`, which is real for a
+          // dead-lead retirement race but was never the cause of the case
+          // that was actually measured.
+          const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
+          const report = classifyLostCas(after);
+          if (report.outcome === "retired") {
+            // Counselors (all three seats), fix round on this same commit.
+            // `live` alone conflates two different facts: isLive(agent)
+            // (above) returns false WITHOUT EVER PROBING TMUX whenever
+            // agent.status !== "running" - so a row that was ALREADY closed
+            // when this call read it produces live===false with no tmux
+            // check behind it at all, same as a row this call genuinely
+            // probed and found dead. The old wording claimed "this call
+            // found the pane already dead" for BOTH, which is false for the
+            // first: test/agent-close-honest-cas.test.mjs's own fixture
+            // pre-closes the row via SQL and never touches the real pane,
+            // which stays genuinely alive - proving the claim wrong against
+            // this lane's own test data.
+            const probedTmux = agent.status === "running";
+            return {
+              agent_id: agent.id,
+              name: agent.name,
+              closed: true,
+              ...(report.parked ? { parked: true } : {}),
+              note: report.parked
+                ? `Already retired as a park by a concurrent agent_park before this call's own close landed` +
+                  (live ? " (this call's kill-pane already took the pane down)." : ".")
+                : live
+                  ? "Already closed by someone else before this call's own close landed - most likely the " +
+                    "janitor (or a peer closer), reaping the pane this call's own kill left dead. End state is " +
+                    "the same as a successful close."
+                  : probedTmux
+                    ? "Already closed by someone else before this call's own close landed. This call's own " +
+                      "probe already found the pane dead, so nothing was left running either way. End state is " +
+                      "the same as a successful close."
+                    : "Already closed by someone else before this call ever probed it, so this call never " +
+                      "checked the pane - it may still be running. Re-read it with agent_status if that matters.",
+            };
+          }
+          throw revivedError(
+            agent,
+            live,
+            "a concurrent `hive lead` restart or agent_resume recording a fresh pane on it",
+            "Nothing further was closed. Re-read it with agent_status and decide what you want.",
           );
         }
         return { agent_id: agent.id, name: agent.name, closed: true };

@@ -134,10 +134,18 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     // requireNameFree's own message, not resumeAgent's SQL-level backstop
     // (that one only fires on the TOCTOU race between this check and the
     // write, which a sequential test cannot produce).
-    await assert.rejects(
-      mcp.call("agent_resume", { agent_id: closedRow.agent_id }),
-      /A running agent named "resume-collide" already exists/,
-    );
+    //
+    // Todo 364. requireNameFree's generic "Pick another name" is impossible
+    // advice here - agent_resume takes no new name for the caller to pick -
+    // so this row's own resume-aware message is what actually fires now,
+    // naming the real remedy (free the name, then retry by agent_id).
+    await assert.rejects(mcp.call("agent_resume", { agent_id: closedRow.agent_id }), (e) => {
+      assert.match(e.message, new RegExp(`Cannot resume agent ${closedRow.agent_id} \\("resume-collide"\\)`));
+      assert.match(e.message, /closed lane is not lost/, "not parked, so the closed wording, not the parked one");
+      assert.match(e.message, new RegExp(`retry agent_resume\\(agent_id: ${closedRow.agent_id}\\)`));
+      assert.ok(!/Pick another name/.test(e.message), "the old advice is impossible for a resume to act on");
+      return true;
+    });
 
     await mcp.call("agent_close", { name: "resume-collide" });
   });
@@ -157,10 +165,33 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
 
     await assert.rejects(
       mcp.call("agent_resume", { agent_id: closedRow.agent_id }),
-      /A running agent named "RESUME-CAFÉ" already exists/,
+      new RegExp(`Cannot resume agent ${closedRow.agent_id} \\("resume-café"\\)`),
     );
 
     await mcp.call("agent_close", { name: "RESUME-CAFÉ" });
+  });
+
+  // Todo 364. The parked half of the message fix above: a resume colliding
+  // with a running agent gets the SAME resume-aware sentence whether the
+  // row it is trying to bring back was parked or merely closed, but the
+  // wording says which - "parked" is the reassurance a next-morning lead
+  // actually needs (the lane it deliberately paused is not gone, only
+  // blocked on a name).
+  it("names the row PARKED, not merely closed, when a parked lane's own name collides on resume", async () => {
+    await mcp.call("agent_spawn", { name: "resume-parked-collide", command: fakeClaude() });
+    await liveAgentRow(mcp, "resume-parked-collide");
+    const parked = await mcp.call("agent_park", { name: "resume-parked-collide" });
+
+    await mcp.call("agent_spawn", { name: "resume-parked-collide", command: fakeClaude() });
+    await liveAgentRow(mcp, "resume-parked-collide");
+
+    await assert.rejects(mcp.call("agent_resume", { agent_id: parked.agent_id }), (e) => {
+      assert.match(e.message, new RegExp(`Cannot resume agent ${parked.agent_id} \\("resume-parked-collide"\\)`));
+      assert.match(e.message, /parked lane is not lost/, "parked, so the parked wording, not the closed one");
+      return true;
+    });
+
+    await mcp.call("agent_close", { name: "resume-parked-collide" });
   });
 
   it("resolves a shared name to the MOST RECENTLY closed row", async () => {
@@ -210,6 +241,33 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     assert.equal(receipt.agent_id, rowA.agent_id, "must resume A (closed_at more recent), not B (id higher)");
 
     await mcp.call("agent_close", { agent_id: rowA.agent_id });
+  });
+
+  // Todo 364, second half of the reported bug: "park 'impl' at 18:00, spawn
+  // and ordinarily close a fresh 'impl' at 09:00, resume 'impl'" used to
+  // silently resume the WRONG lane - closed_at alone always prefers the
+  // more recent ordinary close over an older park, with no error to notice
+  // by. Parked now outranks closed_at entirely.
+  it("prefers a PARKED row over a more recently closed one sharing its name", async () => {
+    await mcp.call("agent_spawn", { name: "resume-parked-vs-closed", command: fakeClaude() });
+    await liveAgentRow(mcp, "resume-parked-vs-closed");
+    const parked = await mcp.call("agent_park", { name: "resume-parked-vs-closed" });
+
+    // A real gap, so the ordinary close below is UNAMBIGUOUSLY later by
+    // closed_at than the park above - the exact condition that used to win.
+    await sleep(1100);
+
+    await mcp.call("agent_spawn", { name: "resume-parked-vs-closed", command: fakeClaude() });
+    await liveAgentRow(mcp, "resume-parked-vs-closed");
+    const laterClose = await mcp.call("agent_status", { name: "resume-parked-vs-closed" });
+    await mcp.call("agent_close", { name: "resume-parked-vs-closed" });
+    assert.ok(laterClose.agent_id !== parked.agent_id, "setup bug: expected two distinct rows");
+
+    const receipt = await mcp.call("agent_resume", { name: "resume-parked-vs-closed" });
+    assert.equal(receipt.agent_id, parked.agent_id, "the parked lane, not the more-recently-closed one");
+    assert.ok(receipt.was_parked_at, "the receipt itself confirms which row this actually was");
+
+    await mcp.call("agent_close", { agent_id: parked.agent_id });
   });
 
   it("resumes with the ORIGINAL binary path, not a bare \"claude\" resolved fresh from PATH (counselors, all three seats)", async () => {
