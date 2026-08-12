@@ -10,6 +10,7 @@ import {
   makeFakeClaude,
   McpClient,
   REPO,
+  repaintPaneAsSameWorker,
   scratchDirs,
   until,
   wakeConfirmPayload,
@@ -112,9 +113,7 @@ describe(
 
       // Clear the dialog by replacing what the pane is running, same pane id
       // (tmux wipes the screen on respawn) - the state change under test.
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", spawned.tmux_target, "sleep 600"], {
-        stdio: "ignore",
-      });
+      repaintPaneAsSameWorker(db, spawned.tmux_target, "sleep 600");
 
       // Typed and unconfirmed: delivered now, gone from the pending list (a
       // one-shot wake leaves it the moment it fires - ACTIVE_TIMER_WHERE),

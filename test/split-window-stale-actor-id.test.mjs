@@ -78,7 +78,11 @@ describe(
         placement: "window",
       });
       const staleTarget = tmux("list-panes", "-t", stray.tmux_target, "-F", "#{pane_id}").trim().split("\n")[0];
-      const windowStray = stray.tmux_target; // placement="window": target IS the window
+      // todo 371: a row's tmux_target is a PANE id for every placement now, so
+      // the window has to be resolved from that pane. Reading it off the receipt
+      // made this comparison a pane id against a `session:@n` string, which can
+      // never be equal - the assertion below stopped being able to fail.
+      const windowStray = tmux("list-panes", "-t", stray.tmux_target, "-F", "#{session_name}:#{window_id}").trim().split("\n")[0];
       assert.notEqual(windowStray, windowRunning, "sanity: the stray window must differ from the running lead's own window");
 
       const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);

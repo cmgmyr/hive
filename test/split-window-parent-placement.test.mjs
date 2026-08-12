@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { dirname } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, leadRow, makeFakeClaude, McpClient, panesIn, runCli, scratchDirs, windowFor } from "./helpers.mjs";
+import { isolateTmux, leadRow, makeFakeClaude, McpClient, panesIn, runCli, scratchDirs, tmux, windowFor } from "./helpers.mjs";
 
 // Todo 267 / plan-lane-3-tmux-topology. splitTargetWindow (src/spawn.ts) used
 // to open with `process.env.TMUX_PANE`, the caller's own ambient pane. That
@@ -99,7 +99,11 @@ describe(
         extra_args: [],
         placement: "window",
       });
-      const worker0Window = worker0.tmux_target; // placement="window": target IS the window
+      // todo 371: a row's tmux_target is a PANE id for every placement now, so
+      // the window has to be resolved from that pane. Reading it off the receipt
+      // made this comparison a pane id against a `session:@n` string, which can
+      // never be equal - the assertion below stopped being able to fail.
+      const worker0Window = tmux("list-panes", "-t", worker0.tmux_target, "-F", "#{window_id}").trim().split("\n")[0];
       assert.notEqual(worker0Window, leadWindow, "worker0's own window must differ from the project's stamped window");
 
       // Now worker0 itself is the spawning parent - drive the real MCP entry

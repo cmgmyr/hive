@@ -369,6 +369,18 @@ export function panesIn(target) {
   return tmux("list-panes", "-t", target, "-F", "#{pane_id}").split("\n").filter(Boolean);
 }
 
+// One field of one PANE, read straight from tmux. `-t <pane>` lists every pane
+// in that pane's WINDOW, not just the one asked for, which is the same trap
+// targetLiveProbe documents - so #{pane_id} leads the format and picks the row
+// out, rather than trusting tmux's ordering. Never `list-panes -a`, which
+// ignores -t entirely (test/CLAUDE.md).
+export function paneField(pane, field) {
+  return tmux("list-panes", "-t", pane, "-F", `#{pane_id}\t${field}`)
+    .split("\n")
+    .map((row) => row.split("\t"))
+    .find(([id]) => id === pane)?.[1];
+}
+
 // Asserts rather than indexing blind: a missing window is a real, nameable
 // finding (which project, which owners actually exist), not a TypeError that
 // buries it. A caller that wants to observe the STORE's own account of what
@@ -868,6 +880,78 @@ export function seedLeadRow(db, projectId, projectDir, socket = "") {
        RETURNING id`,
     )
     .get(projectId, socket, projectDir).id;
+}
+
+// Change what a live worker's pane SHOWS, without hive concluding the worker
+// was replaced. `respawn-pane -k` is the only lever that repaints a pane whose
+// process is a bare `cat fixture; sleep 600`, and every dialog/input-box test
+// here uses it for exactly that.
+//
+// IT GIVES THE PANE A NEW PROCESS, WHICH IS INDISTINGUISHABLE FROM A HIJACK.
+// paneReissued (src/tmux.ts) compares the row's recorded pane_pid against the
+// pane's current one, so after a respawn the janitor reaps the row and
+// deliverable() holds the wake for pane-reissue - and the test then fails
+// somewhere else entirely, asserting about a dialog that is no longer what
+// the code is reacting to.
+//
+// This was invisible until todo 371 and the reason is worth knowing rather
+// than patching around: these files all spawn with placement="window", and a
+// window target made targetLiveProbe return pid null, so those rows carried
+// pane_pid='' - "no fact recorded" - and the guard could not fire for them.
+// The same respawn against a SPLIT-placed worker has always tripped it. So
+// these fixtures were resting on the one placement that was accidentally
+// exempt, not on a property of respawn-pane.
+//
+// Re-recording the pid says "this is still the same worker" and keeps each
+// test about ITS OWN subject. It is a fixture repair, not an assertion: no
+// test here is about pane identity, and the file that IS
+// (test/lead-pane-reissued.test.mjs) does not use this.
+export function repaintPaneAsSameWorker(db, target, command) {
+  execFileSync("tmux", ["respawn-pane", "-k", "-t", target, command], { stdio: "ignore" });
+  const pid = paneField(target, "#{pane_pid}");
+  assert.ok(pid, `respawn-pane left no readable pid for ${target}`);
+  // THE RE-RECORD IS NOT ATOMIC WITH THE RESPAWN, AND IT CANNOT BE (counselors,
+  // opus seat). Every caller runs with a live MCP server whose scheduler ticks
+  // every 3s, so a tick landing between the respawn above and the UPDATE below
+  // sees a live pane whose pid no longer matches, fires paneReissued, and
+  // closes the row - which is the guard behaving correctly against a fact that
+  // is briefly true. respawn-pane has no -P -F, so the pid read is a second
+  // fork that cannot be folded in.
+  //
+  // So this tolerates exactly that race rather than asserting through it: the
+  // row is flipped back to running with the fresh pid, which is the state the
+  // caller is entitled to assume. Written as one statement per outcome rather
+  // than a retry loop, because there is nothing to retry - the reaped row is
+  // deterministic and recoverable, not transient.
+  // ONE UPDATE IS NOT ENOUGH AND THE FIRST FIX ROUND'S TWO-STATEMENT VERSION
+  // WAS NOT EITHER (counselors round 2, all three seats). The sweep can read
+  // the row BEFORE this write and close it AFTER: closeAgentRow's own CAS is
+  // `WHERE id = ? AND status = 'running'` and carries no pid, so a pid this
+  // statement has already corrected does not stop it. So the repair is applied
+  // until it STICKS, over a window comfortably longer than the read-to-close
+  // gap, rather than once.
+  //
+  // SCOPED TO THE REISSUE SIGNATURE, so it cannot quietly undo a close it was
+  // not written for: only a row still carrying the pre-respawn pid is
+  // reclaimed. A regression that made the janitor wrongly reap live workers
+  // for some OTHER reason would leave a row whose pid this helper has already
+  // corrected, and the assertion below fires instead of the test staying green
+  // on a repaired store.
+  const reclaim = db.prepare(
+    "UPDATE agents SET pane_pid = ?, status = 'running', closed_at = NULL " +
+      "WHERE tmux_target = ? AND (status = 'running' OR (status = 'closed' AND pane_pid != ?))",
+  );
+  const row = db.prepare("SELECT status, pane_pid FROM agents WHERE tmux_target = ?");
+  const deadline = Date.now() + 2000;
+  let stable = false;
+  while (!stable) {
+    assert.equal(reclaim.run(pid, target, pid).changes, 1, `no row naming ${target} to re-record a pid onto`);
+    const now = row.get(target);
+    stable = now.status === "running" && now.pane_pid === pid;
+    if (!stable && Date.now() > deadline) {
+      assert.fail(`row naming ${target} would not stay running with pid ${pid}: ${JSON.stringify(now)}`);
+    }
+  }
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

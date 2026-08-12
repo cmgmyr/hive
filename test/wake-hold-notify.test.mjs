@@ -11,6 +11,7 @@ import {
   liveAgentRow,
   makeFakeClaude,
   McpClient,
+  repaintPaneAsSameWorker,
   runFixture,
   scratchDirs,
   until,
@@ -256,7 +257,7 @@ describe(
 
       // Clearing the dialog lets the ORIGINAL deliver normally, which is the
       // whole reason it was held rather than fired or cancelled.
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", stuck.tmux_target, "sleep 600"], { stdio: "ignore" });
+      repaintPaneAsSameWorker(db, stuck.tmux_target, "sleep 600");
       await until(async () => timerRow(wakeId).typed_at != null, 15000);
       const delivered = timerRow(wakeId);
       assert.ok(delivered.typed_at, "the original wake delivers once the dialog clears");
@@ -447,9 +448,7 @@ describe(
       // sequence: the dialog is answered (pane clears, hive records the
       // worker moving off `waiting`), then a new dialog goes up with a new
       // state_changed_at.
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", stuck.tmux_target, replayFixture("ready-idle.txt")], {
-        stdio: "ignore",
-      });
+      repaintPaneAsSameWorker(db, stuck.tmux_target, replayFixture("ready-idle.txt"));
       db.prepare("UPDATE agents SET agent_state = 'working', state_changed_at = ? WHERE name = ?").run(
         "2026-08-08 10:05:00",
         "block-notify-stuck",
@@ -457,11 +456,7 @@ describe(
       await new Promise((resolve) => setTimeout(resolve, 4000));
       assert.equal(noticeCount(wakeId), 1, "nothing new while the worker is not blocked");
 
-      execFileSync(
-        "tmux",
-        ["respawn-pane", "-k", "-t", stuck.tmux_target, replayFixture("model-picker-dialog.txt")],
-        { stdio: "ignore" },
-      );
+      repaintPaneAsSameWorker(db, stuck.tmux_target, replayFixture("model-picker-dialog.txt"));
       markWaiting("block-notify-stuck", "2026-08-08 10:06:00");
       await until(async () => noticeCount(wakeId) > 1, 15000);
       assert.equal(noticeCount(wakeId), 2, "a second block is a second condition and must be reported again");

@@ -52,6 +52,20 @@ Counselors round 2 (F3, R2-3) found this list itself under-claiming in the one p
 
 **R9's own residual text overclaimed here, and R10's todo 181 item 1 is the correction, not a widening.** R9 wrote "closing this one deliberately (a human choosing to run `agent_close` on a specific, named lead)" as if that were already true. It was not: nothing checked who the caller was, so any WORKER could call `agent_close(name: "lead")` exactly like a human at a terminal, including hitting the cross-server false-dead case above against a lead it has no business touching at all. `agent_close` now refuses outright - before probing liveness, so this applies whether the target reads live, dead, or unprobed - whenever `currentActor()` starts with `agent:`. A plain claude session is `user:<name>` and a peer lead is `lead:N` (`src/context.ts`), so a human at a terminal and a peer lead both keep the retirement path; only a spawned worker loses it. For those callers, the cross-server false-dead case is now closed too, by the paragraph above: this is a caller-KIND gate for who may reach the retirement path at all, alongside a liveness-TRUTH fix for what that path believes once reached.
 
+## A row's `tmux_target` is always a PANE id, whatever the placement
+
+Todo 371, from a live incident. `placeAgentPane` (`src/spawn.ts`) used to return the WINDOW id for `placement="window"`, so those rows read `hive-main:@3`. A pane belongs to exactly one window permanently and `join-pane`/`break-pane` MOVE it (`decisions/2026-08-05-tmux-topology-windows-not-sessions.md`), so joining such a worker's pane into another window destroys the window its row names. `janitor()`'s agents sweep then gets an honest `false` from `rowAliveProbe` - not the `null` the foreign-socket conservatism protects - and closes a row whose `claude` is still mid-turn. **A WORKING WORKER READS AS FINISHED**, the standing watch reports it finished, `agent_send` stops resolving it, and nothing repoints a worker's `tmux_target` afterwards. Reproduced locally end to end, asserting the process alive through the kernel and not through hive's own view of it: `test/window-target-moved-pane.test.mjs`. That topology decision had already named this exact consequence six days before it happened, in its own last paragraph.
+
+**Nothing downstream had to change to keep working, and the reason is a measurement rather than an argument.** Against tmux 3.7b, in both directions: `rename-window`, `kill-window`, `show-options -w` and `split-window` all accept a `%pane` and resolve UP to its window; `capture-pane`, `send-keys` and `display-message` all accept an `@window` and resolve DOWN to its ACTIVE pane. So the column's two kinds of id were never a compile-time-shaped problem. What differed was only which pane the pane-scoped readers MEANT - and there the window id was the defect: a window-placed worker's window can hold a second pane, because `splitTargetWindow` puts a split-placed CHILD into its parent's window, so `agent_output`/`agent_status`/`watchedTail` could return the child's screen and `agent_send`/wake delivery could type into it. Narrower than it reads (`split-window -d` leaves the parent active, so it needs the active pane to have moved) and closed as a side effect rather than reproduced end to end. Said that way deliberately: the tmux resolution half is measured, the end-to-end half is not.
+
+**Two sites read `isPaneTarget(tmux_target)` as a stand-in for PLACEMENT, which is not stored anywhere.** That conflation was the root cause, not the sweep. `agent_rename` now asks the window its own name (`ownsItsWindow`, above), and `killAgentPane` (`src/tools/agents.ts`) now reaches `kill-pane` for these rows where it reached `kill-window`. **That is a BEHAVIOUR CHANGE riding inside a "store a different id" patch, which is the shape this project keeps shipping by accident, so it is named here as well as in the code**: identical for the ordinary sole-pane window (tmux reaps a window whose last pane dies), and different in exactly one case - closing a window-placed worker no longer takes down a split child sharing its window. **`killAgentPane`'s window branch is NOT dead code and must stay**: an MCP server started before this change keeps writing window ids into the shared store for the life of its session (`common-issues/stale-mcp-server-runs-old-code.md`), and `kill-pane` against a window id fails, so deleting it would leak a live process instead of erroring.
+
+**The defect is reachable by following hive's OWN advice, not only by an ad-hoc lead action** (counselors, opus seat): `hive doctor`'s duplicate-window-stamp report tells a human to "Move the panes into one window (tmux join-pane -t <window>)". That is the incident's operation, printed by hive.
+
+**NO `placement` COLUMN, argued rather than skipped.** `agent_resume` already re-derives placement from `hive.yml` and the environment rather than reading it off the row, so this codebase already treats placement as a per-spawn input and not a durable property; a column would be a second source of truth for a fact the code deliberately does not keep, made permanent by append-only migrations, for one cosmetic consumer. The argument is at `placeAgentPane` in the code, not only on todo 371.
+
+**The pane-reissue guard (todo 336 / issue #149) STOPS BEING INERT for these rows, and that was a decision.** `targetLiveProbe` returns `pid` null for a window target, so every `placement="window"` row carried `pane_pid=''` - "no fact recorded" - and `paneReissued` could never fire for one. They carry a real pid now. Kept rather than suppressed, because the move this defect is about cannot trip it: measured, a pane keeps both its id and its `#{pane_pid}` across `join-pane`. What it can now catch for these rows is what it was built to catch. **The reachable consequence is worth knowing before you write a test**: `respawn-pane` gives a pane a new pid, so repainting a worker's screen that way now reads as a hijack and reaps the row. Four existing fixtures did exactly that and had been resting on this exemption without knowing it; `repaintPaneAsSameWorker` (`test/helpers.mjs`) is the repair, and it explains itself. It repairs until the row STICKS rather than writing once, because the sweep can read a row before that write and close it after - `closeAgentRow`'s CAS carries no pid, so a corrected pid does not stop it.
+
 ## A pane must never be recorded onto a row that is no longer running
 
 Issue #156, counselors, all three seats. `recordPane` (`src/spawn.ts`) is the
@@ -142,8 +156,19 @@ trap on `pad 71` (`allow-passthrough`, a genuinely pane-inherited option) -
 never at matching scope, which is what every `@hive-project-id` read is.
 
 A worker's own placement="window" (its own dedicated window, not a split into
-its project's) does not stamp ownership yet and still resolves by
-`windowTitle()`; that is 3b's, not this invariant's.
+its project's) does not stamp ownership yet; that is 3b's, not this
+invariant's. **The "and still resolves by `windowTitle()`" half of this
+sentence was misleading and todo 371 made it load-bearing, so say what is
+actually true of that title now.** Nothing ever RESOLVED a window by title -
+`windowTitle()` has only ever been used to NAME one, at the two sites that
+create one (`placeAgentPane` and `resumeAgent`, `src/spawn.ts`). What is new
+is that the title is now also READ: `ownsItsWindow` (`src/spawn.ts`) decides
+whether `agent_rename` may retitle a window by comparing that window's current
+name against `windowTitle(project, the row's current name)`. So the naming
+convention has become a fact hive depends on rather than decoration, and a
+change to `windowTitle`'s format silently stops window retitling rather than
+merely relabelling tabs. Every miss falls through to "do not retitle", pinned
+by `test/agent-names.test.mjs`.
 
 `allow-passthrough` is a pane option inherited from the window. Probes must
 use `show-options -p -A`; without `-A`, tmux reports that inherited, working
@@ -153,8 +178,10 @@ value as unset.
 
 `splitTargetWindow` (`src/spawn.ts`) resolves a split-placed worker's target
 window through `parent_actor_id` -> the parent's `agents` row -> its
-`tmux_target` (a pane id) -> `paneWindow()` of that pane - never through
-ambient `TMUX_PANE`, which names whoever happens to be calling rather than
+`tmux_target` (a pane id - true of EVERY row since todo 371, see "a row's
+tmux_target is always a pane id" above, where it used to hold only when the
+parent happened to be split-placed) -> `paneWindow()` of that pane - never
+through ambient `TMUX_PANE`, which names whoever happens to be calling rather than
 who the row says spawned this worker, and never through a window name (todo
 267, `decisions/2026-08-05-tmux-topology-windows-not-sessions.md`). This is
 the cross-repo case the whole redesign started from: a worker's STORE scope

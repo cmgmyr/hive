@@ -58,7 +58,11 @@ describe(
         extra_args: [],
         placement: "window",
       });
-      const workerWindow = spawned.tmux_target; // placement="window": target IS the window
+      // todo 371: a row's tmux_target is a PANE id for every placement now, so
+      // the window has to be resolved from that pane. Reading it off the receipt
+      // made this comparison a pane id against a `session:@n` string, which can
+      // never be equal - the assertion below stopped being able to fail.
+      const workerWindow = tmux("list-panes", "-t", spawned.tmux_target, "-F", "#{window_id}").trim().split("\n")[0];
       assert.equal(
         stampOf(workerWindow),
         "",

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { REPO, isolateTmux, liveAgentRow, makeFakeClaude, McpClient, scratchDirs, until } from "./helpers.mjs";
+import { REPO, isolateTmux, liveAgentRow, makeFakeClaude, McpClient, repaintPaneAsSameWorker, scratchDirs, until } from "./helpers.mjs";
 
 // Todo 270. Chris's call 2026-08-05, after it bit him on both machines: he
 // was typing into the lead's pane, a wake came due, and hive pasted the wake
@@ -26,6 +26,7 @@ const { hasTmux, cleanup } = isolateTmux("the unsubmitted-input wake-hold tests"
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
+const { db } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
@@ -109,9 +110,7 @@ describe(
         // Clear it by replacing the pane's screen with a genuinely empty
         // input box (ready-idle.txt), same pane id (tmux wipes the screen on
         // respawn) - the state change under test.
-        execFileSync("tmux", ["respawn-pane", "-k", "-t", spawned.tmux_target, replayFixture("ready-idle.txt")], {
-          stdio: "ignore",
-        });
+        repaintPaneAsSameWorker(db, spawned.tmux_target, replayFixture("ready-idle.txt"));
 
         let delivered;
         await until(async () => {

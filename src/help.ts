@@ -168,7 +168,7 @@ runbook (fork it first), not a pad write.`,
     actor_id and its full prior context. It does not send the assignment;
     agent_send it afterwards. Read the pane before believing any wake about
     a worker you just resumed.
-  agent_close(name|agent_id) — kill the window and mark closed. Capture
+  agent_close(name|agent_id) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how
     you abandon a lane you have decided not to resume.

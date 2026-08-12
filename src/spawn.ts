@@ -399,6 +399,58 @@ export function upsertActor(actorId: string, name: string, kind: string): void {
   ).run(actorId, name, kind);
 }
 
+// EVERY PLACEMENT RECORDS A PANE ID. Todo 371, and the reasoning has to live
+// here because the line that returns it is one word long and reads as a
+// tidy-up.
+//
+// placement="window" used to return the WINDOW id, so a row read
+// `hive-main:@3`. A pane belongs to exactly one window permanently and
+// `join-pane`/`break-pane` MOVE it (decisions/2026-08-05-tmux-topology-windows
+// -not-sessions.md), so joining a window-placed worker's pane elsewhere
+// destroys the window the row names. janitor()'s agents sweep then reads an
+// honest `false` from rowAliveProbe and closes a row whose claude is still
+// mid-turn: a WORKING worker reads as FINISHED, and nothing repoints a
+// worker's tmux_target afterwards. It happened to a real crew on 2026-08-11
+// (todo 371), and the topology decision above had already named it as a known
+// consequence six days earlier. A PANE ID SURVIVES THE MOVE - measured, the
+// pane keeps its id AND its #{pane_pid} across join-pane
+// (test/window-target-moved-pane.test.mjs asserts both).
+//
+// WHY THIS DOES NOT BREAK THE READERS THAT WANT A WINDOW: tmux resolves a pane
+// id UP to its window for every window-scoped command (measured on 3.7b:
+// rename-window, kill-window, show-options -w, split-window all accept `%n`),
+// so no consumer of this column has to change to keep working. What changes is
+// which pane the pane-scoped ones MEAN, and there the pane id is the fix
+// rather than the cost: `capture-pane -t @n` and `send-keys -t @n` resolve to
+// the window's ACTIVE pane, so once a window-placed worker's window holds a
+// second pane - which splitTargetWindow does whenever that worker spawns a
+// split child - agent_output could return the child's screen and agent_send
+// could type into it.
+//
+// TWO SITES DID READ IT AS A WINDOW ON PURPOSE, and neither wanted "is this a
+// window id" - both wanted PLACEMENT, which is not stored anywhere, so
+// tmux_target had been doubling as the placement record. See killAgentPane and
+// agent_rename's window-title branch (src/tools/agents.ts) for how each one
+// answers its real question now.
+//
+// NO `placement` COLUMN, AND THE REASON IS NOT COST. A reviewer holding this
+// diff without the argument will propose one - it looks like the obviously
+// honest fix for the conflation named above - so the argument lives here
+// rather than only on todo 371. agent_resume (src/tools/agents.ts) already
+// RE-DERIVES placement from hive.yml and the environment on every resume
+// rather than reading it back off the row, so this codebase already treats
+// placement as a per-spawn input and not a durable property of an agent. A
+// column would be a second source of truth for a fact the code deliberately
+// does not keep, and migrations are append-only, so it would be permanent.
+// The one consumer that genuinely needs the fact is a COSMETIC window
+// retitle, which is not the weight that justifies a schema change.
+//
+// ONE BEHAVIOUR CHANGE RIDES ALONG AND IS NOT A SIDE EFFECT TO DISCOVER
+// LATER: killAgentPane (src/tools/agents.ts) branches on isPaneTarget, so
+// agent_close/agent_park on a window-placed worker now runs kill-pane where it
+// ran kill-window. The argument is at that function, next to the code that
+// does it, rather than restated here where it would be a second copy to drift.
+//
 // The pane/window placement shared by a fresh spawn and a resumed one:
 // given a command already resolved to a string and the session it targets,
 // decide where the pane lands under withWindowClaim's cross-process lock
@@ -416,14 +468,20 @@ function placeAgentPane(
 ): { target: string; landedInProjectId: number | null } {
   let landedInProjectId: number | null = null;
   const target = withWindowClaim((): string => {
+    // What a NEW window for this spawn is called, and who owns it. Hoisted to
+    // one place (/simplify, todo 371): both remaining branches below create a
+    // window and each used to spell this pair out again, so a third placement
+    // - or any change to what gets stamped - had three sites to keep in step.
+    // The values themselves are unchanged: a split worker's window is the
+    // PROJECT's, named for it and stamped with its id, while a window-placed
+    // worker's is ITS OWN, named for the worker and deliberately unstamped so
+    // a later `hive lead` or parentless split never lands in it
+    // (test/worker-first-window-stamp.test.mjs).
+    const windowName = spec.placement === "split" ? spec.projectName : title;
+    const windowOwnerId = spec.placement === "split" ? spec.projectId : null;
     const started = ensureSession(session, spec.projectPath);
     if (started.created) {
-      const windowName = spec.placement === "split" ? spec.projectName : title;
-      const { pane, window } = claimInitialWindow(
-        started, windowName, spec.cwd, envFlags, commandString,
-        spec.placement === "split" ? spec.projectId : null,
-      );
-      return spec.placement === "split" ? pane : window;
+      return claimInitialWindow(started, windowName, spec.cwd, envFlags, commandString, windowOwnerId).pane;
     }
     if (spec.placement === "split") {
       const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
@@ -437,9 +495,8 @@ function placeAgentPane(
         if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
         return pane;
       }
-      return createWindow(session, spec.projectName, spec.cwd, envFlags, commandString, spec.projectId, true).pane;
     }
-    return createWindow(session, title, spec.cwd, envFlags, commandString, null, true).window;
+    return createWindow(session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true).pane;
   });
   return { target, landedInProjectId };
 }
@@ -797,10 +854,128 @@ export function resumeAgent(
 //
 // The window rename is best-effort: the store write has landed, and a window
 // killed since the caller's liveness check must not fail the rename.
+// TODO 371: WHICH WINDOW IS THIS WORKER'S TO RETITLE, ASKED OF THE WINDOW
+// ITSELF. The caller used to answer this with `!isPaneTarget(tmux_target)` -
+// a window id meant placement="window" meant "its own window". Every row now
+// records a PANE id (see placeAgentPane), so that stand-in is gone, and the
+// question it was standing in for was never really "which kind of id is this"
+// but "did this worker get a window of its own", i.e. PLACEMENT - which this
+// codebase deliberately does not store (the argument against a column is at
+// placeAgentPane).
+//
+// So ask the window. hive names a worker's own window windowTitle(project,
+// name) at creation, in both branches that can create one (this file's
+// resumeAgent and launchAgent, via placeAgentPane), while a project's SHARED
+// window - the one a split-placed worker lands in beside its lead - is named
+// for the project alone. Comparing the window's CURRENT name against the
+// title this worker's name would produce therefore answers the real question,
+// and it composes across repeated renames because the row's name and the
+// window's title are updated together.
+//
+// EVERY MISS FALLS THROUGH TO "DO NOT RETITLE", WHICH IS THE SAFE DIRECTION
+// AND IS PINNED (test/agent-names.test.mjs). A window a human renamed, a
+// window whose name drifted for any reason at all, and a target tmux cannot
+// answer for: none of them are retitled. The cost of a miss is a stale window
+// title, and the row is renamed either way, so nothing addressable is
+// affected.
+//
+// THE TITLE ALONE IS NOT ENOUGH, THOUGH, AND TWO COUNSELORS SEATS FOUND THAT
+// INDEPENDENTLY. A miss is safe; a false MATCH is not, and a title can match a
+// window that is not this worker's. The reachable case is a human renaming the
+// PROJECT'S SHARED window - the one holding a lead and several split workers -
+// to exactly "<project> - <this worker's name>", after which renaming that
+// worker would retitle the shared tab. So the stamp is checked too: a
+// project's shared window carries @hive-project-id and a window-placed
+// worker's own window deliberately does not (placeAgentPane above,
+// test/worker-first-window-stamp.test.mjs), which is precisely the difference
+// being asked about. It costs no extra fork - both facts come out of the same
+// list-panes format string.
+//
+// WHAT THAT STILL DOES NOT COVER, recorded rather than left to be
+// rediscovered. All three need a window that is hive-owned, unstamped, and
+// carrying this exact title, so all three are one wrong tab label and nothing
+// else - the row is renamed either way and nothing addressable moves.
+//   - Two projects with the SAME display name (only `path` is unique in the
+//     projects table) each running a window-placed worker with the same name,
+//     one of whose panes has been moved into the other's window.
+//   - A window-placed worker's own window OUTLIVING it: closing that worker
+//     is now a kill-pane, so a window still holding a split child survives
+//     with the dead worker's title on it. A later worker that takes the freed
+//     name and lands in that window would retitle it.
+//   - Any hive-created window a human has renamed to this exact string.
+// The fix for all three is the same ownership stamp described below, which is
+// a lane of its own; a longer string comparison cannot reach any of them.
+//
+// THE ALTERNATIVE THIS ARGUMENT HAS TO MEET IS THE STAMP, NOT THE COLUMN, and
+// the first version of this comment only beat the column (/simplify, altitude
+// seat). hive already records window-scoped facts as tmux WINDOW OPTIONS -
+// @hive-owned, @hive-project-id, @hive-layout - and windowOwner (src/tmux.ts)
+// answers the sibling question "whose window is this" exactly that way. A
+// stamp has none of a column's costs: per-window, per-spawn, dies with the
+// window, no migration. It is the mechanism at this module's own altitude, and
+// .claude/rules/tmux-and-panes.md already says it is owed ("does not stamp
+// ownership yet"). It is not built here because it needs a DISTINCT key from
+// @hive-project-id - configureHiveWindow deliberately passes null for a
+// window-placed worker, and re-introducing that stamp is the defect its own
+// comment guards against - plus a third argument threaded through both
+// window-creating sites. That is a lane of its own, not a line in this one.
+//
+// WHAT THE NAME CHECK COSTS IN THE MEANTIME, stated rather than left to be
+// found. windowTitle's format becomes load-bearing: change it and window
+// retitling silently stops everywhere, with no compile error and nothing red
+// outside test/agent-names.test.mjs. And drift is ABSORBING rather than
+// self-healing - the retitle is best-effort inside a catch, so one swallowed
+// failure leaves the row's name and the window's name out of step forever, and
+// every later rename reads that as "not ours" and declines a window hive does
+// own. A stamp would be idempotent and immune to both. Accepted here because
+// the failure direction is a stale label, never a wrong window retitled, and
+// because the check it replaces was wrong in the OTHER direction.
+//
+// list-panes, not display-message: display-message silently answers for some
+// other target when the one it is given is dead (see paneWindow and
+// targetLiveProbe's own comments).
+//
+// ONE EXTRA FORK PER LIVE agent_rename, NOT FUSED, and that is deliberate
+// rather than an oversight - two places in this codebase fuse exactly this
+// kind of pair and say so (targetLiveProbe's "one list-panes call, not two",
+// deliverable()'s "no second fork paid for reading .pid"), so a reader will
+// look for it here. isLive() collapses its PaneProbe to a boolean at the call
+// site, so fusing means widening PaneProbe and threading the probe through
+// agent_rename. Measured: ~3.5ms added to a call that already pays 5-7 forks
+// and a 300ms ENTER_DELAY_MS sleep, on the rarest tool in the set. The
+// plumbing costs more than it buys. Counted, not estimated: a split-placed
+// worker goes 5 forks to 6, a window-placed one 6 to 7.
+function ownsItsWindow(target: string, expectedTitle: string): boolean {
+  try {
+    const [name, projectStamp, owned] = tmux(
+      "list-panes", "-t", target, "-F", "#{window_name}\t#{@hive-project-id}\t#{@hive-owned}",
+    )
+      .split("\n")[0]
+      .split("\t");
+    // Three facts, one fork, and each rules out a different window.
+    // @hive-owned=1 is on every window hive creates and on no window a human
+    // made (configureHiveWindow, src/tmux.ts), so it rules out a user's own
+    // window that happens to carry this title - reachable by naming a window
+    // "<project> - <worker>" and moving the pane into it, and the case a name
+    // comparison alone cannot see. @hive-project-id being ABSENT rules out a
+    // project's shared window, which is the one holding a lead and every split
+    // worker. The name is what makes it THIS worker's rather than another
+    // window-placed worker's. tmux answers an unset window option as an empty
+    // field, so "" is the unstamped case.
+    return name === expectedTitle && (projectStamp ?? "") === "" && owned === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function renameAgent(
-  agent: { id: number; actor_id: string; tmux_target: string },
+  agent: { id: number; actor_id: string; name: string; tmux_target: string },
   newName: string,
-  window: { projectName: string } | null,
+  // The project's name when this worker's tmux window may be retitled, null
+  // when it may not - which today means "the caller could not confirm the pane
+  // is live". It named a `window` object until todo 371 moved the which-window
+  // decision in here; the object conveyed nothing about a window even then.
+  projectName: string | null,
 ): void {
   try {
     db.transaction(() => {
@@ -813,9 +988,12 @@ export function renameAgent(
     // updates back, so nothing tmux-side has happened yet.
     throw asNameClash(e, newName);
   }
-  if (window) {
+  // agent.name, not newName: the row as this caller read it is what the
+  // window's CURRENT title was built from, and the UPDATE above has already
+  // changed the row. The two titles sit adjacent here for that reason.
+  if (projectName !== null && ownsItsWindow(agent.tmux_target, windowTitle(projectName, agent.name))) {
     try {
-      tmux("rename-window", "-t", agent.tmux_target, windowTitle(window.projectName, newName));
+      tmux("rename-window", "-t", agent.tmux_target, windowTitle(projectName, newName));
     } catch {
       // Window gone; the label stays stale and the row is already correct.
     }

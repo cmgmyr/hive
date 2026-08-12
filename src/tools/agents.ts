@@ -301,6 +301,49 @@ function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: str
 // as live - unknown liveness must never be treated as dead (issue #14), and
 // that decision stays with the caller because agent_close's own lead-retirement
 // path turns on it.
+// TODO 371 CHANGED WHICH BRANCH A WINDOW-PLACED WORKER TAKES, AND THAT IS A
+// BEHAVIOUR CHANGE, NOT A CONSEQUENCE OF STORING A DIFFERENT ID. Every row now
+// records a pane id (placeAgentPane, src/spawn.ts), so a placement="window"
+// worker reaches kill-pane where it used to reach kill-window. For the
+// ordinary case - that worker alone in its own window - the outcome is
+// identical, since tmux reaps a window whose last pane dies. It differs in
+// exactly one case, and there the new behaviour is the point rather than the
+// price: a window-placed worker's window can hold a second pane, because
+// splitTargetWindow places a split-placed CHILD into its parent's window
+// (test/split-window-parent-placement.test.mjs pins that), and kill-window
+// took that child's pane down too. Closing one worker silently killed
+// another. It no longer does.
+//
+// THE WINDOW BRANCH STAYS, AND IT IS NOT DEAD CODE. A row can still hold a
+// window id: an MCP server started before this change keeps running the old
+// code against the shared store for the life of its session (see
+// .claude/sessions/common-issues/stale-mcp-server-runs-old-code.md), so a
+// window-target row can be written into a store whose other sessions are
+// already on the new build. Deleting the branch would make agent_close kill
+// nothing at all for those rows - kill-pane against a window id fails - and
+// the wrong outcome would be a leaked live process rather than a loud error.
+//
+// WHAT THAT BRANCH STILL COSTS, ACCEPTED AND RECORDED RATHER THAN FIXED
+// (counselors, codex seat). A legacy window-target row whose window has since
+// gained a split CHILD takes the child's pane down with it, which is exactly
+// the collateral kill the pane id removes. The seat's proposed fix - refuse
+// loudly on a multi-pane legacy window and tell the human to restart the stale
+// server - was weighed and rejected: it turns agent_close into a failure for
+// rows a human cannot repair from inside hive (nothing repoints tmux_target),
+// and it would be a NEW refusal on a path that has always killed. This is not
+// a regression either: it is main's behaviour for EVERY window-placed worker,
+// narrowed to the rows a pre-change server writes.
+//
+// "A POPULATION THAT CAN ONLY SHRINK" WAS THE FIRST WORDING AND IT WAS WRONG
+// (counselors round 2, two seats). An old MCP server keeps running old code
+// for the LIFE OF ITS SESSION, so it can spawn NEW window-placed workers after
+// this ships, and their panes outlive that server because they belong to the
+// long-lived shared tmux session. The population is bounded by how long any
+// pre-change session stays open, which is hours, not by this build's own
+// write sites. The disposal is unchanged - the trade above does not turn on
+// the population shrinking - but the reason had to stop claiming something
+// false. Revisit if window-target rows ever become writable by a CURRENT
+// build, which would mean this whole change had been reverted.
 function killAgentPane(target: string): void {
   const pane = isPaneTarget(target);
   // Resolve the window before the pane dies, then re-tile the survivors:
@@ -1415,10 +1458,14 @@ export function registerAgents(server: McpServer): void {
         // the worst case is a pane label that lags the store until the next
         // rename. The row itself is renamed either way.
         const live = isLive(agent) === true;
-        // A window-placed worker carries its name in the tmux window too,
-        // which is hive's own to set.
-        const ownWindow = live && !isPaneTarget(agent.tmux_target);
-        renameAgent(agent, newName, ownWindow ? { projectName: project.name } : null);
+        // A worker that has a window of its own carries its name in that
+        // window's title too, which is hive's own to set. WHICH workers those
+        // are is renameAgent's question now, not this call site's, and it
+        // answers it by asking the window rather than by reading the KIND of
+        // id in tmux_target - see ownsItsWindow (src/spawn.ts, todo 371).
+        // Every row records a pane id now, so the old `!isPaneTarget(...)`
+        // test here answered "no" for every worker in existence.
+        renameAgent(agent, newName, live ? project.name : null);
 
         // claude owns its pane title and rewrites it as the session moves, so
         // hive cannot set it directly and make it stick. /rename is claude's

@@ -161,6 +161,15 @@ describe("resolving a worker by name", { skip: hasTmux ? false : "tmux is not in
   });
 });
 
+// One reader for "what is this target's window called", used by both window
+// tests below. list-panes rather than display-message, matching what
+// ownsItsWindow (src/spawn.ts) does and for its reason: display-message
+// silently answers for some other target when the one it is given is dead.
+const windowNameOf = (target) =>
+  execFileSync("tmux", ["list-panes", "-t", target, "-F", "#{window_name}"], { encoding: "utf8" })
+    .trim()
+    .split("\n")[0];
+
 describe("renaming a worker", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const spawned = [];
   const spawn = async (name, opts = {}) => {
@@ -245,12 +254,124 @@ describe("renaming a worker", { skip: hasTmux ? false : "tmux is not installed" 
     await spawn("windowed", { placement: "window" });
     const row = await liveAgentRow(mcp, "windowed");
     await mcp.call("agent_rename", { name: "windowed", new_name: "rewindowed" });
-    const windowName = execFileSync(
+    assert.match(windowNameOf(row.tmux_target), /rewindowed$/);
+  });
+
+  // Todo 371. Which window is hive's to retitle is answered by asking the
+  // window its own name (ownsItsWindow, src/spawn.ts) rather than by reading
+  // the KIND of id in tmux_target, which every row now records as a pane. The
+  // safe direction of that check is the half worth pinning: a miss must mean
+  // "leave the title alone", never "retitle anyway".
+  //
+  // A human renaming a worker's window is the reachable way to produce a miss
+  // (a project's shared window is the other, and the split cases above already
+  // cover it by never being retitled at all). Renaming the window by hand is
+  // also exactly the case the OLD check got wrong: it keyed on the id being a
+  // window id, which stayed true after a human renamed it, so hive overwrote a
+  // label it no longer owned.
+  it("leaves a window alone when its name is not the one hive gave this worker", async () => {
+    await spawn("hand-titled", { placement: "window" });
+    const row = await liveAgentRow(mcp, "hand-titled");
+    const chosenByAHuman = "do-not-touch-this";
+    execFileSync("tmux", ["rename-window", "-t", row.tmux_target, chosenByAHuman], { stdio: "ignore" });
+
+    const receipt = await mcp.call("agent_rename", { name: "hand-titled", new_name: "hand-titled-2" });
+
+    assert.equal(windowNameOf(row.tmux_target), chosenByAHuman, "hive must not retitle a window a human has renamed");
+    // The row is renamed either way - the window title is cosmetic and is the
+    // only thing this check gates. Asserted so a future reader cannot read the
+    // skip as "the rename did not happen".
+    assert.equal(receipt.name, "hand-titled-2");
+    assert.equal((await mcp.call("agent_status", { agent_id: row.agent_id })).name, "hand-titled-2");
+  });
+
+  // Counselors, opus seat: the DANGEROUS direction for the commonest
+  // placement was pinned by nothing. Mutate ownsItsWindow's `=== expectedTitle`
+  // to `.startsWith(projectName)` and every split-placed rename would retitle
+  // the project's SHARED tab - the one holding the lead and every other worker
+  // - with the whole suite still green. The window-placed cases above cannot
+  // catch that: they assert the retitle HAPPENS.
+  it("never retitles the project's shared window when a split-placed worker is renamed", async () => {
+    await spawn("shared-window-worker", { placement: "split" });
+    const row = await liveAgentRow(mcp, "shared-window-worker");
+    const before = windowNameOf(row.tmux_target);
+
+    await mcp.call("agent_rename", { name: "shared-window-worker", new_name: "shared-window-renamed" });
+
+    assert.equal(windowNameOf(row.tmux_target), before, "the shared window's name must not move with one worker's name");
+    assert.doesNotMatch(windowNameOf(row.tmux_target), /shared-window-renamed/, "and must not carry the new name at all");
+  });
+
+  // The other half of the same finding, from the codex seat: a title alone can
+  // MATCH a window that is not the worker's. The reachable case is a human
+  // renaming the project's shared window to exactly the string hive would have
+  // given this worker's own window. The @hive-project-id stamp is what tells
+  // them apart, so this pins the stamp check rather than the name check.
+  it("never retitles a stamped project window even when its name matches hive's own convention", async () => {
+    const worker = await spawn("collider", { placement: "split" });
+    const row = await liveAgentRow(mcp, "collider");
+    const projectName = (await mcp.call("whoami")).project.name;
+    const collidingTitle = `${projectName} - collider`;
+    execFileSync("tmux", ["rename-window", "-t", row.tmux_target, collidingTitle], { stdio: "ignore" });
+
+    const receipt = await mcp.call("agent_rename", { name: "collider", new_name: "collider-2" });
+
+    assert.equal(
+      windowNameOf(row.tmux_target),
+      collidingTitle,
+      "a window carrying @hive-project-id is the project's, whatever it is called",
+    );
+    assert.equal(receipt.name, "collider-2");
+    assert.equal(worker.name, "collider");
+  });
+
+  // Counselors round 2, fable seat: one mutation still survived the two
+  // controls above. Relaxing the name test from `===` to a prefix match keeps
+  // all of them green, because both shared-window cases are blocked by the
+  // STAMP rather than by the name. The window that only exact equality rules
+  // out is another WINDOW-PLACED WORKER's - hive-owned and unstamped like this
+  // worker's own, so the two stamps agree and the title is the only thing left
+  // that differs.
+  it("never retitles another window-placed worker's window after a pane is moved into it", async () => {
+    await spawn("neighbour-a", { placement: "window" });
+    await spawn("neighbour-b", { placement: "window" });
+    const a = await liveAgentRow(mcp, "neighbour-a");
+    const b = await liveAgentRow(mcp, "neighbour-b");
+    const bTitle = windowNameOf(b.tmux_target);
+
+    // A human pulling one worker in beside another: a's pane now lives in b's
+    // window, so a's rename resolves to a window that is not a's.
+    execFileSync("tmux", ["join-pane", "-d", "-s", a.tmux_target, "-t", b.tmux_target], { stdio: "ignore" });
+
+    await mcp.call("agent_rename", { name: "neighbour-a", new_name: "neighbour-a2" });
+
+    assert.equal(windowNameOf(a.tmux_target), bTitle, "b's window keeps its own title");
+    assert.doesNotMatch(windowNameOf(a.tmux_target), /neighbour-a2/, "and never takes a's new name");
+  });
+
+  // The third of the three facts ownsItsWindow reads, and the one a mutation
+  // survived until this test existed: @hive-owned tells a window HIVE made
+  // from one a HUMAN made. A user's own window carrying this exact title is
+  // reachable with two tmux commands and is the case a name-plus-stamp check
+  // cannot see - both a user window and a worker's own window are unstamped.
+  it("never retitles a window hive did not create, even when its name matches exactly", async () => {
+    await spawn("guest", { placement: "window" });
+    const row = await liveAgentRow(mcp, "guest");
+    const projectName = (await mcp.call("whoami")).project.name;
+    const usersOwnTitle = `${projectName} - guest`;
+
+    // A window the user made: hive stamps @hive-owned on every window it
+    // creates and on nothing else, so a plain new-window is the honest fixture.
+    const usersWindow = execFileSync(
       "tmux",
-      ["display-message", "-p", "-t", row.tmux_target, "#{window_name}"],
+      ["new-window", "-d", "-P", "-F", "#{window_id}", "-t", sessionName(), "-n", usersOwnTitle, "sleep 600"],
       { encoding: "utf8" },
     ).trim();
-    assert.match(windowName, /rewindowed$/);
+    execFileSync("tmux", ["join-pane", "-d", "-s", row.tmux_target, "-t", usersWindow], { stdio: "ignore" });
+
+    await mcp.call("agent_rename", { name: "guest", new_name: "guest-2" });
+
+    assert.equal(windowNameOf(row.tmux_target), usersOwnTitle, "a window hive did not create is not hive's to retitle");
   });
 
   it("resolves the worker to rename by partial name and by id", async () => {
