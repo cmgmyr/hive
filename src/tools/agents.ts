@@ -16,7 +16,19 @@ import { currentActor, findProjectForDir, getProject, resolveProject } from "../
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
-import { closeAgentRow, isReservedAgentName, isRunningLeadActor, launchAgent, LEAD_KIND, renameAgent, resumeAgent } from "../spawn.js";
+import { markGoneReported } from "../scheduler.js";
+import {
+  branchAt,
+  closeAgentRow,
+  isReservedAgentName,
+  isRunningLeadActor,
+  launchAgent,
+  LEAD_KIND,
+  parkAgentRow,
+  releaseParkRow,
+  renameAgent,
+  resumeAgent,
+} from "../spawn.js";
 import { resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
@@ -67,6 +79,9 @@ export interface AgentRow {
   state_changed_at: string | null;
   kind: string;
   session_id: string;
+  parked_at: string;
+  parked_branch: string;
+  resumed_at: string;
 }
 
 // The most recently closed agent whose name matches, folded the same way the
@@ -79,13 +94,16 @@ export interface AgentRow {
 // agent to spawn a replacement for, so getting it wrong is cosmetic here,
 // not a resume gone to the wrong session - kept consistent anyway so the
 // same query does not read two different ways in one file.
-function closedAgentNamed(projectId: number, needle: string): { id: number; name: string; kind: string } | undefined {
+function closedAgentNamed(
+  projectId: number,
+  needle: string,
+): { id: number; name: string; kind: string; parked_at: string } | undefined {
   return (
     db
       .prepare(
-        "SELECT id, name, kind FROM agents WHERE project_id = ? AND status != 'running' ORDER BY closed_at DESC, id DESC",
+        "SELECT id, name, kind, parked_at FROM agents WHERE project_id = ? AND status != 'running' ORDER BY closed_at DESC, id DESC",
       )
-      .all(projectId) as { id: number; name: string; kind: string }[]
+      .all(projectId) as { id: number; name: string; kind: string; parked_at: string }[]
   ).find((r) => r.name.toLowerCase() === needle);
 }
 
@@ -138,6 +156,20 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
       // all: "lead" stays reserved (isReservedAgentName), so agent_spawn
       // refuses it outright, and the actual remedy is `hive lead` from a
       // terminal.
+      // A PARKED LANE IS NOT A CLOSED ONE, AND THIS IS THE MESSAGE A
+      // NEXT-MORNING LEAD HITS FIRST (counselors, opus + fable). `agent_send(
+      // name: "impl")` or `agent_status(name: "impl")` at 09:00 used to answer
+      // "is closed. Spawn a new worker" for the lane the lead deliberately
+      // parked at 18:00 - verbatim the confusion issue #156 was filed about,
+      // produced by the feature meant to end it. The branch already had the
+      // shape for a third remedy; it only lacked the fact.
+      if (closed.parked_at) {
+        throw new Error(
+          `Agent ${closed.id} ("${closed.name}") is PARKED, not finished - it was paused on ` +
+            `${closed.parked_at} and its session is waiting. Bring it back with agent_resume(agent_id: ` +
+            `${closed.id}), or abandon the park with agent_close(agent_id: ${closed.id}).`,
+        );
+      }
       const remedy = closed.kind === LEAD_KIND ? "Run `hive lead` to start a new one" : "Spawn a new worker";
       throw new Error(
         `Agent ${closed.id} ("${closed.name}") is closed. ${remedy}, or target a running one by name or agent_id.`,
@@ -200,6 +232,123 @@ function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: str
 // open in the store AND its tmux target still exists. Returns null when tmux
 // could not be asked, which every caller must handle as its own case: reading
 // unknown as dead is what closed live workers (issue #14).
+// End an agent's pane and leave the survivors arranged the way hive placed
+// them. Shared by agent_close and agent_park (issue #156): the two differ in
+// what they write to the ROW, and not at all in how they take the pane down,
+// so a second copy of this would be two places for the re-tile reasoning below
+// to drift apart. Called only where the caller has already probed the target
+// as live - unknown liveness must never be treated as dead (issue #14), and
+// that decision stays with the caller because agent_close's own lead-retirement
+// path turns on it.
+function killAgentPane(target: string): void {
+  const pane = isPaneTarget(target);
+  // Resolve the window before the pane dies, then re-tile the survivors:
+  // tmux's own redistribution otherwise wipes the arrangement hive applied on
+  // spawn.
+  const window = pane ? paneWindow(target) : null;
+  tmux(pane ? "kill-pane" : "kill-window", "-t", target);
+  if (!window) return;
+  // Todo 269 / counselors F1 on pad 71. The window's OWNER decides its
+  // hive.yml, never the CLOSING row's project: once a cross-project worker can
+  // share a window with a lead it did not spawn from (todo 268), re-tiling
+  // through the closing row's own project lets a foreign repo arrange a window
+  // it does not own. windowLayout(window) is consulted FIRST and already reads
+  // @hive-layout off the window itself, so this only narrows the FALLBACK,
+  // which fires when the window carries no @hive-layout yet. A window with no
+  // @hive-project-id stamp (a user-created window, or a placement="window"
+  // worker's own - both deliberately unstamped, test/worker-first-window-
+  // stamp.test.mjs) has no owner to resolve a layout through either, so
+  // DEFAULT_LAYOUT is the honest answer there too - never the closing row's
+  // project, which is the defect.
+  // SIBLING CALL SITE: agent_spawn's landed_in_project receipt resolves the
+  // same windowOwner -> getProject pair and handles a stamp naming a DEAD
+  // project row the other way, with a synthesized "project <id>" placeholder.
+  // Deliberate, and its own comment carries the argument. Absent is the honest
+  // answer HERE because the value feeds a layout: a hive.yml read from a
+  // project that no longer exists cannot be produced at all, so there is
+  // nothing to fall back to but DEFAULT_LAYOUT.
+  const ownerId = windowOwner(window);
+  const ownerProject = ownerId != null ? getProject(ownerId) : undefined;
+  applyLayout(
+    window,
+    windowLayout(window) ?? (ownerProject ? loadProjectYml(ownerProject.path).config?.layout : undefined) ?? DEFAULT_LAYOUT,
+  );
+}
+
+// Issue #156, D2. THE LANE'S TODOS, DERIVED RATHER THAN RECORDED, and the
+// reasoning is the whole of D2's second half (todo 353 comment 819).
+//
+// The issue asks park to record "the lane's todo and pad ids". A parameter for
+// them - in a column, in a blob, or in the board line - reintroduces the exact
+// failure the issue was filed about: something the lead has to remember at
+// 18:00 on a Friday, whose omission is indistinguishable from a lane that
+// genuinely has no todo. `todo_comments.author` is already the row's own
+// actor_id, written as a side effect of the worker recording its decisions the
+// way the runbook requires, so the link exists without anyone deciding to make
+// it. Lane A's D2 (resume reuses the row AND the actor_id) is what keeps it
+// stable across park/resume cycles; a design that minted a new actor_id per
+// resume would break this on the first one.
+//
+// IT IS AN INFERENCE AND THE RECEIPT SHOULD NOT PRETEND OTHERWISE. A worker
+// that never commented yields nothing; one that commented on a neighbouring
+// lane's todo yields a spare id. Both fail toward "a missing or extra number
+// on a board line", never toward a lost lane, which is the direction a column
+// the lead forgot to fill fails in too - with none of the recall this has.
+//
+// Scoped to the PROJECT as well as the author: an actor that commented on
+// another project's todo (the deliberate cross-project write
+// .claude/rules/project-scoping.md describes) is not this lane's work.
+// Archived todos are excluded for `hive status`'s own stated reason - a
+// board line naming a lane's archived scaffolding is noise at cold boot.
+function laneTodoIds(projectId: number, actorId: string): number[] {
+  return (
+    db
+      .prepare(
+        `SELECT DISTINCT c.todo_id AS id FROM todo_comments c
+           JOIN todos t ON t.id = c.todo_id
+          WHERE c.author = ? AND t.project_id = ? AND t.archived_at IS NULL
+          ORDER BY c.todo_id`,
+      )
+      .all(actorId, projectId) as { id: number }[]
+  ).map((r) => r.id);
+}
+
+// THE BOARD LINE, BUILT BY THE TOOL RATHER THAN REMEMBERED BY THE LEAD - the
+// half of issue #156 Chris actually asked for ("asking the lead to save to the
+// board that we should resume these X sessions tomorrow").
+//
+// IT IS RETURNED, NOT WRITTEN, and that is a decision rather than a shortcut.
+// Chris's own sentence describes the lead putting it on the board; what the
+// issue calls the failure is the lead having to COMPOSE it from memory, and
+// generating the text removes exactly that. Having this tool append to the
+// "board" pad itself would add a write to another resource - into free-form
+// content whose structure this tool cannot know, at a position it cannot
+// choose, in the one area of this store that has had a destructive incident
+// (src/db.ts's todo 331 migration). The row is the system of record here (D2),
+// `hive status` reports parked lanes from it, and agent_list surfaces them, so
+// the board is a convenience rather than the thing park depends on. If that
+// turns out to be the wrong call it is one pad_append to reverse, which is why
+// it is worth starting on the cautious side.
+//
+// Wrapped to fit 80 columns because it is pasted into a pad that is read raw
+// in a terminal, matching the runbook's own wrapping rule for that content.
+function parkedBoardLine(fields: {
+  parkedAt: string;
+  name: string;
+  agentId: number;
+  branch: string;
+  cwd: string;
+  todoIds: number[];
+}): string {
+  const day = fields.parkedAt.slice(0, 10);
+  const todos = fields.todoIds.length > 0 ? `  todos ${fields.todoIds.join(", ")}` : "";
+  return (
+    `PARKED ${day}  ${fields.name}  agent_id ${fields.agentId}${todos}\n` +
+    `  branch ${fields.branch || "(unrecorded)"}  cwd ${fields.cwd}\n` +
+    `  resume: agent_resume(agent_id: ${fields.agentId})`
+  );
+}
+
 export function isLive(agent: AgentRow): Liveness {
   if (agent.status !== "running") return false;
   return rowLive(agent.tmux_socket, agent.tmux_target);
@@ -497,6 +646,14 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     // that build on this shared summary. pane is NOT here; see paneField's
     // own comment for why it stays agent_list-only.
     ...lastLogEventField(row),
+    // Issue #156. Present only on a row that was actually parked, so a caller
+    // reading agent_list(include_closed: true) can tell a paused lane from a
+    // finished one - the distinction the issue says a next-morning lead cannot
+    // make today, since `closed` currently means both. Absent rather than null
+    // for an ordinary close, matching the slim-receipt convention every
+    // conditional field on this summary already uses: '' is "no fact
+    // recorded", and a reader should not need to know that to read this.
+    ...(row.parked_at ? { parked_at: row.parked_at, parked_branch: row.parked_branch || null } : {}),
     tmux_target: row.tmux_target,
     command: row.command,
     cwd: row.cwd,
@@ -784,6 +941,47 @@ export function registerAgents(server: McpServer): void {
               "worker instead.",
           );
         }
+        // ISSUE #156: A REMOVED WORKTREE, REFUSED HERE WITH THE ONE FACT THAT
+        // REBUILDS IT, rather than surfacing as tmux's own failure or, worse,
+        // as an ENOENT naming a binary. Node reports a spawn whose cwd is gone
+        // as ENOENT against the EXECUTABLE, not against the directory
+        // (.claude/sessions/common-issues/enoent-names-the-binary-when-the-
+        // cwd-is-gone.md, measured 2026-08-11), which sends the reader after
+        // PATH, the interpreter pin and the dispatcher - three dead ends this
+        // project has a real, similar-looking failure class in.
+        //
+        // The remedy is reachable precisely because park recorded the branch
+        // (D2): transcript resolution is a pure function of the cwd string
+        // (issue #5 D7), so recreating the worktree at the SAME PATH on the
+        // SAME BRANCH restores resumability completely. That is the whole
+        // return on the parked_branch column, and it is why park records a
+        // fact instead of refusing to let anyone remove a worktree.
+        //
+        // Checked for any closed row, not only a parked one: a resume into a
+        // missing directory fails the same way whichever it is. A row with no
+        // recorded branch says so rather than inventing one.
+        if (!existsSync(agent.cwd)) {
+          const recreate = agent.parked_branch
+            ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
+            : `recreate a checkout at ${agent.cwd} (no branch was recorded for it - agent_park records one)`;
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd}. Its transcript is ` +
+              `resolved from that path, so recreate it and the resume works unchanged: ${recreate}`,
+          );
+        }
+        // A BRANCH THAT MOVED IS REPORTED, NOT REFUSED. The session resumes
+        // from the cwd string alone, so a different branch under the same path
+        // is a working resume into a lane whose code has changed - worth
+        // saying out loud on the receipt, and not worth blocking, since
+        // resuming a lane onto a rebased or renamed branch is an ordinary
+        // reason to resume at all. Silence is the failure mode to avoid here:
+        // a resumed worker's own context still describes the branch it was
+        // parked on.
+        const branchNow = agent.parked_branch ? branchAt(agent.cwd) : "";
+        const branchDrift =
+          branchNow && branchNow !== agent.parked_branch
+            ? { parked_branch: agent.parked_branch, branch_now: branchNow }
+            : null;
         // Counselors (opus): idx_agents_running_name's COLLATE NOCASE folds
         // ASCII only, so it alone would let a resumed "café" and a running
         // "CAFÉ" both stay running - the exact pair requireNameFree exists to
@@ -857,9 +1055,157 @@ export function registerAgents(server: McpServer): void {
           name: agent.name,
           tmux_target: target,
           resumed_session_id: agent.session_id,
+          // Issue #156: tells a parked resume from an ordinary one on the
+          // receipt itself, so a lead resuming a morning's crew can see which
+          // of them it actually parked last night and which were merely
+          // closed. Absent, not false, when the row was never parked - the
+          // same "no fact recorded" convention the column itself uses.
+          ...(agent.parked_at ? { was_parked_at: agent.parked_at } : {}),
+          ...(branchDrift ? { branch_drift: branchDrift } : {}),
           ...(landedInProjectId != null
             ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }
             : {}),
+        };
+      }),
+  );
+
+  // ISSUE #156. THE RETIRE CELL OF .claude/rules/tool-contract.md's LIFECYCLE
+  // MATRIX, which read "n/a, folded into agent_close" for agents until this
+  // tool. That rule defines Retire as "soft, reversible, still readable by id
+  // afterward" and Remove as "hard, permanent"; park is the first and
+  // agent_close is the second, so this is not a new slot invented for it.
+  //
+  // WHY A TOOL AND NOT A `park` BOOLEAN ON agent_close (the issue names both).
+  // Written without naming that parameter in a callable shape on purpose:
+  // test/wire-surface.test.mjs reads every tool call in this source and
+  // requires its parameters to be real, so a rejected design spelled out as a
+  // call reads to that check as a tool this file suggests. A boolean that
+  // verb MEANS makes one description answer for two operations, and
+  // agent_close's refusals - the live-lead refusal, the worker-caller gate -
+  // carry reasoning about ENDING a lane that was never made about pausing one.
+  // The naming rule's own escape hatch covers the verb: Retire defaults to
+  // `<resource>_archive` and may take a domain verb when retirement does more
+  // than flip a row, which killing a live pane is - the same reason
+  // `agent_close` overrides Remove.
+  server.registerTool(
+    "agent_park",
+    {
+      description:
+        "Park a claude worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+      inputSchema: {
+        name: agentNameParam,
+        agent_id: agentIdParam,
+        confirm_self: z.boolean().optional(),
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(() => {
+        const project = resolveProject(args.project_id);
+        const agent = findAgent(project.id, args);
+        // A LEAD IS NEVER PARKED, refused before anything is probed or killed.
+        // agent_resume already refuses a lead on the other side (its restart
+        // path is `hive lead`, which reuses the row and actor_id by its own
+        // mechanism), so a parked lead would be a row nothing could ever
+        // un-park - the state this tool exists to make legible would be the
+        // one state with no way out of it.
+        if (agent.kind === LEAD_KIND) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is this project's lead session, which is not a lane to pause. ` +
+              "Leads restart with `hive lead`, which recovers the same row and actor id.",
+          );
+        }
+        // PARK PROMISES RESUMABILITY, SO IT REFUSES WHAT IT CANNOT RESUME.
+        // Both conditions below are exactly agent_resume's own, checked here
+        // rather than only there, because the cost of learning it tomorrow
+        // morning is the whole lane: a row marked parked is a promise the
+        // next-morning lead reads off `hive status` and plans around, and
+        // discovering at 09:00 that the promise was empty is worse than being
+        // told at 18:00 to use agent_close instead. Same facts, twelve hours
+        // earlier, when there is still a live pane to do something about.
+        if (!isClaudeCommand(agent.command)) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is not a claude worker (command: "${agent.command}"), so it has ` +
+              "no session to resume and nothing to park. Close it with agent_close.",
+          );
+        }
+        if (!agent.session_id) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") has no recorded session id, so parking it would promise a resume ` +
+              "that cannot happen. It may predate this feature, or have closed before its first hook event fired. " +
+              "Close it with agent_close and spawn a fresh worker tomorrow.",
+          );
+        }
+        // THE THIRD OF agent_resume's PRECONDITIONS, and the one this tool
+        // originally left out - found by this lane's own /simplify altitude
+        // pass, which is the shape of mistake the pass is for: park's promise
+        // had quietly outlived resume's requirements INSIDE THE SAME COMMIT
+        // that added the requirement.
+        //
+        // What it costs when it is missing is exactly the case parked_branch
+        // was built for. Park a worker whose worktree was already removed out
+        // from under it (which the lead did to a running worker on
+        // 2026-08-11): the park succeeds and marks the lane resumable,
+        // branchAt has nothing to read so it records '', the board line says
+        // "branch (unrecorded)", and next morning agent_resume refuses with
+        // advice telling you agent_park would have recorded a branch - which
+        // it did run, and could not. Unactionable, and false.
+        if (!existsSync(agent.cwd)) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}")'s working directory is already gone: ${agent.cwd}. Parking it ` +
+              "would record a lane that cannot be resumed, and its branch can no longer be read. Recreate that " +
+              "path first if you want this lane back tomorrow, or close it with agent_close.",
+          );
+        }
+        const live = isLive(agent);
+        // Unknown liveness is never dead (issue #14), the same refusal
+        // agent_close makes one tool down and for the same reason: parking the
+        // row while the pane may still be up leaks a running process nothing
+        // tracks, and the kill would not land anyway while tmux is unreachable.
+        if (live === null) throw probeFailed(agent);
+        if (agent.actor_id === currentActor() && args.confirm_self !== true) {
+          throw new Error(
+            "This would park your own session. Pass confirm_self=true only if the user explicitly asked you to park yourself.",
+          );
+        }
+        // READ THE BRANCH BEFORE THE PANE DIES. Nothing here depends on the
+        // pane, but a park whose kill throws must not have already stamped the
+        // row, and a park that stamped the row must have the branch: doing the
+        // read first keeps both true whichever way the kill goes.
+        const branch = branchAt(agent.cwd);
+        if (live) killAgentPane(agent.tmux_target);
+        // The same conditional write agent_close makes, for the same race: a
+        // concurrent writer recording a fresh pane on this row between the
+        // probe above and this write must not have its row retired on the
+        // strength of a probe that is no longer true.
+        const parkedAt = parkAgentRow(agent.id, agent.tmux_target, branch);
+        if (parkedAt === undefined) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}")'s row changed since this call probed it. Nothing was parked. ` +
+              "Re-read it with agent_status and try again.",
+          );
+        }
+        const todoIds = laneTodoIds(project.id, agent.actor_id);
+        return {
+          agent_id: agent.id,
+          name: agent.name,
+          parked: true,
+          parked_at: parkedAt,
+          parked_branch: branch,
+          cwd: agent.cwd,
+          session_id: agent.session_id,
+          todo_ids: todoIds,
+          // The one fact a slim receipt cannot leave to the caller to
+          // reconstruct (.claude/rules/tool-contract.md): this string IS the
+          // deliverable half of issue #156. Paste it onto the board.
+          board_line: parkedBoardLine({
+            parkedAt,
+            name: agent.name,
+            agentId: agent.id,
+            branch,
+            cwd: agent.cwd,
+            todoIds,
+          }),
         };
       }),
   );
@@ -1396,6 +1742,77 @@ export function registerAgents(server: McpServer): void {
               "worker this project spawned may not close it.",
           );
         }
+        // ISSUE #156: CLOSING A PARKED LANE IS HOW A PARK IS ABANDONED, and
+        // without this there is no way to abandon one at all. A parked row is
+        // already closed, so nothing here has a pane to kill; what it has is a
+        // stamp that `hive status` reports and a next-morning lead plans
+        // around. Leaving that stamp on a lane nobody will resume is precisely
+        // the "a parked crew that exists only on the board goes stale" failure
+        // this feature was built to end, reached from inside the feature.
+        //
+        // It is the Remove-after-Retire flow .claude/rules/tool-contract.md's
+        // matrix already describes for pads (pad_archive, then pad_delete),
+        // not a second meaning for agent_close: the row ends up exactly where
+        // an ordinary close leaves one, plain closed.
+        //
+        // Reachable only by agent_id, and that is findAgent's shape rather
+        // than a restriction chosen here - its name branch resolves among
+        // RUNNING rows and reports a closed match as an error. Fine for this
+        // case: `hive status` prints the agent_id beside every parked lane, so
+        // the caller reading the stale entry already has the one thing this
+        // needs.
+        if (agent.status === "closed" && agent.parked_at) {
+          // Conditional, and it throws on a loss for the same reason the
+          // ordinary close below does: a concurrent agent_resume can flip this
+          // row running and clear the stamp between findAgent and this write,
+          // and an unconditional release would then report `closed: true` over
+          // a live worker with a live pane (counselors, all three seats).
+          // ONE TRANSACTION, because the gap between these two writes is a
+          // real window rather than a theoretical one: a scheduler ticks every
+          // three seconds in EVERY hive session on the machine, so a tick
+          // landing between the release and the ledger write files exactly the
+          // obituary the ledger write exists to prevent. The two statements
+          // are one fact - "this lane was deliberately abandoned" - so they
+          // commit together or not at all.
+          //
+          // A plain db.transaction is safe here: this handler never calls
+          // withWindowClaim, which is the one transaction in this codebase
+          // that must be outermost on its call stack
+          // (.claude/rules/store-and-datadir.md).
+          const released = db.transaction(() => {
+            if (!releaseParkRow(agent.id)) return false;
+            markGoneReported(agent.id, project.id);
+            return true;
+          })();
+          if (!released) {
+            throw new Error(
+              `Agent ${agent.id} ("${agent.name}")'s row changed since this call probed it - most likely a ` +
+                "concurrent agent_resume. Nothing was released and nothing was closed. Re-read it with " +
+                "agent_status and try again.",
+            );
+          }
+          // ABANDONING A PARK IS A DECISION, NOT A DEATH, AND THE SCHEDULER
+          // WAS TOLD SO in the transaction above. Do not delete that
+          // markGoneReported call without reading its own comment
+          // (src/scheduler.ts).
+          //
+          // The park exclusion in standingGoneRows is `parked_at = ''`, a
+          // FILTER rather than a claim: while the lane sits parked, no cursor
+          // row is ever written for it. The release above clears parked_at and
+          // deliberately touches nothing else - not closed_at, not
+          // agent_state - so without this line the very next scheduler tick
+          // sees a closed row, still 'working', no longer parked, with an
+          // episode nothing has reported, and tells the lead that worker DIED
+          // and to go and excavate its branch. Last night's timestamp, at
+          // 09:00, about a lane the lead just deliberately abandoned.
+          //
+          // A fourth filter would not close it - the release is exactly the
+          // moment a filter's condition stops holding. The ledger is durable:
+          // it records that this episode has been dealt with, which is what a
+          // deliberate release means, and it survives any later change to the
+          // columns standingGoneRows reads.
+          return { agent_id: agent.id, name: agent.name, closed: true, park_released: true };
+        }
         // Refuse rather than half-close, for every kind. Closing the row
         // while the pane may still be up leaks a running process nothing
         // tracks, and the kill would not land anyway while tmux is
@@ -1429,44 +1846,7 @@ export function registerAgents(server: McpServer): void {
             "This would close your own session. Pass confirm_self=true only if the user explicitly asked you to close yourself.",
           );
         }
-        if (live) {
-          const pane = isPaneTarget(agent.tmux_target);
-          // Resolve the window before the pane dies, then re-tile the
-          // survivors: tmux's own redistribution otherwise wipes the
-          // arrangement hive applied on spawn.
-          const window = pane ? paneWindow(agent.tmux_target) : null;
-          tmux(pane ? "kill-pane" : "kill-window", "-t", agent.tmux_target);
-          if (window) {
-            // Todo 269 / counselors F1 on pad 71. The window's OWNER decides
-            // its hive.yml, never the CLOSING row's project: once a
-            // cross-project worker can share a window with a lead it did
-            // not spawn from (todo 268), re-tiling through `project.path`
-            // (the closing row's own project) lets a foreign repo arrange a
-            // window it does not own. windowLayout(window) is consulted
-            // FIRST and already reads @hive-layout off the window itself, so
-            // this only narrows the FALLBACK, which fires when the window
-            // carries no @hive-layout yet. A window with no @hive-project-id
-            // stamp (a user-created window, or a placement="window" worker's
-            // own - both deliberately unstamped, test/worker-first-window-
-            // stamp.test.mjs) has no owner to resolve a layout through
-            // either, so DEFAULT_LAYOUT is the honest answer there too -
-            // never the closing row's project, which is the defect.
-            // SIBLING CALL SITE: agent_spawn's landed_in_project receipt
-            // (above) resolves the same windowOwner -> getProject pair and
-            // handles a stamp naming a DEAD project row the other way, with a
-            // synthesized "project <id>" placeholder. Deliberate, and its own
-            // comment carries the argument. Absent is the honest answer HERE
-            // because the value feeds a layout: a hive.yml read from a project
-            // that no longer exists cannot be produced at all, so there is
-            // nothing to fall back to but DEFAULT_LAYOUT.
-            const ownerId = windowOwner(window);
-            const ownerProject = ownerId != null ? getProject(ownerId) : undefined;
-            applyLayout(
-              window,
-              windowLayout(window) ?? (ownerProject ? loadProjectYml(ownerProject.path).config?.layout : undefined) ?? DEFAULT_LAYOUT,
-            );
-          }
-        }
+        if (live) killAgentPane(agent.tmux_target);
         // Issue #27's L4 fix round R10, todo 181 item 3 (codex F1).
         // Conditional on the target this call actually probed as `live`
         // above, not merely on id and status='running': a concurrent `hive

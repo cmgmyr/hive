@@ -773,7 +773,14 @@ describe(
         // Todo 336 added pane_pid to this exact UPDATE (src/spawn.ts) - the
         // string this test intercepts has to track that literal SQL, or the
         // patch below silently stops matching and launchAgent just succeeds.
-        if (sql === "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?") {
+        // IT DRIFTED EXACTLY THAT WAY, once, and the comment above is what
+        // caught it: issue #156 added `AND status = 'running'` to recordPane
+        // (counselors, all three seats - a row retired mid-spawn must not have
+        // a pane written onto it), the `===` stopped matching, and this test
+        // went from proving launchAgent's rollback behaviour to proving
+        // nothing. startsWith rather than a second full literal, so the next
+        // clause added to that WHERE does not silently disarm it again.
+        if (sql.startsWith("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?")) {
           return {
             run: () => {
               throw new Error("SQLITE_BUSY: simulated for finding 5");

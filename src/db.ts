@@ -938,6 +938,85 @@ ALTER TABLE agents ADD COLUMN pane_pid TEXT NOT NULL DEFAULT '';
   `
 ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 `,
+  // Issue #156 (todo 353, lane B). PARK IS A COLUMN, NOT A THIRD `status`
+  // VALUE, and that is the load-bearing half of this entry. `status` is
+  // branched on across the janitor's two sweeps, isLive(), requireNameFree,
+  // idx_agents_running_name, agent_list, standingIdleRows and `hive status`;
+  // a third value means auditing every one of them and being silently wrong
+  // in whichever one got missed. An additive column is ignored by every
+  // existing consumer BY CONSTRUCTION - the same argument this file's
+  // append-only rule makes and the same shape session_id took one entry up.
+  // A PARKED LANE IS THEREFORE A CLOSED ROW WITH parked_at SET, which is
+  // exactly the distinction the issue asks for: `closed` currently means both
+  // "this lane is done" and "this lane is paused", and a next-morning lead
+  // cannot tell them apart.
+  //
+  // BOTH DEFAULT '' = "no fact recorded", the convention tmux_socket, pane_pid
+  // and session_id already set. Every row written before this migration reads
+  // as never parked, which is true of all of them.
+  //
+  // WHY parked_branch IS A COLUMN AND THE LANE'S TODO IDS ARE NOT (D2, argued
+  // on todo 353 comment 819). The distinguishing property is that the branch
+  // EXPIRES. Transcript resolution is a pure function of the cwd string
+  // (issue #5 D7), so a removed worktree is recreatable at the same path - but
+  // only while you still know the branch, and `git -C <cwd> rev-parse` can
+  // answer that at park time and never again once the worktree is gone.
+  // Deriving it later is not a cheaper option, it is an unavailable one, and
+  // the lead hit exactly this on 2026-08-11 by removing a worktree out from
+  // under a running worker. The lane's TODO IDS have the opposite shape:
+  // `todo_comments.author` already equals the row's own actor_id (resume
+  // reuses the actor_id, lane A's D2), so the link is written as a side effect
+  // of the worker doing its job and needs no column and no parameter the lead
+  // has to remember at 18:00 on a Friday - which is the failure issue #156 was
+  // filed about. A column the lead must populate would be durable without
+  // being reliable. Pad ids are dropped for a third reason again: runbook
+  // step 14 archives a lane's plan pad at teardown, so recording one here
+  // would record the most perishable fact as though it were the most durable.
+  `
+ALTER TABLE agents ADD COLUMN parked_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN parked_branch TEXT NOT NULL DEFAULT '';
+`,
+  // Issue #156, D3 - THE FALSE FINISH. A resumed worker fires a Stop hook the
+  // moment its restore turn ends, and a standing watch reports that as
+  // "finished" before the worker has been given its assignment. A lead that
+  // trusts the wake tears down a worker that never started. Observed live
+  // twice, and reproduced end to end before this column existed:
+  // test/resume-false-finish.test.mjs drives a real spawn, park, resume and a
+  // real Claude Code Stop payload through dist/hook.js, and the row goes
+  // 'unknown' -> 'idle' with a fresh state_changed_at and a single
+  // `stop|idle` log row with no `prompt` anywhere before it.
+  //
+  // A SEPARATE ENTRY FROM THE PARK COLUMNS ABOVE, even though both land in the
+  // same lane and the same table, because MIGRATIONS is append-only and the
+  // entry above has already been applied to every store that ran this branch.
+  // Editing it would leave those stores without this column forever, since a
+  // version already in the migrations table is never re-run.
+  //
+  // WHY A TIMESTAMP AND NOT A FLAG. It reads as "the moment this row was last
+  // resumed", which is the fact; a boolean would read as "suppress this
+  // worker", which is a policy, and the next reader would have no way to tell
+  // when it was set or whether it was stale. '' is "no fact recorded", the
+  // convention every added column on this table already uses.
+  //
+  // TWO WRITERS, AND THEY ARE WHAT MAKE THE SUPPRESSION SELF-CLEARING RATHER
+  // THAN A LATCH. src/spawn.ts's resumeAgent stamps it in the same statement
+  // that un-closes the row; src/hook.ts CLEARS it on the worker's first
+  // `prompt` event, which is a real UserPromptSubmit and therefore the first
+  // moment anyone actually gave this worker something to do. So
+  // `resumed_at != ''` means exactly "resumed, and not yet spoken to", and the
+  // scheduler needs no log subquery to ask that question.
+  //
+  // THIS IS DELIBERATELY NOT THE SHAPE `also_when_stuck` DIED IN
+  // (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md).
+  // That design FIRED on a latched state whose end emitted nothing, so a stale
+  // value and a live one were byte-identical. This one never fires anything: it
+  // only ever SUPPRESSES, and the end of its condition emits a `prompt` hook,
+  // which is precisely the event hive already wires and already writes on. A
+  // latch may decide whether to LOOK, never what is true - and this one decides
+  // whether to STAY QUIET, which is the safe direction of the same rule.
+  `
+ALTER TABLE agents ADD COLUMN resumed_at TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

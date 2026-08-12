@@ -322,6 +322,32 @@ try {
         "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
       ).run(state, actorId);
     }
+    // Issue #156, D3 - THE OTHER HALF OF THE FALSE-FINISH FIX, and the half
+    // that makes it self-clearing instead of a latch.
+    //
+    // src/spawn.ts's resumeAgent stamps agents.resumed_at, and while it is set
+    // the scheduler declines to report that worker's idle as a finish - the
+    // restore turn ends in a real Stop hook, with a real fresh idle, for a
+    // worker nobody has given anything to. A `prompt` event is a genuine
+    // UserPromptSubmit, so it is exactly the first moment someone HAS: from
+    // here on this worker's finishes are real and must be reported. Clearing
+    // it here rather than in the scheduler keeps the whole condition readable
+    // as one sentence on the row - "resumed, and not yet spoken to" - and
+    // needs no log subquery on the hottest loop hive has.
+    //
+    // SCOPED kind = 'agent' AND resumed_at != '', matching the state UPDATE
+    // above for its reason (an allowlist, so a future third kind defaults to
+    // silence) and adding the second predicate so the ordinary case - every
+    // prompt of every never-resumed worker, which is nearly all of them -
+    // matches no rows rather than rewriting a column to the value it already
+    // holds. `stop` and `notify` deliberately do not clear it: a worker that
+    // ends another turn without ever being prompted still has not been given
+    // anything, which is the whole condition.
+    if (event === "prompt") {
+      db.prepare(
+        "UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND resumed_at != ''",
+      ).run(actorId);
+    }
     // Every event carries session_id, not only the ones stateFor reads a
     // payload for, so this runs unconditionally rather than folded into the
     // branch above.

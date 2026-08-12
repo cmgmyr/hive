@@ -141,6 +141,33 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     }
   }
 
+  // Issue #156 (counselors, opus F7). THE DIGEST IS THE ONE SURFACE THAT
+  // REQUIRES NOBODY TO REMEMBER ANYTHING, which is exactly this feature's
+  // thesis: the issue's complaint is that "anything the lead has to remember to
+  // write down is a thing that gets skipped at 18:00 on a Friday". D4 put
+  // parked lanes in `hive status`, which is right and is still a command
+  // somebody has to run. A crew parked on Friday and not mentioned at 09:00 on
+  // Monday is the failure the issue describes, reached from inside the fix.
+  //
+  // A COUNT AND A POINTER, not a listing, and the two reasons differ from
+  // `hive status`'s. This text is INJECTED into every session's context and is
+  // truncated to CONTEXT_BUDGET, so three lines per lane would push out the
+  // todos above it; and the lead reading this is about to run triage anyway,
+  // where `hive status` gives the branch, the cwd and the resume call. The
+  // WORKERS block above makes the same trade for the same reason.
+  const parked = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND status = 'closed' AND parked_at != ''")
+      .get(project.id) as { n: number }
+  ).n;
+  if (parked > 0) {
+    lines.push(
+      "",
+      `PARKED: ${parked} lane(s) paused rather than finished, waiting to be resumed. ` +
+        "`hive status` lists each with its branch and the one call that brings it back.",
+    );
+  }
+
   const wakes = db
     .prepare(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`)
     .get(project.id) as { n: number };

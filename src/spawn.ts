@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { dataDir, db } from "./db.js";
 import {
   applyLayout,
@@ -248,14 +249,70 @@ function agentIdentityEnv(actorId: string, name: string, projectPath: string): R
 // pane id to" - see src/db.ts's migration and deliverable()'s own comment
 // (src/scheduler.ts). Read against the pane this statement's caller just
 // confirmed live.
-function recordPane(agentId: number, target: string, socket: string): void {
-  db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ?").run(
-    target,
-    socket,
-    panePid(target),
-    agentId,
+//
+// COUNSELORS, ALL THREE SEATS, ISSUE #156: RECORDPANE MUST NOT WRITE A PANE
+// ONTO A ROW THAT IS NO LONGER RUNNING. That sentence is the invariant, and it
+// is true regardless of who closed the row or why - which is what makes this
+// the right layer for it rather than a guard at whichever caller happened to
+// expose it.
+//
+// WHAT EXPOSED IT. resumeAgent's flip deliberately commits status='running'
+// with tmux_target='' (to take the row out of the janitor's `tmux_target != ''`
+// sweep for the duration of the resume). A concurrent agent_park then reads
+// that row: targetLiveProbe('') answers `{live: false}` - FALSE, not null
+// (src/tmux.ts) - so the caller's own "unknown liveness is never dead" refusal
+// does not fire, no pane is killed, and parkAgentRow's CAS `AND tmux_target =
+// ?` compares '' against '' AND MATCHES. The row goes closed+parked while the
+// resume is still mid-flight, and this statement then wrote the live pane onto
+// it. End state: a live `claude --resume` pane on a row that reads closed, so
+// the janitor's status='running' sweep cannot see it, `hive status` lists it as
+// resumable, and resuming again forks a SECOND pane on the same session -
+// verbatim the failure the empty tmux_target was introduced to prevent,
+// reached through a different door.
+// NOT A NARROW WINDOW: placeAgentPane runs inside withWindowClaim, which is
+// BEGIN IMMEDIATE, so a competing write BLOCKS on that lock and fires the
+// instant it releases - precisely into the gap above this line. Contention
+// makes this MORE likely, not less.
+//
+// FIXED HERE RATHER THAN AT THE CALLER, deliberately and with the scope cost
+// accepted by the lead: launchAgent has the identical INSERT-to-recordPane gap
+// (an agent_close landing in it), and a guard written into agent_park would
+// have left that twin live while looking like a fix. This project's own record
+// is that writing such a lesson down does not stop the second instance; only a
+// fix at the site does.
+//
+// THE CALLER OWNS THE RECOVERY, because only the caller knows what it built:
+// `changes === 0` means the row was retired underneath it, so there is a live
+// pane belonging to nobody. Both callers kill that pane and throw rather than
+// leaving it, which is the one action that cannot leak a process nothing
+// tracks.
+function recordPane(agentId: number, target: string, socket: string): boolean {
+  return (
+    db
+      .prepare(
+        "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ? AND status = 'running'",
+      )
+      .run(target, socket, panePid(target), agentId).changes > 0
   );
 }
+
+// The pane this process just created, belonging to a row that no longer wants
+// it. Best-effort: the throw that follows is the real report, and a kill-pane
+// that itself fails must not replace a precise error with a tmux one.
+function discardOrphanedPane(target: string): void {
+  try {
+    tmux("kill-pane", "-t", target);
+  } catch {
+    // Already gone, or a server we cannot reach. Nothing else to try.
+  }
+}
+
+const paneRacedRetirement = (agentId: number) =>
+  new Error(
+    `Agent ${agentId}'s row was retired (closed or parked) while its pane was being created, so the pane was ` +
+      "discarded rather than recorded against a row that is no longer running. Nothing is left running for it. " +
+      "Re-read the row with agent_status and resume or spawn again if that was not what you intended.",
+  );
 
 // Issue #27's L4 fix round R10, todo 182 item 3 (opus, orphaned-comment
 // finding). This paragraph describes idx_agents_running_name, which
@@ -529,7 +586,16 @@ export function launchAgent(
     // INSERT; leave it there and just rethrow, so the caller sees the
     // failure while the worker it already spawned stays reachable by
     // actor_id, just without a recorded tmux_target.
-    recordPane(agentId, target, socket);
+    // The row can have been retired since the INSERT above (an agent_close
+    // landing in the gap this call spans). recordPane refuses to write onto a
+    // row that is no longer running; when it does, this pane belongs to
+    // nobody, so it is killed rather than leaked. paneUp is already true, so
+    // the catch below rethrows without deleting the row - correct, and for the
+    // reason stated above it: whoever retired the row owns it now.
+    if (!recordPane(agentId, target, socket)) {
+      discardOrphanedPane(target);
+      throw paneRacedRetirement(agentId);
+    }
     return { agentId, actorId, target, landedInProjectId };
   } catch (e) {
     if (paneUp) throw e;
@@ -639,8 +705,23 @@ export function resumeAgent(
   try {
     flipped = db
       .prepare(
+        // Issue #156: the park stamp is CLEARED here, in the same statement
+        // that un-closes the row. A resumed lane is not a parked one, and a
+        // parked_at left behind would make `hive status` report it parked for
+        // the rest of the row's life - the stale-state failure the D4 surface
+        // exists to prevent, reintroduced by the tool that was supposed to end
+        // it. Both columns move together on purpose: parked_at != '' is what
+        // every reader gates on, so a parked_branch surviving alone would be a
+        // fact no reader can reach and no writer maintains.
+        // Issue #156 D3: resumed_at is stamped HERE, in the same statement, for
+        // the same reason session_id is written in launchAgent's own INSERT -
+        // a fact that must be true of the row before anything else can observe
+        // it. It marks this worker as "resumed, and not yet spoken to", which
+        // is what stops the restore turn's own Stop hook being reported as a
+        // finish. src/hook.ts clears it on the first `prompt` event.
         "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
-          "agent_state = 'unknown', state_changed_at = NULL, tmux_socket = ?, command = ? " +
+          `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
+          "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
           "WHERE id = ? AND status = 'closed'",
       )
       .run(socket, spec.commandString, spec.agentId).changes;
@@ -682,7 +763,16 @@ export function resumeAgent(
     const title = windowTitle(spec.projectName, spec.name);
     const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
     paneUp = true;
-    recordPane(spec.agentId, target, socket);
+    // THE RACE THIS WHOLE GUARD EXISTS FOR (counselors, all three seats): a
+    // concurrent agent_park sees this row's deliberately-empty tmux_target,
+    // reads the pane as dead rather than unprobed, and parks it mid-resume.
+    // recordPane refuses to write onto the retired row; the pane it would have
+    // recorded is killed, so the park's own view - a closed, parked lane with
+    // nothing running - becomes true rather than a lie.
+    if (!recordPane(spec.agentId, target, socket)) {
+      discardOrphanedPane(target);
+      throw paneRacedRetirement(spec.agentId);
+    }
     return { target, landedInProjectId };
   } catch (e) {
     // launchAgent DELETEs a fresh row on a pre-pane failure; there is no
@@ -744,6 +834,104 @@ export function renameAgent(
 // reason. The return value says whether the close actually happened, so a
 // caller that cares (agent_close does) can tell "closed" from "the row moved
 // out from under me" instead of reporting the former for both.
+// Issue #156 (todo 353 lane B), D2. The branch a lane was parked on, read at
+// PARK TIME because that is the only time it can be read.
+//
+// Transcript resolution is a pure function of the cwd string (issue #5 D7), so
+// a worktree removed while a lane is parked can be recreated at the same path
+// and the session resumes - but only if the branch is still known, and once the
+// directory is gone there is nowhere left to ask. That asymmetry is the whole
+// argument for recording this rather than deriving it on read: deriving it later
+// is not a cheaper option, it is an unavailable one. The lead removed a worktree
+// out from under a running worker on 2026-08-11, so this is a case that has
+// already happened here, not a hypothetical.
+//
+// The shape of the call mirrors gitPrimaryRoot (src/context.ts) deliberately,
+// for its reasons rather than by copying: an argument array (no shell, per
+// .claude/rules/tmux-and-panes.md), a bounded timeout because a cwd on a stalled
+// network mount blocks git in the kernel, and a swallow-to-empty catch because
+// "" is this column's own "no fact recorded" default. PARK MUST NOT FAIL OVER
+// THIS - a lane that cannot be parked because git was slow is strictly worse
+// than a parked lane with one unrecorded fact, and every other fact park needs
+// is already on the row.
+//
+// A DETACHED HEAD ANSWERS "HEAD", which records nothing a reader could act on,
+// so that one case falls through to the short sha - the value that actually
+// recreates the checkout. Only reached when detached, so the ordinary lane pays
+// one fork, not two.
+export function branchAt(cwd: string): string {
+  const git = (args: string[]): string | null => {
+    try {
+      return execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2000,
+      }).trim();
+    } catch {
+      return null;
+    }
+  };
+  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branch === null) return "";
+  if (branch !== "HEAD") return branch;
+  return git(["rev-parse", "--short", "HEAD"]) ?? "";
+}
+
+// PARK IS CLOSE PLUS TWO FACTS, and it deliberately reuses closeAgentRow's own
+// conditional-write shape rather than being a second way to close a row: the
+// same id + status='running' + tmux_target CAS, for the same reason (a
+// concurrent writer recording a fresh pane between the caller's probe and this
+// write must not have its row retired on the strength of a probe that is no
+// longer true).
+//
+// One statement, not close-then-update: a park that closed the row and then
+// failed to stamp it would leave a lane looking finished when it is paused,
+// which is the exact confusion issue #156 exists to remove.
+export function parkAgentRow(agentId: number, expectedTmuxTarget: string, branch: string): string | undefined {
+  // RETURNING, not a separate SELECT afterward - the same reason
+  // src/tools/leases.ts states for its own: the receipt then comes from the
+  // exact row this statement wrote, rather than from a re-read that a
+  // concurrent writer can have moved in between. undefined is the CAS loss,
+  // which is the caller's "nothing was parked" branch.
+  return (
+    db
+      .prepare(
+        "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
+          "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ? RETURNING parked_at",
+      )
+      .get(branch, agentId, expectedTmuxTarget) as { parked_at: string } | undefined
+  )?.parked_at;
+}
+
+// THE PARK STAMP IS TWO COLUMNS AND ONE CONCEPT, so the list of them lives
+// here rather than being retyped at each site that clears it. Three writers
+// touch it - parkAgentRow above sets it, resumeAgent clears it inside its own
+// CAS (which has to stay one statement, so it splices this fragment rather
+// than calling the helper), and agent_close's park release calls
+// releaseParkRow. Issue #156 itself floated a third park column, and whichever
+// one is added next, a release path that forgot it would leave `hive status`
+// reporting a stale detail for a lane nobody parked - the "a parked crew goes
+// stale" failure this feature exists to end, reintroduced by the release path
+// built to prevent it.
+export const PARK_STAMP_CLEARED = "parked_at = '', parked_branch = ''";
+
+// THE SAME CAS EVERY OTHER RETIREMENT PATH IN THIS FILE TAKES, and it was the
+// one that skipped the discipline (counselors, all three seats). Without the
+// predicate: session A reads a parked row, session B resumes it (running, stamp
+// cleared, pane live), A's unconditional UPDATE no-ops on the already-cleared
+// columns, and A returns `{closed: true, park_released: true}` over a worker
+// that is running. closeAgentRow returns a bool for exactly this reason and
+// both of its call sites throw "row changed since this call probed it"; so does
+// this one now.
+export function releaseParkRow(agentId: number): boolean {
+  return (
+    db
+      .prepare(`UPDATE agents SET ${PARK_STAMP_CLEARED} WHERE id = ? AND status = 'closed' AND parked_at != ''`)
+      .run(agentId).changes > 0
+  );
+}
+
 export function closeAgentRow(agentId: number, expectedTmuxTarget?: string): boolean {
   const info =
     expectedTmuxTarget === undefined

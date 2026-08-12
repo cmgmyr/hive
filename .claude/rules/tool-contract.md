@@ -52,7 +52,7 @@ would have held the missing tool; see the file named in each case.
 | todos | `todo_create` | `todo_get` | `todo_list` | `todo_update` | `todo_archive` | none, accepted (`src/tools/todos.ts`) |
 | kv | `kv_set` | `kv_get` | `kv_list` | `kv_set` | TTL | `kv_delete` |
 | leases | `lease_acquire` | none, accepted (`src/tools/leases.ts`) | none, accepted (`src/tools/leases.ts`) | `lease_acquire` (re-acquiring extends) | TTL | `lease_release` |
-| agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | n/a, folded into `agent_close` | `agent_close` |
+| agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | `agent_park` | `agent_close` |
 | wakes | `wake_set`, `wake_when_idle` | `wake_get` | `wake_list` | `wake_update` | n/a | `wake_cancel` |
 | projects | `project_add` | none, accepted (`src/tools/meta.ts`) | `project_list` | none, accepted (`src/tools/meta.ts`) | none, accepted (`src/tools/meta.ts`) | `project_prune` |
 | actors | implicit (`src/context.ts`) | none, accepted (`src/context.ts`) | none, accepted (`src/context.ts`) | n/a | none, accepted (`src/context.ts`) | `actor_prune` |
@@ -86,7 +86,15 @@ current names.
   `<resource>_archive`, matching `pad_archive`. Do not build this for a
   resource whose retirement is really removal with a safety check first
   (see the projects/actors gap above); that is the Remove verb, not this
-  one.
+  one. **`agent_park` (issue #156) is the worked example of the override
+  half**, and of a cell in the matrix above being filled rather than
+  distrusted: parking a worker is soft (the row stays readable by id),
+  reversible (`agent_resume`), and does more than flip a row (it kills a
+  live pane), so it takes a domain verb for the same reason `agent_close`
+  overrides Remove. The alternative considered and rejected was a `park`
+  boolean on `agent_close`: a flag that changes what a verb means makes one
+  description answer for two operations, and `agent_close`'s refusals carry
+  reasoning about ending a lane that was never made about pausing one.
 - **Remove**: hard, permanent. Default `<resource>_delete`. Override with a
   domain verb when removal does more than delete a row: `agent_close` kills
   a live process first, `lease_release` gives up a claim without deleting

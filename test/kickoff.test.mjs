@@ -250,6 +250,45 @@ describe("hive kickoff gates", () => {
   // must not read as a liveness check that already happened. Seeded with a
   // raw insert rather than agent_spawn, since kickoff's WORKERS query is a
   // plain SELECT with no tmux involved and this is the row shape it reads.
+  // Issue #156 (counselors, opus F7). The SessionStart digest is the ONE
+  // surface that requires nobody to remember anything, and a crew parked on
+  // Friday that goes unmentioned at 09:00 on Monday is the exact failure the
+  // issue was filed about, reached from inside the feature meant to end it.
+  // A parked row is CLOSED, so every other query in the digest is blind to it
+  // by construction.
+  it("names parked lanes, which no other line in the digest can see", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      // A parked row and an ORDINARY closed row, so the assertion cannot pass
+      // by counting closed rows: only one of these is a paused lane.
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+             closed_at, parked_at, parked_branch)
+           VALUES (?, 'agent:901', 'parked-lane', '', 'claude', ?, 'agent', 'closed',
+             datetime('now'), datetime('now'), 'some-branch')`,
+        )
+        .run(projectId, dirs.projectDir);
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, closed_at)
+           VALUES (?, 'agent:902', 'finished-lane', '', 'claude', ?, 'agent', 'closed', datetime('now'))`,
+        )
+        .run(projectId, dirs.projectDir);
+    } finally {
+      store.close();
+    }
+
+    const { additionalContext } = fired((await kickoff()).stdout);
+    assert.match(additionalContext, /PARKED: 1 lane\(s\)/, "one parked lane, not two closed rows");
+    assert.match(additionalContext, /hive status/, "and it points at where the resume call actually is");
+  });
+
   it("heads WORKERS as unprobed, not confirmed", async () => {
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();

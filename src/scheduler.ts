@@ -9,6 +9,7 @@ import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
 import {
   ageSecondsSince,
+  awaitingFirstPostResumePrompt,
   describeLastLogEvent,
   humanizeAge,
   lastLogEvent,
@@ -2366,7 +2367,7 @@ const unreported = (condition: string, episode: string): string => `NOT EXISTS (
 // everything downstream.
 const CREW_COLUMNS =
   `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.agent_state,
-   a.state_changed_at, a.status, a.command, a.kind`;
+   a.state_changed_at, a.status, a.command, a.kind, a.resumed_at`;
 
 interface CrewRow {
   id: number;
@@ -2379,6 +2380,7 @@ interface CrewRow {
   status: string;
   command: string;
   kind: string;
+  resumed_at: string;
   episode: string;
 }
 
@@ -2408,15 +2410,88 @@ interface StandingCandidate {
 // watching its own crew; they differ the moment deliver_to names a crew
 // member, and it is that case the exclusion is actually for - a worker being
 // told it went idle, by a paste into the pane it is reading from.
+// ISSUE #156, D3. A RESUMED WORKER'S RESTORE TURN IS NOT A FINISH, and this
+// one predicate is the whole fix on the read side. `claude --resume` replays
+// the restored conversation, ends that turn, and fires a Stop hook; the row
+// goes idle, genuinely and freshly, for a worker nobody has given anything to.
+// A standing watch then reports it as finished, and a lead that trusts the
+// wake tears down a worker that never started. Observed live twice and
+// reproduced end to end in test/resume-false-finish.test.mjs before this
+// existed - a real park, a real resume, and a real Claude Code Stop payload
+// through the built dist/hook.js.
+//
+// WHY THE LATCH RESET LANE A ALREADY SHIPPED CANNOT COVER THIS. resumeAgent
+// clears agent_state/state_changed_at, which closed the case where a PRE-CLOSE
+// idle survived the resume and satisfied this query on the first tick. Here
+// the idle is real and the transition is fresh, so idleIsAFreshTransition is
+// correctly true for it and that reset has nothing to catch. Two different
+// defects that produce the same wrong sentence.
+//
+// `resumed_at != ''` reads as "resumed, and not yet spoken to": resumeAgent
+// stamps it, and src/hook.ts clears it on the first `prompt` event, which is a
+// real UserPromptSubmit and so the first moment anyone gave this worker
+// anything. That is why this is a column read and not a subquery over
+// agent_state_log on the hottest loop hive has.
+//
+// IT ONLY EVER SUPPRESSES. Read that against the withdrawn `also_when_stuck`
+// (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md),
+// which this superficially resembles and is the opposite of: that design FIRED
+// on a latched state whose end emitted nothing, so a stale value and a live one
+// were indistinguishable. This one fires nothing, and the end of its condition
+// emits a `prompt` hook that hive already wires and already writes on.
+//
+// THE ACCEPTED RESIDUAL, stated because it is reachable and this project has
+// shipped silent narrowing before. A delivery into a BUSY pane is absorbed
+// into the running turn as an attachment and fires no UserPromptSubmit at all
+// (.claude/rules/tmux-and-panes.md), so an assignment sent while the restore
+// turn is still replaying leaves resumed_at set, and THAT turn's genuine
+// finish is suppressed too. It is bounded rather than permanent: the next
+// delivery that lands on an idle pane is a real user turn, writes a `prompt`
+// row, and clears the column. The store cannot do better here - between the
+// restore turn and an attachment-driven turn there is no prompt, no `working`
+// latch, and no evidence of any kind distinguishing them - so this is a limit
+// of what is observable, not a check that could be sharpened.
+//
+// THE GONE HALF IS DELIBERATELY NOT SUPPRESSED (standingGoneRows below). A
+// resumed worker that DIES is real news, and the case that motivates watching
+// from outside at all is precisely a turn that dies mid-response, which is the
+// worker that cannot report itself.
+//
+// THAT SENTENCE WAS TRUE OF THE INTENT AND FALSE OF THE CODE for one commit,
+// and counselors caught it. The gone half excludes `agent_state = 'idle'` on
+// the premise "idle means it had finished and this watch has ALREADY SAID SO"
+// - and that premise is exactly what this suppression falsifies: the idle was
+// deliberately NOT said. So a worker resumed at 09:00 whose restore turn ended
+// (suppressed, correctly) and whose pane then died before any assignment
+// landed was closed with agent_state frozen at 'idle', and the gone half
+// skipped it forever. No finish, no obituary, nothing in `hive status` - the
+// worst outcome available, reached by two correct-looking guards meeting.
+// standingGoneRows now reads `(agent_state != 'idle' OR resumed_at != '')`:
+// a suppressed idle was never said, so it cannot be the reason to stay quiet.
+//
+// FILTERED IN JS, NOT IN THE WHERE CLAUSE, and the first version of this lane
+// had it the other way. As a SQL fragment it read cheaper - it prunes before
+// the correlated NOT EXISTS below - but it made this condition a STRING that
+// only looks like the JS test watchedStates does, with no way for either to
+// know the other exists. That is what let a THIRD reader ship unfixed on this
+// lane's first pass (wake_when_idle's own mode="all" shortcut,
+// src/tools/wakes.ts), one door down from the two the lane had walked. The
+// definition now lives in stateProvenance.ts, which exists for exactly this
+// (its header: five surfaces each doing their own is how they drift apart),
+// and every reader calls it. The cost is a crew-sized handful of rows fetched
+// and dropped per tick - blockedWatchedAgents above already post-filters the
+// same way, with rowAlive, for the same reason.
 function standingIdleRows(timer: TimerRow): CrewRow[] {
-  return stmt(
-    `SELECT ${CREW_COLUMNS}, a.state_changed_at AS episode
-       FROM agents a
-      WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
-        AND a.agent_state = 'idle' AND a.state_changed_at IS NOT NULL
-        AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
-      ORDER BY a.id`,
-  ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[];
+  return (
+    stmt(
+      `SELECT ${CREW_COLUMNS}, a.state_changed_at AS episode
+         FROM agents a
+        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
+          AND a.agent_state = 'idle' AND a.state_changed_at IS NOT NULL
+          AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
+        ORDER BY a.id`,
+    ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[]
+  ).filter((row) => !awaitingFirstPostResumePrompt(row));
 }
 
 // A WORKER THAT DIED, and this is the case project scope makes worse rather
@@ -2476,6 +2551,28 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 // silently inverts `!=` because src/db.ts declares this column NOT NULL
 // DEFAULT 'unknown'.
 //
+// A PARKED ROW IS NOT A DEATH EITHER, AND THIS IS THE SAME DISCRIMINATOR ONE
+// CASE WIDER (issue #156). Park closes the row deliberately, and a worker
+// parked mid-work reads `working` (or `unknown` if it never hooked), so without
+// this clause every park files a notice telling the lead that worker DIED and
+// to go and check its branch, its todo and any pad it was writing for what
+// landed before it stopped. That fires at exactly the wrong moment: a lead
+// parking a crew at 18:00 gets one false obituary per worker, about lanes it
+// just deliberately paused and can see in `hive status`.
+//
+// FOUND BY A FLAKY TEST RATHER THAN BY REVIEW, and the flake was the defect:
+// test/resume-false-finish.test.mjs parks and resumes inside a project that
+// has a standing watch, and the MCP server's own 3s scheduler sometimes ticked
+// in the few hundred milliseconds between the park and the resume. It read as
+// test cross-talk and it was the product.
+//
+// THE ONE-SHOT HALF (watchedStates) DELIBERATELY STILL ANSWERS GONE for a
+// parked target, and that is not an inconsistency. This half's membership is a
+// QUERY over a project's crew, so a park silently drops out of it and silence
+// is the honest answer. A one-shot's caller NAMED that worker and is blocked
+// on it; telling it the worker stopped is what unblocks it, and the
+// alternative is waiting out max_wait_seconds to be told nothing happened.
+//
 // THE RESIDUAL, WHICH IS A JUDGEMENT AND NOT AN OVERSIGHT: a worker that goes
 // idle and whose row closes before any tick REPORTED that idle is now silent
 // - the pane died within the same three-second tick, say. The tighter-looking
@@ -2502,7 +2599,8 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
     `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
-        AND a.agent_state != 'idle'
+        AND (a.agent_state != 'idle' OR a.resumed_at != '')
+        AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
         AND ${unreported(CONDITION_GONE, "a.closed_at")}
       ORDER BY a.id`,
@@ -2535,6 +2633,57 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
 // seeded row expire and report an ancient death. The default lifetime is four
 // hours against a seven-day retention, and every other cursor row in this
 // table has the same property.
+// ISSUE #156. THE MIRROR OF seedGoneCursor, FOR ONE AGENT ACROSS EVERY STANDING
+// WATCH, called when a park is ABANDONED (agent_close on a parked row,
+// src/tools/agents.ts).
+//
+// THE DEFECT IT CLOSES, found by the lead reading the real diff before merge,
+// and it is this lane's own defect class reached through the one door the lane
+// had not walked. standingGoneRows excludes a parked row with `parked_at = ''`,
+// which is a FILTER rather than a CLAIM: while the lane sits parked, no cursor
+// row is ever written for it. Releasing the park clears parked_at and touches
+// nothing else - not closed_at, not agent_state - so on the very next tick that
+// row satisfies every clause of standingGoneRows again, and the episode is
+// still unreported because nothing ever recorded it. The lead deliberately
+// abandons a parked lane at 09:00 and is told the worker DIED, with last
+// night's timestamp and instructions to go and excavate its branch. That is
+// verbatim what the park exclusion exists to prevent, displaced by one call.
+//
+// WHY THE LEDGER AND NOT A FOURTH FILTER. A filter suppresses only while its
+// condition holds, which is exactly how the release re-opened this: the moment
+// parked_at cleared, the suppression evaporated and the episode looked like
+// news again. wake_idle_notices is this file's existing, DURABLE record of
+// "this episode has been dealt with", and a deliberate release is precisely
+// that - the lead knows the lane ended, because the lead ended it. Recording
+// the fact survives any later change to the columns standingGoneRows reads.
+//
+// WHY NOT WRITE agent_state = 'idle' TO SLIP PAST THE EXISTING FILTER: that
+// would put a FALSE FACT into a column three other surfaces read
+// (agent_list/agent_status's latch, hive doctor, the dashboard), to buy a
+// side effect in a fourth. .claude/rules/worker-state.md's whole subject is
+// what that costs.
+//
+// EVERY STANDING WATCH IN THE PROJECT, not just one: membership is a query, so
+// a watch created while the lane was parked has no seeded cursor for it either,
+// and would report the release just the same. Scoped to watch_scope IS NOT NULL
+// (a standing watch) because a one-shot's `gone` runs through watchedStates,
+// which reads the row directly and never consults this ledger.
+//
+// INSERT OR IGNORE and notice_timer_id left NULL, matching seedGoneCursor
+// exactly: a NULL notice reads as "reported" with no spent claim to re-arm
+// from, so the row is never deleted and never fires.
+export function markGoneReported(agentId: number, projectId: number): void {
+  stmt(
+    `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+       SELECT t.id, a.id, '${CONDITION_GONE}', a.closed_at
+         FROM timers t
+         JOIN agents a ON a.id = ?
+        WHERE t.project_id = ? AND t.kind = 'idle_any' AND t.watch_scope IS NOT NULL
+          AND t.cancelled_at IS NULL AND t.fired_at IS NULL
+          AND a.closed_at IS NOT NULL`,
+  ).run(agentId, projectId);
+}
+
 export function seedGoneCursor(timerId: number, projectId: number): void {
   stmt(
     `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
@@ -3346,6 +3495,7 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
           tmux_socket: string;
           agent_state: string;
           state_changed_at: string | null;
+          resumed_at: string;
           settled: number;
         }
       | undefined;
@@ -3365,7 +3515,23 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       if (!agent.settled) return UNKNOWN;
       return GONE;
     }
-    return { idle: agent.agent_state === "idle", gone: false, since: agent.state_changed_at };
+    // Issue #156, D3, THE ONE-SHOT HALF. The defect was observed through a
+    // standing watch, but nothing about it is standing-specific: a one-shot
+    // wake_when_idle over a named list reads the same row, through this
+    // function, and would fire on the same restore turn. Both halves call the
+    // same predicate - see standingIdleRows above, and
+    // stateProvenance.ts for the full reasoning and the accepted residual.
+    //
+    // Folded into `idle` rather than an early return, so `gone` and `since`
+    // have one expression each. A resumed worker mid-restore is running,
+    // alive, and simply has not finished anything, which is what "not idle"
+    // already means here; answering GONE would report a live worker as dead
+    // and UNKNOWN would let an idle_all wake treat it as unjudgeable.
+    return {
+      idle: !awaitingFirstPostResumePrompt(agent) && agent.agent_state === "idle",
+      gone: false,
+      since: agent.state_changed_at,
+    };
   });
 }
 

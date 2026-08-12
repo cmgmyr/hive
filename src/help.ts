@@ -25,7 +25,7 @@ PLAYBOOKS — invokable prompts (slash commands in MCP clients)
 
 AGENTS — spawn and drive worker sessions in tmux
   agent_spawn, agent_list, agent_status, agent_send, agent_output,
-  agent_rename, agent_close
+  agent_rename, agent_park, agent_resume, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
   wake_set, wake_when_idle, wake_get, wake_update, wake_cancel, wake_list
@@ -158,8 +158,20 @@ runbook (fork it first), not a pad write.`,
     stays agent:N, so older pad writes and todo comments still point here.
     A live claude worker is told to retitle its own session, which arrives as
     a user turn: rename between assignments, not mid-task.
+  agent_park(name|agent_id) — END OF DAY. Kill the pane, mark the row PARKED
+    rather than plain closed, record the branch, and hand back a board line
+    plus the one call that brings the lane back. Use this instead of
+    agent_close whenever the lane is PAUSED rather than finished: "closed"
+    alone means both, and a next-morning lead cannot tell them apart.
+  agent_resume(name|agent_id) — NEXT MORNING. Reopen a closed or parked
+    claude worker on a fresh pane from its recorded session id, with the same
+    actor_id and its full prior context. It does not send the assignment;
+    agent_send it afterwards. Read the pane before believing any wake about
+    a worker you just resumed.
   agent_close(name|agent_id) — kill the window and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
+    On a PARKED row (by agent_id) it releases the park instead, which is how
+    you abandon a lane you have decided not to resume.
 
 Address a worker by its name, not its id: agent_send(name="impl", ...). A
 partial name works when it matches one running worker, so name="123" finds

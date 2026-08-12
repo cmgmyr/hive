@@ -1837,7 +1837,31 @@ function cmdStatus(): void {
         `SELECT COUNT(*) AS timers, COUNT(held_at) AS heldWakes FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
       )
       .get(project.id) as { timers: number; heldWakes: number };
-    if (agents.length === 0 && todos === 0 && timers === 0) continue;
+    // Issue #156, D4. A PARKED LANE IS LIVE STATE WITH NO RUNNING PROCESS, so
+    // it is invisible to every other query on this screen: the agents query
+    // above is status='running', and a parked row is closed. That is the whole
+    // reason this exists - "a parked crew that only exists on the board goes
+    // stale the first time someone forgets", and the board is the one surface
+    // here that no code maintains.
+    //
+    // LISTED, NOT COUNTED, unlike the todo and wake numbers below it. A count
+    // tells a cold-boot lead that it has forgotten something without telling
+    // it what, and the facts needed to act - which lane, on which branch, and
+    // the call that brings it back - are three fields wide, not one. The set
+    // is bounded by how many lanes a human parked and has not resumed, which
+    // is a crew, so this is not the unbounded listing runbook step 11 warns
+    // about; a project showing twenty parked lanes is correctly reporting that
+    // twenty were abandoned rather than resumed, which is information.
+    //
+    // Ordered oldest first so a lane parked weeks ago sorts above last night's
+    // and reads as the anomaly it is.
+    const parked = db
+      .prepare(
+        "SELECT id, name, parked_at, parked_branch, cwd FROM agents " +
+          "WHERE project_id = ? AND status = 'closed' AND parked_at != '' ORDER BY parked_at, id",
+      )
+      .all(project.id) as { id: number; name: string; parked_at: string; parked_branch: string; cwd: string }[];
+    if (agents.length === 0 && todos === 0 && timers === 0 && parked.length === 0) continue;
     anyOutput = true;
     // Todo 272 / plan-lane-3-tmux-topology: found by the lead by RUNNING the
     // command, not by the suite. Under one store-scoped session this used to
@@ -1905,6 +1929,17 @@ function cmdStatus(): void {
       }
     }
     if (agents.length === 0) console.log("  no running agents or commands");
+    for (const p of parked) {
+      // The branch is what recreates a removed worktree and the cwd is where
+      // it goes, so both are printed rather than one: transcript resolution is
+      // a pure function of the cwd string, and agent_resume refuses with the
+      // `git worktree add` line when that path is gone. A row parked before
+      // its branch could be read says "(unrecorded)" instead of printing an
+      // empty column that reads as a blank branch name.
+      console.log(`  parked  ${p.name.padEnd(20)} ${p.parked_at}  branch ${p.parked_branch || "(unrecorded)"}`);
+      console.log(`         ${p.cwd}`);
+      console.log(`         resume: agent_resume(agent_id: ${p.id})`);
+    }
     console.log(
       `  open todos: ${todos}   pending wake-ups: ${timers}${heldWakes > 0 ? ` (${heldWakes} held)` : ""}`,
     );

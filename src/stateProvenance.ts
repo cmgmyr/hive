@@ -306,3 +306,35 @@ export function describeLastLogEvent(log: LastLogEvent | null): string {
 export function reportsAgentStateLog(row: { kind: string; command: string }): boolean {
   return row.kind === "agent" && isClaudeCommand(row.command);
 }
+
+// Issue #156, D3. THE ONE DEFINITION OF "resumed, and not yet spoken to",
+// shared for exactly the reason the header above gives about deriveProvenance:
+// this module exists so surfaces reading the same latch cannot drift onto
+// slightly different tests of it, and this fact has three readers.
+//
+// WHY IT IS A FACT AND NOT THE VERDICT THIS FILE FORBIDS. The header rules out
+// a bound, a threshold, or a "stuck" verdict, and this is none of them: it
+// restates one column with no clock arithmetic and no interpretation.
+// `resumed_at` is stamped by resumeAgent (src/spawn.ts) and cleared by
+// src/hook.ts on the first `prompt` event, so the column already IS the fact
+// and this is its name.
+//
+// WHAT IT IS FOR. `claude --resume` replays the restored conversation, ends
+// that turn, and fires a Stop hook, so a resumed worker goes idle - genuinely,
+// freshly - for a turn nobody asked for. Reporting that as a finish tells a
+// lead a worker is done before it has been given anything, and a lead that
+// trusts it tears the worker down. Every surface that would answer "this
+// worker is idle, act on it" has to ask this first.
+//
+// THE THREE READERS, named because enumerating them by hand is how the third
+// was missed on this lane's first pass: standingIdleRows and watchedStates
+// (src/scheduler.ts, the standing watch and the one-shot), and
+// wake_when_idle's own mode="all" already_satisfied shortcut
+// (src/tools/wakes.ts), which never reaches the scheduler at all and would
+// otherwise answer "Act now" off the restore turn. A fourth surface,
+// agent_status/agent_list, deliberately keeps reporting the plain latch: it
+// shows what the row says rather than deciding anything on it, which is this
+// module's whole stance.
+export function awaitingFirstPostResumePrompt(row: { resumed_at: string }): boolean {
+  return row.resumed_at !== "";
+}

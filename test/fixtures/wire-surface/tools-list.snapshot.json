@@ -99,6 +99,38 @@
       "type": "object"
     }
   },
+  "agent_park": {
+    "description": "Park a claude worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric agent id. Use name instead unless you have the id to hand.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "confirm_self": {
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
   "agent_rename": {
     "description": "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task. Refuses a lead target outright.",
     "execution": {

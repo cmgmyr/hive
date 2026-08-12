@@ -52,6 +52,54 @@ Counselors round 2 (F3, R2-3) found this list itself under-claiming in the one p
 
 **R9's own residual text overclaimed here, and R10's todo 181 item 1 is the correction, not a widening.** R9 wrote "closing this one deliberately (a human choosing to run `agent_close` on a specific, named lead)" as if that were already true. It was not: nothing checked who the caller was, so any WORKER could call `agent_close(name: "lead")` exactly like a human at a terminal, including hitting the cross-server false-dead case above against a lead it has no business touching at all. `agent_close` now refuses outright - before probing liveness, so this applies whether the target reads live, dead, or unprobed - whenever `currentActor()` starts with `agent:`. A plain claude session is `user:<name>` and a peer lead is `lead:N` (`src/context.ts`), so a human at a terminal and a peer lead both keep the retirement path; only a spawned worker loses it. For those callers, the cross-server false-dead case is now closed too, by the paragraph above: this is a caller-KIND gate for who may reach the retirement path at all, alongside a liveness-TRUTH fix for what that path believes once reached.
 
+## A pane must never be recorded onto a row that is no longer running
+
+Issue #156, counselors, all three seats. `recordPane` (`src/spawn.ts`) is the
+last write of both `launchAgent` and `resumeAgent`, and it used to be
+unconditional (`WHERE id = ?`). Both callers span real tmux forks between
+deciding the row is theirs and this write, so the row can be retired
+underneath them, and the result is a live `claude` process recorded against a
+row that says closed. That row is invisible to `janitor()`'s agents sweep
+(`status = 'running'`), so nothing ever reaps it.
+
+**How it was reached, because the shape is worth recognising rather than the
+instance.** `resumeAgent`'s flip deliberately commits `status='running'` with
+`tmux_target=''` to take the row out of the janitor's `tmux_target != ''`
+window. A concurrent `agent_park` reading that row gets `{live: false}` from
+`targetLiveProbe('')` - **FALSE, not `null`** - so the caller's own "unknown
+liveness is never dead" refusal does not fire, it kills nothing, and
+`parkAgentRow`'s CAS compares `''` against `''` **and matches**. The row goes
+closed+parked mid-resume. Two guards that are each correct in isolation, and
+the empty string that makes one of them work is what defeats the other.
+
+It is not a narrow window: `placeAgentPane` runs inside `withWindowClaim`
+(`BEGIN IMMEDIATE`), so a competing write BLOCKS on that lock and fires the
+instant it releases - straight into the gap. Contention makes it MORE likely.
+
+`recordPane` now takes `AND status = 'running'` and returns whether it wrote.
+**The caller owns the recovery**, because only the caller knows what it built:
+`changes === 0` means there is a live pane belonging to nobody, so both callers
+kill that pane and throw. Leaving it is the one outcome that leaks a process
+nothing tracks.
+
+Fixed at `recordPane` rather than at the caller that exposed it, deliberately:
+`launchAgent` has the identical INSERT-to-`recordPane` gap (an `agent_close`
+landing in it), so a guard written into the park path would have left that twin
+live while reading as a fix. **The invariant is one sentence that does not
+mention park at all** - a pane must never be recorded onto a row that is no
+longer running - which is what makes this the right layer for it.
+
+Pinned by `test/recordpane-row-retired.test.mjs`, which asserts the ROW *and*
+the PANE. Asserting only that the call throws would pass against both versions,
+since the pre-fix code throws nothing at all.
+
+**One consequence for anyone patching this SQL in a test.**
+`test/spawn-cwd-scope.test.mjs`'s "finding 5" intercepted this statement with
+`===` against a full literal, and adding the `WHERE` clause silently stopped
+that match, turning a real regression test into one that proved nothing. It
+matches with `startsWith` now. A test that intercepts SQL by exact string is a
+test that disarms itself the next time anyone touches the query.
+
 ## tmux session names are namespaced by data store, not by project
 
 One session per STORE, one window per project inside it: `sessionName()` takes no argument and returns `hive-main` for the default store. Project ids are SQLite row ids, unique only within one store, so a project id was never a safe namespace on its own, and tmux session names share one machine-wide namespace regardless. `sessionName()` tags the name when `HIVE_DATA_DIR` is not the default; the default store keeps the documented `hive-main`.
