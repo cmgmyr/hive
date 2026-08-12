@@ -530,7 +530,42 @@ export function launchAgent(
   try {
     info = db
       .prepare(
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        // TODO 373: resumed_at IS STAMPED HERE TOO, in the row's very first
+        // statement, and the column's name is half the truth (src/db.ts's
+        // migration comment and src/firstPrompt.ts both say so). It means
+        // "started, and not yet given anything", and a spawn is a start:
+        // agent_spawn types a `[hive]` line into the new pane, the worker
+        // answers it, that turn ends, Stop fires, and the row latches idle
+        // before anybody has given it a lane. Issue #156 closed exactly this
+        // for resume and left the ordinary dispatch path open.
+        //
+        // IN THE INSERT RATHER THAN AFTER THE ANNOUNCEMENT, and the reasoning
+        // here was WRONG in its first version, so it is worth stating
+        // correctly (counselors F4). It said the race was against the
+        // announcement's own UserPromptSubmit hook. It is not: src/hook.ts
+        // recognises that prompt and leaves the latch alone, so the
+        // announcement cannot clear a stamp whenever it lands.
+        //
+        // THE REAL EXPOSURE OF A LATE STAMP IS THE OPPOSITE ORDER, and it
+        // fails silently. agent_spawn returns after typing the announcement,
+        // and a lead sends the assignment seconds later; a stamp written after
+        // that point lands AFTER the clearing UPDATE has already run and found
+        // nothing to clear. The row is then latched with work already given,
+        // and every finish it reports is suppressed until some later prompt -
+        // exactly the silence this project calls its worst outcome. Stamping
+        // in the row's first statement means no window exists in which a
+        // running row is unstamped, so there is no order to get wrong.
+        // Pinned, since sampling the column after agent_spawn returns cannot
+        // tell an INSERT stamp from a later UPDATE: test/spawn-latch-
+        // ordering.test.mjs.
+        //
+        // EVERY KIND, not only claude workers. An uninstrumented row (a bash
+        // worker, a kind='command' process) writes no hook rows at all, so
+        // this never clears for one - and never suppresses anything either,
+        // because its agent_state stays 'unknown' and every reader here is
+        // gated on 'idle'.
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, resumed_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
       )
       .run(
         spec.projectId,

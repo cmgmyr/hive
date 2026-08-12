@@ -976,6 +976,21 @@ ALTER TABLE agents ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN parked_at TEXT NOT NULL DEFAULT '';
 ALTER TABLE agents ADD COLUMN parked_branch TEXT NOT NULL DEFAULT '';
 `,
+  // THIS COLUMN'S NAME IS HALF THE TRUTH, AND THAT IS A DECISION (todo 373).
+  // It means "started, and not yet given anything": src/spawn.ts stamps it at
+  // BOTH starts - launchAgent's INSERT and resumeAgent's flip - because a
+  // freshly SPAWNED worker produces the identical false finish for a different
+  // reason (agent_spawn types a `[hive]` line into its pane and submits it, the
+  // worker answers, that turn ends, Stop fires). The name could not be fixed by
+  // editing the entry below, since MIGRATIONS is append-only, and a RENAME
+  // COLUMN entry was rejected rather than overlooked: an MCP server started
+  // before it keeps running old dist for the life of its session
+  // (common-issues/stale-mcp-server-runs-old-code.md) and would hit `no such
+  // column` inside the scheduler's tick and inside resumeAgent. A SECOND column
+  // was rejected too - one of the readers is a WHERE clause that cannot call a
+  // JS predicate, so two columns means an OR that one reader has to remember
+  // inside a string. src/firstPrompt.ts owns the fact and names every reader.
+  //
   // Issue #156, D3 - THE FALSE FINISH. A resumed worker fires a Stop hook the
   // moment its restore turn ends, and a standing watch reports that as
   // "finished" before the worker has been given its assignment. A lead that
@@ -998,13 +1013,15 @@ ALTER TABLE agents ADD COLUMN parked_branch TEXT NOT NULL DEFAULT '';
   // when it was set or whether it was stale. '' is "no fact recorded", the
   // convention every added column on this table already uses.
   //
-  // TWO WRITERS, AND THEY ARE WHAT MAKE THE SUPPRESSION SELF-CLEARING RATHER
+  // THREE WRITERS, AND THEY ARE WHAT MAKE THE SUPPRESSION SELF-CLEARING RATHER
   // THAN A LATCH. src/spawn.ts's resumeAgent stamps it in the same statement
-  // that un-closes the row; src/hook.ts CLEARS it on the worker's first
-  // `prompt` event, which is a real UserPromptSubmit and therefore the first
-  // moment anyone actually gave this worker something to do. So
-  // `resumed_at != ''` means exactly "resumed, and not yet spoken to", and the
-  // scheduler needs no log subquery to ask that question.
+  // that un-closes the row, and (todo 373) launchAgent stamps it in the row's
+  // own INSERT; src/hook.ts CLEARS it on the worker's first `prompt` event
+  // THAT IS NOT HIVE'S OWN SPAWN ANNOUNCEMENT, which is a real
+  // UserPromptSubmit from somebody else and therefore the first moment anyone
+  // actually gave this worker something to do. So `resumed_at != ''` means
+  // "started, and not yet spoken to", and the scheduler needs no log subquery
+  // to ask that question.
   //
   // THIS IS DELIBERATELY NOT THE SHAPE `also_when_stuck` DIED IN
   // (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md).

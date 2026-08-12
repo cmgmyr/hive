@@ -186,13 +186,19 @@ function blockOn(todoId, blockerId) {
   db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(todoId, blockerId);
 }
 
-function seedAgent(projectId, { name, actorId, agentState = "unknown", kind = "agent" }) {
+// awaitingFirstPrompt stamps agents.resumed_at, which src/firstPrompt.ts reads
+// as "started, and not yet given anything" - what launchAgent writes at every
+// spawn and resumeAgent at every resume, cleared by the worker's first real
+// prompt. Seeded rather than driven here because renderDashboard is a pure
+// reader; the end-to-end path through a real spawn and real hooks is
+// test/spawn-false-finish.test.mjs's.
+function seedAgent(projectId, { name, actorId, agentState = "unknown", kind = "agent", awaitingFirstPrompt = false }) {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, agent_state, kind)
-       VALUES (?, ?, ?, 'claude', '/scratch', 'running', ?, ?) RETURNING id`,
+      `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, agent_state, kind, resumed_at)
+       VALUES (?, ?, ?, 'claude', '/scratch', 'running', ?, ?, ?) RETURNING id`,
     )
-    .get(projectId, actorId, name, agentState, kind).id;
+    .get(projectId, actorId, name, agentState, kind, awaitingFirstPrompt ? "2026-08-12 03:49:23" : "").id;
 }
 
 function seedWake(projectId, { body, dueInSeconds, kind = "delay", maxWaitInSeconds }) {
@@ -449,6 +455,55 @@ describe("renderDashboard: in flight agents", () => {
     seedAgent(project, { name: "impl-worker", actorId: "agent:channel-1", agentState: "idle", kind: "agent" });
     const html = renderDashboard(project);
     assert.ok(html.includes('<span class="status status-ok">ok</span> idle'));
+  });
+
+  it("a worker that has been given nothing yet is not a green idle - and BOTH badges say so (todos 366, 373)", () => {
+    // Todo 366's finding, widened by todo 373. An idle latch means "a turn
+    // ended", and a spawned worker's first turn is hive's own announcement
+    // while a resumed worker's is the restore replay - neither is work anybody
+    // asked for. The wake path was the one that could get a worker torn down,
+    // which is why 366 is low; the page saying a worker finished when it has
+    // been given nothing is the same misreading with a smaller blast radius.
+    //
+    // TWO SITES IN ONE FILE, and that is the whole reason this asserts a
+    // count. src/dashboard.ts badges a running agent in the NOW strip and
+    // again in the In Flight list, so a fix applied to the site a reader
+    // happened to open passes an `includes` and fails this
+    // (common-issues/a-fix-applied-to-only-some-call-sites.md). The NOW strip
+    // caps at NOW_AGENTS_SHOWN, so this project seeds exactly one agent.
+    const project = seedProject("agent-awaiting-first-prompt-test");
+    seedAgent(project, {
+      name: "unassigned-worker",
+      actorId: "agent:awaiting-1",
+      agentState: "idle",
+      awaitingFirstPrompt: true,
+    });
+    const html = renderDashboard(project);
+    assert.equal(
+      html.split("idle (no assignment yet)").length - 1,
+      2,
+      "the NOW strip and the In Flight list must both say it",
+    );
+    assert.ok(
+      !html.includes('<span class="status status-ok">ok</span> idle'),
+      "nothing on the page may still render this worker as a plain pass",
+    );
+  });
+
+  it("only the idle latch is rewritten - a worker awaiting its first prompt that is WORKING still reads working", () => {
+    // The suppression is about one misreading, not about the row being
+    // untrustworthy: a fresh worker mid-turn really is working, and a badge
+    // that hedged about that would be inventing a second fact.
+    const project = seedProject("agent-awaiting-but-working-test");
+    seedAgent(project, {
+      name: "busy-fresh-worker",
+      actorId: "agent:awaiting-2",
+      agentState: "working",
+      awaitingFirstPrompt: true,
+    });
+    const html = renderDashboard(project);
+    assert.ok(html.includes('<span class="status status-live">live</span> working'));
+    assert.ok(!html.includes("no assignment yet"));
   });
 
   it("excludes closed agents", () => {

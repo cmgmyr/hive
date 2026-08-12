@@ -127,7 +127,12 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   const agents = db
     .prepare(
-      "SELECT name, actor_id, command, agent_state, state_changed_at, kind, tmux_target, cwd FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+      // resumed_at (todo 373, counselors F3): this block is INJECTED into a
+      // fresh lead's context next to the instruction to triage it, so a worker
+      // that has been given nothing must not read here as one that finished.
+      // deriveProvenance needs the column to say so.
+      "SELECT name, actor_id, command, agent_state, state_changed_at, kind, tmux_target, cwd, resumed_at " +
+        "FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
     )
     .all(project.id) as (ProvenanceRow & { name: string; tmux_target: string; cwd: string })[];
   if (agents.length > 0) {

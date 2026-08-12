@@ -15,6 +15,10 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
 const { db } = await import("../dist/db.js");
+// Todo 373: the constant src/hook.ts matches a prompt against, imported rather
+// than spelled here so this test cannot pass against a call site that types
+// something the hook no longer recognises.
+const { SPAWN_ANNOUNCEMENT_PREFIX } = await import("../dist/firstPrompt.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 const fixturePath = (file) => join(FIXTURES, file);
@@ -236,6 +240,27 @@ describe("agent_spawn's [hive] announcement", { skip: hasTmux ? false : "tmux is
     spawned.push(receipt.agent_id);
     assert.equal(receipt.announced, true, whyNotAnnounced(receipt));
     assert.equal(receipt.note, undefined);
+
+    // TODO 373, COUNSELORS F4. WHAT THIS CALL SITE ACTUALLY TYPES is the half
+    // no other test covers. src/hook.ts decides whether a `prompt` event
+    // clears a worker's "not yet given anything" latch by matching this exact
+    // line's opening (isSpawnAnnouncement, src/firstPrompt.ts), and
+    // test/spawn-false-finish.test.mjs replays a captured payload rather than
+    // reaching this send - so a call site that started typing a different
+    // [hive] line would leave every spawn's false finish live with nothing
+    // going red. This asserts against the pane, which is where the real
+    // sendText landed.
+    //
+    // Whitespace is stripped from BOTH sides before comparing: a pane wraps a
+    // long line at its own width, and a wrap inserts a newline that would
+    // otherwise split the prefix. Wrapping can only add whitespace, so this
+    // stays honest about what was typed.
+    const { output } = await mcpReady.call("agent_output", { name: "spawn-ready" });
+    const squash = (s) => s.replace(/\s+/g, "");
+    assert.ok(
+      squash(output).includes(squash(SPAWN_ANNOUNCEMENT_PREFIX)),
+      `the announcement hive typed must still be the one src/hook.ts recognises; pane showed: ${output}`,
+    );
   });
 
   // Todo 367, and this is the test that PINS the ceiling split above rather

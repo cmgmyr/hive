@@ -7,9 +7,9 @@ import { renderDashboardForWrite } from "./dashboard.js";
 import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
+import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
 import {
   ageSecondsSince,
-  awaitingFirstPostResumePrompt,
   describeLastLogEvent,
   humanizeAge,
   lastLogEvent,
@@ -2456,15 +2456,19 @@ interface StandingCandidate {
 // watching its own crew; they differ the moment deliver_to names a crew
 // member, and it is that case the exclusion is actually for - a worker being
 // told it went idle, by a paste into the pane it is reading from.
-// ISSUE #156, D3. A RESUMED WORKER'S RESTORE TURN IS NOT A FINISH, and this
-// one predicate is the whole fix on the read side. `claude --resume` replays
-// the restored conversation, ends that turn, and fires a Stop hook; the row
-// goes idle, genuinely and freshly, for a worker nobody has given anything to.
-// A standing watch then reports it as finished, and a lead that trusts the
-// wake tears down a worker that never started. Observed live twice and
-// reproduced end to end in test/resume-false-finish.test.mjs before this
-// existed - a real park, a real resume, and a real Claude Code Stop payload
-// through the built dist/hook.js.
+// ISSUE #156, D3, WIDENED BY TODO 373. A WORKER'S FIRST TURN IS NOT A FINISH,
+// and this one predicate is the whole fix on the read side. `claude --resume`
+// replays the restored conversation, ends that turn, and fires a Stop hook; a
+// SPAWNED worker answers the `[hive]` line agent_spawn types into its pane and
+// ends that turn the same way. Either way the row goes idle, genuinely and
+// freshly, for a worker nobody has given anything to. A standing watch then
+// reports it as finished, and a lead that trusts the wake tears down a worker
+// that never started. Both halves observed live - the resume twice, the spawn
+// four times in one evening, on every worker spawned during a wave - and both
+// reproduced end to end before the fix existed, in
+// test/resume-false-finish.test.mjs and test/spawn-false-finish.test.mjs: a
+// real spawn, a real park and resume, and real Claude Code payloads through
+// the built dist/hook.js.
 //
 // WHY THE LATCH RESET LANE A ALREADY SHIPPED CANNOT COVER THIS. resumeAgent
 // clears agent_state/state_changed_at, which closed the case where a PRE-CLOSE
@@ -2473,11 +2477,14 @@ interface StandingCandidate {
 // correctly true for it and that reset has nothing to catch. Two different
 // defects that produce the same wrong sentence.
 //
-// `resumed_at != ''` reads as "resumed, and not yet spoken to": resumeAgent
-// stamps it, and src/hook.ts clears it on the first `prompt` event, which is a
-// real UserPromptSubmit and so the first moment anyone gave this worker
-// anything. That is why this is a column read and not a subquery over
-// agent_state_log on the hottest loop hive has.
+// `resumed_at != ''` reads as "started, and not yet given anything", which is
+// more than its name says (todo 373; src/firstPrompt.ts and src/db.ts's
+// migration comment carry why it was widened in place rather than joined by a
+// second column). launchAgent stamps it in its INSERT, resumeAgent in its
+// flip, and src/hook.ts clears it on the first `prompt` that is not hive's own
+// spawn announcement - a real UserPromptSubmit from somebody else, and so the
+// first moment anyone gave this worker anything. That is why this is a column
+// read and not a subquery over agent_state_log on the hottest loop hive has.
 //
 // IT ONLY EVER SUPPRESSES. Read that against the withdrawn `also_when_stuck`
 // (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md),
@@ -2490,8 +2497,8 @@ interface StandingCandidate {
 // shipped silent narrowing before. A delivery into a BUSY pane is absorbed
 // into the running turn as an attachment and fires no UserPromptSubmit at all
 // (.claude/rules/tmux-and-panes.md), so an assignment sent while the restore
-// turn is still replaying leaves resumed_at set, and THAT turn's genuine
-// finish is suppressed too. It is bounded rather than permanent: the next
+// or announcement turn is still running leaves the column set, and THAT turn's
+// genuine finish is suppressed too. It is bounded rather than permanent: the next
 // delivery that lands on an idle pane is a real user turn, writes a `prompt`
 // row, and clears the column. The store cannot do better here - between the
 // restore turn and an attachment-driven turn there is no prompt, no `working`
@@ -2514,6 +2521,12 @@ interface StandingCandidate {
 // worst outcome available, reached by two correct-looking guards meeting.
 // standingGoneRows now reads `(agent_state != 'idle' OR resumed_at != '')`:
 // a suppressed idle was never said, so it cannot be the reason to stay quiet.
+// TODO 373 IS WHY THAT PAIR IS SPELLED WITH ONE COLUMN RATHER THAN TWO. This
+// reader is a WHERE clause and cannot call the predicate below, so a second
+// column for the spawn half would have meant remembering an OR here, inside a
+// string, on a query whose whole job is to disagree with the filter below.
+// Widening the existing column instead means this line needed no edit at all
+// to stay correct for spawned workers.
 //
 // FILTERED IN JS, NOT IN THE WHERE CLAUSE, and the first version of this lane
 // had it the other way. As a SQL fragment it read cheaper - it prunes before
@@ -2537,7 +2550,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
           AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[]
-  ).filter((row) => !awaitingFirstPostResumePrompt(row));
+  ).filter((row) => !awaitingFirstPrompt(row));
 }
 
 // A WORKER THAT DIED, and this is the case project scope makes worse rather
@@ -2645,7 +2658,7 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
     `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
-        AND (a.agent_state != 'idle' OR a.resumed_at != '')
+        AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")})
         AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
         AND ${unreported(CONDITION_GONE, "a.closed_at")}
@@ -2878,11 +2891,28 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
     // used to claim a whole CrewRow, four fields of which this query does not
     // select at all, so a future reader could take id or tmux_target off it
     // and get undefined with the compiler agreeing.
+    // TODO 373, COUNSELORS ALL THREE SEATS: A WORKER AWAITING ITS FIRST
+    // ASSIGNMENT BELONGS IN THIS CENSUS, and leaving it out is not an
+    // omission. `agent_state != 'idle'` alone drops a worker whose only
+    // completed turn is its own spawn announcement, and when that empties the
+    // list this function says "Nothing else in this project is running right
+    // now" - an affirmative CLAIM about the crew, which `asked` below exists
+    // to keep honest. The minimum shape is two workers: A is assigned and
+    // finishes, B was spawned in the same wave and not yet briefed, and A's
+    // notice denies B exists. That is the ordinary wave-dispatch shape the
+    // runbook produces, not a corner.
+    //
+    // This lane originally recorded the exclusion as acceptable on the grounds
+    // that the roster's answer is honest and a third category only changes
+    // what a notice SAYS. That was wrong in its premise: the sentence below is
+    // a claim, not silence, and this lane is what made the claim reachable for
+    // a live worker. Same column and same spelling as standingGoneRows, so
+    // there is no third category in the store - only in the rendering.
     const rows = stmt(
-      `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind
+      `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
-          AND a.agent_state != 'idle' AND a.actor_id != ?
+          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor) as {
       name: string;
@@ -2892,6 +2922,7 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
       status: string;
       command: string;
       kind: string;
+      resumed_at: string;
     }[];
     // SLICE BEFORE MAPPING. stateNowClause runs its own lastLogEvent query per
     // agent, so rendering the whole crew and then keeping eight throws away a
@@ -2899,7 +2930,19 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
     // enough for the cap to matter, for text nobody reads. The full count is
     // still needed for "and N more", which is why the query keeps no LIMIT.
     more = Math.max(0, rows.length - ROSTER_STILL_GOING);
-    shown = rows.slice(0, ROSTER_STILL_GOING).map((r) => `${r.name} (${stateNowClause(r)})`);
+    // ONLY THE IDLE LATCH IS RELABELLED, matching src/dashboard.ts's badge rule
+    // exactly so the two surfaces cannot drift onto different readings of one
+    // row: a latched worker that reads `working` is mid-announcement-turn and
+    // really is working, and stateNowClause saying so is more use than a label.
+    // What must not stand is "idle for 3m" about a worker nobody has briefed,
+    // which is the same sentence this lane suppresses in the finish block.
+    shown = rows
+      .slice(0, ROSTER_STILL_GOING)
+      .map((r) =>
+        awaitingFirstPrompt(r) && r.agent_state === "idle"
+          ? `${r.name} (awaiting first assignment)`
+          : `${r.name} (${stateNowClause(r)})`,
+      );
     // LAST, not before the map. `asked` is what licenses the "nothing else is
     // running" sentence below, and that sentence is a claim about the crew -
     // so it may only be said once this really did look at the crew and
@@ -3561,20 +3604,21 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       if (!agent.settled) return UNKNOWN;
       return GONE;
     }
-    // Issue #156, D3, THE ONE-SHOT HALF. The defect was observed through a
-    // standing watch, but nothing about it is standing-specific: a one-shot
-    // wake_when_idle over a named list reads the same row, through this
-    // function, and would fire on the same restore turn. Both halves call the
-    // same predicate - see standingIdleRows above, and
-    // stateProvenance.ts for the full reasoning and the accepted residual.
+    // Issue #156, D3, THE ONE-SHOT HALF, widened with the rest by todo 373.
+    // The defect was observed through a standing watch, but nothing about it
+    // is standing-specific: a one-shot wake_when_idle over a named list reads
+    // the same row, through this function, and would fire on the same restore
+    // or announcement turn. Both halves call the same predicate - see
+    // standingIdleRows above, and src/firstPrompt.ts for the full reasoning
+    // and the accepted residual.
     //
     // Folded into `idle` rather than an early return, so `gone` and `since`
-    // have one expression each. A resumed worker mid-restore is running,
-    // alive, and simply has not finished anything, which is what "not idle"
-    // already means here; answering GONE would report a live worker as dead
-    // and UNKNOWN would let an idle_all wake treat it as unjudgeable.
+    // have one expression each. A worker mid-restore, or mid-announcement, is
+    // running, alive, and simply has not finished anything, which is what "not
+    // idle" already means here; answering GONE would report a live worker as
+    // dead and UNKNOWN would let an idle_all wake treat it as unjudgeable.
     return {
-      idle: !awaitingFirstPostResumePrompt(agent) && agent.agent_state === "idle",
+      idle: !awaitingFirstPrompt(agent) && agent.agent_state === "idle",
       gone: false,
       since: agent.state_changed_at,
     };

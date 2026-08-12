@@ -266,6 +266,58 @@ describe("deriveProvenance", () => {
     assert.equal(prov.event, null);
     assert.equal(prov.age_seconds, 300, "the latch's age is still known even though provenance is not");
   });
+
+  // TODO 373, COUNSELORS F3. deriveProvenance is what `hive status` and the
+  // SessionStart digest describe a worker with, and the digest is INJECTED
+  // into a fresh lead's context beside the instruction to triage it. So "idle
+  // for 3m" about a worker nobody has briefed is not a display nit: a model
+  // reads that sentence and proposes lanes off it.
+  it("carries 'not yet given anything' for a row whose latch is set, and omits the field otherwise", () => {
+    const actorId = "agent:unbriefed";
+    makeActor(actorId, 3);
+    logRow(actorId, "stop", "idle", 45);
+    const row = {
+      actor_id: actorId,
+      command: "claude",
+      agent_state: "idle",
+      state_changed_at: secondsAgo(45),
+      kind: "agent",
+      resumed_at: "2026-07-31 11:59:00",
+    };
+
+    const prov = deriveProvenance(row, true, NOW);
+    assert.equal(prov.awaiting_first_prompt, true);
+    // The raw latch is UNCHANGED for any caller reading JSON: this reports a
+    // fact beside the state, it does not rewrite the state.
+    assert.equal(prov.state, "idle");
+    assert.equal(
+      describeForHuman(prov, NOW),
+      "idle (no assignment yet, 45s ago)",
+      "the sentence a lead and the kickoff digest actually read",
+    );
+
+    // OMITTED, not `false`, for the ordinary row - these fields ride in every
+    // agent_list and agent_status receipt.
+    const briefed = deriveProvenance({ ...row, resumed_at: "" }, true, NOW);
+    assert.equal("awaiting_first_prompt" in briefed, false);
+    assert.equal(describeForHuman(briefed, NOW), "idle (stop, 45s ago)");
+  });
+
+  // A partial row literal is a caller bug, and the safe reading of it is "no
+  // fact recorded" rather than "awaiting": this predicate only ever
+  // SUPPRESSES, so reading an accident as SET would go silent about a worker
+  // that really finished. Same shape as this file's own `kind` lesson above.
+  it("a row with no resumed_at at all is not treated as awaiting", () => {
+    const actorId = "agent:no-column";
+    makeActor(actorId, 3);
+    logRow(actorId, "stop", "idle", 10);
+    const prov = deriveProvenance(
+      { actor_id: actorId, command: "claude", agent_state: "idle", state_changed_at: secondsAgo(10), kind: "agent" },
+      true,
+      NOW,
+    );
+    assert.equal("awaiting_first_prompt" in prov, false);
+  });
 });
 
 describe("lastLogEvent", () => {

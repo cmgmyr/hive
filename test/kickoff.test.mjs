@@ -337,6 +337,52 @@ describe("hive kickoff gates", () => {
     assert.match(additionalContext, /seeded \[unknown \(no record\)\]/);
   });
 
+  // TODO 373, COUNSELORS F3, AND THIS IS THE SURFACE THAT DECIDED IT. Every
+  // other reader of "this worker has not been given anything yet" is chosen by
+  // a human: a wake, a dashboard, a status line. This block is INJECTED into a
+  // fresh lead's context at session start, right next to TRIAGE_MESSAGE
+  // telling that session to reconcile what it just read and propose lanes. So
+  // an unqualified "idle for 3m" here is not a display nit - it is a fact this
+  // surface manufactures for a model that has no way to check it.
+  it("says a worker awaiting its first assignment has not been given anything", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      // The shape a real spawn leaves: launchAgent stamps resumed_at in its
+      // INSERT, the announcement turn ends in a Stop hook, and nobody has
+      // briefed this worker yet.
+      store
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+             agent_state, state_changed_at, resumed_at)
+           VALUES (?, 'agent:903', 'unbriefed', '%3', 'claude', ?, 'agent', 'running',
+             'idle', datetime('now'), datetime('now'))`,
+        )
+        .run(projectId, dirs.projectDir);
+      store
+        .prepare(
+          "INSERT INTO agent_state_log (actor_id, event, state, payload) VALUES ('agent:903', 'stop', 'idle', '{}')",
+        )
+        .run();
+    } finally {
+      store.close();
+    }
+
+    const { additionalContext } = fired((await kickoff()).stdout);
+    assert.match(
+      additionalContext,
+      /unbriefed \[idle \(no assignment yet[^\]]*\)\]/,
+      "the digest must say this worker has not been given anything",
+    );
+    // The control, and it is what makes the assertion above able to fail: the
+    // old render for exactly this row is a bare idle with its stop event.
+    assert.doesNotMatch(additionalContext, /unbriefed \[idle \(stop/);
+  });
+
   // Issue #27, step 5: confirming rather than assuming that the WORKERS
   // block's existing kind='agent' filter also excludes the lead's own row,
   // now that the lead has one. Zero production code changes here - the

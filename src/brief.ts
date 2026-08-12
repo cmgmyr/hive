@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storeDir } from "./dataDir.js";
+import { SPAWN_ANNOUNCEMENT_PREFIX } from "./firstPrompt.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
@@ -69,8 +70,14 @@ If the hive MCP tools are unavailable in this session, write progress and result
 // One line, typed into the pane and submitted as the first user turn. Keep it
 // to a single line: it is sent with send-keys -l, before claude has had time
 // to enable bracketed paste.
+//
+// IT IS SUBMITTED, so the worker answers it, that turn ends, and Claude Code
+// fires Stop - a real idle for a turn nobody asked for (todo 373). The opening
+// is built from SPAWN_ANNOUNCEMENT_PREFIX so src/hook.ts can tell this line
+// apart from a real assignment and leave the suppression in place; changing
+// the wording after the prefix is free, changing the prefix here is not.
 export function paneAnnouncement(ctx: BriefContext): string {
-  return `[hive] You are "${ctx.name}" (${ctx.actorId}) in project "${ctx.projectName}", cwd ${ctx.cwd}. Your full brief is loaded in the system prompt. Run whoami to confirm scope, then wait for your assignment.`;
+  return `${SPAWN_ANNOUNCEMENT_PREFIX}${ctx.name}" (${ctx.actorId}) in project "${ctx.projectName}", cwd ${ctx.cwd}. Your full brief is loaded in the system prompt. Run whoami to confirm scope, then wait for your assignment.`;
 }
 
 const briefsDir = () => join(storeDir(), "briefs");

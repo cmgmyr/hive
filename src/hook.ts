@@ -4,12 +4,18 @@
 // Usage: node hook.js <stop|prompt|notify>; the hook payload arrives on stdin.
 import { readFileSync } from "node:fs";
 import { db } from "./db.js";
+import { awaitingFirstPromptSql, isSpawnAnnouncement } from "./firstPrompt.js";
 
 interface HookPayload {
   message?: unknown;
   notification_type?: unknown;
   background_tasks?: unknown;
   session_id?: unknown;
+  // UserPromptSubmit only: the submitted text. Read for one question - was
+  // this hive's own spawn announcement (src/firstPrompt.ts) - and typed
+  // `unknown` like every other field here, because this payload is a contract
+  // hive does not own and cannot pin a version of.
+  prompt?: unknown;
 }
 
 // stdin is a one-shot read, so every consumer below shares this one read.
@@ -322,30 +328,66 @@ try {
         "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
       ).run(state, actorId);
     }
-    // Issue #156, D3 - THE OTHER HALF OF THE FALSE-FINISH FIX, and the half
-    // that makes it self-clearing instead of a latch.
+    // Issue #156, D3, WIDENED TO THE SPAWN SIDE BY TODO 373 - THE OTHER HALF
+    // OF THE FALSE-FINISH FIX, and the half that makes it self-clearing
+    // instead of a latch.
     //
-    // src/spawn.ts's resumeAgent stamps agents.resumed_at, and while it is set
-    // the scheduler declines to report that worker's idle as a finish - the
-    // restore turn ends in a real Stop hook, with a real fresh idle, for a
-    // worker nobody has given anything to. A `prompt` event is a genuine
-    // UserPromptSubmit, so it is exactly the first moment someone HAS: from
-    // here on this worker's finishes are real and must be reported. Clearing
-    // it here rather than in the scheduler keeps the whole condition readable
-    // as one sentence on the row - "resumed, and not yet spoken to" - and
-    // needs no log subquery on the hottest loop hive has.
+    // src/spawn.ts stamps agents.resumed_at at BOTH starts, launchAgent's
+    // INSERT and resumeAgent's flip, and while it is set every reader of
+    // "this worker is idle, act on it" declines to report that idle as a
+    // finish (src/firstPrompt.ts names them). The turn that produced it is a
+    // real turn ending in a real Stop hook, for a worker nobody has given
+    // anything to. A `prompt` event is a genuine UserPromptSubmit, so it is
+    // ordinarily the first moment someone HAS: from there on this worker's
+    // finishes are real and must be reported. Clearing it here rather than in
+    // the scheduler keeps the whole condition readable as one sentence on the
+    // row and needs no log subquery on the hottest loop hive has.
+    //
+    // THE ONE PAYLOAD-DRIFT DIRECTION IN THIS FILE THAT FAILS INTO A DEFECT
+    // RATHER THAN AWAY FROM ONE, recorded rather than fixed (counselors, two
+    // seats). The discriminator below rides `prompt`, a field of a contract
+    // hive does not own, cannot see change, and pins no version of. Every
+    // other payload read here fails safe - an absent `background_tasks` reads
+    // as "the turn ended", the conservative answer. This one does not: if
+    // Claude Code renames, nests or drops that field, isSpawnAnnouncement
+    // sees undefined, answers false, and the announcement clears its own
+    // latch, which puts the false finish back on EVERY spawn, silently.
+    // scripts/payload-canary.mjs already derives `prompt` as a required field
+    // from the corpus, so a live run detects it - but a canary is a thing
+    // somebody runs, not a runtime guard, and `npm test` replays frozen
+    // captures that carry the field by construction.
+    //
+    // EXCEPT FOR HIVE'S OWN SPAWN ANNOUNCEMENT, and that exception is what
+    // makes the spawn half work at all. agent_spawn types a `[hive]` line into
+    // the new pane and SUBMITS it, so a fresh worker's FIRST prompt is hive's
+    // own, and it fires several seconds before the false idle: measured on
+    // todo 373's own worker, prompt at 03:49:25, the idle it must suppress at
+    // 03:49:30, the lead's real assignment at 03:49:40. Clearing on that
+    // prompt would ship a fix that runs and does nothing. The announcement's
+    // own text says "wait for your assignment", so treating it as an
+    // assignment was always the wrong reading; isSpawnAnnouncement
+    // (src/firstPrompt.ts) is where the two are told apart, sharing one
+    // constant with the line agent_spawn actually types.
     //
     // SCOPED kind = 'agent' AND resumed_at != '', matching the state UPDATE
     // above for its reason (an allowlist, so a future third kind defaults to
     // silence) and adding the second predicate so the ordinary case - every
-    // prompt of every never-resumed worker, which is nearly all of them -
+    // prompt of every already-cleared worker, which is nearly all of them -
     // matches no rows rather than rewriting a column to the value it already
     // holds. `stop` and `notify` deliberately do not clear it: a worker that
     // ends another turn without ever being prompted still has not been given
     // anything, which is the whole condition.
-    if (event === "prompt") {
+    if (event === "prompt" && !isSpawnAnnouncement(readPayload().prompt)) {
       db.prepare(
-        "UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND resumed_at != ''",
+        // The WRITER reads the same fact through the same helper the readers
+        // do (/simplify, two seats independently): this UPDATE used to
+        // hand-spell `resumed_at != ''`, which is the one site
+        // awaitingFirstPromptSql's own promise missed - and it is the site
+        // that fails in the worst direction, since a clearer that matches
+        // nothing suppresses every finish forever. The SET half stays literal:
+        // clearing to '' is what the column's "no fact recorded" convention
+        // means, not a test of it.
+        `UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND ${awaitingFirstPromptSql("agents")}`,
       ).run(actorId);
     }
     // Every event carries session_id, not only the ones stateFor reads a

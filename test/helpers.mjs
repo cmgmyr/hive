@@ -1417,3 +1417,80 @@ export function registeredToolNames() {
     .flatMap((f) => f.names)
     .sort();
 }
+
+// ---------------------------------------------------------------------------
+// A standing watch, its dead-paned owner, and the two matchers for reading
+// what it filed. Extracted on todo 373, when test/spawn-false-finish.test.mjs
+// arrived as a second file needing all five - the same reason
+// createLiveAndDialogPanes above was extracted, one step more load-bearing.
+//
+// THE MATCHERS ENCODE THE NOTICE FORMAT, WHICH IS WHY A SECOND COPY IS WORSE
+// THAN ORDINARY TEST DUPLICATION. Both files' headline assertions are
+// SILENCE assertions ("this worker was not reported"), so a change to that
+// format in src/scheduler.ts makes an out-of-date copy answer false for every
+// worker and go vacuously green - test/CLAUDE.md's shape 1 and 5 at once,
+// against exactly the tests written to catch a false finish. One copy cannot
+// drift from itself.
+
+// The wake's owner: a lead whose pane is in no snapshot these tests pass, so
+// a filed notice is HELD by deliverable()'s lead-pane exemption rather than
+// typed at a real terminal. Backdated because a standing watch only reports
+// what happened after it existed. seedLeadRow above does not fit: it fixes
+// one actor id (so two files sharing a store would collide) and writes no
+// created_at.
+export function seedDeadPaneLead(db, projectId, projectDir, actorId) {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
+       VALUES (?, ?, 'lead', '%deadlead', 'claude', ?, 'lead', 'running', datetime('now', '-300 seconds'))
+       RETURNING id`,
+    )
+    .get(projectId, actorId, projectDir).id;
+}
+
+// A standing watch (wake_when_idle(scope: "project")) seeded directly rather
+// than through the tool, so its owner can be the dead-paned lead above.
+// watch='[]' with watch_scope='project' is what a standing watch really
+// stores: its membership is a query, not a list (src/db.ts's watch_scope
+// migration).
+export function seedStandingWatch(db, projectId, owner, { pane = "%deadlead", body = "crew update" } = {}) {
+  return db
+    .prepare(
+      `INSERT INTO timers (project_id, owner, body, kind, watch, watch_scope, deliver_actor, deliver_pane,
+         max_wait_at, created_at)
+       VALUES (?, ?, ?, 'idle_any', '[]', 'project', ?, ?, datetime('now', '+4 hours'),
+         datetime('now', '-60 seconds')) RETURNING id`,
+    )
+    .get(projectId, owner, body, owner, pane).id;
+}
+
+export function standingNoticeBodies(db, watchId) {
+  return db
+    .prepare("SELECT body FROM timers WHERE parent_timer_id = ? ORDER BY id")
+    .all(watchId)
+    .map((r) => r.body);
+}
+
+// BOTH MATCHERS ARE ANCHORED, AND A BARE /name/ IS ALWAYS WRONG HERE. A
+// standing watch's body has three parts: a reported block, one two-space
+// indented line per worker ("  <name>: idle for ..." or "  <name>: GONE -
+// ..."), then a one-line "Still going: a (...); b (...)" roster, then advice.
+// A substring search matches the ROSTER too, so "is this worker being
+// reported" and "is this worker merely alive and mentioned" become the same
+// question. That is not hypothetical: it failed exactly that way under a full
+// npm test, when the MCP server's own 3s scheduler filed a notice about an
+// unrelated leftover worker and named the still-running subject in its roster.
+//
+// namedInReport: reported at all, finish or death. Use it for SILENCE
+// assertions, where either would be a failure.
+export function namedInStandingReport(db, watchId, name) {
+  return standingNoticeBodies(db, watchId).some((body) => new RegExp(`^ {2}${name}:`, "m").test(body));
+}
+
+// reportedAsFinished: reported as a FINISH specifically. The GONE line shares
+// the same prefix, so without excluding it a "the real finish was reported"
+// assertion would also pass on an obituary - counselors flagged exactly this
+// on issue #156 (opus F8), and the two mean opposite things to a lead.
+export function reportedAsFinished(db, watchId, name) {
+  return standingNoticeBodies(db, watchId).some((body) => new RegExp(`^ {2}${name}: (?!GONE)`, "m").test(body));
+}

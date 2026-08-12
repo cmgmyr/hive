@@ -59,6 +59,7 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
 import { isClaudeCommand } from "./brief.js";
+import { awaitingFirstPrompt } from "./firstPrompt.js";
 import { sanitizeEventForDisplay, type Liveness } from "./tmux.js";
 
 // Lazily cached rather than prepared at module scope: this module loads
@@ -86,6 +87,20 @@ export interface StateProvenance {
   since: string | null;
   age_seconds: number | null;
   last_seen: string | null;
+  // TODO 373, COUNSELORS F3. "This worker has not been given anything yet"
+  // (src/firstPrompt.ts), carried here because three of this function's four
+  // callers need it and one of them is read by a MODEL rather than a person:
+  // src/kickoff.ts injects its WORKERS block into a fresh lead's context
+  // alongside the instruction to triage what it just read, so an unqualified
+  // "idle for 3m" about a worker nobody has briefed is a fact that surface
+  // manufactures. `hive status` is the same sentence for a human, and it is
+  // the triage surface the runbook sends a lead to.
+  //
+  // OMITTED WHEN FALSE, never rendered as `false`: these fields land in every
+  // agent_list and agent_status receipt, and a lead makes hundreds of those
+  // calls in a wave (.claude/rules/tool-contract.md, slim receipts). Absence
+  // is the ordinary case and says the same thing.
+  awaiting_first_prompt?: true;
 }
 
 // The fields deriveProvenance needs off an agents row. AgentRow (src/tools/
@@ -97,6 +112,9 @@ export interface ProvenanceRow {
   agent_state: string;
   state_changed_at: string | null;
   kind: string;
+  // Todo 373. src/cli.ts and src/tools/agents.ts reach this through SELECT *;
+  // src/kickoff.ts names its columns and had to gain this one.
+  resumed_at: string;
 }
 
 // SQLite's datetime('now') and this schema's other timestamp columns are
@@ -210,6 +228,12 @@ export function deriveProvenance(
     since,
     age_seconds,
     last_seen,
+    // REPORTED FOR EVERY STATE, RENDERED ONLY FOR `idle`. The fact is true of
+    // a worker mid-announcement-turn too, and a caller reading JSON should get
+    // it; describeForHuman below rewrites only the sentence that is actually
+    // wrong, matching the dashboard badge and the standing watch's roster so
+    // all three read one row the same way.
+    ...(awaitingFirstPrompt(row) ? { awaiting_first_prompt: true as const } : {}),
   };
 }
 
@@ -218,6 +242,19 @@ export function deriveProvenance(
 // directly instead of this string: a caller parsing JSON should not have to
 // re-derive a sentence hive already threw away.
 export function describeForHuman(prov: StateProvenance, now: number = Date.now()): string {
+  // TODO 373, COUNSELORS F3. `idle` about a worker nobody has briefed is the
+  // same misreading the wake path suppresses and the dashboard badge relabels,
+  // and this string is where it reaches a lead: `hive status`, and the
+  // SessionStart digest a fresh lead is told to triage. The event is dropped
+  // rather than kept - it is always the announcement's own `stop`, and naming
+  // it invites the reader to weigh a fact that means nothing here - while the
+  // age stays, because "how long has it been sitting unbriefed" is exactly the
+  // question this sentence should provoke.
+  if (prov.awaiting_first_prompt && prov.state === "idle") {
+    return prov.age_seconds == null
+      ? "idle (no assignment yet)"
+      : `idle (no assignment yet, ${humanizeAge(prov.age_seconds)} ago)`;
+  }
   switch (prov.source) {
     case "not-instrumented":
       return `${prov.state} (not instrumented)`;
@@ -307,34 +344,17 @@ export function reportsAgentStateLog(row: { kind: string; command: string }): bo
   return row.kind === "agent" && isClaudeCommand(row.command);
 }
 
-// Issue #156, D3. THE ONE DEFINITION OF "resumed, and not yet spoken to",
-// shared for exactly the reason the header above gives about deriveProvenance:
-// this module exists so surfaces reading the same latch cannot drift onto
-// slightly different tests of it, and this fact has three readers.
+// Issue #156, D3 lived here as awaitingFirstPostResumePrompt. TODO 373 MOVED
+// IT to src/firstPrompt.ts, unchanged in what it means and widened in what it
+// covers: a spawned worker's announcement turn produces the same false finish
+// a resumed worker's restore turn does, so the fact is now "started, and not
+// yet given anything" rather than "resumed, and not yet spoken to".
 //
-// WHY IT IS A FACT AND NOT THE VERDICT THIS FILE FORBIDS. The header rules out
-// a bound, a threshold, or a "stuck" verdict, and this is none of them: it
-// restates one column with no clock arithmetic and no interpretation.
-// `resumed_at` is stamped by resumeAgent (src/spawn.ts) and cleared by
-// src/hook.ts on the first `prompt` event, so the column already IS the fact
-// and this is its name.
-//
-// WHAT IT IS FOR. `claude --resume` replays the restored conversation, ends
-// that turn, and fires a Stop hook, so a resumed worker goes idle - genuinely,
-// freshly - for a turn nobody asked for. Reporting that as a finish tells a
-// lead a worker is done before it has been given anything, and a lead that
-// trusts it tears the worker down. Every surface that would answer "this
-// worker is idle, act on it" has to ask this first.
-//
-// THE THREE READERS, named because enumerating them by hand is how the third
-// was missed on this lane's first pass: standingIdleRows and watchedStates
-// (src/scheduler.ts, the standing watch and the one-shot), and
-// wake_when_idle's own mode="all" already_satisfied shortcut
-// (src/tools/wakes.ts), which never reaches the scheduler at all and would
-// otherwise answer "Act now" off the restore turn. A fourth surface,
-// agent_status/agent_list, deliberately keeps reporting the plain latch: it
-// shows what the row says rather than deciding anything on it, which is this
-// module's whole stance.
-export function awaitingFirstPostResumePrompt(row: { resumed_at: string }): boolean {
-  return row.resumed_at !== "";
-}
+// THE MOVE IS FORCED, NOT TIDYING, and the reason belongs here because this is
+// the module whose header claims to be the one place such a fact may live.
+// src/dashboard.ts is two of that fact's readers (todo 366) and is
+// deliberately free of any tmux or scheduler dependency - it hand-rolls its
+// own lastLogEvent rather than importing this module's - while THIS module
+// imports src/tmux.ts for sanitizeEventForDisplay. A leaf module with no
+// imports is the only home every reader can reach. The stance is unchanged:
+// one definition, every reader calls it, and its own file names them all.

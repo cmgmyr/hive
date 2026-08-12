@@ -6,7 +6,9 @@ written to or pointed at by a test) and copied byte-for-byte into these files.
 None of these were typed or composed by hand; hand-writing a fixture from
 documentation is exactly what issue #32 warns produces an untrustworthy
 corpus. Captured from Claude Code 2.1.220 on 2026-07-29 and 2026-07-30. Source
-rows: `agent_state_log` ids 1, 2, 3, 4, 9, 33.
+rows: `agent_state_log` ids 1, 2, 3, 4, 9, 33. One later capture, from Claude
+Code 2.1.228 on 2026-08-12: `prompt-spawn-announcement.json`, source row id
+4105, the announcement `agent_spawn` typed into todo 373's own worker.
 
 If a payload needs to change (a local path, a session id), it must be
 RE-CAPTURED from a live run, never hand-edited. See the same rule in
@@ -15,6 +17,14 @@ because nothing about it was typed by hand, and editing bytes after capture
 throws that away.
 
 - `prompt-user.json` — `UserPromptSubmit` for an ordinary user message.
+- `prompt-spawn-announcement.json` — `UserPromptSubmit` for the `[hive]` line
+  `agent_spawn` types into a brand-new worker's pane and submits. Same event
+  name and same decision (`working`) as the plain prompt, and the reason it is
+  its own fixture is what hive does NOT do with it: this is the one prompt that
+  must not clear a worker's "started, and not yet given anything" latch
+  (`src/firstPrompt.ts`, todo 373). Captured because a hand-written copy of
+  hive's own line would pin the format against itself rather than against a
+  real spawn.
 - `prompt-task-notification.json` — `UserPromptSubmit` for a task-notification
   a finished background subagent injects into its parent. Same event name and
   same decision (`working`) as the plain prompt; kept as a separate fixture

@@ -78,6 +78,10 @@ function expectedState(startState, decidedLogState) {
 // caught rather than mistaken for the value the row already had.
 const CASES = [
   ["prompt-user.json", "prompt", "idle", "working"],
+  // Todo 373. Its STATE decision is the same as any other prompt, which is the
+  // point: what differs is the latch it deliberately does not clear, and that
+  // half is pinned in test/spawn-false-finish.test.mjs.
+  ["prompt-spawn-announcement.json", "prompt", "idle", "working"],
   ["prompt-task-notification.json", "prompt", "idle", "working"],
   ["stop-subagents-running.json", "stop", "idle", "working"],
   ["stop-idle.json", "stop", "idle", "idle"],

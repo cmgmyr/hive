@@ -606,9 +606,18 @@ describe(
       // the dialog, which is the held-wake path's own condition. It must hold
       // the wake exactly as before and say nothing, because the wide path
       // already claimed this episode.
-      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE name = ?").run(
-        "both-paths-other",
-      );
+      // resumed_at IS CLEARED IN THE SAME STATEMENT, and todo 373 is why. This
+      // worker was REALLY spawned (spawnShowing), so launchAgent stamped the
+      // "started, and not yet given anything" latch on its row, and every idle
+      // reader now declines to act on the idle of a worker nobody has given
+      // anything to (src/firstPrompt.ts). The finish this line is simulating is
+      // a worker that WAS given its lane and finished it, so clearing the latch
+      // is what makes the seeded row mean what the test says it means - without
+      // it, stage two's premise ("the wake becomes ready") is silently false
+      // and the assertions below pass on a wake that was never held.
+      db.prepare(
+        "UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now'), resumed_at = '' WHERE name = ?",
+      ).run("both-paths-other");
       const control = await mcp.call("wake_set", {
         delay_seconds: 2,
         body: "INTEGRATION both-paths control wake",

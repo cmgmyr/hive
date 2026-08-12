@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { db } from "./db.js";
 import { getProject } from "./context.js";
+// A leaf module with no imports of its own, which is why this one is allowed
+// where src/stateProvenance.ts is not (that module reaches src/tmux.ts, and
+// this file's header explains why it stays free of that). Todos 373/366.
+import { awaitingFirstPrompt } from "./firstPrompt.js";
 
 // Pure: reads the store for one project and returns a complete, self-contained
 // HTML document as a string. Never touches the filesystem and never decides
@@ -138,6 +142,53 @@ function agentStatusLevel(state: string): StatusLevel {
   return "warn";
 }
 
+// TODOS 366 AND 373. THE BADGE IS A FOURTH AND FIFTH READER of the fact
+// src/firstPrompt.ts owns, and it used to read the latch alone: a worker whose
+// only completed turn is its own spawn announcement, or a resumed worker's
+// restore turn, renders a green "idle" - a plain pass for a worker that has
+// been given nothing. The wake path was the one that could get a worker torn
+// down, which is why 366 is low; the display saying "finished" about a worker
+// that never started is the same misreading with a smaller blast radius.
+//
+// ONE HELPER, TWO CALL SITES, and the second site is the reason this is a
+// helper at all: todo 366 describes "the dashboard" as one reader and this
+// file has two badges (the NOW strip and In Flight). Fixing the one a reader
+// happens to be looking at is this project's most repeated defect shape
+// (common-issues/a-fix-applied-to-only-some-call-sites.md), reachable here
+// without leaving the file.
+//
+// AN OLD SERVER RENDERS THIS ROW THE OLD WAY, AND IT CAN WIN, recorded here
+// because this file is the surface it shows up on (counselors, codex seat).
+// Every hive instance on the machine takes the same periodic dashboard claim
+// and writes the same shared artifact, so an MCP server started before this
+// branch - running old dist for the life of its session, see
+// common-issues/stale-mcp-server-runs-old-code.md - re-renders an unbriefed
+// worker as a plain green idle and overwrites the corrected page. A newer
+// server rewrites it correctly on its next turn, so the page can alternate,
+// and it stays wrong for as long as the old process keeps winning the claim.
+// The accepted stale-dist class rather than a new failure - the page is a
+// display, it self-corrects on restart, and the wake path (which is what could
+// get a worker torn down) is unaffected because the old server's own
+// suppression reads the same column. Written down because the shape of the
+// stale-dist argument recorded in src/db.ts is about SQL that would fail
+// loudly, and this one is silent.
+//
+// "live" RATHER THAN "ok" OR "warn": the accent already means "in progress,
+// not a verdict" (agentStatusLevel above, and a pending wake), which is
+// exactly what a worker waiting for its first assignment is. Nothing is
+// wrong with it, so "warn" would overstate; it has finished nothing, so "ok"
+// is the false report this fixes. ONLY `idle` is rewritten - a row awaiting
+// its first prompt that reads `working` really is working, and the badge
+// should say so.
+// Takes the two fields structurally rather than a named row type: both callers
+// pass a different interface (RunningAgentBrief, RunningAgentRow) and both
+// already satisfy this.
+function agentStateBadge(a: { agent_state: string; resumed_at: string }): string {
+  return awaitingFirstPrompt(a) && a.agent_state === "idle"
+    ? statusBadge("live", "idle (no assignment yet)")
+    : statusBadge(agentStatusLevel(a.agent_state), a.agent_state);
+}
+
 // Chris, looking at a real render: a lead shows "unknown" and it reads as
 // broken. It is not - src/hook.ts's agent_state UPDATE is scoped `WHERE ...
 // AND kind = 'agent'` (worker-state.md), so any row that is not kind='agent'
@@ -184,6 +235,7 @@ interface RunningAgentBrief {
   name: string;
   kind: string;
   agent_state: string;
+  resumed_at: string;
 }
 
 interface NextWakeBrief {
@@ -202,7 +254,8 @@ interface TodoCounts {
 function fetchNowAgents(projectId: number): RunningAgentBrief[] {
   return db
     .prepare(
-      `SELECT name, kind, agent_state FROM agents WHERE project_id = ? AND status = 'running' ORDER BY created_at`,
+      `SELECT name, kind, agent_state, resumed_at FROM agents
+       WHERE project_id = ? AND status = 'running' ORDER BY created_at`,
     )
     .all(projectId) as RunningAgentBrief[];
 }
@@ -254,7 +307,7 @@ function renderNowAgentsLine(agents: RunningAgentBrief[]): string {
   const shown = agents.slice(0, NOW_AGENTS_SHOWN);
   const parts = shown.map((a) =>
     hasStateChannel(a.kind)
-      ? `${escapeHtml(a.name)} ${statusBadge(agentStatusLevel(a.agent_state), a.agent_state)}`
+      ? `${escapeHtml(a.name)} ${agentStateBadge(a)}`
       : escapeHtml(a.name),
   );
   const extra = agents.length > shown.length ? `, +${agents.length - shown.length} more` : "";
@@ -548,6 +601,7 @@ interface RunningAgentRow {
   kind: string;
   actor_id: string;
   agent_state: string;
+  resumed_at: string;
   state_changed_at: string | null;
   created_at: string;
 }
@@ -569,7 +623,7 @@ function renderAgentRow(a: RunningAgentRow): string {
     );
   }
   return (
-    `<li class="agent">${statusBadge(agentStatusLevel(a.agent_state), a.agent_state)} ` +
+    `<li class="agent">${agentStateBadge(a)} ` +
     `${escapeHtml(a.name)} <span class="muted">(${escapeHtml(a.kind)})</span> ` +
     `<span class="muted">since ${timeEl(a.state_changed_at ?? a.created_at)}</span></li>`
   );
@@ -578,7 +632,7 @@ function renderAgentRow(a: RunningAgentRow): string {
 function renderAgentsSection(projectId: number): string {
   const all = db
     .prepare(
-      `SELECT id, name, kind, actor_id, agent_state, state_changed_at, created_at
+      `SELECT id, name, kind, actor_id, agent_state, resumed_at, state_changed_at, created_at
        FROM agents WHERE project_id = ? AND status = 'running' ORDER BY created_at`,
     )
     .all(projectId) as RunningAgentRow[];

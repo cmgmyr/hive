@@ -3,7 +3,20 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { DIST, REPO, isolateTmux, liveAgentRow, makeFakeClaude, McpClient, runNode, scratchDirs } from "./helpers.mjs";
+import {
+  DIST,
+  isolateTmux,
+  liveAgentRow,
+  makeFakeClaude,
+  McpClient,
+  namedInStandingReport,
+  REPO,
+  reportedAsFinished,
+  runNode,
+  scratchDirs,
+  seedDeadPaneLead,
+  seedStandingWatch,
+} from "./helpers.mjs";
 
 // Issue #156's REAL DEFECT, D3. A resumed worker fires a Stop hook the moment
 // its restore turn ends, and a standing watch reports that as "finished"
@@ -38,6 +51,11 @@ const { sessionName } = await import("../dist/tmux.js");
 const HOOK = join(DIST, "hook.js");
 const STOP_PAYLOAD = readFileSync(join(REPO, "test", "fixtures", "hook-payloads", "stop-idle.json"), "utf8");
 
+// This file's own watch owner, distinct from the spawn sibling's: both seed a
+// dead-paned lead, and an actor id shared between two files sharing a store
+// would collide.
+const OWNER = "lead:false-finish";
+
 let mcp;
 let projectId;
 
@@ -51,11 +69,7 @@ before(async () => {
   // is not live is HELD rather than typed (deliverable()'s lead exemption), so
   // these cases reach the code under test and stop short of a real paste. The
   // method is test/standing-watch.test.mjs's, for its reasons.
-  db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-     VALUES (?, 'lead:false-finish', 'lead', '%deadlead', 'claude', ?, 'lead', 'running',
-       datetime('now', '-300 seconds'))`,
-  ).run(projectId, dirs.projectDir);
+  seedDeadPaneLead(db, projectId, dirs.projectDir, OWNER);
 });
 
 after(async () => {
@@ -67,15 +81,7 @@ const fakeClaude = makeFakeClaude(dirs.tmp);
 
 // A standing watch over the project, seeded directly rather than through
 // wake_when_idle so its owner is the dead-paned lead above.
-const addStandingWatch = () =>
-  db
-    .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, watch_scope, deliver_actor, deliver_pane,
-         max_wait_at, created_at)
-       VALUES (?, 'lead:false-finish', 'crew update', 'idle_any', '[]', 'project', 'lead:false-finish',
-         '%deadlead', datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id`,
-    )
-    .get(projectId).id;
+const addStandingWatch = () => seedStandingWatch(db, projectId, OWNER);
 
 // EVERY ASSERTION BELOW IS OVER NOTICE CONTENT, NEVER OVER A ROW COUNT, and
 // that is a correctness requirement of this harness rather than a style choice.
@@ -99,36 +105,14 @@ const addStandingWatch = () =>
 // test/standing-watch.test.mjs can count because it has no MCP server at all -
 // it drives tick() inside runFixture children. Do not copy its counting
 // assertions here without also removing the server.
-const noticeBodies = (watchId) =>
-  db
-    .prepare("SELECT body FROM timers WHERE parent_timer_id = ? ORDER BY id")
-    .all(watchId)
-    .map((r) => r.body);
-
-// TWO MATCHERS, BOTH ANCHORED, AND A BARE /name/ IS ALWAYS WRONG HERE. A
-// standing watch's body has three parts: a reported block, one two-space
-// indented line per worker ("  <name>: idle for ..." or "  <name>: GONE - ..."),
-// then a one-line "Still going: a (...); b (...)" roster, then advice. A
-// substring search matches the ROSTER too, so "is this worker being reported"
-// and "is this worker merely alive and mentioned" become the same question.
-//
-// That is not hypothetical: it failed exactly that way under a full `npm test`.
-// The MCP server's own 3s scheduler ticked between a spawn and its park, filed
-// a notice for this watch about an unrelated leftover worker, and named the
-// still-running subject in that notice's roster - so a test asserting the park
-// was silent read the roster and called it an obituary.
-//
-// namedInReport: reported at all, finish or death. Use it for the SILENCE
-// assertions, where either would be a failure.
-const namedInReport = (watchId, name) =>
-  noticeBodies(watchId).some((body) => new RegExp(`^ {2}${name}:`, "m").test(body));
-
-// reportedAsFinished: reported as a FINISH specifically. The GONE line shares
-// the same prefix, so without excluding it a "the real finish was reported"
-// assertion would also pass on an obituary - counselors flagged exactly this
-// (opus F8), and the two cases mean opposite things to a lead.
-const reportedAsFinished = (watchId, name) =>
-  noticeBodies(watchId).some((body) => new RegExp(`^ {2}${name}: (?!GONE)`, "m").test(body));
+// BOTH MATCHERS ARE test/helpers.mjs's NOW, shared with the spawn-side sibling
+// rather than copied into it (/simplify, two seats): they encode the notice
+// FORMAT, and both files' headline assertions are silence assertions, so a
+// stale second copy would answer false for every worker and go vacuously
+// green. Why the match is anchored, and why GONE is excluded, is written where
+// they live.
+const namedInReport = (watchId, name) => namedInStandingReport(db, watchId, name);
+const wasReportedAsFinished = (watchId, name) => reportedAsFinished(db, watchId, name);
 
 const stateOf = (id) =>
   db.prepare("SELECT agent_state, state_changed_at FROM agents WHERE id = ?").get(id);
@@ -154,6 +138,30 @@ async function fireStopHook(actorId) {
 async function parkAndResume(name) {
   await mcp.call("agent_spawn", { name, command: fakeClaude() });
   const live = await liveAgentRow(mcp, name);
+  const spawned = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(live.agent_id);
+
+  // THE WORKER IS GIVEN ITS LANE BEFORE IT IS PARKED, and this line is load
+  // bearing rather than realism for its own sake (counselors F2, two seats).
+  // Todo 373 made launchAgent stamp resumed_at at spawn, and parkAgentRow
+  // (src/spawn.ts) writes only status/closed_at/parked_at/parked_branch - it
+  // never clears the column. So without a prompt here, the SPAWN's stamp
+  // survives the park and satisfies the assertion below, and deleting
+  // `resumed_at = datetime('now')` from resumeAgent's own flip leaves this
+  // whole file green while issue #156's headline defect is back for every
+  // worker that was actually given work before being parked. That is
+  // test/CLAUDE.md's shape 7 - an assertion satisfied by two indistinguishable
+  // causes - landing on the file that exists to prevent it.
+  //
+  // It is also the real-world shape: a park follows work. A worker that was
+  // never spoken to is the OTHER lane's subject (todo 373), pinned in
+  // test/spawn-false-finish.test.mjs.
+  await firePromptHook(spawned.actor_id);
+  assert.equal(
+    db.prepare("SELECT resumed_at FROM agents WHERE id = ?").get(live.agent_id).resumed_at,
+    "",
+    "setup: the assignment must clear the spawn's own latch, or the assertion below cannot be about the resume",
+  );
+
   await mcp.call("agent_park", { name });
   await mcp.call("agent_resume", { name });
   const row = db.prepare("SELECT id, actor_id, tmux_target, resumed_at FROM agents WHERE id = ?").get(live.agent_id);
@@ -221,7 +229,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     // it: "t348-fixround: idle for 1s, last log event: stop (0s ago)" for a
     // worker that had not been given its assignment yet.
     assert.equal(
-      reportedAsFinished(watchId, "ff-report"),
+      wasReportedAsFinished(watchId, "ff-report"),
       false,
       "the restore turn must not be reported as a finish",
     );
@@ -239,7 +247,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     await fireStopHook(row.actor_id);
     await tick(snapshot);
     assert.equal(
-      reportedAsFinished(watchId, "ff-report"),
+      wasReportedAsFinished(watchId, "ff-report"),
       true,
       "the real finish must be reported - suppressing it would be the worse defect",
     );
@@ -443,14 +451,23 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
 
     // Both end a turn in the same tick. One is a restore turn, one is a real
     // finish by a worker that was never parked.
+    //
+    // THE NEIGHBOUR IS GIVEN ITS ASSIGNMENT FIRST, and todo 373 is why: a
+    // spawn now carries the same suppression a resume does, because a fresh
+    // worker's announcement turn ends in a Stop hook exactly like a restore
+    // turn does. Without the prompt below this neighbour is a worker that was
+    // spawned and never spoken to, so its "finish" is the very thing todo 373
+    // suppresses - the test would be asserting the old behaviour rather than
+    // the control it exists to be (test/CLAUDE.md, shape 5).
     await fireStopHook(resumed.actor_id);
+    await firePromptHook(plainRow.actor_id);
     await fireStopHook(plainRow.actor_id);
     await tick({ panes: new Set([resumed.tmux_target, plainRow.tmux_target]), windows: new Set() });
 
     // The whole case in two lines: the never-parked neighbour's finish is
     // news, the resumed worker's restore turn is not, and both ended a turn in
     // the same tick.
-    assert.equal(reportedAsFinished(watchId, "ff-neighbour-plain"), true, "a real finish is still news");
+    assert.equal(wasReportedAsFinished(watchId, "ff-neighbour-plain"), true, "a real finish is still news");
     assert.equal(
       namedInReport(watchId, "ff-neighbour-resumed"),
       false,
