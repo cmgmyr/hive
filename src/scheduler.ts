@@ -2500,10 +2500,20 @@ interface StandingCandidate {
 // or announcement turn is still running leaves the column set, and THAT turn's
 // genuine finish is suppressed too. It is bounded rather than permanent: the next
 // delivery that lands on an idle pane is a real user turn, writes a `prompt`
-// row, and clears the column. The store cannot do better here - between the
-// restore turn and an attachment-driven turn there is no prompt, no `working`
-// latch, and no evidence of any kind distinguishing them - so this is a limit
-// of what is observable, not a check that could be sharpened.
+// row, and clears the column.
+//
+// TODO 377 NARROWED THE NEXT SENTENCE, which used to read "the store cannot do
+// better here ... no evidence of any kind distinguishing them". That
+// overstates the ignorance: hive's OWN delivery sites - agent_send's text path
+// and deliver() below - are first-person evidence that something WAS given to
+// this worker. What hive cannot tell is whether the in-flight turn's END
+// includes that work, because between the restore turn and an
+// attachment-driven turn there is no prompt and no `working` latch to separate
+// them. So the limit is on attributing the FINISH, not on knowing a delivery
+// happened - and the silence itself is now REPORTED rather than only accepted:
+// reportUnbriefedWorkers (src/cli.ts) names a worker that has sat latched past
+// a bound, which is the mitigation available for a class no check here can
+// close.
 //
 // THE GONE HALF IS DELIBERATELY NOT SUPPRESSED (standingGoneRows below). A
 // resumed worker that DIES is real news, and the case that motivates watching

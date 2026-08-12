@@ -562,8 +562,22 @@ export function launchAgent(
         // EVERY KIND, not only claude workers. An uninstrumented row (a bash
         // worker, a kind='command' process) writes no hook rows at all, so
         // this never clears for one - and never suppresses anything either,
-        // because its agent_state stays 'unknown' and every reader here is
-        // gated on 'idle'.
+        // because its agent_state stays 'unknown' and every SUPPRESSING reader
+        // is gated on 'idle'.
+        //
+        // TODO 377 ADDED A READER THAT IS NOT, AND THAT NARROWS THIS SENTENCE
+        // RATHER THAN LEAVING IT AS WRITTEN. `reportsAgentStateLog` is now the
+        // word for what this paragraph meant: reportUnbriefedWorkers (`hive
+        // doctor`, src/cli.ts) READS this column without gating on 'idle', so
+        // an uninstrumented row's permanently-set latch is no longer inert to
+        // every reader - it is inert to every reader that SUPPRESSES. That
+        // reader gates on reportsAgentStateLog for exactly this reason: an
+        // eternally-latched bash worker would otherwise be named on every run
+        // for the life of its row, with a remedy ("send it something") that
+        // cannot work, because a non-claude pane fires no UserPromptSubmit.
+        // THE RULE FOR THE NEXT READER OF THIS COLUMN: if it suppresses, the
+        // 'idle' gate covers you; if it REPORTS, ask whether the row has a
+        // state channel at all before saying anything about it.
         "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, resumed_at) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
       )
@@ -733,6 +747,189 @@ export interface ResumeSpec {
   parentActor: string;
 }
 
+// TODO 374. EVERY COLUMN resumeAgent's FLIP WRITES, so a pre-pane failure can
+// put the row back exactly as it was rather than approximately.
+//
+// THE DEFECT THIS EXISTS FOR. The revert used to write status and closed_at
+// and nothing else, so a resume that failed before its pane came up left the
+// park stamp CLEARED on a row that was closed again. `hive status` stopped
+// printing the resume call for that lane, agent_resume's parked-row name
+// preference (todo 364) stopped applying to it, and parked_branch - the one
+// fact that rebuilds a removed worktree - was gone. No work was lost: the row
+// is closed, the session id is intact, agent_resume(agent_id) still works.
+// What was lost is every way of FINDING the lane again.
+//
+// AND IT IS NOT ONLY DISCOVERABILITY, which is the half todo 374 was filed
+// for. The reverted row satisfies every clause of standingGoneRows
+// (src/scheduler.ts) and a standing watch FILES AN OBITUARY for it: the lead
+// is told that worker died and to go and excavate its branch for what was
+// lost, about a lane sitting safe on disk exactly where it parked it. Two
+// separate clauses of that query are what let it through, which is why the
+// list below is not just the park stamp:
+//   parked_at = ''       - the park exclusion, cleared by the flip. Nothing
+//                          ever wrote a gone-cursor row for the lane either,
+//                          because that exclusion is a FILTER rather than a
+//                          claim (see standingGoneRows' own comment), so the
+//                          death reads as unreported news.
+//   agent_state != 'idle' - the flip resets agent_state to 'unknown', so an
+//                          ORDINARY closed row that closed FROM idle - never
+//                          parked at all - loses ITS exclusion the same way.
+//                          Same false obituary, and park is not involved.
+//   closed_at             - every gone cursor and every seedGoneCursor row is
+//                          keyed on closed_at AS THE EPISODE, so stamping a
+//                          fresh one makes an already-reported death look like
+//                          news to every standing watch in the project.
+//
+// SO THE RULE IS THE FLIP'S EXACT INVERSE, not a list of the columns somebody
+// noticed: the row must read as though the resume was never attempted. That
+// rule is the only one that stays true when a twelfth column is added, and it
+// is held STRUCTURALLY rather than by this comment - the same list drives the
+// capture SELECT and the restore UPDATE, and test/resume-revert-restores-row.
+// test.mjs asserts it against the flip statement's own SET clause, so a column
+// added to the flip and not to this list fails a test instead of silently
+// going unreverted.
+//
+// RETURNING CANNOT DO THIS, and both todo 374 and its lane plan offer it as an
+// alternative to reading first. SQLite's RETURNING yields POST-update values
+// for an UPDATE and has no OLD.* access, so on this statement it can only hand
+// back the sentinels the flip just wrote. Read-before-flip is the only route,
+// which is why it is in a transaction with the flip rather than beside it.
+//
+// WHY NOT "just do not clear the stamp until the pane is up": the flip's own
+// comment argues both park columns must move in the SAME statement that
+// un-closes the row, and splitting them reintroduces a window where a row
+// reads running-and-parked. Nothing here contradicts that - the flip is
+// untouched, and only the failure path changed.
+export const RESUME_FLIP_COLUMNS = [
+  "status",
+  "closed_at",
+  "tmux_target",
+  "pane_pid",
+  "agent_state",
+  "state_changed_at",
+  "parked_at",
+  "parked_branch",
+  "resumed_at",
+  "tmux_socket",
+  "command",
+];
+
+// A FUNCTION RATHER THAN A CONST, and that is forced rather than a style
+// choice: it splices PARK_STAMP_CLEARED, which is declared further down this
+// file, so a top-level const here would read it inside its temporal dead zone
+// and throw at import. Exported so the test above asserts against this builder
+// rather than against a copy of the SQL - intercepting a statement by string
+// literal is how test/spawn-cwd-scope's "finding 5" silently disarmed itself
+// (decisions/2026-08-11-recordpane-guards-the-row-not-the-caller.md).
+//
+// SAY THE GUARANTEE EXACTLY (counselors): the list and the flip CANNOT DRIFT
+// WHILE resumeAgent'S CALL TO THIS FUNCTION STANDS. It is one indirection, not
+// a law. A twelfth column added to the flip INLINE, bypassing this builder,
+// evades both guards at once - the drift test would still parse this
+// now-unused builder and agree with itself, and the behavioural test reads
+// back only the listed columns, so a destroyed twelfth column is invisible to
+// it. Unlikely, because the builder is where the SQL lives; written down
+// because "cannot drift" was the claim and this is the honest version of it.
+export function resumeFlipSql(): string {
+  // Issue #156: the park stamp is CLEARED here, in the same statement that
+  // un-closes the row. A resumed lane is not a parked one, and a parked_at
+  // left behind would make `hive status` report it parked for the rest of the
+  // row's life - the stale-state failure the D4 surface exists to prevent,
+  // reintroduced by the tool that was supposed to end it. Both columns move
+  // together on purpose: parked_at != '' is what every reader gates on, so a
+  // parked_branch surviving alone would be a fact no reader can reach and no
+  // writer maintains.
+  // Issue #156 D3: resumed_at is stamped HERE, in the same statement, for the
+  // same reason session_id is written in launchAgent's own INSERT - a fact
+  // that must be true of the row before anything else can observe it. It marks
+  // this worker as "resumed, and not yet spoken to", which is what stops the
+  // restore turn's own Stop hook being reported as a finish. src/hook.ts
+  // clears it on the first `prompt` event.
+  return (
+    "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
+    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
+    "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
+    "WHERE id = ? AND status = 'closed'"
+  );
+}
+
+// tmux_target and pane_pid go back to the DEAD pane the row named before the
+// resume, deliberately, rather than being left as the flip's ''. They are as
+// dead either way - agent_close/agent_park killed that pane before the row was
+// ever closed - and nothing sweeps or probes a closed row, so neither value is
+// acted on. Restoring them keeps ONE rule ("the row reads as though this never
+// happened") instead of a rule plus a per-column exemption list that the next
+// reader has to re-derive.
+//
+// THE CAS IS THE SAME DISCIPLINE EVERY OTHER LIFECYCLE WRITE IN THIS FILE
+// TAKES, AND WITHOUT IT THIS FIX REINTRODUCES ITS OWN DEFECT THROUGH THE RACE
+// DOOR (found by this lane's /simplify altitude pass). parkAgentRow,
+// releaseParkRow, recordPane and cmdLead's restart CAS all refuse to write a
+// row whose state has moved since the caller decided it was theirs; the
+// pre-374 revert took no predicate either, but it wrote TWO columns, and this
+// one writes eleven. The reachable sequence is the one recordPane already
+// exists for (.claude/rules/tmux-and-panes.md): the flip commits running with
+// tmux_target='', a concurrent agent_park reads targetLiveProbe('') as FALSE
+// rather than null, its own CAS compares '' against '' and MATCHES, and the
+// row goes closed+parked mid-resume. If placeAgentPane or upsertActor then
+// throws - the contention case, which is exactly when that park is likeliest -
+// an unpredicated restore overwrites the park the lead just performed and got
+// a receipt for. For a row that was not parked before, that clears parked_at
+// outright: this todo's own defect, reintroduced by its own fix.
+//
+// SO THE PREDICATE IS THE STATE THE FLIP LEFT, and `changes === 0` means
+// another writer owns this row now and it must be left alone. Losing it cannot
+// strand a row 'running' with no pane: it is lost either to a status that is no
+// longer 'running' (someone closed or parked it, so the row is already retired)
+// or to a tmux_target that is no longer '' (only recordPane writes one, and it
+// runs after paneUp is true, where this function is never reached).
+//
+// THAT ENUMERATION IS ABOUT LOSING THE CAS, AND IT IS NOT THE WHOLE STORY -
+// THE THIRD OUTCOME IS MATCHING WHEN IT SHOULD NOT (counselors; two seats found
+// this independently and one reproduced it in an in-memory table). The
+// predicate names a LIFECYCLE PHASE, not a particular resume attempt, and the
+// flip's sentinel state recurs:
+//   resume A flips to running/''; a concurrent agent_park wins its own CAS
+//   through the recorded ''-against-'' door; resume B finds the row closed and
+//   flips it again, producing BYTE-IDENTICALLY the state A's CAS tests for; A
+//   then fails pre-pane and restores A's snapshot over B's flip - silently
+//   destroying the park that the concurrent caller holds a RETURNING receipt
+//   for.
+// This is the shape decisions/2026-08-11-recordpane-guards-the-row-not-the-
+// caller.md names, one turn further on: the sentinel that makes a guard work is
+// not a nonce, so it cannot tell MY flip from ANOTHER flip.
+//
+// ACCEPTED AS A RESIDUAL RATHER THAN FIXED HERE, deliberately and with the
+// lead's call on it. What a real fix takes: a PER-ATTEMPT token on the row, so
+// the restore can name its own flip. resumed_at cannot serve - it is
+// datetime('now'), whole seconds, and this whole window is sub-second - so it
+// means a generation column, which means a migration, which is larger than
+// this lane and would land after both of its review rounds are spent. What
+// makes that acceptable meanwhile: it needs THREE lifecycle calls on one row
+// inside A's flip-to-failure window, and B does not proceed on the corrupted
+// row - it aborts loudly at recordPane, kills its pane and throws. The cost is
+// P's park stamp, and P is a caller that has already been told its park
+// succeeded.
+//
+// ONE MORE THING "the row reads as though the resume was never attempted" DOES
+// NOT COVER, and it is pre-existing rather than introduced here. Tmux side
+// effects do not roll back (.claude/rules/store-and-datadir.md says so of
+// withWindowClaim), and claimInitialWindow's rename-window runs AFTER
+// respawn-pane has already launched the command - so a TmuxTimeoutError there
+// throws with paneUp still false, the row is restored, and a live `claude
+// --resume` on that session id keeps running unrecorded. main's revert had the
+// identical gap. WHAT THIS BRANCH CHANGES is that the restored row now
+// ADVERTISES the resume call in `hive status`, where main's amnesiac row did
+// not - so a second resume of the same session is more inviting than it was.
+// Still the right trade (the alternative is the false obituary), and named here
+// so it is not rediscovered as this lane's doing.
+function restoreFlippedRow(agentId: number, before: Record<string, string | null>): void {
+  db.prepare(
+    `UPDATE agents SET ${RESUME_FLIP_COLUMNS.map((c) => `${c} = ?`).join(", ")} ` +
+      "WHERE id = ? AND status = 'running' AND tmux_target = ''",
+  ).run(...RESUME_FLIP_COLUMNS.map((c) => before[c] ?? null), agentId);
+}
+
 export function resumeAgent(
   spec: ResumeSpec,
 ): { target: string; landedInProjectId: number | null } {
@@ -793,30 +990,37 @@ export function resumeAgent(
   // TOCTOU race between that check and this write, with a remedy this
   // caller can actually reach, rather than asNameClash's "pick another
   // name" - a resumed row's name is not the caller's to change.
-  let flipped: number;
+  // TODO 374: what the flip is about to destroy, captured while it is still
+  // there, and the changes count, returned together rather than smuggled out
+  // through a mutable binding - a caller then cannot read `before` without
+  // also holding the count that proves the flip happened.
+  let flip: { before: Record<string, string | null> | undefined; changes: number };
+  // Compiled ABOVE the transaction on purpose. better-sqlite3 does not cache
+  // prepared statements, so leaving these inline would hold the store's single
+  // machine-wide writer slot for two sqlite3_prepare_v2 calls as well as the
+  // two statements - measured at 13.2us held versus 3.0us, i.e. the compile is
+  // about four times the work the section exists to do. The absolute number is
+  // irrelevant; what matters is that the section's own justification is "two
+  // statements and no forks", and this is what makes that literally true.
+  const captureBeforeFlip = db.prepare(`SELECT ${RESUME_FLIP_COLUMNS.join(", ")} FROM agents WHERE id = ?`);
+  const flipStatement = db.prepare(resumeFlipSql());
   try {
-    flipped = db
-      .prepare(
-        // Issue #156: the park stamp is CLEARED here, in the same statement
-        // that un-closes the row. A resumed lane is not a parked one, and a
-        // parked_at left behind would make `hive status` report it parked for
-        // the rest of the row's life - the stale-state failure the D4 surface
-        // exists to prevent, reintroduced by the tool that was supposed to end
-        // it. Both columns move together on purpose: parked_at != '' is what
-        // every reader gates on, so a parked_branch surviving alone would be a
-        // fact no reader can reach and no writer maintains.
-        // Issue #156 D3: resumed_at is stamped HERE, in the same statement, for
-        // the same reason session_id is written in launchAgent's own INSERT -
-        // a fact that must be true of the row before anything else can observe
-        // it. It marks this worker as "resumed, and not yet spoken to", which
-        // is what stops the restore turn's own Stop hook being reported as a
-        // finish. src/hook.ts clears it on the first `prompt` event.
-        "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
-          `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
-          "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
-          "WHERE id = ? AND status = 'closed'",
-      )
-      .run(socket, spec.commandString, spec.agentId).changes;
+    // TODO 374: the read and the flip are ONE `BEGIN IMMEDIATE` transaction,
+    // not two statements. The captured values are the only copy that will
+    // exist, and a concurrent releaseParkRow (agent_close abandoning this very
+    // park) landing between them would make the revert restore a park a lead
+    // deliberately released. `.immediate()` takes the store's single writer
+    // slot up front, which is the same borrow withWindowClaim already makes
+    // (.claude/rules/store-and-datadir.md). It holds it for two statements and
+    // no forks, and it has COMMITTED before placeAgentPane runs - which
+    // matters beyond politeness, since withWindowClaim refuses outright when
+    // db.inTransaction is already true.
+    flip = db
+      .transaction(() => ({
+        before: captureBeforeFlip.get(spec.agentId) as Record<string, string | null> | undefined,
+        changes: flipStatement.run(socket, spec.commandString, spec.agentId).changes,
+      }))
+      .immediate();
   } catch (e) {
     const err = e as { code?: string; message?: string };
     const message = err.message ?? "";
@@ -831,7 +1035,7 @@ export function resumeAgent(
     }
     throw e;
   }
-  if (flipped === 0) {
+  if (flip.changes === 0) {
     throw new Error(`Agent ${spec.agentId} is not closed - another caller may have resumed it first.`);
   }
   let paneUp = false;
@@ -874,8 +1078,17 @@ export function resumeAgent(
     // with whatever tmux_target it last recorded, same as launchAgent past
     // its own identical point: the worker is live either way, and closing
     // the row out from under a live pane would be the worse failure.
+    //
+    // TODO 374: RESTORING THE ROW, NOT JUST ITS STATUS. See restoreFlippedRow.
+    // The `flip.before` fallback is unreachable rather than defensive -
+    // `flip.changes === 0` throws above this try, and the capture ran in the
+    // same transaction as the flip that counted - and it degrades to
+    // closeAgentRow rather than to nothing, because a row left 'running' with
+    // tmux_target='' is invisible to janitor()'s sweep forever, which is the
+    // one outcome worse than an incomplete revert.
     if (!paneUp) {
-      db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(spec.agentId);
+      if (flip.before) restoreFlippedRow(spec.agentId, flip.before);
+      else closeAgentRow(spec.agentId);
     }
     throw e;
   }

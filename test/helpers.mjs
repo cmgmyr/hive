@@ -1448,6 +1448,18 @@ export function seedDeadPaneLead(db, projectId, projectDir, actorId) {
     .get(projectId, actorId, projectDir).id;
 }
 
+// THE ONE PLACE THIS SQL LITERAL IS SPELLED FOR TEST PURPOSES. Two files
+// reproduce resumeAgent's pre-pane failure by patching db.prepare to throw on
+// upsertActor's own INSERT (src/spawn.ts), because that call sits inside the
+// paneUp-guarded try and before placeAgentPane, and is the realistic failure
+// there (SQLITE_BUSY under contention with a concurrent withWindowClaim
+// holder). The literal has to track the source: if it stops matching, the
+// patch never fires, resumeAgent SUCCEEDS against a real tmux fork, and the
+// test looks exactly like a passing one. Both callers assert the throw for
+// that reason; sharing the string means one place to update rather than two,
+// and `grep UPSERT_ACTOR_SQL_PREFIX` finds every file that depends on it.
+export const UPSERT_ACTOR_SQL_PREFIX = "INSERT INTO actors (id, name, kind)";
+
 // A standing watch (wake_when_idle(scope: "project")) seeded directly rather
 // than through the tool, so its owner can be the dead-paned lead above.
 // watch='[]' with watch_scope='project' is what a standing watch really

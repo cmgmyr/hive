@@ -136,13 +136,16 @@ import {
 } from "./projectYml.js";
 import { isClaudeCommand, writeProjectPosture } from "./brief.js";
 import {
+  ageSecondsSince,
   deriveProvenance,
   describeForHuman,
   describeLastLogEvent,
+  humanizeAge,
   lastLogEvent,
   reportsAgentStateLog,
   type ProvenanceRow,
 } from "./stateProvenance.js";
+import { awaitingFirstPromptSql } from "./firstPrompt.js";
 import {
   checkoutRoot,
   createProfile,
@@ -2742,6 +2745,142 @@ function reportOrphanTmuxServers(): void {
   (orphansWorthWarningAbout(orphans) ? warn : info)("scratch tmux servers", ...detail);
 }
 
+// TODO 377. THE BOUND IS A **GUESSED** 30 MINUTES. Nothing here is measured,
+// and the habit that asks for the label is
+// dead-ends/2026-08-07-a-90-second-settle-before-counting-leaked-processes.md:
+// a guess nobody labels becomes a constant everyone downstream pays.
+//
+// THE SEAT THAT FILED THIS SUGGESTED ~15m, AND IT IS DOUBLED ON AN ASYMMETRY.
+// The condition below is PERMANENT once it holds - a latch that never clears
+// never clears - so reporting it late costs nothing at all. A warn that fires
+// while a lead is briefing its fifth worker is one a reader learns to skip,
+// which is `hive doctor --strict`'s own argument and would cost this check its
+// entire value. A lead spawning a crew and briefing each worker in turn leaves
+// legitimate gaps of MINUTES, so 30m is about ten times the ordinary case.
+// WHAT WOULD CHANGE IT: a real crew where the gap between agent_spawn and the
+// first agent_send is measured above ten minutes. Then move the number rather
+// than deleting the check.
+const UNBRIEFED_WORKER_BOUND_SECONDS = 30 * 60;
+
+// TODO 377. A worker that hive has gone quiet about, named.
+//
+// THE CLASS, NOT AN INSTANCE. After todo 373, `agents.resumed_at` means
+// "started (spawned or resumed) and not yet given anything", and every reader
+// that would say "this worker is idle, act on it" SUPPRESSES while it is set
+// (src/firstPrompt.ts names all of them). src/hook.ts clears it on the first
+// prompt that is not hive's own spawn announcement - so every way that clearer
+// fails to run produces one signature, and the signature is SILENCE: a running
+// worker whose finishes are suppressed, indefinitely, while the lead waits for
+// a finish that will never be reported. Three routes reach it and none is
+// exotic: a delivery absorbed by a busy pane fires no UserPromptSubmit at all
+// (.claude/rules/tmux-and-panes.md), and todo 373 made that the DEFAULT timing
+// for a lead that sends an assignment straight after agent_spawn returns; the
+// discriminator rides a payload field hive does not own; and a worker whose
+// hooks never wired up writes nothing ever.
+//
+// INFORMATION, NEVER A GATE - reportPtyHeadroom's and reportOrphanTmuxServers'
+// stance, which doctor now has twice. Plain warn(), never gatingWarn(), never
+// check(): this names a worker worth looking at, not a broken hive install. It
+// converts "a lead waits forever" into "hive says which worker it has gone
+// quiet about", and nothing more.
+//
+// IT DOES NOT FIX THE ABSORBED DELIVERY and must not read as if it did. That
+// residual stays; this makes it visible. Worth being precise about what hive
+// does know there, since the residual's own recorded wording ("the store
+// cannot do better here") overstates the ignorance: hive's own delivery sites
+// - agent_send's text path and deliver() - are FIRST-PERSON evidence that
+// something was given to this worker. What hive cannot tell is whether the
+// in-flight turn's end includes that work.
+//
+// PRINTED AT ZERO TOO, the same three-states-unconditionally reasoning as the
+// orphan-server report above and the input-box drift counters: a check that is
+// silent when healthy cannot be told from one that never ran.
+function reportUnbriefedWorkers(projectId: number): void {
+  const waiting = (
+    db
+      .prepare(
+        `SELECT name, command, kind, resumed_at, tmux_socket FROM agents WHERE project_id = ? AND status = 'running'
+           AND kind = 'agent' AND ${awaitingFirstPromptSql("agents")} ORDER BY id`,
+      )
+      .all(projectId) as { name: string; command: string; kind: string; resumed_at: string; tmux_socket: string }[]
+  )
+    // A ROW WITH NO STATE CHANNEL IS NOT AWAITING ANYTHING, AND kind='agent'
+    // DOES NOT ANSWER THAT QUESTION (counselors, two seats independently).
+    // agent_spawn sets kind='agent' for EVERY command, so a bash or codex
+    // worker - a shape .claude/rules/tmux-and-panes.md documents as supported -
+    // is a kind='agent' row on a local socket whose resumed_at is stamped by
+    // launchAgent's INSERT and can never be cleared, because a non-claude pane
+    // fires no UserPromptSubmit and its hook never runs. Thirty minutes later
+    // this would name it on every run for the life of the row, and all three
+    // sentences below would be false for it: nothing was suppressed (its
+    // agent_state stays 'unknown' and every suppressing reader gates on
+    // 'idle'), it is not waiting to be briefed, and the remedy cannot work.
+    // That is the always-on warn the foreign-socket filter below exists to
+    // prevent, one column over.
+    //
+    // reportsAgentStateLog is this project's own allowlist for "this row has a
+    // state channel" (src/stateProvenance.ts) and is what doctor's per-worker
+    // pane loop already gates on, so this is the existing predicate rather than
+    // a second spelling of it. IT ALSO FALSIFIED A RECORDED JUSTIFICATION:
+    // launchAgent's INSERT comment defended the unconditional stamp on the
+    // grounds that "every reader here is gated on 'idle'", and this check is
+    // the reader that is not - corrected there in the same commit.
+    .filter((row) => reportsAgentStateLog(row))
+    // A FOREIGN-SOCKET ROW IS NOT THIS PROCESS'S TO JUDGE, the same
+    // conservatism every other per-worker read in this command already applies
+    // (.claude/rules/tmux-and-panes.md). Such a row is stuck 'running' forever
+    // by construction - the janitor cannot sweep what it cannot probe - so
+    // without this it would warn on EVERY run, permanently, offering advice
+    // about a pane this process cannot see ("send it something while its pane
+    // is idle"), directly beside the stuck-row warn above that says in terms
+    // that the row cannot be judged from here. A warn that is always on is the
+    // one this check's own bound is chosen to avoid.
+    //
+    // RAISED AND REJECTED, recorded so it is not rediscovered: that this hides
+    // a genuinely stuck latch. Two counselors seats refuted it independently -
+    // doctor's stuck-row warn DIRECTLY ABOVE names every foreign-socket running
+    // row unconditionally, so the row is reported, by name, in the same
+    // command; what is withheld is only the latch sentence, which is the one
+    // claim this process has no way to act on or advise about.
+    .filter((row) => !foreignSocket(row.tmux_socket));
+  const overdue = waiting
+    .map((row) => ({ name: row.name, seconds: ageSecondsSince(row.resumed_at) }))
+    .filter((row) => row.seconds >= UNBRIEFED_WORKER_BOUND_SECONDS);
+  if (overdue.length === 0) {
+    info(
+      "first assignment",
+      `${waiting.length} worker(s) awaiting one, none for more than ` +
+        `${Math.round(UNBRIEFED_WORKER_BOUND_SECONDS / 60)}m`,
+    );
+    return;
+  }
+  for (const row of overdue) {
+    // THE HEADLINE SAYS WHAT hive OBSERVED, NOT WHY (counselors). It used to
+    // say "has been awaiting its first assignment", which is FALSE for the
+    // commonest route into this condition: an assignment absorbed by a busy
+    // pane fires no UserPromptSubmit, so a worker that was briefed and is
+    // productively working reads exactly like one nobody has spoken to. The
+    // store cannot tell those apart - that is the whole reason this check
+    // exists - so the first line claims only the fact hive can defend (the
+    // latch has been set this long, and every finish has been suppressed while
+    // it was) and the detail line below enumerates the three routes. A
+    // diagnostic that overstates its own reading is one a reader stops
+    // believing, which costs exactly what the bound is chosen to protect.
+    warn(
+      `worker ${row.name}`,
+      `has had its first-prompt latch set for ${humanizeAge(row.seconds)} - hive has suppressed every finish it ` +
+        "reported for that whole time, so a lead waiting on this worker will wait forever.",
+      "the latch is agents.resumed_at, cleared by the first prompt that is not hive's own spawn announcement " +
+        "(src/hook.ts). It is still set, which means either nobody has briefed this worker yet, or the " +
+        "assignment landed in a pane that was mid-turn and fired no UserPromptSubmit - in which case the " +
+        "worker may be working normally and only its FINISHES are lost - or its hooks never wired up at all " +
+        "(.claude/rules/worker-state.md).",
+      "either way the fix is the same: send it something while its pane is idle - any real prompt clears the " +
+        "latch and its finishes start being reported again. `hive status` shows whether the pane is busy.",
+    );
+  }
+}
+
 // EVERY TMUX CALL IN HERE IS BOUNDED; THIS COMMAND AS A WHOLE IS NOT.
 // Counselors round 2, RAISED AND ACCEPTED (todo 375), recorded here rather
 // than fixed. Against a wedged LIVE server every read pays the full 10s -
@@ -3068,6 +3207,10 @@ function cmdDoctor(argv: string[]): void {
           "that socket actually lives.",
       );
     }
+    // Todo 377, here rather than beside reportPtyHeadroom because it is
+    // project-scoped like the stuck-row report above it, and reads the same
+    // running/kind='agent' set.
+    reportUnbriefedWorkers(here.id);
   }
   // Issue #72. NOT the per-worker listing the L1 comment on the "stale
   // state" check above declines to add: that decision was specifically

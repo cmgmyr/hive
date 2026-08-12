@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { clearHiveEnv, isolateTmux } from "./helpers.mjs";
+import { UPSERT_ACTOR_SQL_PREFIX, clearHiveEnv, isolateTmux } from "./helpers.mjs";
 
 // Gate finding on PR #161 (issue #154, todo 353): resumeAgent's
 // upsertActor(...) call used to sit BETWEEN the flip UPDATE (which had
@@ -50,10 +50,12 @@ describe(
 
       const originalPrepare = db.prepare.bind(db);
       db.prepare = (sql) => {
-        // upsertActor's own SQL (src/spawn.ts) - the string this test
-        // intercepts has to track that literal, or the patch silently stops
-        // matching and resumeAgent just succeeds against a real tmux fork.
-        if (sql.startsWith("INSERT INTO actors (id, name, kind)")) {
+        // upsertActor's own SQL (src/spawn.ts). The literal has to track
+        // that statement, or the patch silently stops matching and
+        // resumeAgent just succeeds against a real tmux fork - so it is
+        // shared with the other file that patches it rather than typed here
+        // (test/helpers.mjs, UPSERT_ACTOR_SQL_PREFIX).
+        if (sql.startsWith(UPSERT_ACTOR_SQL_PREFIX)) {
           return {
             run: () => {
               throw new Error("SQLITE_BUSY: simulated for the gate finding on PR #161");
