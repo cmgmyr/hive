@@ -59,7 +59,7 @@ import {
   type Project,
 } from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
-import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
+import { errorMessage, parseTags, registrationNoticeText, withTrailingNewline } from "./result.js";
 import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
 import {
   probeSessionInterpreter,
@@ -157,6 +157,7 @@ import {
   type ProfileFileStatus,
 } from "./profiles.js";
 import {
+  COMMENT_COUNT_SQL,
   getTodoDetail,
   listTodoSummaries,
   OPEN_BLOCKERS_SQL,
@@ -1958,6 +1959,49 @@ const gatingWarn = (label: string, ...lines: string[]) => {
   warn(label, ...lines);
 };
 
+// Todo 349 (pad 104, phase B2-ENCODE), pad 130's D1: a "finding" is a todo
+// carrying one of these tags. The set is enumerated here, by the check
+// itself, rather than read from config - widening it is a one-line diff in
+// this file, not a setting someone has to remember exists.
+//
+// AN EMPTY LIST HERE IS SAFE, AND THAT IS WORTH STATING RATHER THAN LEAVING
+// UNSAID: isReviewFindingTag below is `REVIEW_FINDING_TAGS.some(...)`, which
+// is false for every tag when this array is empty, so the check would read
+// "0 tracked, 0 triaged, 0 untriaged" - D1's own honest zero-state ("nothing
+// is tagged", never "nothing is outstanding"), not a silent flip to tracking
+// every todo in the project. That direction of hazard belongs to
+// matchesAnyTag (src/result.ts), NOT to this filter - see isReviewFindingTag's
+// own comment for where that fact still matters.
+const REVIEW_FINDING_TAGS = [
+  "from-counselors",
+  "from-gate",
+  "from-code-review",
+  "from-simplify",
+  "from-smoke-test",
+  "from-sideproj",
+];
+
+// Counselors, all three seats independently, on this lane's own diff: a
+// finding filed as `from-counselors-23` (a per-run-numbered variant -
+// `from-counselors-22` sits on a completed row in this store today, so the
+// shape is observed, not hypothetical) must still be tracked, or a
+// DELIBERATELY tagged finding reads as untagged - worse than D1's own
+// stated weakness above, because the tracked total is then nonzero and the
+// output reads clean rather than blind.
+//
+// PREFIX-WITH-SEPARATOR, DELIBERATELY LOCAL TO THIS CHECK, NOT
+// matchesAnyTag (src/result.ts). matchesAnyTag is the exact-match contract
+// todo_list's user-supplied `tags` filter and every other caller depends
+// on; widening it to prefix matching would silently change what every one
+// of those callers returns. Do not "unify" the two - fold this logic into
+// matchesAnyTag and todo_list(tags: ["from-counselors"]) starts matching
+// from-counselors-anything too. IT WOULD ALSO REINTRODUCE THE EMPTY-LIST
+// HAZARD REVIEW_FINDING_TAGS's own comment now closes: matchesAnyTag
+// returns true for every todo when `wanted` is empty, the exact inverse of
+// isReviewFindingTag's false-for-everything on the same input.
+const isReviewFindingTag = (tag: string): boolean =>
+  REVIEW_FINDING_TAGS.some((base) => tag === base || tag.startsWith(`${base}-`));
+
 function cmdSetup(argv: string[]): void {
   const dirFlag = argv.indexOf("--dir");
   const dir = dirFlag >= 0 ? resolve(argv[dirFlag + 1] ?? "") : dispatcherDir();
@@ -3115,6 +3159,71 @@ function cmdDoctor(argv: string[]): void {
         // Doctor already reports tmux availability; an object disappearing
         // during inspection must not turn cosmetic diagnostics into failure.
       }
+    }
+  }
+  // Todo 349 (pad 104, phase B2-ENCODE): "a wave must not close with
+  // untriaged review findings outstanding", made mechanically checkable
+  // rather than remembered. Pad 130's D1-D4, decided by the lead - this
+  // block builds them rather than re-deriving them.
+  //
+  // D1. A finding is a todo tagged with one of REVIEW_FINDING_TAGS above (or
+  // a `<tag>-<suffix>` variant of one, see isReviewFindingTag). No schema
+  // change: tags already exist, and two of these are already live in this
+  // store. THE WEAKNESS, stated rather than hidden: tags are applied by
+  // hand, so an untagged finding is invisible to this check. That is why the
+  // TOTAL tagged pool prints UNCONDITIONALLY WITHIN A REGISTERED PROJECT
+  // (the whole block below is gated on `if (here)`, same as every other
+  // per-project check in this function) alongside the triaged/untriaged
+  // split - a zero total reads as "nothing is tagged", never as "nothing is
+  // outstanding". Same three-states-unconditionally shape as the input box
+  // classifier above, and the exact false-green
+  // .claude/sessions/dead-ends/2026-08-03-negative-control-that-disabled-its-own-check.md
+  // describes: a control whose setup disables the path it tests is
+  // indistinguishable from one that works.
+  //
+  // D2. Triaged means a RECORDED DECISION, not a closed row: at least one
+  // comment, or completed, or archived. A finding read and rejected must
+  // count as triaged or this punishes the correct behaviour. WEAKNESS,
+  // accepted rather than fixed: an empty or unrelated comment counts. This
+  // check is a prompt to a human, not a proof of triage quality.
+  //
+  // D3. No wave object - hive has none, and this check does not need one. It
+  // is time-independent and reports what is outstanding NOW; a runbook step
+  // (outside this repo, not this file) is what tells a teardown to run it.
+  //
+  // D4. Non-gating: warn(), never gatingWarn(). A bookkeeping gap is not
+  // "this install is wrong" - see the two-function split's own comment above
+  // and .claude/sessions/decisions/2026-08-07-strict-promotes-only-gating-warns.md.
+  if (here) {
+    const findings = (
+      db
+        .prepare(
+          `SELECT id, tags, status, archived_at, ${COMMENT_COUNT_SQL} AS comment_count
+           FROM todos t WHERE t.project_id = ?`,
+        )
+        .all(here.id) as {
+        id: number;
+        tags: string;
+        status: string;
+        archived_at: string | null;
+        comment_count: number;
+      }[]
+    ).filter((t) => parseTags(t.tags).some(isReviewFindingTag));
+    const untriaged = findings.filter(
+      (t) => t.comment_count === 0 && t.status !== "completed" && t.archived_at == null,
+    );
+    info(
+      "review findings",
+      `${findings.length} tracked (tagged ${REVIEW_FINDING_TAGS.join(", ")}): ` +
+        `${findings.length - untriaged.length} triaged, ${untriaged.length} untriaged.`,
+    );
+    if (untriaged.length > 0) {
+      warn(
+        "review findings",
+        `${untriaged.length} untriaged: ${untriaged.map((t) => `todo ${t.id}`).join(", ")}.`,
+        "Triage means a comment recording a decision, or completed/archived - comment with the outcome " +
+          "(dispatched, rejected and why, etc.) on each before closing this wave.",
+      );
     }
   }
   // THE SUMMARY LINE CARRIES BOTH COUNTS, and that is what makes this

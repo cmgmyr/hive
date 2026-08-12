@@ -52,11 +52,16 @@ export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
    WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
 
+// Shared with the CLI (hive doctor's review-findings check, todo 349): the
+// same "does this todo have a comment" subquery SUMMARY_SQL embeds below, so
+// the two cannot drift on what counts as commented-on.
+export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id)`;
+
 const SUMMARY_SQL = `
   SELECT t.*,
     (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
       WHERE b.todo_id = t.id AND bt.status != 'completed') AS open_blockers,
-    (SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id) AS comment_count
+    ${COMMENT_COUNT_SQL} AS comment_count
   FROM todos t`;
 
 function getTodo(projectId: number, todoId: number): TodoRow {
