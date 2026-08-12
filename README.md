@@ -188,6 +188,8 @@ dashboard: true               # optional; default false. Writes a generated, aut
                               # HTML dashboard to .claude/dashboard/index.html on every tick:
                               # the board pad, open todos, running agents, pending wakes, and
                               # recent activity. Read-only, self-contained, opens from file://.
+                              # `hive`/`hive lead` opens it in a browser once per ~8h of use
+                              # (`hive lead --no-dashboard` skips this run's open).
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
   typecheck:                  # expanded form

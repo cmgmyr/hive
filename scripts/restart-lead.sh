@@ -430,9 +430,9 @@ fi
 
 if [ "$DRY_RUN" = "1" ]; then
   if [ -n "$PANE" ]; then
-    say "dry run: would kill $PANE, run 'hive lead $REPO', and send the handoff prompt"
+    say "dry run: would kill $PANE, run 'hive lead $REPO --no-dashboard', and send the handoff prompt"
   else
-    say "dry run: no live lead pane to kill; would just run 'hive lead $REPO' and send the handoff prompt"
+    say "dry run: no live lead pane to kill; would just run 'hive lead $REPO --no-dashboard' and send the handoff prompt"
   fi
   exit 0
 fi
@@ -548,8 +548,20 @@ fi
 # bug this project has been bitten by before, even though ensureLeadRow does
 # not currently read either. HIVE_DATA_DIR is NOT cleared: pointing the
 # restart at the same store the caller used is correct.
-say "running: hive lead $REPO"
-env -u HIVE_AGENT_ID -u HIVE_LEAD -u HIVE_AGENT_NAME hive lead "$REPO" || gone "hive lead failed; check by hand"
+#
+# --no-dashboard (todo 356): this script's own `hive lead` and a human's are
+# now the identical dispatch (bare `hive` defaults to "lead"), so without
+# this flag a restart would pop a browser window on the human's desktop -
+# exactly the class of bug todo 355 closed for auto-attach, reached through
+# the lead restart path instead. Explicit rather than inferred from any
+# ambient signal (a TTY check would not distinguish this pane, which is a
+# real tty, from a human's), so it is visible right here rather than implied.
+# cmdAttach's own kv TTL marker is a second, independent guard behind this
+# one - see maybeOpenDashboard's comment in src/cli.ts - not a reason to
+# drop this flag.
+say "running: hive lead $REPO --no-dashboard"
+env -u HIVE_AGENT_ID -u HIVE_LEAD -u HIVE_AGENT_NAME hive lead "$REPO" --no-dashboard ||
+  gone "hive lead failed; check by hand"
 
 # `hive lead` should have created or reused a live pane - re-resolve from
 # the store rather than polling any old id, which would time out even on a

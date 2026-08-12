@@ -163,6 +163,33 @@ export function makeFakeClaude(tmp) {
   };
 }
 
+// Fakes macOS `open` on PATH, the same shape as makeFakeClaude above for the
+// analogous reason (todo 356): a real `open` would pop a real browser window
+// on whatever machine runs the suite. `bin` logs every invocation's args to
+// a file a test reads back with `calls()`; `failBin` holds a second `open`
+// that exits nonzero without logging anything, for simulating a launch that
+// never actually opened a window. One call per test file is enough - both
+// dashboard-open test files use exactly one - so this returns a single
+// fixture rather than a factory with makeFakeClaude's per-call counter.
+export function makeFakeOpen(tmp) {
+  const bin = join(tmp, "fake-open-bin");
+  const failBin = join(tmp, "fake-open-fail-bin");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(failBin, { recursive: true });
+  const log = join(tmp, "fake-open.log");
+  writeFileSync(join(bin, "open"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexit 0\n`);
+  chmodSync(join(bin, "open"), 0o755);
+  writeFileSync(join(failBin, "open"), "#!/bin/sh\nexit 1\n");
+  chmodSync(join(failBin, "open"), 0o755);
+  writeFileSync(log, "");
+  return {
+    bin,
+    failBin,
+    calls: () => readFileSync(log, "utf8").split("\n").filter(Boolean),
+    reset: () => writeFileSync(log, ""),
+  };
+}
+
 // Puts this process, and every child that inherits its env, on a private tmux
 // server. Call it at module top level, before anything spawns tmux.
 //

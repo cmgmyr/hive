@@ -14,6 +14,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
 import { claudeConfigDir } from "./claudeDir.js";
 import {
@@ -60,7 +61,7 @@ import {
 } from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, parseTags, registrationNoticeText, withTrailingNewline } from "./result.js";
-import { ACTIVE_TIMER_WHERE, janitor } from "./scheduler.js";
+import { ACTIVE_TIMER_WHERE, dashboardFileContained, janitor, resolveDashboardDir } from "./scheduler.js";
 import {
   probeSessionInterpreter,
   reexecTarget,
@@ -176,7 +177,11 @@ function usage(): never {
 
 Usage:
   hive [path]                open the project's session with a lead window
-  hive lead [path]           same; lead is the default command
+  hive lead [path] [--no-dashboard]
+                             same; lead is the default command. --no-dashboard
+                             skips this run's dashboard auto-open (todo 356) -
+                             scripts/restart-lead.sh passes it; a human rarely
+                             needs to
   hive init [path] [--profile <name>|--no-profile]
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
@@ -760,7 +765,28 @@ function ensureLeadRow(
   };
 }
 
-async function cmdLead(path?: string): Promise<void> {
+async function cmdLead(argv: string[]): Promise<void> {
+  // --no-dashboard, todo 356: scripts/restart-lead.sh passes this explicitly
+  // rather than hive inferring "this is a restart" from anything ambient -
+  // see maybeOpenDashboard's own comment for why an explicit flag was chosen
+  // over an env var or a TTY/parent-process guess. Parsed the same way
+  // cmdInit already parses --profile/--no-profile: a boolean flag plus one
+  // optional positional path, in either order.
+  //
+  // UNLIKE cmdInit's loose parsing, an unrecognised `--` flag here is
+  // rejected outright rather than silently dropped (counselors, delta round,
+  // claude-opus-5): cmdInit ignoring a typo is inert, but this flag exists
+  // specifically to suppress a side effect, so a silently-ignored typo (a
+  // future `restart-lead.sh` edit misspelling it, say) would silently
+  // restore the exact 3am-browser-window failure the flag exists to
+  // prevent. Same pattern cmdDoctor already uses for its own `--strict`.
+  const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard");
+  if (unknownFlag !== undefined) {
+    console.error(`hive lead: unknown flag "${unknownFlag}". The only flag is --no-dashboard.`);
+    process.exit(1);
+  }
+  const noDashboard = argv.includes("--no-dashboard");
+  const path = argv.find((a) => !a.startsWith("--"));
   // Deferred, not printed here: resolveProjectAndNotify runs at the very top
   // of this function, with the attach that takes over the terminal still a
   // second-plus and a dozen-odd console.log lines away, which is exactly why
@@ -1235,6 +1261,17 @@ async function cmdLead(path?: string): Promise<void> {
       console.error(registrationNotice);
       registrationNotice = null;
     }
+    // Todo 356. THIS is the trigger the todo actually asked for: bare `hive`
+    // and `hive lead` both dispatch here (this file's own `args[0] ?? "lead"`
+    // default, near the bottom), so cmdAttach alone was never reachable from
+    // ordinary use - see maybeOpenDashboard's own comment for the correction.
+    // --no-dashboard is the ONLY thing that suppresses this for a specific
+    // invocation; the kv TTL marker inside maybeOpenDashboard is a second,
+    // independent guard (a restart inside the marker's ~8h window would not
+    // reopen even without the flag), not a substitute for it - a missed flag
+    // should degrade to "usually right", not be the only thing standing
+    // between a restart and a 3am browser window.
+    if (!noDashboard) maybeOpenDashboard(project, !!config?.dashboard);
     attach(session, project, leadWindow);
   } catch (e) {
     // Review round 1, F5: this project's own review corrected a reachability
@@ -1703,8 +1740,177 @@ function cmdProfile(argv: string[]): void {
   }
 }
 
-function cmdAttach(path?: string): void {
+// Todo 356. OPEN FROM cmdAttach AND cmdLead ONLY - never from the scheduler
+// or the MCP server process, both of which run this SAME check (hive.yml's
+// `dashboard` key) on every tick. The scheduler WRITES the dashboard file;
+// it must never be the one to POP a browser window too, for the identical
+// reason todo 355 stopped a background process popping a terminal window
+// (ensureAttached's comment in src/tmux.ts is the argued case list). A human
+// typing `hive`/`hive lead`/`hive attach` may open a window; a background
+// process may not.
+//
+// ACCEPTED RESIDUAL, RECORDED RATHER THAN CLOSED (counselors, both seats):
+// unlike attach()'s own final tmux-exec branch, this function does not gate
+// on `process.stdout.isTTY`, so a HEADLESS `hive attach` (piped stdio - a
+// script, a cron job, this file's own test suite) still opens a browser.
+// Weighed and accepted rather than fixed: (1) nothing in this codebase
+// invokes `hive attach` non-interactively today (grepped: not
+// scripts/restart-lead.sh, which runs `hive lead`; not ensureAttached's
+// AppleScript, which runs `tmux`; no MCP tool reaches a CLI command at
+// all - tool-contract.md's split, above); (2) closing it precisely needs a
+// REAL pty, which is exactly what this project's own test suite avoids
+// building, on the recorded grounds that pty behaviour differs between the
+// macOS and ubuntu CI legs (test/attach-caller-session.test.mjs's own
+// comment on `callerSession()`) - gating on isTTY here would make this
+// feature's entire marker/TTL/race-closing logic untestable by this suite's
+// established methodology, for a scenario nothing currently reaches; (3) the
+// residual is bounded to at most one extra window per headless invocation -
+// no compounding, no state left behind beyond the marker every successful
+// open already writes. If a future lane wires `hive attach` into anything
+// unattended, revisit this the way todo 355 revisited auto-attach - do not
+// silently inherit "accepted".
+//
+// RESOLVED, WAS FLAGGED (todo 356 comment 822, counselors both seats
+// independently, same finding; Chris's ruling on comment 824): bare `hive`
+// with no arguments does NOT reach cmdAttach. `args[0] ?? "lead"` (this
+// file's own dispatch, near the bottom) defaults to the SAME "lead" command
+// `hive lead` runs, i.e. cmdLead - so cmdAttach alone was never reachable
+// from bare `hive`, the trigger todo 356's decision 1 and Chris's own stated
+// workflow ("I only run `hive` in projects") both describe. Chris's ruling:
+// the PREFERENCE in decision 1 stands; the PARENTHETICAL claiming that
+// preference meant cmdAttach was a false statement about the code, corrected
+// by calling this function from cmdLead too (that call site carries its own
+// comment on the `--no-dashboard` flag this required, since cmdLead's call
+// - unlike cmdAttach's - also reaches scripts/restart-lead.sh's own `hive
+// lead`, which the RESTART CASE section requires never open a window).
+//
+// `open` on this file:// URL was measured, twice, to duplicate a browser
+// window on every call - deterministically 1:1, never focusing an existing
+// one (todo 356 comments 815, 816). So idempotence needs a marker, and hive
+// already has one: project-scoped kv with a TTL that expires on its own
+// (CLAUDE.md's Invariants). No new config value either - hive.yml's
+// `dashboard: true` alone gates this, Chris's own call.
+//
+// This reaches the `kv` table directly rather than through the kv_* MCP
+// tools. tool-contract.md's CLI/MCP split is about a value set in one
+// process (an env var, a CLI flag) not reaching a DIFFERENT process - it does
+// not apply here, since cmdAttach and every kv_* tool share one process's
+// `db` handle onto the same sqlite file, the same way cmdAttach already
+// reads `projects` and `agents` rows directly.
+//
+// The key is namespaced ("hive:...") rather than the bare word a human might
+// plausibly `kv_set` themselves - kv is a shared, arbitrary-key store with no
+// reserved-prefix mechanism (counselors, both seats: an unrelated `kv_set`
+// on the bare key, with no TTL of its own, would suppress every future open
+// for this project permanently, silently, since the un-TTL'd row is never
+// deleted by the expiry sweep below).
+const DASHBOARD_OPENED_KV_KEY = "hive:dashboard_opened";
+// "How long before I want to see this again", not a cache. 8h ~ one working
+// day: long enough that the 2nd, 3rd, ... `hive` of a day does not reopen it,
+// short enough that tomorrow's first `hive` does.
+const DASHBOARD_OPENED_TTL_SECONDS = 8 * 60 * 60;
+
+// dashboardEnabled is passed in rather than read here (/simplify, efficiency
+// angle): cmdLead already calls loadProjectYml once for its own `config.lead`
+// check, so re-parsing hive.yml a second time in the same invocation just to
+// read `config.dashboard` was pure waste. cmdAttach has no other reason to
+// load the yml, so it does its own single read at the call site instead.
+function maybeOpenDashboard(project: Project, dashboardEnabled: boolean): void {
+  if (process.platform !== "darwin") return; // hive is macOS-first; no `open` equivalent wired up elsewhere yet.
+  if (!dashboardEnabled) return;
+  // resolveDashboardDir (src/scheduler.ts) is the WRITE path's own symlink
+  // containment check, exported for reuse rather than re-derived: counselors
+  // (both seats) found the open path had none of it, so a `.claude/dashboard`
+  // symlinked outside the project root - which the scheduler already refuses
+  // to write through - would still get opened here via a bare existsSync.
+  // A plain FILE the repo commits inside a genuinely-contained directory is
+  // not this case and is not treated as one: that is the repo's own content,
+  // the same trust level CLAUDE.md's `vars` invariant already accepts for a
+  // cloned hive.yml.
+  const dashboardDir = resolveDashboardDir(project.path);
+  if (dashboardDir === null) return;
+  const dashboardFile = join(dashboardDir, "index.html");
+  // A cold project's scheduler has not ticked yet, so the file may not exist.
+  // Opening a 404 is worse than doing nothing; the next `hive attach` retries.
+  if (!existsSync(dashboardFile)) return;
+  // dashboardFileContained (src/scheduler.ts) closes the gap resolveDashboardDir
+  // above cannot: that call only realpath-checks the DIRECTORY chain, so a
+  // repo can commit .claude/dashboard/ as a real, contained directory with
+  // index.html itself as a SYMLINK pointing outside the project. `open`
+  // resolves a symlink and acts on the TARGET's real type, not on the
+  // ".html" spelling of the path - a different capability than the plain
+  // committed-file case above, which stays accepted. See that function's own
+  // comment for the full argument; this call is what makes the distinction
+  // real rather than only written down.
+  if (!dashboardFileContained(dashboardFile, project.path)) return;
+
+  // Counselors (both seats): this used to be four separate autocommit
+  // statements (delete-expired, select-exists, open, insert) with `open`'s
+  // own subprocess sitting between the read and the write, so two
+  // `hive attach`es within that window could both read "no marker" and both
+  // call `open` - and, separately, a marker write that failed AFTER a
+  // successful `open` left no marker at all, so the very next attach opened
+  // a second window for the one that actually succeeded.
+  //
+  // /simplify (reuse + simplification angles) collapsed the fix further, from
+  // a three-statement transaction to the single conditional UPSERT below -
+  // CLAUDE.md's own Invariants name this exact shape ("wake-up claims are
+  // atomic conditional updates"), and src/tools/leases.ts's lease_acquire is
+  // the same idiom already in this codebase. A row is claimable when it is
+  // ABSENT (the plain INSERT branch, no conflict at all) or EXPIRED (the
+  // WHERE clause below gates the ON CONFLICT DO UPDATE, so a live, unexpired
+  // marker leaves the row untouched and reports zero rows changed) - one
+  // statement, atomic by construction, no transaction wrapper needed.
+  const actor = currentActor();
+  const claim = db
+    .prepare(
+      `INSERT INTO kv (project_id, key, value, updated_by, expires_at)
+       VALUES (?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))
+       ON CONFLICT(project_id, key) DO UPDATE SET
+         value = excluded.value, updated_by = excluded.updated_by,
+         updated_at = datetime('now'), expires_at = excluded.expires_at
+       WHERE kv.expires_at IS NOT NULL AND kv.expires_at < datetime('now')`,
+    )
+    .run(project.id, DASHBOARD_OPENED_KV_KEY, JSON.stringify(true), actor, DASHBOARD_OPENED_TTL_SECONDS);
+  if (claim.changes === 0) return;
+
+  try {
+    // Bare "open", resolved off cmdAttach's own PATH - unlike the AppleScript
+    // strings in ensureAttached, this runs as a normal child of the CLI's own
+    // process, which inherits whatever PATH launched `hive`, not iTerm's
+    // minimal one. That also makes it fakeable on PATH in tests. `stdio:
+    // "ignore"` and a bounded timeout (counselors, claude-opus-5): the
+    // default stdio inherits this process's own stderr, so a failing `open`
+    // printed noise into `hive attach`'s own output despite the swallowing
+    // catch below, and with no timeout a wedged `open` would sit in front of
+    // the terminal attach the human is actually waiting for.
+    execFileSync("open", [pathToFileURL(dashboardFile).href], { stdio: "ignore", timeout: 5000 });
+  } catch {
+    // best-effort: a failed `open` must not block attach. Release the claim
+    // so the next `hive attach` retries instead of staying poisoned for 8h.
+    db.prepare("DELETE FROM kv WHERE project_id = ? AND key = ?").run(project.id, DASHBOARD_OPENED_KV_KEY);
+  }
+}
+
+function cmdAttach(argv: string[]): void {
+  // `hive attach` takes no flags today. Counselors (delta round,
+  // claude-opus-5): `hive attach --no-dashboard` - a plausible typo, since
+  // the usage text prints that flag four lines above `hive attach [path]` -
+  // used to hand "--no-dashboard" straight to resolveProject as a path and
+  // crash on a raw ENOENT from process.chdir(). Reject any `--` token
+  // outright instead, with a message that says what actually went wrong,
+  // matching cmdLead's own unknown-flag rejection rather than cmdAttach
+  // silently accepting a flag that would do nothing (this command has no
+  // suppress mechanism to accept it INTO - see maybeOpenDashboard's comment
+  // for why cmdAttach needs none today).
+  const unknownFlag = argv.find((a) => a.startsWith("--"));
+  if (unknownFlag !== undefined) {
+    console.error(`hive attach: unknown flag "${unknownFlag}". hive attach takes no flags.`);
+    process.exit(1);
+  }
+  const path = argv.find((a) => !a.startsWith("--"));
   const project = resolveProject(path);
+  maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
   // Pad 79, T5(b), and the PR gate's finding on the first version of this
   // fix. Two DIFFERENT ways cmdAttach can reach a project with no window of
@@ -3813,7 +4019,18 @@ const COMMANDS = [
 ];
 if (!COMMANDS.includes(command)) {
   // `hive <path>` opens that project's session; lead is the default command.
-  if (existsSync(command)) {
+  // `hive --<flag>` is the same shape (counselors, delta round on todo 356:
+  // `hive --no-dashboard` is the form the usage text documents as the
+  // default command's own flag, and command === "--no-dashboard" here is
+  // not a path and not a known command, so without this branch it fell
+  // straight to usage()/exit(1) - the exact invocation the docs advertise
+  // failing outright). `rest = args` keeps the flag itself in argv for
+  // cmdLead to parse, rather than the ordinary branch's `[command, ...rest]`
+  // reconstruction, which would drop it.
+  if (command.startsWith("--")) {
+    rest = args;
+    command = "lead";
+  } else if (existsSync(command)) {
     rest = [command, ...rest];
     command = "lead";
   } else {
@@ -3832,13 +4049,13 @@ migrate();
 try {
   switch (command) {
     case "lead":
-      await cmdLead(rest[0]);
+      await cmdLead(rest);
       break;
     case "init":
       await cmdInit(rest);
       break;
     case "attach":
-      cmdAttach(rest[0]);
+      cmdAttach(rest);
       break;
     case "start":
       await cmdStart(rest[0], rest[1]);

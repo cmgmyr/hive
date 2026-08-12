@@ -111,15 +111,41 @@ jobs:
         # number means anything: the file was run with process.platform forced
         # to "linux", before (4) and after (7), and 4 matching the budget it
         # replaced is what confirms no other file contributes to it.
+        #
+        # 7 -> 18 (todo 356). maybeOpenDashboard's `open` call is darwin-only
+        # by the same construction as ensureAttached above, so its positive
+        # cases (which actually call the faked `open` and assert on it) are a
+        # Linux no-op the same way and skip by design rather than pass
+        # silently for the wrong reason. Two new files, eleven skips: five in
+        # test/dashboard-open.test.mjs (symlink containment, first open+TTL,
+        # no-reopen, expired-marker reopen, failed-open retry), six in
+        # test/dashboard-open-lead.test.mjs (three `hive lead` cases, bare
+        # `hive`, `hive --no-dashboard`, the misspelled-flag rejection - that
+        # last one is darwin-gated because a rejected call is proven by
+        # asserting NOTHING was opened, which needs the real gate chain
+        # below it to be reachable; `hive attach --no-dashboard`'s own
+        # rejection test is NOT gated, since it fails before the platform
+        # check and runs identically on every OS). CI CONFIRMED THE COUNT
+        # independently of this arithmetic: the run this comment was written
+        # against reported exactly 18 skipped against the old budget of 7.
+        #
+        # 18 -> 19 (todo 356, counselors round 3, posted four times before it
+        # was actually read). resolveDashboardDir only realpath-checked the
+        # DIRECTORY chain, never the FILE - a real, contained .claude/dashboard
+        # with index.html itself committed as a symlink escaping the project
+        # root got followed by `open` unchecked. One new darwin-gated case
+        # (test/dashboard-open.test.mjs) proves the fix; it is the same
+        # positive-open-path shape as the other eighteen, so it skips on
+        # Linux for the identical reason.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 7
+            skipped: 19
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 7
+            skipped: 19
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5

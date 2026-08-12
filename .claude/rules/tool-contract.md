@@ -233,7 +233,17 @@ tool. If it is a human standing up or tearing down the environment hive
 runs in, it is a CLI command. A capability genuinely needed on both sides
 gets built for whichever is asked for first, and the other side is a
 separate, deliberate addition with its own review, never assumed to come
-free because the first half shipped. No CLI command reaches kv, leases, or
-wakes today, and no MCP tool reaches backups, restore, profiles, posture,
-runbook, or doctor; both are the split working as intended, not omissions
-to close.
+free because the first half shipped. No CLI command reaches leases or wakes
+today, and no MCP tool reaches backups, restore, profiles, posture, runbook,
+or doctor; both are the split working as intended, not omissions to close.
+
+**Narrowed since, for kv specifically (todo 356).** `cmdAttach`/`cmdLead`'s
+`maybeOpenDashboard` (`src/cli.ts`) reads and writes one kv row directly, via
+the same process's `db` handle rather than through `kv_set`/`kv_get`. This is
+not the gap the mechanical reasoning above warns about: that reasoning is
+about a value set in ONE process (a shell env var, a CLI flag) failing to
+reach a DIFFERENT process (the MCP server), and there is no process boundary
+here at all - the CLI and every `kv_*` tool already share one `db` handle
+onto the same sqlite file in the same process. Still narrow: this is one CLI
+command touching one table for one purpose, not a general precedent for CLI
+code to bypass MCP tools where a real process boundary would apply.

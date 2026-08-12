@@ -610,7 +610,22 @@ function writeDashboardAtomically(dashboardDir: string, html: string): void {
 // function returns is the plain `join()`-built path, never `realpathSync`'s
 // output, so every consumer downstream (writeDashboardAtomically, the tests)
 // keeps seeing the same spelling it always has.
-function resolveDashboardDir(projectPath: string): string | null {
+// Shared by resolveDashboardDir below and by maybeOpenDashboard's own
+// file-level check (src/cli.ts, todo 356 counselors round 3): "is this
+// EXISTING path's real location inside the resolved project root" is one
+// comparison, needed at two different granularities (a directory that may
+// not exist yet vs. a file already confirmed to exist) - factored out so the
+// open path reuses it rather than hand-rolling a second copy.
+function realpathContained(existingPath: string, projectPath: string): boolean {
+  const resolved = realpathSync(existingPath);
+  const resolvedProjectPath = realpathSync(projectPath);
+  return resolved === resolvedProjectPath || resolved.startsWith(resolvedProjectPath + sep);
+}
+
+// Exported for reuse by cmdAttach/cmdLead (src/cli.ts, todo 356): the OPEN
+// path deserves the identical containment guarantee the WRITE path already
+// argues for above, not a hand-rolled join() with none of it.
+export function resolveDashboardDir(projectPath: string): string | null {
   const dashboardDir = join(projectPath, ".claude", "dashboard");
   let ancestor = dashboardDir;
   while (!existsSync(ancestor)) {
@@ -618,12 +633,43 @@ function resolveDashboardDir(projectPath: string): string | null {
     if (parent === ancestor) break; // filesystem root; existsSync(projectPath) should stop this first
     ancestor = parent;
   }
-  const resolvedAncestor = realpathSync(ancestor);
-  const resolvedProjectPath = realpathSync(projectPath);
-  if (resolvedAncestor !== resolvedProjectPath && !resolvedAncestor.startsWith(resolvedProjectPath + sep)) {
-    return null;
-  }
+  if (!realpathContained(ancestor, projectPath)) return null;
   return dashboardDir;
+}
+
+// Counselors, round 3 (posted four times across four syncs before it was
+// actually read - see todo 356's record): resolveDashboardDir above only
+// realpath-checks the DIRECTORY chain. When .claude/dashboard already exists
+// as an ordinary, project-contained directory - the common case once the
+// scheduler has ticked once, or a directory a repo ships pre-populated -
+// resolveDashboardDir returns immediately without ever inspecting what is
+// INSIDE it. A repo can commit that directory as real and contained, with
+// index.html itself as a symlink pointing outside the project (`~/.ssh/id_rsa`,
+// say). `dashboard: true` needs no trust prompt (it is a bare boolean, not a
+// `lead:`/`processes:` command - maybeGenerateDashboard never calls
+// ensureTrusted on it), and on a freshly cloned checkout's very first
+// `hive lead`/`hive attach` - before any scheduler tick has self-healed
+// index.html via writeDashboardAtomically's rename-over-whatever's-there,
+// which only runs from the MCP server's own tick(), never from this CLI path -
+// `existsSync` follows the symlink and reads true, and `open` would act on
+// the target's real content with zero prompt.
+//
+// THIS IS A DIFFERENT CASE FROM A REPO COMMITTING A REAL index.html DIRECTLY,
+// which stays accepted (see maybeOpenDashboard's own comment: that is the
+// repo's own content, the same trust level CLAUDE.md's `vars` invariant
+// already accepts for a cloned hive.yml). `open` resolves a symlink and acts
+// on the TARGET's real type, not on the ".html" spelling of the path it was
+// asked to open - so the primitive a symlinked index.html grants is "make
+// `open` act on an arbitrary local path of the repo author's choosing", a
+// different capability than "render the repo's own HTML", and the asymmetry
+// (the write path had this check, the open path did not) was the defect on
+// its own terms.
+//
+// A non-symlink index.html is unaffected: realpathContained on an ordinary
+// file inside an already-contained directory always agrees with the
+// directory check above, so this never refuses an ordinary dashboard.
+export function dashboardFileContained(dashboardFile: string, projectPath: string): boolean {
+  return realpathContained(dashboardFile, projectPath);
 }
 
 function maybeGenerateDashboard(project: { id: number; path: string }): void {
