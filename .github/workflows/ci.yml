@@ -100,15 +100,26 @@ jobs:
         #
         # `skipped` is this leg's EXACT skip budget, enforced after `npm test`
         # rather than described near it. See the comment on the tmux step.
+        #
+        # 4 -> 7 (todo 355). Every skip in this budget comes from one file,
+        # test/auto-attach-scope.test.mjs, whose cases drive ensureAttached -
+        # a no-op off darwin by construction, so a Linux leg cannot run them
+        # and a silent pass there would be worse than a skip. That lane added
+        # three: a `tmux -L` private socket, full isolation, and the ordinary
+        # no-tmux-environment case that must still attach.
+        # MEASURED RATHER THAN COUNTED OFF THE DIFF, which is the only way this
+        # number means anything: the file was run with process.platform forced
+        # to "linux", before (4) and after (7), and 4 matching the budget it
+        # replaced is what confirms no other file contributes to it.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 4
+            skipped: 7
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 4
+            skipped: 7
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5

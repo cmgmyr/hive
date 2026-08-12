@@ -1892,6 +1892,51 @@ export function autoAttachProbe(value: AutoAttach, session: string): string[] {
 // maps each tmux window to a native window/tab.
 export function ensureAttached(session: string): void {
   if (process.platform !== "darwin") return;
+  // Todo 355. A process on a PRIVATE tmux socket must not attach at all, and
+  // the reason is structural rather than a preference: attachScripts emits
+  // neither -L nor -S, so the tmux that AppleScript's fresh GUI shell runs
+  // resolves its socket from that shell's own environment - which has none of
+  // ours, since it is spawned by iTerm/Terminal rather than forked from here.
+  // So hive CANNOT ENSURE that window reaches this socket - the refusal is
+  // about hive's own ignorance, not about tmux's behaviour, and stating it the
+  // stronger way ("it can only ever reach the default socket") is false: the
+  // Terminal branch's `do script` runs through the user's LOGIN SHELL, so a
+  // machine whose ~/.zprofile or `launchctl setenv` exports TMUX_TMPDIR feeds
+  // that shell the same private socket by a route hive cannot see. Such a user
+  // had a working auto-attach and now gets a silent refusal; known, and still
+  // the right default, because hive cannot read that shell's rc and guessing
+  // wrong is the leak itself. On every socket hive can actually reason about,
+  // the window we are about to open cannot see the session we would name, and what
+  // actually lands is a stray bare-shell session on the developer's own tmux
+  // server, plus a control-mode client. That client is the damaging half:
+  // killing the stray does not make it exit, it makes it SWITCH to whatever
+  // session the developer is really using (measured, todo 355 comment 788), so
+  // the fix has to stop the client being CREATED rather than re-point it.
+  // Propagating TMUX_TMPDIR through the AppleScript string was the obvious
+  // alternative and does not close that half.
+  //
+  // THE COST, STATED BECAUSE IT READS AS AN UNEXPLAINED BEHAVIOUR LOSS: a
+  // human running hive inside `tmux -L something` no longer gets an
+  // auto-attach window. That is correct rather than a regression - the window
+  // would have opened onto a server that is not theirs - and it is narrower
+  // than it looks, since a human inside that server is an attached client ON
+  // it, so under "auto" this function already returned at the probe below.
+  // Only "on", whose probe reads the base session alone, reaches here.
+  // Unaffected: every ordinary spawn. An MCP server Claude Code starts has no
+  // tmux env at all, and a lead or worker pane is on the default socket, so
+  // privateTmuxSocket is false and the attach happens exactly as before. The
+  // scratch-HIVE_DATA_DIR-on-the-default-socket method is unaffected too, and
+  // deliberately: it is the only known way to exercise this function at all
+  // (.claude/sessions/dead-ends/2026-08-02-ensureattached-against-the-live-session.md),
+  // which is why this refusal is SOCKET-shaped and never mentions the store.
+  //
+  // ITS POSITION ABOVE THE PROBE IS ITS MEANING, not an optimisation. The
+  // probe is what makes this function's other returns observable, so a guard
+  // BELOW it still closes the leak while making no test able to tell which
+  // return fired - the false green this lane exists not to ship. Hoisting the
+  // probe above this line, or sinking this line below it, breaks
+  // test/auto-attach-scope.test.mjs's "asks tmux nothing" assertions.
+  if (privateTmuxSocket(process.env.TMUX, process.env.TMUX_TMPDIR)) return;
   const { value } = resolvedAutoAttach();
   if (value === "off") return;
   try {

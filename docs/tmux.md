@@ -104,7 +104,7 @@ bind P command-prompt -p "project:" -I "~/Code/" "display-popup -E 'hive %%'"
 
 **Windows are picked with `prefix w`, tmux's own default, since windows are projects now.** `choose-tree -Zw` already lists every hive-owned window by its plain project name - no `<project> - lead` suffix to strip, since nothing looks a window up by name anymore and the suffix is gone. No custom binding needed for this.
 
-**Never start the outer tmux with `-L` or a custom `TMUX_TMPDIR`.** hive refuses a private socket paired with the default store, on purpose, and the error is long. Plain `tmux` is correct. The reasoning is in `.claude/rules/tmux-and-panes.md`.
+**Never start the outer tmux with `-L` or a custom `TMUX_TMPDIR`.** hive refuses a private socket paired with the default store, on purpose, and the error is long. Plain `tmux` is correct. The reasoning is in `.claude/rules/tmux-and-panes.md`. A private socket also turns auto-attach off entirely, whatever `hive setup --auto-attach` says and whichever store you are on, and that refusal is silent: the window hive would open gets a fresh shell that inherits nothing from hive, so hive cannot make it land on your private server (todo 355, same rule file).
 
 **Quote a leading `=` in a tmux target.** `tmux kill-session -t =hive-main` breaks in zsh, which expands a leading `=` as a command path. Write `-t '=hive-main'`. The same applies to a view session's own name, `hive-<tag>view-<pid>` - `hive doctor`'s stray-view-session report already prints it quoted.
 

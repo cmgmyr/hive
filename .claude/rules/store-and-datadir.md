@@ -54,6 +54,12 @@ The refusal is the load-bearing half, since the assignment can be defeated by an
 
 A symlink pointing at `~/.hive` is the case that defeats both guards at once, which is why the comparison follows symlinks: `storeDir()` would not refuse it under a test runner, and `untrustedTmuxServer()` would read "scratch store" and let a private tmux server write pane ids into the live database.
 
+**A THIRD hole in this story, and the one no store guard could ever have closed (todo 355).** Full isolation - scratch `HIVE_DATA_DIR`, private `TMUX_TMPDIR`, `TMUX` unset - still leaked a session, a control-mode client and a native terminal window onto the developer's own tmux server on every `agent_spawn`, because `ensureAttached` opens that window through AppleScript and the GUI shell it spawns inherits none of this process's environment. Every guard on this page is about which STORE a process opens, and the store was correct throughout: the damage went out through a different channel entirely.
+
+Closed on a SOCKET predicate, `privateTmuxSocket()`, never on the store - stated here because this page is where a reader would expect the store-shaped fix, and it would have been the wrong one. A refusal keyed on "`HIVE_DATA_DIR` is not the default" reads as obviously right and deletes its own test method: a scratch store on the DEFAULT socket is the only way anyone here has found to reach `ensureAttached`'s interesting branch at all, since a live session always has a client and returns early (`.claude/sessions/dead-ends/2026-08-02-ensureattached-against-the-live-session.md`). Mechanism, cost, and the reason the fix must prevent the CLIENT rather than re-point it: `.claude/rules/tmux-and-panes.md`.
+
+One consequence for anyone writing tests here: `isolateTmux()` sets that private `TMUX_TMPDIR` in the TEST PROCESS's own environment, so every file calling it runs with `privateTmuxSocket()` true. Before todo 355 that made `test/auto-attach-scope.test.mjs`'s two "a window opens" cases assertions about the LEAK configuration while reading as assertions about the ordinary one. They set the socket explicitly now. A fixture's third dimension being invisible because nothing reads it is a shape worth checking for, not a one-off.
+
 ## Migrations are append-only
 
 Never edit an existing entry in `MIGRATIONS`; add a new one. A snapshot is taken before any pending migration runs, which is one of the two backup triggers.
