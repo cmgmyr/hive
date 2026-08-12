@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { isolateTmux, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
+import { fakeFailingTmux, fakeHangingTmux, isolateTmux, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
 
 // Issue #23. `hive backups` and `hive restore` themselves never touch tmux,
 // but runCli spawns hive, and every hive command runs migrate() first; the
@@ -205,6 +205,118 @@ describe("hive restore refuses on any running lead row with no tmux server reach
     } finally {
       rmSync(neverStartedSocket, { recursive: true, force: true });
     }
+  });
+});
+
+// Todo 375, PR gate round 1 finding 3, one command over. `hive restore`
+// bounded its `tmux ls` in this lane and went on swallowing a TIMEOUT with
+// the same catch that swallows "tmux is not installed" - so against a wedged
+// server it computed NO tmux reason and proceeded, and this is the path that
+// OVERWRITES THE STORE. Doctor's version of that bug produced a misleading
+// line; this one produces data loss.
+//
+// The pair matters more than either half. A test that only proved the
+// blocker appears would pass just as well against a version that blocks on
+// EVERY tmux failure, which would refuse restore on every machine with no
+// tmux installed - the ordinary case this catch was written for.
+describe("hive restore and a tmux that does not answer (todo 375)", () => {
+  const setup = async () => {
+    const dirs = scratchDirs();
+    const cli = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    await runCli(["pads"], cli);
+    const listed = await runCli(["backups"], cli);
+    const name = listed.stdout.match(/^(\S+)\s+migration/m)?.[1];
+    assert.ok(name, `expected a snapshot name in:\n${listed.stdout}`);
+    return { cli, name };
+  };
+
+  it("blocks the restore and says what to do about it", { skip: hasTmux ? false : "tmux not installed" }, async () => {
+    const { cli, name } = await setup();
+    // Hangs only on `ls`, so everything else in this run reaches the real
+    // tmux and the refusal below can only be about the read under test.
+    const fakeDir = fakeHangingTmux({ hangOn: "ls" });
+    try {
+      const env = { PATH: `${fakeDir}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "500" };
+      const refused = await runCli(["restore", name, "--yes"], { ...cli, env });
+      assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+      assert.match(refused.stdout, /Refusing to restore/);
+      assert.match(refused.stdout, /tmux did not answer/);
+      assert.match(refused.stdout, /UNKNOWN/);
+      // The remedy has to be reachable, the same way the lead-rows reason
+      // above it names agent_close rather than only --force.
+      assert.match(refused.stdout, /list-sessions/);
+
+      // --force stays the escape hatch it already is for every other reason
+      // here; this one must not become a wall.
+      const forced = await runCli(["restore", name, "--yes", "--force"], { ...cli, env });
+      assert.equal(forced.code, 0, forced.stdout + forced.stderr);
+      assert.match(forced.stdout, /Restored hive\.db/);
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks on a tmux failure that is not a timeout either", { skip: hasTmux ? false : "tmux not installed" }, async () => {
+    // COUNSELORS ROUND 2, F3. The blocker's condition was `e instanceof
+    // TmuxTimeoutError`, which is the timeout SHAPE rather than the unknown
+    // CLASS: EACCES spawning tmux, ENOBUFS, a transient socket error all
+    // arrive as an ordinary TmuxError matching nothing, and each one used to
+    // pass in silence on the path that OVERWRITES THE STORE. The condition is
+    // tmuxSaysNothingThere now, so an unrecognised failure blocks exactly the
+    // way an unanswered one does. No timeout is involved here: the fake exits
+    // 1 at once.
+    const { cli, name } = await setup();
+    const fakeDir = fakeFailingTmux({ failOn: "ls" });
+    try {
+      const refused = await runCli(["restore", name, "--yes"], {
+        ...cli,
+        env: { PATH: `${fakeDir}:${process.env.PATH}` },
+      });
+      assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+      assert.match(refused.stdout, /Refusing to restore/);
+      assert.match(refused.stdout, /tmux did not answer/);
+      // The unrecognised failure is quoted, because "tmux did not answer" on
+      // its own sends a human hunting for a wedged server that is not there.
+      assert.match(refused.stdout, /operation not permitted/);
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent for a tmux that ANSWERS that no server is running", { skip: hasTmux ? false : "tmux not installed" }, async () => {
+    // The other half of the pair above, and the one that keeps the widened
+    // condition from becoming "any tmux failure blocks". A server that
+    // answers "there is no server" is a fact about the world - nothing is
+    // running - and restore must proceed on it.
+    const { cli, name } = await setup();
+    const fakeDir = fakeFailingTmux({ failOn: "ls", stderr: "no server running on /tmp/tmux-501/default" });
+    try {
+      const restored = await runCli(["restore", name, "--yes"], {
+        ...cli,
+        env: { PATH: `${fakeDir}:${process.env.PATH}` },
+      });
+      assert.equal(restored.code, 0, restored.stdout + restored.stderr);
+      assert.doesNotMatch(restored.stdout, /tmux did not answer/);
+      assert.match(restored.stdout, /Restored hive\.db/);
+    } finally {
+      rmSync(fakeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("stays silent when tmux is simply not installed", async () => {
+    const { cli, name } = await setup();
+    // A PATH with node and no tmux at all: `tmux ls` fails with ENOENT,
+    // which is an ANSWER about the world (nothing tmux manages is running)
+    // rather than an unanswered probe. That case degraded to silence before
+    // this fix and must keep doing so, or every machine without tmux loses
+    // the ability to restore without --force.
+    const restored = await runCli(["restore", name, "--yes"], {
+      ...cli,
+      env: { PATH: dirname(process.execPath) },
+    });
+    assert.equal(restored.code, 0, restored.stdout + restored.stderr);
+    assert.doesNotMatch(restored.stdout, /tmux did not answer/);
+    assert.match(restored.stdout, /Restored hive\.db/);
   });
 });
 

@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { isolateTmux } from "./helpers.mjs";
+import { isolateTmux, recordScratchTmuxSocket } from "./helpers.mjs";
 import {
   DIST_DIR,
   MCP_CONFIG_FILE,
@@ -615,6 +615,11 @@ describe("isolated-hive CLI lifecycle", () => {
       const tmuxTmpDir = /TMUX_TMPDIR=(\S+)/.exec(up.stdout)?.[1];
       assert.ok(tmuxTmpDir, up.stdout);
       const scratchSocket = tmuxSocketPath(undefined, tmuxTmpDir);
+      // Todo 375, counselors round 2 (F6). A real server on an instance
+      // socket that is not this file's own, so the run-level leak check has
+      // to be told about it - `down --force` below is what reaps it, and a
+      // case that fails before reaching that line is exactly when it matters.
+      recordScratchTmuxSocket(scratchSocket);
 
       execFileSync("tmux", ["new-session", "-d", "-s", "worker-under-test"], {
         env: { ...process.env, TMUX_TMPDIR: tmuxTmpDir },

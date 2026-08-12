@@ -10,9 +10,11 @@ import {
   assertScratchStore,
   clearHiveEnv,
   isolateTmux,
+  recordScratchTmuxSocket,
   runCli,
   scratchDirs,
   seedTrustedYml,
+  tmuxSocketUnder,
 } from "./helpers.mjs";
 
 // Issue #14: liveTargets could not tell "the probe failed" from "nothing is
@@ -129,6 +131,12 @@ const withBrokenTmux = (fn, unprobeable) =>
 // which makes the server exit on its own. Never kill-server: it takes down
 // whatever server the ambient env points at (CLAUDE.md).
 const emptyTmuxTmp = mkdtempSync(join(tmpdir(), "hive-emptysrv-"));
+// Todo 375, counselors round 2 (F6). isolateTmux registers only the file's
+// OWN socket, so this second, bespoke server is invisible to the run-level
+// leak check unless it is registered here. Recorded at creation rather than
+// after startEmptyServer(), so a file killed before it ever starts still
+// hands the checker a socket to ask about.
+recordScratchTmuxSocket(tmuxSocketUnder(emptyTmuxTmp));
 const onEmptyServer = (...args) =>
   execFileSync("tmux", args, { encoding: "utf8", env: { ...process.env, TMUX_TMPDIR: emptyTmuxTmp } });
 

@@ -63,7 +63,15 @@ fi
 # name must read as free (exit nonzero) or the probe loops through all 1000
 # and throws. An unconditional "exit 0" below answered has-session as "found"
 # for every name, which is wrong for a fixture with nothing on the server.
-if [ "$1" = "has-session" ]; then exit 1; fi
+# HIVE_TEST_HANG_HAS_SESSION is todo 375's case (counselors round 2, F7): the
+# client probe ANSWERS and the server wedges before the has-session that
+# follows it, which is the only window in which ensureAttached could throw
+# over a worker that is already live. Logged above before hanging, so the
+# record still shows which call it was.
+if [ "$1" = "has-session" ]; then
+  if [ -n "$HIVE_TEST_HANG_HAS_SESSION" ]; then exec sleep 30; fi
+  exit 1
+fi
 exit 0
 `,
 );
@@ -227,6 +235,38 @@ describe("which clients auto-attach counts", () => {
       const seen = probes();
       assert.equal(seen[0], "list-clients -t =hive-1", "the predicate probe must be unchanged");
       assert.equal(seen.length, 2, `expected exactly one probe after the predicate; saw: ${JSON.stringify(seen)}`);
+      assert.match(seen[1], /^has-session -t =hive-\S*view-\d+$/, seen[1]);
+    },
+  );
+
+  it(
+    "survives a server that wedges between the client probe and the view-name probe",
+    { skip: runnable ? false : "darwin-only behaviour" },
+    () => {
+      // COUNSELORS ROUND 2, F7. quietTmux rethrows a timeout now, and
+      // attachScripts -> freeViewSessionName -> quietTmux("has-session") sat
+      // OUTSIDE every try in this function - so this call could throw where
+      // its neighbours (the client probe, `which tmux`) return quietly.
+      // agent_spawn and agent_resume both reach ensureAttached AFTER
+      // committing the pane and the agents row, so the tool would report
+      // failure over a worker that is running, and the retry then collides
+      // with the row it just made.
+      //
+      // The world is the one that DOES open a window ("on keeps the
+      // per-session behaviour in that same world" above), so nothing but the
+      // wedge can explain the outcome here.
+      world({ mode: "on", sessionClients: false, serverClients: true });
+      withEnv({ ...ON_DEFAULT_SOCKET, HIVE_TEST_HANG_HAS_SESSION: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
+        assert.doesNotThrow(
+          () => ensureAttached("hive-1"),
+          "auto-attach is best-effort; a wedged server must not fail a spawn that already succeeded",
+        );
+      });
+      assert.equal(openedAWindow(), false, "with no view name there is nothing to open");
+      // Proof the wedge happened where this case says it did, rather than the
+      // function returning early for one of its other reasons.
+      const seen = probes();
+      assert.equal(seen[0], "list-clients -t =hive-1", "the client probe must have ANSWERED first");
       assert.match(seen[1], /^has-session -t =hive-\S*view-\d+$/, seen[1]);
     },
   );

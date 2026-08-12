@@ -20,6 +20,37 @@
 # a wedged or killed test file cannot suppress it the way a bug in its own
 # exit handler could suppress the primary check.
 #
+# A THIRD CHECK EXISTS NOW (todo 375 item 3), AND HALF THE LIST ABOVE IS ITS
+# BUSINESS RATHER THAN THIS SCRIPT'S. `scripts/tmux-leaks.mjs`, run by `npm
+# test` itself, asks every SOCKET the run created whether a server is still on
+# it - no argv involved - and it runs locally as well as in CI.
+#
+# SAY EXACTLY WHICH OF THE FOUR IT COVERS, because an earlier version of this
+# paragraph claimed all of them and that was false (counselors round 2, F6:
+# a comment is an assertion here, and this one was wrong in the reassuring
+# direction). test/attach-mode.test.mjs's ensureSession() calls and
+# test/helpers.mjs's createLiveAndDialogPanes run on the FILE'S OWN socket,
+# which isolateTmux() registers, so the socket check has always seen those
+# two. test/probe.test.mjs and test/lead-data-dir.test.mjs start servers on a
+# SECOND, bespoke TMUX_TMPDIR, which isolateTmux knows nothing about - it
+# appends only its own socket - so those were genuinely uncovered by both
+# checks at once. They register their sockets explicitly now
+# (recordScratchTmuxSocket, test/helpers.mjs), as do the two further
+# secondary-server sites the audit turned up that this script never listed:
+# test/tmux-socket.test.mjs's second-server restart and
+# test/isolated-hive.test.mjs's `hive up` instance.
+#
+# So the coverage rule is: the socket check sees every socket that REGISTERS
+# ITSELF, automatically for a file's own and by that call for a bespoke one.
+# A future test that starts a server on a third socket and does not call it is
+# invisible to both nets.
+#
+# THIS SCRIPT STAYS for two reasons that survive all of the above: it is
+# external to the process that could leak, and it can see a server whose
+# socket FILE is already gone, which a socket probe never can. That gap is
+# recorded in scripts/tmux-leaks.mjs's own header too - neither check claims
+# to have closed it.
+#
 # Run this AFTER `npm test` completes (any invocation - CI or local), never
 # during: cleanup() and isolateTmux()'s own exit-time kill-server both need
 # every test file's process to have actually exited first.

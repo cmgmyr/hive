@@ -104,6 +104,9 @@ import {
   isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
+  ORPHAN_MIN_AGE_MS,
+  orphanScratchServers,
+  orphansWorthWarningAbout,
   paneChoiceCheck,
   panePid,
   RAW_ATTACH_TMUX_CONFIG,
@@ -119,6 +122,7 @@ import {
   tmux,
   TMUX_DOC,
   tmuxSaysNothingThere,
+  tmuxTimeoutOverride,
   tmuxSocketPath,
   untrustedTmuxServer,
 } from "./tmux.js";
@@ -2680,6 +2684,80 @@ function reportPtyHeadroom(): void {
   );
 }
 
+// Todo 375 item 2, and the same shape as reportPtyHeadroom above: not a
+// check(), never throws, silent when there is nothing measurable. It is
+// information, not a gate.
+//
+// IT MUST NOT KILL ANYTHING, and that is Chris's standing posture for doctor
+// rather than caution about this particular report (see the stray view
+// session warn above, which reports a session doctor could trivially remove).
+// Reaping is a separate, dangerous act with two recorded failures behind it:
+// dead-ends/2026-08-07-killing-orphaned-tmux-servers-by-pid.md (a pid-to-
+// socket mapping observed ambiguous on a real row) and
+// dead-ends/2026-08-11-reaping-a-wedged-tmux-server-by-socket-alone.md (the
+// safe socket-only method assumes the server ANSWERS; against a wedged one it
+// blocked and left another spinning client behind on every attempt, going
+// from four spinning processes to six).
+function reportOrphanTmuxServers(): void {
+  const orphans = orphanScratchServers();
+  // Unreadable temp dir. Silence, deliberately - see reportPtyHeadroom.
+  if (!orphans) return;
+  const truncated = orphans.probed < orphans.aged ? `, ${orphans.aged - orphans.probed} not probed (time budget)` : "";
+  const found = orphans.live + orphans.wedged;
+  const hours = orphans.oldestMs === null ? null : (orphans.oldestMs / 3_600_000).toFixed(1);
+  // ONE detail block for both branches, so info and warn differ in URGENCY
+  // and in nothing else. A report that says less when it is calmer would make
+  // a reader run the command twice to learn the same fact.
+  const detail = [
+    `${found} orphaned server(s) on scratch sockets (${orphans.live} answering, ${orphans.wedged} not answering` +
+      `${hours === null ? "" : `, oldest ${hours}h`}), out of ${orphans.candidates} scratch socket(s)${truncated}`,
+    `not touched here - doctor reports: ${orphans.sockets.slice(0, 5).join(", ")}` +
+      (orphans.sockets.length > 5 ? `, and ${orphans.sockets.length - 5} more` : ""),
+    "reap one that ANSWERS by socket: resolve the live socket with `tmux display-message -p '#{socket_path}'`, " +
+      "then `tmux -S <path> kill-server` on the others. Never by pid - a pid-to-socket mapping has been observed " +
+      "ambiguous on a real row.",
+    "a server that does NOT answer is the wedged case, and kill-server blocks against it, leaving another " +
+      "spinning client behind per attempt. Resolve the live PID as well (`tmux display-message -p '#{pid}'`), " +
+      "exclude both it and the live socket, re-check each candidate with lsof, and verify the live session after " +
+      "every step.",
+  ];
+  if (found === 0) {
+    // Printed even at zero, and it names the candidate count rather than only
+    // the server count: "0 servers" must not read as "nothing is there", and
+    // a reader who knows 200 sockets are lying around should see that number
+    // rather than a clean line. Same three-states-unconditionally reasoning
+    // as the input-box drift report (.claude/rules/tmux-and-panes.md).
+    info(
+      "scratch tmux servers",
+      `none older than ${Math.round(ORPHAN_MIN_AGE_MS / 60000)}m (${orphans.candidates} scratch socket(s) present, ` +
+        `${orphans.aged} old enough to probe${truncated})`,
+    );
+    return;
+  }
+  // A few answering orphans are ordinary debris on any machine that runs this
+  // suite, so they are INFORMATION. A wedged one, or a hoard, is a warn - see
+  // orphansWorthWarningAbout (src/tmux.ts) for why those two and not a single
+  // count. NON-GATING either way (plain warn(), never gatingWarn()), matching
+  // reportPtyHeadroom: a machine condition worth a look, not a broken install.
+  (orphansWorthWarningAbout(orphans) ? warn : info)("scratch tmux servers", ...detail);
+}
+
+// EVERY TMUX CALL IN HERE IS BOUNDED; THIS COMMAND AS A WHOLE IS NOT.
+// Counselors round 2, RAISED AND ACCEPTED (todo 375), recorded here rather
+// than fixed. Against a wedged LIVE server every read pays the full 10s -
+// hiveSessions, the owned-window read, the lead liveness probe, and two
+// capture-pane forks per running worker - so six workers puts `hive doctor`
+// north of two minutes, on the one command the incident's own remedy text
+// tells a human to run.
+//
+// Accepted because it is bounded, loud, and streams progressively: the human
+// watching sees each line as it lands, and the `warn tmux server` line above
+// arrives early and names the cause. THE FIX IF IT IS EVER WORTH DOING is a
+// latch - keep the first TmuxTimeoutError, skip the remaining live-server
+// reads, and print "tmux did not answer; N further checks skipped", reusing
+// the `answered` flag hiveSessions already computes. That is a control-flow
+// change to this whole function, landing after both of this lane's review
+// rounds were spent, which is the only reason it is not here.
 function cmdDoctor(argv: string[]): void {
   const strict = argv.includes("--strict");
   const unknown = argv.find((a) => a !== "--strict");
@@ -2716,8 +2794,19 @@ function cmdDoctor(argv: string[]): void {
     if (!status.ok) throw new Error(describeAbi(status));
     return [describeAbi(status), status.addon].join("\n        ");
   });
-  check("tmux", () => execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim());
+  // The one raw tmux call left in this file, and it is exempt from todo 375's
+  // bound rather than overlooked: `-V` is answered by the client itself and
+  // never contacts a server, so there is nothing here that a wedged server
+  // could hang. Everything else in this command reaches tmux through tmux().
+  check("tmux", () => {
+    const version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim();
+    // A knob that SHORTENS the timeout every liveness probe in hive depends on
+    // must be visible in the one command a human runs to ask what is going on.
+    const override = tmuxTimeoutOverride();
+    return override === null ? version : `${version} (HIVE_TMUX_TIMEOUT_MS=${override}ms override; testing only)`;
+  });
   reportPtyHeadroom();
+  reportOrphanTmuxServers();
   check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
@@ -3234,21 +3323,71 @@ function cmdDoctor(argv: string[]): void {
   // check reports only the base session(s), so what it prints stays true
   // under one session per store; a view session is reported separately, on
   // its own terms, immediately after.
-  const hiveSessions = (): string[] => {
+  // Todo 375: through tmux(), not a raw execFileSync. Every read in this
+  // function used to reach tmux directly with no timeout, so `hive doctor` -
+  // the command a human runs precisely BECAUSE tmux is behaving strangely -
+  // was one of the easiest places in the codebase to hang forever against a
+  // wedged server.
+  //
+  // A TIMEOUT IS NOT AN EMPTY SESSION LIST, and the first version of this
+  // said it was, on the grounds that a REPORT should print what it could see
+  // (PR gate, fix round 1; the lead overrode the argument and was right).
+  // Doctor does not print what it could see: it prints `sessions: none
+  // running` and `window stamps: no session` as green `ok` lines, and those
+  // are ASSERTIONS about the world that are FALSE when tmux never answered.
+  // The scenario is this whole todo's own: the LIVE server wedges,
+  // orphanScratchServers() excludes the live socket by design, and every
+  // other read here degrades quietly - so the one command a human runs
+  // BECAUSE tmux is misbehaving would go fully green about a server it cannot
+  // reach. That is the same conflation this lane refuses one layer down in
+  // tmuxSaysNothingThere(), reintroduced inside doctor's own try/catch.
+  //
+  // So the answer carries whether tmux ANSWERED, and every consumer below
+  // says "unknown" rather than making a claim.
+  const hiveSessions = (): { sessions: string[]; answered: boolean } => {
     try {
-      return execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      })
-        .trim()
-        .split("\n")
-        .filter((s) => s.startsWith(SESSION_PREFIX));
-    } catch {
-      return [];
+      return {
+        sessions: tmux("ls", "-F", "#{session_name}")
+          .trim()
+          .split("\n")
+          .filter((s) => s.startsWith(SESSION_PREFIX)),
+        answered: true,
+      };
+    } catch (e) {
+      // tmux ANSWERED "there is no server" - the ordinary state of a machine
+      // with nothing running, and a genuine empty list. Only an unanswered
+      // call is unknown.
+      //
+      // COUNSELORS ROUND 2 (F3): the predicate is "did tmux answer", so it is
+      // tmuxSaysNothingThere, not `!(e instanceof TmuxTimeoutError)`. That
+      // one covered the timeout SHAPE and left the whole unknown CLASS
+      // reading as an answer: EACCES spawning tmux, ENOBUFS, a transient
+      // socket error - each of them printed `ok sessions: none running`
+      // again, which is the very sentence the round-1 fix removed for the
+      // timeout case alone. This is the codebase's own classifier for the
+      // question, already used for `hive status`'s window label above, and it
+      // is true for exactly two things: tmux said nothing is there, and tmux
+      // is not installed. Both are answers. Everything else is unknown.
+      return { sessions: [], answered: tmuxSaysNothingThere(e) };
     }
   };
-  const allSessions = hiveSessions();
+  const { sessions: allSessions, answered: tmuxAnswered } = hiveSessions();
+  if (!tmuxAnswered) {
+    // NON-GATING (plain warn(), never gatingWarn()), matching
+    // reportPtyHeadroom's stance and the lead's call on this finding:
+    // silent-and-green is what was wrong, not the absence of an exit code.
+    warn(
+      "tmux server",
+      `tmux did not answer (todo 375): the call either hit its bound against a server hive itself talks to, or ` +
+        "failed in a way that is not an answer about the world at all. Either way the session, window-stamp " +
+        "and view-session lines below say unknown rather than none.",
+      "the orphaned-scratch-server report above deliberately EXCLUDES this live socket, so it cannot see this " +
+        "one either. Resolve it by hand: `tmux display-message -p '#{socket_path}'`, then `tmux -S <path> " +
+        "list-sessions` to confirm it is unreachable.",
+    );
+  }
   check("sessions", () => {
+    if (!tmuxAnswered) return "unknown - tmux did not answer";
     const base = allSessions.filter((s) => !isViewSessionName(s));
     return base.length > 0 ? base.join(", ") : "none running";
   });
@@ -3269,6 +3408,9 @@ function cmdDoctor(argv: string[]): void {
   // else.
   check("window stamps", () => {
     const session = sessionName();
+    // "No session" is a claim about the server, so it may only be made when
+    // the server answered (todo 375, PR gate round 1).
+    if (!tmuxAnswered) return "unknown - tmux did not answer";
     // No session is not a finding: list-windows would throw here and this
     // check would FAIL on the ordinary machine where nothing is running.
     if (!allSessions.includes(session)) return "no session";
@@ -3305,13 +3447,17 @@ function cmdDoctor(argv: string[]): void {
   for (const name of allSessions.filter(isViewSessionName)) {
     let hasClient: boolean;
     try {
-      hasClient = execFileSync("tmux", ["list-clients", "-t", `=${name}`], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim() !== "";
+      hasClient = tmux("list-clients", "-t", `=${name}`).trim() !== "";
     } catch {
       // Gone between the listing above and this probe - its own
       // destroy-unattached already did doctor's job for it.
+      //
+      // A timeout lands here too and is harmless, unlike the session read
+      // above (todo 375, PR gate round 1): this loop only ever ADDS a warn,
+      // so an unanswered probe can under-report a stray view and can never
+      // turn silence into a false green claim. It is also unreachable in the
+      // wedged case the finding is about - the list it iterates comes from
+      // that same read, which is empty when tmux did not answer.
       continue;
     }
     if (hasClient) continue;
@@ -3359,11 +3505,7 @@ function cmdDoctor(argv: string[]): void {
       // show-options -p without -A reports the working inherited value as
       // unset. A missing server or no hive-owned windows is simply no report.
       try {
-        const owned = execFileSync(
-          "tmux",
-          ["list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{@hive-owned}"],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-        )
+        const owned = tmux("list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{@hive-owned}")
           .trim()
           .split("\n")
           .map((row) => row.split("\t"))
@@ -3379,15 +3521,9 @@ function cmdDoctor(argv: string[]): void {
             return target.startsWith(SESSION_PREFIX) && marker === "1" && !isViewSessionName(sess);
           });
         for (const [target] of owned) {
-          const pane = execFileSync("tmux", ["list-panes", "-t", target, "-F", "#{pane_id}"], {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-          }).trim().split("\n")[0];
+          const pane = tmux("list-panes", "-t", target, "-F", "#{pane_id}").trim().split("\n")[0];
           const option = (scope: "-p" | "-w", optionName: string): string =>
-            execFileSync("tmux", ["show-options", scope, "-A", "-v", "-t", scope === "-p" ? pane : target, optionName], {
-              encoding: "utf8",
-              stdio: ["ignore", "pipe", "ignore"],
-            }).trim();
+            tmux("show-options", scope, "-A", "-v", "-t", scope === "-p" ? pane : target, optionName).trim();
           info(
             `tmux window ${target}`,
             `allow-passthrough ${option("-p", "allow-passthrough")}; ` +
@@ -3399,6 +3535,9 @@ function cmdDoctor(argv: string[]): void {
       } catch {
         // Doctor already reports tmux availability; an object disappearing
         // during inspection must not turn cosmetic diagnostics into failure.
+        // Same audit as the two reads above (todo 375, PR gate round 1): a
+        // timeout here drops the per-window info lines entirely rather than
+        // printing a claim, and an absent line asserts nothing.
       }
     }
   }
@@ -3663,10 +3802,9 @@ function activeHiveUsage(): string[] {
   }
 
   try {
-    const sessions = execFileSync("tmux", ["ls", "-F", "#{session_name}"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    })
+    // Todo 375: through tmux() for its bound. A `hive restore` that hangs
+    // here never reaches the refusal it was computing.
+    const sessions = tmux("ls", "-F", "#{session_name}")
       .trim()
       .split("\n")
       // A view session (topology-3c) owns no panes of its own - it only
@@ -3678,8 +3816,41 @@ function activeHiveUsage(): string[] {
       // someone runs `hive restore` from a second terminal.
       .filter((s) => s.startsWith(SESSION_PREFIX) && !isViewSessionName(s));
     if (sessions.length > 0) reasons.push(`tmux session(s) still running: ${sessions.join(", ")}`);
-  } catch {
-    // tmux not installed or unreachable; the agents check above still stands.
+  } catch (e) {
+    // AN UNANSWERED PROBE IS A REASON, NOT SILENCE (todo 375, PR gate round 1
+    // finding 3, one command over). The bound above stops `hive restore`
+    // hanging against a wedged server; swallowing the timeout with it made
+    // restore proceed believing nothing is running, and this is the path that
+    // OVERWRITES THE STORE. Same class as doctor reporting `sessions: none
+    // running` about a server it never reached, with data loss instead of a
+    // misleading line.
+    //
+    // ONLY WHAT TMUX DID NOT ANSWER. tmux genuinely not installed, and a
+    // server that answers "there is no server", both keep degrading to
+    // silence exactly as before: those are answers, and they say nothing is
+    // running. Blocking on every tmux failure would refuse restore on every
+    // machine without tmux, which is the case this catch was written for.
+    //
+    // COUNSELORS ROUND 2 (F3): the condition is tmuxSaysNothingThere, not
+    // `e instanceof TmuxTimeoutError`. A timeout is the LIKELIEST unanswered
+    // call, not the only one - EACCES spawning tmux, ENOBUFS, a transient
+    // socket error are all failures that say nothing about whether a session
+    // is running, and each of them used to pass silently on the one path in
+    // this codebase that OVERWRITES THE STORE. The same widening is applied
+    // to doctor's `answered` predicate above; here the cost of being wrong is
+    // data loss rather than a misleading line, so it is the site that least
+    // deserves the narrower shape-based test.
+    if (!tmuxSaysNothingThere(e)) {
+      reasons.push(
+        "tmux did not answer, so whether hive sessions are still running is UNKNOWN - the server may be " +
+          `wedged, or the probe failed for another reason (todo 375): ${errorMessage(e)}. A restore ` +
+          "overwrites this store, so an unanswered probe blocks rather than passes. Confirm by hand with " +
+          "`tmux display-message -p '#{socket_path}'` and `tmux -S <path> list-sessions`; reap a wedged " +
+          "server before restoring, or pass --force if you are certain nothing is using this store.",
+      );
+    }
+    // tmux not installed or genuinely unreachable; the agents check above
+    // still stands.
   }
   return reasons;
 }

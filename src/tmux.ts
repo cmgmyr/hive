@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { attachMode, AutoAttach, resolvedAutoAttach } from "./config.js";
 import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
@@ -19,6 +20,40 @@ export class TmuxError extends Error {
   }
 }
 
+// Todo 375. THE THIRD OUTCOME. Until this existed, tmux() had exactly two:
+// an answer, or a TmuxError that tmuxSaysNothingThere() classifies. A call
+// the timeout below killed is neither, and the whole safety of this fix turns
+// on it never being read as the second one: `false` means tmux said nothing
+// is there, `null` means tmux never answered, and reading unknown as dead is
+// how a live worker gets reaped (issue #14, and the file this rule is pinned
+// in). A timed-out call is the `null` case, loudly.
+//
+// A SUBCLASS, not a `timedOut` boolean on TmuxError and not a string match on
+// the message. Two properties fall out of that and both are load-bearing:
+// every existing `e instanceof TmuxError` caller keeps working unchanged
+// (this IS a TmuxError, carrying the same stderr contract), and
+// tmuxSaysNothingThere() can refuse it by TYPE before it ever looks at text.
+//
+// IT CARRIES THE PARTIAL stderr RATHER THAN "" DELIBERATELY, and the reason
+// is that the guard has to be able to fail. A killed child's stderr is
+// whatever it had written by then, which is honest to report - and if this
+// class hard-coded "" instead, the type check in tmuxSaysNothingThere() would
+// be unfalsifiable decoration: no test could construct the case it exists to
+// stop, since NOTHING_THERE cannot match an empty string anyway. Carrying the
+// real text means a TmuxTimeoutError whose partial stderr DOES match
+// NOTHING_THERE is constructible, so the guard is pinned by a test that goes
+// red without it (test/tmux-timeout.test.mjs).
+export class TmuxTimeoutError extends TmuxError {
+  constructor(
+    message: string,
+    stderr: string,
+    readonly timeoutMs: number,
+  ) {
+    super(message, stderr);
+    this.name = "TmuxTimeoutError";
+  }
+}
+
 // execFileSync's default maxBuffer is 1MB, which a dense capture-pane (many
 // columns, heavy color/attribute use, "-e" widening every cell) can exceed.
 // The failure mode without this is an uncaught ENOBUFS: tmuxSaysNothingThere
@@ -27,12 +62,109 @@ export class TmuxError extends Error {
 // to handle. 16MB comfortably covers even a wide, fully-attributed pane.
 const TMUX_MAX_BUFFER = 16 * 1024 * 1024;
 
+// Todo 375, from an incident: four tmux processes pegged at ~99% CPU, the
+// oldest for 1h34m, each a client spinning against a server that had wedged.
+// execFileSync with no `timeout` blocks for as long as the child runs, which
+// against a wedged server is forever, so one stuck call became an hour and a
+// half of a burning core.
+//
+// MEASURED, NOT FELT (the whole point of
+// dead-ends/2026-08-07-a-90-second-settle-before-counting-leaked-processes.md:
+// an unmeasured threshold becomes a constant everyone downstream pays). Every
+// command shape this file issues was timed against a real tmux 3.7b on a
+// private socket, 60 iterations each, on a loaded server (20 windows x 2
+// panes, every pane full of wide fully-attributed output so capture-pane -e
+// has the most expensive screen it will ever serialise):
+//
+//   idle box                 p50 ~6ms   p99 102ms   max 120ms
+//   8-way fork contention    p50 ~6ms   p99  98ms   max 155ms
+//   during a full npm test   p50 ~12ms  p99  51ms   max 103ms
+//
+// The slowest legitimate call observed anywhere was 155ms, and the slowest
+// SHAPE is a cold-server `new-session` (47ms idle, 103ms under a full suite)
+// because it forks the server itself. 10s is ~65x the worst observation and
+// ~100x p99. The headroom is that wide on purpose: cutting a legitimate call
+// short is not free (it answers `null`, so the janitor holds, agent_send
+// reports a failed probe, and a healthy machine starts looking unknowable),
+// while the cost of being generous is bounded and small - a wedge now burns
+// ten seconds of a core per call instead of an hour and a half.
+//
+// Every command that reaches tmux() is non-interactive and returns as soon as
+// the server answers. The one tmux call that blocks by design, `attach`, never
+// comes through this function - it is spawned with stdio inherited straight
+// from the CLI (src/cli.ts's attach()), because a human's terminal is supposed
+// to stay in it.
+//
+// ONE SHAPE IS BOUNDED BY THE USER'S CONFIG RATHER THAN BY TMUX, and an
+// earlier version of this comment claimed otherwise (counselors round 2, F9).
+// A cold-server `new-session` starts the server, which SOURCES ~/.tmux.conf,
+// and `run-shell`/`if-shell` WITHOUT -b block that startup - a tpm line doing
+// first-run plugin installation is not a sub-second operation. So the numbers
+// above are a property of this machine's config as much as of the command,
+// and on a heavy enough conf `hive lead`'s first run after a reboot
+// (ensureSession) can be cut short and told "the tmux server may be wedged",
+// naming the wrong cause on a healthy machine. Recoverable - a retry finds
+// the session the killed client's server actually created - and loud rather
+// than silent, which is why it is a correction here and not a second bound.
+// CI cannot see it either way: runners have no ~/.tmux.conf.
+//
+// NARROWER THAN IT READS, and worth saying so rather than leaving the numbers
+// looking unmeasured: the box those measurements were taken on HAS a 6.3k
+// ~/.tmux.conf carrying both an unbackgrounded `run` and an `if-shell`, and a
+// cold-server new-session through it re-measured at 62ms. The finding is
+// about a config heavier than that one, not about a bare one.
+const TMUX_TIMEOUT_MS = 10_000;
+
+// Read at CALL time, never at module load, for the same reason the data dir
+// is (.claude/rules/store-and-datadir.md): a value frozen at import time
+// cannot be exercised by a test that has already imported this module.
+//
+// TESTING ONLY, and `hive doctor` says so out loud when it is set, on the
+// same posture as HIVE_AUTO_ATTACH's override - a knob that SHORTENS a safety
+// bound must not be able to sit in an environment silently. The suite needs
+// it because the alternative is a ten-second real-time wait per assertion
+// about a bound that only expires in real time.
+// An unparseable or non-positive value falls back to the measured default
+// rather than throwing: this function is on every tmux call in the codebase,
+// including the scheduler's, which must never throw (CLAUDE.md).
+function tmuxTimeoutMs(): number {
+  const raw = process.env.HIVE_TMUX_TIMEOUT_MS;
+  if (raw === undefined) return TMUX_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : TMUX_TIMEOUT_MS;
+}
+
+export function tmuxTimeoutOverride(): number | null {
+  return process.env.HIVE_TMUX_TIMEOUT_MS === undefined ? null : tmuxTimeoutMs();
+}
+
+// WHAT THIS DOES NOT DO, said here rather than left to be discovered:
+// execFileSync's timeout kills the CHILD, not the tmux SERVER it was talking
+// to. This bounds hive's exposure and leaves the wedged server running. It
+// bounds the DAMAGE and leaves the CAUSE open (todo 368, still open through
+// two incidents); `hive doctor`'s orphaned-server report is what notices the
+// survivor afterwards.
 export function tmux(...args: string[]): string {
+  return tmuxWithin(tmuxTimeoutMs(), ...args);
+}
+
+// The bound as a PARAMETER, for the one caller whose calls are not hive's own
+// work: `hive doctor`'s orphan probe talks to candidate servers it expects to
+// be debris, where the measured 10s protects nothing and a report has to stay
+// interactive. Every other caller takes the default through tmux() above.
+// Callers never widen the env override, only narrow it (see the min at that
+// call site), so HIVE_TMUX_TIMEOUT_MS stays a ceiling for every tmux call.
+function tmuxWithin(timeoutMs: number, ...args: string[]): string {
   try {
     return execFileSync("tmux", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: TMUX_MAX_BUFFER,
+      timeout: timeoutMs,
+      // SIGTERM is execFileSync's default, and a wedged tmux is exactly the
+      // process least likely to act on one. SIGKILL cannot be caught or
+      // ignored, so the bound above is a bound rather than a request.
+      killSignal: "SIGKILL",
     }).replace(/\n$/, "");
   } catch (e) {
     const err = e as { code?: string; stderr?: Buffer | string; message?: string };
@@ -44,6 +176,22 @@ export function tmux(...args: string[]): string {
       );
     }
     const detail = typeof err.stderr === "string" ? err.stderr.trim() : err.stderr?.toString().trim();
+    // MEASURED against node v24.19.0 on darwin rather than assumed, because
+    // the branch below is the whole safety of this bound: a timed-out
+    // execFileSync throws with `code: "ETIMEDOUT"` (errno -60), `signal:
+    // "SIGKILL"` from the killSignal above, and `status: null`. An ordinary
+    // non-zero tmux exit carries `status: <n>` and no `code` at all, and a
+    // child killed from outside carries a signal with no `code` either, so
+    // ETIMEDOUT is specific to the bound this function set.
+    if (err.code === "ETIMEDOUT") {
+      throw new TmuxTimeoutError(
+        `tmux ${args[0]} did not answer within ${timeoutMs}ms and was killed. The tmux server may be ` +
+          "wedged; this says NOTHING about whether the target exists. Check for orphaned servers with " +
+          "`hive doctor`.",
+        detail ?? "",
+        timeoutMs,
+      );
+    }
     throw new TmuxError(`tmux ${args[0]} failed${detail ? `: ${detail}` : ""}`, detail ?? "");
   }
 }
@@ -74,6 +222,16 @@ export function tmux(...args: string[]): string {
 const NOTHING_THERE = /no server running|error connecting to|no current target|can't find (pane|window|session)/;
 
 export function tmuxSaysNothingThere(e: unknown): boolean {
+  // Todo 375, and this line is the reason that todo's timeout is safe to add
+  // at all. A call hive killed for not answering has told us nothing about
+  // the world, so it can never be "there is nothing there" no matter what
+  // partial text the dying child had already written to stderr. Refused BY
+  // TYPE, above the text match rather than inside it: a timed-out probe that
+  // classified as `false` would let the janitor sweep, agent_close retire and
+  // agent_send give up on workers that are alive and working, which is
+  // precisely the failure the bound was added to prevent, arriving through
+  // the fix for it.
+  if (e instanceof TmuxTimeoutError) return false;
   if (!(e instanceof TmuxError)) return false;
   // No tmux binary: nothing tmux manages can be alive either.
   if (e.notInstalled) return true;
@@ -84,11 +242,34 @@ export function tmuxSaysNothingThere(e: unknown): boolean {
 // session exist" and falls through to new-session on false, which throws its
 // own TmuxError if tmux is genuinely unreachable. Nothing is destroyed by
 // guessing wrong here.
+// Todo 375: THROUGH tmux(), not a second execFileSync of its own. This used
+// to reach tmux directly, so a wedged server hung it just as completely - and
+// it sits on `hive lead`'s and `hive attach`'s own path (ensureSession's
+// has-session probe), which made an unbounded call here a CLI that never
+// returns.
+//
+// A TIMEOUT IS RETHROWN RATHER THAN FLATTENED INTO `false`, and that is the
+// correction this function needed rather than just a bound (found by this
+// lane's own /simplify altitude pass). `catch { return false }` collapses the
+// third outcome straight back into "nothing there" - the exact flattening
+// tmuxSaysNothingThere() is amended above to refuse - and the two callers
+// read `false` differently enough that it matters:
+//   ensureSession falls through to `new-session`, which is bounded too and
+//     throws against the same wedged server. Survivable, and it was the only
+//     caller the first version of this comment reasoned about.
+//   freeViewSessionName reads `false` as "this session name is FREE" and
+//     hands it to a create. A wedged server would make every candidate look
+//     free, which is a fact about the probe, not about the server.
+// Rethrowing means a wedge costs ONE timeout and a loud failure at both call
+// sites instead of a guess that happens to be recoverable at one of them.
+// Everything else about `false` is unchanged: tmux answered, the target is
+// not there.
 function quietTmux(...args: string[]): boolean {
   try {
-    execFileSync("tmux", args, { stdio: "ignore" });
+    tmux(...args);
     return true;
-  } catch {
+  } catch (e) {
+    if (e instanceof TmuxTimeoutError) throw e;
     return false;
   }
 }
@@ -177,6 +358,19 @@ export function ensureSession(name: string, cwd: string): SessionStart {
 // hand-built one: this is a match on another program's English, and the cost
 // of it silently drifting is ensureSession rethrowing a race it is supposed to
 // absorb. tmux is not localized, so matching its English is stable.
+//
+// THE ONE CLASSIFIER LEFT THAT A TIMEOUT CAN SATISFY BY TEXT. Counselors
+// round 2, RAISED AND ACCEPTED (todo 375), recorded here because a future
+// reader deserves to know it is deliberate: this tests `instanceof TmuxError`
+// plus stderr, with no TmuxTimeoutError exclusion, and TmuxTimeoutError
+// carries the dying child's PARTIAL stderr - so a timed-out new-session whose
+// stderr happened to contain "duplicate session" would read as { created:
+// false }. Accepted because the consequence is benign and nothing
+// destructive was constructible: the caller falls through to bounded calls
+// that throw against the same wedged server, and the killed child would have
+// had to write that exact text before dying. Excluding the type here is a
+// one-line reversal if that judgement is ever revisited; it buys nothing
+// today.
 export function isDuplicateSession(e: unknown): boolean {
   return e instanceof TmuxError && /duplicate session/.test(e.stderr);
 }
@@ -420,6 +614,216 @@ export function tmuxSocketPath(tmux: string | undefined, tmuxTmpDir: string | un
 }
 
 export const defaultTmuxSocketPath = (): string => socketUnder(DEFAULT_TMUX_TMPDIR);
+
+// Todo 375 item 2. What `hive doctor` needs to REPORT the debris the bound
+// above leaves behind: killing the child does not kill the server it was
+// talking to, so a wedge that used to hang a caller forever now leaves a
+// survivor nobody counts. On the night this was filed there were 200
+// candidate scratch sockets under the temp dir and a server still spinning
+// from 10:45 that morning, from a worktree that no longer existed.
+//
+// ENUMERATED BY SOCKET, NEVER BY PID
+// (dead-ends/2026-08-07-killing-orphaned-tmux-servers-by-pid.md: building the
+// same pid list twice gave two different answers for one pid, because `lsof`
+// lists connected and listening sockets alike and a tmux CLIENT is also named
+// `tmux`). This only reports, so a wrong row would only misinform rather than
+// kill the live server - and it is still built the safe way, because the
+// report's own remedy text tells a human to act on it.
+//
+// THE PREFIX IS THE SUITE'S, deliberately narrow: `isolateTmux()`
+// (test/helpers.mjs) creates `<tmpdir>/hive-tmux-XXXX/tmux-<uid>/default`, and
+// nothing in production ever makes a scratch socket. So this counts hive's own
+// test debris and says nothing about another tool's private server, which is
+// not hive's to report on. The prefix is mirrored by hand in
+// test/helpers.mjs, the same way scripts/restart-lead.sh mirrors
+// isViewSessionName's suffix; test/orphan-tmux-servers.test.mjs pins that the
+// two agree.
+export const SCRATCH_SOCKET_PREFIX = "hive-tmux-";
+
+// A JUDGEMENT, not a measurement, and stated as one (the habit
+// dead-ends/2026-08-07-a-90-second-settle-before-counting-leaked-processes.md
+// asks for: mark every threshold MEASURED or GUESSED).
+//
+// It exists to keep this report off LIVE test runs rather than to describe
+// anything about orphans: a full `npm test` on this machine takes ~3 minutes
+// (measured, 181s), and every file's socket is created and reaped inside it,
+// so a scratch socket older than an hour cannot belong to a run still in
+// flight. Twenty times the longest run, against an incident whose own orphan
+// was nearly eight hours old. Without a floor, doctor run DURING a suite
+// reports that suite's own healthy sockets as debris, and two existing tests
+// diff doctor's warning count across two runs seconds apart.
+export const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;
+
+// A JUDGEMENT again, and the reason it exists at all is that this report
+// names a CHRONIC condition. Any machine that runs this suite accumulates
+// aged scratch sockets - one was sitting on the developer's box, 10.4h old,
+// the first time this check ran - and a warn that is on most of the time is
+// one a reader learns to skip, which is the same argument `hive doctor
+// --strict` already makes about warns that fire during healthy operation
+// (src/cli.ts). So a handful of ANSWERING orphans is information, not a
+// warning.
+//
+// A WEDGED one warns at the first, and that asymmetry is the finding rather
+// than a tuning choice: a server that answers can be reaped by the recorded
+// safe method (kill-server by socket), while one that does not answer is the
+// incident's own shape and that method does not work on it at all
+// (dead-ends/2026-08-11-reaping-a-wedged-tmux-server-by-socket-alone.md).
+const ORPHAN_WARN_COUNT = 5;
+
+// Exported and tested at the boundary rather than inlined at its one call
+// site, for the reason isLowHeadroom's own comment gives (src/ptys.ts):
+// "exactly at the threshold" and "one either side" are fixture-testable this
+// way, instead of only observable by reading doctor's stdout.
+export function orphansWorthWarningAbout(orphans: OrphanScratchServers): boolean {
+  return orphans.wedged > 0 || orphans.live >= ORPHAN_WARN_COUNT;
+}
+
+// Probing costs a fork per candidate (5.4ms measured), and a WEDGED candidate
+// costs the whole bound - the case this report exists for. Doctor stays usable
+// on a box with 200 sockets and several wedged servers by stopping at a budget
+// and SAYING it stopped, never by silently sampling.
+//
+// WORST CASE IS BUDGET PLUS ONE PROBE, stated rather than implied: the loop
+// checks what it has SPENT, so the last probe it starts can still run its full
+// bound. Reserving a bound per candidate instead was tried and is worse - a
+// pessimistic reservation stops after two candidates on a box where every
+// probe actually costs 6ms, which is every healthy box.
+const ORPHAN_PROBE_BUDGET_MS = 5000;
+
+// A SHORTER BOUND THAN tmux()'s MEASURED 10s, and the reason is the same one
+// that lets isolateTmux's teardown use 5000 (test/helpers.mjs): there is no
+// legitimate slow case to protect here. The 10s default exists so a
+// legitimate call on hive's OWN server is never cut short; a `list-sessions`
+// against a candidate orphan either answers at once or is the wedged server
+// this report is looking for. 2s keeps doctor's worst case at 7s instead of
+// 15s.
+const ORPHAN_PROBE_TIMEOUT_MS = 2000;
+
+export interface OrphanScratchServers {
+  // Every scratch socket found, whatever its age. Reported even when nothing
+  // is old enough to probe, so "0 servers" can never be mistaken for "nothing
+  // is there at all".
+  candidates: number;
+  // Candidates past ORPHAN_MIN_AGE_MS, i.e. the ones worth probing.
+  aged: number;
+  probed: number;
+  // Answered: a real, reachable orphan server.
+  live: number;
+  // Did not answer within the bound. This is the incident's own shape, and
+  // the reason it is counted separately is that the recorded safe reap
+  // (kill-server by socket) does not work on one:
+  // dead-ends/2026-08-11-reaping-a-wedged-tmux-server-by-socket-alone.md.
+  wedged: number;
+  oldestMs: number | null;
+  // Socket paths of what was counted, for a remedy a human can paste.
+  sockets: string[];
+}
+
+// Never throws, and answers null when there is nothing measurable - the same
+// stance ptyHeadroom() takes and for the same reason: doctor has plenty of
+// other ways to be red, and this is one additive read-only report.
+export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: number } = {}):
+  | OrphanScratchServers
+  | null {
+  const minAgeMs = options.minAgeMs ?? ORPHAN_MIN_AGE_MS;
+  const budgetMs = options.budgetMs ?? ORPHAN_PROBE_BUDGET_MS;
+  const now = Date.now();
+  let entries: string[];
+  try {
+    entries = readdirSync(tmpdir());
+  } catch {
+    return null;
+  }
+  // THE LIVE SOCKET IS RESOLVED EXPLICITLY AND EXCLUDED, never inferred. hive
+  // itself runs on a scratch socket throughout the test suite, so this is not
+  // hypothetical: without the exclusion, doctor under test would report the
+  // very server it is talking to.
+  //
+  // THE EXCLUSION IS LEXICAL, AND A SYMLINK DEFEATS IT. Counselors round 2,
+  // RAISED AND ACCEPTED (todo 375), recorded here rather than fixed: only the
+  // temp BASE is canonicalised below, not each entry, so an entry named
+  // hive-tmux-<anything> that SYMLINKS to the live socket's directory
+  // compares unequal to liveSocket, stats through to the live socket, and
+  // gets probed and reported as an orphan - with a reap instruction next to
+  // it. Accepted because someone has to plant that symlink under the temp
+  // dir, doctor still kills nothing (it prints, and this function contains no
+  // kill path at all), and the fix - realpath per entry - costs a syscall per
+  // candidate on a path that already stats each one, on a box this report
+  // exists for because it had 200 of them.
+  const liveSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+  const result: OrphanScratchServers = {
+    candidates: 0,
+    aged: 0,
+    probed: 0,
+    live: 0,
+    wedged: 0,
+    oldestMs: null,
+    sockets: [],
+  };
+  const deadline = now + budgetMs;
+  const aged: { socket: string; ageMs: number }[] = [];
+  // Resolved ONCE for the whole scan. socketUnder() canonicalises with
+  // realpathSync (13.4us, 8x the statSync below it), and every candidate
+  // shares the identical temp-dir prefix, so calling it per entry walks the
+  // same path 200 times on the machine this report exists for.
+  const base = canonical(tmpdir());
+  const uidDir = `tmux-${process.getuid?.() ?? 0}`;
+  for (const entry of entries) {
+    if (!entry.startsWith(SCRATCH_SOCKET_PREFIX)) continue;
+    const socket = join(base, entry, uidDir, "default");
+    if (socket === liveSocket) continue;
+    let mtimeMs: number;
+    try {
+      // stat, not a probe: an age is readable without talking to a server
+      // that may not answer, so every candidate is aged before any of them
+      // costs a fork.
+      mtimeMs = statSync(socket).mtimeMs;
+    } catch {
+      // The directory exists with no socket file in it: a test that never
+      // started a server, or one whose server exited and unlinked it. Neither
+      // is a server, so neither is a candidate.
+      continue;
+    }
+    result.candidates += 1;
+    const ageMs = now - mtimeMs;
+    if (ageMs < minAgeMs) continue;
+    aged.push({ socket, ageMs });
+  }
+  result.aged = aged.length;
+  // Oldest first: with a budget, the ones most likely to be real debris are
+  // the ones worth spending it on.
+  aged.sort((a, b) => b.ageMs - a.ageMs);
+  for (const candidate of aged) {
+    if (Date.now() > deadline) break;
+    result.probed += 1;
+    let state: "live" | "wedged" | "gone";
+    try {
+      // -S names the socket FILE, so this can never fall back to the shared
+      // server the way an env-selected call would (test/CLAUDE.md, and
+      // decisions/2026-08-07-kill-the-servers-socket-by-S-never-through-
+      // tmux-tmpdir.md). Through tmux() rather than a raw execFileSync so the
+      // probe carries the bound this whole todo is about: a wedged candidate
+      // does not answer, and a report that hangs while counting hangs the
+      // command a human ran to find out why things are hanging.
+      // min, not the constant outright: HIVE_TMUX_TIMEOUT_MS is a ceiling for
+      // every tmux call in the process, so a caller may narrow it and must
+      // never widen it.
+      tmuxWithin(
+        Math.min(ORPHAN_PROBE_TIMEOUT_MS, tmuxTimeoutMs()),
+        "-S", candidate.socket, "list-sessions", "-F", "#{session_name}",
+      );
+      state = "live";
+    } catch (e) {
+      state = e instanceof TmuxTimeoutError ? "wedged" : "gone";
+    }
+    if (state === "gone") continue;
+    if (state === "live") result.live += 1;
+    else result.wedged += 1;
+    result.sockets.push(candidate.socket);
+    result.oldestMs = Math.max(result.oldestMs ?? 0, candidate.ageMs);
+  }
+  return result;
+}
 
 export function privateTmuxSocket(tmux: string | undefined, tmuxTmpDir: string | undefined): boolean {
   return tmuxSocketPath(tmux, tmuxTmpDir) !== defaultTmuxSocketPath();
@@ -1953,7 +2357,29 @@ export function ensureAttached(session: string): void {
   } catch {
     return;
   }
-  for (const script of attachScripts(tmuxPath, session)) {
+  // Todo 375, counselors round 2 (F7). attachScripts -> freeViewSessionName ->
+  // quietTmux("has-session") reaches tmux, and quietTmux RETHROWS a timeout
+  // now, so this line could throw out of ensureAttached where nothing above
+  // it can: the probe and the `which` lookup above both degrade to a bare
+  // return. agent_spawn and agent_resume call this AFTER committing the pane
+  // and the agents row, so a server wedging inside that window made the tool
+  // report failure over a worker that is already live and running - and the
+  // obvious retry then collides with the row and the name it just created.
+  //
+  // Auto-attach is BEST-EFFORT everywhere else in this function, so a timeout
+  // degrades the way its neighbours already do rather than by a new rule. It
+  // catches everything, not only TmuxTimeoutError, for the same reason those
+  // neighbours do: no failure to open a convenience window is worth failing a
+  // spawn that already succeeded. The wedge itself is not silent - the caller
+  // that spawned this worker is about to hit the same server through bounded
+  // calls of its own, and `hive doctor` names it.
+  let scripts: string[];
+  try {
+    scripts = attachScripts(tmuxPath, session);
+  } catch {
+    return;
+  }
+  for (const script of scripts) {
     try {
       execFileSync("osascript", ["-e", script], { stdio: "ignore", timeout: 8000 });
       return;
@@ -2127,6 +2553,24 @@ export function findUnsafeControlChar(text: string, allowed: Set<string>): Unsaf
   return null;
 }
 
+// A TIMED-OUT PASTE THE SERVER ALREADY EXECUTED LEAVES HIVE'S OWN TEXT IN THE
+// BOX. Counselors round 2, RAISED AND ACCEPTED (todo 375), and recorded HERE
+// so whoever next debugs a wake that is held forever has somewhere to start.
+// This is four separate bounded children (set-buffer, paste-buffer, sleep,
+// send-keys Enter), and execFileSync's timeout kills the CLIENT, not the
+// command the server may already have run. So a paste-buffer killed at 10s
+// after the server processed it puts the wake body on screen with no Enter
+// behind it - and the classifier cannot tell that from a human's unsubmitted
+// text (.claude/rules/tmux-and-panes.md: send-keys -l text carries no faint
+// attribute), so holdsHumanInput is true and that pane's wakes hold
+// indefinitely, past max_wait_at. Nobody typed it; hive did.
+//
+// Accepted because no seat could construct the state it needs - a server slow
+// enough to exceed 10s yet alive enough to execute the command; a fully
+// wedged one executes nothing - and because it is strictly better than the
+// pre-bound behaviour, which was this call never returning at all. Same
+// mechanism, milder: a timed-out set-buffer leaks a named tmux buffer, since
+// -d never runs.
 export async function sendText(target: string, text: string, submit = true): Promise<void> {
   if (text.includes("\n")) {
     const buffer = nextBufferName();

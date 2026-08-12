@@ -5,7 +5,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
+import {
+  clearHiveEnv,
+  isolateTmux,
+  leadRow,
+  makeFakeClaude,
+  recordScratchTmuxSocket,
+  runCli,
+  scratchDirs,
+} from "./helpers.mjs";
 
 // Issue #73, todo 210 (step 1 of the lane): every write of tmux_target must
 // write tmux_socket in the same statement, from tmuxSocketPath() - the same
@@ -112,6 +120,10 @@ describe(
       // layout, which would silently stop matching if that layout ever
       // changes.
       const expectedNew = tmuxSocketPath(undefined, otherSocketDir);
+      // Todo 375, counselors round 2 (F6). A real second server on a
+      // bespoke socket: isolateTmux registers only this file's own, so the
+      // run-level leak check needs to be told about this one.
+      recordScratchTmuxSocket(expectedNew);
       try {
         const restarted = await runCli(["lead"], {
           cwd: project.path,

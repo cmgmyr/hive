@@ -137,15 +137,26 @@ jobs:
         # (test/dashboard-open.test.mjs) proves the fix; it is the same
         # positive-open-path shape as the other eighteen, so it skips on
         # Linux for the identical reason.
+        #
+        # 19 -> 20 (todo 375, counselors round 2). One new darwin-gated case in
+        # test/auto-attach-scope.test.mjs: ensureAttached must not throw when
+        # the tmux server wedges between its client probe and the has-session
+        # that names a view session, because both of its callers reach it after
+        # the worker is already live. It sits in that file's existing
+        # darwin-only block for the same construction reason as the other
+        # seven - ensureAttached returns immediately off darwin, so a Linux
+        # pass would prove nothing. CI CONFIRMED THE COUNT rather than it
+        # being read off the diff: the first run against this branch reported
+        # exactly 20 skipped on both Linux legs, against the budget of 19.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 19
+            skipped: 20
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 19
+            skipped: 20
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   cpSync,
@@ -12,12 +13,28 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+
+// Todo 375, counselors round 2. CAPTURED AT MODULE LOAD, ABOVE ANY TEST
+// BODY'S REACH, and that position is the whole fix. clearHiveEnv() below
+// deletes EVERY HIVE_* key, this one included, and isolateTmux() used to read
+// it from process.env at call time - so a file that cleared first and
+// isolated second dropped its own socket from the run-level leak manifest
+// while the run still printed "N scratch socket(s) checked, all gone".
+// Nothing in that sentence distinguishes N checked from N of M checked, which
+// is test/CLAUDE.md's shape 7 living inside the leak detector itself.
+//
+// Latent rather than live when it was found (no file violates the order
+// today), and enforced by convention only, which is what made it worth
+// closing structurally: this module is evaluated before any importing file's
+// body, so the capture cannot lose that race.
+const LEAK_MANIFEST = process.env.HIVE_TMUX_LEAK_MANIFEST;
 export const DIST = join(REPO, "dist");
 export const SERVER = join(DIST, "index.js");
 export const CLI = join(DIST, "cli.js");
@@ -238,11 +255,60 @@ export function makeFakeOpen(tmp) {
 // So the directory is removed once, on process exit, when no more tmux calls can
 // happen. Registered once per isolateTmux call; a file that calls it twice gets
 // two handlers for two directories, which is correct.
+// tmux puts its socket at <TMUX_TMPDIR>/tmux-<uid>/default. One derivation
+// for every caller here, matching src/tmux.ts's socketUnder(): three copies
+// of this join had grown in this file alone, and all of them have to stay in
+// step with tmux's own layout or the leak checks are testing nothing.
+export function tmuxSocketUnder(tmuxTmpDir) {
+  return join(tmuxTmpDir, `tmux-${process.getuid?.() ?? 0}`, "default");
+}
+
+// Todo 375, counselors round 2 (F6). isolateTmux registers its OWN socket and
+// nothing else, so a file that starts a server on a SECOND, bespoke
+// TMUX_TMPDIR - four of them do - is invisible to the run-level leak check
+// unless it says so. Call this with that socket at CREATION time, for the
+// same reason isolateTmux does: a file killed before its handlers run leaves
+// a server nothing in that process will ever report.
+//
+// Registering a socket whose server never starts is harmless and expected:
+// the checker probes it, tmux answers "error connecting to", and it reads
+// gone like any other clean socket.
+export function recordScratchTmuxSocket(socket) {
+  if (!LEAK_MANIFEST) return;
+  try {
+    appendFileSync(LEAK_MANIFEST, `${socket}\n`);
+  } catch {
+    // A manifest that cannot be written must never fail a test run.
+  }
+}
+
 export function isolateTmux(suite) {
   const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
   process.env.TMUX_TMPDIR = tmuxTmp;
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
+
+  // The socket this file's own server will live on, derived exactly the way
+  // the exit handler below derives it (and src/tmux.ts's socketUnder does).
+  const socket = tmuxSocketUnder(tmuxTmp);
+
+  // Todo 375 item 3. Recorded at CREATION, not at teardown, and that is the
+  // whole point: a test file killed before its handlers run (node does NOT
+  // run process.on("exit") under a default-disposition SIGTERM - measured on
+  // todo 375 comment 899) leaves a server nothing in this process will ever
+  // report. The run-level check (scripts/tmux-leaks.mjs) reads this manifest
+  // after every file has exited and asks each socket directly.
+  //
+  // Absent env var means a bare `node --test` rather than `npm test`, where
+  // there is no run-level check to feed; that stays silent rather than
+  // failing, since a single-file run is a legitimate thing to do.
+  //
+  // LEAK_MANIFEST (inside recordScratchTmuxSocket), not process.env, for the
+  // reason its own comment at the top of this file gives: clearHiveEnv()
+  // deletes the variable, so reading it here made coverage depend on the
+  // order two helpers happen to be called in. One O_APPEND write of one short
+  // line, which is why many test processes can share the file without a lock.
+  recordScratchTmuxSocket(socket);
 
   let hasTmux = true;
   try {
@@ -282,8 +348,6 @@ export function isolateTmux(suite) {
     // Stripping TMUX does not close that; only naming the socket file
     // directly does, since -S has no fallback to fall back TO - a missing
     // file is just ENOENT, caught below like any other absent server.
-    const socket = join(tmuxTmp, `tmux-${process.getuid?.() ?? 0}`, "default");
-
     // Named before killed: reports which SESSIONS this file left running,
     // not just an anonymous pid a separate sweep discovers after the fact.
     try {
@@ -311,7 +375,116 @@ export function isolateTmux(suite) {
     try {
       execFileSync("tmux", ["-S", socket, "kill-server"], { stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
     } catch {
-      // No server was ever started on this socket, or it is already gone.
+      // No server was ever started on this socket, or it is already gone, or
+      // it is wedged and the bound above gave up on it - which the survivor
+      // check immediately below is what tells apart.
+    }
+
+    // Todo 375 item 3. DID THE KILL ACTUALLY WORK? The bound on the call
+    // above means it can now return having achieved nothing, against exactly
+    // the wedged server this whole todo is about, and an unverified kill
+    // reads identical to a successful one.
+    //
+    // Written out here rather than calling scripts/tmux-leaks.mjs's
+    // probeScratchSocket, which classifies the identical three outcomes: this
+    // check and the run-level one are two independent nets over the same
+    // failure, and a shared probe is one bug away from blinding both at once.
+    // The duplication is ten lines; the independence is the whole point of
+    // having two.
+    //
+    // IT SETTLES BEFORE IT BELIEVES A SURVIVOR, and the number is MEASURED,
+    // not guessed: `kill-server` returns before the server has finished
+    // exiting, and the server keeps answering for a few milliseconds after
+    // that. Timed 20 times against a real tmux 3.7b, one and two sessions
+    // deep: 4.9ms min, 5.3ms median, 5.8ms max. The probe below is the very
+    // next fork after the kill, which lands right on that boundary - so the
+    // first version of this check was a coin flip per test file and reported
+    // a healthy file (auto-attach-scope) as a leak on the first full run. A
+    // leak detector that cries wolf gets deleted, so a first "still
+    // answering" only earns a 250ms settle (43x the measured window) and one
+    // more look.
+    // GATED ON THE SOCKET FILE, which is the one part of this that does not
+    // go through PATH. test/auto-attach-scope.test.mjs installs a FAKE tmux
+    // for its whole module and never restores PATH, so every call in this
+    // handler resolves to a binary that answers a fixture: the fake exits 0
+    // for `list-sessions` and the first version of this check read that as a
+    // surviving server on a file that cannot create one. A file whose socket
+    // was never created has nothing to verify. It also cannot hide a real
+    // leak - the run-level check (scripts/tmux-leaks.mjs) probes the same
+    // socket later, from a process with a normal PATH.
+    //
+    // SKIPS THE CHECK, NEVER THE CLEANUP. An early `return` here was the first
+    // shape and it was a leak regression shipped by a leak lane (PR gate, fix
+    // round 1): the rmSync below used to be unconditional, and every file that
+    // calls isolateTmux() without ever starting a server on its own socket -
+    // required of every hive-reaching file by test/CLAUDE.md, and common,
+    // test/wire-surface.test.mjs among them - then leaked its scratch
+    // directory on every run. The gate was right; the return was not.
+    // THE PROBE TAXONOMY, the second of the two copies (the other is
+    // scripts/tmux-leaks.mjs, where the same four states are written out in
+    // full with the measurements behind them). Measured against tmux 3.7b:
+    // exit 0 with a session list means a live server; "no server running on
+    // <path>" means tmux ANSWERED that the socket file outlived its server,
+    // which is the ordinary state after a successful kill-server since it
+    // does NOT unlink the file; "error connecting to <path>" covers both an
+    // absent socket file and a path that is not a socket. Those are the only
+    // answers that prove nothing is there.
+    //
+    // ANYTHING ELSE IS UNKNOWN, NOT GONE (counselors round 2, F5). This
+    // handler DELETES THE SOCKET DIRECTORY on "gone", so reading a failure to
+    // SPAWN as an answer is the destructive direction: under the process/fd
+    // exhaustion this whole detector exists to catch, kill-server fails, the
+    // probe fails with EAGAIN, and the directory backing a live server's
+    // listening socket gets removed - which is exactly how todo 294's leaks
+    // became unreachable forever, manufactured this time out of an unknown
+    // result. An unknown keeps the directory and says so, the same way a
+    // wedged one already did.
+    const answeredNoServer = /no server running|error connecting to/;
+    const settle = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    const stillThere = () => {
+      try {
+        execFileSync("tmux", ["-S", socket, "list-sessions", "-F", "#{session_name}"], {
+          encoding: "utf8",
+          timeout: 2000,
+          killSignal: "SIGKILL",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        return "is still answering";
+      } catch (e) {
+        // A wedged server is believed on the FIRST reading: it did not answer
+        // within two seconds, which no amount of settling explains away.
+        if (e?.code === "ETIMEDOUT") return "did not answer (wedged)";
+        // No tmux binary: nothing tmux manages can be alive, and a file with
+        // no tmux never started a server. Same call this handler's own
+        // kill-server just made, same conclusion src/tmux.ts draws from
+        // ENOENT.
+        if (e?.code === "ENOENT") return null;
+        const stderr = (typeof e?.stderr === "string" ? e.stderr : e?.stderr?.toString() ?? "").trim();
+        if (answeredNoServer.test(stderr)) return null;
+        return `could not be probed (${stderr || e?.code || e?.message})`;
+      }
+    };
+    let survivor = existsSync(socket) ? stillThere() : null;
+    // One settle-and-retry for both inconclusive readings. "Still answering"
+    // is usually the measured 5.8ms shutdown window below; an unknown is
+    // usually transient too, and a detector that cries wolf gets deleted.
+    // Neither is believed until a second look agrees.
+    if (survivor !== null && survivor !== "did not answer (wedged)") {
+      settle();
+      survivor = stillThere();
+    }
+    if (survivor) {
+      // The directory STAYS. Removing it deletes the socket file backing the
+      // survivor's own listening socket, which is what made todo 294's leaks
+      // unreachable forever: alive, holding ptys, and impossible to name.
+      // Leaving it costs one scratch directory and keeps the server reapable
+      // by hand and visible to `hive doctor`'s orphan report.
+      console.error(
+        `${suite}: its tmux server ${survivor} after kill-server. Nothing has said it is gone, so ${tmuxTmp} ` +
+          `stays in place and it remains reachable: tmux -S ${socket} kill-server`,
+      );
+      process.exitCode = 1;
+      return;
     }
     try {
       rmSync(tmuxTmp, { recursive: true, force: true });
@@ -320,16 +493,152 @@ export function isolateTmux(suite) {
     }
   });
 
+  // Todo 375, and this is the call site that produced the incident's own
+  // spinners: two `tmux kill-session -t =hive-<hash>-main` processes at 99%
+  // CPU for 1h33m and 1h08m, each started seconds after the `new-session` it
+  // targets. A teardown racing its own server, then never returning.
+  //
+  // THE ASYMMETRY IS THE DEFECT. The exit handler ONE LINE ABOVE has carried
+  // `timeout: 5000` and SIGKILL, with a comment explaining that a wedged
+  // server would otherwise block forever, since todo 294. The reasoning was
+  // written down one line away and this loop did not get it: a fix applied to
+  // some call sites, which is this project's most repeated defect shape.
+  //
+  // Matching that neighbour is worth more than picking a new number, and no
+  // measurement is owed here the way it is for src/tmux.ts's bound: a
+  // teardown has no legitimate slow case to protect. SIGKILL for the same
+  // reason it uses one - a wedged tmux is the process least likely to act on
+  // a SIGTERM.
   const cleanup = (...sessions) => {
     for (const session of sessions) {
       try {
-        execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
+        execFileSync("tmux", ["kill-session", "-t", `=${session}`], {
+          stdio: "ignore",
+          timeout: 5000,
+          killSignal: "SIGKILL",
+        });
       } catch {
-        // Never started, or already gone.
+        // Never started, or already gone, or wedged and killed by the bound
+        // above. All three mean the same thing to a teardown: stop waiting.
       }
     }
   };
   return { hasTmux, cleanup };
+}
+
+// Todo 375. A SECOND scratch tmux server, on its own socket, for the two
+// files that test hive's answers ABOUT orphaned and leaked servers
+// (test/orphan-tmux-servers.test.mjs, test/tmux-leak-check.test.mjs).
+// isolateTmux() only ever makes the file's own, and both files had grown a
+// byte-identical copy of this - including the socket-path derivation, which
+// has to stay in step with src/tmux.ts's socketUnder() for either file to be
+// testing anything at all.
+//
+// Returns { socket, dir, reap }. `reap` kills the SESSION rather than the
+// server: test/suite-isolation.test.mjs forbids that other verb by name in
+// any test file (and counts this file's single exempted use), and tmux's own
+// `exit-empty on` takes the server down with its last session anyway.
+export function scratchTmuxServer({ prefix = "hive-tmux-", session = "orphan", ageHours = 0 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  // realpathSync because macOS's os.tmpdir() is a symlink (/var ->
+  // /private/var) and hive reports canonical paths. Resolved with node's own
+  // realpath rather than by asking the code under test, which would only
+  // prove it agrees with itself.
+  //
+  // tmux does NOT create the parent of a `-S` path - measured: it prints
+  // "error creating <path>" and exits 0 doing it - so the uid directory tmux
+  // would make for itself under TMUX_TMPDIR has to be made here.
+  const socket = tmuxSocketUnder(realpathSync(dir));
+  mkdirSync(dirname(socket), { recursive: true });
+  // A real second server on a real socket: it belongs in the run-level leak
+  // manifest exactly as much as a file's own does (counselors round 2, F6).
+  recordScratchTmuxSocket(socket);
+  execFileSync("tmux", ["-S", socket, "new-session", "-d", "-s", session, "sleep", "300"], {
+    stdio: "ignore",
+    timeout: 5000,
+    killSignal: "SIGKILL",
+  });
+  // Backdating the socket rather than adding a testing-only env knob for
+  // doctor's age floor: the floor reads the socket file's own mtime, so a
+  // real file with a real old timestamp exercises the production
+  // configuration instead of a second code path only tests take.
+  if (ageHours > 0) {
+    const when = new Date(Date.now() - ageHours * 3_600_000);
+    utimesSync(socket, when, when);
+  }
+  const reap = () => {
+    try {
+      execFileSync("tmux", ["-S", socket, "kill-session", "-t", `=${session}`], {
+        stdio: "ignore",
+        timeout: 5000,
+        killSignal: "SIGKILL",
+      });
+    } catch {
+      // Already gone.
+    }
+    rmSync(dir, { recursive: true, force: true });
+  };
+  return { socket, dir, reap };
+}
+
+// A `tmux` on PATH that never answers, which is what a wedged server looks
+// like from a caller's side. The sibling of probe.test.mjs's own
+// fakeTmuxFailing scaffold ("one scaffold shared by every fixture, rather
+// than a hand-copied heredoc per fixture") for the case where the call has to
+// HANG rather than fail.
+//
+// `exec sleep` rather than `sleep`: the shim then IS the process
+// execFileSync kills, so the SIGKILL that enforces a timeout reaps it instead
+// of leaving an orphaned sleep behind for the rest of the run.
+// `hangOn` narrows it to ONE subcommand and passes everything else through to
+// the real tmux, the same shape probe.test.mjs's fakeTmuxFailing uses. Needed
+// because a shim that hangs on EVERY call also hangs `tmux -V`, which
+// src/cli.ts deliberately leaves unbounded (it is answered client-side and
+// never reaches a server), so a doctor run against the blanket version waits
+// out the fake's own sleep before it gets anywhere near the read under test.
+// `log` names a file the shim appends each call's SUBCOMMAND to, one per
+// line, before it decides whether to hang. Counselors round 2 (F2): a test
+// that only asserts the TYPE of the error a wedged server produces cannot
+// tell which call produced it, because every bounded call against this shim
+// throws the same TmuxTimeoutError. Counting the calls is what tells "the
+// probe threw and stopped the sequence" from "the probe was flattened into a
+// false and the NEXT call threw".
+export function fakeHangingTmux({ hangOn, log } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "hive-hangingtmux-"));
+  // Before the hang, or a hanging call would never be recorded - and the
+  // hanging call is the one under test.
+  const record = log ? `printf '%s\\n' "$1" >> ${JSON.stringify(log)}\n` : "";
+  const body = hangOn
+    ? `#!/bin/sh\n${record}if [ "$1" = "${hangOn}" ]; then exec sleep 30; fi\nexec ${execFileSync("which", ["tmux"], { encoding: "utf8" }).trim()} "$@"\n`
+    : `#!/bin/sh\n${record}exec sleep 30\n`;
+  writeFileSync(join(dir, "tmux"), body, { mode: 0o755 });
+  return dir;
+}
+
+// A `tmux` on PATH that FAILS one subcommand with stderr hive's classifier
+// does not recognise, and passes everything else through to the real one.
+// Counselors round 2 (F3): a timeout is the likeliest unanswered call and not
+// the only one - EACCES spawning tmux, ENOBUFS, a transient socket error all
+// arrive as an ordinary TmuxError whose text matches nothing, and a predicate
+// written as "not a timeout" reads every one of them as an ANSWER. This is
+// how a test constructs that class without needing to exhaust a machine's
+// file descriptors.
+//
+// `stderr` deliberately defaults to a wording NOTHING_THERE (src/tmux.ts)
+// cannot match: the whole point is an error that is neither a timeout nor a
+// recognised "there is nothing there".
+// `failOn` narrows it to one subcommand, the way fakeHangingTmux's `hangOn`
+// does; omitted, EVERY call fails, which is what a machine that cannot fork
+// looks like from a caller's side.
+export function fakeFailingTmux({ failOn, stderr = "tmux: operation not permitted" } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "hive-failingtmux-"));
+  const fail = `printf '%s\\n' ${JSON.stringify(stderr)} >&2; exit 1`;
+  const body = failOn
+    ? `#!/bin/sh\nif [ "$1" = "${failOn}" ]; then ${fail}; fi\n` +
+      `exec ${execFileSync("which", ["tmux"], { encoding: "utf8" }).trim()} "$@"\n`
+    : `#!/bin/sh\n${fail}\n`;
+  writeFileSync(join(dir, "tmux"), body, { mode: 0o755 });
+  return dir;
 }
 
 // Todo 275 (topology-3c). tmux(), windowOwners(), panesIn() and windowFor()
@@ -350,8 +659,22 @@ export function isolateTmux(suite) {
 // independent derivation). It looks redundant next to `import { findProjectWindow } from "../dist/tmux.js"`
 // sitting right above it in most of these files - it is not; that import is
 // for driving the code under test, this is for checking its work.
+// Bounded on the same terms as cleanup() above (todo 375). This one is shared
+// by roughly nine test files, so it is the second-largest concentration of
+// raw tmux calls in the suite after the per-file ones, and an assertion that
+// hangs forever against a wedged server reads as a hung TEST FILE with
+// nothing pointing at tmux - which is exactly how the 2026-08-11 incident
+// presented (two files alive 16m45s and 16m after their runs had moved on).
+// 5000 is 32x the slowest legitimate call measured for src/tmux.ts's own
+// bound, which is ample for a query this makes against a server the test just
+// created.
+//
+// HONEST SCOPE: this does NOT bound the suite's own per-file raw calls, of
+// which there are ~190 across 37 files. Bounding those is a mechanical sweep
+// with its own review, and the two sites here are the ones every file
+// inherits.
 export function tmux(...args) {
-  return execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
+  return execFileSync("tmux", args, { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" }).replace(/\n$/, "");
 }
 
 // #{@hive-project-id} read at WINDOW scope via list-windows -F, not through a

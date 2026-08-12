@@ -70,6 +70,14 @@ function isolatedDoctorEnv(dirs) {
   return {
     cwd: dirs.projectDir,
     dataDir: dirs.dataDir,
+    // TMPDIR too (todo 375): doctor now reports orphaned scratch tmux
+    // servers, which it finds by reading os.tmpdir(). Without this, the
+    // "All good." control below asserts a fact about the DEVELOPER'S temp
+    // directory - one aged scratch socket left by any earlier run makes it
+    // unreachable, which is the same saturated-baseline shape this helper
+    // already exists to close for the dispatcher, the registration and the
+    // claude binary.
+    tmp: dirs.tmp,
     env: {
       CLAUDE_CONFIG_DIR: configDir,
       HIVE_BIN_DIR: join(dirs.tmp, "no-dispatcher-here"),

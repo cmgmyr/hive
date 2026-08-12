@@ -5,7 +5,15 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { after, describe, it } from "node:test";
 
-import { isolateTmux, makeFakeClaude, runCli, scratchDirs, until } from "./helpers.mjs";
+import {
+  isolateTmux,
+  makeFakeClaude,
+  recordScratchTmuxSocket,
+  runCli,
+  scratchDirs,
+  tmuxSocketUnder,
+  until,
+} from "./helpers.mjs";
 
 // Issue #27's L4 fix round R6, todo 167 (counselors codex F4, HIGH, verified
 // by the lead against the code before dispatch). cmdLead's envFlags
@@ -49,6 +57,10 @@ describe("the lead's spawned session clears HIVE_PROJECT_LOCK and HIVE_PROJECT_P
   it("does not inherit them from a pre-existing tmux server's own environment", async () => {
     const dirs = scratchDirs();
     const bareTmuxTmpDir = mkdtempSync(join(tmpdir(), "hive-bare-tmux2-"));
+    // Todo 375, counselors round 2 (F6). A SECOND server on a bespoke
+    // socket, which isolateTmux does not register - so the run-level leak
+    // check only sees it if this says so.
+    recordScratchTmuxSocket(tmuxSocketUnder(bareTmuxTmpDir));
     const keepaliveSession = "bare-server-keepalive-2";
 
     // The pre-existing server's OWN environment carries both vars, standing
@@ -118,6 +130,10 @@ describe("the lead's spawned session gets HIVE_DATA_DIR", () => {
     // near 104 bytes (test/CLAUDE.md), and this dir nests under mkdtemp's
     // own already-long scratch path.
     const bareTmuxTmpDir = mkdtempSync(join(tmpdir(), "hive-bare-tmux-"));
+    // Todo 375, counselors round 2 (F6). A SECOND server on a bespoke
+    // socket, which isolateTmux does not register - so the run-level leak
+    // check only sees it if this says so.
+    recordScratchTmuxSocket(tmuxSocketUnder(bareTmuxTmpDir));
     const keepaliveSession = "bare-server-keepalive";
 
     // The "server without HIVE_DATA_DIR" half of the repro: start the server
