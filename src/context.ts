@@ -412,7 +412,7 @@ export function agentProjectPin(): number | null {
   // The pin applies to a session claiming BOTH an agent identity AND a
   // project lock - exactly and only what launchAgent produces for
   // kind="agent" - not to HIVE_AGENT_ID alone. HIVE_AGENT_ID is the
-  // documented manual-identity mechanism (README's "Identity" section) that
+  // documented manual-identity mechanism (docs/concepts.md's "Identity" section) that
   // ANY session may claim without ever being spawned or getting a backing
   // agents row; HIVE_PROJECT_LOCK=1 is what only a real spawned worker ever
   // carries alongside it. Keying this on identity alone once broke that

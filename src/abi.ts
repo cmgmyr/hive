@@ -511,8 +511,9 @@ export function guardAbi(): void {
     // The same shape cmdDoctor's own summary line has since todo 292, warn
     // count included. This path emits no warns and never can - it runs during
     // db.ts's import, before any check exists to warn - so the zero is a fact
-    // rather than a placeholder. It matters because the README now tells a
-    // script to read a result off that line, and this is the renderer that
+    // rather than a placeholder. It matters because docs/troubleshooting.md's
+    // "hive doctor is the first stop" entry now tells a script to read a
+    // result off that line, and this is the renderer that
     // fires on exactly the run where the environment is broken.
     ...(doctor ? ["", "1 problem(s) found, 0 warning(s)."] : []),
   ];

@@ -1,10 +1,22 @@
 # tmux settings for hive
 
-hive drives tmux and sets the options it needs on every window it creates. This file separates the one global recommendation from settings that merely make the workflow pleasant, because hive has no business prescribing your terminal.
+hive configures the tmux windows it creates and sets the options it needs on each one. This file separates the one global recommendation from settings that merely make the workflow pleasant, because hive has no business prescribing your terminal.
 
 Everything here was measured on tmux 3.7b with Claude Code 2.1.221. Where a default surprised us, the measurement is written down next to it.
 
 Almost all of this applies to **raw attach mode** (`hive setup --attach raw`). Under iTerm control mode (`-CC`) iTerm renders tmux windows as native tabs and panes, so it supplies most of this itself.
+
+## Attach mode
+
+Two places decide whether tmux attaches carry iTerm's control mode (`-CC`): your own `hive lead`/`hive attach`, and auto-open (see docs/daily-driver.md). One stored setting controls both:
+
+| `hive setup --attach <mode>` | `hive lead` / `hive attach` | Auto-open |
+|---|---|---|
+| `auto` (default) | control mode iff your terminal is iTerm | iTerm in control mode, then Terminal |
+| `raw` | never control mode | iTerm running a plain `tmux attach`, then Terminal |
+| `control` | always control mode | unchanged from `auto` |
+
+`auto` is today's behavior: nothing changes if you never touch this. Prefer tmux's own key bindings over `-CC`'s window management, or want a raw tmux session under any terminal? `hive setup --attach raw`. `hive doctor` reports the effective mode, where it came from, and the settings carried by hive-owned windows.
 
 ## What hive needs
 
@@ -12,7 +24,7 @@ hive marks its windows with `@hive-owned` and sets `allow-passthrough all`, `pan
 
 `window-size smallest` matters once a second terminal is looking at the same session through a view session (see "Every terminal gets its own view onto the same windows" below): tmux's default, `latest`, resizes every window to whoever focused it last, so two clients fight over the size. `smallest` letterboxes a window to the smaller of the two clients' terminals instead, which is a real cost Chris accepted deliberately: the letterboxing is a visible signal that a view session is open, not a bug to fix later.
 
-No tmux configuration is required for hive-owned windows. One global recommendation remains for Claude Code sessions outside them:
+No tmux configuration is required for hive-owned windows, so raw attach mode needs no global pane-border settings; `allow-passthrough all` remains a global notification recommendation for Claude Code sessions outside them:
 
 ```tmux
 set -g allow-passthrough all

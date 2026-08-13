@@ -620,11 +620,32 @@ describe("against the real repo", () => {
   // backstop for the REAL repo deliberate too, rather than incidental
   // cross-coverage from test/docs.test.mjs's own unconditional reads
   // (counselors, todo 354).
-  it("loads CLAUDE.md and both real docs/*.md files, not silently fewer", () => {
+  it("loads CLAUDE.md and every real docs/*.md file, not silently fewer", () => {
+    // Todo 380/382/383 split the README into docs/*.md pages, every one of
+    // which matches tmux-and-panes.md's own "docs/*.md" glob same as
+    // docs/tmux.md already did - the "mildly wasteful and not a defect" cost
+    // the plan pad for todo 380 already named.
+    //
+    // docs/reviewer-preamble.md moved to .github/docs/reviewer-preamble.md
+    // in the same lane (todo 383, from Chris): it briefs the PR review
+    // workflow, not a page for a human reading the project's own docs, and
+    // moving it out of docs/ is what drops it from this list and from the
+    // tmux-and-panes.md glob it used to incidentally match.
     const docs = loadDocs();
     assert.deepEqual(
       docs.map((d) => d.name).sort(),
-      ["CLAUDE.md", "docs/reviewer-preamble.md", "docs/tmux.md"],
+      [
+        "CLAUDE.md",
+        "docs/concepts.md",
+        "docs/daily-driver.md",
+        "docs/development.md",
+        "docs/install.md",
+        "docs/profiles.md",
+        "docs/projects.md",
+        "docs/tmux.md",
+        "docs/tools.md",
+        "docs/troubleshooting.md",
+      ],
     );
     for (const doc of docs) assert.ok(doc.content.length > 0, `${doc.name} loaded with empty content`);
   });

@@ -70,11 +70,24 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
-  it("keeps the README's raw attach advice scoped to hive-owned windows", () => {
-    const readme = readRepo("README.md");
-    assert.match(readme, /hive configures the tmux windows it creates/);
-    assert.match(readme, /allow-passthrough all.*global notification recommendation/);
-    assert.doesNotMatch(readme, /pane-border-status top.*~\/\.tmux\.conf/);
+  it("keeps docs/tmux.md's raw attach advice scoped to hive-owned windows", () => {
+    // Moved from the README's own "Attach mode" section, which folded into
+    // this existing page rather than becoming a new one (the pad's plan for
+    // todo 380).
+    const doc = readRepo(TMUX_DOC);
+    assert.match(doc, /hive configures the tmux windows it creates/);
+    assert.match(doc, /allow-passthrough all.*global notification recommendation/);
+    // A doesNotMatch(/pane-border-status top.*~\/\.tmux\.conf/) used to sit
+    // here, guarding against telling a raw-attach user to add
+    // `pane-border-status top` to their own ~/.tmux.conf, back when README
+    // contained NEITHER string. docs/tmux.md is a full page about tmux
+    // options and legitimately contains both now, on unrelated lines (the
+    // list of settings hive sets automatically; a separate sentence saying
+    // hive never writes to ~/.tmux.conf) - `.` never crosses a newline, so
+    // this could only fail if both phrases later landed on ONE line, and
+    // would stay green even if the exact regression it was written for (that
+    // instruction, added on its own line) shipped. Removed rather than kept
+    // as a check that cannot fire on the failure it names.
   });
 
   it("ships the tmux doc the CLI points at", () => {
@@ -295,18 +308,24 @@ describe("docs keep up with the CLI", () => {
     assert.notDeepEqual(tableGlobs, [...preFixFrontmatterGlobs].sort(), "precondition: the pre-fix row and frontmatter must disagree");
   });
 
-  it("keeps docs/reviewer-preamble.md naming every rule file", () => {
+  it("keeps .github/docs/reviewer-preamble.md naming every rule file", () => {
     // Todo 342. The preamble named four rule topics in prose when six rule
     // files existed, and a reviewer who trusts that list as complete never
     // opens the two it omits - one of which, project-scoping.md, covers
     // src/context.ts, src/spawn.ts and src/tools/agents.ts. Pin the list
     // itself, not a count, so a seventh rule file added later fails this
     // test until the preamble names it too.
+    //
+    // Moved out of docs/ into .github/docs/ (todo 383, from Chris): this
+    // file briefs the PR review workflow only, not a page for a human
+    // reading the project's own docs, so it does not belong in the README's
+    // docs index and does not need to keep matching tmux-and-panes.md's
+    // "docs/*.md" glob or covering-rules.mjs's docs/*.md candidate set.
     const ruleFiles = globSync("*.md", { cwd: join(REPO, ".claude/rules") });
     assert.ok(ruleFiles.length > 0, "no rules found; did .claude/rules move?");
-    const preamble = readRepo("docs/reviewer-preamble.md");
+    const preamble = readRepo(".github/docs/reviewer-preamble.md");
     for (const name of ruleFiles) {
-      assert.ok(preamble.includes(`\`${name}\``), `docs/reviewer-preamble.md does not name ${name}`);
+      assert.ok(preamble.includes(`\`${name}\``), `.github/docs/reviewer-preamble.md does not name ${name}`);
     }
   });
 
@@ -386,13 +405,12 @@ describe("docs keep up with the MCP surface", () => {
   const TOOL_REGISTRATIONS = toolRegistrationsByFile();
   const REGISTERED_TOOLS = registeredToolNames();
 
-  // The Tools section only, between its own heading and the next one.
-  // Scoping this way keeps a backtick-quoted word in an unrelated table (the
-  // attach-mode options table above it uses the identical "| `auto` | ... |"
-  // row shape) from being misread as a tool name.
-  const toolsSection = (readme) => {
-    const match = /^## Tools.*\n([\s\S]*?)\n^## /m.exec(readme);
-    assert.ok(match, "README has no ## Tools section (or no ## heading after it)");
+  // The Tools table moved to its own page (todo 380/382), so this reads
+  // docs/tools.md rather than README.md now. The section runs from the page's
+  // own heading to the end of the file, since nothing else shares the page.
+  const toolsSection = (doc) => {
+    const match = /^# Tools.*\n([\s\S]*)$/m.exec(doc);
+    assert.ok(match, "docs/tools.md has no # Tools heading");
     return match[1];
   };
   // A tool row is "| `tool_name` | ...". The group header rows ("|
@@ -413,27 +431,27 @@ describe("docs keep up with the MCP surface", () => {
     }
   });
 
-  it("documents every registered tool in the README table, and names nothing extra", () => {
+  it("documents every registered tool in docs/tools.md, and names nothing extra", () => {
     // Two-way, or the check rots: a one-way "every tool is documented" still
     // passes after a tool is deleted and its row left behind, same as the
     // CLI shape above.
-    const documented = readmeToolNames(toolsSection(readRepo("README.md")));
+    const documented = readmeToolNames(toolsSection(readRepo("docs/tools.md")));
     for (const name of REGISTERED_TOOLS) {
-      assert.ok(documented.includes(name), `${name} is registered but has no row in README's Tools table`);
+      assert.ok(documented.includes(name), `${name} is registered but has no row in docs/tools.md's table`);
     }
     for (const name of documented) {
-      assert.ok(REGISTERED_TOOLS.includes(name), `README's Tools table names "${name}", which is not a registered tool`);
+      assert.ok(REGISTERED_TOOLS.includes(name), `docs/tools.md names "${name}", which is not a registered tool`);
     }
   });
 
   it("pins the Tools heading count to the parsed registration count, not a literal", () => {
-    const readme = readRepo("README.md");
-    const heading = /^## Tools \((\d+)\)/m.exec(readme);
-    assert.ok(heading, "README has no `## Tools (N)` heading");
+    const doc = readRepo("docs/tools.md");
+    const heading = /^# Tools \((\d+)\)/m.exec(doc);
+    assert.ok(heading, "docs/tools.md has no `# Tools (N)` heading");
     assert.equal(
       Number(heading[1]),
       REGISTERED_TOOLS.length,
-      `README says ${heading[1]} tools, src/tools/*.ts registers ${REGISTERED_TOOLS.length}`,
+      `docs/tools.md says ${heading[1]} tools, src/tools/*.ts registers ${REGISTERED_TOOLS.length}`,
     );
   });
 

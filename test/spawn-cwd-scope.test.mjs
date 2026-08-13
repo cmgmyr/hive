@@ -419,10 +419,11 @@ describe("a worker's project comes from its own agents row, guarded by HIVE_PROJ
   });
 
   it("(n2) THE LOCK GATE ITSELF: HIVE_AGENT_ID set with NO HIVE_PROJECT_LOCK resolves from cwd and does not fail, even when a RUNNING row exists for that identity elsewhere", async () => {
-    // The documented manual-identity pattern (README's Identity section:
-    // "Set identity through environment variables when starting a worker
-    // session: HIVE_AGENT_ID=worker-1 ... claude") is unlocked and was
-    // never meant to carry a project pin - any session may claim an
+    // The documented manual-identity pattern ("Set identity through
+    // environment variables when starting a worker session:
+    // HIVE_AGENT_ID=worker-1 ... claude", documented in src/help.ts and
+    // docs/concepts.md) is unlocked and was never meant to carry a project
+    // pin - any session may claim an
     // identity without ever going through agent_spawn. Two existing tests
     // elsewhere in the suite (test/store.test.mjs's lease-conflict case,
     // test/todo-cli.test.mjs's actor-attribution case) already exercise

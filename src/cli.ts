@@ -2200,8 +2200,8 @@ const warn = (label: string, ...lines: string[]) => {
   report("warn", label, lines);
 };
 // For a state where hive itself is misconfigured: the dispatcher, the MCP
-// registration, the addon. README calls these "the whole reason you ran
-// doctor", and they are what an update script exists to catch.
+// registration, the addon. docs/troubleshooting.md calls these "the whole
+// reason you ran doctor", and they are what an update script exists to catch.
 const gatingWarn = (label: string, ...lines: string[]) => {
   gatingWarnings += 1;
   warn(label, ...lines);
@@ -2337,10 +2337,10 @@ function cmdSetup(argv: string[]): void {
   );
 
   // An absent --attach leaves the stored value alone; setup only ever writes
-  // it when asked. README:238 tells everyone to run this after every update,
-  // so a bare `hive setup` that reset the setting to its default would read
-  // as a hive bug on every rebuild. Echoed the way the interpreter above is,
-  // whether this run changed it or not.
+  // it when asked. The README's own Updating section tells everyone to run
+  // this after every update, so a bare `hive setup` that reset the setting to
+  // its default would read as a hive bug on every rebuild. Echoed the way the
+  // interpreter above is, whether this run changed it or not.
   if (attachArg) setAttachMode(attachArg);
   if (autoAttachArg) setAutoAttach(autoAttachArg);
   console.log(`\nattach mode  ${attachMode()}`);

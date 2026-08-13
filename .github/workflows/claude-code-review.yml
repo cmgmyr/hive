@@ -54,7 +54,7 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
-            Read docs/reviewer-preamble.md first and follow it as your
+            Read .github/docs/reviewer-preamble.md first and follow it as your
             reviewing instructions: this project's invariants, the finding
             bar, its real false-green test shapes, and the ban on style
             notes, praise, and summary. Do not restate the preamble in your
