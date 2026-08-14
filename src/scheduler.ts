@@ -1,5 +1,5 @@
 import type { Statement } from "better-sqlite3";
-import { existsSync, mkdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
@@ -8,6 +8,7 @@ import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
   describeLastLogEvent,
@@ -1598,7 +1599,15 @@ function ownerPaneIfLive(timer: TimerRow, snapshot: AliveSnapshot | null): strin
   return rowAlive(row.tmux_socket, row.tmux_target, snapshot) === true ? row.tmux_target : null;
 }
 
-function blockNoticeTarget(timer: TimerRow, snapshot: AliveSnapshot): { actor: string; pane: string } | null {
+// TODO 391 WIDENED THE SNAPSHOT TO NULLABLE, and that changes nothing for the
+// block half, which is still called only under a non-null snapshot.
+// ownerPaneIfLive already answers null for a null snapshot ("no fact, not
+// probe it"), so a null snapshot here simply falls through to the wake's own
+// resolved delivery target - which is exactly what the stall detector's arm 1
+// needs, since it answers with no tmux at all. One resolver rather than a
+// second copy of the owner-first rule: who a meta-notice about a WATCHED
+// WORKER'S pane goes to is one decision, and it must not exist twice.
+function blockNoticeTarget(timer: TimerRow, snapshot: AliveSnapshot | null): { actor: string; pane: string } | null {
   const pane = ownerPaneIfLive(timer, snapshot);
   if (pane !== null) return { actor: timer.owner, pane };
   return timer.deliver_pane ? { actor: timer.deliver_actor, pane: timer.deliver_pane } : null;
@@ -2579,7 +2588,15 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 //
 // closed_at is the key, because it is the only value that moves. GONE's own
 // `since` is null by construction, and agent_close/closeAgentRow never touch
-// state_changed_at - src/hook.ts is its only writer. Re-arm is by
+// state_changed_at. CORRECTED, TODO 391: this used to say src/hook.ts is that
+// column's ONLY writer, and it is not - resumeAgent's flip and
+// restoreFlippedRow both list state_changed_at in RESUME_FLIP_COLUMNS
+// (src/spawn.ts) and write it to NULL and back again. Nothing about this
+// paragraph's conclusion changes (a resume is not a close, and neither writer
+// runs on the close path), but the claim as written is the one
+// .claude/rules/worker-state.md's "enumerate every path that can write the
+// value" exists to stop, and a reader inheriting it walks into the trap this
+// lane walked around. Re-arm is by
 // construction too: a replacement worker is a new agents row with a new id,
 // so its own death is a new key with nothing to clear.
 //
@@ -2611,11 +2628,18 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 // two notices per worker lifecycle, half of them frightening and wrong, and
 // the standing watch does it per close where the one-shot did it once.
 //
-// WHY THE ROW'S OWN STATE CAN ANSWER THAT. src/hook.ts is the ONLY writer of
-// agents.agent_state (.claude/rules/worker-state.md, "enumerate every writer
-// before picking one" - checked, not assumed: closeAgentRow in src/spawn.ts
-// writes status and closed_at and never this column). So a closed row's state
-// is FROZEN at whatever the worker last reported on its way out. `idle` means
+// WHY THE ROW'S OWN STATE CAN ANSWER THAT, and the WHERE clause below rests
+// on it. src/hook.ts is the only writer of agents.agent_state ON THE CLOSE
+// PATH (.claude/rules/worker-state.md, "enumerate every writer before picking
+// one" - checked, not assumed: closeAgentRow in src/spawn.ts writes status and
+// closed_at and never this column). CORRECTED, TODO 391: the unqualified
+// version of that sentence shipped here and is false. resumeAgent's flip
+// resets agent_state to 'unknown' and restoreFlippedRow puts it back, both via
+// RESUME_FLIP_COLUMNS (src/spawn.ts) - which is precisely the third door todo
+// 374 found into a false obituary, documented in worker-state.md and
+// contradicted by this comment. Scoped to the close path, the justification
+// stands: a closed row's state is FROZEN at whatever the worker last reported
+// on its way out. `idle` means
 // it had finished and this watch has already said so; `working` or `waiting`
 // is the real death this half exists for - the turn that died mid-response
 // (issue #38), which is precisely the worker that cannot report itself.
@@ -3054,30 +3078,71 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
 // real 300ms Enter sleeps old by the time this runs, so the watch may have
 // been cancelled or expired in between. Inside the transaction, so a claim
 // cannot outlive the watch it belongs to.
+// THE THREE STATEMENTS THAT MAKE UP ONE EPISODE CLAIM, extracted so the two
+// batches that make one - the standing watch's finish/death batch below and
+// todo 391's stall batch further down - cannot drift onto two spellings of it.
+// This is CREW_COLUMNS' rule applied to the write side: the two batches are
+// allowed to differ in WHICH rows they claim and WHAT they then say, never in
+// what a claim IS. The extraction moved no statement across a guard - all
+// three still run in the same order, inside the caller's own transaction.
+//
+// EVERY ONE OF THESE MUST BE CALLED INSIDE `db.transaction(...).immediate()`.
+// The claim IS the record that the notice was filed, so a throwing INSERT
+// after a committed claim loses the report permanently.
+
+// The re-arm, run unconditionally rather than only when the read-gate said the
+// row was stale: the read is a hint, the claim is the authority, and it only
+// runs inside a transaction that opens when there is work to do - so it costs
+// nothing on the quiet path and cannot disagree with what the INSERT then
+// sees. It fires only for a claim whose notice was spent WITHOUT ever being
+// typed (see NOTICE_RETRY_AFTER); a seeded cursor row carries a NULL
+// notice_timer_id and is therefore never deleted.
+function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): void {
+  stmt(
+    `DELETE FROM wake_idle_notices
+      WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?
+        AND notice_timer_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM timers t WHERE t.id = wake_idle_notices.notice_timer_id
+                      AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
+                      AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
+  ).run(timerId, agentId, condition, episode);
+}
+
+// The atomic claim: INSERT OR IGNORE against the primary key, won when
+// changes === 1 exactly once across every concurrent instance.
+function claimEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
+  return (
+    stmt(
+      `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+       VALUES (?, ?, ?, ?)`,
+    ).run(timerId, agentId, condition, episode).changes === 1
+  );
+}
+
+// WHICH notice carried this episode. Not optional: it is the whole LEFT JOIN
+// half of unreported()'s cursor read, so without it a notice lost to either
+// documented loss path stops being retryable and the episode is silently never
+// reported again.
+function stampEpisodeNotice(
+  noticeId: number,
+  timerId: number,
+  agentId: number,
+  condition: string,
+  episode: string,
+): void {
+  stmt(
+    `UPDATE wake_idle_notices SET notice_timer_id = ?
+      WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?`,
+  ).run(noticeId, timerId, agentId, condition, episode);
+}
+
 const claimStandingBatch = db.transaction(
   (timer: TimerRow, candidates: StandingCandidate[]): boolean => {
     if (!stillPending(timer.id)) return false;
     const won: StandingCandidate[] = [];
     for (const c of candidates) {
-      // The re-arm, run unconditionally rather than only when the read-gate
-      // above said the row was stale: the read is a hint, the claim is the
-      // authority, and this is inside a transaction that only ever opens when
-      // there is work to do - so it costs nothing on the quiet path and
-      // cannot disagree with what the INSERT below then sees.
-      stmt(
-        `DELETE FROM wake_idle_notices
-          WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?
-            AND notice_timer_id IS NOT NULL
-            AND EXISTS (SELECT 1 FROM timers t WHERE t.id = wake_idle_notices.notice_timer_id
-                          AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
-                          AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
-      ).run(timer.id, c.row.id, c.condition, c.row.episode);
-      const claimed =
-        stmt(
-          `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
-           VALUES (?, ?, ?, ?)`,
-        ).run(timer.id, c.row.id, c.condition, c.row.episode).changes === 1;
-      if (claimed) won.push(c);
+      rearmSpentEpisode(timer.id, c.row.id, c.condition, c.row.episode);
+      if (claimEpisode(timer.id, c.row.id, c.condition, c.row.episode)) won.push(c);
     }
     if (won.length === 0) return false;
     const noticeId = insertNotice(
@@ -3088,10 +3153,7 @@ const claimStandingBatch = db.transaction(
       timer.id,
     );
     for (const c of won) {
-      stmt(
-        `UPDATE wake_idle_notices SET notice_timer_id = ?
-          WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?`,
-      ).run(noticeId, timer.id, c.row.id, c.condition, c.row.episode);
+      stampEpisodeNotice(noticeId, timer.id, c.row.id, c.condition, c.row.episode);
     }
     return true;
   },
@@ -3156,6 +3218,394 @@ function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null
   } catch {
     // Reporting about the crew, never the crew itself: same precedent as
     // noteBlockedWatched above and src/hook.ts's record().
+  }
+}
+
+// ===========================================================================
+// TODO 391, THE STALL DETECTOR. TWO ARMS, AND BOTH ARE REQUIRED.
+//
+// A worker's turn can die mid-response - an API error, a killed process, a
+// host tmux server going away. hive's hooks fire on UserPromptSubmit, Stop and
+// Notification, so a turn that dies has fired `prompt` and will never fire
+// `stop`: the row reads `working` (or `waiting`, below) forever, every check
+// that existed before this lane is blind to it, and the runbook tells a lead
+// to arm a standing watch and go quiet - so the lead that most needs the fact
+// is precisely the one not running the command that already carries it
+// (issue #72's last_log_event age, which covers this on PULL and never
+// pushes). Reported from two independent sites before this was built.
+//
+// THREE MEASURED FACTS DECIDE THE DESIGN, taken against the live store on
+// 2026-08-14 (todo 391, pad spec-391-stall). They are settled; do not
+// re-derive them.
+//
+//   F1 - THE LATCH IS NOT EVIDENCE OF A STALL, so the latch cannot be the
+//   sampler. Ten workers in that store showed two consecutive `prompt` rows
+//   with no `stop` between them and gaps of 33 to 125 minutes; of the four
+//   checked against their own transcripts, THREE WERE ALIVE AND WRITING right
+//   up to the next prompt. A detector keyed on latch age fires four times and
+//   is wrong three times. The latch decides only whether it is worth LOOKING -
+//   the same rule noteBlockedWatched already lives by, and the same rule the
+//   withdrawn also_when_stuck design broke.
+//
+//   F2 - THE TRANSCRIPT IS THE SAMPLER, AND ITS QUIET PERIODS HAVE A
+//   STRUCTURAL CEILING. 49,678 gaps between consecutive transcript writes
+//   inside turns that agent_state_log brackets prompt->stop: median 0.1s, p95
+//   12.1s, p99 49.2s, max 600.1s. Every gap above 240s was a single Bash tool
+//   call and the two at ~600s are the Bash tool's own maximum timeout. THE
+//   BOUND BELOW IS ARGUED FROM THAT CEILING, NOT FITTED TO THE LARGEST
+//   OBSERVATION, which is why a survivorship objection to the corpus does not
+//   move it.
+//
+//   F3 - `working` DOES NOT COVER THE CONDITION, WHICH IS WHY ARM 2 EXISTS.
+//   stateForNotification (src/hook.ts) returns `waiting` for every
+//   notification that is not idle_prompt, latched until that turn's own stop,
+//   so a turn that dies after a permission prompt reads `waiting` and not
+//   `working`. Measured: real workers sat `waiting` for 3.9 and 11.5 minutes,
+//   and three notify|waiting rows were the LAST ROW their worker ever wrote.
+//   An arm-1-only implementation passes every other test in
+//   test/stall-report.test.mjs and misses the commonest death shape on a
+//   machine that actually prompts, which is the machine this was reported
+//   from.
+//
+// IT IS A REPORT AND NEVER A GATE, on reportPtyHeadroom's and
+// reportUnbriefedWorkers' stance. It says what hive OBSERVED and never what
+// that means: a worker inside one very long tool call is indistinguishable
+// from a dead turn to every sampler available, so a wrong bound costs a
+// paragraph in a terminal and never a live worker. It must not cancel a wake,
+// close a row, suppress a finish, or assert that a worker is dead.
+//
+// NO SCHEMA CHANGE. wake_idle_notices already carries `condition` (free text,
+// no CHECK) and `notice_timer_id`, so `stall` is a third value beside the
+// shipped `idle` and `gone`.
+// ===========================================================================
+
+const CONDITION_STALL = "stall";
+
+// FIFTEEN MINUTES OF TRANSCRIPT SILENCE, argued rather than fitted: it clears
+// F2's 600s structural ceiling with 50% margin. Detection is therefore up to
+// fifteen minutes late, against a baseline of never being told at all.
+//
+// ONE CONSTANT, TWO RENDERINGS. The SQL prefilter and the JS comparison must
+// be the same number or the prefilter silently decides the bound.
+//
+// WHAT IT DOES NOT TRAVEL TO, so nobody re-uses the number without
+// re-measuring: a project whose longest single tool call exceeds this one's.
+// The bound clears Bash's 600s ceiling; a blocking subagent, or an MCP call
+// with no timeout of its own, could exceed it.
+//
+// Exported for `hive doctor`'s sibling report (src/cli.ts), which is the half
+// that covers a project with NO watch armed at all - the population this todo
+// was actually filed from. Both surfaces must answer at the same bound or one
+// of them is silently a different feature.
+export const STALL_BOUND_SECONDS = 15 * 60;
+const STALL_BOUND_SQL = `-${STALL_BOUND_SECONDS} seconds`;
+
+// The prefilter needs two columns the crew queries do not: the transcript path
+// is `<transcriptDir(cwd)>/<session_id>.jsonl`.
+interface StallRow extends CrewRow {
+  cwd: string;
+  session_id: string;
+}
+
+// THE PREFILTER, and every clause of it is load-bearing.
+//
+// `status = 'running'` is stated explicitly rather than inherited by copying a
+// neighbouring query: a CLOSED row frozen mid-work is standingGoneRows' news,
+// not this one's, and reporting it here would file a second paragraph about
+// one worker.
+//
+// THE STALENESS PREFILTER CANNOT HIDE A STALL, which is what licenses gating
+// the (cheap) statSync behind the latch age at all. Measured over twelve
+// turns, a transcript's first write follows its prompt by 0.2-8.9s, so
+// transcript staleness can never meaningfully exceed the latch's own age: a
+// row younger than the bound cannot have a transcript older than it.
+//
+// Both arms in one query, discriminated afterwards by agent_state, because
+// they share every clause here and differ only in what evidence they then
+// require. `state_changed_at IS NOT NULL` because it is the episode key and a
+// NULL is not an episode.
+function stallCandidateRows(timer: TimerRow, tellActor: string): StallRow[] {
+  return stmt(
+    `SELECT ${CREW_COLUMNS}, a.cwd, a.session_id, a.state_changed_at AS episode
+       FROM agents a
+      WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
+        AND a.agent_state IN ('working', 'waiting')
+        AND a.state_changed_at IS NOT NULL
+        AND a.state_changed_at < datetime('now', ?)
+        AND ${unreported(CONDITION_STALL, "a.state_changed_at")}
+      ORDER BY a.id`,
+  ).all(timer.project_id, tellActor, STALL_BOUND_SQL, timer.id) as StallRow[];
+}
+
+// "never" means the transcript file is not there at all.
+export type TranscriptStaleness = { seconds: number } | "never";
+
+// THE SAMPLER. `<transcriptDir(agents.cwd)>/<agents.session_id>.jsonl`,
+// verified against four live rows: it matches the file Claude Code's own hook
+// payload names.
+//
+// NOT resolveTranscriptDir, whose encoding is not injective - both `/` and `.`
+// become `-` (src/transcript.ts), so a directory that exists proves only that
+// SOME cwd encodes to that name. The UUID filename is what disambiguates a
+// colliding directory, `cwd` is NOT NULL, and `session_id` is reconciled by
+// the hook on every event.
+//
+// A MISSING FILE IS NOT A SKIP, AND THAT IS ONE OF THE TWO FAILURES THIS WAS
+// BUILT FOR. statSync throwing ENOENT means the turn died before its first
+// transcript write, i.e. an API error at turn start - inside this feature's
+// own defect class. It is treated as infinitely stale and reported, with its
+// own sentence so the body never mis-describes its own evidence.
+//
+// EVERY OTHER stat FAILURE IS FOLDED INTO THE SAME ANSWER (EACCES, a path this
+// process cannot traverse). That is this feature's standing rule rather than
+// laziness: for a defect whose entire shape is silence, an unanswerable
+// question resolves to "report it" - the same direction
+// idleIsAFreshTransition takes when the log cannot answer for its interval.
+// The cost of being wrong is one paragraph naming a worker a human then reads
+// in one call.
+export function transcriptStaleness(
+  row: { cwd: string; session_id: string },
+  now: number = Date.now(),
+): TranscriptStaleness {
+  const path = join(transcriptDir(row.cwd), `${row.session_id}.jsonl`);
+  try {
+    return { seconds: Math.max(0, Math.round((now - statSync(path).mtimeMs) / 1000)) };
+  } catch {
+    return "never";
+  }
+}
+
+// THE SENTENCE ITSELF, shared by the notice below and `hive doctor`'s sibling
+// report, because two surfaces hand-rolling one observation is how they drift
+// onto two different readings of one row - the reason describeLastLogEvent and
+// describeForHuman exist one module over. Three shapes, because what hive
+// observed genuinely differs between them and a body that mis-describes its
+// own evidence is a small lie in a lead's session.
+//
+// The caller supplies the name and the remedy; this supplies only what hive
+// SAW, which is the half that must not vary.
+export function describeStall(agentState: string, latchedSeconds: number, stale: TranscriptStaleness): string {
+  const latched = `has claimed \`${agentState}\` for ${humanizeAge(latchedSeconds)}`;
+  if (stale === "never") return `${latched} and has never written a transcript at all.`;
+  const quiet = `its transcript has not been written for ${humanizeAge(stale.seconds)}`;
+  return agentState === "waiting"
+    ? `${latched}, its pane shows no dialog, and ${quiet}.`
+    : `${latched} and ${quiet}.`;
+}
+
+interface StallCandidate {
+  row: StallRow;
+  stale: TranscriptStaleness;
+}
+
+// THREE SENTENCES, because what hive observed genuinely differs between them
+// and a body that mis-describes its own evidence is a small lie in a lead's
+// session. Wake bodies are typed VERBATIM into a terminal
+// (.claude/rules/worker-state.md), so this stands on its own for a reader with
+// none of the context that produced it.
+//
+// IT SAYS WHEN IT WAS TRUE. Every one of these is a snapshot and a notice can
+// be delivered late - it is an ordinary timer row that holds against a busy or
+// dialogged pane - so the observation time is named rather than implied by
+// arrival.
+//
+// THE PER-WORKER LINE CARRIES THE CALL AND THE TRAILER CARRIES THE REASONS,
+// which is standingBlockNoticeBody's own split and taken for its reason:
+// repeating the remedy prose whole for every worker pastes the same two
+// paragraphs N times into a terminal. If you change one, read the other.
+//
+// The remedy itself is not invented here - .claude/rules/worker-state.md
+// already prescribes it, including the half a lead will otherwise skip: TELL
+// THE WORKER WHAT STATE YOU FOUND, because after an API error it does not
+// reliably remember what it was doing.
+function stallNoticeBody(timer: TimerRow, stalled: StallCandidate[], observedAt: string): string {
+  const lines = [
+    `${stalled.length} worker(s) in this project have stopped writing to their transcript while still ` +
+      `claiming to be mid-turn. Observed at ${observedAt} (store time):`,
+  ];
+  for (const c of stalled) {
+    lines.push(
+      `  ${c.row.name}: ${describeStall(c.row.agent_state, ageSecondsSince(c.row.episode), c.stale)} ` +
+        `Read it with ${readPaneCall(c.row.name)}.`,
+    );
+  }
+  lines.push(
+    "hive is reporting what it OBSERVED and is NOT saying these workers are dead: a worker inside one very " +
+      "long tool call looks identical from here. Read each pane before acting. If a turn really did die, send " +
+      "that worker a message AND TELL IT WHAT STATE YOU FOUND - after an API error it does not reliably " +
+      "remember what it was doing (.claude/rules/worker-state.md).",
+  );
+  lines.push(
+    `Standing watch #${timer.id} is UNAFFECTED by this notice: nothing was fired, held, cancelled or typed ` +
+      "into any of the panes above, and no finish has been suppressed.",
+  );
+  return lines.join("\n");
+}
+
+// ONE TRANSACTION, ONE BATCH, ONE NOTICE - claimStandingBatch's shape, sharing
+// its three claim statements, with ONE addition that is not optional.
+//
+// ARM 2 CLAIMS THE BLOCK KEY FIRST, AND STOPS IF IT LOSES. THE HAZARD IT
+// CLOSES: the block half (noteBlockedWatched) and arm 2 read ONE population -
+// a `waiting` crew member - and without this they would claim in DIFFERENT
+// tables, so winning one says nothing about the other. Every session runs its
+// own scheduler against one store. Interleave them: instance A captures at
+// T-0.4s, sees a dialog, wins wake_block_notices, files "W is stopped on a
+// dialog"; a human answers at T; instance B captures at T+0.6s, sees no
+// dialog and a stale transcript, wins wake_idle_notices('stall'), files "W's
+// pane shows no dialog and its transcript is N minutes stale". Both claims
+// succeed and the lead gets two paragraphs about one worker that contradict
+// each other on the one fact that decides what to do next.
+//
+// IT IS THE SAME VALUE ON BOTH SIDES: wake_block_notices.blocked_since IS the
+// agent's state_changed_at (src/db.ts), and so is arm 2's episode. One key,
+// one report about this worker's current `waiting` episode, whichever
+// condition reaches it first. This is the pattern the two block paths already
+// share (claimBlockNotice's own comment), not a new one; arm 2 is a third
+// reader of that population joining the same claim.
+//
+// CONSUMING THE BLOCK KEY IS SAFE for the ordinary sequence: a dialog going up
+// later writes a new state_changed_at (src/hook.ts's UPDATE is unconditional,
+// so waiting -> waiting moves the stamp), which is a new episode with its own
+// key.
+//
+// ARM 1 DOES NOT DO THIS, and must not. The block half never looks at
+// `working` rows, so there is no shared population and no shared key to
+// integrate with - the same rule claimModalHoldWithNotice applies to a target
+// with no agents row.
+//
+// THE ONE RESIDUAL, stated rather than discovered later. wake_block_notices
+// has no notice_timer_id and therefore no re-arm, so arm 2's OWN
+// delivery-failure re-arm is defeated by the block key it already consumed: a
+// stall notice about a `waiting` worker that was spent without ever being
+// typed re-arms its wake_idle_notices row, then loses the block key, and stays
+// silent for that episode. Arm 1 is unaffected. Closing it needs a column on
+// wake_block_notices, i.e. the migration this lane is scoped to avoid, for a
+// case that is still strictly better than the pre-lane baseline of never
+// reporting at all. REOPEN TRIGGER: a real lane where an arm-2 stall went
+// unreported through exactly this path.
+const claimStallBatch = db.transaction(
+  (
+    timer: TimerRow,
+    tell: { actor: string; pane: string },
+    candidates: StallCandidate[],
+    observedAt: string,
+  ): boolean => {
+    if (!stillPending(timer.id)) return false;
+    const won: StallCandidate[] = [];
+    for (const c of candidates) {
+      if (c.row.agent_state === "waiting" && !claimBlockNotice(timer.id, c.row.id, c.row.episode)) continue;
+      rearmSpentEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+      if (claimEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode)) won.push(c);
+    }
+    // Rendered from the WINNERS ONLY: another instance may have claimed some
+    // of these in the same tick, and naming a worker this row did not win is a
+    // duplicate paragraph about a stall someone else has already reported.
+    if (won.length === 0) return false;
+    const noticeId = insertNotice(timer, tell.actor, tell.pane, stallNoticeBody(timer, won, observedAt), timer.id);
+    for (const c of won) {
+      stampEpisodeNotice(noticeId, timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+    }
+    return true;
+  },
+);
+
+// The store's own clock, read once per notice. This file otherwise reads its
+// clock from SQLite for everything the store has to compare against, and an
+// observation time printed next to store-stamped ages must come from the same
+// clock or the two disagree on a machine whose wall clock has drifted.
+const storeNow = (): string => (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
+
+// Never throws (it runs inside tick()'s candidate loop) and WRITES NOTHING TO
+// THE WATCH ITSELF - not fired_at, not held_at, not held_reason. A standing
+// watch is never due and never held, and marking it either makes wake_list and
+// `hive status` report a delivery hive never attempted.
+//
+// IT TAKES A NULLABLE SNAPSHOT AND DECIDES INTERNALLY, rather than being gated
+// at the call site the way noteBlockedWatched is. Arm 1 answers with NO TMUX
+// AT ALL - a store query plus one statSync - and gating the whole call on
+// `snapshot !== null` would silence it under a persistently null snapshot: a
+// foreign socket, an untrusted server/store pair, or a tmux answering null on
+// a timeout. The precedent is already in this file and is explicit:
+// standingGoneRows ("NO TMUX IS CONSULTED HERE, deliberately ... so it still
+// answers when the tmux probe cannot"), and noteStandingTransitions takes
+// AliveSnapshot | null for exactly this reason.
+//
+// THE SKIP LIST IS EXACTLY TWO, and both are "this row has nothing to sample":
+// an empty session_id (no transcript to resolve) and a row with no state
+// channel at all. reportsAgentStateLog is this project's own allowlist for the
+// latter - a bash or codex worker fires no hooks and writes no transcript, so
+// it must never be judged here, and would otherwise be named on every tick for
+// the life of the row with a remedy that cannot work. Same reasoning
+// reportUnbriefedWorkers records for the identical gate.
+//
+// COST. Arm 1 is one indexed query per tick plus one statSync per row that
+// passes the fifteen-minute prefilter, against a capture-pane's measured
+// 3.5ms; on almost every tick the prefilter returns nothing and there is no
+// statSync at all. Arm 2 costs one capture-pane fork per tick per
+// STALE-`waiting` crew member. That fork is real on most ticks and what bounds
+// it is the POPULATION, not a cache: crew members latched `waiting` AND
+// already past fifteen minutes of transcript silence, which is empty on a
+// healthy project.
+//
+// IT MUST NOT USE recentlyHadNoDialog. That thirty-second negative cache
+// exists to SUPPRESS work and its own comment prices being wrong at "a notice
+// up to thirty seconds late". Arm 2 would consume it as a POSITIVE assertion
+// that no dialog is up, where being wrong means telling a lead that a worker
+// sitting on a live dialog has a dead turn. Different cost, so it does not get
+// to ride that cache - and writing to it is out too, since that would suppress
+// the block half's own reads for another lane's reasons.
+function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): void {
+  try {
+    // RESOLVE WHO TO TELL BEFORE CLAIMING. The claim is spent either way, so
+    // filing at a pane nobody reads consumes the one report this episode was
+    // ever going to get - and because this key re-arms only on a NEW TURN, and
+    // a stalled worker has no new turn until someone rescues it, that is
+    // permanent for that worker rather than merely late.
+    const tell = blockNoticeTarget(timer, snapshot);
+    if (tell === null) return;
+    const now = Date.now();
+    const candidates: StallCandidate[] = [];
+    for (const row of stallCandidateRows(timer, tell.actor)) {
+      // Telling a session about its own pane, the same rule the prefilter's
+      // actor exclusion already applies, reached by value for the case the
+      // actor check cannot see: two actors whose rows name one pane.
+      if (row.tmux_target === tell.pane) continue;
+      if (!reportsAgentStateLog(row)) continue;
+      if (row.session_id === "") continue;
+      // THE CHEAP QUESTION BEFORE THE EXPENSIVE ONE. The sampler is a statSync
+      // and arm 2's dialog check is a fork, so a `waiting` row whose
+      // transcript is fresh costs no fork at all - which is what makes arm 2's
+      // cost bounded by the stalled population rather than by the crew.
+      const stale = transcriptStaleness(row, now);
+      if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
+      if (row.agent_state === "waiting") {
+        // ARM 2 NEEDS A FRESH, DEFINITE "no dialog". `true` (a dialog IS up)
+        // belongs to the block half and must not be reported here; `null` (an
+        // unanswered probe) is NO FACT, never "no dialog" - the same rule
+        // rowAlive applies one line above, and the direction that keeps a
+        // foreign-socket row out of a report about a pane this process cannot
+        // see into.
+        if (snapshot === null) continue;
+        if (rowAlive(row.tmux_socket, row.tmux_target, snapshot) !== true) continue;
+        if (awaitingChoice(row.tmux_target, choices) !== false) continue;
+      }
+      candidates.push({ row, stale });
+    }
+    // EVERY PANE IS READ AND EVERY FILE IS STAT'ED BEFORE THE TRANSACTION
+    // OPENS. The claim below takes SQLite's single machine-wide writer slot,
+    // and the rule for that slot is fast tmux forks only
+    // (.claude/rules/store-and-datadir.md) - a capture-pane or a statSync per
+    // crew member inside it would hold every hive process on the machine.
+    // Reading the cursor first (the unreported() clause above) is the same
+    // read-before-write discipline: a continuing condition never takes the
+    // writer slot, and a stale read costs one losing INSERT rather than a
+    // wrong answer.
+    if (candidates.length === 0) return;
+    claimStallBatch.immediate(timer, tell, candidates, storeNow());
+  } catch {
+    // Reporting about a stall, never the stall itself: same precedent as
+    // noteStandingTransitions, noteBlockedWatched and src/hook.ts's record().
   }
 }
 
@@ -3719,6 +4169,15 @@ async function maybeFireIdle(
   // tick that expires the watch used to be dropped with no final sweep.
   if (isStandingWatch(timer)) {
     noteStandingTransitions(timer, snapshot);
+    // Todo 391, the stall half, and it sits HERE - beside the transitions call
+    // and ABOVE the `snapshot !== null` gate below - deliberately. Its arm 1
+    // needs nothing tmux can refuse, so borrowing the block half's call-site
+    // gate would silence it in exactly the environments a stalled worker is
+    // most likely to be sitting in. Unconditional on `timedOut` for the same
+    // reason noteStandingTransitions is: reporting runs first and runs
+    // unconditionally, and this notice's body makes no claim about the wake's
+    // own future that an expiry could falsify.
+    noteStalledCrew(timer, snapshot, choices);
     // Todo 321, the block half, and the two conditions on it are the one-shot
     // branch's own conditions reached by a different route.
     //
@@ -4083,6 +4542,17 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   //     why a freshness bound does not belong here either). Reopen if
   //     unconfirmed_busy is ever the ONLY place a stuck target would have
   //     been visible - i.e. if #72's channel stops covering it.
+  //     THAT REOPEN CONDITION WAS MET IN PRACTICE AND IS NOW ANSWERED (todo
+  //     391). #72's channel covers this on PULL and never pushes, and the
+  //     runbook tells every lead to arm a standing watch and go quiet - so the
+  //     lead that most needs the fact is the one not running agent_list. Two
+  //     independent sites reported exactly that. noteStalledCrew (above) is
+  //     the push half and reportStalledWorkers (src/cli.ts) is doctor's, both
+  //     keyed on the worker's own TRANSCRIPT mtime rather than on this latch,
+  //     for the reason F1 records: an old latch is wrong about a stall three
+  //     times in four. Nothing about typed_busy changed, and this value is
+  //     still the quiet one for a stuck target - what changed is that the
+  //     stuck target is now reported somewhere else entirely.
   //   - The sample is taken before sendText, so the target can transition
   //     either way in the gap between this read and the paste landing.
   // typed_busy still does its one job under all of this: separating "typed

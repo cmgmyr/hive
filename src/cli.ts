@@ -61,7 +61,15 @@ import {
 } from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, parseTags, registrationNoticeText, withTrailingNewline } from "./result.js";
-import { ACTIVE_TIMER_WHERE, dashboardFileContained, janitor, resolveDashboardDir } from "./scheduler.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  dashboardFileContained,
+  describeStall,
+  janitor,
+  resolveDashboardDir,
+  STALL_BOUND_SECONDS,
+  transcriptStaleness,
+} from "./scheduler.js";
 import {
   probeSessionInterpreter,
   reexecTarget,
@@ -2885,6 +2893,135 @@ function reportUnbriefedWorkers(projectId: number): void {
   }
 }
 
+// TODO 391. THE SECOND SURFACE OF THE STALL DETECTOR, AND THE HALF THAT COVERS
+// THE MOTIVATING CASE. The push half (noteStalledCrew, src/scheduler.ts)
+// reaches a lead that has ARMED A STANDING WATCH; this todo was filed from a
+// report where the lead had every check it knew about running, and the machine
+// that most needs this may have no watch at all. Todo 391's own body proposed
+// this landing in terms, as a sibling of reportUnbriefedWorkers.
+//
+// IT IS NEARLY FREE BECAUSE THAT SIBLING ALREADY DID THE WORK: the same
+// kind='agent' AND status='running' scan, the same reportsAgentStateLog gate,
+// the same foreign-socket filter, the same bounded-age warn.
+//
+// SAME BOUND AND SAME SENTENCE AS THE PUSH HALF, imported rather than restated
+// (STALL_BOUND_SECONDS, describeStall, transcriptStaleness). Two surfaces
+// answering one question at two numbers is two features wearing one name.
+//
+// INFORMATION, NEVER A GATE - reportPtyHeadroom's stance, which doctor now has
+// several times over. Plain warn(), never gatingWarn(), never check(): a
+// worker inside one very long tool call is indistinguishable from a dead turn
+// to every sampler available, so this names a worker worth looking at and
+// nothing more.
+//
+// PRINTED AT ZERO TOO: a check that is silent when healthy cannot be told from
+// one that never ran.
+//
+// A ROW MAY BE NAMED BY BOTH THIS AND reportUnbriefedWorkers IN ONE RUN, and
+// that must not be suppressed. They say different things (its finishes are
+// being swallowed, versus its turn may have died) and their remedies differ
+// (brief it, versus read its pane and tell it what state you found).
+function reportStalledWorkers(projectId: number): void {
+  const latched = (
+    db
+      .prepare(
+        `SELECT name, command, kind, cwd, session_id, agent_state, state_changed_at, tmux_target, tmux_socket
+           FROM agents
+          WHERE project_id = ? AND status = 'running' AND kind = 'agent'
+            AND agent_state IN ('working', 'waiting') AND state_changed_at IS NOT NULL
+          ORDER BY id`,
+      )
+      .all(projectId) as {
+      name: string;
+      command: string;
+      kind: string;
+      cwd: string;
+      session_id: string;
+      agent_state: string;
+      state_changed_at: string;
+      tmux_target: string;
+      tmux_socket: string;
+    }[]
+  )
+    // THE SKIP LIST IS EXACTLY TWO, matching the push half's. A row with no
+    // state channel (a bash or codex worker) writes no transcript and fires no
+    // hooks, so it must never be judged here; a row with no session_id has no
+    // transcript path to resolve at all.
+    //
+    // THE FOREIGN-SOCKET FILTER IS NOT A THIRD ITEM, AND IT USED TO BE ONE
+    // HERE. It was applied to the whole population, before the arm split, and
+    // that silently dropped exactly the row this report exists for: a worker
+    // latched `working` on a socket this process cannot see into, whose
+    // transcript has gone quiet. The standing watch reported it
+    // (stallCandidateRows has no such filter, correctly) and doctor did not -
+    // in the no-watch-armed population doctor is the half FOR.
+    //
+    // The argument for it was that foreign-socket conservatism is what every
+    // other per-worker read in this command applies. That rule is about not
+    // believing a PANE, and ARM 1 MAKES NO CLAIM ABOUT A PANE: it is a store
+    // read plus a statSync on a path built from `cwd` and `session_id`, both
+    // of which are as readable here as anywhere. The recorded justification
+    // conceded this in its own words - "arm 2 could not read its pane from
+    // here anyway" - and then applied an arm 2 constraint to both arms. Nor
+    // does doctor's stuck-row warn cover the gap: it says liveness cannot be
+    // judged from here, which is a different sentence from "this worker's turn
+    // appears to have died", and a reader acts on them differently.
+    //
+    // So it moves to arm 2's own branch below, where the thing being doubted
+    // really is a pane read. Found by the PR gate on this lane.
+    .filter((row) => reportsAgentStateLog(row) && row.session_id !== "");
+  const stalled: { name: string; sentence: string }[] = [];
+  for (const row of latched) {
+    // The latch age gates the sampler for the reason the push half's SQL
+    // prefilter does: a transcript's first write follows its prompt within
+    // seconds, so a row younger than the bound cannot have a transcript older
+    // than it - and this way the common healthy case costs no stat at all.
+    const latchedFor = ageSecondsSince(row.state_changed_at);
+    if (latchedFor < STALL_BOUND_SECONDS) continue;
+    const stale = transcriptStaleness(row);
+    if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
+    // ARM 2 NEEDS A FRESH, DEFINITE "no dialog", exactly as the push half
+    // does. `true` is a real dialog and belongs to the block report, not here;
+    // `null` is an unanswered probe, which is no fact and never "no dialog".
+    // This is a second capture-pane fork for such a worker, paid only for a
+    // row already past the bound on both clocks - doctor is the command a
+    // human runs to look closely.
+    //
+    // THE FOREIGN-SOCKET REFUSAL BELONGS HERE, not to the population above
+    // (see the filter chain's own comment). A row recorded on a socket this
+    // process cannot see into cannot have its pane read from here at all -
+    // probing that pane id against THIS process's server would capture
+    // whatever stranger's pane happens to hold it, which is issue #73's own
+    // defect and what doctor's per-worker pane loop already gates on. Refused
+    // rather than probed, and refused BEFORE the fork rather than by reading
+    // its answer as null, so nothing is spent on a question that has no
+    // answerable form. Arm 1 is untouched by it.
+    if (row.agent_state === "waiting") {
+      if (foreignSocket(row.tmux_socket)) continue;
+      if (paneChoiceCheck(row.tmux_target).awaitingChoice !== false) continue;
+    }
+    stalled.push({ name: row.name, sentence: describeStall(row.agent_state, latchedFor, stale) });
+  }
+  if (stalled.length === 0) {
+    info(
+      "stalled workers",
+      `${latched.length} worker(s) latched working/waiting, none stalled past ` +
+        `${Math.round(STALL_BOUND_SECONDS / 60)}m`,
+    );
+    return;
+  }
+  for (const row of stalled) {
+    warn(
+      `worker ${row.name}`,
+      row.sentence,
+      "hive is reporting what it OBSERVED, not that this worker is dead: one very long tool call looks " +
+        "identical from here. Read its pane before acting.",
+      "if the turn really did die, send it a message AND TELL IT WHAT STATE YOU FOUND - after an API error a " +
+        "worker does not reliably remember what it was doing (.claude/rules/worker-state.md).",
+    );
+  }
+}
+
 // EVERY TMUX CALL IN HERE IS BOUNDED; THIS COMMAND AS A WHOLE IS NOT.
 // Counselors round 2, RAISED AND ACCEPTED (todo 375), recorded here rather
 // than fixed. Against a wedged LIVE server every read pays the full 10s -
@@ -3215,6 +3352,9 @@ function cmdDoctor(argv: string[]): void {
     // project-scoped like the stuck-row report above it, and reads the same
     // running/kind='agent' set.
     reportUnbriefedWorkers(here.id);
+    // Todo 391, beside its sibling for the same reason: project-scoped, and
+    // reading the same running/kind='agent' set.
+    reportStalledWorkers(here.id);
   }
   // Issue #72. NOT the per-worker listing the L1 comment on the "stale
   // state" check above declines to add: that decision was specifically
