@@ -237,7 +237,7 @@ function workerAssignment(completionsDir) {
     "Automated end-to-end test (issue #31 part C). Do exactly this and nothing else:",
     "",
     // Todo 141 item 4: --strict-mcp-config (todo 128/129) is wired up but
-    // nothing in the run used to DEPEND on it -- spawnReceipt.announced is
+    // nothing in the run used to DEPEND on it -- spawnReceipt.ready is
     // equally true with the right server, the machine's installed one, or
     // none at all. Claude Code namespaces MCP tools by server key, so under
     // --strict-mcp-config the only hive tools this worker can see are
@@ -416,9 +416,13 @@ async function runGate(instance, partial) {
     // A dialog here means either the trust-inheritance or the
     // --strict-mcp-config mechanism (todo 128/129) regressed -- not
     // something todo 131's assertions should have to discover indirectly.
-    if (spawnReceipt.announced !== true) {
+    // `ready` (renamed from `announced` by todo 387 fix round 1: agent_spawn
+    // no longer types anything, but still waits for the pane and still
+    // reports whether a dialog blocked it) is the same readiness/no-dialog
+    // signal this check always depended on.
+    if (spawnReceipt.ready !== true) {
       throw new Error(
-        `worker's pane never confirmed ready/undialogued (announced=${spawnReceipt.announced}); ` +
+        `worker's pane never confirmed ready/undialogued (ready=${spawnReceipt.ready}); ` +
           `receipt: ${JSON.stringify(spawnReceipt)}`,
       );
     }

@@ -530,56 +530,18 @@ export function launchAgent(
   try {
     info = db
       .prepare(
-        // TODO 373: resumed_at IS STAMPED HERE TOO, in the row's very first
-        // statement, and the column's name is half the truth (src/db.ts's
-        // migration comment and src/firstPrompt.ts both say so). It means
-        // "started, and not yet given anything", and a spawn is a start:
-        // agent_spawn types a `[hive]` line into the new pane, the worker
-        // answers it, that turn ends, Stop fires, and the row latches idle
-        // before anybody has given it a lane. Issue #156 closed exactly this
-        // for resume and left the ordinary dispatch path open.
-        //
-        // IN THE INSERT RATHER THAN AFTER THE ANNOUNCEMENT, and the reasoning
-        // here was WRONG in its first version, so it is worth stating
-        // correctly (counselors F4). It said the race was against the
-        // announcement's own UserPromptSubmit hook. It is not: src/hook.ts
-        // recognises that prompt and leaves the latch alone, so the
-        // announcement cannot clear a stamp whenever it lands.
-        //
-        // THE REAL EXPOSURE OF A LATE STAMP IS THE OPPOSITE ORDER, and it
-        // fails silently. agent_spawn returns after typing the announcement,
-        // and a lead sends the assignment seconds later; a stamp written after
-        // that point lands AFTER the clearing UPDATE has already run and found
-        // nothing to clear. The row is then latched with work already given,
-        // and every finish it reports is suppressed until some later prompt -
-        // exactly the silence this project calls its worst outcome. Stamping
-        // in the row's first statement means no window exists in which a
-        // running row is unstamped, so there is no order to get wrong.
-        // Pinned, since sampling the column after agent_spawn returns cannot
-        // tell an INSERT stamp from a later UPDATE: test/spawn-latch-
-        // ordering.test.mjs.
-        //
-        // EVERY KIND, not only claude workers. An uninstrumented row (a bash
-        // worker, a kind='command' process) writes no hook rows at all, so
-        // this never clears for one - and never suppresses anything either,
-        // because its agent_state stays 'unknown' and every SUPPRESSING reader
-        // is gated on 'idle'.
-        //
-        // TODO 377 ADDED A READER THAT IS NOT, AND THAT NARROWS THIS SENTENCE
-        // RATHER THAN LEAVING IT AS WRITTEN. `reportsAgentStateLog` is now the
-        // word for what this paragraph meant: reportUnbriefedWorkers (`hive
-        // doctor`, src/cli.ts) READS this column without gating on 'idle', so
-        // an uninstrumented row's permanently-set latch is no longer inert to
-        // every reader - it is inert to every reader that SUPPRESSES. That
-        // reader gates on reportsAgentStateLog for exactly this reason: an
-        // eternally-latched bash worker would otherwise be named on every run
-        // for the life of its row, with a remedy ("send it something") that
-        // cannot work, because a non-claude pane fires no UserPromptSubmit.
-        // THE RULE FOR THE NEXT READER OF THIS COLUMN: if it suppresses, the
-        // 'idle' gate covers you; if it REPORTS, ask whether the row has a
-        // state channel at all before saying anything about it.
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, resumed_at) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        // resumed_at is deliberately NOT stamped here (todo 387, option (e)).
+        // Todo 373 used to stamp it in this INSERT, on the grounds that a spawn
+        // is a start exactly like a resume - but a spawn's "start" was
+        // agent_spawn typing a `[hive]` line into the pane and submitting it,
+        // which was the actual defect: a self-inflicted turn that could
+        // silently swallow a real assignment absorbed into it, latching the
+        // worker's finishes suppressed for good (todo 384). With nothing typed
+        // into the pane at spawn, there is no spurious turn to suppress, and
+        // this column is stamped only by resumeAgent's flip now - the one
+        // start path that still speaks first with nothing hive controls.
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         spec.projectId,
@@ -670,9 +632,9 @@ export function launchAgent(
     // -d on the split path: a split without it makes the new pane active, so
     // a human typing into whatever pane had focus gets their keystrokes
     // stolen by the worker mid-sentence (todo 316, confirmed in real use).
-    // applyLayout and the spawn announcement both target this pane by its
-    // returned id, never by "the active pane", so nothing depends on the
-    // split leaving it active. detach: true on both create-window paths
+    // applyLayout targets this pane by its returned id, never by "the active
+    // pane", so nothing depends on the split leaving it active. detach: true
+    // on both create-window paths
     // (todo 316) - a human watching some OTHER project's window in this
     // shared session must not get switched onto this one, and a worker's own
     // tab must not steal focus from whatever the human was looking at.

@@ -352,9 +352,10 @@ describe("hive kickoff gates", () => {
 
     const store = new Database(join(dirs.dataDir, "hive.db"));
     try {
-      // The shape a real spawn leaves: launchAgent stamps resumed_at in its
-      // INSERT, the announcement turn ends in a Stop hook, and nobody has
-      // briefed this worker yet.
+      // The shape a real RESUME leaves (todo 387: a plain spawn no longer
+      // stamps resumed_at at all, so this shape is resume-only now):
+      // resumeAgent stamps resumed_at in its flip, the restore turn ends in a
+      // Stop hook, and nobody has re-briefed this worker yet.
       store
         .prepare(
           `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,

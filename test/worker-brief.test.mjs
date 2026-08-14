@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -12,7 +12,6 @@ process.env.HIVE_DATA_DIR = scratch;
 const {
   agentBriefPath,
   isClaudeCommand,
-  paneAnnouncement,
   readAgentBrief,
   workerBrief,
   workerCommandString,
@@ -159,11 +158,46 @@ describe("worker brief file", () => {
     const onDisk = readFileSync(path, "utf8");
     assert.match(onDisk, /You are agent "api-worker" \(actor id: agent:7\)/);
     assert.match(onDisk, /HIVE_PROJECT_LOCK=1/);
+    // Todo 387: this used to be a separate line agent_spawn typed into the
+    // pane and submitted. Nothing types it anymore, so it has to survive here
+    // instead, or a spawned worker is never told to wait for its assignment.
+    assert.match(onDisk, /Run whoami to confirm scope, then wait for your assignment\./);
     assert.equal(readAgentBrief(7), onDisk);
   });
 
   it("returns null for an agent that was never briefed", () => {
     assert.equal(readAgentBrief(4242), null);
+  });
+});
+
+describe("a profile's own worker.md still gets the wait-for-assignment instruction", () => {
+  // FIX ROUND 1, FINDING 7. workerBrief returns a profile's worker.md
+  // VERBATIM (its own early return, above) and never reaches
+  // defaultWorkerBrief when a profile exists and ships that file - so
+  // baking the instruction into defaultWorkerBrief alone silently dropped
+  // it for every profile-using project, including this repo's own
+  // (hive.yml here sets profile: orchestration). This pins that the
+  // instruction survives regardless of which branch produced the rest of
+  // the brief.
+  it("appends the instruction after a profile's own worker.md content", () => {
+    const profileDir = join(scratch, "profiles", "test-profile");
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(join(profileDir, "worker.md"), "Custom orchestration brief for {{agent_name}}.");
+
+    const rendered = workerBrief({ ...ctx, profile: "test-profile" });
+    assert.match(rendered, /^Custom orchestration brief for api-worker\./);
+    assert.match(rendered, /Run whoami to confirm scope, then wait for your assignment\.$/);
+  });
+
+  it("still falls through to the default brief for a profile with no worker.md", () => {
+    const profileDir = join(scratch, "profiles", "posture-only-profile");
+    mkdirSync(profileDir, { recursive: true });
+    // No worker.md written - readProfileFile returns null, workerBrief must
+    // fall all the way through to defaultWorkerBrief rather than returning
+    // an empty or partial brief.
+    const rendered = workerBrief({ ...ctx, profile: "posture-only-profile" });
+    assert.match(rendered, /\[HIVE CONTEXT\]/);
+    assert.match(rendered, /Run whoami to confirm scope, then wait for your assignment\./);
   });
 });
 
@@ -183,22 +217,8 @@ describe("project posture file", () => {
   });
 });
 
-describe("pane announcement", () => {
-  const line = paneAnnouncement(ctx);
-
-  it("stays on one line", () => {
-    // It is typed with send-keys -l before claude enables bracketed paste; a
-    // newline would submit half a sentence.
-    assert.equal(line.includes("\n"), false);
-  });
-
-  it("marks itself as hive's, not the human's", () => {
-    assert.match(line, /^\[hive\] /);
-  });
-
-  it("carries the identity the transcript will not have", () => {
-    for (const fragment of ["api-worker", "agent:7", "hive", ctx.cwd, "whoami"]) {
-      assert.ok(line.includes(fragment), `announcement should mention ${fragment}: ${line}`);
-    }
-  });
-});
+// This file used to have a "pane announcement" describe block here, testing
+// paneAnnouncement() - the line agent_spawn typed into a fresh pane and
+// submitted. Todo 387 deleted the function along with the turn it created;
+// the "worker brief file" describe above now covers the one thing it added
+// (the wait-for-your-assignment instruction) as part of the brief text.

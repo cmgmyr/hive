@@ -143,12 +143,14 @@ function agentStatusLevel(state: string): StatusLevel {
 }
 
 // TODOS 366 AND 373. THE BADGE IS A FOURTH AND FIFTH READER of the fact
-// src/firstPrompt.ts owns, and it used to read the latch alone: a worker whose
-// only completed turn is its own spawn announcement, or a resumed worker's
-// restore turn, renders a green "idle" - a plain pass for a worker that has
-// been given nothing. The wake path was the one that could get a worker torn
-// down, which is why 366 is low; the display saying "finished" about a worker
-// that never started is the same misreading with a smaller blast radius.
+// src/firstPrompt.ts owns, and it used to read the latch alone: a worker
+// whose only completed turn is a resumed worker's restore turn (todo 373
+// briefly widened this to a spawn-side announcement turn too; todo 387
+// removed that turn) renders a green "idle" - a plain pass for a worker that
+// has been given nothing. The wake path was the one that could get a worker
+// torn down, which is why 366 is low; the display saying "finished" about a
+// worker that never started is the same misreading with a smaller blast
+// radius.
 //
 // ONE HELPER, TWO CALL SITES, and the second site is the reason this is a
 // helper at all: todo 366 describes "the dashboard" as one reader and this

@@ -16,6 +16,7 @@ import {
   scratchDirs,
   seedDeadPaneLead,
   seedStandingWatch,
+  standingNoticeBodies,
 } from "./helpers.mjs";
 
 // Issue #156's REAL DEFECT, D3. A resumed worker fires a Stop hook the moment
@@ -140,21 +141,15 @@ async function parkAndResume(name) {
   const live = await liveAgentRow(mcp, name);
   const spawned = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(live.agent_id);
 
-  // THE WORKER IS GIVEN ITS LANE BEFORE IT IS PARKED, and this line is load
-  // bearing rather than realism for its own sake (counselors F2, two seats).
-  // Todo 373 made launchAgent stamp resumed_at at spawn, and parkAgentRow
-  // (src/spawn.ts) writes only status/closed_at/parked_at/parked_branch - it
-  // never clears the column. So without a prompt here, the SPAWN's stamp
-  // survives the park and satisfies the assertion below, and deleting
-  // `resumed_at = datetime('now')` from resumeAgent's own flip leaves this
-  // whole file green while issue #156's headline defect is back for every
-  // worker that was actually given work before being parked. That is
-  // test/CLAUDE.md's shape 7 - an assertion satisfied by two indistinguishable
-  // causes - landing on the file that exists to prevent it.
-  //
-  // It is also the real-world shape: a park follows work. A worker that was
-  // never spoken to is the OTHER lane's subject (todo 373), pinned in
-  // test/spawn-false-finish.test.mjs.
+  // THE WORKER IS GIVEN ITS LANE BEFORE IT IS PARKED, matching the real-world
+  // shape: a park follows work. Todo 387 removed the reason this used to be
+  // LOAD-BEARING (counselors F2, two seats) - launchAgent no longer stamps
+  // resumed_at at spawn, so resumed_at is already '' before this prompt ever
+  // fires, and the assertion below would hold with or without it. Kept for
+  // the realism rather than deleted: a worker that was truly never spoken to
+  // before a park is a different, narrower case than this file's subject
+  // (issue #156's resume defect), and test/spawn-false-finish.test.mjs pins
+  // that one - a spawned worker has no turn at all until briefed.
   await firePromptHook(spawned.actor_id);
   assert.equal(
     db.prepare("SELECT resumed_at FROM agents WHERE id = ?").get(live.agent_id).resumed_at,
@@ -411,6 +406,19 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
       namedInReport(watchId, "ff-death"),
       "a resumed worker's death is real news even before its first prompt",
     );
+
+    // Todo 384 comment 944. hive knows resumed_at was still set when this row
+    // closed, which means it was never given anything - so the ordinary
+    // obituary's "check its branch, its todo and any pad it was writing" is
+    // advice to go excavate work that cannot exist. Same row, same query,
+    // different sentence.
+    const body = standingNoticeBodies(db, watchId).find((b) => b.includes("ff-death:"));
+    assert.match(
+      body,
+      /ff-death: GONE .* It was never given an assignment, so nothing was in flight\./,
+      "a never-briefed worker's obituary must not send the lead looking for branch/todo/pad state",
+    );
+    assert.doesNotMatch(body, /Check its branch/);
   });
 
   it("a resumed worker that dies AFTER its restore turn is reported too - the case the title above did not cover", async () => {
@@ -439,6 +447,31 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
       namedInReport(watchId, "ff-death-after-stop"),
       "a death that follows a SUPPRESSED idle is still a death, and nothing else will ever mention it",
     );
+
+    // FIX ROUND 1, FINDING 4. This is the exact row the reviewer named: a
+    // resumed worker whose restore turn ENDED (state_changed_at is set by
+    // that real Stop hook) while resumed_at is STILL set, because nothing
+    // ever sent it a real assignment to clear the latch. hive cannot tell
+    // from here whether that Stop was the restore alone or a restore that
+    // absorbed a real assignment landing in the same busy window (the exact
+    // shape #156 added the gone disjunct to report) - so it must NOT claim
+    // "nothing was in flight" about a row it cannot see into. The first
+    // version of this fix got this wrong, claiming resumed_at alone was
+    // proof enough.
+    // Anchored to THIS worker's own line, not the whole (batched) body: the
+    // notice above also reports ff-parked/ff-abandon/ff-death from earlier
+    // cases in this file, and they correctly DO carry "never given an
+    // assignment" on their own lines - a blanket doesNotMatch on the full
+    // body would fail for the wrong reason. The positive match below is
+    // sufficient on its own: a GONE line carries exactly one of the two
+    // sentences, never both, so proving it is the branch/todo/pad one
+    // already proves it is not the other.
+    const body = standingNoticeBodies(db, watchId).find((b) => b.includes("ff-death-after-stop:"));
+    assert.match(
+      body,
+      /ff-death-after-stop: GONE .* Check its branch, its todo and any pad it was writing/,
+      "a row whose hook DID fire must not get the 'nothing was in flight' claim - hive cannot rule out absorbed work",
+    );
   });
 
   it("suppresses only the resumed worker, never its neighbours in the same crew", async () => {
@@ -452,13 +485,13 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     // Both end a turn in the same tick. One is a restore turn, one is a real
     // finish by a worker that was never parked.
     //
-    // THE NEIGHBOUR IS GIVEN ITS ASSIGNMENT FIRST, and todo 373 is why: a
-    // spawn now carries the same suppression a resume does, because a fresh
-    // worker's announcement turn ends in a Stop hook exactly like a restore
-    // turn does. Without the prompt below this neighbour is a worker that was
-    // spawned and never spoken to, so its "finish" is the very thing todo 373
-    // suppresses - the test would be asserting the old behaviour rather than
-    // the control it exists to be (test/CLAUDE.md, shape 5).
+    // THE NEIGHBOUR IS GIVEN ITS ASSIGNMENT FIRST - realism, not a load-
+    // bearing requirement anymore. Todo 373 once made a plain spawn carry the
+    // same suppression a resume does; todo 387 removed that (a fresh worker's
+    // pane gets no turn at all until briefed, so there is nothing to suppress
+    // even without the prompt below). Kept as the true-to-life control shape:
+    // a real finish reported alongside a suppressed restore turn, in the same
+    // tick.
     await fireStopHook(resumed.actor_id);
     await firePromptHook(plainRow.actor_id);
     await fireStopHook(plainRow.actor_id);

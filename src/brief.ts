@@ -1,19 +1,23 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storeDir } from "./dataDir.js";
-import { SPAWN_ANNOUNCEMENT_PREFIX } from "./firstPrompt.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
 
-// The worker bootstrap, in two halves.
+// The worker bootstrap.
 //
 // The brief is the authoritative text and rides in the system prompt via
 // --append-system-prompt-file: prompt-cached, uncompactable, impossible for
 // the lead to forget. But an appended system prompt is invisible in the TUI
 // and absent from the transcript, so hive owes the human an audit trail of
-// its own: the copy it wrote for this agent stays on disk, and a short line
-// naming the agent is typed into the pane as the visible first turn.
+// its own: the copy it wrote for this agent stays on disk
+// (writeAgentBrief/agentBriefPath below), readable long after the pane is
+// gone. Nothing is typed into the pane itself anymore (todo 387, option
+// (e)) - agent_spawn used to type a short line naming the agent as the
+// worker's visible first turn, and stopped, because that typed line WAS a
+// turn hive asked for itself, and everything downstream of it was machinery
+// for managing a turn nobody else asked for.
 //
 // This module deliberately imports dataDir.js rather than db.js; resolving a
 // brief path must not open or migrate a store.
@@ -43,10 +47,25 @@ function briefVars(ctx: BriefContext): Record<string, string> {
   };
 }
 
+// "Run whoami to confirm scope, then wait for your assignment" used to be a
+// separate line agent_spawn typed into the pane and submitted, which created
+// a real turn hive asked for itself (todo 387, option (e)). Everything that
+// line established as fact is already above it in the brief; this
+// instruction is the one thing it added, so it has to survive as text
+// instead. Appended by workerBrief itself (below) rather than baked into
+// defaultWorkerBrief alone (fix round 1, finding 7): a project with a
+// profile never reaches defaultWorkerBrief at all - workerBrief returns a
+// profile's own worker.md verbatim - so putting the instruction only in the
+// fallback silently dropped it for every profile-using project, including
+// this repo's own (hive.yml here sets profile: orchestration). One place
+// every worker's brief passes through, regardless of where the rest of it
+// came from.
+const WAIT_FOR_ASSIGNMENT = "Run whoami to confirm scope, then wait for your assignment.";
+
 export function workerBrief(ctx: BriefContext): string {
   if (ctx.profile) {
     const template = readProfileFile(ctx.profile, "worker.md");
-    if (template != null) return renderTemplate(template, briefVars(ctx)).trimEnd();
+    if (template != null) return `${renderTemplate(template, briefVars(ctx)).trimEnd()}\n\n${WAIT_FOR_ASSIGNMENT}`;
   }
   return defaultWorkerBrief(ctx);
 }
@@ -64,20 +83,8 @@ Coordinate through the hive MCP tools:
 - todo_comment for handoffs (changed files, tests run, remaining risk), then todo_complete.
 - lease_acquire before editing shared file areas; leases expire on their own.
 If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
+${WAIT_FOR_ASSIGNMENT}
 [END HIVE CONTEXT]`;
-}
-
-// One line, typed into the pane and submitted as the first user turn. Keep it
-// to a single line: it is sent with send-keys -l, before claude has had time
-// to enable bracketed paste.
-//
-// IT IS SUBMITTED, so the worker answers it, that turn ends, and Claude Code
-// fires Stop - a real idle for a turn nobody asked for (todo 373). The opening
-// is built from SPAWN_ANNOUNCEMENT_PREFIX so src/hook.ts can tell this line
-// apart from a real assignment and leave the suppression in place; changing
-// the wording after the prefix is free, changing the prefix here is not.
-export function paneAnnouncement(ctx: BriefContext): string {
-  return `${SPAWN_ANNOUNCEMENT_PREFIX}${ctx.name}" (${ctx.actorId}) in project "${ctx.projectName}", cwd ${ctx.cwd}. Your full brief is loaded in the system prompt. Run whoami to confirm scope, then wait for your assignment.`;
 }
 
 const briefsDir = () => join(storeDir(), "briefs");

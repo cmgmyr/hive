@@ -6,7 +6,6 @@ import { db } from "../db.js";
 import {
   agentBriefPath,
   isClaudeCommand,
-  paneAnnouncement,
   readAgentBrief,
   workerBrief,
   workerCommandString,
@@ -623,12 +622,31 @@ function nextWorkerName(projectId: number): string {
   return `worker-${count + 1}`;
 }
 
-// How long agent_spawn waits for claude's prompt box before typing the
-// visible first turn into the pane. A cold claude loading plugins and MCP
-// servers routinely needs more than ten seconds, and an observed 8s default
-// missed the prompt box outright. Waiting costs one tmux fork per 500ms, so
-// the ceiling is generous on purpose: a slow start should delay the line, not
-// lose it.
+// How long agent_spawn waits for claude's prompt box before returning. A cold
+// claude loading plugins and MCP servers routinely needs more than ten
+// seconds, and an observed 8s default missed the prompt box outright.
+// Waiting costs one tmux fork per 500ms, so the ceiling is generous on
+// purpose: a slow start should delay the return, not silently lose whatever
+// the caller does next.
+//
+// THIS WAIT OUTLIVES THE ANNOUNCEMENT IT WAS ADDED FOR (todo 387 fix round
+// 1, finding 1). Todo 387 stopped typing anything into a fresh pane, and the
+// first version of that change removed this wait along with the typing it
+// used to gate - reasoning that with nothing left to type, there was nothing
+// left to wait for. That reasoning missed what the wait actually protects:
+// waitForPaneInput's own contract is that sending into a pane that has not
+// taken the terminal loses the text silently and reports success
+// (src/tmux.ts). Removing the wait did not remove that hazard, it moved it
+// onto the NEXT thing to type into this pane - which is now the lead's own
+// agent_send, landing straight after agent_spawn returns for exactly the
+// dispatch shape todo 384 measured (spawn and send in the same tool block).
+// Without this wait, that send races a cold claude and can be silently
+// swallowed while reporting sent: true - strictly worse than the false-finish
+// defect this whole lane exists to fix, and reportUnbriefedWorkers cannot
+// catch it either, since resumed_at is no longer stamped at spawn to detect
+// against. Keeping the wait closes the window at the one place hive still
+// controls it: agent_spawn does not return until the pane can safely be
+// typed into, even though agent_spawn itself types nothing.
 const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 
 // Two of the three ways in can end in unknown: an omitted snapshot probes
@@ -959,47 +977,43 @@ export function registerAgents(server: McpServer): void {
         });
         ensureAttached(sessionName());
 
-        // The appended system prompt is invisible in the TUI and absent from
-        // the transcript, so the pane gets a short line naming the worker: the
-        // human watching sees exactly who this session thinks it is. Never let
-        // a failure here fail a worker that is already running.
-        // Only type once the pane is confirmed ready. Typing into a TUI that
-        // has not taken the terminal yet was observed to swallow the line
-        // silently, which is strictly worse than not sending: the lead sees a
-        // spawn, the worker sees nothing, and nothing says so. Skipping makes
-        // announced=false mean "not sent", which a lead can act on.
-        // The brief itself rides in the system prompt and is unaffected either
-        // way, so a missed line costs visibility, not instructions.
+        // NOTHING IS TYPED INTO THE PANE (todo 387, option (e)). This used to
+        // type a `[hive]` line and submit it, which created a real turn hive
+        // asked for itself - and everything downstream was machinery for
+        // managing that turn: the spawn half of agents.resumed_at,
+        // SPAWN_ANNOUNCEMENT_PREFIX, isSpawnAnnouncement, and a busy pane
+        // absorbing an assignment into that turn with no UserPromptSubmit to
+        // clear the latch, silencing the worker for the rest of its life.
+        // Every fact that line carried is already in the brief riding the
+        // system prompt (--append-system-prompt-file); the one thing it added
+        // was an instruction ("wait for your assignment"), which now lives in
+        // the brief text itself (src/brief.ts). A human attaching to a fresh
+        // pane sees an idle claude with nothing on screen until the lead
+        // sends - accepted, not a correctness cost.
         //
-        // Issue #27. A spawn is exactly when claude raises the folder-trust
-        // prompt, so this is the sharpest edge in the lane: typing requires
-        // BOTH ready and not-a-dialog, checked independently (see todo 73's
-        // comment just below for why the dialog half runs unconditionally).
-        let announced = false;
+        // THE WAIT STAYS, EVEN THOUGH THE TYPING IT ORIGINALLY GATED IS GONE
+        // (fix round 1, finding 1). See PANE_READY_MS's own comment for why:
+        // this is no longer about protecting agent_spawn's OWN send, it is
+        // about not returning until the NEXT send - the lead's own
+        // agent_send, which can land in the same tool block as this call -
+        // is safe to type into. The dialog check rides along for the same
+        // reason it always did: reported information a caller can act on
+        // (agent_send keys to clear it) rather than a gate on anything hive
+        // itself does here.
+        let ready = false;
         let dialogTail: string | undefined;
         if (isClaude) {
           try {
-            const ready = await waitForPaneInput(target, PANE_READY_MS);
-            // Todo 73. The dialog check used to run only when ready, which
-            // meant it could never fire for the case that motivated it: a
-            // real folder-trust or /model-picker screen carries no readiness
-            // marker at all (that absence is #30's own fix), so `ready` was
-            // always false for them and this whole branch was dead against
-            // every real fixture, catchable only by a synthetic screen. Run
-            // it unconditionally instead, so a genuine dialog is reported as
-            // one even while the pane also reads as not-yet-ready. One extra
-            // capture-pane fork on a path that already burned PANE_READY_MS
-            // if it gets here, so the cost is noise.
+            const paneReady = await waitForPaneInput(target, PANE_READY_MS);
             const { awaitingChoice, tail } = paneChoiceCheck(target);
             if (awaitingChoice === true) {
               dialogTail = tail;
-            } else if (ready) {
-              await sendText(target, paneAnnouncement(briefFor(actorId)));
-              announced = true;
+            } else if (paneReady) {
+              ready = true;
             }
           } catch {
             // Pane died or tmux refused; the receipt reports it below.
-            announced = false;
+            ready = false;
           }
         }
 
@@ -1040,16 +1054,24 @@ export function registerAgents(server: McpServer): void {
           ...(isClaude
             ? {
                 brief_path: agentBriefPath(agentId),
-                announced,
-                ...(announced
+                // Renamed from the pre-todo-387 `announced` (fix round 1,
+                // finding 2/3): this reports whether the pane took the
+                // terminal cleanly, not whether hive typed anything into it -
+                // nothing does anymore. `false` here is exactly the signal
+                // callers (scripts/part-c-gate.mjs, a lead deciding whether
+                // to send yet) need before their own first send: the pane may
+                // still be mid-boot or sitting on a dialog agent_send would
+                // refuse or silently lose text against.
+                ready,
+                ...(ready
                   ? {}
                   : dialogTail !== undefined
                     ? {
-                        note: "The pane is waiting on a choice (e.g. a folder-trust or permission prompt), so the [hive] line was NOT sent: typing into it would answer the prompt instead. Clear the prompt with agent_send keys, then send the worker its assignment.",
+                        note: "The pane is waiting on a choice (e.g. a folder-trust or permission prompt). Clear it with agent_send keys, then send the worker its assignment.",
                         tail: dialogTail,
                       }
                     : {
-                        note: "The pane never became ready, so the [hive] line was NOT sent. The system-prompt brief is loaded regardless; send the worker its assignment as usual, or check agent_output first.",
+                        note: "The pane never became ready. The system-prompt brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
                       }),
               }
             : {

@@ -2764,19 +2764,23 @@ const UNBRIEFED_WORKER_BOUND_SECONDS = 30 * 60;
 
 // TODO 377. A worker that hive has gone quiet about, named.
 //
-// THE CLASS, NOT AN INSTANCE. After todo 373, `agents.resumed_at` means
-// "started (spawned or resumed) and not yet given anything", and every reader
-// that would say "this worker is idle, act on it" SUPPRESSES while it is set
-// (src/firstPrompt.ts names all of them). src/hook.ts clears it on the first
-// prompt that is not hive's own spawn announcement - so every way that clearer
-// fails to run produces one signature, and the signature is SILENCE: a running
-// worker whose finishes are suppressed, indefinitely, while the lead waits for
-// a finish that will never be reported. Three routes reach it and none is
-// exotic: a delivery absorbed by a busy pane fires no UserPromptSubmit at all
-// (.claude/rules/tmux-and-panes.md), and todo 373 made that the DEFAULT timing
-// for a lead that sends an assignment straight after agent_spawn returns; the
-// discriminator rides a payload field hive does not own; and a worker whose
-// hooks never wired up writes nothing ever.
+// THE CLASS, NOT AN INSTANCE. `agents.resumed_at` means "resumed, and not yet
+// given anything" (src/firstPrompt.ts), and every reader that would say "this
+// worker is idle, act on it" SUPPRESSES while it is set (src/firstPrompt.ts
+// names all of them). src/hook.ts clears it on the worker's first prompt - so
+// every way that clearer fails to run produces one signature, and the
+// signature is SILENCE: a running worker whose finishes are suppressed,
+// indefinitely, while the lead waits for a finish that will never be
+// reported. TODO 387 CLOSED THE COMMONEST ROUTE HERE, and it is worth saying
+// which: this column used to be stamped at spawn too, and a delivery absorbed
+// by a busy pane's own running turn fired no UserPromptSubmit at all
+// (.claude/rules/tmux-and-panes.md) - a lead that sent an assignment straight
+// after agent_spawn returned hit it by default. Nothing is typed into a
+// spawned worker's pane anymore, so there is no such turn to absorb into.
+// What is left, for the resume path this column now describes alone: a lead
+// that resumes a worker and never sends it anything, trusting the restore
+// turn's own Stop as proof of life; and a worker whose hooks never wired up,
+// which writes nothing ever regardless of what stamped the column.
 //
 // INFORMATION, NEVER A GATE - reportPtyHeadroom's and reportOrphanTmuxServers'
 // stance, which doctor now has twice. Plain warn(), never gatingWarn(), never
@@ -2784,13 +2788,12 @@ const UNBRIEFED_WORKER_BOUND_SECONDS = 30 * 60;
 // converts "a lead waits forever" into "hive says which worker it has gone
 // quiet about", and nothing more.
 //
-// IT DOES NOT FIX THE ABSORBED DELIVERY and must not read as if it did. That
-// residual stays; this makes it visible. Worth being precise about what hive
-// does know there, since the residual's own recorded wording ("the store
-// cannot do better here") overstates the ignorance: hive's own delivery sites
-// - agent_send's text path and deliver() - are FIRST-PERSON evidence that
-// something was given to this worker. What hive cannot tell is whether the
-// in-flight turn's end includes that work.
+// STILL NOT A FIX for the case that remains, and must not read as if it were.
+// Worth being precise about what hive does know there, since the residual's
+// own recorded wording ("the store cannot do better here") overstates the
+// ignorance: hive's own delivery sites - agent_send's text path and deliver()
+// - are FIRST-PERSON evidence that something was given to this worker. What
+// hive cannot tell is whether the in-flight turn's end includes that work.
 //
 // PRINTED AT ZERO TOO, the same three-states-unconditionally reasoning as the
 // orphan-server report above and the input-box drift counters: a check that is
@@ -2808,10 +2811,11 @@ function reportUnbriefedWorkers(projectId: number): void {
     // DOES NOT ANSWER THAT QUESTION (counselors, two seats independently).
     // agent_spawn sets kind='agent' for EVERY command, so a bash or codex
     // worker - a shape .claude/rules/tmux-and-panes.md documents as supported -
-    // is a kind='agent' row on a local socket whose resumed_at is stamped by
-    // launchAgent's INSERT and can never be cleared, because a non-claude pane
-    // fires no UserPromptSubmit and its hook never runs. Thirty minutes later
-    // this would name it on every run for the life of the row, and all three
+    // is a kind='agent' row on a local socket, and if such a row is ever
+    // resumed, resumeAgent's flip stamps resumed_at the same as it would for
+    // claude and it can never be cleared, because a non-claude pane fires no
+    // UserPromptSubmit and its hook never runs. Thirty minutes later this
+    // would name it on every run for the life of the row, and all three
     // sentences below would be false for it: nothing was suppressed (its
     // agent_state stays 'unknown' and every suppressing reader gates on
     // 'idle'), it is not waiting to be briefed, and the remedy cannot work.
@@ -2870,11 +2874,11 @@ function reportUnbriefedWorkers(projectId: number): void {
       `worker ${row.name}`,
       `has had its first-prompt latch set for ${humanizeAge(row.seconds)} - hive has suppressed every finish it ` +
         "reported for that whole time, so a lead waiting on this worker will wait forever.",
-      "the latch is agents.resumed_at, cleared by the first prompt that is not hive's own spawn announcement " +
-        "(src/hook.ts). It is still set, which means either nobody has briefed this worker yet, or the " +
-        "assignment landed in a pane that was mid-turn and fired no UserPromptSubmit - in which case the " +
-        "worker may be working normally and only its FINISHES are lost - or its hooks never wired up at all " +
-        "(.claude/rules/worker-state.md).",
+      "the latch is agents.resumed_at, cleared by the worker's first prompt (src/hook.ts). It is still set, " +
+        "which means either this worker was resumed and nobody has re-briefed it yet, or its next assignment " +
+        "landed in a pane that was still replaying its restore turn and fired no UserPromptSubmit - in which " +
+        "case the worker may be working normally and only its FINISHES are lost - or its hooks never wired up " +
+        "at all (.claude/rules/worker-state.md).",
       "either way the fix is the same: send it something while its pane is idle - any real prompt clears the " +
         "latch and its finishes start being reported again. `hive status` shows whether the pane is busy.",
     );

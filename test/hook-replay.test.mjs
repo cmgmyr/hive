@@ -78,9 +78,12 @@ function expectedState(startState, decidedLogState) {
 // caught rather than mistaken for the value the row already had.
 const CASES = [
   ["prompt-user.json", "prompt", "idle", "working"],
-  // Todo 373. Its STATE decision is the same as any other prompt, which is the
-  // point: what differs is the latch it deliberately does not clear, and that
-  // half is pinned in test/spawn-false-finish.test.mjs.
+  // This fixture used to carry a special meaning - hive's own spawn
+  // announcement, which src/hook.ts excepted from clearing the first-prompt
+  // latch (todo 373). Todo 387 deleted that exception along with the turn
+  // that created it, so this fixture is now just "a prompt payload" like the
+  // one above: its STATE decision is the same as any other prompt, which is
+  // the point of keeping it in this table rather than the reason.
   ["prompt-spawn-announcement.json", "prompt", "idle", "working"],
   ["prompt-task-notification.json", "prompt", "idle", "working"],
   ["stop-subagents-running.json", "stop", "idle", "working"],

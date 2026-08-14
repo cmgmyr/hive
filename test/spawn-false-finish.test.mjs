@@ -19,36 +19,28 @@ import {
   standingNoticeBodies,
 } from "./helpers.mjs";
 
-// TODO 373. A FRESHLY SPAWNED WORKER'S ANNOUNCEMENT TURN IS NOT A FINISH.
-// agent_spawn types a short `[hive]` line into the new pane and SUBMITS it, so
-// the worker answers it, that turn ends, Claude Code fires Stop, and the row
-// latches idle before anyone has given that worker a lane. Every surface that
-// answers "this worker is idle, act on it" then reports a finish for a worker
-// that has been given nothing. Watched live four times in one evening, on
-// every worker spawned during a wave, with a standing watch up - which the
-// runbook tells every lead to have.
+// TODO 387, OPTION (e). agent_spawn used to type a short `[hive]` line into a
+// brand-new worker's pane and SUBMIT it (todo 373), creating a real turn hive
+// asked for itself. Todo 384 found the actual cost of that turn: if a lead's
+// real assignment landed while it was still running, it could be absorbed
+// into it as an attachment with no `UserPromptSubmit` to clear the
+// suppression, and since the ordinary dispatch shape is brief once and wait
+// for the finish, that suppression was OPERATIONALLY PERMANENT for the worker
+// it hit - not the "bounded, not permanent" residual todo 373 recorded.
 //
-// ISSUE #156 CLOSED EXACTLY THIS FOR RESUME AND NOT FOR SPAWN, and
-// test/resume-false-finish.test.mjs is this file's sibling: same defect, same
-// readers, other door. The spawn half is the worse one, because a resume is a
-// deliberate act by a lead who is standing there while a spawn under a
-// standing watch is the ordinary dispatch path.
+// THIS FILE USED TO PIN THE SUPPRESS-THEN-CLEAR MECHANISM (todo 373) AND NOW
+// PINS ITS REPLACEMENT: a spawned worker has NO TURN AT ALL until briefed.
+// Nothing is typed into its pane, so there is no announcement, no latch to
+// stamp, and no window for a real assignment to be absorbed into. The defect
+// this file used to reproduce cannot recur structurally, because the turn it
+// depended on no longer exists.
 //
-// THE ONE THING THAT DOES NOT CARRY OVER FROM THE RESUME HALF, and it is what
-// the first case below exists to pin. A resume types NOTHING into the pane, so
-// "the first `prompt` event" really is "the first moment anyone gave this
-// worker anything". A spawn speaks first, and its announcement IS a real
-// UserPromptSubmit: measured on todo 373's own worker, prompt|working at
-// 03:49:25, the false stop|idle at 03:49:30, the lead's real assignment at
-// 03:49:40. So a latch cleared on the first prompt is cleared BEFORE the idle
-// it exists to suppress, and the fix would ship green and do nothing.
-//
-// EVERYTHING HERE IS REAL: a real agent_spawn, real Claude Code payloads
-// (including the announcement one, captured byte-for-byte off the live store)
-// driven through the BUILT dist/hook.js, and the real readers. Nothing
-// hand-writes agent_state - .claude/rules/worker-state.md's "enumerate every
-// path that can write the value" exists because two full lanes of #24 reasoned
-// from an observed value to a presumed writer and neither checked.
+// EVERYTHING HERE IS REAL where it can be: a real agent_spawn, and for the
+// regression case below, real Claude Code payloads (captured off the live
+// store) driven through the BUILT dist/hook.js. Nothing hand-writes
+// agent_state - .claude/rules/worker-state.md's "enumerate every path that
+// can write the value" exists because two full lanes of #24 reasoned from an
+// observed value to a presumed writer and neither checked.
 const { hasTmux, cleanup } = isolateTmux("the spawn false-finish tests");
 const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
 
@@ -57,25 +49,29 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
 const { sessionName } = await import("../dist/tmux.js");
-const { renderDashboard } = await import("../dist/dashboard.js");
-const { paneAnnouncement } = await import("../dist/brief.js");
-const { isSpawnAnnouncement } = await import("../dist/firstPrompt.js");
 
 const HOOK = join(DIST, "hook.js");
 const payload = (name) => readFileSync(join(REPO, "test", "fixtures", "hook-payloads", name), "utf8");
 const STOP_PAYLOAD = payload("stop-idle.json");
-const ANNOUNCEMENT_PAYLOAD = payload("prompt-spawn-announcement.json");
+// This fixture used to be recognised specially as hive's OWN announcement
+// text (isSpawnAnnouncement). It carries no special meaning anymore - reused
+// below only as a stand-in for "some real prompt text", to prove the point
+// that nothing about ITS CONTENT matters now, only whether hive typed it.
+const FORMER_ANNOUNCEMENT_PAYLOAD = payload("prompt-spawn-announcement.json");
 const USER_PROMPT_PAYLOAD = payload("prompt-user.json");
 
-// This file's own watch owner, distinct from the sibling file's: both seed a
-// dead-paned lead, and an actor id shared between two files sharing a store
-// would collide.
 const OWNER = "lead:spawn-finish";
 
 let mcp;
 let projectId;
 
 before(async () => {
+  // agent_spawn still waits for the pane before returning (fix round 1,
+  // finding 1: the wait outlives the announcement it was added for). The
+  // plain fakeClaude() shell below never renders anything recognisable as
+  // ready, so without a short ceiling every spawn in this file would burn
+  // the full default wait for no reason - none of these cases are about
+  // readiness, only about whether anything gets typed.
   mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "1" } });
   await mcp.start();
   projectId = (await mcp.call("whoami")).project.id;
@@ -91,316 +87,179 @@ after(async () => {
 
 const fakeClaude = makeFakeClaude(dirs.tmp);
 
-// The watch seed and both matchers are test/helpers.mjs's, shared with
-// test/resume-false-finish.test.mjs rather than copied: the matchers encode
-// the notice FORMAT, and every headline assertion in both files is a silence
-// assertion, so a stale copy would go vacuously green against exactly the
-// defect these files exist to catch. Their reasoning - why the match is
-// anchored, why GONE is excluded, why nothing here counts notices - is on
-// them there.
 const addStandingWatch = () => seedStandingWatch(db, projectId, OWNER);
 
-// The notice that reported a given worker's finish, for the roster case below,
-// which asserts about the REST of that notice's text. Anchored the same way
-// the shared matchers are, so it cannot pick a notice that merely names the
-// worker in its own roster line.
 const noticeReporting = (watchId, name) =>
   standingNoticeBodies(db, watchId).find((body) => new RegExp(`^ {2}${name}: (?!GONE)`, "m").test(body));
 const namedInReport = (watchId, name) => namedInStandingReport(db, watchId, name);
 const wasReportedAsFinished = (watchId, name) => reportedAsFinished(db, watchId, name);
 
 async function fireHook(event, stdin, actorId) {
-  // "stop"/"prompt", not the capitalised Claude Code event names: the hook's
-  // own argv vocabulary is lower-case (stateFor, src/hook.ts), and a
-  // capitalised name falls through to "waiting", which is never idle and would
-  // make this whole file quietly prove nothing.
   const { code } = await runNode(HOOK, [event], { dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: actorId }, stdin });
   assert.equal(code, 0, "the hook must exit 0 - a failing hook would prove nothing about state");
 }
 
-// The two halves of a fresh worker's first turn, in the order Claude Code
-// fires them: hive's own announcement arrives as a UserPromptSubmit, the
-// worker answers it, and the turn ends in a Stop.
-async function announcementTurn(actorId) {
-  await fireHook("prompt", ANNOUNCEMENT_PAYLOAD, actorId);
-  await fireHook("stop", STOP_PAYLOAD, actorId);
-}
-
-// The lead's real assignment, then the worker finishing it. This is the finish
-// that must be reported, or the fix is a mute rather than a suppression.
-async function assignmentAndRealFinish(actorId) {
-  await fireHook("prompt", USER_PROMPT_PAYLOAD, actorId);
-  await fireHook("stop", STOP_PAYLOAD, actorId);
-}
-
 async function spawnWorker(name) {
-  await mcp.call("agent_spawn", { name, command: fakeClaude() });
+  const receipt = await mcp.call("agent_spawn", { name, command: fakeClaude() });
   const live = await liveAgentRow(mcp, name);
   const row = db
-    .prepare("SELECT id, actor_id, tmux_target, resumed_at FROM agents WHERE id = ?")
+    .prepare("SELECT id, actor_id, tmux_target, resumed_at, agent_state FROM agents WHERE id = ?")
     .get(live.agent_id);
-  assert.ok(
-    row.resumed_at,
-    "setup bug: a spawn must stamp the latch in its own INSERT, or nothing below tests the fix",
-  );
-  return row;
+  return { row, receipt };
 }
 
 const logFor = (actorId) =>
-  db
-    .prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id")
-    .all(actorId)
-    .map((r) => `${r.event}|${r.state}`);
+  db.prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(actorId);
 
-const latchOf = (id) => db.prepare("SELECT resumed_at FROM agents WHERE id = ?").get(id).resumed_at;
+describe("todo 387: a spawned worker has no turn at all until briefed", NEEDS_TMUX, () => {
+  it("nothing is typed into the pane, and the row carries no trace of a turn", async () => {
+    const { row, receipt } = await spawnWorker("sf-no-turn");
 
-describe("todo 373: a spawned worker's announcement turn is not a finish", NEEDS_TMUX, () => {
-  it("THE TRAP: hive's own announcement is a real prompt event, and must not lift the suppression", async () => {
-    const row = await spawnWorker("sf-premise");
+    assert.equal(row.resumed_at, "", "launchAgent must not stamp resumed_at anymore - only resumeAgent's flip does");
+    assert.equal(row.agent_state, "unknown", "no hook has fired, so the row's state is still its default");
+    assert.deepEqual(logFor(row.actor_id), [], "no hook event of any kind - hive gave this worker nothing to react to");
 
-    await fireHook("prompt", ANNOUNCEMENT_PAYLOAD, row.actor_id);
-    // THE WHOLE LANE TURNS ON THIS LINE. Mirroring issue #156 exactly - clear
-    // on the first `prompt` - clears here, seconds before the idle below, and
-    // the fix does nothing. The announcement's own text says "wait for your
-    // assignment"; it is hive speaking, not anybody giving this worker a lane.
-    assert.ok(latchOf(row.id), "hive's own announcement must not read as somebody giving this worker work");
+    // The receipt's own shape: `ready` still reports whether the pane took
+    // the terminal (fix round 1, finding 1 restored the wait behind it), but
+    // nothing about its value gates any typing anymore - false here (the
+    // 1ms ceiling above times out against a fakeClaude that renders nothing)
+    // proves that on its own, not "ready and therefore untyped".
+    assert.equal(typeof receipt.ready, "boolean");
+    assert.equal(receipt.ready, false);
+    assert.match(receipt.note, /never became ready/);
+    assert.equal(receipt.tail, undefined, "no dialog fixture here, so there is nothing to name");
+    assert.ok(receipt.brief_path, "the brief itself still rides the system prompt");
 
-    await fireHook("stop", STOP_PAYLOAD, row.actor_id);
-    const after = db.prepare("SELECT agent_state, state_changed_at FROM agents WHERE id = ?").get(row.id);
-    assert.equal(after.agent_state, "idle", "the announcement turn really does end in a Stop hook");
-    assert.ok(after.state_changed_at, "with a FRESH transition, which is why no latch reset can catch it");
-
-    // Asserted over the SEQUENCE in agent_state_log, never a sample of
-    // agents.agent_state: the row is overwritten in place, and a sample is not
-    // evidence about a state machine (worker-state.md, test/CLAUDE.md).
-    assert.deepEqual(
-      logFor(row.actor_id),
-      ["prompt|working", "stop|idle"],
-      "prompt then stop, with the prompt being hive's own line - verbatim the live sequence on agent:208",
-    );
-
-    // And the real assignment does lift it, which is what makes this a
-    // suppression rather than a permanent mute.
-    await fireHook("prompt", USER_PROMPT_PAYLOAD, row.actor_id);
-    assert.equal(latchOf(row.id), "", "a prompt that is NOT the announcement is somebody giving this worker work");
+    const { output } = await mcp.call("agent_output", { name: "sf-no-turn" });
+    assert.doesNotMatch(output, /\[hive\]/, "nothing hive typed should be on screen");
   });
 
-  it("the announcement hive actually types is the one the hook recognises", () => {
-    // The discrimination above is a text match, so its failure mode is silent:
-    // reword the announcement and every spawn's false finish comes back with
-    // nothing going red. Both directions are pinned here - the line hive
-    // builds today, and the line a real spawn was observed sending (the
-    // captured fixture this file replays).
-    const line = paneAnnouncement({
-      name: "sf-format",
-      actorId: "agent:1",
-      projectName: "hive",
-      projectPath: "/tmp/p",
-      cwd: "/tmp/p",
-    });
-    assert.ok(isSpawnAnnouncement(line), "paneAnnouncement must still be recognisable to src/hook.ts");
-    assert.ok(
-      isSpawnAnnouncement(JSON.parse(ANNOUNCEMENT_PAYLOAD).prompt),
-      "and so must the announcement a real spawn was captured sending",
-    );
-    assert.equal(
-      isSpawnAnnouncement(JSON.parse(USER_PROMPT_PAYLOAD).prompt),
-      false,
-      "an ordinary user prompt must not be mistaken for it, or nothing ever lifts the suppression",
-    );
-  });
-
-  it("a standing watch stays quiet through the announcement turn, then reports the REAL finish", async () => {
+  it("the standing watch shows an unbriefed worker without claiming the project is empty", async () => {
     const watchId = addStandingWatch();
-    const row = await spawnWorker("sf-report");
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
-
-    await announcementTurn(row.actor_id);
-    await tick(snapshot);
-    // BEFORE THE FIX THIS WAS THE LIVE FAILURE, word for word:
-    // "sf-report: idle for 1s, last log event: stop (0s ago)" for a worker
-    // that had been given nothing at all.
-    assert.equal(
-      wasReportedAsFinished(watchId, "sf-report"),
-      false,
-      "the announcement turn must not be reported as a finish",
-    );
-
-    await assignmentAndRealFinish(row.actor_id);
-    await tick(snapshot);
-    assert.equal(
-      wasReportedAsFinished(watchId, "sf-report"),
-      true,
-      "the real finish must be reported - suppressing it would be the worse defect",
-    );
-  });
-
-  it("a one-shot wake_when_idle over a named list gets the same suppression", async () => {
-    const row = await spawnWorker("sf-oneshot");
-    await announcementTurn(row.actor_id);
-
-    // watchedStates (src/scheduler.ts) reads the same row for a one-shot over
-    // an explicit list. Fixing only the surface the defect was watched through
-    // is this project's single most repeated defect shape.
-    const oneShot = db
-      .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
-           max_wait_at, created_at)
-         VALUES (?, ?, 'one-shot idle', 'idle_any', ?, ?, '%deadlead',
-           datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id`,
-      )
-      .get(projectId, OWNER, JSON.stringify([row.id]), OWNER).id;
-
-    // ASSERTED ON held_at, NOT fired_at: %deadlead is in no snapshot here, so
-    // deliverable() HOLDS this wake and it is never claimed - fired_at stays
-    // null whether or not the wake became ready, so asserting on it would pass
-    // against both versions of the code. held_at moves only once the wake is
-    // READY, which is the decision under test.
-    const heldAt = () => db.prepare("SELECT held_at FROM timers WHERE id = ?").get(oneShot).held_at;
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
-
-    await tick(snapshot);
-    assert.equal(heldAt(), null, "the announcement turn must not make a one-shot idle wake ready either");
-
-    await assignmentAndRealFinish(row.actor_id);
-    await tick(snapshot);
-    assert.ok(heldAt(), "and the real finish still makes it ready");
-  });
-
-  it("wake_when_idle(mode: 'all') does not answer 'Act now' off an announcement turn", async () => {
-    const row = await spawnWorker("sf-allmode");
-    await announcementTurn(row.actor_id);
-
-    // THE READER THAT NEVER REACHES THE SCHEDULER AT ALL. This shortcut is
-    // exactly the call a lead makes after spawning a crew: spawn three
-    // workers, set one wake on all of them, and be told they are already
-    // finished. deliver_to names the worker itself because resolveDelivery
-    // runs BEFORE the shortcut and refuses a caller that is not inside tmux,
-    // which the test process is not.
-    const watch = { agents: [row.id], mode: "all", body: "crew is done", deliver_to: "sf-allmode" };
-
-    const receipt = await mcp.call("wake_when_idle", watch);
-    assert.notEqual(
-      receipt.status,
-      "already_satisfied",
-      "an announcement turn must not satisfy an idle_all wake before the worker has been given anything",
-    );
-    // Scheduled rather than short-circuited, so cancel it: a real pending wake
-    // would be delivered by the MCP server's own scheduler during a later test.
-    if (receipt.wake_id) await mcp.call("wake_cancel", { wake_id: receipt.wake_id });
-
-    await assignmentAndRealFinish(row.actor_id);
-    const afterAssignment = await mcp.call("wake_when_idle", watch);
-    assert.equal(afterAssignment.status, "already_satisfied", "a real finish still satisfies it immediately");
-  });
-
-  it("the dashboard says so too - todo 366's reader, against a really spawned worker", async () => {
-    const row = await spawnWorker("sf-dash");
-    await announcementTurn(row.actor_id);
-
-    // renderDashboard is pure (no tmux, no scheduler), so it can be called
-    // straight against this store - and here it renders a REAL spawned
-    // worker's row rather than a seeded one.
-    //
-    // ONE OCCURRENCE IS ENOUGH TO ASSERT HERE, and that is a limit of this
-    // fixture rather than of the fix. src/dashboard.ts has TWO badge sites and
-    // the NOW strip shows only the first NOW_AGENTS_SHOWN running rows; every
-    // worker spawned by an earlier case in this file is still running, so
-    // sf-dash falls outside that cap and only the In Flight badge can be
-    // reached from here. The two-site property is pinned where the row count
-    // is controllable: test/dashboard.test.mjs.
-    //
-    // SCOPED TO THIS WORKER'S OWN <li>, not to the whole page, for the same
-    // reason the notice matchers above are anchored: every earlier case in
-    // this file leaves a running worker behind, so a page-wide `includes`
-    // would answer about the crew rather than about sf-dash.
-    const inFlightBadge = (html) => {
-      const item = html.split('<li class="agent">').find((chunk) => chunk.includes("sf-dash"));
-      assert.ok(item, "setup: the worker must be rendered at all, or the assertion below proves nothing");
-      return item.slice(0, item.indexOf("</li>"));
-    };
-
-    assert.match(
-      inFlightBadge(renderDashboard(projectId)),
-      /idle \(no assignment yet\)/,
-      "a worker whose only completed turn is its own announcement must not render as a plain green idle",
-    );
-
-    await assignmentAndRealFinish(row.actor_id);
-    assert.doesNotMatch(
-      inFlightBadge(renderDashboard(projectId)),
-      /no assignment yet/,
-      "and a worker that finished real work renders as a plain idle again",
-    );
-  });
-
-  it("the notice never says the project is empty while an unbriefed worker is live - the roster counts it", async () => {
-    const watchId = addStandingWatch();
-    // THE MINIMUM WAVE SHAPE, and it is the ordinary one: spawn the crew, brief
-    // them serially. A is assigned and finishes; B was spawned in the same wave
-    // and has not been given its lane yet.
+    // THE MINIMUM WAVE SHAPE (mirrors the old file's own case): spawn the
+    // crew, give one its real assignment, leave the other untouched.
     const assigned = await spawnWorker("sf-roster-assigned");
     const unbriefed = await spawnWorker("sf-roster-unbriefed");
-    await announcementTurn(unbriefed.actor_id);
-    await assignmentAndRealFinish(assigned.actor_id);
-    await tick({ panes: new Set([assigned.tmux_target, unbriefed.tmux_target]), windows: new Set() });
+    await fireHook("prompt", USER_PROMPT_PAYLOAD, assigned.row.actor_id);
+    await fireHook("stop", STOP_PAYLOAD, assigned.row.actor_id);
+    await tick({
+      panes: new Set([assigned.row.tmux_target, unbriefed.row.tmux_target]),
+      windows: new Set(),
+    });
 
     const body = noticeReporting(watchId, "sf-roster-assigned");
     assert.ok(body, "setup: the assigned worker's real finish must be reported, or there is no notice to read");
-    // THE COUNSELORS' FINDING, ALL THREE SEATS. Suppressing the unbriefed
-    // worker's finish is right; letting the roster then deny it exists is a
-    // false statement, not an omission - and it is what a lead reads on a
-    // phone, where no dashboard badge is on screen to correct it.
+    // agent_state defaults to 'unknown', which already satisfies the roster's
+    // own `agent_state != 'idle'` filter - so an unbriefed worker under (e)
+    // was never the silent-crew hazard todo 366/384 found for the old spawn
+    // shape (where the announcement's own Stop latched a false 'idle'). It is
+    // simply a worker whose state channel has nothing to say yet, and the
+    // roster says so rather than denying it exists.
     assert.doesNotMatch(
       body,
       /Nothing else in this project is running right now/,
       "a live, unbriefed worker must stop the notice claiming the project is empty",
     );
-    assert.match(
-      body,
-      /Still going:.*sf-roster-unbriefed \(awaiting first assignment\)/,
-      "and it is named as awaiting its first assignment, not as 'idle for 0s'",
-    );
+    assert.match(body, /Still going:.*sf-roster-unbriefed/, "and it is named in the roster, honestly labelled");
   });
 
-  it("a spawned worker that DIES before its first prompt is still reported - only the finish half is suppressed", async () => {
+  it("a spawned worker that dies before ever being given anything is still reported", async () => {
     const watchId = addStandingWatch();
-    const row = await spawnWorker("sf-death");
-    await announcementTurn(row.actor_id);
+    const { row } = await spawnWorker("sf-death-unbriefed");
 
-    // THE PAIRED INVARIANT, and the reason this lane widened one column rather
-    // than adding a second. standingGoneRows excludes a closed row whose state
-    // is 'idle' on the premise "idle means it finished and this watch already
-    // said so" - which a suppression falsifies. Its clause is a WHERE clause
-    // and cannot call the predicate, so a second column would have meant
-    // remembering an OR here, in a string; the same column keeps both halves
-    // in step with no edit. Before #156's own fix, the equivalent worker was
-    // silent in BOTH halves, which is the worst outcome available.
     db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(row.id);
     await tick({ panes: new Set(), windows: new Set() });
 
     assert.ok(
-      namedInReport(watchId, "sf-death"),
-      "a spawned worker's death is real news even before its first assignment",
+      namedInReport(watchId, "sf-death-unbriefed"),
+      "a spawned worker's death is real news even before its first assignment - " +
+        "agent_state stays 'unknown', which standingGoneRows' != 'idle' clause already catches",
+    );
+    const body = standingNoticeBodies(db, watchId).find((b) => b.includes("sf-death-unbriefed:"));
+    assert.match(
+      body,
+      /sf-death-unbriefed: GONE .* It was never given an assignment, so nothing was in flight\./,
+      "a claude worker whose hook never fired at all gets the airtight message (todo 384 comment 944)",
     );
   });
 
-  it("suppresses only the un-assigned worker, never a neighbour in the same crew", async () => {
+  it("a never-touched worker with NO state channel does not get the airtight claim (fix round 1, finding 4)", async () => {
     const watchId = addStandingWatch();
-    const fresh = await spawnWorker("sf-neighbour-fresh");
-    const working = await spawnWorker("sf-neighbour-working");
+    // A bash worker is kind='agent' (agent_spawn's own allowlist) but fires
+    // no hooks at all - reportsAgentStateLog is false for it, same gate
+    // reportUnbriefedWorkers already uses. Its state_changed_at is NULL
+    // forever, exactly like a genuinely untouched claude worker's - the only
+    // thing that tells them apart is whether hive can see this row's state
+    // at all, and "never given an assignment, so nothing was in flight" is a
+    // claim hive has no standing to make about a row it cannot observe.
+    await mcp.call("agent_spawn", { name: "sf-bash-never-touched", command: "bash" });
+    const live = await liveAgentRow(mcp, "sf-bash-never-touched");
+    db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(live.agent_id);
+    await tick({ panes: new Set(), windows: new Set() });
 
-    // The neighbour has been given its lane and finishes it; the fresh worker
-    // has only answered hive's own line. Both end a turn in the same tick.
-    await assignmentAndRealFinish(working.actor_id);
-    await announcementTurn(fresh.actor_id);
-    await tick({ panes: new Set([fresh.tmux_target, working.tmux_target]), windows: new Set() });
+    // Anchored to THIS worker's own line, not the whole body - sf-death-
+    // unbriefed (the previous case) is a real claude worker in the SAME
+    // notice and correctly DOES carry "never given an assignment" on its
+    // own line, so a blanket doesNotMatch on the full body would fail for
+    // the wrong reason. See resume-false-finish.test.mjs's matching case for
+    // the same note.
+    const body = standingNoticeBodies(db, watchId).find((b) => b.includes("sf-bash-never-touched:"));
+    assert.match(
+      body,
+      /sf-bash-never-touched: GONE .* Check its branch, its todo and any pad it was writing/,
+      "a row with no state channel must fall back to the honest 'go check' sentence, not the airtight claim",
+    );
+  });
 
-    assert.equal(wasReportedAsFinished(watchId, "sf-neighbour-working"), true, "a real finish is still news");
+  it("a real assignment is the worker's first and only turn, and its finish is reported", async () => {
+    const watchId = addStandingWatch();
+    const { row } = await spawnWorker("sf-real-first-turn");
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+
+    await fireHook("prompt", USER_PROMPT_PAYLOAD, row.actor_id);
+    await fireHook("stop", STOP_PAYLOAD, row.actor_id);
+    await tick(snapshot);
+
     assert.equal(
-      namedInReport(watchId, "sf-neighbour-fresh"),
-      false,
-      "the un-assigned worker must not appear in the finished block",
+      wasReportedAsFinished(watchId, "sf-real-first-turn"),
+      true,
+      "the worker's first turn is a real assignment, so its finish is real news",
+    );
+  });
+});
+
+describe("todo 384's regression: nothing suppresses an assignment landing immediately after spawn", NEEDS_TMUX, () => {
+  // THE FAILING TEST, RED AGAINST THE BUILD BEFORE THIS COMMIT. Before todo
+  // 387, launchAgent's INSERT stamped resumed_at at spawn and src/hook.ts
+  // excepted hive's own announcement prompt from clearing it
+  // (isSpawnAnnouncement). Replaying that exact sequence - a prompt event
+  // carrying hive's former announcement text, then a stop - reproduced todo
+  // 384's defect: the latch stayed set through it (the announcement's own
+  // prompt did not count as "given something"), so the worker's real work
+  // inside that same absorbed turn was suppressed, permanently, because the
+  // ordinary dispatch shape never sends a second message to clear it.
+  //
+  // AFTER TODO 387, THE SAME SEQUENCE PROVES THE OPPOSITE, AND FOR THE RIGHT
+  // REASON: launchAgent no longer stamps resumed_at at all, and hook.ts no
+  // longer excepts any particular prompt text - every prompt a spawned worker
+  // gets is a real one. So this fixture's text carries no special meaning
+  // anymore; replaying it is simply replaying "some prompt, then a stop", and
+  // the standing watch must report the finish because there is nothing left
+  // to suppress it.
+  it("a spawn immediately followed by an assignment - the two-for-two reproduction shape - reports the finish", async () => {
+    const watchId = addStandingWatch();
+    const { row } = await spawnWorker("sf-immediate-send");
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+
+    await fireHook("prompt", FORMER_ANNOUNCEMENT_PAYLOAD, row.actor_id);
+    await fireHook("stop", STOP_PAYLOAD, row.actor_id);
+    await tick(snapshot);
+
+    assert.equal(
+      wasReportedAsFinished(watchId, "sf-immediate-send"),
+      true,
+      "todo 384: an assignment landing in the window right after spawn must not be suppressed - " +
+        "this is the exact reproduction shape (spawn, then send, in the same tool block)",
     );
   });
 });

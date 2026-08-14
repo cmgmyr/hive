@@ -1,34 +1,39 @@
-// THE ONE DEFINITION OF "started, and not yet given anything", plus the one
-// text that does not count as being given something. Todos 373/366; issue
-// #156 built the first half of it.
+// THE ONE DEFINITION OF "started, and not yet given anything". Issue #156;
+// todo 373 widened it to cover a second start path, and todo 387 narrowed it
+// back to the first.
 //
-// A WORKER'S FIRST IDLE IS NOT A FINISH, and it reaches that idle two ways.
-// `claude --resume` replays the restored conversation, ends that turn, and
-// fires a Stop hook (issue #156). A freshly SPAWNED worker does the same
-// thing for a different reason: agent_spawn types a short `[hive]` line into
-// its pane and submits it, so the worker answers it, that turn ends, and Stop
-// fires (todo 373). Both produce a real, fresh, correctly-recorded `idle` for
-// a turn nobody asked for, and a surface that reports it tells a lead a
-// worker is done before it has been given anything - a lead that trusts it
-// tears the worker down. Every surface that would answer "this worker is
-// idle, act on it" has to ask this first.
+// A RESUMED WORKER'S FIRST IDLE IS NOT A FINISH. `claude --resume` replays
+// the restored conversation, ends that turn, and fires a Stop hook (issue
+// #156) - a real, fresh, correctly-recorded `idle` for a turn nobody asked
+// for, and a surface that reports it tells a lead a worker is done before it
+// has been given anything - a lead that trusts it tears the worker down.
+// Every surface that would answer "this worker is idle, act on it" has to
+// ask this first.
 //
-// ONE FACT, ONE COLUMN, AND THE COLUMN IS MISNAMED. `agents.resumed_at` was
-// added for the resume half and now carries both: launchAgent stamps it in
-// its INSERT, resumeAgent stamps it in its flip, and src/hook.ts clears it on
-// the first prompt that is not the announcement below. So it means "started
-// (spawned or resumed) and not yet spoken to", and its name says only half of
-// that. Weighed on todo 373 and accepted rather than renamed: a second column
-// spelling the same fact is how this fact's readers drifted apart in the first
-// place, and ONE of those readers is a SQL fragment (standingGoneRows,
-// src/scheduler.ts) that cannot call a JS predicate - with two columns every
-// reader has to remember an OR, and one of them has to remember it inside a
-// string. A RENAME migration is append-only-legal and was rejected for a
-// sharper reason: an MCP server started before the rename keeps running old
-// dist for the life of its session (common-issues/stale-mcp-server-runs-old-
-// code.md) and would hit `no such column` inside the scheduler tick and inside
-// resumeAgent. See src/db.ts's migration comment, which says the same thing
-// where a reader of the schema will find it.
+// A SPAWNED WORKER USED TO HAVE THE IDENTICAL SHAPE THROUGH A DIFFERENT DOOR,
+// AND TODO 387 CLOSED THE DOOR RATHER THAN GENERALISE THE LATCH FURTHER.
+// agent_spawn used to type a short `[hive]` line into a fresh pane and submit
+// it, creating exactly the turn this file exists to un-suppress (todo 373).
+// Worse, if a lead's real assignment landed while that turn was still running
+// it could be absorbed into it as an attachment with no `UserPromptSubmit` to
+// clear the latch (todo 384), and since the ordinary dispatch shape is brief
+// once and wait for the finish, that suppression was operationally permanent
+// for the worker it hit. Closed by not creating the turn at all: nothing is
+// typed into a spawned worker's pane anymore, every fact that line carried is
+// already in the brief riding the system prompt, and the one instruction it
+// added ("wait for your assignment") moved into the brief text itself
+// (src/brief.ts). `SPAWN_ANNOUNCEMENT_PREFIX` and `isSpawnAnnouncement`, which
+// used to live here to tell hive's own announcement apart from a real
+// assignment, are gone with the turn they existed to discriminate.
+//
+// ONE FACT, ONE COLUMN. `agents.resumed_at` is stamped by resumeAgent's flip
+// and cleared by src/hook.ts on the worker's first prompt - back to meaning
+// exactly what its name says, now that launchAgent no longer stamps it too.
+// The predicate and its SQL twin below stay general rather than collapsing
+// into a resume-specific name, because the column and every reader named
+// below still key on "started and not yet spoken to" as a concept, not on
+// which start path produced it - a future third start path can reuse this
+// machinery the same way todo 373 once did, without every reader changing.
 //
 // A LEAF MODULE WITH NO IMPORTS, and that is forced rather than tidy. This
 // predicate lived in src/stateProvenance.ts, whose header owns exactly this
@@ -46,54 +51,9 @@
 // the end of its condition is a `prompt` hook hive already wires and already
 // writes on.
 
-// The visible first turn agent_spawn types into a new worker's pane, up to the
-// part that is the same for every worker. src/brief.ts builds the real line
-// from this constant so the two cannot drift, and src/hook.ts matches on it.
-//
-// WHY A MARKER AT ALL, since the resume half needed none. A resume types
-// NOTHING into the pane, so on that side "the first prompt" really is the
-// first moment anyone gave the worker something. A spawn speaks first, and
-// what it says is "wait for your assignment" - so treating its own
-// announcement as an assignment clears the latch SECONDS BEFORE the idle it
-// exists to suppress. Measured on this lane, from agent:208's own rows:
-// prompt|working at 03:49:25 (the announcement), stop|idle at 03:49:30 (the
-// false finish), prompt|working at 03:49:40 (the lead's real assignment).
-// Matching hive's own text in a prompt payload is not new here: deliver()
-// prefixes every wake body with `[hive wake #N] ` and checkConfirmations
-// (src/scheduler.ts) recognises a delivery the same way.
-export const SPAWN_ANNOUNCEMENT_PREFIX = '[hive] You are "';
-
-// A prompt hive typed itself, as part of starting this worker. Anything else -
-// a lead's agent_send, a delivered wake, a human typing into the pane - is
-// somebody giving this worker something, which is what lifts the suppression.
-//
-// A PREFIX, NOT AN EQUALITY, because the rest of the line names the worker and
-// hook.ts has no cheap way to rebuild it.
-//
-// THE FAIL-CLOSED DIRECTION, ARGUED AGAINST ITS STRONGEST VERSION (counselors,
-// codex seat). A real assignment that happens to start with `[hive] You are "`
-// keeps that worker's finish suppressed. The first version of this comment
-// called that harmless "because it is silence, not a false report", and that
-// is too easy on it: the ordinary assignment is ONE turn, the lead is waiting
-// for exactly that finish, and if it sends nothing else there is never a next
-// prompt to clear the latch - so the suppression is operationally permanent,
-// which is this project's stated worst outcome, not a bounded delay.
-// Accepted anyway, on three things the strong version does not overturn: the
-// collision needs a lead to open an assignment with hive's own worker-briefing
-// sentence verbatim, which nothing in this project's own tooling produces; the
-// death half is unaffected (standingGoneRows reads the same column and reports
-// a worker that dies latched); and the alternative - matching the whole line,
-// rebuilt per worker inside a hook that runs on every turn of every worker -
-// buys a narrower match at the cost of a second place the announcement's exact
-// text has to be reproduced, which is the drift this constant exists to
-// prevent. If it ever bites, the fix is a marker hive controls end to end
-// rather than a longer prefix.
-export function isSpawnAnnouncement(promptText: unknown): boolean {
-  return typeof promptText === "string" && promptText.startsWith(SPAWN_ANNOUNCEMENT_PREFIX);
-}
-
 // THE READERS, named because enumerating them by hand is how the third was
-// missed on issue #156's first pass and how todo 366 became its own todo:
+// missed on issue #156's first pass and how todo 366 became its own todo -
+// and this list itself went stale the same way twice more (todo 384/387):
 //   standingIdleRows           src/scheduler.ts   the standing watch
 //   watchedStates              src/scheduler.ts   the one-shot
 //   wake_when_idle mode="all"  src/tools/wakes.ts the already_satisfied
@@ -106,6 +66,21 @@ export function isSpawnAnnouncement(promptText: unknown): boolean {
 //                                                 said, so it cannot be the
 //                                                 reason to stay quiet about a
 //                                                 death (worker-state.md)
+//   the "Still going" roster   src/scheduler.ts   the standing watch's OWN
+//                              :2925, :2952       finish notice, filtering out
+//                                                 an unbriefed worker so its
+//                                                 crew claim ("nothing else is
+//                                                 running") stays honest - see
+//                                                 "A SEVENTH SITE" below, which
+//                                                 argues this site at length
+//                                                 without ever landing in this
+//                                                 list
+//   reportUnbriefedWorkers     src/cli.ts         the ONE reader that REPORTS
+//                              :2798-2803          on the latch rather than
+//                                                 suppressing or describing a
+//                                                 row - `hive doctor` naming a
+//                                                 worker stuck past a guessed
+//                                                 30 minutes (worker-state.md)
 // plus the WRITER that clears it, src/hook.ts, which reads the fact through
 // the same SQL helper below rather than spelling it again - the direction that
 // fails worst, since a clearer matching nothing suppresses every finish

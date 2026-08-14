@@ -353,8 +353,12 @@ async function runCanary(instance, partial) {
       cwd: instance.workerRoot,
       extra_args: ["--mcp-config", mcpConfigPath, "--strict-mcp-config"],
     });
-    if (spawnReceipt.announced !== true) {
-      throw new Error(`worker's pane never confirmed ready/undialogued (announced=${spawnReceipt.announced}); receipt: ${JSON.stringify(spawnReceipt)}`);
+    // `ready` (renamed from `announced` by todo 387 fix round 1: agent_spawn
+    // no longer types anything, but still waits for the pane and still
+    // reports whether a dialog blocked it) is the same readiness/no-dialog
+    // signal this check always depended on.
+    if (spawnReceipt.ready !== true) {
+      throw new Error(`worker's pane never confirmed ready/undialogued (ready=${spawnReceipt.ready}); receipt: ${JSON.stringify(spawnReceipt)}`);
     }
     partial.worker = { agentId: spawnReceipt.agent_id, actorId: spawnReceipt.actor_id, name: spawnReceipt.name };
 

@@ -545,17 +545,18 @@ export function registerWakes(server: McpServer): void {
           // the lead proceeds on a completion that never happened.
           const allIdle = watched.every((a) => {
             const live = summaryLiveness(a, snapshot);
-            // Issue #156, D3, AND THIS IS THE READER THAT LANE ALMOST MISSED;
-            // todo 373 widened it to spawns. A worker's restore turn - or the
-            // announcement turn agent_spawn types into a fresh pane - ends in
-            // a real Stop hook and writes a real, fresh idle for a turn nobody
-            // asked for. This shortcut never reaches watchedStates
-            // (src/scheduler.ts), so without the same predicate a lead that
-            // spawns or resumes a crew and immediately sets a mode="all" wake
-            // is told "Every watched agent is already idle ... Act now" off
-            // that turn - verbatim the defect, through the one idle door the
-            // fix had not walked. src/firstPrompt.ts owns the definition and
-            // names every reader.
+            // Issue #156, D3, AND THIS IS THE READER THAT LANE ALMOST MISSED.
+            // A worker's restore turn ends in a real Stop hook and writes a
+            // real, fresh idle for a turn nobody asked for (todo 373 briefly
+            // widened this to a spawn-side announcement turn too; todo 387
+            // removed that turn instead of leaving a second case for every
+            // reader here to keep in step with). This shortcut never reaches
+            // watchedStates (src/scheduler.ts), so without the same predicate
+            // a lead that resumes a crew and immediately sets a mode="all"
+            // wake is told "Every watched agent is already idle ... Act now"
+            // off that turn - verbatim the defect, through the one idle door
+            // the fix had not walked. src/firstPrompt.ts owns the definition
+            // and names every reader.
             if (awaitingFirstPrompt(a)) return false;
             return live === false || (live === true && a.agent_state === "idle");
           });

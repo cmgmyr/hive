@@ -13,13 +13,13 @@ import {
   warningCount,
 } from "./helpers.mjs";
 
-// TODO 377. After todo 373, `agents.resumed_at` means "started (spawned or
-// resumed) and not yet given anything", and every reader that would say "this
-// worker is idle, act on it" suppresses while it is set. src/hook.ts clears it
-// on the first prompt that is not hive's own spawn announcement - so EVERY way
-// that clearer fails to run produces one signature, and the signature is
-// SILENCE: a running worker whose finishes are suppressed indefinitely, while
-// the lead waits for a finish that will never be reported.
+// TODO 377. `agents.resumed_at` means "resumed, and not yet given anything"
+// (todo 387 narrowed this back from "spawned or resumed"; see src/firstPrompt.ts),
+// and every reader that would say "this worker is idle, act on it" suppresses
+// while it is set. src/hook.ts clears it on the worker's first prompt - so
+// EVERY way that clearer fails to run produces one signature, and the
+// signature is SILENCE: a running worker whose finishes are suppressed
+// indefinitely, while the lead waits for a finish that will never be reported.
 //
 // `hive doctor` now names such a worker. This file pins the three things that
 // decide whether the check is worth having:

@@ -1200,10 +1200,11 @@ function rememberNoDialog(socket: string, pane: string): void {
 // The negative cache decides only whether to NOTIFY about someone else's
 // dialog, and the worst case is a notice up to thirty seconds late.
 //
-// ONLY deliver() CALLS THIS, AND FOUR OTHER PATHS TYPE INTO THESE SAME PANES
-// (counselors round 1, opus F10): agent_send's text and keys paths,
-// agent_rename, and the spawn announcement, all in this same process and all
-// unable to reach a module-private function in the scheduler. So
+// ONLY deliver() CALLS THIS, AND THREE OTHER PATHS TYPE INTO THESE SAME PANES
+// (counselors round 1, opus F10 - a fourth, the spawn announcement, existed
+// until todo 387 removed it): agent_send's text and keys paths and
+// agent_rename, all in this same process and all unable to reach a
+// module-private function in the scheduler. So
 // agent_send(text:...) -> the worker starts a turn -> a permission prompt goes
 // up is a notice up to 30s late where before this lane it was 3s. ACCEPTED,
 // NOT MISSED: the direction is safe (late, never wrong, and never a wake typed
@@ -2477,14 +2478,14 @@ interface StandingCandidate {
 // correctly true for it and that reset has nothing to catch. Two different
 // defects that produce the same wrong sentence.
 //
-// `resumed_at != ''` reads as "started, and not yet given anything", which is
-// more than its name says (todo 373; src/firstPrompt.ts and src/db.ts's
-// migration comment carry why it was widened in place rather than joined by a
-// second column). launchAgent stamps it in its INSERT, resumeAgent in its
-// flip, and src/hook.ts clears it on the first `prompt` that is not hive's own
-// spawn announcement - a real UserPromptSubmit from somebody else, and so the
-// first moment anyone gave this worker anything. That is why this is a column
-// read and not a subquery over agent_state_log on the hottest loop hive has.
+// `resumed_at != ''` reads as "resumed, and not yet given anything" -
+// resumeAgent stamps it in its flip (todo 373 widened this to cover a second
+// start path, spawn; todo 387 narrowed it back to this one, see
+// src/firstPrompt.ts's own header for the full history) - and src/hook.ts
+// clears it on the worker's first `prompt`, a real UserPromptSubmit, the
+// first moment anyone gave this worker anything. That is why this is a
+// column read and not a subquery over agent_state_log on the hottest loop
+// hive has.
 //
 // IT ONLY EVER SUPPRESSES. Read that against the withdrawn `also_when_stuck`
 // (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md),
@@ -2497,10 +2498,13 @@ interface StandingCandidate {
 // shipped silent narrowing before. A delivery into a BUSY pane is absorbed
 // into the running turn as an attachment and fires no UserPromptSubmit at all
 // (.claude/rules/tmux-and-panes.md), so an assignment sent while the restore
-// or announcement turn is still running leaves the column set, and THAT turn's
-// genuine finish is suppressed too. It is bounded rather than permanent: the next
-// delivery that lands on an idle pane is a real user turn, writes a `prompt`
-// row, and clears the column.
+// turn is still running leaves the column set, and THAT turn's genuine finish
+// is suppressed too. It is bounded rather than permanent: the next delivery
+// that lands on an idle pane is a real user turn, writes a `prompt` row, and
+// clears the column. TODO 387 CLOSED THE SPAWN-SIDE TWIN OF THIS RESIDUAL
+// RATHER THAN LEAVING IT BOUNDED: agent_spawn no longer types anything into a
+// fresh pane, so there is no announcement turn left for an assignment to be
+// absorbed into on the spawn side - only the restore turn above remains.
 //
 // TODO 377 NARROWED THE NEXT SENTENCE, which used to read "the store cannot do
 // better here ... no evidence of any kind distinguishing them". That
@@ -2887,9 +2891,37 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
           // asserts a fact hive cannot see is the shape
           // .claude/rules/worker-state.md rules out. Two observations and a
           // next action instead.
-          `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
-          `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any pad it ` +
-          "was writing for what landed before it stopped."
+          //
+          // UNLESS THE ROW WAS NEVER GIVEN ANYTHING (todo 384 comment 944) -
+          // and saying so takes airtight evidence, not merely an unset latch
+          // (fix round 1, finding 4; the first version of this condition
+          // OR'd in `awaitingFirstPrompt(c.row)` and overclaimed on exactly
+          // the row the surrounding comment already warns against: a
+          // RESUMED worker whose real assignment landed inside its still-
+          // running restore turn is absorbed the same way a spawned
+          // worker's used to be (`.claude/rules/tmux-and-panes.md`'s busy-
+          // pane paths), so resumed_at stays set while real work happens -
+          // the exact row #156 added the gone disjunct to report at all).
+          //
+          // `state_changed_at IS NULL`, gated on `reportsAgentStateLog`, is
+          // the airtight signal: it means this row's hook has NEVER fired a
+          // single transition, for a row hive can actually observe. A Stop
+          // hook fires whenever ANY turn ends - restore, absorbed-assignment,
+          // or ordinary - so if the row ever had ANY turn at all,
+          // state_changed_at would already be set and this branch would not
+          // fire; the branch/todo/pad sentence below covers that ambiguous
+          // case rather than guessing which way it resolved. Gated on
+          // reportsAgentStateLog for the reason `reportUnbriefedWorkers`
+          // already is: an uninstrumented row (a bash or codex worker) never
+          // writes a hook event either way, so an ungated NULL check would
+          // claim "nothing was in flight" about a worker hive simply cannot
+          // see, which is the exact shape this whole branch exists to avoid.
+          reportsAgentStateLog(c.row) && c.row.state_changed_at === null
+            ? `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
+              `${c.row.episode}. It was never given an assignment, so nothing was in flight.`
+            : `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
+              `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any pad it ` +
+              "was writing for what landed before it stopped."
         : `  ${c.row.name}: ${stateNowClause(c.row)}`,
     );
   }
@@ -2903,13 +2935,17 @@ function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): str
     // and get undefined with the compiler agreeing.
     // TODO 373, COUNSELORS ALL THREE SEATS: A WORKER AWAITING ITS FIRST
     // ASSIGNMENT BELONGS IN THIS CENSUS, and leaving it out is not an
-    // omission. `agent_state != 'idle'` alone drops a worker whose only
-    // completed turn is its own spawn announcement, and when that empties the
+    // omission. `agent_state != 'idle'` alone used to drop a worker whose
+    // only completed turn was its own spawn announcement (todo 387 removed
+    // that turn - a never-briefed spawned worker now reads 'unknown', which
+    // already fails `!= 'idle'` on its own; the shape below survives for the
+    // RESUME side, where a worker whose only completed turn is its restore
+    // still latches 'idle' with resumed_at set), and when that empties the
     // list this function says "Nothing else in this project is running right
     // now" - an affirmative CLAIM about the crew, which `asked` below exists
     // to keep honest. The minimum shape is two workers: A is assigned and
-    // finishes, B was spawned in the same wave and not yet briefed, and A's
-    // notice denies B exists. That is the ordinary wave-dispatch shape the
+    // finishes, B was resumed in the same wave and not yet re-briefed, and
+    // A's notice denies B exists. That is an ordinary wave-dispatch shape the
     // runbook produces, not a corner.
     //
     // This lane originally recorded the exclusion as acceptable on the grounds
@@ -3614,18 +3650,19 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       if (!agent.settled) return UNKNOWN;
       return GONE;
     }
-    // Issue #156, D3, THE ONE-SHOT HALF, widened with the rest by todo 373.
-    // The defect was observed through a standing watch, but nothing about it
-    // is standing-specific: a one-shot wake_when_idle over a named list reads
-    // the same row, through this function, and would fire on the same restore
-    // or announcement turn. Both halves call the same predicate - see
-    // standingIdleRows above, and src/firstPrompt.ts for the full reasoning
-    // and the accepted residual.
+    // Issue #156, D3, THE ONE-SHOT HALF. The defect was observed through a
+    // standing watch, but nothing about it is standing-specific: a one-shot
+    // wake_when_idle over a named list reads the same row, through this
+    // function, and would fire on the same restore turn (todo 373 briefly
+    // widened this to a spawn-side announcement turn too; todo 387 removed
+    // that turn rather than leaving a second case to keep in step). Both
+    // halves call the same predicate - see standingIdleRows above, and
+    // src/firstPrompt.ts for the full reasoning and the accepted residual.
     //
     // Folded into `idle` rather than an early return, so `gone` and `since`
-    // have one expression each. A worker mid-restore, or mid-announcement, is
-    // running, alive, and simply has not finished anything, which is what "not
-    // idle" already means here; answering GONE would report a live worker as
+    // have one expression each. A worker mid-restore is running, alive, and
+    // simply has not finished anything, which is what "not idle" already
+    // means here; answering GONE would report a live worker as
     // dead and UNKNOWN would let an idle_all wake treat it as unjudgeable.
     return {
       idle: !awaitingFirstPrompt(agent) && agent.agent_state === "idle",

@@ -2,23 +2,23 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, REPO, scratchDirs, seedLeadRow, sleep } from "./helpers.mjs";
+import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, REPO, scratchDirs, seedLeadRow, sleep, until } from "./helpers.mjs";
 
 // Todo 70 / issue #27. The #24 lane guarded exactly one typing path, the
-// scheduler's own wake delivery. These three still typed into whatever was on
-// screen: the spawn announcement, agent_send's text path, and agent_rename's
-// /rename. Decisions D1-D3, D5 on plan-issue-27-guard govern this file (D5
-// superseded D4 in round 2: see src/tmux.ts next to CHOICE_DIALOG).
+// scheduler's own wake delivery. Two more still typed into whatever was on
+// screen: agent_send's text path and agent_rename's /rename (a third, the
+// spawn announcement, existed until todo 387 removed it - agent_spawn types
+// nothing into a fresh pane anymore, so there is nothing left to guard there,
+// though it still WAITS for the pane first; see agent_spawn's own comment on
+// PANE_READY_MS for why the wait outlived the typing it was added for).
+// Decisions D1-D3, D5 on plan-issue-27-guard govern this file (D5 superseded
+// D4 in round 2: see src/tmux.ts next to CHOICE_DIALOG).
 const { hasTmux, cleanup } = isolateTmux("the typing-guard tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
 const { db } = await import("../dist/db.js");
-// Todo 373: the constant src/hook.ts matches a prompt against, imported rather
-// than spelled here so this test cannot pass against a call site that types
-// something the hook no longer recognises.
-const { SPAWN_ANNOUNCEMENT_PREFIX } = await import("../dist/firstPrompt.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 const fixturePath = (file) => join(FIXTURES, file);
@@ -42,86 +42,23 @@ const fixturePath = (file) => join(FIXTURES, file);
 const GREPPED_MARKER_STILL_READY = "shift+tab to cycle\\n 1. Yes\\n 2. No\\n\\n Esc to cancel";
 
 let mcp;
-let mcpReady;
 let projectId;
 
 before(async () => {
-  mcp = new McpClient({
-    cwd: dirs.projectDir,
-    dataDir: dirs.dataDir,
-    // 2000ms is the DEFAULT client's ceiling, and the selection rule between
-    // the two clients is NOT "which fixture becomes ready" - most spawns left
-    // on this one replay ready-shaped fixtures and return early, well under
-    // it. THE RULE IS WHETHER THE TEST ASSERTS `announced`. If it does, the
-    // readiness wait is load-bearing for the assertion and the spawn belongs
-    // on mcpReady below. If it does not, this ceiling is only a delay.
-    // Stated as the real rule because the previous wording ("the cases that
-    // never become ready") named a different set, and a reader following it
-    // would put the next announce-asserting test on this client and
-    // reintroduce todo 367's flake with the comment telling them they were
-    // right. Counselors, all three seats.
-    env: { HIVE_SPAWN_READY_MS: "2000" },
-  });
+  // agent_spawn still waits for the pane before returning (fix round 1,
+  // finding 1 restored it - typing is gone, the wait is not). A dialog
+  // fixture never shows claude's input-box marker, so agent_spawn's wait
+  // pays its FULL ceiling on every dialog spawn below; at the production
+  // default (45s) that alone would blow past McpClient's own 15s call
+  // timeout. 2000ms is cheap for the ordinary case (a ready fixture is
+  // detected within ~1s) and short enough that dialog spawns fail fast
+  // rather than timing out the client - none of the tests below assert
+  // `ready`, so the exact ceiling only affects how long a dialog case takes,
+  // not what it proves. spawnShowing's own poll (below) is the belt to this
+  // suspenders: it does not depend on agent_spawn's wait succeeding, only on
+  // the fixture having rendered by the time IT checks.
+  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
   await mcp.start();
-
-  // Todo 367. A SECOND client with a wider readiness ceiling, for every spawn
-  // whose test asserts `announced`. The default 2000ms above was a cheap
-  // bound for spawns nobody was timing; it was never chosen as a budget for a
-  // pane that is genuinely coming up, and using it as one is what made
-  // "announces once the pane is genuinely ready" load-flaky on main.
-  //
-  // MEASURED, not reasoned (todo 367 comments 873 and 882 hold the raw data):
-  //   - waitForPaneInput sleeps 250ms AFTER it matches, before returning
-  //     (src/tmux.ts), so a measured call time is 250ms longer than the
-  //     detection it reports. The passing case measured 855-1090ms, which is
-  //     detection at ~605-840ms.
-  //   - It polls every 200ms for the first second and every 500ms after, and
-  //     the loop re-checks the deadline before each capture, so under a
-  //     2000ms ceiling polls land at ~0/200/400/600/800/1000/1500 and there
-  //     is none at 2000. Detection therefore had ~660-900ms of headroom - not
-  //     the ~1145ms the raw ceiling suggests, and not the ~400-500ms an
-  //     earlier version of this comment claimed by subtracting the 250ms
-  //     settle from the wrong end. All three counselors seats caught that.
-  //   - Sampling the real waitForPaneInput against this same pane shape: 466ms
-  //     median idle (n=15, max 672), and under a concurrent full suite 466ms
-  //     median with a 3916ms tail sample (n=40). One sample in forty was
-  //     already PAST the whole 2000ms ceiling. The distribution is bimodal
-  //     rather than wide: ~466ms almost always, with a rare multi-second
-  //     outlier, which is why five sequential runs saw nothing.
-  //   - The reproduction: a full suite run concurrent with that sampling
-  //     failed this exact test at 2292ms, assert.equal(receipt.announced,
-  //     true), with the note "The pane never became ready".
-  // So this is a margin widened against a measured distribution, not a
-  // re-roll until green - see
-  // .claude/sessions/decisions/2026-07-31-accept-margin-over-happens-before.md
-  // for why this project takes that trade on a timing-shaped test.
-  //
-  // WHY 10000 AND NOT THE PRODUCTION 45000, WHICH IS WHAT THIS FIRST SHIPPED
-  // AS. Because the harness cannot reach 45s: McpClient.request() rejects
-  // every JSON-RPC call after 15000ms (test/helpers.mjs), so a 45s ceiling is
-  // time no test on this client could ever spend. The binding constant is the
-  // CLIENT timeout, not PANE_READY_MS. Past it the failure arrives as "Timed
-  // out waiting for tools/call" thrown out of spawnShowing rather than as
-  // announced:false, so whyNotAnnounced never runs and the receipt that names
-  // the branch never exists; and the throw lands before
-  // spawned.push(receipt.agent_id), so the describe's after() cannot close a
-  // worker the server goes on to spawn anyway.
-  // 10000ms keeps every failure on this client INSIDE the harness: ~2.5x the
-  // worst latency ever measured here (3916ms), ~21x the idle median, 5s clear
-  // of the client's own cap. The first version argued 45000 was right BECAUSE
-  // it was the production constant, the way ENTER_DELAY_MS is anchored in the
-  // decision file above. That argument is void when the constant is
-  // unreachable; all three counselors seats said so independently.
-  // What it costs: if the readiness probe breaks outright (issue #30's shape,
-  // claude's chrome drifting out from under INPUT_BOX_PRESENT), the tests on
-  // this client take 10s each to fail rather than 2s - and they fail with the
-  // note naming the branch. A broken-state cost only.
-  mcpReady = new McpClient({
-    cwd: dirs.projectDir,
-    dataDir: dirs.dataDir,
-    env: { HIVE_SPAWN_READY_MS: "10000" },
-  });
-  await mcpReady.start();
   projectId = (await mcp.call("whoami")).project.id;
 
   // Round 2, todo 75. This comment has been wrong twice (width, then the
@@ -170,7 +107,6 @@ before(async () => {
 
 after(async () => {
   await mcp.close();
-  await mcpReady.close();
   cleanup(sessionName());
 });
 
@@ -187,220 +123,121 @@ const printScreen = (text) => `printf '${text}\\n'; sleep 600`;
 // comment above the session's own creation for why height matters and what
 // was measured). This is the enforcement half: no pane in this file can ever
 // be shorter than 60 rows, so there is no threshold left to fall under.
-//
-// `client` picks the readiness ceiling this spawn runs under: `mcp` (2000ms)
-// where the test does not assert `announced`, `mcpReady` (10000ms) where it
-// does. See mcpReady's own comment in before() for the measurements, and for
-// why the ceiling is not the production 45s.
-//
-// The elapsed time rides back on the receipt as `spawn_ms` so a failure can
-// say HOW LONG the spawn took rather than only that it did not announce.
-// Todo 367: the original report of this test failing under load recorded the
-// test name and nothing else, and a bare assertion failure names no branch.
-async function spawnShowing(name, shellCommand, client = mcp) {
-  const started = Date.now();
-  const receipt = await client.call("agent_spawn", {
+// Polls for the pane to show something before returning, on top of
+// agent_spawn's own wait rather than instead of it: agent_spawn's wait looks
+// for CLAUDE's input-box marker specifically, and a dialog fixture never
+// shows one, so agent_spawn returns at its ceiling with the fixture already
+// rendered (cat is far faster than 2000ms) but with no marker to report. This
+// poll is what actually protects the caller's own next read (agent_rename,
+// agent_send) against the fixture still painting, independent of whether
+// agent_spawn's own wait found what it was looking for.
+async function spawnShowing(name, shellCommand) {
+  const receipt = await mcp.call("agent_spawn", {
     name,
     command: fakeClaude(shellCommand),
     extra_args: [],
     placement: "window",
   });
-  receipt.spawn_ms = Date.now() - started;
-  await liveAgentRow(client, name);
+  await liveAgentRow(mcp, name);
+  await until(async () => (await mcp.call("agent_output", { name })).output.trim() !== "");
   return receipt;
 }
 
-// THREE causes produce announced:false, not the two an earlier version of
-// this comment claimed, and only two are distinguishable by the note.
-// A dialog says "waiting on a choice" and carries a tail. A pane that never
-// became ready says "never became ready" and carries none. And sendText
-// throwing AFTER a successful readiness check - the pane died, tmux refused
-// the paste - lands in agent_spawn's own catch (src/tools/agents.ts) and
-// reports the SAME "never became ready" note, which is wrong about what
-// happened but is what the receipt says. spawn_ms is what separates that
-// third case from the second: a real timeout burns the whole ceiling, a dead
-// pane returns fast. So the number is load-bearing, not decorative.
-// spawn_ms is the WHOLE agent_spawn round trip - new-window, the brief write,
-// sqlite, JSON-RPC - not waitForPaneInput's own time. Do not compare it
-// directly against the detection figures in before()'s comment; the fixed
-// overhead measured ~140ms on this box.
-const whyNotAnnounced = (receipt) =>
-  `announced=${receipt.announced} after ${receipt.spawn_ms}ms; note: ${receipt.note ?? "(none)"}; tail: ${
-    receipt.tail ?? "(none)"
-  }`;
+// This file used to have a describe block here, "agent_spawn's [hive]
+// announcement" - agent_spawn typed a line into the pane and waited for it to
+// be ready (or refused on a dialog) before doing so, and every test in it
+// asserted the receipt's `announced`/`note`/`tail`. Todo 387 removed the
+// TYPING: nothing is typed into a spawned worker's pane anymore, so there is
+// no announcement receipt left to assert against. The wait stayed (fix round
+// 1, finding 1), and the describe below is its regression test.
 
-describe("agent_spawn's [hive] announcement", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+// TODO 387 FIX ROUND 1, FINDING 1. The first version of this lane removed
+// agent_spawn's readiness wait along with its typing, reasoning that with
+// nothing left to type there was nothing left to wait FOR. That reasoning
+// only looked at what agent_spawn itself does. waitForPaneInput's own
+// contract (src/tmux.ts) is that sending into a pane that has not taken the
+// terminal loses the text silently and reports success - and the NEXT thing
+// to type into a freshly spawned pane is now the lead's own agent_send,
+// which can land in the same tool block as the spawn (todo 384's exact
+// dispatch shape, and this PR's own regression test for it). Without the
+// wait, that send would race a cold claude and could be silently swallowed:
+// strictly worse than the false-finish defect this whole lane exists to fix,
+// since a swallowed send leaves the worker sitting forever with an empty
+// screen and nothing in the store distinguishes that from a worker that is
+// simply thinking.
+//
+// THIS IS WHY THE REGRESSION TEST BELOW USES A SLOW-RENDERING FAKE CLAUDE
+// RATHER THAN THE PLAIN ONE spawn-false-finish.test.mjs uses. A plain
+// fakeClaude() shell takes the terminal essentially instantly (it is a `sh`
+// script, not a cold claude loading plugins and MCP servers), so a test
+// built on it cannot distinguish "the wait ran and succeeded quickly" from
+// "there was no wait at all" - which is exactly why the first version of
+// this lane shipped with its own regression tests green. Forcing a real
+// delay before the pane renders is what makes the absence of a wait
+// observable.
+describe("agent_spawn's readiness wait outlives the typing it was added for", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const spawned = [];
   after(async () => {
     for (const agent_id of spawned) await mcp.call("agent_close", { agent_id }).catch(() => {});
   });
 
-  it("announces once the pane is genuinely ready with no dialog up", async () => {
-    const receipt = await spawnShowing("spawn-ready", replayFixture("ready-idle.txt"), mcpReady);
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, true, whyNotAnnounced(receipt));
-    assert.equal(receipt.note, undefined);
+  it("a send landing immediately after spawn is not swallowed, even against a slow-to-render pane", async () => {
+    // A wider ceiling than the file's default 2000ms, and a client of its
+    // own rather than reusing `mcp`: this is the one case in the file that
+    // needs agent_spawn to actually wait out a multi-second cold start
+    // rather than timing out fast, so it cannot share the short ceiling
+    // every other test here relies on to keep dialog cases quick.
+    const patientMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_SPAWN_READY_MS: "10000" },
+    });
+    await patientMcp.start();
+    try {
+      const name = "spawn-then-send-cold";
+      const started = Date.now();
+      const receipt = await patientMcp.call("agent_spawn", {
+        name,
+        // 2s before the pane renders anything at all - long enough that a
+        // send fired the instant agent_spawn returns would land on a raw,
+        // untaken terminal if agent_spawn were not itself waiting.
+        command: fakeClaude(`sleep 2; ${replayFixture("ready-idle.txt")}`),
+        extra_args: [],
+        placement: "window",
+      });
+      spawned.push(receipt.agent_id);
+      await liveAgentRow(patientMcp, name);
+      const spawnMs = Date.now() - started;
 
-    // TODO 373, COUNSELORS F4. WHAT THIS CALL SITE ACTUALLY TYPES is the half
-    // no other test covers. src/hook.ts decides whether a `prompt` event
-    // clears a worker's "not yet given anything" latch by matching this exact
-    // line's opening (isSpawnAnnouncement, src/firstPrompt.ts), and
-    // test/spawn-false-finish.test.mjs replays a captured payload rather than
-    // reaching this send - so a call site that started typing a different
-    // [hive] line would leave every spawn's false finish live with nothing
-    // going red. This asserts against the pane, which is where the real
-    // sendText landed.
-    //
-    // Whitespace is stripped from BOTH sides before comparing: a pane wraps a
-    // long line at its own width, and a wrap inserts a newline that would
-    // otherwise split the prefix. Wrapping can only add whitespace, so this
-    // stays honest about what was typed.
-    const { output } = await mcpReady.call("agent_output", { name: "spawn-ready" });
-    const squash = (s) => s.replace(/\s+/g, "");
-    assert.ok(
-      squash(output).includes(squash(SPAWN_ANNOUNCEMENT_PREFIX)),
-      `the announcement hive typed must still be the one src/hook.ts recognises; pane showed: ${output}`,
-    );
-  });
+      // THE PROPERTY UNDER TEST: agent_spawn's own return already implies
+      // the pane was ready, so the immediately-following send below is safe
+      // BY CONSTRUCTION rather than by luck. Asserted directly (spawn_ms
+      // comfortably exceeds the artificial 2s render delay) rather than
+      // inferred from the send succeeding, so a future change that makes
+      // the wait a no-op fails HERE with a clear message instead of only on
+      // the send assertion below, which a flaky pane could also fail for
+      // unrelated reasons.
+      assert.ok(
+        spawnMs >= 1800,
+        `agent_spawn must not return before the pane is ready; returned after ${spawnMs}ms against a 2000ms render delay`,
+      );
+      assert.equal(receipt.ready, true, "the pane must have been detected as ready before agent_spawn returned");
 
-  // Todo 367, and this is the test that PINS the ceiling split above rather
-  // than describing it: a pane that takes seconds to draw is what a loaded
-  // machine produces, and it must still announce. Proven red first, which is
-  // the whole point of it existing - against the 2000ms client this fails on
-  // the assertion below with "The pane never became ready", the identical
-  // note the real load failure produced. So a future edit that points these
-  // spawns back at a short ceiling turns this red deterministically instead
-  // of waiting for a busy afternoon to notice.
-  //
-  // 3s is chosen to sit past the old 2000ms ceiling with room to spare, not
-  // to model any particular machine: the measured tail under a concurrent
-  // suite was 3916ms (see before()), so this is a mild version of a load
-  // spike this box has actually produced. It costs ~3.2s of suite time, and
-  // it is the only fixed sleep in the file - everything else here is polled.
-  //
-  // WHAT THE PANE READ BELOW DOES AND DOES NOT CATCH, both MEASURED by
-  // mutating dist/ and running this file, because all three counselors seats
-  // predicted the first one and the measurement contradicts them:
-  //   Hardcoding `ready = true` in agent_spawn (type blindly, never wait):
-  //     this test still PASSES. The pane is a plain shell, and a tty echoes
-  //     what is typed at it whether or not anything is reading, so "[hive]"
-  //     is on screen either way. A pane read cannot discriminate here. The
-  //     file does catch that mutation - "never draws anything" below flips to
-  //     announced:true, and both dialog cases get [hive] typed at them - so
-  //     the coverage exists; it is simply not THIS test's.
-  //   Reporting announced:true without calling sendText: this test FAILS, on
-  //     the pane assertion, with its own message. That is the mutation
-  //     .claude/rules/tmux-and-panes.md records counselors' codex seat
-  //     finding against this same file, and the reason that rule requires
-  //     every control here to assert DELIVERY rather than a receipt flag.
-  // So the read earns its place against one mutation class and provably not
-  // against the other. Stated rather than implied, since "asserts the pane"
-  // reads like it covers both.
-  it("still announces when the pane is slow to render, not only when it is fast", async () => {
-    const receipt = await spawnShowing("spawn-slow-ready", `sleep 3; ${replayFixture("ready-idle.txt")}`, mcpReady);
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, true, whyNotAnnounced(receipt));
-    assert.equal(receipt.note, undefined);
-    // Polled, not read once: send-keys returns as soon as tmux has queued the
-    // keystrokes, so a single capture races the render on exactly the loaded
-    // machine this test is about (common-issues/reading-a-pane-right-after-
-    // typing-into-it.md). The happy path still costs one capture.
-    let output = "";
-    for (let attempt = 0; attempt < 20 && !/\[hive\]/.test(output); attempt++) {
-      if (attempt > 0) await sleep(100);
-      ({ output } = await mcp.call("agent_output", { name: "spawn-slow-ready" }));
+      // No extra wait here - this call fires the instant agent_spawn
+      // returns, which is exactly the dispatch shape (spawn and send in the
+      // same tool block) todo 384 measured.
+      const sendReceipt = await patientMcp.call("agent_send", { name, text: "REAL ASSIGNMENT", submit: false });
+      assert.equal(sendReceipt.sent, true);
+
+      const { output } = await patientMcp.call("agent_output", { name });
+      assert.match(
+        output,
+        /REAL ASSIGNMENT/,
+        "the text must have actually reached the pane, not been silently swallowed by a cold terminal",
+      );
+    } finally {
+      await patientMcp.close();
     }
-    assert.match(output, /\[hive\]/, "announced:true has to mean the line reached the pane, not just the receipt");
-  });
-
-  it("still announces mid-turn busy, which must not be read as a dialog", async () => {
-    const receipt = await spawnShowing("spawn-busy", replayFixture("busy-mid-turn.txt"), mcpReady);
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, true, whyNotAnnounced(receipt));
-  });
-
-  // RESIDUAL, NAMED RATHER THAN LEFT LOOKING CLEARED (counselors, all three
-  // seats). The two dialog spawns below stay on the 2000ms client, and there
-  // that ceiling is not only a delay: a dialog fixture never matches
-  // INPUT_BOX_PRESENT, so the whole wait is also the only grace the `cat`
-  // gets before paneChoiceCheck reads the pane. A fixture that has not
-  // rendered by then reads as no-dialog, the receipt carries the not-ready
-  // note, and the assert.match on /waiting on a choice/ fails - todo 367's
-  // flake one assertion over, driven by the same render distribution.
-  // NOT FIXED HERE, deliberately: raising these two costs ~4s each on every
-  // suite run, because unlike the ready cases they pay their ceiling in full,
-  // against a tail this box produced once in forty samples under deliberate
-  // three-lane load and never once across the twelve full runs this lane
-  // measured. Recorded on todo 367 for the lead rather than absorbed.
-  // The rename/send dialog cases further down share the shape but more
-  // weakly: their assertions are on a LATER call's receipt, so the spawn's
-  // own 2s of waiting is extra render grace for them.
-  //
-  // Todo 73. A real folder-trust or /model-picker screen carries no readiness
-  // marker (that absence is #30's own fix), so before the spawn dialog check
-  // ran unconditionally these two landed in the not-ready branch every time
-  // and never reached the dialog branch at all: /NOT sent/ matches both
-  // branches' notes, so the assertion below could not have told them apart,
-  // and deleting the dialog check entirely left both tests passing (13/14,
-  // only the synthetic both-markers test caught it). Asserting the dialog
-  // note and the tail is the fix: only the dialog branch produces either.
-  it("refuses a folder-trust prompt with the dialog note and a tail, not the not-ready note", async () => {
-    const receipt = await spawnShowing("spawn-trust", replayFixture("folder-trust-dialog.txt"));
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, false);
-    assert.match(receipt.note, /waiting on a choice/);
-    assert.match(receipt.tail, /trust this folder/, "the tail is what proves this hit the dialog branch");
-    const { output } = await mcp.call("agent_output", { name: "spawn-trust" });
-    // Immune, not just designed-safe: `output` is the pane's rendered
-    // screen, and this pane never held anything but `cat folder-trust-dialog.txt;
-    // sleep 600` plus whatever this test typed, so a false negative would need
-    // the literal bracketed "[hive]" text sitting inside that STATIC, checked-in
-    // fixture. Verified by grep across every fixture in test/fixtures/panes/ -
-    // none carry it, only bare "hive" inside cwd paths (folder-trust-dialog.txt
-    // itself has one, in its own scratch-path line). A fixture later re-recorded
-    // from a real session that happened to scroll another agent's own [hive]
-    // announcement into view would silently defeat this check.
-    assert.doesNotMatch(output, /\[hive\]/, "nothing may have been typed at the dialog");
-  });
-
-  it("refuses the /model picker with the dialog note and a tail, not the not-ready note", async () => {
-    const receipt = await spawnShowing("spawn-model", replayFixture("model-picker-dialog.txt"));
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, false);
-    assert.match(receipt.note, /waiting on a choice/);
-    assert.match(receipt.tail, /Esc to cancel/, "the tail is what proves this hit the dialog branch");
-    const { output } = await mcp.call("agent_output", { name: "spawn-model" });
-    // Same immunity as the folder-trust case above: model-picker-dialog.txt is
-    // static and grepped clean of "[hive]".
-    assert.doesNotMatch(output, /\[hive\]/);
-  });
-
-  // The other side of the same fix: a pane that genuinely never becomes
-  // ready (no dialog, just slow or dead) must still land on the not-ready
-  // note, not be silently upgraded to the dialog one. A fake claude that
-  // exits immediately never draws anything, so waitForPaneInput times out and
-  // paneChoiceCheck reads an empty pane -- CHOICE_DIALOG cannot match nothing.
-  it("still reports not-ready, not a dialog, for a pane that never draws anything", async () => {
-    const receipt = await spawnShowing("spawn-never-ready", "sleep 600");
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, false);
-    assert.match(receipt.note, /never became ready/);
-    assert.equal(receipt.tail, undefined);
-  });
-
-  // Decision D5, the grep case (round 2). "Esc to cancel" on screen is not
-  // enough by itself: the input box is on the same screen too, so there is
-  // somewhere for the paste to go and nothing to answer. Refusing here is
-  // exactly the D4 bug round 2 found -- a worker that greps for the dialog
-  // string, or opens the fixture file, would have been refused forever, with
-  // no real dialog ever going to clear.
-  it("still announces when the marker is grepped text, not a real dialog", async () => {
-    const receipt = await spawnShowing("spawn-grepped-marker", printScreen(GREPPED_MARKER_STILL_READY), mcpReady);
-    spawned.push(receipt.agent_id);
-    assert.equal(receipt.announced, true, whyNotAnnounced(receipt));
-    assert.equal(receipt.note, undefined);
-    const { output } = await mcp.call("agent_output", { name: "spawn-grepped-marker" });
-    assert.match(output, /\[hive\]/, "there was an input box, so the announcement must have landed");
   });
 });
 

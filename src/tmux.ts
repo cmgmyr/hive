@@ -2414,12 +2414,13 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
     // The prompt box border and the shortcuts hint both only appear once the
     // TUI has taken over the pane. This is claude's chrome, so it is coupled
     // to its version: if a redesign drops every marker, every spawn returns
-    // false at the timeout and no worker gets its visible [hive] line. That
-    // is loud rather than silent -- agent_spawn reports announced: false with
-    // a note every time -- and the system-prompt brief still lands, so the
-    // crew keeps working. It degrades, it does not hang, and it does not
-    // pretend. If you are here because announced is always false, check this
-    // regex against a current claude before changing the caller.
+    // false at the timeout and agent_spawn reports ready: false with a note
+    // every time. Nothing is typed regardless of this result (todo 387), so
+    // the failure mode is a wait that always burns its full ceiling rather
+    // than a worker that never gets a line - degraded, not hung, and the
+    // system-prompt brief still lands either way. If you are here because
+    // ready is always false, check this regex against a current claude
+    // before changing the caller.
     //
     // Issue #30. claude 2.1.220 dropped both original markers: the input box
     // is now drawn with a straight rule rather than rounded corners, and the
