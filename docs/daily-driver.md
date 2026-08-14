@@ -51,6 +51,16 @@ hive re-applies the layout whenever a worker spawns or closes, so it holds up as
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
 
+## Permission mode
+
+hive does not set a permission mode. A worker inherits whatever mode Claude Code's own configuration gives it at the moment it spawns, fixed for that session: hive passes no `--permission-mode` flag and has no `hive.yml` key for one. These docs go no higher than `auto`; hive itself never raises the mode for you.
+
+Whether a worker on `auto` ever stops depends on two things together, not the mode alone: the mode and your own permission allow list (the `permissions` block in `~/.claude/settings.json`, or a project's own settings). A broad allow list can mean `auto` never prompts at all; a narrow one stops sooner. A worker that stops on a prompt is a modal pane, not a crash: it stops until someone answers it.
+
+Answer it by hand: attach (see [Watching and taking over workers](#watching-and-taking-over-workers) above) and respond in the worker's own pane. From outside the pane, `agent_send`'s `text` refuses on a dialog rather than typing into it, returning the pane's tail so you can read the prompt; `agent_send`'s `keys` is the supported way to drive it from outside instead, deliberately left unguarded, because pressing a key is the only way to unstick a dialog from outside the pane.
+
+Arm a standing watch before you spawn workers, on any mode that can prompt: `wake_when_idle(scope: "project")`. It reports a worker stopped on a permission prompt to the watch's owner, always, overriding wherever else the watch delivers. A plain idle report goes to the watch's own delivery target instead, so the two land in the same place only if you never set one. With no watch armed, nothing is pushed to you: `agent_list` shows the worker in state `waiting`, and `hive doctor` prints its pane tail so you can read the prompt itself.
+
 ## Wake-ups, not polling
 
 Workers report their state (`working`, `idle`, `waiting`) the moment it changes, through Claude Code hooks. Set a wake-up and go quiet instead of checking in:
