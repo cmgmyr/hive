@@ -116,6 +116,18 @@ function agentRow({ name, target, socket = ownSocket }) {
   ).run(project, `agent:${name}`, name, target, socket);
 }
 
+// Todo 399. The lead row this check was blind to until this lane. `kind`
+// and `command` are the two columns the new probe branches on, so both are
+// parameters here rather than baked in: `reportsAgentStateLog` (which gates
+// the per-worker loop) requires kind='agent', so a lead can never reach that
+// loop and the probe had to be its own read.
+function leadRow({ name = "lead", target, socket = ownSocket, command = "claude" }) {
+  db.prepare(
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state)
+     VALUES (?, ?, ?, ?, ?, ?, '/tmp/lead', 'running', 'lead', 'working')`,
+  ).run(project, `lead:${name}`, name, target, socket, command);
+}
+
 function reset() {
   db.exec("DELETE FROM agent_state_log; DELETE FROM agents;");
 }
@@ -192,8 +204,148 @@ describe(
       assert.doesNotMatch(stdout, /worker-healthy:[\s\S]*?input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude worker box\(es\) probed: 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
         `a clean run must still say something, not just stay silent; got:\n${stdout}`,
+      );
+    });
+
+    // TODO 399. The exclusion this check shipped with, closed. The loop
+    // above is `kind = 'agent'`, so the LEAD's pane was never probed - and
+    // the lead's pane is the only pane a human types into, which makes it
+    // the only pane where this detector failing destroys a person's
+    // half-written message rather than a wake. That is not hypothetical:
+    // todo 389 is the incident, and todo 399 is its mechanism.
+    //
+    // RED-FIRST against the version without the lead probe: the warn does
+    // not appear and the count reads 1 (the worker alone), not 2.
+    it("TODO 399: warns on the LEAD's own drifted box, and counts it alongside the workers", async () => {
+      reset();
+      leadRow({ target: driftedPane });
+      agentRow({ name: "worker-healthy-beside-lead", target: healthyPane });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /warn {2}lead lead: input box classifies 'unknown'/,
+        `expected a named warn for the lead's own pane; got:\n${stdout}`,
+      );
+      // The warn says WHY this pane is the one that matters, which the
+      // per-worker wording deliberately does not.
+      assert.match(
+        stdout,
+        /lead lead:[\s\S]*?the pane a human types into/,
+        "the lead's warn must name the stake that makes it different from a worker's",
+      );
+      assert.match(
+        stdout,
+        /input box classifier: 2 running claude box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        `the lead must be inside the ratio, not reported beside it; got:\n${stdout}`,
+      );
+    });
+
+    // TODO 399, PR GATE ON THE REBASED HEAD - AND THE REASON IT SURVIVED
+    // REVIEW IS THE PART WORTH KEEPING. Every seeded case in this file that
+    // calls leadRow() also calls agentRow(), so the LEAD-ONLY project was not
+    // exercised anywhere: a fixture corpus structurally unable to see a case,
+    // the same class as the 220-column blindness this lane found in
+    // test/fixtures/panes/, in a different dimension. Two instances in one
+    // lane.
+    //
+    // The summary line used to phrase itself off the LEAD counter alone, so a
+    // project with a running claude lead and no countable worker - no agent
+    // rows yet, or every worker row foreign-socket or non-claude - printed
+    // "workers plus the lead's own pane" having probed no worker at all. A
+    // report claiming a measurement it did not take, in the surface this lane
+    // exists to make trustworthy.
+    //
+    // RED against phrasing off `leadsProbed` alone.
+    it("TODO 399: a project with a lead and no countable worker says so, and does not claim workers", async () => {
+      reset();
+      leadRow({ target: healthyPane });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /input box classifier: 1 running claude box\(es\) probed \(the lead's own pane only - no worker pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        `a lead-only project must not claim a worker probe it never made; got:\n${stdout}`,
+      );
+      assert.doesNotMatch(
+        stdout,
+        /workers plus the lead's own pane/,
+        "no worker was probed, so the summary must not say workers were",
+      );
+    });
+
+    // The same gap from the other side: a lead that exists but is NOT
+    // countable (foreign socket here; non-claude is covered separately above)
+    // alongside a real worker must still say "workers only". This is the
+    // direction counselors already fixed, kept as the control that stops a
+    // future edit collapsing the three cases back into two.
+    it("TODO 399: a worker with an uncountable lead still says workers only", async () => {
+      reset();
+      leadRow({ target: driftedPane, socket: FOREIGN_SOCKET });
+      agentRow({ name: "worker-alone", target: healthyPane });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly/,
+        `a foreign-socket lead is not a probed lead; got:\n${stdout}`,
+      );
+    });
+
+    // TODO 399, COUNSELORS ROUND 1 (two seats independently). The first
+    // version used `.get()` with `ORDER BY id`, so with two running lead rows
+    // only the LOWEST id was probed. That state is reachable - ensureLeadRow's
+    // own comment in src/cli.ts documents it - and lead rows are exempt from
+    // the janitor, so a dead-but-`running` first row shadows the live lead
+    // FOREVER: a standing "not classified" in the denominator and the one
+    // pane a human types into never probed. Seeded here the way the defect
+    // actually arrives: an older foreign-socket lead at the lower id, the
+    // live drifted one above it.
+    //
+    // RED against `.get()`: the warn never appears, and the count reads 1
+    // (the foreign row is skipped) with the "no lead pane was probeable"
+    // wording rather than 2.
+    it("TODO 399: a stale lower-id lead row does not shadow the live lead", async () => {
+      reset();
+      leadRow({ name: "lead-stale", target: driftedPane, socket: FOREIGN_SOCKET });
+      leadRow({ name: "lead-live", target: driftedPane });
+      agentRow({ name: "worker-healthy-two-leads", target: healthyPane });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /warn {2}lead lead-live: input box classifies 'unknown'/,
+        `the live lead must be probed even when a stale row sorts ahead of it; got:\n${stdout}`,
+      );
+      assert.match(
+        stdout,
+        /input box classifier: 2 running claude box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        `the foreign-socket lead must be skipped, not counted; got:\n${stdout}`,
+      );
+    });
+
+    // The gate, and it is the same one every typing path here carries:
+    // inputBoxState finds its box by claude's own chrome, so probing a lead
+    // running something else would count a permanent, meaningless "not
+    // classified" against the ratio the project-scoped warn rests on.
+    it("TODO 399: a lead running something other than claude is not probed at all", async () => {
+      reset();
+      leadRow({ target: driftedPane, command: "bash" });
+      agentRow({ name: "worker-healthy-only", target: healthyPane });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(stdout, /lead lead: input box classifies/);
+      assert.match(
+        stdout,
+        /input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        `a non-claude lead must not enter the count in any of the three states; got:\n${stdout}`,
       );
     });
 
@@ -217,7 +369,7 @@ describe(
       assert.doesNotMatch(stdout, /worker-nobox:[\s\S]*?input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude worker box\(es\) probed: 0 classified cleanly, 0 classified 'unknown', 1 not classified/,
+        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 0 classified 'unknown', 1 not classified/,
         `a null read must be its own counted state, not folded into clean or unknown; got:\n${stdout}`,
       );
     });
@@ -250,7 +402,7 @@ describe(
       assert.match(stdout, /warn {2}worker worker-drifted-2: input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude worker box\(es\) probed: 0 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 1 classified 'unknown', 0 not classified/,
         `the foreign row must not inflate the denominator; got:\n${stdout}`,
       );
     });

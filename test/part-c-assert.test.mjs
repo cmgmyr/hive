@@ -612,32 +612,39 @@ describe("runAllAssertions", () => {
 // regex literals, unlike restart-lead.sh's bash ERE strings, so this can
 // compare them as TEXT directly rather than needing the behavioural
 // cross-dialect comparison that file's view-session test does.
-describe("part-c-assert.mjs's dialog/input-box markers stay in sync with src/tmux.ts", () => {
-  it("CHOICE_DIALOG and INPUT_BOX_PRESENT copy src/tmux.ts's own regex source exactly", () => {
-    const script = readFileSync(join(REPO, "scripts", "part-c-assert.mjs"), "utf8");
-    const tmuxSource = readFileSync(join(REPO, "src", "tmux.ts"), "utf8");
+describe("part-c-assert.mjs does not keep its own copy of the dialog predicate (todo 399)", () => {
+  // WHAT THIS TEST USED TO BE, AND WHY IT WAS REPLACED RATHER THAN REPAIRED.
+  // It extracted `CHOICE_DIALOG` and `INPUT_BOX_PRESENT` from both files as
+  // regex SOURCE TEXT and asserted the strings matched. That pins a copy; it
+  // does not remove one, and it only works while both copies are regex
+  // literals. Todo 399 replaced the input-box half with a structural anchor,
+  // the extraction returned undefined, and this test went red - correctly,
+  // but the copy underneath had been carrying todo 392's bug through that
+  // lane's own acceptance run before anyone noticed. Two lanes bitten by one
+  // structure is a reason to delete the structure.
+  //
+  // So the copy is gone and this asserts the ABSENCE of a new one. Comments
+  // are stripped first: this file's own prose says "INPUT_BOX_PRESENT" while
+  // explaining the history, and a test that cannot tell an explanation from a
+  // declaration would forbid documenting the decision it exists to enforce.
+  const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-    const scriptChoice = script.match(/^const CHOICE_DIALOG = \/(.*)\/;$/m)?.[1];
-    const scriptInputBox = script.match(/^const INPUT_BOX_PRESENT = \/(.*)\/;$/m)?.[1];
-    const tsChoice = tmuxSource.match(/const CHOICE_DIALOG = \/(.*)\/;/)?.[1];
-    const tsInputBox = tmuxSource.match(/const INPUT_BOX_PRESENT = \/(.*)\/;/)?.[1];
+  it("imports the predicate from dist/ instead of transcribing it", () => {
+    const script = stripComments(readFileSync(join(REPO, "scripts", "part-c-assert.mjs"), "utf8"));
 
-    // Same reasoning as restart-lead.sh's own version of this test: an
-    // undefined extraction means the regex above is stale against a
-    // reformatted source line, not evidence the two copies agree.
-    assert.ok(
-      scriptChoice && scriptInputBox && tsChoice && tsInputBox,
-      `could not extract one of the four markers: script=[${scriptChoice}/${scriptInputBox}] ts=[${tsChoice}/${tsInputBox}]`,
+    assert.match(
+      script,
+      /screenAwaitingChoice.*dist\/tmux\.js/s,
+      "part-c-assert.mjs must import the real predicate from this checkout's dist/, not re-derive it",
     );
-    assert.equal(
-      scriptChoice,
-      tsChoice,
-      "part-c-assert.mjs's CHOICE_DIALOG has drifted from src/tmux.ts's own regex - this is the step 11 live driver, and todo 392 shipped from exactly this drift",
-    );
-    assert.equal(
-      scriptInputBox,
-      tsInputBox,
-      "part-c-assert.mjs's INPUT_BOX_PRESENT has drifted from src/tmux.ts's own INPUT_BOX_PRESENT",
-    );
+    for (const declaration of [/const\s+CHOICE_DIALOG\s*=/, /const\s+INPUT_BOX_PRESENT\s*=/, /for shortcuts/]) {
+      assert.doesNotMatch(
+        script,
+        declaration,
+        `scripts/part-c-assert.mjs has grown its own copy of the dialog predicate again (${declaration}). ` +
+          "That copy shipped todo 392's bug through its own acceptance run and went stale again in todo 399; " +
+          "import screenAwaitingChoice from dist/tmux.js instead. See src/tmux.ts's own comment on that export.",
+      );
+    }
   });
 });

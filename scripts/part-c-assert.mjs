@@ -329,33 +329,31 @@ export function assertWorkerUsedItsOwnMcpServer(result) {
   return `worker confirmed calling ${confirmed} -- its own branch's hive-iso MCP server, not any other registration`;
 }
 
-// Mirrors src/tmux.ts's own CHOICE_DIALOG / INPUT_BOX_PRESENT / D5
-// discriminator, not imported: those three are module-private (not
-// exported), and this lane does not touch src/tmux.ts for a two-regex
-// discriminator -- same shape as TERMINAL_STATUSES and LOG_MAX_ROWS above.
-// Keep in sync by hand; `grep -n CHOICE_DIALOG src/tmux.ts` to check for
-// drift, pinned by test/part-c-assert.test.mjs's own sync test. See that
-// file's own comment for why the pair, not the footer alone, is the answer:
-// a modal REPLACES claude's input affordance rather than sitting beside it,
-// so CHOICE_DIALOG present AND INPUT_BOX_PRESENT absent is what "awaiting a
-// choice" means.
+// TODO 399: THIS USED TO BE A HAND-SYNCED COPY OF src/tmux.ts's CHOICE_DIALOG,
+// INPUT_BOX_PRESENT and D5 discriminator, kept honest by a sync test that
+// compared the two regexes' SOURCE TEXT. That worked only while the predicate
+// WAS a regex literal. Todo 399 replaced it with a structural anchor over the
+// box's own borders, the extraction returned undefined, and the sync test went
+// red - which is the good outcome; the bad one is what the copy was doing in
+// the meantime. Todo 392 had already found this exact copy carrying the bug
+// that lane fixed, right through its own acceptance run, because this file is
+// the STEP 11 LIVE DRIVER (part-c-gate.mjs runs it against a real worker).
+// Twice is a structure, not an accident.
 //
-// Todo 392 found this copy still carried the bug that lane fixed: this is
-// the STEP 11 LIVE DRIVER (part-c-gate.mjs runs it against a real worker),
-// so it was misclassifying an ordinary tool-permission prompt as "no
-// dialog" the same way src/tmux.ts's own pair was, right up through the
-// lane's own acceptance run. Synced to match; see src/tmux.ts's own D1/D2/D3
-// comments for why each alternative moved, round 2's M1/M2 for why "manual
-// mode on" and "Would you like to proceed" moved again, and M1's own
-// completion for "permissions on" (bypassPermissions mode's footer, missed
-// by "mode on" alone). No window mismatch to fix here unlike
-// scripts/restart-lead.sh's copy: paneTail above (part-c-gate.mjs) reads
-// through the real agent_output MCP tool, which already applies
-// src/tmux.ts's own capturePane() trimming - this file never reads tmux
-// directly.
-const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
-const INPUT_BOX_PRESENT = /for shortcuts|shift\+tab to cycle|mode on|permissions on/;
-const isAwaitingChoiceScreen = (screen) => CHOICE_DIALOG.test(screen) && !INPUT_BOX_PRESENT.test(screen);
+// So it is imported now. `screenAwaitingChoice` is the string-taking form of
+// the same function src/tmux.ts's own paneAwaitingChoice calls; see its
+// comment there for why the pair (footer present AND input box absent), and
+// why the box half is anchored rather than matched. This file reads its tail
+// through the real agent_output MCP tool, which has already applied
+// src/tmux.ts's own capturePane trimming, so there is no window to match here
+// and never was - unlike scripts/restart-lead.sh's copy, which had one.
+//
+// From THIS checkout's dist/, deliberately, not from whatever `hive` resolves
+// to on PATH: the checkout that ships this script is the one whose
+// classification is being asserted. Same reasoning restart-lead.sh gives for
+// its own dist/projectYml.js import.
+const { screenAwaitingChoice } = await import(new URL("../dist/tmux.js", import.meta.url));
+const isAwaitingChoiceScreen = (screen) => screenAwaitingChoice(screen);
 
 // Todo 141 item 5, second half: paneTail is sampled every 2 seconds
 // (part-c-gate.mjs's pollUntilDone) and read by NOTHING -- agent_output

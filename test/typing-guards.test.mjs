@@ -37,9 +37,33 @@ const fixturePath = (file) => join(FIXTURES, file);
 // Claude itself has never been observed rendering both markers on one real
 // screen, so this stays synthetic the same way test/false-idle.test.mjs pins
 // the scheduler's own guard with a printf: what is under test is hive's
-// decision, not claude's chrome. INPUT_BOX_PRESENT and CHOICE_DIALOG are each
-// pinned separately, against real captures, in test/pane-fixtures.test.mjs.
-const GREPPED_MARKER_STILL_READY = "shift+tab to cycle\\n 1. Yes\\n 2. No\\n\\n Esc to cancel";
+// decision, not claude's chrome. The two halves of the pair are each pinned
+// separately, against real captures, in test/pane-fixtures.test.mjs.
+//
+// TODO 399 HAD TO REBUILD THIS SCREEN, AND THE REASON IS THE FINDING. It
+// used to be five lines: the literal string "shift+tab to cycle", then a
+// dialog's options and "Esc to cancel". That satisfied D5 only because
+// "shift+tab to cycle" was itself an INPUT_BOX_PRESENT alternative - so the
+// screen proved hive's decision by ACCIDENT, on a shell pane with no input
+// box anywhere on it. That accident is the `╰` bug's own shape (a substring
+// standing in for a box) pointed the other way, and the box anchor removes
+// it: a bare shell printf now correctly reads as having no box, which for a
+// NON-claude pane is the fail-closed degeneration this file already records.
+//
+// So the screen now carries what it always claimed to: a real input box -
+// top rule, `❯`+NBSP prompt row, closing rule, a status line and the mode
+// footer, in claude's own layout - with the grepped dialog text sitting in
+// the SCROLLBACK above it. That is the case D5 is actually about (a worker
+// that grepped for the string while its own box is still on screen), and it
+// is the same case whether the predicate under it is a footer substring or
+// the box's own borders.
+const GREPPED_MARKER_STILL_READY =
+  " 1. Yes\\n 2. No\\n\\n Esc to cancel\\n" +
+  "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\\n" +
+  "\u276f\u00a0\\n" +
+  "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\\n" +
+  "  hive-scratch | ctx: 0k\\n" +
+  "  \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 for agents";
 
 let mcp;
 let projectId;

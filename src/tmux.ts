@@ -1759,7 +1759,7 @@ export interface InputBoxState {
 // reports nothing; agent_rename's success carries no box either. `input_box`
 // appears on agent_status/agent_output, which nobody polls while sends look
 // fine, and on the refusals that would have STOPPED happening. So if claude
-// changes its prompt glyph while INPUT_BOX_PRESENT still matches, every pane
+// changes its prompt glyph while the box is still recognisable, every pane
 // reads "unknown", all three call sites revert to pre-guard behaviour, and
 // nothing anywhere says so. No test catches it either: test/input-box.test.mjs
 // replays frozen captures that still carry the old glyph, so a real chrome
@@ -1769,18 +1769,35 @@ export interface InputBoxState {
 // predicate - widening trades a fail-safe direction for a fail-loud one at
 // all three call sites at once, which is the thing .claude/rules/tmux-and-
 // panes.md refuses. Todo 319 built the channel: `hive doctor` (src/cli.ts)
-// now reads inputBoxState() for every running, non-foreign-socket claude
-// worker and warns, by name, on "unknown".
+// reads inputBoxState() for every running, non-foreign-socket claude worker
+// - and, since todo 399, for the lead's own pane - warning by name on
+// "unknown".
 //
 // SAY PRECISELY WHAT THAT CLOSES, because a broader claim here already shipped
 // once and was wrong (lead triage on this lane's own PR, after counselors
-// found it): this guards the PARTIAL-drift case only - INPUT_BOX_PRESENT
-// still matches (a box is genuinely on screen) and the prompt row inside it
-// cannot be found. A TOTAL drift, where INPUT_BOX_PRESENT itself stops
-// matching, returns null here (see the check above) and is exactly as silent
-// to the three callers as before this lane existed. Full reasoning and the
-// reopen trigger for closing that gap: .claude/rules/tmux-and-panes.md, the
-// "unknown exemption" section.
+// found it): it guards the PARTIAL-drift case - a box is genuinely on screen
+// and the prompt row inside it cannot be found.
+//
+// TODO 399 CLOSED THE TOTAL CASE THIS PARAGRAPH USED TO LEAVE OPEN, and the
+// correction matters because the old text told a reader the gap was
+// permanent. It used to say: a TOTAL drift, where INPUT_BOX_PRESENT itself
+// stops matching, returns null here and is exactly as silent to the three
+// callers as before todo 319 existed. That was true, and it was not
+// hypothetical - it is what happened. INPUT_BOX_PRESENT's four alternatives
+// all lived on ONE line of claude's UI, claude multiplexes that line, and
+// while another hint occupied it the predicate was false on a pane with a
+// box plainly on screen (test/fixtures/panes/footer-slot-taken.txt, measured
+// live on the lead's own pane on main). Every guard that rests on this
+// function was ABSENT, not weakened, for the duration of the hint.
+//
+// The predicate now anchors on the box itself (`findInputBox`, below), which
+// is present whatever claude puts in that line, so the total case it names
+// no longer has a producer of this shape. What has NOT changed: a claude
+// release that redraws the box's own borders would still take this to null
+// on every pane, and it would still be silent to the three callers. The
+// class is narrowed to "claude redesigns the box", not closed - which is
+// worth saying, because "the box" is a far more stable thing to key on than
+// "the footer" and the temptation is to read that as a guarantee.
 export const holdsHumanInput = (box: InputBoxState | null): boolean => box?.state === "pending";
 
 // The horizontal rule claude draws as the input box's own top and bottom
@@ -1789,6 +1806,259 @@ export const holdsHumanInput = (box: InputBoxState | null): boolean => box?.stat
 // rather than adding a marker of its own, so it is the stop condition
 // classifyInputBox scans for below.
 const BOX_BORDER = /^─+$/;
+
+// TODO 399. The box's TOP edge is not always a bare rule. Claude 2.1.232
+// draws the terminal's own title into it as an inverse-video chip -
+// test/fixtures/panes/footer-slot-taken.txt row 62 reads
+// "───…─── Hive Overnight Lead 2026-08-13 ──" - so BOX_BORDER does not match
+// it. Widening BOX_BORDER itself is the wrong repair twice over: it is the
+// stop condition classifyInputBox scans FORWARD for, where only the bare
+// closing edge is ever seen, and anything loose enough to accept a title
+// would also accept the indented preview rules a dialog draws
+// (tool-permission-prompt.txt row 21, plan-approval-dialog.txt row 42).
+//
+// Matched by its LEADING run instead: a row that STARTS with box-drawing
+// horizontals is an edge, whatever claude hangs off the end of it. The
+// four-character floor is there only so a stray `─` in ordinary prose is not
+// an edge; nothing depends on its exact value.
+const BOX_TOP_BORDER = /^─{4,}/;
+
+// TODO 399, AND THIS IS THE WHOLE LANE: WHAT PROVES CLAUDE'S INPUT BOX IS ON
+// SCREEN RIGHT NOW.
+//
+// It used to be INPUT_BOX_PRESENT, a regex over four substrings of the
+// permission-mode footer. Every one of those four lives on ONE line of
+// claude's UI, and claude multiplexes that line with other transient hints.
+// Measured live on main, 2026-08-14, on the lead's own pane (claude 2.1.232,
+// 105 columns, bypassPermissions), captured with the identical command
+// inputBoxState issues: a real prompt row on screen carrying a ghost, and
+// not one of `for shortcuts`, `shift+tab to cycle`, `mode on` or
+// `permissions on` anywhere in the capture, because the line read "paste
+// again to expand". Re-captured a minute later, the footer was back. Not a
+// version drift (two workers on the same 2.1.232, same width, same mode,
+// captured in the same minute, both matched) and not width (105 columns is
+// far above the 40-column truncation todo 392 measured). The capture is
+// test/fixtures/panes/footer-slot-taken.txt and it cannot be re-taken on
+// demand; the fixtures README says why.
+//
+// A FIFTH SUBSTRING WOULD BE THE WRONG FIX and this is not the widening todo
+// 392's D2/M1 argued for. Those closed TOTAL MISSES - a mode whose footer
+// never carried any alternative, at any width - by adding a marker that is
+// always there for that population. This slot is multi-purpose BY DESIGN, so
+// a fifth alternative buys one hint and loses to the next one claude puts in
+// it.
+//
+// SO ANCHOR ON THE BOX. The prompt row and its own border rules were present
+// and correct throughout the drifted capture, and they are what "an input
+// box is on screen" actually means.
+//
+// THE CONSTRAINT THIS HAS TO MEET, and it is the reason the footer gate
+// existed at all (counselors B3 on PR #37): A GLYPH ROW CAN APPEAR IN
+// SCROLLBACK. A worker that `cat`s a fixture, greps this file, or renders
+// another pane's tail draws a prompt row in its own transcript, so a prompt
+// row alone is not proof of a live box. Permissive here and this is todo
+// 392's `╰` bug rebuilt with a different glyph - a dialog's own
+// surroundings proving there is no dialog. Strict here and the guard is
+// absent again, which is the bug being fixed. Hence: the prompt row has to
+// be BRACKETED BY ITS OWN BORDERS, and that bracket has to sit at the BOTTOM
+// of the capture, where claude pins its UI.
+//
+// THREE FACTS, NOT ONE, because the callers need them apart. `prompt: null`
+// with borders found is the PARTIAL drift `hive doctor` reports as
+// "unknown": claude has control and a box is on screen, but the glyph or the
+// NBSP that finds the prompt row inside it has changed. That state used to
+// be founded on the footer matching while findInputBoxRow failed; it is
+// founded on the box's own borders now, which is strictly better evidence
+// for the same claim. A `null` return here is "no box on screen" - mid-turn
+// with the pane not yet drawn, a modal, an unreadable pane.
+interface InputBoxAnchor {
+  top: number;
+  bottom: number;
+  prompt: number | null;
+}
+
+// How far above the capture's last non-blank row the box's closing border
+// may sit. THIS IS THE SCROLLBACK DISCRIMINATOR: claude pins its UI to the
+// bottom of the pane, so a live box's closing border is always within the
+// status block of the end, while a copy of a box sitting in scrollback has
+// the whole rest of the screen underneath it.
+//
+// MEASURED, both sides. Below the closing border every real capture in
+// test/fixtures/panes/ carries three rows (status line, hive's status line,
+// mode footer) and footer-slot-taken.txt carries four (a trailing row
+// holding only an OSC-8 link). Above it, the smallest dialog block this
+// project has captured is nine rows (plan-approval-dialog.txt) and the
+// largest fifteen (folder-trust-dialog.txt), so a scrollback COPY of a box
+// sitting above a real dialog never lands inside eight.
+//
+// SAY WHAT THAT DOES NOT COVER, because it is not the same claim and the
+// mutation run found the difference. A dialog's OWN rules are inside the
+// window: plan-approval-dialog.txt's top rule sits exactly eight rows above
+// its last line, and tool-permission-prompt.txt's preview box closes six
+// rows above its last line. Neither is rejected by this bound - the first is
+// rejected because nothing box-shaped sits above it inside the box, the
+// second because BOX_BORDER does not accept a `╰…╯`. Proven by mutation:
+// dropping the top-border requirement flips t392plan, and widening
+// BOX_BORDER to accept the preview box's corners flips t392prompt. This
+// bound is the SCROLLBACK discriminator and only that; it is not, on its
+// own, what keeps a dialog from proving there is no dialog.
+//
+// THE COST OF THE BOUND, stated rather than left to be discovered: a
+// `statusLine` command is user-configurable and emits as many lines as it
+// likes. Past roughly five status rows the box's border falls outside this
+// window, the box reads absent, and todo 399's own bug returns for that
+// user - the destructive direction. Chosen anyway, because the alternative
+// is no bound, and no bound is the `╰` bug. If someone turns up with a tall
+// status line, raise this number; do not remove it.
+const BOX_TAIL_ROWS = 8;
+
+// How far above the closing border the top border may sit - i.e. how tall
+// the box itself may be. A pending message grows the box DOWNWARD (see
+// BOX_BORDER above and multiline-pending.txt), so this is a cap on how much
+// unsubmitted text a human can have typed and still be protected. Twenty-four
+// rows is far past anything observed and still far short of a capture window
+// (~68 rows), which is what keeps a dialog's own rules from pairing up
+// across half a screen. A genuinely taller box reads absent, which is the
+// destructive direction, so the number is generous on purpose.
+const BOX_MAX_ROWS = 24;
+
+// COUNSELORS ROUND 1, ALL THREE SEATS INDEPENDENTLY: THE UPWARD SCAN USED TO
+// STOP AT A BLANK ROW AND THAT RE-ARMED THE VERY CLOBBER THIS LANE EXISTS TO
+// CLOSE. The justification was "the box claude draws has no blank rows inside
+// it". That is measured only for an empty FIRST logical line
+// (multiline-empty-first-line.txt), where the prompt row still carries `❯`
+// and is non-blank after trim. An empty INTERIOR line is a different screen:
+// continuation rows carry no side chrome (measured, multiline-pending.txt),
+// so a human typing "paragraph one, blank line, paragraph two" renders a
+// genuinely blank row INSIDE the box. Reproduced against the real predicate
+// on an isolated tmux server: box `null`, `holdsHumanInput` false, so the
+// wake pastes onto the half-typed message and submits it.
+//
+// AND IT IS THE INCIDENT'S OWN SHAPE, not a constructed one. Pad 142 records
+// the message todo 389 destroyed as "92 characters over three logical lines,
+// including a deliberate blank line". The first version of this function
+// would not have held it.
+//
+// The stop is gone. What it was actually doing for the dialog path - keeping
+// the upward scan from pairing a dialog's own rule with something far above
+// it - is done properly by `inputBoxOnScreen` requiring a prompt row (see
+// its own comment), because a dialog has no prompt row at all. A blank row
+// is not evidence either way and must not be treated as any.
+function findInputBox(rows: string[]): InputBoxAnchor | null {
+  const text = rows.map((row) => stripControlBytes(stripSgr(row)).trim());
+
+  // Trailing blank rows are an artefact of the pane being taller than what
+  // claude drew, not part of the screen. capturePane already strips them for
+  // its own callers; inputBoxState reads raw and does not, so the trim
+  // happens here and both windows measure "the bottom" the same way.
+  let end = text.length - 1;
+  while (end >= 0 && text[end] === "") end -= 1;
+  if (end < 0) return null;
+
+  let bottom = -1;
+  for (let i = end; i >= 0 && end - i <= BOX_TAIL_ROWS; i--) {
+    if (BOX_BORDER.test(text[i])) {
+      bottom = i;
+      break;
+    }
+  }
+  if (bottom < 0) return null;
+
+  // A RULE WIDER THAN THE PANE WRAPS INTO SEVERAL CONSECUTIVE ROWS, AND THEY
+  // ARE ONE EDGE. Found by running this lane's own scripts half, not by
+  // review: `test/restart-lead.test.mjs` replays the 220-column
+  // ready-idle.txt into an 80-column pane, where each 220-character border
+  // renders as three rows. The first version took the lowest of those three
+  // as `bottom` and then found the SECOND one immediately above it as the
+  // top border, so the bracket closed on two rows of the same edge with the
+  // prompt row outside it - box absent, hold gone, on a screen that plainly
+  // has one. Measured: `paneHasInputBox` false at 80x24 and true at 220x50
+  // for the identical fixture.
+  //
+  // Walking to the TOP of the run rather than just skipping it is the half
+  // that matters for `classifyInputBox`, which reads every row between the
+  // prompt and this index as message content: leaving `bottom` at the lowest
+  // row would splice two rows of `───────` into the text a receipt reports
+  // as the human's unsubmitted message.
+  //
+  // A real claude pane draws to its own width and does not wrap its borders,
+  // so this is reachable through a replayed capture, a pane resized under a
+  // process that has not redrawn, and any scrollback copy of a wider screen -
+  // which is exactly the population the tail bound below is about.
+  while (bottom > 0 && BOX_BORDER.test(text[bottom - 1])) bottom -= 1;
+
+  let top = -1;
+  for (let i = bottom - 1; i >= 0 && bottom - i <= BOX_MAX_ROWS; i--) {
+    if (BOX_TOP_BORDER.test(text[i])) {
+      top = i;
+      break;
+    }
+  }
+  if (top < 0) return null;
+
+  // Bottom-up between the two borders: a box holding a multi-line message
+  // has one prompt row and plain continuation rows under it, so the LAST
+  // glyph row inside the bracket is still the prompt row, and scanning this
+  // way keeps the old findInputBoxRow's reasoning ("only the last matching
+  // row reflects the pane's current state") without its scrollback exposure.
+  let prompt: number | null = null;
+  for (let i = bottom - 1; i > top; i--) {
+    if (rows[i].includes(PROMPT_GLYPH_NBSP)) {
+      prompt = i;
+      break;
+    }
+  }
+  return { top, bottom, prompt };
+}
+
+// The shared predicate the readiness probe and the dialog discriminator ask,
+// and the replacement for INPUT_BOX_PRESENT at both. One definition, for the
+// reason CHOICE_DIALOG's own comment gives for the sibling pair: two callers
+// deciding "is claude's input box on screen" must not drift onto two
+// answers.
+//
+// IT REQUIRES THE PROMPT ROW, AND THE FIRST VERSION DID NOT. That version
+// asked only `findInputBox(...) !== null`, which is TRUE for a prompt-less
+// anchor - two rules with nothing recognisable between them. Counselors round
+// 1 found it from all three seats independently, and it is this lane
+// rebuilding todo 392's `╰` bug with a different glyph, which is the one
+// thing the brief said not to do. Reproduced against the real
+// paneAwaitingChoice on an isolated tmux server:
+//
+//     ────────────────────
+//      tool preview line
+//     ────────────────────
+//      Do you want to continue?
+//      ❯ 1. Yes
+//        2. No
+//      Esc to cancel · Tab to amend
+//
+// awaitingChoice FALSE. A real dialog reading as no dialog, on a screen the
+// RETIRED regex classified correctly, because it carries no footer string.
+// Delivery would then paste and press Enter, and the Enter picks "1. Yes".
+//
+// The population is also much wider than the residual first recorded: a
+// non-claude pane does not have to PRINT claude's chrome, it only has to emit
+// two horizontal rules near the bottom of its output, which pytest, rich, and
+// most TUIs do routinely.
+//
+// SO THE THREE CONSUMERS SPLIT HERE, DELIBERATELY, AND THAT IS THE POINT.
+// `inputBoxState` keeps the prompt-less anchor and reports it as "unknown" -
+// borders on screen, prompt row not findable, which is the PARTIAL drift
+// `hive doctor` warns on and the reason that state still exists. The
+// PRESENCE predicate cannot afford the same generosity, because for the
+// dialog guard and the readiness probe a false present is the destructive
+// direction. One function, two questions, and the answer differs by design:
+// "is something box-shaped on screen" is not "is there an input box here to
+// type into".
+//
+// WHAT IT COSTS, stated rather than discovered later: on a pane whose prompt
+// GLYPH has drifted, readiness now reads not-ready where the footer regex
+// read ready. That is the conservative direction and it is bounded - todo 387
+// records that nothing is typed on a false readiness either way, so the cost
+// is a spawn that reports `ready: false` and a brief that still lands. The
+// alternative is a spawn typing into a pane hive cannot locate the input of.
+const inputBoxOnScreen = (screen: string): boolean => findInputBox(screen.split("\n"))?.prompt != null;
 
 // Issue #34's discriminator, and ONLY that: on the input-box's first row,
 // text whose leading SGR run includes parameter 2 (faint) is not something
@@ -1823,17 +2093,28 @@ const BOX_BORDER = /^─+$/;
 // Control-stripped and length-capped (stripControlBytes, TAIL_LINE_CHARS)
 // like every other pane-derived string that leaves this file, which the
 // first version of this also skipped.
-function classifyInputBox(rows: string[], promptRowIndex: number): InputBoxState {
+function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: number): InputBoxState {
   const promptRow = rows[promptRowIndex];
   const after = promptRow.slice(promptRow.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
   const dim = leadingRunIsFaint(after);
   const firstLine = stripControlBytes(stripSgr(after)).trim();
 
+  // THE SCAN STOPS AT THE BOX'S OWN CLOSING BORDER, WHICH THE CALLER NOW
+  // KNOWS, AND NO LONGER AT THE FIRST BLANK ROW. Counselors round 1 (the same
+  // finding that removed findInputBox's blank-row stop, see its comment)
+  // established that an empty INTERIOR logical line renders as a genuinely
+  // blank row inside the box - the shape todo 389's own destroyed message
+  // had. Stopping there truncated a multi-paragraph pending message at its
+  // first paragraph and reported that as its whole content.
+  // NOT A HOLD BUG - `state` was already `pending` either way, because the
+  // first line carries text - so this never let a wake through. It is a
+  // RECEIPT bug: agent_status/agent_output would show a reader one paragraph
+  // of a message that has three, and a lead deciding whether it is safe to
+  // interrupt someone reads exactly that field. Blank rows still contribute
+  // nothing, since the join below filters empty lines out.
   const continuation: string[] = [];
-  for (let i = promptRowIndex + 1; i < rows.length; i++) {
-    const stripped = stripControlBytes(stripSgr(rows[i])).trim();
-    if (stripped === "" || BOX_BORDER.test(stripped)) break;
-    continuation.push(stripped);
+  for (let i = promptRowIndex + 1; i < boxBottom; i++) {
+    continuation.push(stripControlBytes(stripSgr(rows[i])).trim());
   }
 
   const text = [firstLine, ...continuation]
@@ -1841,15 +2122,6 @@ function classifyInputBox(rows: string[], promptRowIndex: number): InputBoxState
     .join(" ")
     .slice(0, TAIL_LINE_CHARS);
   return { state: text === "" ? "empty" : dim ? "ghost" : "pending", text };
-}
-
-// Bottom-up: the input box sits near the status line, not in scrollback, and
-// only the LAST matching row reflects the pane's current state.
-function findInputBoxRow(rows: string[]): number | null {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i].includes(PROMPT_GLYPH_NBSP)) return i;
-  }
-  return null;
 }
 
 // Issue #34. Claude Code renders a dim, context-derived suggestion (and,
@@ -1864,15 +2136,17 @@ function findInputBoxRow(rows: string[]): number | null {
 //
 // The current state of a pane's input box: real unsubmitted text, claude's
 // own ghost/hint suggestion, empty, or unknown (below). null when the pane
-// cannot be read, or when INPUT_BOX_PRESENT itself answers false, e.g.
-// mid-turn or a modal dialog -- there is legitimately no box to report on.
+// cannot be read, or when findInputBox finds no live box on it -- a pane
+// whose TUI has not come up, or a modal dialog -- there is legitimately no
+// box to report on.
 //
 // state: "unknown" (should-fix, counselors PR #37 S1) is a DIFFERENT
-// failure from null, and collapsing them was itself a bug: INPUT_BOX_PRESENT
-// true means claude has control and is not showing a modal, i.e. an input
-// box IS on screen, so failing to find its prompt row (PROMPT_GLYPH_NBSP)
-// means the chrome drifted -- claude changed how it draws the glyph or the
-// NBSP -- not that there is nothing to report. Issue #30 is this exact
+// failure from null, and collapsing them was itself a bug: a box found by
+// its own borders at the bottom of the capture means claude has control and
+// is not showing a modal, i.e. an input box IS on screen, so failing to find
+// its prompt row (PROMPT_GLYPH_NBSP) bracketed inside those borders means
+// the chrome drifted -- claude changed how it draws the glyph or the NBSP --
+// not that there is nothing to report. Issue #30 is this exact
 // failure shape for a different marker: a chrome change made every spawn's
 // readiness check silently return false forever, indistinguishable from a
 // slow pane, until someone went looking. Returning plain null here would
@@ -1881,9 +2155,10 @@ function findInputBoxRow(rows: string[]): number | null {
 // from the receipt (inputBoxField omits a null the same as it would omit
 // nothing at all). "unknown" is truthy and gets included, so drift is loud.
 //
-// GATED ON INPUT_BOX_PRESENT (counselors review on PR #37, B3): this used to
-// trust the LAST row anywhere in the window containing the prompt pair, with
-// no check that an input box is actually showing right now. That is
+// BRACKETED, NOT MERELY PRESENT (counselors review on PR #37, B3, and todo
+// 399's anchor is the second answer to the same finding): this used to trust
+// the LAST row anywhere in the window containing the prompt pair, with no
+// check that an input box is actually showing right now. That is
 // findable, and hive is a source. watchedTail embeds a worker's tail into a
 // wake body typed into the LEAD's pane; sanitizeTail only collapses a
 // trailing EMPTY box, so a non-empty (ghost or real) row can land in the
@@ -1896,6 +2171,17 @@ function findInputBoxRow(rows: string[]): number | null {
 // CHOICE_DIALOG by requiring the input box ABSENT; this closes it for the
 // input box's own contents by requiring it PRESENT first.
 //
+// TODO 399 REPLACED WHAT "PRESENT" MEANS AND THE WEDGE ABOVE IS WHY THE
+// REPLACEMENT COULD NOT BE LOOSE. `cat test/fixtures/panes/real-input.txt`
+// renders a whole box - both borders and a real prompt row - not just a
+// footer string, so a box anchor that asked only "is a prompt row bracketed
+// by rules anywhere in the window" would have re-opened this exact wedge on
+// the day it closed the footer one. findInputBox requires the bracket to sit
+// at the BOTTOM of the capture, where claude pins its UI, which is what
+// tells a live box from a copy of one in scrollback.
+// test/fixtures/panes/scrollback-box-above-dialog.txt is that case built
+// deliberately, and the mutation it dies against is removing that bound.
+//
 // LABEL, DO NOT DELETE (decided on the plan pad): this is additive DATA
 // alongside the ordinary tail, never a rewrite of it. agent_output's
 // contract is "the rendered screen", and pending unsubmitted input is
@@ -1906,10 +2192,10 @@ function findInputBoxRow(rows: string[]): number | null {
 export function inputBoxState(target: string): InputBoxState | null {
   try {
     const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
-    if (!INPUT_BOX_PRESENT.test(raw)) return null;
     const rows = raw.split("\n");
-    const promptRowIndex = findInputBoxRow(rows);
-    return promptRowIndex === null ? { state: "unknown", text: "" } : classifyInputBox(rows, promptRowIndex);
+    const box = findInputBox(rows);
+    if (box === null) return null;
+    return box.prompt === null ? { state: "unknown", text: "" } : classifyInputBox(rows, box.prompt, box.bottom);
   } catch {
     return null;
   }
@@ -1964,13 +2250,20 @@ export function inputBoxState(target: string): InputBoxState | null {
 // The question was never "is this substring on screen". It is "is there an
 // input box that would receive this paste". A modal REPLACES claude's input
 // affordance rather than sitting beside it, so the two markers are mutually
-// informative: INPUT_BOX_PRESENT (below) is what waitForPaneInput polls for
+// informative: `inputBoxOnScreen` (below) is what waitForPaneInput polls for
 // as "claude has control and is not showing a modal", and CHOICE_DIALOG on
 // its own only means "this text is somewhere on screen". A dialog is
-// therefore CHOICE_DIALOG present AND INPUT_BOX_PRESENT absent -- see
-// paneAwaitingChoice and paneChoiceCheck. Fixture-verified both ways:
-// INPUT_BOX_PRESENT is absent from folder-trust-dialog.txt and
-// model-picker-dialog.txt, present in ready-idle.txt and busy-mid-turn.txt.
+// therefore CHOICE_DIALOG present AND the input box absent -- see
+// paneAwaitingChoice and paneChoiceCheck. Fixture-verified both ways: no
+// input box in folder-trust-dialog.txt or model-picker-dialog.txt, one in
+// ready-idle.txt and busy-mid-turn.txt.
+//
+// EVERY MENTION OF `INPUT_BOX_PRESENT` FROM HERE TO THE END OF THIS COMMENT
+// IS HISTORY, KEPT DELIBERATELY. Todo 399 retired that regex and replaced it
+// with the box anchor; the paragraphs below are the record of what the
+// footer-matching version got wrong and how, which is the reasoning a future
+// widening has to engage with. `inputBoxOnScreen`'s own comment says which
+// of those conclusions survived the replacement and which stopped applying.
 //
 // Both ways of being wrong were weighed and they are not symmetric. A false
 // positive holds a wake (or refuses a tool call) for another tick/retry; a
@@ -2024,11 +2317,15 @@ export function inputBoxState(target: string): InputBoxState | null {
 // M2: "Would you like to proceed", kept in round 1 on the wrap-risk
 // argument that used to follow this paragraph, turned out to be exactly
 // the ordinary-prose shape that is dangerous for a pane running something
-// OTHER than claude (agent_spawn(command: "bash"), say). INPUT_BOX_PRESENT
-// can never match a non-claude pane, so CHOICE_DIALOG && !INPUT_BOX_PRESENT
+// OTHER than claude (agent_spawn(command: "bash"), say). Claude's chrome
+// can never appear on a non-claude pane of its own accord, so the pair
 // degenerates to bare CHOICE_DIALOG for that pane, permanently -- the same
 // degeneration D2 fixed for manual-mode claude, but with no fix available,
-// since there is no claude chrome to add a marker for. "Esc to cancel" was
+// since there is no claude chrome to add a marker for. Todo 399 does not
+// change that, and it does add one narrow case in the other direction (a
+// shell that PRINTS claude's chrome - `cat` of a captured fixture - now
+// reads box-present where a footer substring would only sometimes have);
+// isAwaitingChoiceScreen's own comment states that residual in full. "Esc to cancel" was
 // already accepted as low-risk in ordinary shell output; "Would you like to
 // proceed? [Y/n]" is installer/CLI output almost verbatim (this project's
 // own restart-lead.sh test calls it exactly that). Measured whether the
@@ -2065,45 +2362,103 @@ export function inputBoxState(target: string): InputBoxState | null {
 // result like everything else, and maskChoiceMarker is the only exception.
 const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
 
-// The marker claude renders under its own input box, and only there: present
-// whenever claude has control of the terminal and is NOT showing a modal
-// choice, absent from every modal screen captured for this project. Shared
-// with waitForPaneInput's readiness probe below deliberately -- same chrome,
-// one detector -- and reused here as D5's discriminator.
+// TODO 399 RETIRED `INPUT_BOX_PRESENT`, the regex that used to live here:
+// `/for shortcuts|shift\+tab to cycle|mode on|permissions on/`. All four
+// alternatives were substrings of the permission-mode footer, all four live
+// on ONE line of claude's UI, and claude multiplexes that line with other
+// hints, so the predicate went FALSE on a pane that plainly had a box on
+// screen. `inputBoxOnScreen` (declared next to the InputBoxState block
+// above) replaces it at all three call sites and carries the full argument,
+// including why a fifth substring was the wrong repair and why that is not a
+// reversal of todo 392's D2/M1 widenings.
 //
-// `╰` is deliberately NOT in this list; see CHOICE_DIALOG's own comment for
-// why removing it, rather than narrowing it further, was the whole fix.
-// "mode on" replaced "manual mode on" for the same reason CHOICE_DIALOG's
-// own comment gives under M1: it is a substring of every mode's footer
-// measured, and survives at 40 columns where "shift+tab to cycle" (the
-// alternative that used to be this file's only narrow-pane protection for
-// auto and plan mode) does not.
-//
-// M1 completion (todo 392, flagged after round 2 landed): "mode on" does
-// NOT cover every permission mode. bypassPermissions's footer reads
-// "bypass permissions on (shift+tab to cycle) ...", not "<word> mode on" -
-// measured live, side by side with an auto-mode pane. At normal widths this
-// was never a total miss ("(shift+tab to cycle)" still covered it), so it
-// was not a regression; it is the identical total-miss shape M1 exists to
-// close, left open for a mode this project's own maintainer runs by
-// default. Measured at 220/80/60/40/30/25 columns (test/fixtures/panes/
-// bypass-mode-idle-narrow.txt is the 40-column capture): "bypass
-// permissions on" itself, like "mode on" is for the other three modes,
-// survives everywhere "(shift+tab to cycle)" does not - intact through 30
-// columns, gone by 25 (cut down to "bypass" alone). "permissions on" added
-// as its own alternative rather than the fuller "bypass permissions on":
-// measured to survive to the identical width (removing "bypass" changes
-// nothing about where it breaks, since the failure at 25 columns truncates
-// starting right after "bypass"), so the shorter fragment is strictly
-// preferable with no cost.
-const INPUT_BOX_PRESENT = /for shortcuts|shift\+tab to cycle|mode on|permissions on/;
+// The reasoning those widenings established is NOT lost with the regex, and
+// it is what the anchor had to satisfy rather than something it made moot:
+// D1's "a dialog's own chrome must never prove there is no dialog" is the
+// bottom-of-capture bound, and D2/M1's "a total miss on this predicate is
+// not the safe failure it looks like" is why the anchor keys on the box,
+// which every mode at every width draws identically, instead of on a footer
+// whose wording differs per mode and truncates per width. The 40-column and
+// manual-mode fixtures those rounds captured still pin exactly what they
+// pinned; they now discriminate the box rather than the footer.
 
 // D5: a screen is awaiting a choice when the dialog footer is present AND the
 // input box is not -- see the comment above CHOICE_DIALOG for why the pair,
 // not the footer alone, is the answer. One function so paneAwaitingChoice and
 // paneChoiceCheck cannot drift onto two different definitions of "dialog".
+//
+// TODO 399 CHANGED THE SECOND HALF, AND THIS IS THE CONSUMER THAT IS HURT BY
+// OVER-MATCHING, so say what moved in its direction. The pair used to
+// degenerate to bare CHOICE_DIALOG on a REAL claude pane whenever the footer
+// slot was taken - .claude/rules/tmux-and-panes.md documented that
+// degeneration for NON-claude panes only, where it is at least fail-closed.
+// That is closed: the box is still found while the slot holds another hint,
+// so the second half stays falsifiable.
+//
+// In the other direction the anchor is strictly TIGHTER than the regex it
+// replaces. A worker whose transcript contains the string "mode on" - this
+// lane's own diff, a captured fixture, `hive doctor`'s output - used to
+// suppress dialog detection for that pane; it no longer does, because a
+// substring is no longer evidence of anything. What can still suppress it is
+// a COMPLETE box chrome (top border, prompt row, closing border) rendered
+// within BOX_TAIL_ROWS of the bottom of the capture, which is a far narrower
+// accident than a substring anywhere in ~68 rows, and which no dialog this
+// project has captured produces.
+//
+// THE RESIDUAL, NARROWED BUT NOT CLOSED. A NON-claude pane still has no
+// claude chrome, so the pair still degenerates to bare CHOICE_DIALOG there,
+// exactly as before. What is new for that population is the opposite case: a
+// shell that `cat`s a captured pane leaves a complete box chrome at the
+// bottom of its own screen, so the box now reads PRESENT on a bash pane and
+// a CHOICE_DIALOG match there reads as "no dialog". That is a change from
+// fail-closed to fail-open for one narrow shape - but only for a box drawn
+// with none of the four old footer strings in it, since any fixture carrying
+// one already read box-present under the old regex and behaved identically.
+// Unchanged for every capture in test/fixtures/panes/ except this lane's own.
 const isAwaitingChoiceScreen = (screen: string): boolean =>
-  CHOICE_DIALOG.test(screen) && !INPUT_BOX_PRESENT.test(screen);
+  CHOICE_DIALOG.test(screen) && !inputBoxOnScreen(screen);
+
+// TODO 399, COUNSELORS ROUND 1 (fable, sole seat). THESE TWO EXPORTS EXIST TO
+// DELETE TWO HAND-SYNCED COPIES OF THIS PREDICATE, NOT TO WIDEN THE SURFACE.
+//
+// `scripts/part-c-assert.mjs` and `scripts/restart-lead.sh` each carried
+// their OWN transcription of `INPUT_BOX_PRESENT` and the D5 pairing, kept
+// honest by sync tests that compared the regex SOURCE TEXT. That structure
+// works exactly as long as the predicate is a regex literal, and it broke the
+// moment this predicate stopped being one - which is how todo 399's own
+// branch went red. Worse than red: `restart-lead.sh` REPAINTS THE LEAD'S PANE,
+// and its dialog gate carried the todo 399 defect in full, on the one pane a
+// human types into. A lane that fixed the defect in `src/` and left that copy
+// alone would have shipped it live.
+//
+// Three copies with sync tests is a structure that guarantees this lane
+// happens again the next time claude's chrome moves. So the copies are gone
+// and both scripts call in here instead. `restart-lead.sh` reaches these
+// through `node -e` against this repo's own `dist/`, which is the SAME
+// pattern and the same fail-closed handling that file already uses for
+// `dist/projectYml.js` - see its own comment there, which rejects a bash
+// reimplementation for the identical reason: the point is to run what hive
+// runs, not a second approximation of it.
+//
+// PANE-TAKING, NOT SCREEN-TAKING, and that is the half that matters most for
+// the shell copy. `restart-lead.sh` had to reproduce this file's capture
+// WINDOW as well as its regex - its `capture_trimmed 18` exists only to match
+// `tailCaptureLines()`, and its own comments record getting that mismatch
+// wrong once already. Handing it a pane id moves the window back inside this
+// file, where it cannot drift.
+export const paneHasInputBox = (target: string): boolean | null => {
+  try {
+    return inputBoxOnScreen(capturePane(target, tailCaptureLines()));
+  } catch {
+    return null;
+  }
+};
+
+// The string-taking form, for a caller that already HAS a screen and must not
+// fork a capture for it: `part-c-assert.mjs` reads its tail back through the
+// real `agent_output` MCP tool, which has already applied this file's own
+// `capturePane` trimming. Same predicate, same file, no second window.
+export const screenAwaitingChoice = (screen: string): boolean => isAwaitingChoiceScreen(screen);
 
 // null means the pane could not be read, which is not the same as "no dialog".
 // Callers decide; the scheduler treats it as go-ahead, because its liveness
@@ -2571,15 +2926,26 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
     // hint line reads "... shift+tab to cycle ... for agents" rather than
     // "for shortcuts". Neither appears anywhere in a captured 2.1.220 ready
     // screen (test/fixtures/panes/ready-idle.txt), which is why every spawn
-    // was timing out. INPUT_BOX_PRESENT (declared above, next to
-    // CHOICE_DIALOG) is this same regex: shared rather than duplicated,
-    // because round 2's D5 promoted it from a readiness hint to the thing
-    // that tells a dialog from ordinary transcript, and one drifting out of
-    // sync with the other would quietly break that pairing. The old markers
-    // are kept alongside the current one in case an older claude on someone's
-    // machine still renders them; they cost nothing since they never match
-    // here.
-    if (INPUT_BOX_PRESENT.test(screen)) {
+    // was timing out.
+    //
+    // TODO 399. What that regex was replaced BY is `inputBoxOnScreen`,
+    // shared with the dialog discriminator for the same reason the regex was
+    // - one detector, so the pair the discriminator forms cannot drift out
+    // of sync with what readiness believes.
+    //
+    // THIS CONSUMER IS HURT BY OVER-MATCHING (a false ready types a brief
+    // into a pane that has not taken the terminal and loses it silently),
+    // and the anchor is better for it in both directions. Under-matching:
+    // the footer regex reported ready:false on a pane that had been ready
+    // the whole time whenever the mode line was showing another hint - issue
+    // #30's own failure shape reached by a transient hint rather than a
+    // version change, and the reason test/fixtures/panes/footer-slot-taken
+    // .txt is in the readiness CASES. Over-matching: a fresh pane's
+    // scrollback used to only need the substring "mode on" in it, where it
+    // now needs a whole box drawn at the bottom of the capture - and the box
+    // IS what "claude has taken the terminal" means, which the footer only
+    // ever correlated with.
+    if (inputBoxOnScreen(screen)) {
       await sleep(250);
       return true;
     }

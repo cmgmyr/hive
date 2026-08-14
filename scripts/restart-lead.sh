@@ -288,8 +288,54 @@ fi
 # The markers hive itself uses for DIALOG detection. Kept in sync with
 # CHOICE_DIALOG and INPUT_BOX_PRESENT in src/tmux.ts; if claude's chrome
 # changes, both move.
-CHOICE_DIALOG='Esc to cancel|ctrl\+g to edit in'
-INPUT_BOX='for shortcuts|shift\+tab to cycle|mode on|permissions on'
+# TODO 399: THESE USED TO BE TWO HAND-TRANSCRIBED REGEXES AND THEY ARE NOW A
+# CALL INTO hive's OWN CODE. The input-box half read
+# 'for shortcuts|shift\+tab to cycle|mode on|permissions on' - four substrings
+# of claude's permission-mode footer, all on ONE line of its UI, a line claude
+# multiplexes with other transient hints. While another hint held that line the
+# predicate was FALSE on a pane with an input box plainly on screen, so
+# awaiting_choice below degenerated to the bare footer match. THIS SCRIPT
+# REPAINTS THE LEAD'S PANE - the one pane a human types into - so that defect
+# lived on the surface where it eats real work, and todo 399 fixing src/tmux.ts
+# alone would have left it live here.
+#
+# Kept in sync by hand was the structure that allowed it: a sync test compared
+# the two regexes as SOURCE TEXT, which works only while both are regex
+# literals, and todo 392 had already found this copy carrying the bug that lane
+# fixed. Two lanes, one structure.
+#
+# THE SHELL-OUT IS THIS FILE'S OWN ESTABLISHED PATTERN, not a new dependency:
+# see DIST_PROJECTYML further down, which runs the SAME parser `hive lead`
+# runs rather than a bash approximation, with the identical fail-closed
+# handling for "no node" and "dist/ missing". Same argument, same shape.
+#
+# IT ALSO RETIRES THE WINDOW PROBLEM. capture_trimmed's `18` existed only to
+# match src/tmux.ts's tailCaptureLines(), and this file's own comments record
+# getting that mismatch wrong once already. paneHasInputBox and
+# paneAwaitingChoice do their own capture inside src/tmux.ts, so the window
+# cannot drift from hive's any more.
+DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
+
+# Answers hive's own question about a pane. `$1` is `input-box` or `dialog`;
+# `$2` is the pane. Exit 0 = yes, 1 = no, 2 = could not answer.
+#
+# FAILS CLOSED IN THE CALLER, NOT HERE, because "yes" and "no" are refusals in
+# opposite directions at the three call sites below: refusal 1 wants "no input
+# box" to refuse, refusal 3 wants "dialog" to refuse, and the readiness wait
+# wants "input box" to proceed. A single exit code cannot carry that, so this
+# reports UNKNOWN as 2 and each caller decides - which is the same tri-state
+# discipline src/tmux.ts uses for every tmux probe it makes.
+pane_says() {
+  command -v node >/dev/null || return 2
+  [ -f "$DIST_TMUX" ] || return 2
+  RL_DIST_TMUX="$DIST_TMUX" RL_Q="$1" RL_PANE="$2" node -e '
+    const t = require(process.env.RL_DIST_TMUX);
+    const answer = process.env.RL_Q === "dialog"
+      ? t.paneAwaitingChoice(process.env.RL_PANE)
+      : t.paneHasInputBox(process.env.RL_PANE);
+    process.exit(answer === null ? 2 : answer ? 0 : 1);
+  ' 2>/dev/null
+}
 
 # A SEPARATE identity signal, for refusal 1 only, deliberately not
 # CHOICE_DIALOG. Todo 392 round-1 review (F2): CHOICE_DIALOG is a bare,
@@ -411,8 +457,13 @@ capture_trimmed() {
 # just above CLAUDE_PANE_CMD) rather than a bare capture-pane, since a wider
 # raw window only makes the residual worse without buying anything back.
 if [ -n "$PANE" ]; then
-  PANE_SCREEN=$(capture_trimmed 30 "$PANE") || refuse "cannot read pane $PANE"
-  if ! grep -qE "$INPUT_BOX" <<<"$PANE_SCREEN" && ! grep -qE "$CLAUDE_PANE_CMD" <<<"$PANE_CMD"; then
+  pane_says input-box "$PANE"
+  HAS_BOX=$?
+  # UNKNOWN (2) is treated as "no chrome seen" here deliberately: this refusal
+  # is a fail-closed identity check with a second, independent signal beside
+  # it (CLAUDE_PANE_CMD), so an unanswerable probe costs a refusal a human can
+  # read and act on, never a kill of a pane hive could not identify.
+  if [ "$HAS_BOX" != "0" ] && ! grep -qE "$CLAUDE_PANE_CMD" <<<"$PANE_CMD"; then
     refuse "pane $PANE does not look like claude (command '$PANE_CMD', no claude chrome on screen); not touching it"
   fi
 fi
@@ -465,10 +516,18 @@ fi
 # 18 to match src/tmux.ts's own tailCaptureLines() exactly - see
 # capture_trimmed's own comment for why the WINDOW, not just this number,
 # has to match.
+#
+# TODO 399: this is now hive's own paneAwaitingChoice, called through
+# pane_says (above), rather than a transcription of it. The `18` this comment
+# used to have to justify lives inside src/tmux.ts now and cannot drift from
+# it. UNKNOWN is NOT a dialog here - an unanswerable probe already means the
+# pane could not be read, and refusal 1 above has by then either refused or
+# confirmed this pane is claude; treating unknown as "waiting on a choice"
+# would refuse every restart on a machine whose dist/ is mid-build, which is
+# the ordinary state right after the `npm run build` that motivates a restart.
 awaiting_choice() {
-  local screen
-  screen=$(capture_trimmed 18 "$1") || return 1
-  grep -qE "$CHOICE_DIALOG" <<<"$screen" && ! grep -qE "$INPUT_BOX" <<<"$screen"
+  pane_says dialog "$1"
+  [ $? = 0 ]
 }
 
 # Same guard as refusal 1: nothing to check on the skip-the-kill path.
@@ -703,7 +762,7 @@ say "new lead pane: $PANE (running: $PANE_CMD; session: $SESSION; resolved via: 
 say "waiting up to ${READY_TIMEOUT}s for the input box"
 READY=0
 for _ in $(seq 1 $((READY_TIMEOUT * 2))); do
-  if capture_trimmed 30 "$PANE" | grep -qE "$INPUT_BOX"; then
+  if pane_says input-box "$PANE"; then
     READY=1
     break
   fi

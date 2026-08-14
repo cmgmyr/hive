@@ -15,7 +15,9 @@ import { REPO, isolateTmux, until } from "./helpers.mjs";
 // claude 2.1.220 pane; see test/fixtures/panes/README.md for how and when.
 const { hasTmux, cleanup } = isolateTmux("the pane fixture tests");
 
-const { paneAwaitingChoice, waitForPaneInput, describePaneChoice } = await import("../dist/tmux.js");
+const { paneAwaitingChoice, paneHasInputBox, waitForPaneInput, describePaneChoice } = await import(
+  "../dist/tmux.js"
+);
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 
@@ -97,6 +99,82 @@ const CASES = [
     awaitingChoice: false,
     ready: true,
   },
+  // TODO 399, the READINESS half of the same bug. A genuine claude pane with
+  // its input box on screen and every INPUT_BOX_PRESENT alternative absent,
+  // because the single UI line all four share was showing another hint. The
+  // `ready: true` row is the one that dies against the footer regex: a spawn
+  // landing in this window reports ready:false with a "may lose typed text"
+  // note on a pane that has been ready the whole time - issue #30's own
+  // failure shape, reached by a transient hint rather than by a version
+  // change.
+  //
+  // The `awaitingChoice: false` row cannot fail against the box anchor on
+  // its own (this screen carries no CHOICE_DIALOG alternative either way, so
+  // it reads false from the first half of the pair regardless - the same
+  // F8 caveat t392manual carries). It is here as the control that the anchor
+  // did not turn an ordinary idle screen into a dialog.
+  {
+    file: "footer-slot-taken.txt",
+    name: "t399slot",
+    marker: "paste again to expand",
+    awaitingChoice: false,
+    ready: true,
+  },
+  // TODO 399, COUNSELORS ROUND 1, ALL THREE SEATS INDEPENDENTLY - THE ROW
+  // THAT MATTERS MOST IN THIS FILE. Two bare rules with no prompt row between
+  // them used to satisfy the presence predicate, so a REAL dialog with framed
+  // tool output above it read awaitingChoice=false: delivery would paste and
+  // press Enter, and the Enter picks "1. Yes". That is todo 392's `╰` bug
+  // rebuilt with a different glyph by the lane told not to rebuild it, and it
+  // is a REGRESSION AGAINST THE RETIRED REGEX, which classified this screen
+  // correctly because it carries no footer string.
+  //
+  // Reproduced against the real paneAwaitingChoice on an isolated tmux server
+  // before the fix. MUTATION: drop `?.prompt != null` from inputBoxOnScreen
+  // (back to `!== null`) and both rows here flip.
+  //
+  // Its `ready: false` row is the same fact from the readiness side: a pane
+  // showing a dialog must never report ready, or a spawn types its brief into
+  // the prompt and answers it.
+  {
+    file: "dialog-under-two-rules.txt",
+    name: "t399tworules",
+    marker: "Do you want to run this command again",
+    awaitingChoice: true,
+    ready: false,
+  },
+  // TODO 399, the OVER-matching direction, which is what the dialog guard and
+  // the readiness probe are hurt by and the input-box hold is not. A complete
+  // box - top border, prompt row, closing border, status lines, footer - in
+  // the scrollback above a genuine tool-permission dialog, the shape a worker
+  // that `cat`s a captured pane produces in its own transcript.
+  //
+  // Green before and after: against the footer regex this fixture carries no
+  // marker, and against the anchor the box is too far from the bottom of the
+  // capture to be the live one. It is here for the MUTATION - drop the
+  // anchor's bottom-of-capture bound and both rows flip, which is todo 392's
+  // `╰` bug rebuilt with a different glyph: a dialog's own surroundings
+  // proving there is no dialog, and a spawn typing its brief into a pane
+  // sitting on a permission prompt.
+  {
+    file: "scrollback-box-above-dialog.txt",
+    name: "t399scrollback",
+    marker: "Do you want to insert this cell",
+    awaitingChoice: true,
+    ready: false,
+  },
+  // The top-border half of the bracketing, which the fixture above cannot
+  // reach - a real dialog's own block is 9 to 15 rows tall, so a scrollback
+  // echo above one never falls inside the tail bound in the first place.
+  // Synthetic and minimal; see the fixtures README. MUTATION: drop the
+  // top-border requirement and both rows flip here instead.
+  {
+    file: "tail-echo-no-top-border.txt",
+    name: "t399echo",
+    marker: "ECHOED TAIL FROM ANOTHER PANE",
+    awaitingChoice: true,
+    ready: false,
+  },
 ];
 
 describe(
@@ -176,6 +254,83 @@ describe(
 // on the bytes themselves, so the case cannot be silently swapped for a
 // fixture that looks equivalent to the CASES loop but cannot discriminate
 // the bug.
+// TODO 399. FOUND BY RUNNING THE LANE'S OWN SCRIPTS HALF, NOT BY REVIEW - all
+// three counselors seats missed it, because none of them could execute
+// anything.
+//
+// Every other case in this file replays a 220-column capture into a
+// 220-column pane, so no line ever wraps and the box's borders are one row
+// each. test/restart-lead.test.mjs replays the SAME ready-idle.txt into the
+// 80-column pane `hive lead` creates by default, where each 220-character
+// border renders as THREE consecutive rows. The first version of findInputBox
+// took the lowest of those as the closing border and then matched the second
+// row of that same edge as the "top" border, closing the bracket on two rows
+// of one rule with the prompt row outside it: box absent, hold gone, on a
+// screen that plainly has one. Measured before the fix: paneHasInputBox false
+// at 80x24, true at 220x50, identical bytes.
+//
+// This pins the width directly rather than leaving it to restart-lead's
+// end-to-end suite, which found it by accident and would stop covering it the
+// moment that file changed how it fakes a claude pane. MUTATION: remove the
+// `while (bottom > 0 && BOX_BORDER.test(text[bottom - 1])) bottom -= 1;` run
+// collapse in src/tmux.ts. Red at 80 and 60, green at 220 - which is the
+// shape that made it invisible.
+describe(
+  "a border wider than the pane wraps into several rows and is still ONE edge (todo 399)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    const session = `hive-panewrap-${process.pid}`;
+    const WIDTHS = [220, 80, 60];
+
+    before(async () => {
+      if (!hasTmux) return;
+      const cmd = `cat '${join(FIXTURES, "ready-idle.txt")}'; sleep 600`;
+      WIDTHS.forEach((w, i) => {
+        const name = `w${w}`;
+        if (i === 0) {
+          execFileSync("tmux", ["new-session", "-d", "-s", session, "-n", name, "-x", String(w), "-y", "24", cmd], {
+            stdio: "ignore",
+          });
+        } else {
+          execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, "-n", name, "-e", "X=1", cmd], {
+            stdio: "ignore",
+          });
+          execFileSync("tmux", ["resize-window", "-t", `${session}:${name}`, "-x", String(w), "-y", "24"], {
+            stdio: "ignore",
+          });
+        }
+      });
+      await Promise.all(
+        WIDTHS.map((w) =>
+          until(() =>
+            execFileSync("tmux", ["capture-pane", "-p", "-t", `${session}:w${w}`]).toString().includes("auto mode on"),
+          ),
+        ),
+      );
+    });
+
+    after(() => cleanup(session));
+
+    for (const w of WIDTHS) {
+      it(`finds the input box at ${w} columns`, async () => {
+        const target = `${session}:w${w}`;
+        const rendered = await until(() =>
+          execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString().includes("auto mode on"),
+        );
+        assert.ok(rendered, `the fixture never rendered at ${w} columns`);
+
+        assert.equal(
+          paneHasInputBox(target),
+          true,
+          `ready-idle.txt is an idle claude screen at every width; at ${w} columns its borders wrap, and a wrapped ` +
+            "border is still one edge",
+        );
+        assert.equal(paneAwaitingChoice(target), false, "an idle screen is never a dialog, at any width");
+      });
+    }
+  },
+);
+
 describe("tool-permission-prompt.txt carries the bytes the t392prompt case actually needs (todo 392 round 2, F6)", () => {
   it("contains the preview box's own closing border and the dialog's own question", () => {
     const raw = readFileSync(join(FIXTURES, "tool-permission-prompt.txt"), "utf8");

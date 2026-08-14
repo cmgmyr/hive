@@ -2921,6 +2921,25 @@ function reportUnbriefedWorkers(projectId: number): void {
 // that must not be suppressed. They say different things (its finishes are
 // being swallowed, versus its turn may have died) and their remedies differ
 // (brief it, versus read its pane and tell it what state you found).
+// Todo 399, PR gate on the rebased head. Names WHAT WAS ACTUALLY PROBED for
+// the input-box classifier's summary line, off both counters rather than one.
+// Split out of the template literal it used to live in because a ternary that
+// has to answer three cases is where the second case gets forgotten - which
+// is exactly what happened: the first version branched on the lead count
+// alone and claimed workers on a lead-only run.
+//
+// `inputBoxChecked > 0` gates the caller, so at least one of the two is
+// non-zero and the final branch is genuinely unreachable rather than a
+// default; it is written out anyway, because a summary line that would
+// silently claim both on a state that cannot happen is how the first version
+// read too.
+function describeProbed(workers: number, leads: number): string {
+  if (workers > 0 && leads > 0) return "workers plus the lead's own pane";
+  if (leads > 0) return "the lead's own pane only - no worker pane was probeable";
+  if (workers > 0) return "workers only - no lead pane was probeable";
+  return "nothing was probeable";
+}
+
 function reportStalledWorkers(projectId: number): void {
   const latched = (
     db
@@ -3408,23 +3427,30 @@ function cmdDoctor(argv: string[]): void {
     // .claude/rules/tmux-and-panes.md's "unknown exemption" section.
     //
     // "unknown" is a SPECIFIC fact, not "the pane could not be read": it
-    // means INPUT_BOX_PRESENT matched (claude has control, a box is on
-    // screen) but findInputBoxRow could not find the prompt row inside it -
-    // i.e. the box is there and the glyph/NBSP marker that finds it is not.
-    // `null` (mid-turn, a real dialog, an unreadable pane, OR INPUT_BOX_PRESENT
-    // itself no longer matching at all) is none of that and must not be
-    // counted here - collapsing the two was rejected once already for a
-    // sibling probe (.claude/sessions/dead-ends/2026-07-28-null-on-any-probe-
-    // failure.md) and the reasoning transfers.
+    // means the box's own borders were found at the bottom of the capture
+    // (claude has control, a box is on screen) but no prompt row could be
+    // found bracketed inside them - i.e. the box is there and the glyph/NBSP
+    // marker that finds it is not. `null` (mid-turn, a real dialog, an
+    // unreadable pane) is none of that and must not be counted here -
+    // collapsing the two was rejected once already for a sibling probe
+    // (.claude/sessions/dead-ends/2026-07-28-null-on-any-probe-failure.md)
+    // and the reasoning transfers.
+    //
+    // TODO 399 REFOUNDED THAT FACT WITHOUT WIDENING IT. "unknown" used to
+    // rest on INPUT_BOX_PRESENT, a footer substring, so the box's presence
+    // was inferred from a line claude multiplexes with other hints. It rests
+    // on the box's own borders now (`findInputBox`, src/tmux.ts), which is
+    // better evidence for the identical claim - and it is what makes this
+    // check reach the pane where a miss destroys human work at all.
     //
     // COUNSELORS ON THIS LANE'S OWN PR, BOTH SEATS INDEPENDENTLY: the first
     // version incremented a single "checked" counter before classifying, so a
     // null read was silently counted as "classified cleanly" alongside a real
-    // clean read. The dangerous case: a TOTAL chrome drift - INPUT_BOX_PRESENT
-    // itself stops matching (src/tmux.ts's own `if (!INPUT_BOX_PRESENT.test
-    // (raw)) return null`) - makes every worker read null, never "unknown",
-    // and the old counter reported "N of N classified cleanly" during the
-    // exact failure this check exists to catch. Three states now, reported
+    // clean read. The dangerous case: a TOTAL chrome drift - nothing on the
+    // screen reads as a box at all, so inputBoxState returns null - makes
+    // every worker read null, never "unknown", and the old counter reported
+    // "N of N classified cleanly" during the exact failure this check exists
+    // to catch. Three states now, reported
     // separately, each incremented only after the read: `inputBoxClean`,
     // `inputBoxDrifted` (the PARTIAL-drift case this check can actually
     // catch: a box is on screen, its prompt row is not), and
@@ -3434,6 +3460,91 @@ function cmdDoctor(argv: string[]): void {
     let inputBoxClean = 0;
     let inputBoxDrifted = 0;
     let inputBoxUnclassified = 0;
+    // Counted separately from the three states so the summary line can say
+    // WHAT WAS ACTUALLY PROBED rather than what this code hoped to probe -
+    // counselors round 1 caught the first version printing "workers plus the
+    // lead's own pane" on runs with no lead row, a non-claude lead, or a
+    // foreign-socket one, and an existing test pinned that wording in a run
+    // that seeded no lead at all. A report that names a probe it did not
+    // perform is this check's own defect one level up.
+    //
+    // PR GATE ON THE REBASED HEAD, AND IT IS THE MIRROR OF THE BUG ABOVE.
+    // Counting only the LEAD half fixed the direction that had been observed
+    // and left the other one live: phrasing off `leadsProbed` alone prints
+    // "workers plus the lead's own pane" for a project with a running claude
+    // lead and no countable worker at all - no agent rows yet, or every
+    // worker row foreign-socket or non-claude - which is a report making a
+    // claim it did not measure, in the surface this whole lane exists to
+    // make trustworthy. Fixing the half you can see is this project's most
+    // repeated failure (the #156 predicate shipped three times that way), so
+    // the sentence is phrased off BOTH counters and there are three cases,
+    // not two.
+    let leadsProbed = 0;
+    let workersProbed = 0;
+    // TODO 399. The loop below is `kind = 'agent'` and stays that way -
+    // `reportsAgentStateLog` requires it, and a lead has no state log to
+    // report on - but the INPUT-BOX probe was never really about the state
+    // log, and excluding the lead from it was the one exclusion that
+    // mattered. The lead's pane is the ONLY pane a human types into, so it
+    // is the only pane where this detector failing destroys a person's
+    // half-written message rather than a wake. .claude/rules/tmux-and-panes
+    // .md recorded that as an accepted limit with its own reasoning
+    // ("probing it is a separate change with its own blast radius"); todo
+    // 389 is that limit being paid, and this lane closes it.
+    //
+    // A SEPARATE, NARROW PROBE RATHER THAN A WIDER LOOP, deliberately. The
+    // per-worker `info` block above reports a last log event and a pane tail
+    // that a lead has neither of (its liveness and its own remedies are
+    // already reported a few hundred lines up in this function, on their own
+    // terms). Widening the query would have dragged all of that along for a
+    // row it does not describe. What this adds is one more capture-pane fork
+    // and one more row in the same three-state arithmetic.
+    //
+    // Gated on isClaudeCommand for the reason every other typing path here
+    // is: inputBoxState finds its box by claude's own chrome, so probing a
+    // lead running something else would count a permanent, meaningless
+    // "not classified" against the ratio the warn below rests on.
+    //
+    // `.all()`, NOT `.get()` - COUNSELORS ROUND 1, TWO SEATS INDEPENDENTLY.
+    // The first version took `.get()` with `ORDER BY id` and probed only the
+    // LOWEST-id running lead row. Two running lead rows for one project is a
+    // state this file's own `ensureLeadRow` comment documents as reachable
+    // (`idx_agents_running_name` constrains name, not kind), and lead rows
+    // are exempt from the janitor - so a dead-but-`running` first lead row
+    // SHADOWS THE LIVE ONE PERMANENTLY: a standing "not classified" in the
+    // denominator, and the one pane a human types into never probed at all.
+    // That is the exact cost this check was added to remove, reintroduced
+    // through row ordering. Probing every lead row costs one capture-pane
+    // fork per row in a state that should have at most one row anyway.
+    const leadRows = db
+      .prepare(
+        "SELECT name, command, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      )
+      .all(here.id, LEAD_KIND) as {
+      name: string;
+      command: string;
+      tmux_target: string;
+      tmux_socket: string;
+    }[];
+    for (const leadBox of leadRows) {
+      if (!isClaudeCommand(leadBox.command) || foreignSocket(leadBox.tmux_socket)) continue;
+      leadsProbed += 1;
+      const box = inputBoxState(leadBox.tmux_target);
+      if (box === null) {
+        inputBoxUnclassified += 1;
+      } else if (box.state === "unknown") {
+        inputBoxDrifted += 1;
+        warn(
+          `lead ${leadBox.name}`,
+          "input box classifies 'unknown': an input box is on screen (its own borders were found) but its " +
+            "prompt row could not be found inside it. This is the pane a human types into, so the guard that " +
+            "protects unsubmitted text is the one at risk (.claude/rules/tmux-and-panes.md, the 'unknown " +
+            "exemption' section).",
+        );
+      } else {
+        inputBoxClean += 1;
+      }
+    }
     for (const w of workers) {
       if (!reportsAgentStateLog(w)) continue;
       // Issue #73 counselors F2. This used to call paneChoiceCheck
@@ -3517,6 +3628,7 @@ function cmdDoctor(argv: string[]): void {
       // second one here is affordable on the same grounds rather than a new
       // argument.
       if (!foreign) {
+        workersProbed += 1;
         const box = inputBoxState(w.tmux_target);
         // ONLY the observation, not a claim about the rest of the project -
         // that claim needs the RATIO across every probed worker, computed
@@ -3527,18 +3639,22 @@ function cmdDoctor(argv: string[]): void {
         // exact "right about the code, wrong about why" shape this project
         // keeps re-shipping. Lead review on commit 1f323cf caught it before it
         // merged. NAMING A CAUSE was still wrong even after that fix -
-        // counselors on this PR: INPUT_BOX_PRESENT is an unanchored match
-        // over up to 18 captured rows (tailCaptureLines), so boxed tool
-        // output sitting above a genuine dialog can satisfy it with no prompt
-        // row below - "unknown" with no chrome change at all. State only what
-        // was observed; the ratio below is what earns any conclusion.
+        // counselors on this PR: the presence test was an unanchored match
+        // over the whole capture, so boxed tool output sitting above a
+        // genuine dialog could satisfy it with no prompt row below -
+        // "unknown" with no chrome change at all. Todo 399's anchor narrows
+        // that producer (the box has to be bracketed by its own borders and
+        // sit at the bottom of the capture) without removing it, since a
+        // scrollback copy of a box can still land inside that window. State
+        // only what was observed; the ratio below is what earns any
+        // conclusion.
         if (box === null) {
           inputBoxUnclassified += 1;
         } else if (box.state === "unknown") {
           inputBoxDrifted += 1;
           warn(
             `worker ${w.name}`,
-            "input box classifies 'unknown': an input box is on screen (INPUT_BOX_PRESENT matched) but its prompt " +
+            "input box classifies 'unknown': an input box is on screen (its own borders were found) but its prompt " +
               "row could not be found inside it (.claude/rules/tmux-and-panes.md, the 'unknown exemption' section).",
           );
         } else {
@@ -3563,7 +3679,8 @@ function cmdDoctor(argv: string[]): void {
     if (inputBoxChecked > 0) {
       info(
         "input box classifier",
-        `${inputBoxChecked} running claude worker box(es) probed: ${inputBoxClean} classified cleanly, ` +
+        `${inputBoxChecked} running claude box(es) probed (${describeProbed(workersProbed, leadsProbed)}): ` +
+          `${inputBoxClean} classified cleanly, ` +
           `${inputBoxDrifted} classified 'unknown', ${inputBoxUnclassified} not classified (no box currently on ` +
           "screen to classify - a dialog, mid-turn, or an unreadable pane)",
       );
@@ -3584,7 +3701,7 @@ function cmdDoctor(argv: string[]): void {
           inputBoxDrifted === inputBoxChecked
             ? "every probed input box in this project classified 'unknown' - the chrome-change signature, not " +
                 "pane-specific noise. The wake hold, agent_send's text refusal and agent_rename's refusal have " +
-                "likely reverted to pre-guard behaviour across every probed worker in this project " +
+                `likely reverted to pre-guard behaviour on every pane probed here (${inputBoxChecked}) ` +
                 "(.claude/rules/tmux-and-panes.md, the 'unknown exemption' section)."
             : `${inputBoxDrifted} of ${inputBoxChecked} probed input boxes in this project classified 'unknown' - ` +
                 "some but not all, so this reads as pane-specific rather than project-wide drift; the guards " +
@@ -3592,16 +3709,6 @@ function cmdDoctor(argv: string[]): void {
         );
       }
     }
-    // ACCEPT AND RECORD (lead triage on this PR), NOT WIDENED IN THIS LANE: a
-    // lead's own pane is never probed here - `workers` above is `kind =
-    // 'agent'` only - though the guards this check exists to protect DO reach
-    // it (agent_send's text path and the scheduler's wake hold both can type
-    // into a lead's pane, .claude/rules/tmux-and-panes.md's "three of the
-    // five" paragraph). REOPEN TRIGGER: probing the lead's row too is a
-    // separate change with its own blast radius (a different `kind`, a
-    // different liveness path already resolved a few hundred lines up in this
-    // function) - do not fold it into this counter set without deciding that
-    // on its own.
   }
   // One store-scoped session now, not one per project (pad 76, "3a's SCOPE
   // WIDENED"), so a hive- prefixed session on this server is either THE base

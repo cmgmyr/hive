@@ -848,32 +848,73 @@ describe(
   },
 );
 
-// Fix round 1, todo 193 item 5 (both counselors' test sections). No tmux or
-// store needed - this is a pure text comparison between the two copies.
-describe("restart-lead.sh's dialog/input-box markers stay in sync with src/tmux.ts", () => {
-  it("CHOICE_DIALOG and INPUT_BOX copy src/tmux.ts's own regex source exactly", () => {
-    const script = readFileSync(SCRIPT, "utf8");
-    const tmuxSource = readFileSync(join(REPO, "src", "tmux.ts"), "utf8");
+// TODO 399 REPLACED A SYNC TEST WITH AN ABSENCE TEST, and the reason is that
+// the thing it was keeping in sync should not have existed.
+//
+// It used to extract `CHOICE_DIALOG` and `INPUT_BOX` from this script as bash
+// ERE strings, extract their counterparts from src/tmux.ts as regex sources,
+// and assert the strings matched. That pins a transcription; it does not
+// remove one. It also only works while both sides ARE regex literals - todo
+// 399 replaced the input-box half with a structural anchor over the box's own
+// borders, the extraction returned undefined, and this test went red.
+//
+// Red was the good outcome. The bad one is what the copy was doing until
+// then: this script REPAINTS THE LEAD'S PANE, and its transcribed input-box
+// regex carried todo 399's defect in full, so its dialog gate degenerated to
+// the bare footer match on the one pane a human types into. Todo 392 had
+// already found the sibling copy in scripts/part-c-assert.mjs carrying THAT
+// lane's bug through its own acceptance run. Two lanes, two copies, one
+// structure.
+//
+// So the copies are gone: the script calls hive's own paneAwaitingChoice and
+// paneHasInputBox through `node -e` against this checkout's dist/, the same
+// pattern and the same fail-closed handling it already uses for
+// dist/projectYml.js. This test asserts the copies STAY gone and that the
+// call is still wired, and it names the file to open when it fires.
+describe("restart-lead.sh does not keep its own copy of the dialog predicate (todo 399)", () => {
+  // Comments are stripped first: this script's own prose quotes the retired
+  // regex while explaining why it is retired, and a test that cannot tell an
+  // explanation from a declaration would forbid recording the decision it
+  // exists to enforce.
+  const stripComments = (src) => src.replace(/^\s*#.*$/gm, "");
 
-    const scriptChoice = script.match(/^CHOICE_DIALOG='(.*)'$/m)?.[1];
-    const scriptInputBox = script.match(/^INPUT_BOX='(.*)'$/m)?.[1];
-    const tsChoice = tmuxSource.match(/const CHOICE_DIALOG = \/(.*)\/;/)?.[1];
-    const tsInputBox = tmuxSource.match(/const INPUT_BOX_PRESENT = \/(.*)\/;/)?.[1];
+  it("calls hive's own predicate through dist/ instead of transcribing it", () => {
+    const script = stripComments(readFileSync(SCRIPT, "utf8"));
 
-    // If any extraction comes back undefined, the regex above is stale
-    // against a reformatted source line, not evidence the markers agree -
-    // fail loudly rather than let two undefineds compare equal.
-    assert.ok(
-      scriptChoice && scriptInputBox && tsChoice && tsInputBox,
-      `could not extract one of the four markers: script=[${scriptChoice}/${scriptInputBox}] ts=[${tsChoice}/${tsInputBox}]`,
+    assert.match(
+      script,
+      /paneAwaitingChoice/,
+      "scripts/restart-lead.sh must reach hive's own dialog predicate, not re-derive one",
     );
-    assert.equal(scriptChoice, tsChoice, "CHOICE_DIALOG has drifted from src/tmux.ts's own regex");
-    assert.equal(
-      scriptInputBox,
-      tsInputBox,
-      "INPUT_BOX has drifted from src/tmux.ts's own INPUT_BOX_PRESENT - issue #30 is this exact drift, discovered after the pane was already dead",
+    assert.match(
+      script,
+      /paneHasInputBox/,
+      "scripts/restart-lead.sh must reach hive's own input-box predicate, not re-derive one",
+    );
+    assert.match(
+      script,
+      /DIST_TMUX=/,
+      "the predicate must come from THIS checkout's dist/, the same way DIST_PROJECTYML does",
     );
   });
+
+  for (const [label, pattern] of [
+    ["the retired footer regex", /for shortcuts/],
+    ["an INPUT_BOX assignment", /^INPUT_BOX=/m],
+    ["a CHOICE_DIALOG assignment", /^CHOICE_DIALOG=/m],
+  ]) {
+    it(`has not grown ${label} back`, () => {
+      const script = stripComments(readFileSync(SCRIPT, "utf8"));
+      assert.doesNotMatch(
+        script,
+        pattern,
+        `OPEN scripts/restart-lead.sh: it has grown its own copy of hive's dialog predicate again (${label}). ` +
+          "That copy shipped todo 392's bug and then todo 399's, on the script that repaints the LEAD's pane. " +
+          "Call paneAwaitingChoice/paneHasInputBox through dist/tmux.js instead - see src/tmux.ts's own comment " +
+          "on those two exports for why they exist at all.",
+      );
+    });
+  }
 });
 
 // Todo 392 round 1, F2. CLAUDE_PANE_CMD has no src/tmux.ts counterpart - it

@@ -205,3 +205,206 @@ capture depth.
   `manual-mode-idle.txt`'s own entry above explains: the banner sits well
   above `capturePane()`'s real trim-then-slice window, which starts from
   this pane's own last line (the footer, with nothing blank after it).
+
+## Todo 399: the footer slot holding a different hint
+
+- `footer-slot-taken.txt` — the only capture in this directory of the
+  failure todo 399 names: claude's input box is plainly on screen and NOT
+  ONE of `INPUT_BOX_PRESENT`'s four alternatives (`for shortcuts`,
+  `shift+tab to cycle`, `mode on`, `permissions on`) appears anywhere in
+  it, because the single UI line all four live on was showing "paste again
+  to expand" instead. A genuine `capture-pane -p -e -S -54` — the identical
+  command `inputBoxState` issues, so the SGR is intact — taken off the
+  lead's own pane `%0` on main at 296d41b, 2026-08-14, claude 2.1.232, 105
+  columns, `bypassPermissions`. 68 rows, 6261 bytes.
+
+  **THIS STATE IS TRANSIENT AND CANNOT BE RE-TAKEN ON DEMAND.** The same
+  pane had its mode footer back about a minute later. That is why no
+  fixture here has ever carried it and why the whole class stayed
+  theoretical: it comes and goes on its own, so neither `hive doctor` nor
+  any after-the-fact investigation has ever seen it. Do not replace this
+  file with a reconstruction, and do not delete it on the assumption
+  another one can be captured.
+
+  **DOCTORED IN EXACTLY ONE PLACE, SAID HERE BECAUSE A DOCTORED FIXTURE
+  THAT DOES NOT SAY SO IS A FALSE RECORD.** Row 68 carries an OSC-8
+  hyperlink to `https://claude.ai/code/session_<id>`. The 24-character id
+  was replaced with `01SCRUBBEDSCRUBBEDSCRUBB`, the same length, so the
+  file is still 6261 bytes and every escape, every column and every other
+  byte is the capture's own. Nothing else was touched. The OSC-8 `id=`
+  parameter on that same row is a terminal-local link-grouping token, not
+  a session identifier, and is kept.
+
+  That scrub is a DIFFERENT judgement from `folder-trust-dialog.txt`'s
+  kept path above, not a reversal of it: that one is a local filesystem
+  path carrying a username and a Claude Code session uuid, which names
+  nothing outside this machine. This one is a URL into a hosted service.
+
+  What it is FOR, and it is used in both directions:
+  - the headline case for the box anchor (`inputBoxOnScreen`,
+    `src/tmux.ts`) — the box is live, `inputBoxState` must classify it
+    rather than return `null`, and `hive doctor` must probe it;
+  - the control that `isAwaitingChoiceScreen` is unchanged by the anchor:
+    this capture carries zero `Esc to cancel` and zero `ctrl+g to edit
+    in`, so it is not a dialog before or after, and the anchor's effect on
+    the dialog guard has to be proven on the dialog fixtures instead.
+
+  Two things about its SHAPE are worth knowing before you write a test
+  against it, because both differ from every 2.1.220 fixture above:
+  - the box's TOP border is not a bare `─` rule. It carries an
+    inverse-video title chip (`Hive Overnight Lead 2026-08-13`), so
+    `BOX_BORDER`'s `/^─+$/` does not match it. The BOTTOM border (row 64)
+    is bare, and the bottom one is the only border `classifyInputBox` and
+    the anchor actually scan for.
+  - four rows sit below that bottom border, not the usual three: two
+    status lines, the taken footer slot, and a trailing row carrying only
+    the OSC-8 link. Any "the box is at the bottom of the capture" rule has
+    to allow for a status area of more than one line — a `statusLine`
+    command is user-configurable and emits as many lines as it likes.
+
+- `scrollback-box-above-dialog.txt` — SYNTHETIC, and the adversarial case
+  against the anchor above rather than a capture of anything. It is
+  `footer-slot-taken.txt`'s own live box — top border, prompt row, bottom
+  border, both status lines and the taken footer, byte for byte — spliced
+  into `tool-permission-prompt.txt`'s scrollback ABOVE its genuine dialog,
+  which is exactly what a worker that `cat`s a captured pane, greps
+  `src/tmux.ts`, or renders another pane's tail produces in its own
+  transcript. Nothing else in either file is modified.
+
+  ONE THING WAS CHANGED BEYOND THE SPLICE AND THE FIRST VERSION OF THIS ENTRY
+  DID NOT SAY SO (counselors round 1, two seats): the splice added 6 rows and
+  the file is still 51 lines, so six TRAILING BLANK rows were dropped from
+  `tool-permission-prompt.txt`'s tail. Behaviourally inert - `findInputBox`
+  trims trailing blanks and `capturePane` pops them, so no consumer can see
+  the difference - but this page is the record, and "nothing else is
+  modified" was false against the bytes.
+
+  This is `dialog-with-stale-input-line.txt` one turn of the screw
+  tighter. That fixture splices a bare glyph+NBSP row into blank
+  scrollback, which is enough to kill a detector that trusts the last
+  prompt row anywhere in the window. It is NOT enough to kill one that
+  requires the prompt row to be bracketed by its own borders, because it
+  has no borders — so a box anchor could pass it while still being wide
+  open to the real thing. This fixture carries the complete chrome and
+  therefore actually tests the bracketing.
+
+  The live screen is a real tool-permission dialog, so the correct answer
+  is box-ABSENT on every consumer: `inputBoxState` `null`,
+  `isAwaitingChoiceScreen` true. Getting this wrong in the permissive
+  direction is todo 392's `╰` bug rebuilt with a different glyph — a
+  dialog's own surroundings proving there is no dialog.
+
+- `footer-slot-taken-pending.txt` — SYNTHETIC, and the case that actually
+  destroys a human's work rather than the one that was captured.
+  `footer-slot-taken.txt` caught the pane with an EMPTY box showing its own
+  "Press up to edit queued messages" hint, so it classifies `ghost` and
+  `holdsHumanInput` is correctly false for it — which means the real capture
+  alone cannot prove the unsubmitted-text hold was restored, only that the
+  box is found again. This is that capture with its prompt row (row 63)
+  replaced by `real-input.txt`'s OWN measured prompt-row shape
+  (`ESC[39m❯<NBSP>` then plain text, a leading run that sets no faint
+  attribute) carrying `REAL UNSUBMITTED TEXT, FOOTER SLOT TAKEN`. Every
+  other byte of the capture is untouched, including the taken footer slot
+  that makes all four `INPUT_BOX_PRESENT` alternatives absent.
+
+  Read back through the real `inputBoxState` it is `{state: "pending"}` and
+  `holdsHumanInput` is true — the wake hold firing on the exact screen where
+  it was entirely absent before todo 399. A graft, not an invention: both
+  halves are bytes this project captured off a real claude, from two
+  different versions, and the join is that one row.
+
+- `tail-echo-no-top-border.txt` — SYNTHETIC and deliberately minimal, the
+  torture case for the TOP-border half of the box anchor the way
+  `dim-then-normal.txt` is one for the SGR fold. Not a capture of anything.
+
+  It exists because `scrollback-box-above-dialog.txt` cannot reach this
+  half. Measured while building it: with a real dialog on screen the
+  dialog's own block is 9 to 15 rows tall, so a scrollback echo above it is
+  always further from the bottom of the capture than the anchor's tail bound
+  allows, and the tail bound alone rejects it — the top-border requirement
+  never gets a vote. This file takes the dialog's height out of the
+  question: a glyph+NBSP row with a bare rule directly under it, both inside
+  the tail bound, and NO border above the glyph row.
+
+  The shape is one `.claude/rules/tmux-and-panes.md` already names as a real
+  producer — `watchedTail` embeds a worker's tail into a wake body typed into
+  the LEAD's pane, so a prompt row and its closing border can land in the
+  lead's own scrollback with nothing above them. Correct answer:
+  `inputBoxState` `null` and `isAwaitingChoiceScreen` true. Without the
+  top-border requirement it reads `{state: "pending", text: "ECHOED TAIL FROM
+  ANOTHER PANE"}`, which holds every wake aimed at that pane forever and
+  tells the dialog guard there is no dialog.
+
+## Todo 399, counselors round 1: the two regressions the lane's own fix introduced
+
+Both were found by three independent seats, and both are cases where the
+first version of the box anchor was WORSE than the footer regex it replaced.
+Neither is hypothetical; both were reproduced against the real predicate on
+an isolated tmux server before either fixture was written.
+
+- `dialog-under-two-rules.txt` — SYNTHETIC, minimal, and the more serious of
+  the two. A genuine tool-permission-shaped dialog with framed command output
+  above it: two bare `─` rules with a line of test output between them, and no
+  `❯`+NBSP prompt row anywhere on the screen.
+
+  The first `inputBoxOnScreen` asked only whether `findInputBox` returned
+  non-null, and it returns an anchor with `prompt: null` when it finds two
+  borders and no prompt row between them. So this screen read
+  `awaitingChoice: false` — **a real dialog reading as no dialog**, which is
+  todo 392's `╰` bug rebuilt with a different glyph by the lane that was told
+  not to rebuild it. Delivery would then paste and press Enter, and the Enter
+  takes "1. Yes".
+
+  It is a REGRESSION AGAINST THE RETIRED REGEX, not merely a gap: this screen
+  carries no footer string at all, so `INPUT_BOX_PRESENT` classified it
+  correctly. Synthetic because the reproduction needs the rules within the
+  anchor's tail bound, and framed output is the ordinary producer — `───`
+  separators are routine in pytest, rich, and most CLI output, which is also
+  why the residual first recorded for non-claude panes ("it must PRINT
+  claude's chrome") understated its own population.
+
+  Correct answers: `inputBoxState` `{state: "unknown"}` — borders on screen,
+  prompt row not findable, which is exactly the partial drift `hive doctor`
+  warns on — and `isAwaitingChoiceScreen` true. That pair is the whole point:
+  the classifier and the presence predicate ask different questions of the
+  same anchor and are allowed to differ.
+
+- `multiline-blank-interior.txt` — `multiline-pending.txt` with one blank row
+  grafted between its two content rows, and nothing else changed. It is the
+  shape of an ordinary two-paragraph unsubmitted message: a human types a
+  paragraph, presses Enter twice, types another.
+
+  The first `findInputBox` stopped its upward scan at any blank row, on the
+  stated grounds that "the box claude draws has no blank rows inside it".
+  That was measured only for an empty FIRST logical line
+  (`multiline-empty-first-line.txt`, where the prompt row still carries `❯`
+  and is non-blank after trim). An empty INTERIOR line is a different screen,
+  and since continuation rows carry no side chrome it renders as a genuinely
+  blank row inside the box. Result: `inputBoxState` `null`,
+  `holdsHumanInput` false, and the wake pastes onto the half-typed message
+  and submits it.
+
+  **That is todo 389's clobber, re-armed by the lane that exists to close it,
+  on the incident's own message shape** — pad 142 records the destroyed
+  message as "92 characters over three logical lines, including a deliberate
+  blank line". Correct answer: `{state: "pending"}` carrying BOTH paragraphs.
+  The text half matters on its own account: the continuation scan stopped at
+  the same blank row, so a receipt reported one paragraph of a message that
+  has two, which is what a lead reads when deciding whether it is safe to
+  interrupt someone.
+
+### And one this directory cannot hold, recorded here because it is about how these fixtures are REPLAYED
+
+Every fixture on this page is a 220-column capture and every test above
+replays it into a 220-column pane, so no line ever wraps. `hive lead` creates
+an 80-column pane, and `test/restart-lead.test.mjs` replays `ready-idle.txt`
+into one — where each 220-character border renders as THREE consecutive rows.
+The first `findInputBox` read the second row of a wrapped edge as the box's
+top border and closed the bracket with the prompt row outside it: box absent,
+hold gone, at 80 and 60 columns, green at 220.
+
+No fixture can carry this, because the defect is in the geometry the bytes are
+replayed INTO, not in the bytes. `test/pane-fixtures.test.mjs` pins it by
+replaying `ready-idle.txt` at three widths instead. If you add a fixture whose
+own capture width is close to the pane it will be replayed into, that test is
+the one that will tell you.
