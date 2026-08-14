@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -135,22 +135,41 @@ describe("a tmux call that never answers", () => {
     // So this counts the PROBE. With the rethrow, has-session throws and
     // new-session is never reached; without it, both are called. The call log
     // is the only thing that differs.
-    const log = join(logDir, "ensure-session-calls");
-    const loggedFake = fakeHangingTmux({ log });
-    try {
-      withEnv({ PATH: `${loggedFake}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
-        const started = Date.now();
-        assert.throws(() => ensureSession("hive-timeout-probe", process.cwd()), TmuxTimeoutError);
-        assert.ok(Date.now() - started < 10_000, "the probe returned within its bound");
-        const calls = readFileSync(log, "utf8").trim().split("\n");
+    //
+    // TODO 404: the fake's own process creation can lose the race against the
+    // 300ms SIGKILL under the run's own concurrency, before the shim ever
+    // reaches its first line - true regardless of what that first line is, so
+    // reordering the shim's write earlier (already the case; see
+    // fakeHangingTmux's `record`) cannot close it, and widening this bound
+    // only buys headroom against a contender (the suite's own file count)
+    // that keeps growing. A bounded retry does not have either problem: each
+    // attempt is an independent scheduling opportunity, so it stays effective
+    // regardless of suite size. Only the RACED read - the log never got
+    // written at all - is retried; a log that captured the wrong calls is a
+    // real regression and fails immediately, on the first attempt it appears.
+    for (let attempt = 1; ; attempt++) {
+      const log = join(logDir, `ensure-session-calls-${attempt}`);
+      const loggedFake = fakeHangingTmux({ log });
+      try {
+        const calls = withEnv({ PATH: `${loggedFake}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
+          const started = Date.now();
+          assert.throws(() => ensureSession("hive-timeout-probe", process.cwd()), TmuxTimeoutError);
+          assert.ok(Date.now() - started < 10_000, "the probe returned within its bound");
+          return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+        });
+        if (calls.length === 0 || calls[0] === "") {
+          if (attempt < 3) continue;
+          assert.fail(`the fake's log was never written after ${attempt} attempts (todo 404's fork-loses-the-race case)`);
+        }
         assert.deepEqual(
           calls,
           ["has-session"],
           "a timed-out has-session must throw, not flatten to false and fall through to new-session",
         );
-      });
-    } finally {
-      rmSync(loggedFake, { recursive: true, force: true });
+        break;
+      } finally {
+        rmSync(loggedFake, { recursive: true, force: true });
+      }
     }
   });
 

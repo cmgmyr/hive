@@ -119,7 +119,12 @@ export function currentHolder(cwd = process.cwd()) {
 // else) has to be treated as alive: the same rule test/CLAUDE.md already
 // states for a leaked tmux socket probe - a holder is a survivor unless
 // something actually proved it dead.
-function isAlive(pid) {
+// Exported for scripts/sweep-scratch.mjs (todo 402): before reaping a live
+// scratch tmux server, it needs the identical "is the recorded holder still
+// alive" answer this file's own takeover logic rests on, not a second
+// hand-copied kill(pid, 0) that could drift from the ESRCH-vs-EPERM
+// distinction the comment below argues for.
+export function isAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -131,7 +136,10 @@ function isAlive(pid) {
 // Returns { record, raw } so a caller that decides to take over can verify,
 // after the fact, that the file it removed was still the exact bytes it
 // inspected (see takeover() below) - or null if the file is genuinely gone.
-function readHolder(lockPath) {
+// Exported for scripts/sweep-scratch.mjs (todo 402), for the same reason as
+// isAlive above - the corrupt/non-numeric-pid handling here is exactly what
+// a second reader needs too, not something safe to re-derive independently.
+export function readHolder(lockPath) {
   let raw;
   try {
     raw = readFileSync(lockPath, "utf8");

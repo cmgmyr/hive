@@ -717,6 +717,13 @@ export interface OrphanScratchServers {
   oldestMs: number | null;
   // Socket paths of what was counted, for a remedy a human can paste.
   sockets: string[];
+  // The same population as `sockets`, carrying each one's own state rather
+  // than only the aggregate counts above. Added for scripts/sweep-scratch.mjs
+  // (todo 402): reaping needs to choose ITS method per candidate - a `live`
+  // one answers `kill-server` directly, a `wedged` one needs the pid fallback
+  // (dead-ends/2026-08-11-reaping-a-wedged-tmux-server-by-socket-alone.md) -
+  // and doctor's own report never needed that, only the counts.
+  entries: { socket: string; state: "live" | "wedged"; ageMs: number }[];
 }
 
 // Never throws, and answers null when there is nothing measurable - the same
@@ -759,6 +766,7 @@ export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: nu
     wedged: 0,
     oldestMs: null,
     sockets: [],
+    entries: [],
   };
   const deadline = now + budgetMs;
   const aged: { socket: string; ageMs: number }[] = [];
@@ -820,6 +828,7 @@ export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: nu
     if (state === "live") result.live += 1;
     else result.wedged += 1;
     result.sockets.push(candidate.socket);
+    result.entries.push({ socket: candidate.socket, state, ageMs: candidate.ageMs });
     result.oldestMs = Math.max(result.oldestMs ?? 0, candidate.ageMs);
   }
   return result;

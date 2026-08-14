@@ -111,7 +111,12 @@ export function countAllocatedTtys(rows: PsRow[]): number {
 // used and confirmed correct. Taking only the first whitespace token here
 // is what makes one function work against either column: `comm=` is always
 // one token already, and `args=`'s first token is argv[0].
-function isOrphanLoginShell(row: PsRow): boolean {
+// Exported for scripts/sweep-scratch.mjs (todo 402): the dev sweep reaps this
+// exact population and must use the identical predicate doctor's count
+// already rests on, not a second hand-copied version - the tmux-and-panes.md
+// rule about one predicate rather than three copies applies just as much
+// here as it did to the input-box detector.
+export function isOrphanLoginShell(row: PsRow): boolean {
   if (row.ppid !== 1) return false;
   const arg0 = row.comm.split(/\s+/, 1)[0] ?? row.comm;
   const base = arg0.split("/").pop() ?? arg0;
