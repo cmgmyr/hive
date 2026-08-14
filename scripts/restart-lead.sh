@@ -404,6 +404,41 @@ CLAUDE_PANE_CMD='^[0-9]+\.[0-9]+(\.[0-9]+)?$|^claude$'
 # NO dialog to this script's old raw-window version (wide window, sees it,
 # INPUT_BOX matches, awaiting_choice returns false). Refusal 3 would not
 # have fired, and the script would have killed a lead waiting on a human.
+#
+# TODO 403 SPLIT THAT WINDOW IN TWO, AND THE SPLIT IS BY CALL SITE HERE, SO
+# READ THE TWO CONSUMERS SEPARATELY.
+#   REFUSAL 1 AND THE READINESS WAIT (`pane_says input-box` ->
+#     paneHasInputBox) READ THE NARROW WINDOW, exactly as the F3 paragraph
+#     below requires. Todo 403's first draft moved them to the raw window
+#     for uniformity, which reversed that decision without engaging it, and
+#     both counselors seats caught it: this script's own new fixture
+#     (test/fixtures/panes/tall-pending-esc-to-cancel.txt) is a complete
+#     16-row box chrome, so a bash pane that had merely `cat`-ed it would
+#     have passed refusal 1 as claude and been killed. Reverted; the
+#     reasoning now lives at paneHasInputBox in src/tmux.ts as well as here.
+#   REFUSAL 3 (`pane_says dialog` -> paneAwaitingChoice) reads the narrow
+#     window for the FOOTER and the raw one for the input box, which is the
+#     todo 403 fix proper. The F2 case above does not come back with it:
+#     what suppressed detection then was a footer SUBSTRING quoted anywhere
+#     in the wide window, and since todo 399 the box half needs a whole box
+#     chrome drawn at the BOTTOM of the capture, a bound todo 403 did not
+#     touch. Quoted text is not a box.
+#
+# ONE BEHAVIOUR CHANGE HERE THAT IS WORTH STATING PLAINLY, because it looks
+# like a lost protection and is not. On main, a lead pane holding a pending
+# message taller than about 13 rows reads as a DIALOG, so refusal 3 fires
+# and this script cannot restart that lead at all until the human clears
+# their own half-typed message - a false refusal, the same defect todo 403
+# fixes for agent_send. After the fix refusal 3 correctly says "no dialog"
+# and the restart proceeds. The pane's unsubmitted text is lost with it,
+# exactly as it already is for any message SHORTER than that band, because
+# nothing in this script has ever refused on unsubmitted input - see this
+# file's own header ("expect the conversation to end mid-sentence; that is
+# the tool"). Whether restart-lead should gain such a refusal is a real
+# question and a separate one; it is not something todo 403 removed.
+#
+# See "The window belongs to the HALF, not to the caller" in
+# .claude/rules/tmux-and-panes.md.
 # Defined here, before refusal 1, so both readers of INPUT_BOX (this one and
 # refusal 3's awaiting_choice) share it.
 capture_trimmed() {

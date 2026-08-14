@@ -1673,11 +1673,40 @@ export function paneCurrentCommand(target: string): string | null {
   }
 }
 
-export function capturePane(target: string, lines: number): string {
-  const raw = tmux("capture-pane", "-p", "-t", target, "-S", `-${lines}`);
+// TODO 403. ONE CAPTURE, TWO WINDOWS, AND WHICH ONE A CALLER WANTS DEPENDS
+// ON WHICH WAY THAT CALLER FAILS.
+//
+// `capture-pane -S -N` returns the whole VISIBLE pane plus N rows of history,
+// not N rows total - measured live at three pane heights on an isolated
+// server (69, 49 and 39 rows returned for `-S -18` against panes 50, 30 and
+// 20 rows tall), which is the same correction this project already had to
+// record once against scripts/restart-lead.sh's `capture_trimmed`.
+// `capturePane` then throws that surplus away: trailing blanks stripped, last
+// N rows kept.
+//
+// Both windows are legitimate and hive needs both, which is what todo 403
+// found the hard way - `inputBoxState` read the raw one and everything going
+// through `capturePane` read the narrow one, so BOX_MAX_ROWS bound only on
+// one of them and a tall input box read PRESENT to the reporting path and
+// ABSENT to the dialog path at the same instant on the same pane. The split
+// is exposed here rather than settled here, because the right window is a
+// property of the QUESTION (see isAwaitingChoiceScreen), not of the capture.
+export function captureRawPane(target: string, lines: number): string {
+  return tmux("capture-pane", "-p", "-t", target, "-S", `-${lines}`);
+}
+
+// The narrow window: the last `lines` rows of what was actually drawn.
+// Trailing blank rows are an artefact of the pane being taller than the
+// content, so they are stripped before the slice or a mostly-empty screen
+// yields a mostly-empty window.
+export function tailWindow(raw: string, lines: number): string {
   const rows = raw.split("\n");
   while (rows.length > 0 && rows[rows.length - 1].trim() === "") rows.pop();
   return rows.slice(-lines).join("\n");
+}
+
+export function capturePane(target: string, lines: number): string {
+  return tailWindow(captureRawPane(target, lines), lines);
 }
 
 // The glyph claude draws at the start of its input box, followed by NBSP
@@ -2424,8 +2453,93 @@ const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
 // with none of the four old footer strings in it, since any fixture carrying
 // one already read box-present under the old regex and behaved identically.
 // Unchanged for every capture in test/fixtures/panes/ except this lane's own.
-const isAwaitingChoiceScreen = (screen: string): boolean =>
-  CHOICE_DIALOG.test(screen) && !inputBoxOnScreen(screen);
+//
+// TODO 403 GAVE THE TWO HALVES TWO WINDOWS, AND THAT IS THE WHOLE FIX. Every
+// caller used to hand ONE screen to both halves - `capturePane`'s narrow
+// trim-then-slice window - while `inputBoxState` asked the box the same
+// question over the RAW window (see captureRawPane). So BOX_MAX_ROWS (24)
+// bound only on the reporting path; here the real cap was the window itself,
+// about 13 rows of message. A lead pane holding a taller pending message read
+// box-ABSENT, this pair degenerated to bare CHOICE_DIALOG, and if that message
+// contained "Esc to cancel" - which a human writing to the lead ABOUT the
+// dialog predicate does - agent_send's text path refused forever and
+// deliverable() held every wake aimed at that pane. Measured before the fix on
+// a real tmux at three pane heights: awaitingChoice `true` and
+// inputBoxState `pending` on the same pane at the same instant, two readers of
+// one fact disagreeing (test/fixtures/panes/tall-pending-esc-to-cancel.txt).
+//
+// WHY THE WINDOW IS A PROPERTY OF THE HALF, NOT OF THE CALLER. These two
+// halves fail in OPPOSITE directions, which this file has said in words since
+// D5 and had never said in code:
+//   - CHOICE_DIALOG is the LOOSE half, hurt by OVER-matching. Its false
+//     direction is a permanent unclearable dialog on a pane with no box to
+//     ever falsify it. It keeps the NARROW window. Unchanged by todo 403,
+//     deliberately: widening it is what both of that todo's own candidate
+//     fixes did, and a wider window is strictly more worker-controlled
+//     transcript for a stray "Esc to cancel" to hide in.
+//   - the box is the FALSIFIER, hurt by UNDER-matching. Its false direction
+//     deletes the falsifier and degenerates the pair, which is the bug above.
+//     It gets the RAW window, the one inputBoxState has always read.
+//
+// AND THE SAME RULE DECIDES THE OTHER BOX READERS, WHICH ROUND 2 IS WHY THIS
+// PARAGRAPH SAYS SO. The first version of this lane finished with "so
+// BOX_MAX_ROWS is the only cap on box height anywhere" and moved every box
+// read onto the raw window for that uniformity. That is the same mistake one
+// level down: the window belongs to the DIRECTION A READER FAILS IN, and box
+// readers split too.
+//   RAW, because a MISS is what destroys them: inputBoxState (a missed box
+//     lets a wake paste over a human's unsubmitted message) and this
+//     predicate's falsifier half.
+//   NARROW, because being FOOLED is what destroys them: paneHasInputBox
+//     (restart-lead.sh's identity check, whose other side is kill-pane) and
+//     waitForPaneInput (types as soon as it says yes). Each carries the
+//     argument at its own definition.
+// So there is deliberately no single answer to "which window does the box
+// search read", and the footnote is load-bearing rather than untidy.
+//
+// THE BLAST RADIUS IS BOUNDED BY BOX_MAX_ROWS, and that is why this is not
+// just "a bigger window with better manners". findInputBox anchors BOTTOM-UP:
+// the closing border must sit within BOX_TAIL_ROWS of the last non-blank row,
+// and that row is the SAME row in both windows (capturePane strips trailing
+// blanks before slicing, findInputBox strips them again itself). The upward
+// scan is then capped at BOX_MAX_ROWS. So the raw window changes exactly one
+// thing - whether a top border that was above the narrow window's own top
+// edge is reachable - and cannot admit a box from scrollback, because the
+// bottom bound carries that and the bottom bound does not move. Verified
+// against scrollback-box-above-dialog.txt, which still reads `true`: its
+// `╰…╯` is rejected by BOX_BORDER, not by the window.
+//
+// THE BAND, WITH THE ARITHMETIC CORRECTED (counselors round 2, opus seat).
+// This comment first said "15 to 24 rows up", which is the number for a box
+// with exactly 3 rows below its closing border. The general form is
+// `(17 - (end - bottom)) + 1` up to BOX_MAX_ROWS, and `end - bottom` runs to
+// BOX_TAIL_ROWS (8), so the FLOOR IS 10, not 15. footer-slot-taken.txt
+// carries 4 rows below its border and so already sits at 14. Raising
+// BOX_TAIL_ROWS - which its own comment invites a future reader to do for a
+// tall statusLine - widens this band further, and that is now the second
+// thing that number decides rather than the first.
+//
+// WHAT IT SELLS, AND THE POPULATION IS NOT THE ONE THIS COMMENT FIRST NAMED.
+// A screen carrying a COMPLETE box chrome - top border, `❯`+NBSP prompt row,
+// closing border within BOX_TAIL_ROWS of the bottom - spanning that band can
+// now suppress dialog detection where the truncated window could not see its
+// top border. The first version answered that with "no dialog this project
+// has captured has a `❯`+NBSP prompt row", which is true and is about the
+// WRONG POPULATION: on a claude pane the live box is what suppresses, and
+// that is the fix. The screens that are hurt are NON-CLAUDE panes, where this
+// pair degenerates to the bare footer match and the box half exists only to
+// be spoofed - `cat` of a captured pane, a replayed tail, a nested claude's
+// own chrome. That residual predates this lane (todo 399, "ONE NEW RESIDUAL"
+// in .claude/rules/tmux-and-panes.md) and this lane WIDENS ITS BAND from
+// about 13 rows to 24, and then ships a producer at the new band in its own
+// test corpus (tall-pending-esc-to-cancel.txt is a 16-row complete box). The
+// structural close is the same one recorded twice already - gate this check
+// on isClaudeCommand before it is ever consulted - and it is still a separate
+// lane. Said here rather than left to be discovered, because "we widened a
+// residual and added a file that reaches it" is the sentence a future reader
+// needs.
+const isAwaitingChoiceScreen = (tail: string, wide: string): boolean =>
+  CHOICE_DIALOG.test(tail) && !inputBoxOnScreen(wide);
 
 // TODO 399, COUNSELORS ROUND 1 (fable, sole seat). THESE TWO EXPORTS EXIST TO
 // DELETE TWO HAND-SYNCED COPIES OF THIS PREDICATE, NOT TO WIDEN THE SURFACE.
@@ -2455,6 +2569,36 @@ const isAwaitingChoiceScreen = (screen: string): boolean =>
 // `tailCaptureLines()`, and its own comments record getting that mismatch
 // wrong once already. Handing it a pane id moves the window back inside this
 // file, where it cannot drift.
+//
+// TODO 403, ROUND 2: THE NARROW WINDOW, AND THIS FUNCTION IS WHY THE BOX
+// SEARCH DOES NOT GET ONE ANSWER EVERYWHERE. The first version of this lane
+// moved it to the raw window "for uniformity" and that reversed a decision
+// recorded at its own call site, in scripts/restart-lead.sh's F3 paragraph
+// (todo 392 round 2): refusal 1's input-box read was deliberately put on the
+// narrow window because "a wider raw window only makes the residual worse
+// without buying anything back". Both counselors seats found it independently.
+//
+// THE RULE THIS LANE FOUND APPLIES TO THIS LANE. The window belongs to the
+// direction a reader fails in, and the two readers of THIS function both fail
+// destructively on a false PRESENT, not on a false absent:
+//   - restart-lead.sh refusal 1 uses it as proof the pane is claude, and the
+//     thing on the other side of that refusal is `tmux kill-pane`. A bash
+//     pane that has merely `cat`-ed a captured fixture - the tall one this
+//     lane ADDED to the repo is exactly such a file - reads box-present over
+//     the raw window, passes as claude, and gets killed with whatever was
+//     running in it.
+//   - the post-respawn readiness wait in the same script types as soon as
+//     this says yes, so a false present there loses the text it types.
+// A false ABSENT costs neither of them anything: refusal 1 is an OR with
+// CLAUDE_PANE_CMD, which a real claude satisfies for the pane's whole life
+// (its pane_current_command is its own version string), and the readiness
+// wait is polling a pane that has just been respawned, where no tall pending
+// message can exist yet.
+//
+// So the tall-lead-message case this lane exists for does not need the raw
+// window HERE, and buying it here costs the destructive direction at a caller
+// that kills processes. inputBoxState and the dialog half keep the raw window
+// for the opposite reason: they are destroyed by a MISS.
 export const paneHasInputBox = (target: string): boolean | null => {
   try {
     return inputBoxOnScreen(capturePane(target, tailCaptureLines()));
@@ -2467,7 +2611,18 @@ export const paneHasInputBox = (target: string): boolean | null => {
 // fork a capture for it: `part-c-assert.mjs` reads its tail back through the
 // real `agent_output` MCP tool, which has already applied this file's own
 // `capturePane` trimming. Same predicate, same file, no second window.
-export const screenAwaitingChoice = (screen: string): boolean => isAwaitingChoiceScreen(screen);
+//
+// TODO 403: ONE SCREEN IS ALL THIS CALLER HAS, so it is passed to both halves
+// and the narrower answer is the one it gets. `part-c-assert.mjs` reads its
+// tail back through the real `agent_output` tool, which has already applied
+// sanitizeTail - there is no wider window to hand the box half, and inventing
+// one would mean forking a capture against a pane this caller does not hold.
+// The consequence is the todo 403 defect surviving here: a screen whose box
+// is taller than what it was handed reads box-absent and so reads as a
+// dialog. Accepted rather than closed, because this caller's screens come
+// from a script's own assertion pass over panes it just drove, not from a
+// human's half-typed message, and because the direction is the safe one.
+export const screenAwaitingChoice = (screen: string): boolean => isAwaitingChoiceScreen(screen, screen);
 
 // null means the pane could not be read, which is not the same as "no dialog".
 // Callers decide; the scheduler treats it as go-ahead, because its liveness
@@ -2490,9 +2645,16 @@ export const screenAwaitingChoice = (screen: string): boolean => isAwaitingChoic
 // match evaporates once INPUT_BOX_PRESENT has to be absent too, since 18 rows
 // of ordinary transcript containing "Esc to cancel" still has the input box
 // on it.
+//
+// TODO 403. ONE capture-pane fork still, exactly as before: `-S -18` already
+// returned the raw rows and `capturePane` discarded them, so reading both
+// windows off one raw string costs nothing and adds no tmux call. The footer
+// half gets the same narrow window it has always had; the box half gets the
+// raw one. See isAwaitingChoiceScreen for why the window belongs to the half.
 export function paneAwaitingChoice(target: string): boolean | null {
   try {
-    return isAwaitingChoiceScreen(capturePane(target, tailCaptureLines()));
+    const raw = captureRawPane(target, tailCaptureLines());
+    return isAwaitingChoiceScreen(tailWindow(raw, tailCaptureLines()), raw);
   } catch {
     return null;
   }
@@ -2600,10 +2762,17 @@ export const tailCaptureLines = (): number => TAIL_LINES * 3;
 // for the same pane in the same call. null keeps paneAwaitingChoice's
 // meaning: the pane could not be read, so callers proceed (D3) rather than
 // reading it as "no dialog".
+//
+// TODO 403: THREE USES OF ONE CAPTURE NOW, not two - the footer half and the
+// receipt tail read the narrow window, the box half reads the raw one. Still
+// one fork. This function is agent_send's and agent_rename's refusal path, so
+// leaving it on the old single window would have fixed the scheduler's view
+// of a pane while the tool a human calls about that same pane kept refusing.
 export function paneChoiceCheck(target: string): { awaitingChoice: boolean | null; tail: string } {
   try {
-    const raw = capturePane(target, tailCaptureLines());
-    return { awaitingChoice: isAwaitingChoiceScreen(raw), tail: sanitizeTail(raw) };
+    const raw = captureRawPane(target, tailCaptureLines());
+    const tail = tailWindow(raw, tailCaptureLines());
+    return { awaitingChoice: isAwaitingChoiceScreen(tail, raw), tail: sanitizeTail(tail) };
   } catch {
     return { awaitingChoice: null, tail: "" };
   }
@@ -2915,6 +3084,30 @@ export async function waitForPaneInput(target: string, timeoutMs: number): Promi
   while (Date.now() < deadline) {
     let screen: string;
     try {
+      // TODO 403, ROUND 2: STAYS ON THE NARROW WINDOW, AND THE FOOTNOTE IS
+      // THE POINT RATHER THAN AN UNTIDINESS TO REMOVE. This lane moved it to
+      // the raw window arguing it was "nearly a no-op" - 30 trimmed rows
+      // already hold a box up to about 22 against a 24-row cap - and that
+      // both the mutation table and a counselors seat then read as widening
+      // the one probe in this file whose false direction loses a human's
+      // text silently.
+      //
+      // The case, which is not the arithmetic: a wrapper named `claude` (a
+      // supported launch shape - `mise exec --`, `npx`, an absolute-path
+      // shim) prints copied box chrome and then blocks in a bootstrap `read`
+      // before exec'ing the real thing. With a 24-row box and eight rows
+      // under its closing border the top border sits 32 rows up - outside
+      // the 30-row trimmed window, INSIDE the raw one. So the raw window
+      // reports ready on a pane claude has not taken, agent_spawn returns
+      // ready:true, and the brief that follows is eaten by the wrapper's
+      // `read`. That is the exact failure this poll exists to prevent (see
+      // its own contract above), reached by widening it.
+      //
+      // Over-matching is this consumer's destructive direction, the same as
+      // paneHasInputBox's; under-matching costs a false ready:false and
+      // nothing typed (todo 387). It is not that 30 is the RIGHT number - it
+      // is that a box a fresh pane cannot have yet is not worth reaching for
+      // at a caller that types on a yes.
       screen = capturePane(target, 30);
     } catch {
       return false;

@@ -15,7 +15,7 @@ import { REPO, isolateTmux, until } from "./helpers.mjs";
 // claude 2.1.220 pane; see test/fixtures/panes/README.md for how and when.
 const { hasTmux, cleanup } = isolateTmux("the pane fixture tests");
 
-const { paneAwaitingChoice, paneHasInputBox, waitForPaneInput, describePaneChoice } = await import(
+const { paneAwaitingChoice, paneHasInputBox, waitForPaneInput, describePaneChoice, inputBoxState } = await import(
   "../dist/tmux.js"
 );
 
@@ -175,6 +175,63 @@ const CASES = [
     awaitingChoice: true,
     ready: false,
   },
+  // TODO 403. A REAL LEAD PANE HOLDING A PENDING MESSAGE TALLER THAN THE
+  // NARROW CAPTURE WINDOW, whose text quotes "Esc to cancel" - which is what
+  // a human writing to the lead ABOUT the dialog predicate types. Before the
+  // window split this read awaitingChoice=TRUE: the footer half matched the
+  // human's own typing and the box half went absent, because the box's top
+  // border sat above the last 18 rows, so the pair degenerated to bare
+  // CHOICE_DIALOG on a REAL claude pane with no dialog anywhere on it.
+  // agent_send's text path then refuses forever and deliverable() holds every
+  // wake aimed at that pane, and nothing clears it - a static screen does not
+  // scroll away.
+  //
+  // ONE ROW HERE IS LOAD-BEARING AND THE OTHER IS A CONTROL, and this comment
+  // claimed both until counselors round 2 (two seats) checked it against the
+  // mutation table 200 lines below. `awaitingChoice: false` dies against the
+  // box half reading the narrow window - that is the pin. `ready: true` does
+  // NOT die against the readiness probe doing the same: this fixture's top
+  // border sits 20 rows above the last non-blank row, inside the readiness
+  // probe's own 30-row window, so it reads ready either way. It is a control
+  // that the fix did not turn a live lead pane into a not-ready one.
+  //
+  // Worth keeping the correction rather than just the corrected text: an
+  // overclaimed row is the F8 shape this file already documents twice, filed
+  // under a mutation it cannot catch, and the next reader checking whether a
+  // revert is pinned would have believed line-for-line that it was.
+  {
+    file: "tall-pending-esc-to-cancel.txt",
+    name: "t403tall",
+    marker: "nothing scrolls a static screen away",
+    awaitingChoice: false,
+    ready: true,
+  },
+  // TODO 403, THE OTHER HALF OF THE PAIR, AND THE ONE THAT PINS A DECISION
+  // RATHER THAN A FIX. The window split leaves CHOICE_DIALOG on the narrow
+  // window deliberately, and until this fixture existed nothing in the suite
+  // enforced that: unifying the two windows "for consistency" turned nothing
+  // red, so the argument lived only in prose - and prose that no test defends
+  // reads as arbitrary to the next person to refactor it.
+  //
+  // A worker's own bash pane, no claude chrome anywhere on it, that grepped
+  // the dialog predicate - which is what a worker on this lane does - so
+  // "Esc to cancel" sits in its scrollback 36 rows above the last non-blank
+  // row: OUTSIDE the narrow window, INSIDE the raw one.
+  //
+  // Shipped: no footer match in the narrow window, so awaitingChoice=false on
+  // a pane with nothing on it. MUTATION - hand the footer half the raw window
+  // (`CHOICE_DIALOG.test(wide)`) - and it matches, the box is absent because a
+  // bash pane has none, and this pane reads as a PERMANENT unclearable dialog:
+  // agent_send's text path refuses forever and every wake aimed here is held,
+  // with nothing ever coming to falsify it. That is the failure the CHOICE_
+  // DIALOG comment and the rule file both argue against, made red.
+  {
+    file: "stray-esc-above-the-narrow-window.txt",
+    name: "t403stray",
+    marker: "git add -A",
+    awaitingChoice: false,
+    ready: false,
+  },
 ];
 
 describe(
@@ -330,6 +387,248 @@ describe(
     }
   },
 );
+
+// TODO 403. THE HEIGHT AXIS, WHICH THIS CORPUS WAS AS BLIND TO AS IT WAS TO
+// WIDTH BEFORE THE DESCRIBE ABOVE. Every case in the CASES loop is replayed
+// into one 220x50 pane, so nothing there can tell a defect in the capture
+// WINDOW from a defect that happens to depend on the pane's own height - and
+// this todo is entirely about row windows.
+//
+// The claim under test is a pair, and it needs both heights to be a claim at
+// all: the narrow window's cap is height-INDEPENDENT (the bug reproduced
+// identically at 50, 30 and 20 rows), and so is the fix. `capture-pane -S -18`
+// returns the visible pane PLUS 18 rows, so the raw window shrinks with the
+// pane - 69, 49 and 39 rows at these three heights, measured - while the
+// narrow window stays 18 at all of them. A fix that only worked because a
+// tall pane happened to hold the whole box on screen would pass at 50 and
+// fail at 20; a fix that read the visible pane rather than the capture would
+// do the same.
+//
+// MUTATIONS, RUN ONE AT A TIME AND VERIFIED PRESENT IN dist/ BEFORE EACH RUN,
+// with what each one actually killed rather than what it was expected to:
+//
+//   box half back on the narrow window          -> 4 red (the t403tall CASE
+//     (`inputBoxOnScreen(tail)`)                   plus all three heights)
+//   paneHasInputBox moved to the RAW window     -> 3 red (the box assertion
+//                                                  at all three heights)
+//   footer half moved to the raw window         -> 1 red, and NOT from this
+//     (`CHOICE_DIALOG.test(wide)`)                 fixture - see t403stray
+//   paneChoiceCheck back on ONE narrow capture  -> 3 red (added round 2b:
+//     (`isAwaitingChoiceScreen(tail, tail)`)       every assertion above ran
+//                                                  through paneAwaitingChoice,
+//                                                  so this caller could be
+//                                                  reverted alone and stay
+//                                                  green - and it is the
+//                                                  agent_send refusal path)
+//
+// TWO OF THOSE ROWS CHANGED DIRECTION IN ROUND 2 AND THAT IS THE HONEST
+// RECORD. `paneHasInputBox` shipped on the RAW window in round 1, so the
+// mutation that killed those three assertions was moving it back to the
+// narrow one. Counselors found that the raw window there reversed a recorded
+// decision at its destructive caller, it went back to narrow, and the
+// mutation inverted with it. The readiness row is gone from this table
+// entirely for the same reason: it shipped raw, was reverted, and there is
+// no mutation left to name - what pins it now is the argument at its own
+// definition, which is the only thing that ever pinned it.
+//
+// THE FOOTER ROW WAS "NOTHING RED" UNTIL THE LEAD REFUSED THAT, AND THE
+// REFUSAL WAS RIGHT. This fixture genuinely cannot discriminate that half -
+// its "Esc to cancel" sits inside BOTH windows - but the conclusion drawn
+// from it, that a decision not to widen has no screen to prove it, was
+// false. A decision not to widen is testable by a screen where widening
+// CHANGES THE ANSWER: `stray-esc-above-the-narrow-window.txt`, a bash pane
+// whose scrollback quotes the footer above the narrow window and inside the
+// raw one. Recorded here because the wrong version of this reasoning is
+// exactly what leaves an argued decision defended only in prose.
+//
+// THE READINESS ROW GOT THE SAME TREATMENT AND THE OPPOSITE OUTCOME, which
+// is worth reading next to the paragraph above rather than as a repeat of it.
+// It was also "nothing red", it was also defended as accepted, and there the
+// answer was not to build a discriminating fixture but to REVERT the change:
+// a counselors seat constructed the case (a wrapper printing box chrome and
+// blocking in `read` before exec'ing claude, top border 32 rows up) and it
+// showed the probe had been widened in the one direction that loses a human's
+// text silently. "Nothing red" is a question, not a verdict - sometimes the
+// answer is a fixture the corpus was missing, and sometimes it is that the
+// change should not have been made.
+//
+// The first mutation is also the control that the split is inert everywhere
+// else: it turns nothing else in this file red, so no existing fixture's
+// answer moved when the box half changed windows.
+//
+// AND ONE MUTATION THAT IS NOT ABOUT src/ AT ALL, run because a pin is only
+// worth what it does in the condition it exists for: point the t403stray CASE
+// at a fixture file that does not exist, so the pane renders NOTHING. Before
+// round 2b that case passed green - a blank pane satisfies awaitingChoice
+// false and ready false, and the footer-half mutation passes with it, because
+// a pane that never rendered carries no stray quote. It now fails in 3.0s on
+// the `until` return. That is the difference between a pin and a pin-shaped
+// assertion, and it was invisible until someone asked what happens when the
+// `cat` loses a race.
+describe(
+  "a pending message taller than the narrow window is not a dialog, at any pane height (todo 403)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    const session = `hive-panetall-${process.pid}`;
+    const HEIGHTS = [50, 30, 20];
+    const MARKER = "nothing scrolls a static screen away";
+
+    before(async () => {
+      if (!hasTmux) return;
+      const cmd = `cat '${join(FIXTURES, "tall-pending-esc-to-cancel.txt")}'; sleep 600`;
+      HEIGHTS.forEach((h, i) => {
+        const name = `h${h}`;
+        if (i === 0) {
+          execFileSync("tmux", ["new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", String(h), cmd], {
+            stdio: "ignore",
+          });
+        } else {
+          execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, "-n", name, "-e", "X=1", cmd], {
+            stdio: "ignore",
+          });
+          execFileSync("tmux", ["resize-window", "-t", `${session}:${name}`, "-x", "220", "-y", String(h)], {
+            stdio: "ignore",
+          });
+        }
+      });
+    });
+
+    after(() => cleanup(session));
+
+    for (const h of HEIGHTS) {
+      it(`reads the tall pending box at ${h} rows`, async () => {
+        const target = `${session}:h${h}`;
+        await until(() => execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString().includes(MARKER));
+
+        assert.equal(
+          paneAwaitingChoice(target),
+          false,
+          `at ${h} rows: a human's own message quoting "Esc to cancel" is not a dialog, and the box that proves it ` +
+            "is taller than the narrow window",
+        );
+        // AND THIS ONE READS FALSE ON PURPOSE, WHICH IS THE ROUND-2
+        // CORRECTION. The presence predicate stays on the NARROW window, so
+        // it does not see this box - and that is the answer its callers need,
+        // because both of them are destroyed by a false PRESENT rather than
+        // by a miss: restart-lead.sh's refusal 1 has `tmux kill-pane` on the
+        // other side of it, and its readiness wait types the moment this says
+        // yes. A bash pane that had merely `cat`-ed THIS FIXTURE would pass
+        // refusal 1 as claude over the raw window. The lead pane this fixture
+        // represents is still recognised there, by CLAUDE_PANE_CMD's own
+        // branch of that OR.
+        //
+        // MUTATION: move paneHasInputBox back to captureRawPane and all three
+        // heights go red here.
+        assert.equal(
+          paneHasInputBox(target),
+          false,
+          `at ${h} rows: the presence predicate must NOT see a box this tall - its callers kill panes and type on a ` +
+            "yes, so being fooled is their destructive direction",
+        );
+        // THE TWO READERS OF ONE FACT, ASSERTED TOGETHER. This is the whole
+        // shape of todo 403: inputBoxState was ALREADY right about this pane
+        // (the unsubmitted-text hold never broke), and the dialog path
+        // disagreed with it. Asserting only awaitingChoice would pin the
+        // symptom; asserting both pins that they agree, which is the thing
+        // that was false.
+        assert.equal(
+          inputBoxState(target)?.state,
+          "pending",
+          `at ${h} rows: the hold path was always right about this pane - the point is that the dialog path now agrees`,
+        );
+      });
+    }
+  },
+);
+
+// TODO 403, the F6/M1 defence applied before review rather than after: the
+// t403tall CASE and the height describe above assert awaitingChoice=false and
+// ready=true, both of which ready-idle.txt and footer-slot-taken-pending.txt
+// would also satisfy. Swap the file for either and every one of those
+// assertions still passes with the window split reverted entirely, because
+// neither fixture has a box tall enough to fall outside the narrow window.
+// A bound can only be tested by a fixture that exceeds it (test/CLAUDE.md's
+// own named false-green shape 6), so this asserts on the bytes that make it
+// exceed the bound.
+describe("tall-pending-esc-to-cancel.txt carries the bytes the todo 403 cases actually need", () => {
+  const rows = readFileSync(join(FIXTURES, "tall-pending-esc-to-cancel.txt"), "utf8")
+    .split("\n")
+    .map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+  const lastNonBlank = rows.reduce((last, row, i) => (row.trim() === "" ? last : i), -1);
+  const isRule = (row) => /^─{4,}/.test(row.trim());
+
+  it("quotes the dialog footer inside the narrow window, so the loose half really does match", () => {
+    const narrow = rows.slice(Math.max(0, lastNonBlank - 17), lastNonBlank + 1);
+    assert.ok(
+      narrow.some((row) => row.includes("Esc to cancel")),
+      "if this string were outside the 18-row window the case would read false for the wrong reason entirely",
+    );
+  });
+
+  it("puts the box's top border OUTSIDE the narrow window and inside BOX_MAX_ROWS", () => {
+    const bottom = rows.findLastIndex((row, i) => i <= lastNonBlank && isRule(row));
+    const top = rows.findLastIndex((row, i) => i < bottom && isRule(row));
+    assert.ok(top >= 0 && bottom > top, "the fixture must carry both of the box's own borders");
+
+    const rowsFromEnd = lastNonBlank - top;
+    assert.ok(
+      rowsFromEnd > 18,
+      `the top border sits ${rowsFromEnd} rows above the last non-blank row; at 18 or fewer it is inside the narrow ` +
+        "window and this fixture cannot reach the bound it exists to test",
+    );
+    assert.ok(
+      bottom - top <= 24,
+      `the box is ${bottom - top} rows tall; past BOX_MAX_ROWS (24) it reads absent to BOTH windows and the fixture ` +
+        "would be pinning the cap rather than the window",
+    );
+  });
+});
+
+// TODO 403. The same defence for the fixture that pins the OTHER half. This
+// one is more fragile than tall-pending, because its whole discriminating
+// power is a row OFFSET: the quoted footer has to fall outside the narrow
+// window and inside the raw one, and an edit that adds ten lines to the
+// bottom of the transcript silently moves it into the narrow window, where
+// the case would then read awaitingChoice=true and someone would "fix" the
+// expectation. Both bounds are asserted so that edit fails here instead.
+describe("stray-esc-above-the-narrow-window.txt carries the bytes the t403stray case actually needs", () => {
+  const rows = readFileSync(join(FIXTURES, "stray-esc-above-the-narrow-window.txt"), "utf8")
+    .split("\n")
+    .map((row) => row.replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
+  const lastNonBlank = rows.reduce((last, row, i) => (row.trim() === "" ? last : i), -1);
+  const lowestStray = rows.reduce((last, row, i) => (row.includes("Esc to cancel") ? i : last), -1);
+
+  it("quotes the dialog footer OUTSIDE the narrow window and INSIDE the raw one", () => {
+    assert.ok(lowestStray >= 0, "the whole point of this fixture is that it quotes the footer somewhere");
+
+    const rowsAbove = lastNonBlank - lowestStray;
+    assert.ok(
+      rowsAbove > 18,
+      `the lowest quote sits ${rowsAbove} rows above the last non-blank row; at 18 or fewer the narrow window sees ` +
+        "it too and this fixture stops discriminating the footer half's window",
+    );
+    // The raw window is the visible pane PLUS tailCaptureLines(), so at the
+    // 50-row height the CASES loop replays into, the quote has to be within
+    // 68 rows of the end for the mutation to be able to see it at all. A
+    // fixture the mutation cannot see is one that passes for the wrong
+    // reason, which is the same failure in the opposite direction.
+    assert.ok(
+      rowsAbove < 50 + 18,
+      `the lowest quote sits ${rowsAbove} rows above the last non-blank row, outside the raw window at the replay ` +
+        "height - the mutation this fixture exists to kill would never even match it",
+    );
+  });
+
+  it("has no claude chrome at all, so the box half cannot be what answers here", () => {
+    const raw = rows.join("\n");
+    assert.doesNotMatch(
+      raw,
+      /^─{4,}/m,
+      "a rule near the bottom would let the box anchor engage, and then this fixture would be testing that half",
+    );
+    assert.doesNotMatch(raw, /\u276f\u00a0/, "the prompt row is the other half of the box anchor and must not be here either");
+  });
+});
 
 describe("tool-permission-prompt.txt carries the bytes the t392prompt case actually needs (todo 392 round 2, F6)", () => {
   it("contains the preview box's own closing border and the dialog's own question", () => {

@@ -408,3 +408,88 @@ replayed INTO, not in the bytes. `test/pane-fixtures.test.mjs` pins it by
 replaying `ready-idle.txt` at three widths instead. If you add a fixture whose
 own capture width is close to the pane it will be replayed into, that test is
 the one that will tell you.
+
+## Todo 403: a pending message taller than the narrow capture window
+
+- `tall-pending-esc-to-cancel.txt` — the lead's own pane holding an
+  unsubmitted message 15 lines long whose text quotes `Esc to cancel`. Built
+  from `footer-slot-taken-pending.txt`, a real capture of that same pane, by
+  extending its pending message with continuation rows of the shape
+  `multiline-pending.txt` measured (two leading spaces, no side chrome); every
+  byte of chrome around the message is the real capture's. 83 rows.
+
+  The screen it represents is not exotic: it is a human writing to the lead
+  ABOUT the dialog predicate, which is what puts the detector's own trigger
+  string inside the box. Before the window split, `paneAwaitingChoice` read
+  `true` on it — the footer half matched the human's own typing while the box
+  half went absent, because the box's top border sits 20 rows above the last
+  non-blank row and the dialog path only ever saw 18. `agent_send`'s text path
+  then refuses forever and every wake aimed at that pane is held, and nothing
+  clears it, because a static screen does not scroll away.
+
+  Two rows of it are asserted directly (`pane-fixtures.test.mjs`), which is
+  the same defence `tool-permission-prompt.txt` and `bypass-mode-idle-narrow
+  .txt` carry: the top border must sit MORE than 18 rows above the last
+  non-blank row, or the fixture does not reach the bound it exists to test and
+  `ready-idle.txt` would pass every assertion in its place; and the box must
+  stay within `BOX_MAX_ROWS` (24), or it reads absent to both windows and the
+  fixture pins the cap rather than the window.
+
+  **It reads `paneHasInputBox` FALSE, on purpose, and that assertion pins a
+  different decision than the rest of the fixture does.** The presence
+  predicate stays on the narrow window because both of its callers are
+  destroyed by a false PRESENT rather than by a miss — `restart-lead.sh`'s
+  refusal 1 has `tmux kill-pane` on the other side of it, and its readiness
+  wait types the moment that predicate says yes. This fixture is itself the
+  producer: a bash pane that has merely `cat`-ed it renders a complete 16-row
+  box, and over the raw window that pane would pass refusal 1 as claude.
+  Moving `paneHasInputBox` to the raw window turns all three height
+  assertions red.
+
+  **This file is also a producer of the fail-open residual the dialog half
+  now carries at a wider band** (`.claude/rules/tmux-and-panes.md`, "The
+  window belongs to the HALF"). A non-claude pane showing this box reads
+  box-present, so a `CHOICE_DIALOG` match there reads as no dialog. That
+  residual is todo 399's and is accepted; what this lane added is a file in
+  the corpus that reaches it at the new band. Worth knowing before you `cat`
+  a fixture into a worker's own pane.
+
+- `stray-esc-above-the-narrow-window.txt` — SYNTHETIC, and the fixture for the
+  half of the split that did NOT move. A worker's own bash pane: it grepped
+  `Esc to cancel` out of `src/tmux.ts`, which is what a worker on the dialog
+  lane does, then carried on working. No claude chrome anywhere on it, and
+  deliberately no rule or prompt row near the bottom, so the box anchor cannot
+  be what answers. The quote sits 36 rows above the last non-blank row:
+  OUTSIDE the narrow window the footer half reads, INSIDE the raw one.
+
+  It exists because the footer half staying narrow is a DECISION, and a
+  decision defended only in prose is one a later refactor removes for looking
+  arbitrary. Shipped, this pane reads no dialog. Hand the footer half the raw
+  window and it reads a permanent unclearable dialog on a pane with nothing on
+  it — `agent_send`'s text path refusing forever, every wake held, and no
+  claude chrome ever coming to falsify it.
+
+  Its discriminating power is a row OFFSET, which makes it more fragile than
+  anything else here: ten more lines at the bottom of the transcript move the
+  quote into the narrow window, and the case would then read the other way
+  round with nothing to say why. Both bounds are asserted on the bytes — more
+  than 18 rows above the last non-blank row, and inside the raw window at the
+  replay height — so that edit fails on the assertion instead.
+
+### The height axis, which is this corpus's other structural blind spot
+
+Todo 399 found that every fixture here was 220 columns replayed into a
+220-column pane, so nothing could see a wrapping-border defect. Todo 403 is
+the same shape one axis over: every fixture is replayed into ONE pane height,
+so nothing could tell a defect in the capture WINDOW from one that depends on
+the pane's own height. `capture-pane -S -18` returns the visible pane PLUS 18
+rows, so the raw window shrinks with the pane (measured: 69, 49 and 39 rows at
+50, 30 and 20 rows tall) while the narrow window stays 18 at every height.
+`tall-pending-esc-to-cancel.txt` is replayed at all three, and the bug
+reproduced identically at each — which is what makes "the cap is the window,
+not the pane" a measurement rather than an assumption.
+
+One residual this fixture deliberately does not test: a box TALLER THAN THE
+PANE ITSELF has its top border scrolled off the screen and into scrollback, so
+it can read absent whatever window hive asks for. That is claude's own
+rendering rather than hive's window, and it fails closed.
