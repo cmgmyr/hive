@@ -401,6 +401,25 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
     assert.equal(receipt.sent, false);
   });
 
+  // Todo 392. The whole bug: an ordinary tool-permission prompt's own
+  // preview box closes with `╰`, the same glyph INPUT_BOX_PRESENT used to
+  // trust as proof no dialog was up, so this call used to type "1" and
+  // hive granted the permission nobody read. Same shape as the trust/model
+  // cases above; the fixture is the only thing that changed.
+  it("refuses text into an ordinary tool-permission prompt (todo 392)", async () => {
+    const name = await showing("send-permission-prompt", "tool-permission-prompt.txt");
+    const receipt = await mcp.call("agent_send", { name, text: "1" });
+    assert.equal(receipt.sent, false);
+    assert.match(receipt.note, /waiting on a choice/);
+    assert.match(receipt.tail, /Esc to cancel/);
+    const { output } = await mcp.call("agent_output", { name });
+    assert.match(
+      output,
+      /Esc to cancel/,
+      "the dialog must still be up: an Enter reaching it would have chosen an option and cleared it",
+    );
+  });
+
   // D5, the grep case, same reasoning as agent_spawn's and agent_rename's.
   it("still sends text when the marker is grepped text, not a real dialog", async () => {
     const name = "send-grepped-marker";

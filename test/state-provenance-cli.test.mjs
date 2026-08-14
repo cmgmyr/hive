@@ -56,9 +56,29 @@ let longPane;
 // pins paneChoiceCheck's awaitingChoice=false reading against) so the
 // no-dialog case has real content to assert.
 let busyPane;
+// Todo 392 round 2 review (F7). doctor's own dialog case above only ever
+// replays folder-trust-dialog.txt, which never carried `╰` to begin with -
+// restoring `╰` to INPUT_BOX_PRESENT would leave doctor reporting "no
+// dialog" for the fixture the bug was actually about while this file's
+// existing dialog test stayed green. A second window in the same session,
+// same technique as longPane/busyPane below.
+let permissionPromptPane;
 before(() => {
   if (!hasTmux) return;
   ({ livePane, dialogPane } = createLiveAndDialogPanes(session, "folder-trust-dialog.txt"));
+  permissionPromptPane = execFileSync(
+    "tmux",
+    [
+      "new-window",
+      "-t",
+      `=${session}`,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      `cat '${join(REPO, "test", "fixtures", "panes", "tool-permission-prompt.txt")}'; sleep 600`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
   longPane = execFileSync(
     "tmux",
     [
@@ -456,6 +476,22 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     assert.match(stdout, /worker worker-dialog: last log event: no record/);
     assert.match(stdout, /pane: awaiting a choice \(dialog\)/);
     assert.match(stdout, /Esc to cancel/, "the dialog's own tail should be printed, not just the verdict");
+  });
+
+  // Todo 392 round 2 review (F7). The mutation this file's own dialog test
+  // above cannot kill: restore `╰` to INPUT_BOX_PRESENT and
+  // folder-trust-dialog.txt (no `╰` in it) still reads correctly, so
+  // doctor's own reporting path for the actual bug - an ordinary
+  // tool-permission prompt - stayed uncovered right through the lane's own
+  // acceptance run.
+  it("reports awaiting a choice for a worker parked on an ordinary tool-permission prompt, not just a chrome dialog", async () => {
+    reset();
+    agentRow({ name: "worker-permission-prompt", state: "waiting", stateChangedAgo: 5, target: permissionPromptPane });
+
+    const { stdout } = await runCli(["doctor"], opts);
+
+    assert.match(stdout, /pane: awaiting a choice \(dialog\)/);
+    assert.match(stdout, /Do you want to insert this cell/, "the prompt's own question should be in the tail");
   });
 
   it("caps the tail at sanitizeTail's own bound: last 6 lines, each cut before 160 chars (fix round 1, item 5d)", async () => {

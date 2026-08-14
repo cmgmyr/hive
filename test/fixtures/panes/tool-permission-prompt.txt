@@ -1,0 +1,50 @@
+
+╭─── Claude Code v2.1.231 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                                                                                       │
+│                 Welcome back Robin!                │ Ask Claude to create a new app or clone a repository                                                                           │
+│                                                    │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                                                                                     │
+│                      ▝▜█████▛▘                     │ Fixed MCP OAuth sign-in failing with a redirect URI mismatch for servers that use a pre-registered OAuth client, such as Slack │
+│                        ▘▘ ▝▝                       │ Documented `claude remote-control --continue` for resuming the most recent Remote Control session                              │
+│   Opus 5 (1M context) with high… · Claude Max ·    │ Added server-supplied Claude Code hook support for self-hosted runner sessions, matching managed-environment behavior          │
+│   devs@example.com's Organization                  │ /release-notes for more                                                                                                        │
+│             /…/T/hive-t392-cwd.5Mlp22              │                                                                                                                                │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ Use the NotebookEdit tool to insert a new code cell into scratch.ipynb containing the single line: print('hi')
+
+  Read 1 file, listed 1 directory, ran 1 shell command
+
+⏺ Edit Notebook(scratch.ipynb@undefined)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Edit notebook
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ /private/var/folders/v0/tn80j87n3dz_pzvn8tv7sz7w0000gn/T/hive-t392-cwd.5Mlp22/scratch.ipynb                                                                                                                              │
+│ Insert new cell for cell  (code)                                                                                                                                                                                         │
+│                                                                                                                                                                                                                          │
+│    1 print('hi')                                                                                                                                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Do you want to insert this cell into scratch.ipynb?
+ ❯ 1. Yes
+   2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

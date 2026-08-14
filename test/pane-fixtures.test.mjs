@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
@@ -23,6 +24,79 @@ const CASES = [
   { file: "folder-trust-dialog.txt", name: "trust", marker: "trust this folder", awaitingChoice: true, ready: false },
   { file: "model-picker-dialog.txt", name: "model", marker: "Select model", awaitingChoice: true, ready: false },
   { file: "busy-mid-turn.txt", name: "busy", marker: "lighthouse keeper", awaitingChoice: false, ready: true },
+  // Todo 392. An ordinary tool-permission prompt renders a bordered PREVIEW
+  // of the pending change, and that box's own closing border is `╰` -- the
+  // same glyph INPUT_BOX_PRESENT counted as proof the input box (not a
+  // dialog) is on screen. Before D1, this reads awaitingChoice=false and
+  // ready=true: the dialog's own chrome proves there is no dialog.
+  {
+    file: "tool-permission-prompt.txt",
+    name: "t392prompt",
+    marker: "Esc to cancel",
+    awaitingChoice: true,
+    ready: false,
+  },
+  // Todo 392, D2. Manual (`default`) permission mode's footer reads "manual
+  // mode on" with no "(shift+tab to cycle)" -- the only mode that drops it --
+  // and this screen carries no `╰` either. Captured after a warm-up turn;
+  // see the fixture README for what that warm-up does and does not protect
+  // against (round 2 review corrected the original reasoning -- the banner's
+  // `╰` was never inside capturePane()'s real trim-then-slice window even
+  // without it, only inside the RAW `capture-pane -S -N` output a naive
+  // reading of tailCaptureLines() would expect). Before D2, ready reads
+  // false on a pane that is, in fact, perfectly ready. INPUT_BOX_PRESENT's
+  // marker for this screen is "mode on" as of round 2 (M1: "manual mode on"
+  // alone did not survive narrow-pane truncation testing the way "mode on"
+  // does), matched below via its own substring.
+  //
+  // Todo 392 round 1 review (F8/opus 5): this fixture carries no
+  // CHOICE_DIALOG alternative either way, so its `awaitingChoice: false`
+  // row cannot fail against a mutation to the INPUT_BOX_PRESENT half - the
+  // `ready: true` row below it is the one that actually dies against D2's
+  // mutation, and is the only reason this fixture is here.
+  {
+    file: "manual-mode-idle.txt",
+    name: "t392manual",
+    marker: "manual mode on",
+    awaitingChoice: false,
+    ready: true,
+  },
+  // Todo 392, D3. The plan-approval dialog renders no "Esc to cancel" at
+  // all, so CHOICE_DIALOG missed it outright. Round 2 (M2) replaced the
+  // original "Would you like to proceed" alternative with "ctrl+g to edit
+  // in" -- the dialog's own chrome rather than its prose, measured stable
+  // across two different $EDITOR configurations. Before D3, awaitingChoice
+  // reads false with no INPUT_BOX_PRESENT involvement whatsoever.
+  //
+  // Todo 392 round 1 review (F8/opus 5): the symmetric case to t392manual
+  // above - this fixture carries no INPUT_BOX_PRESENT marker either way, so
+  // its `ready: false` row cannot fail against a mutation to CHOICE_DIALOG.
+  // `awaitingChoice: true` is the one that dies against D3's mutation.
+  {
+    file: "plan-approval-dialog.txt",
+    name: "t392plan",
+    marker: "ctrl+g to edit in Zed",
+    awaitingChoice: true,
+    ready: false,
+  },
+  // Todo 392, M1 completion. bypassPermissions's footer reads "bypass
+  // permissions on (shift+tab to cycle) ...", not "<word> mode on" - "mode
+  // on" alone left this population with the identical total miss M1 closed
+  // for auto/plan at narrow widths. Captured at 40 COLUMNS deliberately
+  // (every other fixture here is 220): at that width "(shift+tab to
+  // cycle)" is gone and "permissions on" is the ONLY INPUT_BOX_PRESENT
+  // alternative left standing, so this fixture actually discriminates the
+  // new alternative - a 220-column capture would also carry "(shift+tab to
+  // cycle)" intact and pass with "permissions on" removed entirely,
+  // proving nothing (F6/F8's own lesson, applied before shipping rather
+  // than found after).
+  {
+    file: "bypass-mode-idle-narrow.txt",
+    name: "t392bypass",
+    marker: "permissions on",
+    awaitingChoice: false,
+    ready: true,
+  },
 ];
 
 describe(
@@ -89,6 +163,49 @@ describe(
     }
   },
 );
+
+// Todo 392 round 2 review (F6). The t392prompt CASE above asserts only
+// "Esc to cancel" (via `marker`), awaitingChoice=true, ready=false - every
+// one of which folder-trust-dialog.txt or model-picker-dialog.txt would
+// also satisfy. Swap tool-permission-prompt.txt's file for either and every
+// assertion in the CASES loop still passes, and then restoring `╰` to
+// INPUT_BOX_PRESENT also passes, because neither of those fixtures ever
+// carried `╰` to begin with - test/CLAUDE.md's own named false-green shape,
+// a fixture with no power to catch the mutation it is filed under. This
+// reads the fixture FILE directly (not through a replayed pane) and asserts
+// on the bytes themselves, so the case cannot be silently swapped for a
+// fixture that looks equivalent to the CASES loop but cannot discriminate
+// the bug.
+describe("tool-permission-prompt.txt carries the bytes the t392prompt case actually needs (todo 392 round 2, F6)", () => {
+  it("contains the preview box's own closing border and the dialog's own question", () => {
+    const raw = readFileSync(join(FIXTURES, "tool-permission-prompt.txt"), "utf8");
+    assert.match(raw, /╰/, "the preview box's closing border - the whole bug - must be in this fixture");
+    assert.match(
+      raw,
+      /Do you want to insert this cell/,
+      "the dialog's own question, not just a generic dialog marker any captured screen could share",
+    );
+  });
+});
+
+// Todo 392, M1 completion, same reasoning as F6 immediately above: applied
+// pre-emptively here rather than found by review. t392bypass's `ready: true`
+// CASE only discriminates the "permissions on" alternative if this fixture
+// genuinely has no OTHER surviving INPUT_BOX_PRESENT marker - swap it for a
+// wide bypass-mode capture (where "(shift+tab to cycle)" also survives) and
+// the case would pass with "permissions on" removed entirely, proving
+// nothing.
+describe("bypass-mode-idle-narrow.txt carries the bytes the t392bypass case actually needs (todo 392, M1)", () => {
+  it("contains 'permissions on' and genuinely lacks every other INPUT_BOX_PRESENT alternative", () => {
+    const raw = readFileSync(join(FIXTURES, "bypass-mode-idle-narrow.txt"), "utf8");
+    assert.match(raw, /permissions on/, "the alternative this fixture exists to pin");
+    assert.doesNotMatch(
+      raw,
+      /shift\+tab to cycle|for shortcuts|mode on/,
+      "if any other alternative survived here too, this fixture could not tell 'permissions on' apart from an untested regression",
+    );
+  });
+});
 
 // Issue #72 fix round 2, item 1 (both counselors seats). No test in the
 // suite referenced describePaneChoice directly; agent_list/doctor tests only

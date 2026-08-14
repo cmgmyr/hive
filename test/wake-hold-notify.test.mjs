@@ -462,6 +462,38 @@ describe(
       assert.equal(noticeCount(wakeId), 2, "a second block is a second condition and must be reported again");
     });
 
+    // Todo 392, measured live before this fix: a standing watch armed over a
+    // worker sitting on an ordinary tool-permission prompt filed ZERO block
+    // notices in ~4 minutes, because noteBlockedWatched's own pane read
+    // (paneChoiceCheck) answered "no dialog" - the preview box's own `╰`
+    // again. Same mechanism as the folder-trust case above; this pins the
+    // fixture the bug was actually about.
+    it("notifies the owner when the blocked worker is on an ordinary tool-permission prompt (todo 392)", async () => {
+      const owner = await spawnShowing("permission-block-owner", replayFixture("ready-idle.txt"));
+      const stuck = await spawnShowing("permission-block-stuck", replayFixture("tool-permission-prompt.txt"));
+      markWaiting("permission-block-stuck", "2026-08-13 20:00:00");
+      const wakeId = await ownedIdleWake(
+        "permission-block-owner",
+        ["permission-block-stuck"],
+        owner.agent_id,
+        "INTEGRATION permission-block original body",
+      );
+
+      let notices;
+      await until(async () => {
+        notices = noticesAbout(wakeId);
+        return notices.length > 0;
+      }, 15000);
+      assert.equal(notices.length, 1, "the block must produce one notification to the wake's owner");
+      assert.equal(notices[0].deliver_pane, owner.tmux_target, "delivered to the owner's pane");
+      assert.match(notices[0].body, /permission-block-stuck/, "naming the blocked worker");
+      assert.match(notices[0].body, /cannot go idle/, "and saying why the wake is not firing");
+
+      const original = timerRow(wakeId);
+      assert.equal(original.fired_at, null, "the watched wake must not have fired");
+      assert.equal(original.held_at, null, "and must not be reported as held: it was never due");
+    });
+
     it("says nothing for a stale `waiting` whose pane has no dialog on it", async () => {
       const owner = await spawnShowing("stale-latch-owner", replayFixture("ready-idle.txt"));
       const resumed = await spawnShowing("stale-latch-worker", replayFixture("ready-idle.txt"));

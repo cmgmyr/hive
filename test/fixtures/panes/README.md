@@ -97,3 +97,111 @@ that is here now.
   `classifyInputBox` in src/tmux.ts scans forward from the prompt row for
   continuation content, stopping at the box's own closing border or a
   genuinely blank row.
+
+## Todo 392: the ordinary tool-permission prompt
+
+Three genuine captures off a real claude 2.1.231 session, 2026-08-13, for the
+detector gap todo 392 measured live: `INPUT_BOX_PRESENT` (src/tmux.ts) counts
+a `╰` as proof claude's input box is on screen, but a tool-permission prompt
+renders a bordered PREVIEW of the pending change whose bottom border is `╰`
+too, so the dialog's own chrome was read as "no dialog". Captured against an
+isolated private tmux server (`TMUX_TMPDIR` set to a scratch directory, `TMUX`
+unset — no `-L`, matching `isolateTmux()`'s own technique), a scratch cwd, and
+`HIVE_DATA_DIR` pointed at a scratch directory with every other `HIVE_*` var
+unset, so the session could not reach the real store; torn down after. `-x 220
+-y 50`, same pane size as every other fixture here, and the same `-S -50`
+capture depth.
+
+- `tool-permission-prompt.txt` — the whole bug. `claude --permission-mode
+  default`, then a task asking for `NotebookEdit` against a scratch
+  `.ipynb`: outside the default allow list, so it reliably stops on a real
+  prompt rather than auto-approving. Reads "Do you want to insert this cell
+  into scratch.ipynb?" with numbered options and "Esc to cancel · Tab to
+  amend" below a `╭…╰` preview box of the pending cell. Carries `╰` twice —
+  once from the startup banner still visible above (this is the pane's
+  first turn, so nothing has scrolled it away yet) and once from the
+  preview box's own closing border — and either one alone is enough to
+  trip the old regex.
+- `manual-mode-idle.txt` — the second, separate gap: manual (`default`)
+  permission mode's footer reads "⏸ manual mode on · ← for agents", with
+  no "(shift+tab to cycle)" — the only mode that drops it, which is why a
+  manual-mode worker used to carry no `INPUT_BOX_PRESENT` marker of its own
+  at all. Captured from the SAME session as the prompt above, after a
+  warm-up turn (asked to list numbers 1 to 150, no tools) that pushed the
+  startup banner well down the pane's own scrollback.
+
+  Todo 392 round 2 review corrected the reason given for that warm-up.
+  The original version justified it by treating `capture-pane -S -18`'s
+  RAW output as the detector's own capture window (measured at 68 rows
+  against an 80-line scroll on a real tmux 3.7b — visible-pane-height plus
+  18, not "the last 18 rows"). That measurement is real, but it describes
+  `capture-pane -S -N` itself, not what hive's own `capturePane()`
+  (`src/tmux.ts`) returns: `capturePane` strips TRAILING blank rows from
+  that raw output first, then takes the LAST N of what remains. Verified
+  directly against the ORIGINAL, pre-warm-up capture (kept in this lane's
+  own working notes, not shipped): replayed into a real pane and read back
+  through the real `paneAwaitingChoice`/`waitForPaneInput`, the startup
+  banner's `╰` never reached either function even without the warm-up —
+  the footer was already the pane's own LAST printed line with nothing
+  blank after it to strip, so the trim-then-slice window was rows 33-50
+  either way, never rows 2-13 where the banner sits. The fixture itself is
+  unaffected by this correction — a genuinely idle manual-mode pane
+  mid-lane, which is what a real worker looks like by the time anything
+  checks it, is still the more representative capture — only the STATED
+  reason for needing the warm-up was wrong. `scripts/restart-lead.sh`'s own
+  dialog check is a different story: it reads `capture-pane -S -N`
+  directly, with none of `capturePane`'s trimming, so its effective window
+  really is the wider one this paragraph used to (wrongly) attribute to
+  hive itself — see that script's own comment on `awaiting_choice` for the
+  fix. Zero hits for `╰`, "for shortcuts", or "shift+tab to cycle" in this
+  fixture, matching what todo 392's own live probe measured on a real idle
+  manual-mode worker.
+- `plan-approval-dialog.txt` — the third gap: the plan-approval dialog
+  ("Claude has written up a plan and is ready to execute. Would you like to
+  proceed?") renders no "Esc to cancel" anywhere on it, so `CHOICE_DIALOG`
+  misses it outright before `INPUT_BOX_PRESENT` ever enters into it.
+  `claude --permission-mode plan`, then an ordinary task, captured once the
+  plan was written and the approval prompt rendered. Zero hits for `Esc to
+  cancel`, `╰`, "for shortcuts", and "shift+tab to cycle" alike. Round 2
+  review (M2) uses this fixture's OWN "ctrl+g to edit in Zed" line (the
+  dialog's chrome, an editor-shortcut hint, not its prose) as `CHOICE_DIALOG`'s
+  alternative in place of "Would you like to proceed" — measured stable
+  across two different `$EDITOR` configurations (only the editor NAME
+  varies: "Zed" here, "Vim" when `$EDITOR`/`$VISUAL` are unset and claude
+  falls back to a default), and far less plausible in ordinary shell output
+  than the dialog's own prose, which reads almost verbatim as an installer
+  confirmation.
+- `manual-mode-pending.txt` — round 2 review (F9): manual mode's PENDING
+  case was never measured, only its idle one (`manual-mode-idle.txt`
+  above), and getting it wrong is the dangerous direction — if the mode
+  footer hid or changed while a human was mid-sentence, a wake would paste
+  onto their half-typed line and submit it. `claude --permission-mode
+  default`, then real unsubmitted text via `send-keys -l` (no Enter,
+  `agent_send`'s own mechanism) once idle. The footer reads "manual mode
+  on" during composition too, dropping only its own trailing "· ← for
+  agents" hint — nothing depends on that half. Read back through the real
+  `inputBoxState`: `{state: "pending", text: "REAL UNSUBMITTED PENDING TEXT
+  FOR F9"}`, `holdsHumanInput` true, exactly the shape every other mode's
+  own pending fixture already has.
+- `bypass-mode-idle-narrow.txt` — M1 completion, flagged after round 2
+  landed. `mode on` (round 2's fix for the narrow-pane total miss) covers
+  auto/manual/plan, but `bypassPermissions` mode's footer reads "bypass
+  permissions on (shift+tab to cycle) ...", not "\<word\> mode on" — the
+  identical total miss left open for the one mode this project's own
+  maintainer runs by default. `claude --permission-mode bypassPermissions`,
+  captured at **40 columns**, not this file's usual 220 — deliberately, so
+  the capture actually isolates "permissions on" as the sole surviving
+  `INPUT_BOX_PRESENT` alternative (a 220-column capture would also carry
+  "(shift+tab to cycle)" intact and prove nothing about the new
+  alternative). Measured at 220/80/60/40/30/25 columns first: "bypass
+  permissions on" survives everywhere "(shift+tab to cycle)" does not,
+  intact through 30 columns and gone by 25 (cut down to "bypass" alone).
+  "permissions on" was added rather than the fuller "bypass permissions
+  on" — measured to break at the identical width, so the shorter fragment
+  costs nothing. Zero hits for "shift+tab to cycle", "for shortcuts", or
+  "mode on"; one hit for "permissions on". Carries one `╰`, from the
+  startup banner (this is the pane's first turn, no warm-up done) — same
+  as `tool-permission-prompt.txt`, and confirmed harmless the same way
+  `manual-mode-idle.txt`'s own entry above explains: the banner sits well
+  above `capturePane()`'s real trim-then-slice window, which starts from
+  this pane's own last line (the footer, with nothing blank after it).

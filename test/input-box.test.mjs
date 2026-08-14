@@ -122,6 +122,23 @@ const CASES = [
     // overwrite.
     expect: { state: "pending", text: "SECOND LINE ONLY, FIRST LINE EMPTY" },
   },
+  {
+    file: "manual-mode-pending.txt",
+    name: "manual-pending",
+    marker: "REAL UNSUBMITTED PENDING TEXT FOR F9",
+    // Todo 392 round 2 review (F9). D2 (manual-mode idle) and F9's dialog-
+    // side reasoning cover idle and dialog states; genuine PENDING input
+    // under manual mode was never measured, and it is the dangerous
+    // direction to get wrong: if the footer this fixture's own D2 fix
+    // depends on hid or changed while a human was mid-sentence,
+    // holdsHumanInput would read false and a wake would paste onto the
+    // human's half-typed line and submit it. Measured live: the footer
+    // reads "manual mode on" during composition too (it drops only its own
+    // trailing "· ← for agents" hint, which nothing here depends on), so
+    // this reads pending exactly like every other mode's own pending
+    // fixture.
+    expect: { state: "pending", text: "REAL UNSUBMITTED PENDING TEXT FOR F9" },
+  },
 ];
 
 describe(

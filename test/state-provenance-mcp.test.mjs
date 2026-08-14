@@ -265,6 +265,52 @@ describe(
   },
 );
 
+// Todo 392. The dialog fixture above (folder-trust-dialog.txt) never carried
+// `╰`, so it could never have caught the bug: an ordinary tool-permission
+// prompt's own preview box closes with `╰`, the same glyph paneChoiceCheck's
+// INPUT_BOX_PRESENT used to trust as proof no dialog was up, and agent_list
+// reported "no dialog" for a worker sitting on a real, unread prompt. Its own
+// session and panes, deliberately: reusing dialogPane above would only prove
+// the fixture that was already fine still works.
+const permissionPromptSession = `hive-provenance-permission-${process.pid}`;
+let permissionPromptDialogPane;
+
+describe(
+  "agent_list and agent_status report an ordinary tool-permission prompt as a dialog (todo 392)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    beforeEach(reset);
+
+    before(() => {
+      if (!hasTmux) return;
+      ({ dialogPane: permissionPromptDialogPane } = createLiveAndDialogPanes(
+        permissionPromptSession,
+        "tool-permission-prompt.txt",
+      ));
+    });
+
+    after(() => cleanup(permissionPromptSession));
+
+    it("agent_list reports the dialog label, not 'no dialog'", async () => {
+      agentRow({ name: "on-permission-prompt", state: "waiting", target: permissionPromptDialogPane, stateChangedAgo: 5 });
+
+      const out = await callTool("agent_list", {});
+      const row = out.agents.find((a) => a.name === "on-permission-prompt");
+
+      assert.equal(row.pane, "awaiting a choice (dialog)");
+    });
+
+    it("agent_status's own capture still carries the prompt's tail", async () => {
+      agentRow({ name: "status-on-permission-prompt", state: "waiting", target: permissionPromptDialogPane, stateChangedAgo: 5 });
+
+      const out = await callTool("agent_status", { name: "status-on-permission-prompt" });
+
+      assert.ok(out.tail.includes("Esc to cancel"), "the prompt's own footer must be in the tail");
+      assert.ok(out.tail.includes("Do you want to insert this cell"), "and its own question, not a generic dialog label");
+    });
+  },
+);
+
 describe(
   "wake_when_idle's watching array carries provenance",
   { skip: hasTmux ? false : "tmux is not installed" },

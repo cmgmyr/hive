@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
+import { REPO } from "./helpers.mjs";
 import {
   assertNoIdleWhileSubagentsLive,
   assertPaneReadCoverageSufficient,
@@ -599,5 +602,42 @@ describe("runAllAssertions", () => {
     // not be swallowed by the two failures above.
     assert.equal(byName["wake fired after last completion"].ok, true);
     assert.equal(byName["wake held throughout the subagent window"].ok, true);
+  });
+});
+
+// Todo 392 round 1, F4. This file's own header (scripts/part-c-assert.mjs,
+// above CHOICE_DIALOG) says "keep in sync by hand" - this is the mechanical
+// half of that instruction, the same shape scripts/restart-lead.sh's own
+// sync test (test/restart-lead.test.mjs) already has. Both copies are JS
+// regex literals, unlike restart-lead.sh's bash ERE strings, so this can
+// compare them as TEXT directly rather than needing the behavioural
+// cross-dialect comparison that file's view-session test does.
+describe("part-c-assert.mjs's dialog/input-box markers stay in sync with src/tmux.ts", () => {
+  it("CHOICE_DIALOG and INPUT_BOX_PRESENT copy src/tmux.ts's own regex source exactly", () => {
+    const script = readFileSync(join(REPO, "scripts", "part-c-assert.mjs"), "utf8");
+    const tmuxSource = readFileSync(join(REPO, "src", "tmux.ts"), "utf8");
+
+    const scriptChoice = script.match(/^const CHOICE_DIALOG = \/(.*)\/;$/m)?.[1];
+    const scriptInputBox = script.match(/^const INPUT_BOX_PRESENT = \/(.*)\/;$/m)?.[1];
+    const tsChoice = tmuxSource.match(/const CHOICE_DIALOG = \/(.*)\/;/)?.[1];
+    const tsInputBox = tmuxSource.match(/const INPUT_BOX_PRESENT = \/(.*)\/;/)?.[1];
+
+    // Same reasoning as restart-lead.sh's own version of this test: an
+    // undefined extraction means the regex above is stale against a
+    // reformatted source line, not evidence the two copies agree.
+    assert.ok(
+      scriptChoice && scriptInputBox && tsChoice && tsInputBox,
+      `could not extract one of the four markers: script=[${scriptChoice}/${scriptInputBox}] ts=[${tsChoice}/${tsInputBox}]`,
+    );
+    assert.equal(
+      scriptChoice,
+      tsChoice,
+      "part-c-assert.mjs's CHOICE_DIALOG has drifted from src/tmux.ts's own regex - this is the step 11 live driver, and todo 392 shipped from exactly this drift",
+    );
+    assert.equal(
+      scriptInputBox,
+      tsInputBox,
+      "part-c-assert.mjs's INPUT_BOX_PRESENT has drifted from src/tmux.ts's own INPUT_BOX_PRESENT",
+    );
   });
 });

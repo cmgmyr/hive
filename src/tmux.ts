@@ -1979,14 +1979,124 @@ export function inputBoxState(target: string): InputBoxState | null {
 // would risk missing a real dialog whose wording drifts. INPUT_BOX_PRESENT is
 // what carries the precision now, since a modal's defining property is what
 // it replaces, not what footer text it happens to render.
-const CHOICE_DIALOG = /Esc to cancel/;
+//
+// Todo 392 found "fixture-verified both ways" above had never checked the
+// dialog shape a worker actually stops on first. An ordinary tool-permission
+// prompt renders a bordered PREVIEW of the pending change, and that box's own
+// closing border is `╰` -- the exact glyph this pair trusted as proof an
+// input box, not a dialog, was on screen. `╰` never appears on a genuine idle
+// or busy screen; it appears on the dialog's OWN chrome, so the AND collapsed
+// and hive answered permission prompts nobody read (test/fixtures/panes/
+// tool-permission-prompt.txt). Dropped from INPUT_BOX_PRESENT rather than
+// replaced, on the same asymmetry argued two paragraphs up: removing an
+// alternative can only move screens from "no dialog" toward "dialog", the
+// safe direction. Manual (`default`) permission mode's footer -- "manual
+// mode on", with no "(shift+tab to cycle)", the only mode that drops it --
+// gained its own alternative in exchange, so a manual-mode worker is not left
+// with no INPUT_BOX_PRESENT marker at all (test/fixtures/panes/manual-mode-
+// idle.txt). And the plan-approval dialog ("Claude has written up a plan and
+// is ready to execute. Would you like to proceed?") renders no "Esc to
+// cancel" anywhere on it, so CHOICE_DIALOG missed it outright -- widened to
+// match, keeping it the loose half on purpose
+// (test/fixtures/panes/plan-approval-dialog.txt).
+//
+// Todo 392 round 2 review measured two things round 1 assumed rather than
+// checked.
+//
+// M1: every fixture above was captured at 220 columns, and hive splits
+// panes by default, so a narrow terminal is the ordinary case, not the
+// exotic one. Measured live against claude 2.1.231 at 220/80/60/40 columns:
+// "(shift+tab to cycle)" truncates below its own closing paren at 40
+// columns, for BOTH auto and plan mode ("auto mode on (shift+tab to
+// <blank> ·" -- "cycle)" gone entirely). That is the identical total miss
+// D2 argued was serious enough to overturn this file's own "do not widen
+// it" rule, reopened for an ordinary auto-mode worker in a narrow split,
+// because the only alternative protecting it happened to be measured at
+// 220 columns and nowhere narrower. "manual mode on" was never the actual
+// fix; a marker that survives truncation is. "mode on" is a substring of
+// every mode's footer measured here ("auto mode on", "manual mode on",
+// "plan mode on") and matched at every width tested, 40 through 220 --
+// replaces "manual mode on" below rather than sitting beside it, since it
+// subsumes that alternative entirely. "shift+tab to cycle" stays: it is
+// harmless at the widths where it still matches, and dropping it would buy
+// nothing now that "mode on" covers the width it used to lose.
+//
+// M2: "Would you like to proceed", kept in round 1 on the wrap-risk
+// argument that used to follow this paragraph, turned out to be exactly
+// the ordinary-prose shape that is dangerous for a pane running something
+// OTHER than claude (agent_spawn(command: "bash"), say). INPUT_BOX_PRESENT
+// can never match a non-claude pane, so CHOICE_DIALOG && !INPUT_BOX_PRESENT
+// degenerates to bare CHOICE_DIALOG for that pane, permanently -- the same
+// degeneration D2 fixed for manual-mode claude, but with no fix available,
+// since there is no claude chrome to add a marker for. "Esc to cancel" was
+// already accepted as low-risk in ordinary shell output; "Would you like to
+// proceed? [Y/n]" is installer/CLI output almost verbatim (this project's
+// own restart-lead.sh test calls it exactly that). Measured whether the
+// plan-approval dialog's own CHROME offers a safer alternative than its
+// prose: "ctrl+g to edit in <editor>" appears on every capture taken (Zed
+// configured, and EDITOR/VISUAL unset, which falls back to Vim) -- only the
+// editor name varies, never the prefix. Replaces "Would you like to
+// proceed" below for three reasons at once: it is chrome, not prose, so it
+// reads as implausible in ordinary installer/CLI output the same way "Esc
+// to cancel" always has; at 18 characters it is short enough not to wrap
+// the way the dialog's fuller sentence would on a narrow pane (the
+// wrap-risk argument this paragraph used to make for keeping the prose
+// short); and it closes the specific new risk this lane's own D3 opened.
+//
+// "Esc to cancel" is UNCHANGED, and the non-claude-pane degeneration above
+// is a residual for it too, not a new one introduced here -- it predates
+// this lane and stays accepted at the same low probability it always was.
+// Recorded next to the paragraph below that already covers the sibling
+// case (the human-input hold failing OPEN on a non-claude pane): this pair
+// failing CLOSED forever on one had no equivalent record until now. See
+// .claude/rules/tmux-and-panes.md's "THIS PROTECTION IS CLAUDE-CHROME-
+// SHAPED" paragraph.
+//
+// EVERY consumer of this pair goes through isAwaitingChoiceScreen below
+// (paneAwaitingChoice, paneChoiceCheck, and everything built on them --
+// agent_send, agent_rename, deliver()/deliverable(), noteBlockedWatched,
+// agent_list/agent_status) except ONE: maskChoiceMarker (further down this
+// file) masks a BARE CHOICE_DIALOG match with no INPUT_BOX_PRESENT pairing
+// at all, by design -- it scrubs the string from a wake body regardless of
+// whether the pane it was read from was ever really a dialog, so hive
+// cannot retype the trigger into the lead's own pane later. An earlier
+// version of this comment named deliverable() as a bare-match consumer;
+// that was wrong -- deliverable() reads paneAwaitingChoice's PAIRED
+// result like everything else, and maskChoiceMarker is the only exception.
+const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
 
 // The marker claude renders under its own input box, and only there: present
 // whenever claude has control of the terminal and is NOT showing a modal
 // choice, absent from every modal screen captured for this project. Shared
 // with waitForPaneInput's readiness probe below deliberately -- same chrome,
 // one detector -- and reused here as D5's discriminator.
-const INPUT_BOX_PRESENT = /╰|for shortcuts|shift\+tab to cycle/;
+//
+// `╰` is deliberately NOT in this list; see CHOICE_DIALOG's own comment for
+// why removing it, rather than narrowing it further, was the whole fix.
+// "mode on" replaced "manual mode on" for the same reason CHOICE_DIALOG's
+// own comment gives under M1: it is a substring of every mode's footer
+// measured, and survives at 40 columns where "shift+tab to cycle" (the
+// alternative that used to be this file's only narrow-pane protection for
+// auto and plan mode) does not.
+//
+// M1 completion (todo 392, flagged after round 2 landed): "mode on" does
+// NOT cover every permission mode. bypassPermissions's footer reads
+// "bypass permissions on (shift+tab to cycle) ...", not "<word> mode on" -
+// measured live, side by side with an auto-mode pane. At normal widths this
+// was never a total miss ("(shift+tab to cycle)" still covered it), so it
+// was not a regression; it is the identical total-miss shape M1 exists to
+// close, left open for a mode this project's own maintainer runs by
+// default. Measured at 220/80/60/40/30/25 columns (test/fixtures/panes/
+// bypass-mode-idle-narrow.txt is the 40-column capture): "bypass
+// permissions on" itself, like "mode on" is for the other three modes,
+// survives everywhere "(shift+tab to cycle)" does not - intact through 30
+// columns, gone by 25 (cut down to "bypass" alone). "permissions on" added
+// as its own alternative rather than the fuller "bypass permissions on":
+// measured to survive to the identical width (removing "bypass" changes
+// nothing about where it breaks, since the failure at 25 columns truncates
+// starting right after "bypass"), so the shorter fragment is strictly
+// preferable with no cost.
+const INPUT_BOX_PRESENT = /for shortcuts|shift\+tab to cycle|mode on|permissions on/;
 
 // D5: a screen is awaiting a choice when the dialog footer is present AND the
 // input box is not -- see the comment above CHOICE_DIALOG for why the pair,
@@ -2160,8 +2270,42 @@ export function describePaneChoice(awaitingChoice: boolean | null): string {
 // INPUT_BOX_PRESENT and so no longer reads as a dialog either way, but
 // masking here is one line and removes the dependency on that holding
 // forever: hive should not be able to trigger its own detector.
+//
+// Todo 392 round 1 review (F5). CHOICE_DIALOG carries two alternatives now
+// (D3), so a tail carrying BOTH -- plausible once it is a real alternation
+// rather than one fixed phrase, e.g. a worker's transcript that happens to
+// quote both dialog shapes -- used to have only the FIRST one masked:
+// String.replace with a non-global regex stops after one match. A NEW regex
+// is built here rather than adding the `g` flag to the shared CHOICE_DIALOG
+// constant: that constant is also driven through `.test()` in
+// isAwaitingChoiceScreen, and a global regex's `.test()` is STATEFUL --
+// it advances the shared object's own `lastIndex` on every call and resumes
+// from there next time, which would make repeated dialog checks against
+// different panes silently start missing matches.
+//
+// Todo 392 round 2 review (F4). The first version built the new regex from
+// CHOICE_DIALOG.source alone and claimed that meant "this cannot drift" --
+// true for the PATTERN TEXT, false for FLAGS: source carries no flags, so
+// an `i` added to CHOICE_DIALOG later (a plausible chrome-drift response,
+// since this whole pair stays loose on purpose) would make dialog
+// DETECTION case-insensitive while this mask silently stayed
+// case-sensitive, restoring the exact self-trigger this function exists to
+// prevent through the one path that was supposed to be safe from it.
+// CHOICE_DIALOG.flags is read too now, so both halves of the shared
+// constant -- pattern and flags -- are derived, and neither can drift from
+// it independently of the other. `g` is added only when not already
+// present, since CHOICE_DIALOG carrying `g` itself would otherwise produce
+// "gg", which V8 accepts but is not the intent.
+// Exported on its own so the flag-preservation logic is testable directly:
+// CHOICE_DIALOG is module-private, so a test cannot swap in a flagged
+// regex to prove this handles one correctly.
+export function withGlobalFlag(re: RegExp): RegExp {
+  const flags = re.flags.includes("g") ? re.flags : `${re.flags}g`;
+  return new RegExp(re.source, flags);
+}
+
 export function maskChoiceMarker(text: string): string {
-  return text.replace(CHOICE_DIALOG, "[dialog marker masked]");
+  return text.replace(withGlobalFlag(CHOICE_DIALOG), "[dialog marker masked]");
 }
 
 export function shellQuote(s: string): string {

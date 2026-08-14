@@ -876,6 +876,109 @@ describe("restart-lead.sh's dialog/input-box markers stay in sync with src/tmux.
   });
 });
 
+// Todo 392 round 1, F2. CLAUDE_PANE_CMD has no src/tmux.ts counterpart - it
+// is a process-identity signal this script alone needs, since hive's own TS
+// code never has to guess a pane's identity from scratch (it always starts
+// from the pane a STORE row already names). What is worth pinning is its own
+// SHAPE: a real claude reports its version as pane_current_command for its
+// entire life - idle, busy, and sitting on a real dialog, all measured live
+// against claude 2.1.231 - and that must match, while an ordinary shell or
+// tool name must not. bash's own grep -qE interprets this, not a JS regex
+// reinterpretation of it, for the same reason the view-session test below
+// does: the two dialects can silently disagree on what "looks like a match"
+// means.
+describe("restart-lead.sh's CLAUDE_PANE_CMD identifies claude by process, not by screen content (todo 392 round 1, F2)", () => {
+  it("matches a claude version string and the literal 'claude', never an ordinary shell or tool", () => {
+    const script = readFileSync(SCRIPT, "utf8");
+    const pattern = script.match(/^CLAUDE_PANE_CMD='(.*)'$/m)?.[1];
+    assert.ok(pattern, "could not extract CLAUDE_PANE_CMD from restart-lead.sh");
+
+    const matches = (name) => {
+      try {
+        execFileSync("bash", ["-c", 'printf \'%s\' "$2" | grep -qE "$1"', "_", pattern, name]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    for (const claude of ["2.1.220", "2.1.231", "3.0.0", "claude"]) {
+      assert.ok(matches(claude), `must match a real claude pane_current_command: ${claude}`);
+    }
+    for (const other of ["bash", "sh", "zsh", "node", "cat", "vim", "python3", ""]) {
+      assert.ok(!matches(other), `must not match an ordinary shell/tool command: ${JSON.stringify(other)}`);
+    }
+  });
+});
+
+// Todo 392 round 1, F2. Refusal 1 used to OR CHOICE_DIALOG in unguarded, as
+// proof a pane is claude: "Esc to cancel" alone was implausible in a bare
+// shell's scrollback, but D3 (todo 392) widened CHOICE_DIALOG with "Would
+// you like to proceed" for the plan-approval dialog, and that IS ordinary
+// installer/CLI prompt text.
+//
+// This does NOT reproduce the exact scroll-depth exploit: refusal 1 reads
+// -S -30, refusal 3's awaiting_choice reads -S -18 (matching src/tmux.ts's
+// own tailCaptureLines()), so a real kill needed the matching text to sit
+// PAST refusal 3's narrower window while staying inside refusal 1's wider
+// one - refusal 3 would have caught this exact fixture too, since the text
+// is close to the bottom on both reads, and the two windows are not
+// reproduced far enough apart here to tell them apart. What this DOES prove,
+// and has to prove regardless of that depth: refusal 1 must be correct ON
+// ITS OWN, not merely lucky that refusal 3 happens to also fire on the same
+// condition it does - the assertion on WHICH message comes back is what
+// makes that the actual claim, not just "the script refused eventually".
+describe(
+  "restart-lead.sh's refusal 1 no longer trusts CHOICE_DIALOG text as proof of claude identity (todo 392 round 1, F2)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    it("refuses a bare shell whose scrollback happens to carry ordinary installer prompt text", async () => {
+      const dir = mkdtempSync(join(dirs.tmp, "proj-not-claude-"));
+      const proj = insertProject("restart-lead-not-claude", dir);
+      const projSession = sessionName();
+      after(() => cleanup(projSession));
+
+      // A REAL pane, but genuinely not claude: a plain `sh` printing text an
+      // ordinary installer might. pane_current_command for this pane is "sh"
+      // - it never matches CLAUDE_PANE_CMD - and INPUT_BOX has nothing to
+      // match either. This text was a real CHOICE_DIALOG alternative when
+      // this test was written (round 1's D3 widening); round 2's M2 swapped
+      // that alternative for "ctrl+g to edit in", so it is ordinary,
+      // non-matching prose now - which still proves the point, since
+      // refusal 1 stopped consulting CHOICE_DIALOG at all in round 1 (F2)
+      // and this asserts identity is refused on SCREEN CONTENT generally,
+      // not on this one string surviving in the regex.
+      const pane = execFileSync("tmux", [
+        "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", projSession, "-x", "220", "-y", "50",
+        "sh", "-c", "printf 'brew upgrade\\nWould you like to proceed with the upgrade? [Y/n]\\n'; sleep 600",
+      ]).toString().trim();
+
+      db.prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
+         VALUES (?, 'lead:not-claude-test', 'not-claude-lead', ?, 'sh', ?, 'lead', 'running')`,
+      ).run(proj.id, pane, dir);
+
+      const rendered = await until(() =>
+        execFileSync("tmux", ["capture-pane", "-p", "-t", pane]).toString().includes("Would you like to proceed"),
+      );
+      assert.ok(rendered, "the fixture text must render before the script can see it");
+
+      const log = join(dirs.tmp, "restart-lead-not-claude.log");
+      const result = runScript(["--dry-run"], { HIVE_SESSION: projSession, HIVE_REPO: dir }, log);
+
+      assert.notEqual(result.status, 0, `expected a refusal, got: ${result.stdout}`);
+      assert.match(
+        result.stderr,
+        /does not look like claude/,
+        `refusal 1 must be the one that catches this - a "waiting on a choice" message here would mean refusal 3 is doing refusal 1's own job: ${result.stderr}`,
+      );
+
+      const panesAfter = execFileSync("tmux", ["list-panes", "-t", `=${projSession}`, "-F", "#{pane_id}"]).toString();
+      assert.ok(panesAfter.includes(pane), "the pane must survive - a real kill here is the exact defect this closes");
+    });
+  },
+);
+
 // Todo 273. The two copies cannot be compared as TEXT the way CHOICE_DIALOG/
 // INPUT_BOX are above: bash's ERE ('view-[0-9]+$', via grep -vE) and the TS
 // regex source (isViewSessionName, src/tmux.ts) are two different dialects

@@ -36,7 +36,7 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText, tmuxSocketPath } =
+const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText, tmuxSocketPath, withGlobalFlag } =
   await import("../dist/tmux.js");
 migrate();
 
@@ -470,6 +470,59 @@ describe("maskChoiceMarker keeps a wake body from becoming its own trigger", () 
 
   it("leaves ordinary text with no marker untouched", () => {
     assert.equal(maskChoiceMarker("nothing to see here"), "nothing to see here");
+  });
+
+  // Todo 392 round 1, F5. CHOICE_DIALOG gained a second alternative (D3), and
+  // String.replace with a non-global regex stops after the FIRST match - so
+  // a tail carrying both markers used to leave the second one to reach the
+  // lead's pane verbatim, exactly the self-trigger this function exists to
+  // prevent. Two DIFFERENT alternatives, not the same one twice: that is
+  // what a non-global replace's blind spot actually is here (a repeated
+  // identical marker is also unmasked past the first, but two distinct
+  // matches makes the point without relying on a coincidence).
+  it("masks every occurrence, not just the first, when both CHOICE_DIALOG alternatives appear", () => {
+    const out = maskChoiceMarker(
+      "some transcript\n Enter to confirm · Esc to cancel\nmore text\nctrl+g to edit in Vim\ntail",
+    );
+
+    assert.ok(!out.includes("Esc to cancel"), "the first marker must not survive into a wake body");
+    assert.ok(!out.includes("ctrl+g to edit in"), "the second marker must not survive either");
+    assert.equal(
+      out.split("[dialog marker masked]").length - 1,
+      2,
+      "both occurrences must be masked, not just the first",
+    );
+    assert.match(out, /some transcript/);
+    assert.match(out, /more text/);
+    assert.match(out, /tail$/);
+  });
+
+  // Todo 392 round 2 review, F4. The first version of the fix above built
+  // the replacement regex from CHOICE_DIALOG.source alone, silently
+  // dropping any flag CHOICE_DIALOG might carry (an `i` for case-drift,
+  // say) - "cannot drift" was true for the pattern text and false for
+  // flags. withGlobalFlag is the extracted unit that fix now goes through;
+  // CHOICE_DIALOG itself is module-private, so this is what a test can
+  // actually swap regexes on.
+  describe("withGlobalFlag preserves whatever flags it is given", () => {
+    it("adds g to a flagless regex", () => {
+      const re = withGlobalFlag(/foo/);
+      assert.equal(re.source, "foo");
+      assert.equal(re.flags, "g");
+    });
+
+    it("keeps an existing flag and adds g alongside it", () => {
+      const re = withGlobalFlag(/foo/i);
+      // RegExp.flags re-serializes in the spec's canonical order (d g i m s
+      // u v y), not the order they were passed in - "g" sorts before "i".
+      assert.equal(re.flags, "gi");
+      assert.ok(re.flags.includes("i"), "the original flag must survive, not just g");
+    });
+
+    it("does not double g on a regex that already carries it", () => {
+      const re = withGlobalFlag(/foo/g);
+      assert.equal(re.flags, "g");
+    });
   });
 });
 

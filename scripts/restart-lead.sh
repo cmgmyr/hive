@@ -285,28 +285,134 @@ else
   say "no live pane for project $PROJECT_ID's lead (no running row, or its row's pane is not live) - nothing to kill; will just run hive lead"
 fi
 
-# The markers hive itself uses. Kept in sync with CHOICE_DIALOG and
-# INPUT_BOX_PRESENT in src/tmux.ts; if claude's chrome changes, both move.
-CHOICE_DIALOG='Esc to cancel'
-INPUT_BOX='╰|for shortcuts|shift\+tab to cycle'
+# The markers hive itself uses for DIALOG detection. Kept in sync with
+# CHOICE_DIALOG and INPUT_BOX_PRESENT in src/tmux.ts; if claude's chrome
+# changes, both move.
+CHOICE_DIALOG='Esc to cancel|ctrl\+g to edit in'
+INPUT_BOX='for shortcuts|shift\+tab to cycle|mode on|permissions on'
+
+# A SEPARATE identity signal, for refusal 1 only, deliberately not
+# CHOICE_DIALOG. Todo 392 round-1 review (F2): CHOICE_DIALOG is a bare,
+# unanchored substring match, loose ON PURPOSE so a real dialog whose wording
+# drifts is still caught (see CHOICE_DIALOG's own comment in src/tmux.ts).
+# That looseness is safe everywhere it is paired with INPUT_BOX's absence -
+# the pairing is what turns "this text is somewhere on screen" into "this is
+# a dialog". Refusal 1 used to OR it in UNGUARDED, as proof the pane is
+# claude at all, and "Esc to cancel" alone was implausible in an ordinary
+# shell's scrollback - but "Would you like to proceed" (added for the
+# plan-approval dialog, D3) is ordinary installer/CLI prompt text. A bare
+# shell whose scrollback happens to carry it (an apt/brew/npm confirmation,
+# say) would have passed as claude and been KILLED - exactly the case
+# refusal 1 exists to prevent (issue #157's bare-shell-in-%0).
+#
+# claude's own pane_current_command IS its version string ("2.1.220",
+# "2.1.231", ...) for the pane's entire life - measured live, idle, busy, and
+# sitting on a real permission-prompt dialog all report the identical value.
+# That is not "wrong", contrary to what this file used to say two paragraphs
+# below: it is claude's actual process title, and unlike a hardcoded exact
+# version it is not a moving target, because CLAUDE_PANE_CMD matches the
+# SHAPE (a version number) rather than any one release. It also cannot be
+# forged by anything printed to the screen, which is exactly the property
+# CHOICE_DIALOG lacks for this purpose.
+#
+# Known limit, accepted rather than closed (todo 392 round 2 review, F3/C4):
+# `pane_current_command` reflects whatever the foreground process's own
+# comm resolves to, and in principle nothing stops an unrelated process
+# from making that a bare version string too - a binary literally named
+# "2.1.231", say. MEASURED to be harder than it sounds, not just assumed
+# safe: neither of the two ordinary ways a shell script can try (`exec -a
+# "2.1.231" cmd`, which only sets argv[0]; a Node process setting
+# `process.title = "2.1.231"`) actually changed what tmux itself reports
+# for pane_current_command in this file's own testing - both still showed
+# the real underlying binary. Left as an accepted residual anyway, because
+# an ACTUAL binary named or compiled to report that shape is still a real,
+# if narrow, possibility this regex cannot rule out. Accepted for the same
+# reason CHOICE_DIALOG's own remaining "Esc to cancel" alternative is: the
+# failure direction this file cares about most (refusal 1 wrongly PASSING a
+# non-claude pane through so it gets killed) needs someone to have engineered
+# a fake process to look like this, not a real installer's output the way
+# CHOICE_DIALOG's prose alternatives could be; the opposite miss (a real
+# claude reporting something other than a bare version, e.g. a wrapper
+# launch: `mise exec -- claude`, `npx`) fails in the refuse direction below,
+# which is safe.
+CLAUDE_PANE_CMD='^[0-9]+\.[0-9]+(\.[0-9]+)?$|^claude$'
+
+# Mirrors capturePane() in src/tmux.ts, and has to: a bare `capture-pane -p
+# -S -N` is NOT the window hive's own dialog detector reads. Measured
+# against a real tmux 3.7b, `-S -N` returns N rows of HISTORY PLUS THE
+# WHOLE VISIBLE PANE (~68 rows for -S -18 against an 80-line scroll on a
+# 50-row pane) - hive's capturePane() strips TRAILING blank rows from that
+# raw output first, then takes the LAST N of what remains, which is a much
+# NARROWER effective window whenever the pane has blank padding below its
+# real content (the ordinary case: claude's own chrome sits well above the
+# bottom of a tall pane).
+#
+# Todo 392 round 2 review (F2/opus finding 1) found this file used the raw
+# form for both consumers of these markers, and named the reachable
+# consequence: a lead pane sitting on a real dialog, whose earlier
+# transcript rows (above the dialog, still within the WIDER raw window)
+# quote "shift+tab to cycle" or "mode on" - a lead reviewing this exact
+# lane, or that grepped src/tmux.ts, or that catted a pane fixture, the
+# precise case decision D5 exists for - reads as a real dialog to hive's
+# own paneAwaitingChoice (narrow window, never sees the stray text) and as
+# NO dialog to this script's old raw-window version (wide window, sees it,
+# INPUT_BOX matches, awaiting_choice returns false). Refusal 3 would not
+# have fired, and the script would have killed a lead waiting on a human.
+# Defined here, before refusal 1, so both readers of INPUT_BOX (this one and
+# refusal 3's awaiting_choice) share it.
+capture_trimmed() {
+  local n="$1" target="$2" raw
+  raw=$(tmux capture-pane -p -t "$target" -S "-$n" 2>/dev/null) || return 1
+  printf '%s\n' "$raw" | awk -v n="$n" '
+    { lines[NR] = $0 }
+    END {
+      last = NR
+      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
+      start = last - n + 1
+      if (start < 1) start = 1
+      for (i = start; i <= last; i++) print lines[i]
+    }'
+}
 
 # REFUSAL 1. Do not respawn a pane that is not running claude. If someone left
 # a shell, a build, or an editor there, killing it destroys work this script
 # knows nothing about. Only applies when there IS a pane to examine - the
 # skip-the-kill path (no live lead pane) has nothing here to check.
 #
-# Identify claude by its CHROME, not by pane_current_command. The obvious
-# allowlist (*claude*|node) was tried first and refused the real lead pane on
-# the first run: claude reports its command as its VERSION, "2.1.220", so the
-# name is both wrong and a moving target across upgrades. The screen is the
-# reliable signal, and it is the same marker the readiness poll uses below. A
-# busy mid-turn claude still renders it, verified against the captured busy
-# fixture in test/fixtures/panes/, so this does not refuse a working lead. A
-# claude sitting on a dialog renders the footer instead, which also counts as
-# claude; refusal 3 handles that case separately and more usefully.
+# Identity is CLAUDE_PANE_CMD (above) OR INPUT_BOX (claude's own idle/busy
+# chrome) - never CHOICE_DIALOG, for the reason CLAUDE_PANE_CMD's own comment
+# gives (todo 392 round 1, F2).
+#
+# Todo 392 round 2 review (F3) asked for INPUT_BOX to be dropped from this
+# OR too, on the same reasoning as F2: it is still SCREEN TEXT, and a shell
+# that `cat`s a captured pane fixture or its own scrollback from grepping
+# src/tmux.ts would render "shift+tab to cycle" or "mode on" and pass as
+# claude. Tried, and reverted after measurement (this round): dropping it
+# does not just narrow an edge case, it breaks every EXISTING real-restart
+# test in this file. makeFakeClaude() (test/helpers.mjs), the fixture this
+# whole suite's restart tests use in place of a slow real claude spawn,
+# `exec`s into a plain shell - and per CLAUDE_PANE_CMD's own "known limit"
+# paragraph above, that shell's pane_current_command reads "bash" or "sh",
+# never a version-shaped string, no matter which spoofing trick is tried.
+# So CLAUDE_PANE_CMD alone cannot recognize any of this project's own
+# fake-claude fixtures OR a real wrapper-launched claude (`mise exec --
+# claude`, `npx`) - the identical failure mode CLAUDE_PANE_CMD's own comment
+# already names as an accepted cost for the SECURITY side, reappearing here
+# as a FUNCTIONAL cost that would have been much larger in practice: every
+# restart this project's own suite exercises, and every real wrapper launch,
+# refusing instead of restarting. Kept as a fallback rather than dropped:
+# the residual F3 raised is real, but it is the SAME LOW-PROBABILITY CLASS
+# already accepted for CHOICE_DIALOG's own remaining "Esc to cancel"
+# alternative two sections up, not a new one - and unlike that trade, this
+# one was going to cost something concrete and immediate (a broken suite,
+# and refused restarts for ordinary wrapper launches) for a residual that
+# was already accepted elsewhere in this exact file. What DID change this
+# round: the WINDOW this reads is now capture_trimmed (its own comment is
+# just above CLAUDE_PANE_CMD) rather than a bare capture-pane, since a wider
+# raw window only makes the residual worse without buying anything back.
 if [ -n "$PANE" ]; then
-  PANE_SCREEN=$(tmux capture-pane -p -t "$PANE" -S -30 2>/dev/null) || refuse "cannot read pane $PANE"
-  if ! grep -qE "$INPUT_BOX" <<<"$PANE_SCREEN" && ! grep -q "$CHOICE_DIALOG" <<<"$PANE_SCREEN"; then
+  PANE_SCREEN=$(capture_trimmed 30 "$PANE") || refuse "cannot read pane $PANE"
+  if ! grep -qE "$INPUT_BOX" <<<"$PANE_SCREEN" && ! grep -qE "$CLAUDE_PANE_CMD" <<<"$PANE_CMD"; then
     refuse "pane $PANE does not look like claude (command '$PANE_CMD', no claude chrome on screen); not touching it"
   fi
 fi
@@ -355,10 +461,14 @@ fi
 # whatever says yes. A dialog is the footer present AND the input box absent:
 # the footer alone also matches a worker whose transcript merely quotes the
 # string, which wedged hive itself for a whole release (issue #27, decision D5).
+#
+# 18 to match src/tmux.ts's own tailCaptureLines() exactly - see
+# capture_trimmed's own comment for why the WINDOW, not just this number,
+# has to match.
 awaiting_choice() {
   local screen
-  screen=$(tmux capture-pane -p -t "$1" -S -18 2>/dev/null) || return 1
-  grep -q "$CHOICE_DIALOG" <<<"$screen" && ! grep -qE "$INPUT_BOX" <<<"$screen"
+  screen=$(capture_trimmed 18 "$1") || return 1
+  grep -qE "$CHOICE_DIALOG" <<<"$screen" && ! grep -qE "$INPUT_BOX" <<<"$screen"
 }
 
 # Same guard as refusal 1: nothing to check on the skip-the-kill path.
@@ -585,11 +695,15 @@ say "new lead pane: $PANE (running: $PANE_CMD; session: $SESSION; resolved via: 
 # between a handoff and a prompt that never existed. Note the marker: the OLD
 # readiness regex went stale against claude 2.1.220 and every hive spawn
 # silently stopped announcing for days (issue #30). Do not shorten this to a
-# fixed sleep.
+# fixed sleep. capture_trimmed rather than a bare capture-pane, for the same
+# window-mismatch reason awaiting_choice uses it - this pane is freshly
+# spawned so there is little real transcript for a stray match to hide in
+# yet, but there is no reason to leave one of the two readers inconsistent
+# with the other now that the mismatch is understood.
 say "waiting up to ${READY_TIMEOUT}s for the input box"
 READY=0
 for _ in $(seq 1 $((READY_TIMEOUT * 2))); do
-  if tmux capture-pane -p -t "$PANE" -S -30 2>/dev/null | grep -qE "$INPUT_BOX"; then
+  if capture_trimmed 30 "$PANE" | grep -qE "$INPUT_BOX"; then
     READY=1
     break
   fi

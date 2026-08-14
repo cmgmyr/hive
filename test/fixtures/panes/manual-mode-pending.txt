@@ -1,0 +1,50 @@
+
+╭─── Claude Code v2.1.232 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting started                                                                                                       │
+│                 Welcome back Robin!                │ Ask Claude to create a new app or clone a repository                                                                           │
+│                                                    │ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│                       ▐▛███▜▌                      │ What's new                                                                                                                     │
+│                      ▝▜█████▛▘                     │ Fixed MCP OAuth sign-in failing with a redirect URI mismatch for servers that use a pre-registered OAuth client, such as Slack │
+│                        ▘▘ ▝▝                       │ Documented `claude remote-control --continue` for resuming the most recent Remote Control session                              │
+│   Opus 5 (1M context) with high… · Claude Max ·    │ Added server-supplied Claude Code hook support for self-hosted runner sessions, matching managed-environment behavior          │
+│   devs@example.com's Organization                  │ /release-notes for more                                                                                                        │
+│           /…/T/hive-t392-f9b-cwd.mAo8Go            │                                                                                                                                │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                                                                           ● high · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ REAL UNSUBMITTED PENDING TEXT FOR F9
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  hive-t392-f9b-cwd.mAo8Go | ctx: 0k (0%) | $0.00 | +0/-0 [Opus 5 (1M context)]                                                                                                                                         /rc
+  ⬡ hive: 1 agent · 25 todos (25 ready) · 15 pads · 1 wake
+  ⏸ manual mode on

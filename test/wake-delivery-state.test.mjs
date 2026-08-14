@@ -168,6 +168,50 @@ describe(
       assert.ok(confirmed.confirmed_at, "confirmed_at must carry the timestamp, not just the status");
     });
 
+    // Todo 392. Observed live before this fix: a wake aimed at a worker
+    // sitting on an ordinary tool-permission prompt had fired_at set,
+    // typed_at set, held_at NULL - the hold above never ran, because the
+    // preview box's own `╰` made paneChoiceCheck answer "no dialog". Same
+    // hold as the folder-trust case above; the fixture is the bug itself.
+    it("holds behind an ordinary tool-permission prompt and never types into it (todo 392)", async () => {
+      const spawned = await spawnShowing("wake-state-permission-prompt", replayFixture("tool-permission-prompt.txt"));
+
+      const wake = await mcp.call("wake_set", {
+        delay_seconds: 1,
+        body: "INTEGRATION wake state check, permission prompt",
+        deliver_to: spawned.agent_id,
+      });
+
+      let held;
+      await until(async () => {
+        const list = await mcp.call("wake_list");
+        held = findWake(list.wakes, wake.wake_id);
+        return held?.held_at != null;
+      }, 10000);
+      assert.ok(held, "the wake must still be in the pending list while held");
+      assert.match(held.held_reason, /modal choice/, "held for the dialog, not some other reason");
+      assert.equal(held.typed_at, null, "nothing typed while the prompt is up");
+
+      // Not just "not yet" - still held, and still nothing typed, after
+      // several more scheduler ticks against the SAME unanswered dialog.
+      // held_at is rewritten on every tick the hold still applies, so an
+      // advanced held_at is proof the ticks kept happening and kept holding.
+      const heldAtFirst = held.held_at;
+      await until(async () => {
+        const list = await mcp.call("wake_list");
+        held = findWake(list.wakes, wake.wake_id);
+        return held?.held_at > heldAtFirst;
+      }, 12000);
+      assert.ok(held.held_at > heldAtFirst, "the scheduler must have re-held this wake on a later tick");
+      assert.equal(held.typed_at, null, "still nothing typed: the dialog was never answered");
+      const stillPending = await mcp.call("wake_list");
+      assert.equal(
+        findWake(stillPending.recently_delivered, wake.wake_id),
+        undefined,
+        "a held wake has not fired; it must not appear as delivered",
+      );
+    });
+
     it("distinguishes no-confirmation-channel from unconfirmed, and a never-typed claim from either", async () => {
       // Seeded directly: no L4 yet means the lead writes no agents row at
       // all, and there is no way to make a fixture do that through the

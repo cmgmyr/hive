@@ -334,12 +334,27 @@ export function assertWorkerUsedItsOwnMcpServer(result) {
 // exported), and this lane does not touch src/tmux.ts for a two-regex
 // discriminator -- same shape as TERMINAL_STATUSES and LOG_MAX_ROWS above.
 // Keep in sync by hand; `grep -n CHOICE_DIALOG src/tmux.ts` to check for
-// drift. See that file's own comment for why the pair, not the footer alone,
-// is the answer: a modal REPLACES claude's input affordance rather than
-// sitting beside it, so CHOICE_DIALOG present AND INPUT_BOX_PRESENT absent is
-// what "awaiting a choice" means.
-const CHOICE_DIALOG = /Esc to cancel/;
-const INPUT_BOX_PRESENT = /╰|for shortcuts|shift\+tab to cycle/;
+// drift, pinned by test/part-c-assert.test.mjs's own sync test. See that
+// file's own comment for why the pair, not the footer alone, is the answer:
+// a modal REPLACES claude's input affordance rather than sitting beside it,
+// so CHOICE_DIALOG present AND INPUT_BOX_PRESENT absent is what "awaiting a
+// choice" means.
+//
+// Todo 392 found this copy still carried the bug that lane fixed: this is
+// the STEP 11 LIVE DRIVER (part-c-gate.mjs runs it against a real worker),
+// so it was misclassifying an ordinary tool-permission prompt as "no
+// dialog" the same way src/tmux.ts's own pair was, right up through the
+// lane's own acceptance run. Synced to match; see src/tmux.ts's own D1/D2/D3
+// comments for why each alternative moved, round 2's M1/M2 for why "manual
+// mode on" and "Would you like to proceed" moved again, and M1's own
+// completion for "permissions on" (bypassPermissions mode's footer, missed
+// by "mode on" alone). No window mismatch to fix here unlike
+// scripts/restart-lead.sh's copy: paneTail above (part-c-gate.mjs) reads
+// through the real agent_output MCP tool, which already applies
+// src/tmux.ts's own capturePane() trimming - this file never reads tmux
+// directly.
+const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
+const INPUT_BOX_PRESENT = /for shortcuts|shift\+tab to cycle|mode on|permissions on/;
 const isAwaitingChoiceScreen = (screen) => CHOICE_DIALOG.test(screen) && !INPUT_BOX_PRESENT.test(screen);
 
 // Todo 141 item 5, second half: paneTail is sampled every 2 seconds
