@@ -1793,6 +1793,107 @@ function insertNotice(
   ).id;
 }
 
+// TODO 390 (pad 142 PART 3, Q3). A held pane must never accumulate a second
+// pending notice from the SAME parent: never queue a new one, update the one
+// already there. Looked up by parent_timer_id ALONE, not also by pane -
+// `hive lead` re-points a pending notice's own deliver_pane on restart, so
+// the row this finds already carries whatever pane is current.
+//
+// COUNSELORS ROUND 3, F1: parent_timer_id ALONE is not enough, because a
+// standing watch's finish batch (claimStandingBatch) and its stall batch
+// (claimStallBatch) share the SAME parent - the watch's own id - and used to
+// share this lookup too. So a finish batch could find a PENDING STALL
+// notice, overwrite its transcript-staleness diagnosis with a finish
+// roster, and leave its deliver_actor/deliver_pane untouched from
+// blockNoticeTarget - reopening the wrong-pane defect :3345's own comment
+// records as already fixed. `conditions` scopes the lookup to notices whose
+// stamped episodes (wake_idle_notices.condition) are ALL one of the caller's
+// own kinds, via EXISTS rather than a JOIN, so a notice this batch never
+// wrote to can never be mistaken for a pending one of its own. Every row
+// stamped against a notice always shares one condition set, because
+// stampEpisodeNotice only ever stamps episodes a single batch just claimed -
+// so "at least one episode of this batch's own kind" is equivalent to "every
+// episode is", and the cheaper existence check is the one worth writing.
+//
+// `conditions` IS BOUND, NOT INTERPOLATED (lead's own note on this lane,
+// round 3 follow-up). The one call site only ever passes
+// [CONDITION_IDLE, CONDITION_GONE] - internal constants, never caller data -
+// so string-building the IN list would have been safe in practice, but
+// "safe because the only caller behaves" is a property of the caller, not
+// of this function, and every other value in this file reaches SQL through
+// a bound parameter regardless of how trusted its source looks today. A
+// generated `?` placeholder list costs one extra line and keeps that
+// property true here too, rather than leaving this the one place a future
+// caller could hand it something that was never meant to reach SQL as text.
+function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]): { id: number } | undefined {
+  const placeholders = conditions.map(() => "?").join(", ");
+  return stmt(
+    `SELECT t.id FROM timers t
+      WHERE t.parent_timer_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
+        AND EXISTS (
+          SELECT 1 FROM wake_idle_notices n WHERE n.notice_timer_id = t.id AND n.condition IN (${placeholders})
+        )
+      ORDER BY t.id DESC LIMIT 1`,
+  ).get(parentTimerId, ...conditions) as { id: number } | undefined;
+}
+
+// GUARDED ON fired_at IS NULL, the same optimistic-token shape
+// claimModalHoldWithNotice already uses - kept as DEFENSE IN DEPTH, not as
+// the mechanism that actually closes the race Q3 names.
+//
+// TODO 390 COUNSELORS ROUND 3, F7 (fable; codex and opus independently
+// confirmed the correction). The original comment here claimed this guard
+// is what stops "an update racing a delivery that has just claimed this
+// notice." It is not reachable from the caller this function has, and
+// saying so plainly is the fix: claimStandingBatch's whole read-then-write
+// (pendingNoticeFor's SELECT through this UPDATE) runs inside ONE
+// `db.transaction(...).immediate()`, which takes the store's single
+// machine-wide writer slot at BEGIN, before any read - so nothing else can
+// commit a delivery between the SELECT that found `pending.id` still
+// pending and this UPDATE touching the same row. `changes === 0` here would
+// mean the row changed WITHOUT taking that slot, which cannot happen.
+//
+// THE REAL RACE is a TIME-OF-CHECK-TO-TIME-OF-USE gap one layer up, in
+// tick()'s own candidate list: a notice read as a due candidate at the
+// START of a tick can be rewritten by ANOTHER instance's coalescing update
+// before THIS instance's delivery (fireDelay -> claimOneShot) actually
+// claims it - two separate, fully serialized transactions, not two
+// overlapping ones. What closes THAT gap is claimOneShot's own optimistic
+// token (issue #96's `body IS ?`, compared against the body the candidates
+// SELECT read): if a coalescing update changed the body in between, the
+// delivery's claim fails and falls through to being reconsidered next tick,
+// so a stale-bodied claim can never win. This function's own guard is left
+// in place because a future caller reaching it through a different
+// transaction shape should not have to re-derive that argument from
+// scratch - but the caller that exists today never exercises it.
+//
+// created_at IS DELIBERATELY TOUCHED HERE, and that is not decoration.
+// NOTICE_MAX_AGE (below) cancels a notice whose created_at has gone stale,
+// and every candidate this file renders into `body` is re-derived FRESH at
+// the moment of this write (see crewRowForRender) - so created_at genuinely
+// still means "as of when this content was last true" for a coalesced row,
+// exactly as it already does for a fresh one. Leaving it frozen at the
+// FIRST file time would let an ordinary long hold (a lunch break past an
+// hour) silently cancel the one notice standing in for the whole hold the
+// moment MAX_AGE elapsed - worse than the pre-coalescing shape, where at
+// least the most recently filed notice would still be fresh enough to
+// survive. THE NARROW COST, named rather than hidden: a non-lead-owned
+// standing watch (an unusual target) whose delivery pane has genuinely died
+// stays exempt from the janitor's dead-pane timers sweep
+// (SETTLE_WINDOW-gated on created_at, above) for as long as unrelated crew
+// keep finishing fast enough to keep refreshing it. A lead-owned watch - the
+// ordinary case, and pad 142's whole story - is already exempt from that
+// sweep by `deliver_actor NOT LIKE LEAD_ACTOR_PREFIX%` regardless of
+// created_at, so this cost never reaches it at all.
+function updateNoticeInPlace(noticeId: number, body: string): boolean {
+  return (
+    stmt(
+      `UPDATE timers SET body = ?, created_at = datetime('now')
+        WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
+    ).run(body, noticeId).changes === 1
+  );
+}
+
 // The block-notice claim, and the reason both halves of this feature route
 // through it: it is the ONE place that records "the owner has been told that
 // this agent is blocked, in this episode". INSERT OR IGNORE against the
@@ -2393,6 +2494,14 @@ const NOTICE_MAX_AGE = "-1 hours";
 // past a handful it is a wall of text pasted into a terminal.
 const ROSTER_STILL_GOING = 8;
 
+// TODO 390 COUNSELORS ROUND 3, F5. The same cap, same reasoning, applied to
+// the FINISHED list rather than the still-running roster: an ordinary crew
+// is naturally small, but a coalesced notice's finished list grows one line
+// per episode for as long as the pane stays held, with no bound at all
+// pre-fix. Reused rather than a fresh judgement call, because the two lists
+// are read the same way and there is no argument for a different number.
+const FINISHED_SHOWN_CAP = ROSTER_STILL_GOING;
+
 // The note delivered when the lifetime runs out. A silent expiry is the
 // original bug with a timer on it - watched, then quietly not, with nothing
 // saying so - so the expiry SPEAKS, through the existing max-wait branch.
@@ -2421,9 +2530,18 @@ const unreported = (condition: string, episode: string): string => `NOT EXISTS (
 // `episode` is aliased per query - state_changed_at for a finish, closed_at
 // for a death - which is exactly the difference the alias exists to hide from
 // everything downstream.
+// closed_at IS ADDITIVE, TODO 390 COUNSELORS ROUND 3 (F2). Added so
+// crewRowForRender's re-render can compare a carried-forward GONE
+// candidate's STORED episode against the row's CURRENT close, not merely
+// whether it is closed at all - see standingNoticeBody's own comment on the
+// CONDITION_GONE branch for why "still closed" is not sufficient once a
+// resumed row can close AGAIN at a different time. Every other reader of
+// CREW_COLUMNS (the block-notice queries, crewRowForRender's own SELECT)
+// gets the extra column too and ignores it; none of them cast in a way an
+// additional key could break.
 const CREW_COLUMNS =
   `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.agent_state,
-   a.state_changed_at, a.status, a.command, a.kind, a.resumed_at`;
+   a.state_changed_at, a.status, a.command, a.kind, a.resumed_at, a.closed_at`;
 
 interface CrewRow {
   id: number;
@@ -2437,6 +2555,7 @@ interface CrewRow {
   command: string;
   kind: string;
   resumed_at: string;
+  closed_at: string | null;
   episode: string;
 }
 
@@ -2899,54 +3018,122 @@ function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
 // (.claude/rules/worker-state.md), so this is written to stand on its own for
 // a reader with none of the context that produced it: what happened, what is
 // still running, what to read before acting, and how to stop it.
-function standingNoticeBody(timer: TimerRow, finished: StandingCandidate[]): string {
+// `finished` is CAPPED to FINISHED_SHOWN_CAP by the caller (round 3, F5) -
+// `totalFinished` is the TRUE count this notice covers, always. `carriedTotal`
+// is TODO 390 (pad 142 PART 3, Q1/Q3): how many episodes were already
+// reported in an earlier update to THIS SAME pending notice, re-derived
+// fresh rather than recomputed from the tick that first claimed them (see
+// crewRowForRender) - zero for an ordinary, uncoalesced notice, and it is
+// what licenses the "updated in place" sentence below. `span` is the TRUE
+// oldest-to-newest interval across every episode this notice covers,
+// independent of the cap - null only when carriedTotal is 0 (nothing to
+// span yet).
+function standingNoticeBody(
+  timer: TimerRow,
+  finished: StandingCandidate[],
+  totalFinished: number,
+  carriedTotal: number,
+  span: { lo: string; hi: string } | null,
+): string {
   const lines = [
-    `${finished.length} worker(s) in this project have finished or gone away since standing watch ` +
+    `${totalFinished} worker(s) in this project have finished or gone away since standing watch ` +
       `#${timer.id} last spoke:`,
   ];
   for (const c of finished) {
     lines.push(
       c.condition === CONDITION_GONE
-        ? // WHAT HIVE OBSERVED, NOT WHAT IT INFERS WAS LOST. The gone half now
-          // only fires for a row frozen mid-work (see standingGoneRows), so a
-          // stronger sentence would be defensible - and it still must not be
-          // written, because "its work is lost" is a claim about a branch, a
-          // todo and a pad that this code has not looked at, and a notice that
-          // asserts a fact hive cannot see is the shape
-          // .claude/rules/worker-state.md rules out. Two observations and a
-          // next action instead.
+        ? // TODO 390, REVIEW ROUND 2 (Claude Code Review on PR #181) then
+          // ROUND 3 (F2, fable + codex independently). crewRowForRender's
+          // OWN comment claimed "a closed row does not move again", and
+          // that premise is false: agent_resume's flip (src/spawn.ts) sets
+          // status = 'running' and clears closed_at with no awareness that
+          // a coalesced notice is holding this row's episode as GONE.
+          // Coalescing is what makes this reachable at all - the pre-lane
+          // code rendered a GONE candidate exactly once, from the row the
+          // same tick claimed it, and never read the row again.
           //
-          // UNLESS THE ROW WAS NEVER GIVEN ANYTHING (todo 384 comment 944) -
-          // and saying so takes airtight evidence, not merely an unset latch
-          // (fix round 1, finding 4; the first version of this condition
-          // OR'd in `awaitingFirstPrompt(c.row)` and overclaimed on exactly
-          // the row the surrounding comment already warns against: a
-          // RESUMED worker whose real assignment landed inside its still-
-          // running restore turn is absorbed the same way a spawned
-          // worker's used to be (`.claude/rules/tmux-and-panes.md`'s busy-
-          // pane paths), so resumed_at stays set while real work happens -
-          // the exact row #156 added the gone disjunct to report at all).
-          //
-          // `state_changed_at IS NULL`, gated on `reportsAgentStateLog`, is
-          // the airtight signal: it means this row's hook has NEVER fired a
-          // single transition, for a row hive can actually observe. A Stop
-          // hook fires whenever ANY turn ends - restore, absorbed-assignment,
-          // or ordinary - so if the row ever had ANY turn at all,
-          // state_changed_at would already be set and this branch would not
-          // fire; the branch/todo/pad sentence below covers that ambiguous
-          // case rather than guessing which way it resolved. Gated on
-          // reportsAgentStateLog for the reason `reportUnbriefedWorkers`
-          // already is: an uninstrumented row (a bash or codex worker) never
-          // writes a hook event either way, so an ungated NULL check would
-          // claim "nothing was in flight" about a worker hive simply cannot
-          // see, which is the exact shape this whole branch exists to avoid.
-          reportsAgentStateLog(c.row) && c.row.state_changed_at === null
-            ? `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
-              `${c.row.episode}. It was never given an assignment, so nothing was in flight.`
-            : `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
-              `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any pad it ` +
-              "was writing for what landed before it stopped."
+          // ROUND 2's OWN FIX WAS INCOMPLETE: it asked "is the row still
+          // closed", not "is the row's CURRENT close still THIS episode".
+          // A worker dying again after a resume closes the row a SECOND
+          // time - status back to 'closed', but closed_at now a LATER
+          // timestamp than the one this candidate's episode stamped. The
+          // status-only check reads that as still-valid and asserts the
+          // STALE closed_at as fact. Comparing the stored episode against
+          // the row's live closed_at catches both directions: resumed and
+          // still running (status !== 'closed'), and resumed then closed
+          // again at a different moment (status === 'closed' but
+          // closed_at !== episode) - either way this candidate's own
+          // snapshot has gone stale and must not be trusted, because both
+          // GONE sentences below assert "there is no terminal left to
+          // read" - the false-obituary shape worker-state.md's
+          // #156/373/374 already fought at length, reopened through the
+          // one path here that re-reads live state.
+          c.row.status !== "closed" || c.row.closed_at !== c.row.episode
+            ? `  ${c.row.name}: was reported GONE earlier in this hold, but its row's state has moved since - ` +
+              `it may have been resumed, or closed again at a different time. Read its CURRENT state with ` +
+              `agent_output(name: "${c.row.name}") rather than trusting this line; do not treat it as gone ` +
+              "based on this notice alone."
+            : // WHAT HIVE OBSERVED, NOT WHAT IT INFERS WAS LOST. The gone half now
+              // only fires for a row frozen mid-work (see standingGoneRows), so a
+              // stronger sentence would be defensible - and it still must not be
+              // written, because "its work is lost" is a claim about a branch, a
+              // todo and a pad that this code has not looked at, and a notice that
+              // asserts a fact hive cannot see is the shape
+              // .claude/rules/worker-state.md rules out. Two observations and a
+              // next action instead.
+              //
+              // UNLESS THE ROW WAS NEVER GIVEN ANYTHING (todo 384 comment 944) -
+              // and saying so takes airtight evidence, not merely an unset latch
+              // (fix round 1, finding 4; the first version of this condition
+              // OR'd in `awaitingFirstPrompt(c.row)` and overclaimed on exactly
+              // the row the surrounding comment already warns against: a
+              // RESUMED worker whose real assignment landed inside its still-
+              // running restore turn is absorbed the same way a spawned
+              // worker's used to be (`.claude/rules/tmux-and-panes.md`'s busy-
+              // pane paths), so resumed_at stays set while real work happens -
+              // the exact row #156 added the gone disjunct to report at all).
+              //
+              // `state_changed_at IS NULL`, gated on `reportsAgentStateLog`, is
+              // the airtight signal: it means this row's hook has NEVER fired a
+              // single transition, for a row hive can actually observe. A Stop
+              // hook fires whenever ANY turn ends - restore, absorbed-assignment,
+              // or ordinary - so if the row ever had ANY turn at all,
+              // state_changed_at would already be set and this branch would not
+              // fire; the branch/todo/pad sentence below covers that ambiguous
+              // case rather than guessing which way it resolved. Gated on
+              // reportsAgentStateLog for the reason `reportUnbriefedWorkers`
+              // already is: an uninstrumented row (a bash or codex worker) never
+              // writes a hook event either way, so an ungated NULL check would
+              // claim "nothing was in flight" about a worker hive simply cannot
+              // see, which is the exact shape this whole branch exists to avoid.
+              reportsAgentStateLog(c.row) && c.row.state_changed_at === null
+              ? `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
+                `${c.row.episode}. It was never given an assignment, so nothing was in flight.`
+              : `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
+                `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any ` +
+                "pad it was writing for what landed before it stopped."
         : `  ${c.row.name}: ${stateNowClause(c.row)}`,
+    );
+  }
+  // TODO 390 COUNSELORS ROUND 3, F5: the finished list is CAPPED, matching
+  // ROSTER_STILL_GOING's own precedent below - an unbounded hold otherwise
+  // grows one line per wake_idle_notices row forever, with no bound on
+  // either the pasted text or the per-row crewRowForRender query this
+  // function's caller runs inside the store's single writer slot.
+  if (totalFinished > finished.length) {
+    lines.push(`...and ${totalFinished - finished.length} more finish(es) not shown above.`);
+  }
+  // TODO 390 (pad 142 PART 3, Q1): "one notice describing the current crew,
+  // saying how many notices it replaced and over what interval." carried
+  // FORWARD episodes are already named above (up to the cap), so this line
+  // says only that the list is a merge, and over what TRUE span - span
+  // covers every episode this notice has ever carried, not only the shown
+  // ones, so it stays accurate under the cap.
+  if (carriedTotal > 0 && span !== null) {
+    lines.push(
+      `This notice was updated in place rather than queued behind the one before it: ${carriedTotal} of the ` +
+        `${totalFinished} above were already known before this update. Every finish this notice covers spans ` +
+        `${span.lo} to ${span.hi}.`,
     );
   }
   let shown: string[] = [];
@@ -3136,6 +3323,42 @@ function stampEpisodeNotice(
   ).run(noticeId, timerId, agentId, condition, episode);
 }
 
+// TODO 390. Re-derives a StandingCandidate's row for a worker already
+// recorded against a PENDING notice (wake_idle_notices.notice_timer_id), so a
+// coalescing update can re-render an earlier tick's finish rather than carry
+// a frozen snapshot forward. Everything but `episode` is read fresh from
+// `agents`; `episode` comes from the caller - the exact state_changed_at or
+// closed_at value that was actually claimed - because the agents row's own
+// state can have moved past it by the time this runs, and only the stored
+// value still names the moment this candidate is about.
+//
+// THE ACCEPTED COST, named rather than hidden (pad 142 PART 3, Q1's own
+// mitigation is "name every worker", not "freeze every worker's detail"):
+// for a CONDITION_IDLE candidate, re-deriving fresh means its line can grow
+// more current (a longer idle duration) or, rarely, describe a worker that
+// has since been reassigned and gone busy again. Every worker is still
+// named; only the DETAIL can age between updates, exactly the loss Q1
+// accepts.
+//
+// "A CLOSED ROW DOES NOT MOVE AGAIN" WAS FALSE, AND IT WAS THIS COMMENT'S OWN
+// CLAIM (Claude Code Review, PR #181). agent_resume's flip (src/spawn.ts)
+// un-closes a row with no awareness that a coalesced notice is holding its
+// episode as GONE, and coalescing is what makes that reachable: the pre-lane
+// code rendered a GONE candidate once, from the row the same tick claimed it,
+// and never read the row again. This function is the one new path that does.
+// NOT fixed here, because the fix has to know the ORIGINAL condition
+// (`gone`) to recognise the row disagreeing with it - standingNoticeBody's
+// own CONDITION_GONE branch is where that check lives now, comparing the
+// row's CURRENT `status`/`closed_at` against the STORED `episode` (round 3,
+// F2: `status !== "closed"` alone missed a row resumed and closed AGAIN at
+// a different time) before trusting either GONE sentence.
+function crewRowForRender(agentId: number, episode: string): CrewRow | null {
+  const row = stmt(`SELECT ${CREW_COLUMNS} FROM agents a WHERE a.id = ?`).get(agentId) as
+    | Omit<CrewRow, "episode">
+    | undefined;
+  return row === undefined ? null : { ...row, episode };
+}
+
 const claimStandingBatch = db.transaction(
   (timer: TimerRow, candidates: StandingCandidate[]): boolean => {
     if (!stillPending(timer.id)) return false;
@@ -3145,11 +3368,98 @@ const claimStandingBatch = db.transaction(
       if (claimEpisode(timer.id, c.row.id, c.condition, c.row.episode)) won.push(c);
     }
     if (won.length === 0) return false;
+    // TODO 390 (pad 142 PART 3, Q3): file at most one pending notice per
+    // watch. A pane held across several ticks used to get a fresh row every
+    // tick something new finished, all queued behind the hold and released
+    // together the instant it cleared - the thundering herd this lane
+    // exists to remove. parent_timer_id = timer.id scopes the lookup to
+    // THIS watch, never a different one sharing the same pane (pad 142 Q4:
+    // one queue per pane holds only within a single watch's own notices).
+    // CONDITION_IDLE/CONDITION_GONE (round 3, F1): this batch's own kinds
+    // only, so a pending STALL notice from claimStallBatch - which shares
+    // this same parent_timer_id - is never mistaken for one of these.
+    //
+    // "BOUNDED AT ONE ROW", NAMED RESIDUAL (counselors round 3, accept and
+    // record, codex): true only among instances running THIS code. During a
+    // mixed-version rollout, a session still on a pre-this-lane build has no
+    // pendingNoticeFor concept at all and files a fresh notice unconditionally
+    // on every batch, exactly as every version before this one did - so a
+    // watch can still see a burst of TWO notices (one per version) for the
+    // span of the rollout, never more, and never once every session has
+    // restarted onto this code. Same shape this file already accepts for
+    // #71/#73/#75's own mixed-version windows; recorded here so this
+    // function's "at most one pending notice" is read as "one per code
+    // version present," not as an absolute guarantee.
+    const pending = pendingNoticeFor(timer.id, [CONDITION_IDLE, CONDITION_GONE]);
+    if (pending !== undefined) {
+      // TODO 390 COUNSELORS ROUND 3, F5. Two reads instead of one: an
+      // aggregate for the TRUE total and TRUE span (cheap, no per-row
+      // rendering), and a capped, most-recent-first SELECT for what is
+      // actually rendered - so the O(N) crewRowForRender cost inside this
+      // transaction's writer slot is bounded by FINISHED_SHOWN_CAP, not by
+      // how long the pane has been held.
+      const priorStats = stmt(
+        `SELECT COUNT(*) AS n, MIN(episode) AS lo, MAX(episode) AS hi
+           FROM wake_idle_notices WHERE notice_timer_id = ?`,
+      ).get(pending.id) as { n: number; lo: string | null; hi: string | null };
+      const priorCap = Math.max(0, FINISHED_SHOWN_CAP - won.length);
+      const prior = stmt(
+        `SELECT agent_id, condition, episode FROM wake_idle_notices WHERE notice_timer_id = ?
+           ORDER BY episode DESC LIMIT ?`,
+      ).all(pending.id, priorCap) as { agent_id: number; condition: string; episode: string }[];
+      const carried: StandingCandidate[] = [];
+      for (const p of prior) {
+        const row = crewRowForRender(p.agent_id, p.episode);
+        // BELIEVED UNREACHABLE, STATED RATHER THAN SILENTLY TRUSTED (Q1's
+        // mitigation is "name every worker whose episode it stands in for",
+        // and a dropped row is the one loss Q1 promised not to take). The
+        // only statement in this codebase that hard-DELETEs an agents row is
+        // `launchAgent`'s own catch in src/spawn.ts, and it fires ONLY while
+        // `paneUp` is still false - before that row's pane exists, so before
+        // any hook could ever write it a state transition. A row reaching
+        // THIS loop was claimed into wake_idle_notices by standingIdleRows or
+        // standingGoneRows, both of which require a real agent_state
+        // transition (idle or closed), which cannot happen to a row this
+        // young. If that invariant is ever broken, this silently loses the
+        // worker's NAME along with its row - wake_idle_notices stores no
+        // name to fall back to, only agent_id - so a null here should be
+        // treated as a bug report rather than routine.
+        if (row !== null) carried.push({ condition: p.condition, row });
+      }
+      const finished = [...carried, ...won];
+      const totalFinished = priorStats.n + won.length;
+      // The aggregate's lo/hi cover only what was ALREADY stamped before
+      // this tick's own claim ran, so this tick's own `won` episodes have to
+      // be folded in too, or a fresh contribution at either edge of the
+      // interval reads as narrower than it is.
+      const spanValues = [priorStats.lo, priorStats.hi, ...won.map((c) => c.row.episode)].filter(
+        (v): v is string => v !== null,
+      );
+      const span =
+        spanValues.length > 0
+          ? {
+              lo: spanValues.reduce((a, b) => (a < b ? a : b)),
+              hi: spanValues.reduce((a, b) => (a > b ? a : b)),
+            }
+          : null;
+      if (updateNoticeInPlace(pending.id, standingNoticeBody(timer, finished, totalFinished, priorStats.n, span))) {
+        for (const c of won) stampEpisodeNotice(pending.id, timer.id, c.row.id, c.condition, c.row.episode);
+        return true;
+      }
+      // changes === 0 here: not a live race (this whole block runs inside
+      // one .immediate() transaction, so nothing else could have touched
+      // pending.id between the SELECT above and this write - see
+      // updateNoticeInPlace's own comment, round 3 F7). The reachable cause
+      // is a throw or a constraint failure on the write itself. Either way,
+      // fall through and file a fresh notice for this tick's winners only -
+      // the carried-forward ones already belong to whatever pending.id
+      // still holds, and re-filing them here would duplicate, not repair.
+    }
     const noticeId = insertNotice(
       timer,
       timer.deliver_actor,
       timer.deliver_pane,
-      standingNoticeBody(timer, won),
+      standingNoticeBody(timer, won.slice(0, FINISHED_SHOWN_CAP), won.length, 0, null),
       timer.id,
     );
     for (const c of won) {
@@ -3484,6 +3794,24 @@ function stallNoticeBody(timer: TimerRow, stalled: StallCandidate[], observedAt:
 // case that is still strictly better than the pre-lane baseline of never
 // reporting at all. REOPEN TRIGGER: a real lane where an arm-2 stall went
 // unreported through exactly this path.
+//
+// TODO 390 SCOPE: THIS BATCH IS DELIBERATELY NOT COALESCED, even though it
+// files through insertNotice with the identical unconditional-per-tick shape
+// claimStandingBatch used to have. The blocker is crewRowForRender's own
+// trick, above: it re-derives a carried-forward candidate by trusting only
+// the STORED episode value and re-fetching everything else fresh, which is
+// safe for CONDITION_IDLE/CONDITION_GONE because both describe a fact on the
+// worker's own `agents` row. A stall candidate's `stale` (TranscriptStaleness)
+// is not stored anywhere at all - it would have to be RE-MEASURED against the
+// same worker's transcript at update time, which can have moved on (the
+// worker resumed writing) since the tick that first flagged it, so a
+// carried-forward stall line could describe a transcript state that is no
+// longer the one that raised the flag. Coalescing this batch honestly needs
+// either a stored snapshot (a column, out of this lane's scope by the same
+// rule PART 2's typed_seen is) or a live re-probe inside this transaction
+// (a tmux fork on the store's single writer slot, the exact cost this file
+// elsewhere refuses). Left as the pre-existing per-tick shape; reopen as its
+// own lane if arm 2's own burst is measured to matter in practice.
 const claimStallBatch = db.transaction(
   (
     timer: TimerRow,
@@ -3945,7 +4273,27 @@ async function fireDelay(
   // refuse it. bestEffortRun is this file's existing precedent for exactly
   // this trade (see its own comment).
   if (!noticeStillDeliverable(timer)) {
-    bestEffortRun("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?", timer.id);
+    // TODO 390 COUNSELORS ROUND 3, F8 (verified, not assumed): the `timer`
+    // this function is passed is a member of THIS TICK'S candidates array,
+    // captured once at the top of tick() - so `timer.created_at` here is
+    // exactly the in-memory-and-possibly-stale value this file elsewhere
+    // warns about (noteFinishedCrew's own header comment, "several
+    // deliveries and their real 300ms Enter sleeps old by the time this
+    // runs"). noticeStillDeliverable's own MAX_AGE comparison already reads
+    // this same stale value, so a coalescing update that refreshes
+    // created_at AFTER this tick's SELECT but BEFORE this cancel runs is
+    // invisible to the check - and the cancel below used to be
+    // unconditional, so it would still fire against a row that had just
+    // been proven fresh by a write this instance never saw. `AND created_at
+    // IS ?` is issue #96's own optimistic-token shape, reused rather than
+    // invented: it loses to a concurrent refresh instead of overriding it,
+    // and the row survives to be reconsidered next tick with a freshly-read
+    // (and by then non-stale) created_at.
+    bestEffortRun(
+      "UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ?",
+      timer.id,
+      timer.created_at,
+    );
     return;
   }
   if (!deliverable(timer, snapshot, choices)) return;
@@ -4490,6 +4838,72 @@ function watchedTail(timer: TimerRow): string {
 // check-then-act against a program that does not answer, and closing it needs
 // delivery to stop meaning "typed at a terminal" (issue #27). What is fixed is
 // the part hive causes itself.
+
+// TODO 390 REVIEW ROUND 1: created_at ANSWERS "how fresh is the CONTENT",
+// NEVER "how long has this notice been held", and the first version of this
+// function used it for both. updateNoticeInPlace's own comment explains why
+// created_at has to refresh on every coalescing update - but that refresh is
+// exactly what makes it the wrong clock for the HOLD's own age: on pad 142's
+// own scenario (a 45-minute lunch, workers finishing every few minutes, the
+// notice updated in place six times) created_at is only minutes old at
+// delivery, so a trailer built from it alone would read "held 5 minutes" on
+// a notice whose oldest finish is 45 minutes gone - understating staleness
+// worst in exactly the case this lane exists for.
+//
+// So two separate facts, from two separate columns, neither of them new:
+//   - HELD SINCE: the earliest wake_idle_notices row ever stamped against
+//     this notice (`notified_at`, written once per episode by claimEpisode's
+//     INSERT OR IGNORE and never rewritten except by a delivery-failure
+//     re-arm's delete-then-reinsert - see rearmSpentEpisode). That is the
+//     moment THIS notice, or the first of its coalesced predecessors in this
+//     same hold, was actually filed.
+//   - CONTENT REFRESHED: timer.created_at, the exact value
+//     updateNoticeInPlace touches - what the reader is looking at was true
+//     as of this moment, which is the question the original single sentence
+//     was actually trying to answer.
+function firstEpisodeFiledAt(noticeId: number): string | null {
+  return (
+    stmt("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_timer_id = ?").get(noticeId) as {
+      t: string | null;
+    }
+  ).t;
+}
+
+// Applied to EVERY notice this scheduler files, coalesced or not, because an
+// ordinary single-episode notice held behind even a short dialog is exactly
+// as stale on arrival - only a coalesced one can additionally have HELD SINCE
+// and CONTENT REFRESHED disagree by more than a few seconds. parent_timer_id
+// IS NOT NULL is pad 142 Q2's own proven discriminator for "hive rendered
+// this body", so this can never touch a caller's own wake_set text.
+//
+// TODO 390 COUNSELORS ROUND 3, F3 (fable + codex, independently). This runs
+// AFTER fireDelay's claim has already committed fired_at, inline in the
+// sendText argument expression - deliver()'s own comment on the adjacent
+// typed_busy read states the rule this used to break: "every other read or
+// write in this function is guarded on exactly that ground", because a
+// throw here would leave the notice fired-but-never-typed, permanently, and
+// (for an IDLE episode whose worker was re-briefed in the meantime) lose
+// that finish outright - it can never re-enter standingIdleRows once its
+// state has moved past the episode this notice claimed. Same fallback shape
+// the comment already prescribes for typed_busy: on any failure, "" - the
+// same answer a parentless wake already gets from the guard above.
+function noticeStalenessNote(timer: TimerRow): string {
+  if (timer.parent_timer_id === null) return "";
+  try {
+    // Falls back to created_at on a null MIN() (no episode row survived, or
+    // - defensively - none was ever stamped): the honest floor is "at least
+    // as long as the content's own age", never a fabricated earlier time.
+    const heldSince = firstEpisodeFiledAt(timer.id) ?? timer.created_at;
+    return (
+      `\nHeld since ${heldSince} UTC (${humanizeAge(ageSecondsSince(heldSince))} ago). Its content reflects what ` +
+      `hive knew as of ${timer.created_at} UTC, ${humanizeAge(ageSecondsSince(timer.created_at))} before this ` +
+      "reached you."
+    );
+  } catch {
+    return "";
+  }
+}
+
 async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
@@ -4635,7 +5049,7 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
     typedBusy = null;
   }
   try {
-    await sendText(timer.deliver_pane, prefix + timer.body + tail, true);
+    await sendText(timer.deliver_pane, prefix + timer.body + noticeStalenessNote(timer) + tail, true);
   } finally {
     // Unchanged from before this lane: a throw out of sendText still
     // propagates from here, past the typed_at write below, so typed_at

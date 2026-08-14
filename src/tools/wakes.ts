@@ -704,7 +704,8 @@ export function registerWakes(server: McpServer): void {
         if (args.delay_seconds != null || args.repeat_every_seconds != null) {
           const target = db
             .prepare(
-              `SELECT kind FROM timers WHERE id = ? AND project_id = ? AND owner = ? AND ${ACTIVE_TIMER_WHERE}`,
+              `SELECT kind FROM timers WHERE id = ? AND project_id = ? AND owner = ? AND parent_timer_id IS NULL
+                 AND ${ACTIVE_TIMER_WHERE}`,
             )
             .get(args.wake_id, projectId, currentActor()) as { kind: string } | undefined;
           if (target && target.kind !== "delay") {
@@ -758,10 +759,23 @@ export function registerWakes(server: McpServer): void {
         // drift from pendingWakes()'s. A miss (wrong id, not yours, not
         // pending) reads as updated: false, the same soft-failure shape
         // wake_cancel already uses for the identical predicate shape.
+        //
+        // parent_timer_id IS NULL (todo 390 counselors round 3, F4). Pad
+        // 142 Q2 proves a caller cannot SET parent_timer_id - no MCP tool
+        // declares it, and strictInput refuses an undeclared key - but that
+        // is a proof about ORIGIN, not about immutability once a row has
+        // one. A standing watch's owner also owns every notice it files
+        // (insertNotice writes the WATCH's own owner onto each), so without
+        // this exclusion that owner could wake_update a filed notice's body
+        // directly - and src/scheduler.ts's coalescing path and staleness
+        // trailer would then rewrite or append onto whatever the caller put
+        // there, corrupting the one kind of body this file promises is
+        // hive-rendered end to end (worker-state.md's verbatim-delivery
+        // invariant is the mirror claim, about a caller's OWN wake).
         const row = db
           .prepare(
             `UPDATE timers SET ${sets.join(", ")}
-             WHERE id = ? AND project_id = ? AND owner = ? AND ${ACTIVE_TIMER_WHERE}
+             WHERE id = ? AND project_id = ? AND owner = ? AND parent_timer_id IS NULL AND ${ACTIVE_TIMER_WHERE}
              RETURNING due_at`,
           )
           .get(...params) as { due_at: string } | undefined;

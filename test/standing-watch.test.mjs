@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
@@ -153,8 +154,12 @@ describe("a standing watch keeps watching", () => {
     // hottest loop hive has.
     assert.deepEqual(result.noticeWatchLists, ["[]"], "a notice must watch nothing, or deliver() pastes worker screens");
 
-    assert.equal(result.second.length, 2, "w2's LATER finish must be reported too - this is the one-shot's defect");
-    assert.match(result.second[1], /w2/);
+    // TODO 390: w2's LATER finish must still be reported (this is the
+    // one-shot's own defect), but while the pane stays held it must update
+    // the SAME pending notice rather than queue a second one behind it.
+    assert.equal(result.second.length, 1, "the pane is still held; a second finish must not queue a second notice");
+    assert.match(result.second[0], /w2/);
+    assert.match(result.second[0], /w1/, "and the earlier finish must still be named in the merged notice");
 
     assert.equal(result.watch.fired_at, null, "the watch's own row must never fire while it is watching");
     assert.equal(result.watch.fire_count, 0);
@@ -385,7 +390,12 @@ describe("the cursor is a transition, not a timestamp", () => {
     );
     assert.equal(result.first, 1);
     assert.equal(result.churned, 1, "a latch that moved with no working|waiting row between is not a new finish");
-    assert.equal(result.afterRealWork, 2, "control: a real turn between two idles IS a new finish");
+    // TODO 390: the lead's pane is deliberately absent from this fixture's
+    // snapshot (the file header explains why), so it stays held across every
+    // tick here. The real finish below is still a NEW episode - the control
+    // this test exists for - but while the pane is held it folds into the
+    // one pending notice rather than queuing a second one behind it.
+    assert.equal(result.afterRealWork, 1, "control: a real turn between two idles IS a new finish, held in the same notice");
   });
 
   // THE SHAPE RETENTION ACTUALLY PRODUCES, which the first version of this
@@ -426,7 +436,10 @@ describe("the cursor is a transition, not a timestamp", () => {
       ["idle"],
       "the fixture must really be the partial-retention shape: the working row gone, the idle row kept",
     );
-    assert.equal(result.notices, 2, "a truncated interval is unanswerable, and unanswerable must not mean silent");
+    // TODO 390: still reported (unanswerable must not mean silent) - and,
+    // the pane being held throughout this fixture, folded into the ONE
+    // notice already pending rather than queued as a second row.
+    assert.equal(result.notices, 1, "a truncated interval is unanswerable, and unanswerable must not mean silent");
   });
 
   it("control: an INTACT log that records no work is evidence, and stays quiet", () => {
@@ -541,14 +554,17 @@ describe("a watched worker that dies", () => {
       result.afterFinish,
       "closing a worker the lead has already read is its own tidy-up, not a death to be woken for",
     );
-    assert.equal(result.afterDeath.length, 2, "a row that closed while it still read working IS the death this reports");
-    assert.match(result.afterDeath[1], /died: GONE/);
+    // TODO 390: the death is still reported (the whole point of this test),
+    // and since the pane is held throughout, it folds into the ONE notice
+    // already pending rather than filing a second row.
+    assert.equal(result.afterDeath.length, 1, "a row that closed while it still read working IS the death this reports");
+    assert.match(result.afterDeath[0], /died: GONE/);
     assert.match(
-      result.afterDeath[1],
+      result.afterDeath[0],
       /last read it as working/,
       "and it says what hive observed, rather than asserting what was lost",
     );
-    assert.doesNotMatch(result.afterDeath[1], /is lost/, "hive has not looked at the branch, the todo or the pad");
+    assert.doesNotMatch(result.afterDeath[0], /is lost/, "hive has not looked at the branch, the todo or the pad");
   });
 
   it("says nothing about a worker that died before the watch was set", () => {
@@ -800,6 +816,202 @@ describe("the parent link", () => {
     );
     assert.equal(result.after.cancelled_at, null, "the staleness bound must apply only to rows that carry a parent");
     assert.match(result.after.held_reason ?? "", /lead's pane is not live/, "it reached delivery and held, exactly as before");
+  });
+});
+
+// TODO 390 (pad 142 PART 3). Wakes held behind a modal (or, here, a dead
+// lead pane - the same hold shape "the parent link" tests above already use
+// to avoid a real tmux fork) used to queue one notice PER finish and release
+// them all together the moment the pane cleared. THE PROPERTY UNDER TEST:
+// N edges arriving while held must leave exactly ONE pending notice, naming
+// every worker whose episode it stands in for - never a sample of the
+// current row taken once, but the full set of rows this project EVER filed
+// for the watch, which is durable precisely because a `timers` row is never
+// deleted (test/CLAUDE.md's own rule: assert over a record, not a sample).
+describe("todo 390: coalescing while held", () => {
+  it("holds a pane's second finish in the SAME pending notice instead of queuing a new one, and names both workers", () => {
+    const result = fixture(
+      "coalesce-two-finishes",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
+      const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      const watchId = addStandingWatch();
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w1);
+      await tick(snapshot);
+      const afterFirst = notices(watchId);
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
+      await tick(snapshot);
+      const afterSecond = notices(watchId);
+
+      ${out(`{
+        idsAfterFirst: afterFirst.map((n) => n.id),
+        idsAfterSecond: afterSecond.map((n) => n.id),
+        bodyAfterFirst: afterFirst[0].body,
+        bodyAfterSecond: afterSecond[0].body,
+        cursor: cursor(watchId),
+      }`)}
+      `,
+    );
+    assert.equal(result.idsAfterFirst.length, 1, "the first finish files exactly one notice, as before this lane");
+    assert.equal(
+      result.idsAfterSecond.length,
+      1,
+      "the second finish while still held must update the SAME row rather than queue a second one - the " +
+        "thundering herd this lane exists to remove",
+    );
+    assert.deepEqual(result.idsAfterSecond, result.idsAfterFirst, "same row id, updated in place");
+    assert.match(result.bodyAfterSecond, /w1/, "the worker named before this update must still be named");
+    assert.match(result.bodyAfterSecond, /w2/, "and the worker that just finished must be named too");
+    assert.doesNotMatch(result.bodyAfterFirst, /updated in place/, "the FIRST write is not itself a coalesced one");
+    assert.match(result.bodyAfterSecond, /updated in place/, "the SECOND write is, and must say so");
+    assert.equal(result.cursor.length, 2, "both episodes are recorded in the cursor");
+    assert.deepEqual(
+      result.cursor.map((c) => c.notice_timer_id),
+      [result.idsAfterSecond[0], result.idsAfterSecond[0]],
+      "both episodes point at the ONE notice that carries them - what the delivery-failure re-arm reads",
+    );
+  });
+
+  // COUNSELORS ROUND 3, F7 CORRECTION: this pins pendingNoticeFor's OWN
+  // `fired_at IS NULL` filter, not updateNoticeInPlace's guard of the same
+  // shape - claimStandingBatch's read-then-write runs inside one
+  // .immediate() transaction, so updateNoticeInPlace's guard is never
+  // actually reached with a stale row from this caller (see its own
+  // comment). What this proves instead: a notice that has ALREADY fired by
+  // the time the next finish arrives must not be found as "pending" at
+  // all - w2's finish gets its OWN fresh notice rather than either being
+  // silently dropped or matched against a row that is already being typed.
+  // Delete `AND fired_at IS NULL` from pendingNoticeFor's own query (not
+  // updateNoticeInPlace's) to see this test go red.
+  it("falls back to a fresh notice when the pending one was claimed by a delivery in between", () => {
+    const result = fixture(
+      "coalesce-race-lost",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
+      const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      const watchId = addStandingWatch();
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w1);
+      await tick(snapshot);
+      const first = notices(watchId)[0];
+      db.prepare("UPDATE timers SET fired_at = datetime('now'), typed_at = datetime('now') WHERE id = ?").run(first.id);
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
+      await tick(snapshot);
+      const after = notices(watchId);
+      ${out(`{
+        ids: after.map((n) => n.id),
+        firstBody: after.find((n) => n.id === first.id).body,
+        secondBody: after.find((n) => n.id !== first.id)?.body,
+      }`)}
+      `,
+    );
+    assert.equal(result.ids.length, 2, "losing the race must file a FRESH notice, never drop w2's report entirely");
+    assert.doesNotMatch(
+      result.firstBody,
+      /^ {2}w2:/m,
+      "the already-fired notice must never be rewritten after the fact - w2 must not appear as a FINISHED worker",
+    );
+    assert.match(result.secondBody, /w2/, "and the fresh notice carries the winner this tick actually claimed");
+  });
+
+  // REVIEW ROUND 1: created_at is refreshed on every in-place update (so
+  // NOTICE_MAX_AGE cannot cancel a long-held coalesced notice out from under
+  // itself), which means it answers "how fresh is the CONTENT", never "how
+  // long has this notice been HELD" - the trailer's first version read the
+  // one number as if it were the other, understating a long hold's own age
+  // worst in exactly the lunch-break case this lane exists for. The fix
+  // reads the hold's own start from wake_idle_notices.notified_at, which
+  // `updateNoticeInPlace` never touches. Proven here by forcing the two
+  // clocks apart with a backdated first episode, matching pad 142's own
+  // 45-minute scenario, rather than waiting on a real clock.
+  it("keeps the hold's own start time separate from the content's own refresh time", () => {
+    const result = fixture(
+      "coalesce-two-clocks",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
+      const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      const watchId = addStandingWatch();
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w1);
+      await tick(snapshot);
+      const first = notices(watchId)[0];
+      db.prepare(
+        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_timer_id = ?",
+      ).run(first.id);
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
+      await tick(snapshot);
+      const merged = notices(watchId)[0];
+      const createdAt = db.prepare("SELECT created_at FROM timers WHERE id = ?").get(merged.id).created_at;
+      const heldSince = db
+        .prepare("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_timer_id = ?")
+        .get(merged.id).t;
+      ${out("{ sameRow: first.id === merged.id, createdAt, heldSince }")}
+      `,
+    );
+    assert.ok(result.sameRow, "the fixture must really be coalescing into one row, or this proves nothing");
+    const asMs = (t) => new Date(`${t.replace(" ", "T")}Z`).getTime();
+    assert.ok(
+      asMs(result.createdAt) - asMs(result.heldSince) > 40 * 60 * 1000,
+      "content-refresh (created_at) must be recent while the hold's own start (notified_at) stays at the " +
+        "backdated first episode - the two facts the trailer now reports separately",
+    );
+  });
+
+  // REVIEW ROUND 2 (Claude Code Review on PR #181). crewRowForRender's own
+  // comment claimed "a closed row does not move again"; agent_resume's flip
+  // (src/spawn.ts) proves that false, and coalescing is what makes it
+  // reachable - the pre-lane code rendered a GONE candidate once, from the
+  // row the same tick claimed it, and never read the row again. A worker
+  // reported GONE, then resumed while its notice is still held, must not
+  // have the next coalescing update re-assert a stale "no terminal left to
+  // read" obituary about a row that is now live.
+  it("does not re-assert a stale obituary for a GONE worker that was resumed while the notice was held", () => {
+    const result = fixture(
+      "coalesce-gone-then-resumed",
+      `
+      const died = addWorker('agent:1', 'died', '%1', 'working', '-120 seconds');
+      const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      const watchId = addStandingWatch();
+
+      db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(died);
+      await tick(snapshot);
+      const first = notices(watchId)[0];
+
+      // Simulate agent_resume's flip: status back to running, closed_at
+      // cleared, with no awareness that \`first\` is holding died's episode
+      // as GONE.
+      db.prepare(
+        "UPDATE agents SET status = 'running', closed_at = NULL, agent_state = 'working', " +
+          "state_changed_at = datetime('now') WHERE id = ?",
+      ).run(died);
+
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
+      await tick(snapshot);
+      const merged = notices(watchId)[0];
+      ${out("{ sameRow: first.id === merged.id, firstBody: first.body, mergedBody: merged.body }")}
+      `,
+    );
+    assert.ok(result.sameRow, "the fixture must really be coalescing into one row, or this proves nothing");
+    assert.match(
+      result.firstBody,
+      /died: GONE - hive last read it as working, and its row was closed at/,
+      "the premise: died was genuinely reported GONE before the resume",
+    );
+    assert.doesNotMatch(
+      result.mergedBody,
+      /no terminal left to read/,
+      "must not assert a stale obituary about a worker that is now live",
+    );
+    assert.match(
+      result.mergedBody,
+      /died: was reported GONE earlier in this hold, but its row's state has moved since/,
+      "and must say so plainly instead of trusting either snapshot",
+    );
+    assert.match(result.mergedBody, /w2/, "the finish that actually happened on this tick must still be named");
   });
 });
 
@@ -1117,6 +1329,184 @@ describe("the tool surface", () => {
       /nothing is watching now/,
       "the sentence has to tell a lead that it is now unwatched, not just that a timer elapsed",
     );
+  });
+
+  // TODO 390 (pad 142 PART 3, the cheap win). Every generated notice's body
+  // is a snapshot, so it must say when it was taken and how stale it already
+  // is by the time a human reads it. Proven against a REAL delivery, because
+  // the trailer is appended in deliver() itself, not stored in the row's own
+  // body - a test that only read the `body` column would not see it at all.
+  // ITS OWN SESSION AND PANE, deliberately not the shared `mcp`/`livePane`
+  // above: those accumulate every prior test's pasted text for the life of
+  // this describe block, past the pane's own visible height, and even a
+  // wide `-S` scrollback capture came back with this assertion's own tail
+  // silently missing - a pty input-buffer limit on the "sleep 600" pane's
+  // cooked-mode echo, not anything this lane's own code does. A fresh pane
+  // starts with nothing in it, so this cannot be that.
+  it("tells the reader when the notice was observed and how long it sat before this reached them", NEEDS_TMUX, async () => {
+    const staleSession = `hive-standing-watch-staleness-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", staleSession, "sleep 600"], { stdio: "ignore" });
+    const stalePane = execFileSync("tmux", ["list-panes", "-t", `=${staleSession}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+    const staleMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: "user:staleness-owner", TMUX_PANE: stalePane },
+    });
+    try {
+      await staleMcp.start();
+      const receipt = await staleMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
+      const { db } = await import("../dist/db.js");
+      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      // A GONE worker, not an idle one: standingGoneRows consults no tmux at
+      // all, so this needs no second real pane the way an idle finish would.
+      db.prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+            agent_state, state_changed_at, closed_at)
+          VALUES (?, 'agent:staleness-1', 'w1', '%doesnotexist', 'claude', '/tmp', 'agent', 'closed',
+            'working', datetime('now'), datetime('now'))`,
+      ).run(projectId);
+      const staleCapture = () => execFileSync("tmux", ["capture-pane", "-p", "-t", stalePane]).toString();
+      const SCHEDULER_TICK_MS = 3000;
+      const delivered = await until(() => staleCapture().includes("finished or gone away"), SCHEDULER_TICK_MS * 6);
+      assert.ok(delivered, "the finish notice must actually reach the pane");
+      assert.match(
+        staleCapture(),
+        /Held since \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \(\d+[sm] ago\)\. Its content reflects what hive knew/,
+        "the staleness trailer must be on the DELIVERED text, not just the stored body",
+      );
+      await staleMcp.call("wake_cancel", { wake_id: receipt.wake_id });
+    } finally {
+      await staleMcp.close();
+      cleanup(staleSession);
+    }
+  });
+
+  // TODO 390 COUNSELORS ROUND 3, F6 (opus + fable, independently). The
+  // fixture-based "keeps the hold's own start time separate..." test
+  // re-implements the MIN(notified_at) query inline and never calls
+  // noticeStalenessNote or delivers anything, and the real-delivery
+  // staleness test above uses a single, uncoalesced notice where both
+  // clocks agree to the second - so neither can fail against a version that
+  // silently reads `heldSince = timer.created_at` for both halves, which is
+  // the exact defect round 1 shipped. THIS test forces the two clocks apart
+  // (a 45-minute backdated first episode, matching pad 142's own scenario)
+  // AND delivers the result through the real, running server, then reads
+  // BOTH numbers back off the DELIVERED PANE TEXT - proving what the
+  // header comment above claims rather than asserting it.
+  it("delivers a coalesced notice whose held-since and content-refreshed clocks were genuinely forced apart", NEEDS_TMUX, async () => {
+    const clockSession = `hive-standing-watch-clocks-${process.pid}`;
+    // `cat > file`, NOT `sleep 600`: this notice's body (two candidates plus
+    // the coalescing summary) is long enough to hit a real limit `sleep`'s
+    // pane hits elsewhere in this file - nothing reads a `sleep` pane's
+    // stdin, so the pty's own cooked-mode input queue fills and silently
+    // drops the tail of a long paste, independent of this lane's own code
+    // (measured: cut off mid-word, at a different byte offset each run).
+    // `cat` continuously drains stdin, so nothing queues up, and every byte
+    // sent lands in the file - read that back instead of capture-pane's
+    // viewport, which only ever showed what `cat` echoed to its OWN stdout,
+    // a second and unrelated copy.
+    const captureFile = join(dirs.tmp, "clock-capture.txt");
+    execFileSync("tmux", ["new-session", "-d", "-s", clockSession, "bash", "-c", `cat > ${captureFile}`], {
+      stdio: "ignore",
+    });
+    const clockPane = execFileSync("tmux", ["list-panes", "-t", `=${clockSession}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+    // LEAD-SHAPED ACTOR, DELIBERATELY. isLeadActorId is a bare string-prefix
+    // check with no row lookup behind it (worker-state.md), so this needs no
+    // real agents row to get deliverable()'s lead exemption: a dead
+    // deliver_pane HOLDS (retried every tick) rather than being CANCELLED
+    // outright, which is what a non-lead owner gets with no SETTLE_WINDOW
+    // grace at all. That HOLD is what buys the window this test needs
+    // between the two finishes - a live pane throughout would let the FIRST
+    // notice deliver before the second finish ever has a chance to coalesce
+    // into it, which is exactly the race the first version of this test hit.
+    const clockMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: "lead:990001", TMUX_PANE: clockPane },
+    });
+    try {
+      await clockMcp.start();
+      const receipt = await clockMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
+      const { db } = await import("../dist/db.js");
+      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      // Redirect BEFORE any finish is added, so every notice this watch
+      // files inherits the dead pane and holds from birth.
+      db.prepare("UPDATE timers SET deliver_pane = '%doesnotexist' WHERE id = ?").run(receipt.wake_id);
+      // GONE workers, not idle ones: standingGoneRows consults no tmux at
+      // all, so neither needs its own real pane the way an idle finish would.
+      const addDead = (actor, name) =>
+        db
+          .prepare(
+            `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+                agent_state, state_changed_at, closed_at)
+              VALUES (?, ?, ?, '%doesnotexist', 'claude', '/tmp', 'agent', 'closed',
+                'working', datetime('now'), datetime('now'))`,
+          )
+          .run(projectId, actor, name);
+      const noticeRow = () =>
+        db
+          .prepare("SELECT id, body, fired_at FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .get(receipt.wake_id);
+      const SCHEDULER_TICK_MS = 3000;
+
+      addDead("agent:clocks-1", "clock-a");
+      const filed = await until(() => noticeRow() !== undefined, SCHEDULER_TICK_MS * 4);
+      assert.ok(filed, "the first finish must be filed as a notice before this test can force the clocks apart");
+      const first = noticeRow();
+      assert.equal(first.fired_at, null, "must still be HELD (dead pane), or the coalescing window is already closed");
+
+      db.prepare(
+        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_timer_id = ?",
+      ).run(first.id);
+      addDead("agent:clocks-2", "clock-b");
+      const coalesced = await until(() => {
+        const n = noticeRow();
+        return n !== undefined && n.id === first.id && n.fired_at === null && n.body.includes("clock-a") && n.body.includes("clock-b");
+      }, SCHEDULER_TICK_MS * 4);
+      assert.ok(coalesced, "the second finish must update the SAME notice, or this is not testing a coalesced one");
+
+      // RELEASE THE HOLD, matching what `hive lead` does on restart: point
+      // the pending notice at the real, live pane so the next tick delivers.
+      db.prepare("UPDATE timers SET deliver_pane = ? WHERE id = ?").run(clockPane, first.id);
+
+      const clockCapture = () => (existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "");
+      // Poll for text at the very END of what deliver() sends (the trailer,
+      // appended after the body), not text near the start - `cat`'s own
+      // write-to-file buffering does not guarantee the whole single paste
+      // lands in the file atomically, so polling on an early marker like
+      // "finished or gone away" can see a PARTIAL write that stops short of
+      // the trailer this test exists to check, and read that as "delivered"
+      // before it actually was. Waiting for the trailer's own last words
+      // means everything before it, in the same write, is already there.
+      const delivered = await until(() => clockCapture().includes("reached you."), SCHEDULER_TICK_MS * 6);
+      assert.ok(delivered, "the coalesced notice must actually reach the pane");
+
+      const text = clockCapture();
+      const parseAge = (n, unit) => Number(n) * (unit === "h" ? 3600 : unit === "m" ? 60 : 1);
+      const heldMatch = text.match(/Held since [^(]+\((\d+)([smh]) ago\)/);
+      const contentMatch = text.match(
+        /Its content reflects what hive knew as of [^,]+, (\d+)([smh]) before this reached you/,
+      );
+      assert.ok(heldMatch && contentMatch, `both clauses must be on the delivered text; got: ${text}`);
+      const heldSeconds = parseAge(heldMatch[1], heldMatch[2]);
+      const contentSeconds = parseAge(contentMatch[1], contentMatch[2]);
+      assert.ok(
+        heldSeconds >= 40 * 60,
+        `held-since must reflect the 45-minute backdated first episode (got "${heldMatch[0]}")`,
+      );
+      assert.ok(
+        contentSeconds < 5 * 60,
+        `content-refreshed must be recent, not carrying the 45-minute backdate (got "${contentMatch[0]}")`,
+      );
+      await clockMcp.call("wake_cancel", { wake_id: receipt.wake_id });
+    } finally {
+      await clockMcp.close();
+      cleanup(clockSession);
+    }
   });
 
   // THE WIRING, which the fixture above cannot see: it calls seedGoneCursor
