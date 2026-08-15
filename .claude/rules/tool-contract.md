@@ -19,7 +19,7 @@ code.** This file is a naming convention and a matrix, not a guard.
 `test/docs.test.mjs` pins that it exists, that its `paths` globs still match
 a real file, that every path it cites is real, that it stays indexed in
 `CLAUDE.md` and `src/AGENTS.md`, and that `CLAUDE.md`'s table names the exact
-same globs its own frontmatter does (todo 354) - the same five checks every
+same globs its own frontmatter does - the same five checks every
 rule file gets. None of that pins its CONTENT against the code: nothing
 fails if the matrix drifts from what `src/tools/*.ts` actually registers, or
 if the naming convention stops matching what a new tool was actually named.
@@ -133,7 +133,7 @@ says what state it touches.
 
 ## Every tool rejects an unknown argument key, and you get that for free
 
-Todo 298, from counselors run 22. All 42 tools advertise
+PR #125 found this. All 42 tools advertise
 `additionalProperties: false` and refuse an undeclared key at runtime with a
 -32602 that names it. Both halves come from `src/strictInput.ts`, which wraps
 `registerTool` once on the single `McpServer` in `src/index.ts` and rebuilds
@@ -180,8 +180,8 @@ the 42 advertised `additionalProperties: false` (the four without it were the
 no-parameter tools: `actor_prune`, `project_list`, `project_prune`,
 `whoami`), **and the runtime never enforced it** - zod strips unknown keys
 silently by default, so the advertised guard had value only to a client that
-validated arguments before sending, which Claude Code does not. Issue #105
-lane C's zod 4 bump stopped emitting the key and was accepted on that basis.
+validated arguments before sending, which Claude Code does not. Issue #105's
+zod 4 bump stopped emitting the key and was accepted on that basis.
 What made it worth answering rather than accepting is the shape underneath:
 `pad_delete({pad_id: 7, expected_revison: 3})` - one letter wrong - reached
 the handler as `{pad_id: 7}`, and `checkRevision` returns SILENTLY when the
@@ -195,7 +195,7 @@ ignored. And adding an optional parameter is no longer backward compatible
 against a RUNNING server: it used to be ignored by a session on older
 `dist/`, and is now refused until that session restarts. See
 `.claude/sessions/common-issues/stale-mcp-server-runs-old-code.md`. That cost
-was weighed and accepted (todo 298 comment 556): bounded by one restart, and
+was weighed and accepted: bounded by one restart, and
 loud rather than silent. A refusal is per call, not per session - the SDK
 turns it into an `isError` tool result carrying the -32602, so the caller
 reads which key was wrong and corrects it.
@@ -237,7 +237,7 @@ free because the first half shipped. No CLI command reaches leases or wakes
 today, and no MCP tool reaches backups, restore, profiles, posture, runbook,
 or doctor; both are the split working as intended, not omissions to close.
 
-**Narrowed since, for kv specifically (todo 356).** `cmdAttach`/`cmdLead`'s
+**Narrowed since, for kv specifically.** `cmdAttach`/`cmdLead`'s
 `maybeOpenDashboard` (`src/cli.ts`) reads and writes one kv row directly, via
 the same process's `db` handle rather than through `kv_set`/`kv_get`. This is
 not the gap the mechanical reasoning above warns about: that reasoning is

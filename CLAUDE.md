@@ -15,9 +15,9 @@ hive doctor       # environment check + stale-state sweep
 
 `npm test` runs the suite (`test/*.test.mjs`, node:test) against the built `dist/`, so build first. It runs through `scripts/run-tests.mjs`, which adds three things to a bare `node --test`:
 
-- For the full suite, it hoists the longest file (wake-hold-notify.test.mjs, measured) to the front by spelling only that one path absolute, since node sorts its file list by path string before scheduling and an absolute spelling always sorts before a relative one - worth ~15.7% wall clock, because that file is otherwise queued behind others under 16-way concurrency (todo 423; the hoist and its fragility are documented at `LONGEST_FILE_HOIST` in `scripts/run-tests.mjs`, pinned by `test/run-tests-file-order.test.mjs`).
-- Any run except a single named `.test.mjs` file first waits on a machine-wide lock file, so two lanes can never run the full suite (or a whole-directory/multi-file target) at once (todo 401; `scripts/suite-lock.mjs`, `HIVE_TEST_NO_LOCK=1` skips it).
-- After every file has exited, it asks each tmux socket the run created whether a server is still on it, and fails the run on a survivor (todo 375; `test/CLAUDE.md` has the mechanics).
+- For the full suite, it hoists the longest file (wake-hold-notify.test.mjs, measured) to the front by spelling only that one path absolute, since node sorts its file list by path string before scheduling and an absolute spelling always sorts before a relative one - worth ~15.7% wall clock, because that file is otherwise queued behind others under 16-way concurrency (the hoist and its fragility are documented at `LONGEST_FILE_HOIST` in `scripts/run-tests.mjs`, pinned by `test/run-tests-file-order.test.mjs`).
+- Any run except a single named `.test.mjs` file first waits on a machine-wide lock file, so two lanes can never run the full suite (or a whole-directory/multi-file target) at once (`scripts/suite-lock.mjs`, `HIVE_TEST_NO_LOCK=1` skips it).
+- After every file has exited, it asks each tmux socket the run created whether a server is still on it, and fails the run on a survivor (`test/CLAUDE.md` has the mechanics).
 
 Tests spawn real MCP server and CLI processes against scratch directories; `test/CLAUDE.md` has the rules that keep them off the live store and off the developer's tmux server. CI runs the same on macOS (`.github/workflows/ci.yml`). For ad-hoc poking, pipe JSON-RPC lines to `node dist/index.js` the same way; MCP handles piped requests concurrently, so drive dependent calls sequentially.
 
