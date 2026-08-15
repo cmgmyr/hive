@@ -381,12 +381,15 @@ jobs:
       matrix:
         include:
           - node: 22.13.1
+            napi: 9
             expect: refuse
             why: last 22.x below Node-API 10
           - node: 23.5.0
+            napi: 9
             expect: refuse
             why: satisfies a bare >=22.14.0 and provides Node-API 9
           - node: 23.6.0
+            napi: 10
             expect: ok
             why: where Node-API 10 starts on the 23 line
     name: node ${{ matrix.node }} must ${{ matrix.expect }} (${{ matrix.why }})
@@ -399,6 +402,27 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: echo "HIVE_BOUNDARY_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      # setup-node logs a download attempt and does not fail the step if it
+      # falls back to whatever's already on the runner (todo 416: it silently
+      # handed us the image's preinstalled 22.23.2 under a step named for
+      # 22.13.1). Nothing above this line checks that the interpreter IS the
+      # version this leg is named for, and every assertion below trusts it.
+      - name: the runner handed us the interpreter this leg is named for
+        env:
+          EXPECT_NODE: ${{ matrix.node }}
+          EXPECT_NAPI: ${{ matrix.napi }}
+        run: |
+          got_node=$("$HIVE_BOUNDARY_NODE" -p process.versions.node)
+          got_napi=$("$HIVE_BOUNDARY_NODE" -p process.versions.napi)
+          if [ "$got_node" != "$EXPECT_NODE" ]; then
+            echo "FAIL: the runner gave us $got_node, not $EXPECT_NODE"
+            exit 1
+          fi
+          if [ "$got_napi" != "$EXPECT_NAPI" ]; then
+            echo "FAIL: $got_node reports Node-API $got_napi, not the $EXPECT_NAPI this leg expects"
+            exit 1
+          fi
+          echo "confirmed: node $got_node, Node-API $got_napi"
       - uses: actions/setup-node@v5
         with:
           node-version: 24
