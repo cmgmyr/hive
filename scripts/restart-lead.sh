@@ -309,11 +309,14 @@ fi
 # runs rather than a bash approximation, with the identical fail-closed
 # handling for "no node" and "dist/ missing". Same argument, same shape.
 #
-# IT ALSO RETIRES THE WINDOW PROBLEM. capture_trimmed's `18` existed only to
-# match src/tmux.ts's tailCaptureLines(), and this file's own comments record
-# getting that mismatch wrong once already. paneHasInputBox and
-# paneAwaitingChoice do their own capture inside src/tmux.ts, so the window
-# cannot drift from hive's any more.
+# IT ALSO RETIRES THE WINDOW PROBLEM. This file used to hand-tune its own
+# capture depth to match src/tmux.ts's tailCaptureLines() (capture_trimmed,
+# deleted by todo 405 once it had no callers left - its own comments record
+# getting that match wrong once already). paneHasInputBox and
+# paneAwaitingChoice do their own capture inside src/tmux.ts now, each
+# choosing the narrow or the raw window for itself (todo 403, "The window
+# belongs to the HALF, not to the caller" in .claude/rules/tmux-and-panes.md),
+# so no window this script needs can drift from hive's.
 DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
 
 # Answers hive's own question about a pane. `$1` is `input-box` or `dialog`;
@@ -383,15 +386,18 @@ pane_says() {
 # which is safe.
 CLAUDE_PANE_CMD='^[0-9]+\.[0-9]+(\.[0-9]+)?$|^claude$'
 
-# Mirrors capturePane() in src/tmux.ts, and has to: a bare `capture-pane -p
-# -S -N` is NOT the window hive's own dialog detector reads. Measured
-# against a real tmux 3.7b, `-S -N` returns N rows of HISTORY PLUS THE
-# WHOLE VISIBLE PANE (~68 rows for -S -18 against an 80-line scroll on a
-# 50-row pane) - hive's capturePane() strips TRAILING blank rows from that
+# HISTORY. Before todo 399, this script's own capture_trimmed (deleted by
+# todo 405) had to MIRROR capturePane() in src/tmux.ts by hand: a bare
+# `capture-pane -p -S -N` is NOT the window hive's own dialog detector
+# reads. Measured against a real tmux 3.7b, `-S -N` returns N rows of
+# HISTORY PLUS THE WHOLE VISIBLE PANE (69, 49 and 39 rows for `-S -18`
+# against panes 50, 30 and 20 rows tall - captureRawPane's own comment,
+# src/tmux.ts) - hive's capturePane() strips TRAILING blank rows from that
 # raw output first, then takes the LAST N of what remains, which is a much
 # NARROWER effective window whenever the pane has blank padding below its
 # real content (the ordinary case: claude's own chrome sits well above the
-# bottom of a tall pane).
+# bottom of a tall pane). Nothing in this script re-implements that trim
+# now - pane_says calls src/tmux.ts's own functions directly.
 #
 # Todo 392 round 2 review (F2/opus finding 1) found this file used the raw
 # form for both consumers of these markers, and named the reachable
@@ -437,24 +443,6 @@ CLAUDE_PANE_CMD='^[0-9]+\.[0-9]+(\.[0-9]+)?$|^claude$'
 # the tool"). Whether restart-lead should gain such a refusal is a real
 # question and a separate one; it is not something todo 403 removed.
 #
-# See "The window belongs to the HALF, not to the caller" in
-# .claude/rules/tmux-and-panes.md.
-# Defined here, before refusal 1, so both readers of INPUT_BOX (this one and
-# refusal 3's awaiting_choice) share it.
-capture_trimmed() {
-  local n="$1" target="$2" raw
-  raw=$(tmux capture-pane -p -t "$target" -S "-$n" 2>/dev/null) || return 1
-  printf '%s\n' "$raw" | awk -v n="$n" '
-    { lines[NR] = $0 }
-    END {
-      last = NR
-      while (last > 0 && lines[last] ~ /^[[:space:]]*$/) last--
-      start = last - n + 1
-      if (start < 1) start = 1
-      for (i = start; i <= last; i++) print lines[i]
-    }'
-}
-
 # REFUSAL 1. Do not respawn a pane that is not running claude. If someone left
 # a shell, a build, or an editor there, killing it destroys work this script
 # knows nothing about. Only applies when there IS a pane to examine - the
@@ -487,10 +475,15 @@ capture_trimmed() {
 # alternative two sections up, not a new one - and unlike that trade, this
 # one was going to cost something concrete and immediate (a broken suite,
 # and refused restarts for ordinary wrapper launches) for a residual that
-# was already accepted elsewhere in this exact file. What DID change this
-# round: the WINDOW this reads is now capture_trimmed (its own comment is
-# just above CLAUDE_PANE_CMD) rather than a bare capture-pane, since a wider
-# raw window only makes the residual worse without buying anything back.
+# was already accepted elsewhere in this exact file. What DID change since
+# this round: the window this reads has moved twice more - first to this
+# file's own capture_trimmed (a hand-tuned 18-row match, deleted by todo
+# 405), then, since todo 399/403, to hive's own paneHasInputBox (called
+# through pane_says, above), which reads the NARROW window on purpose. This
+# refusal is hurt by being FOOLED, not by missing a real box, so a wider raw
+# window would only make the residual worse without buying anything back
+# ("The window belongs to the HALF, not to the caller",
+# .claude/rules/tmux-and-panes.md).
 if [ -n "$PANE" ]; then
   pane_says input-box "$PANE"
   HAS_BOX=$?
@@ -548,9 +541,10 @@ fi
 # the footer alone also matches a worker whose transcript merely quotes the
 # string, which wedged hive itself for a whole release (issue #27, decision D5).
 #
-# 18 to match src/tmux.ts's own tailCaptureLines() exactly - see
-# capture_trimmed's own comment for why the WINDOW, not just this number,
-# has to match.
+# HISTORY: this refusal used to hand-tune its own capture depth (18, to
+# match src/tmux.ts's tailCaptureLines()) through capture_trimmed, a
+# transcription this file carried before todo 399 and that todo 405 deleted
+# once it had no callers left. See the next paragraph for what replaced it.
 #
 # TODO 399: this is now hive's own paneAwaitingChoice, called through
 # pane_says (above), rather than a transcription of it. The `18` this comment
@@ -789,11 +783,13 @@ say "new lead pane: $PANE (running: $PANE_CMD; session: $SESSION; resolved via: 
 # between a handoff and a prompt that never existed. Note the marker: the OLD
 # readiness regex went stale against claude 2.1.220 and every hive spawn
 # silently stopped announcing for days (issue #30). Do not shorten this to a
-# fixed sleep. capture_trimmed rather than a bare capture-pane, for the same
-# window-mismatch reason awaiting_choice uses it - this pane is freshly
-# spawned so there is little real transcript for a stray match to hide in
-# yet, but there is no reason to leave one of the two readers inconsistent
-# with the other now that the mismatch is understood.
+# fixed sleep. This reads through pane_says input-box -> hive's own
+# paneHasInputBox (src/tmux.ts) - the narrow window, same as refusal 1 above
+# and for the identical reason - this pane is freshly spawned so there is
+# little real transcript for a stray match to hide in yet, but there is no
+# reason to leave one of the two readers on a different window than the
+# other. capture_trimmed, which this comment used to name here, is gone
+# (todo 405); pane_says has read hive's own capture since todo 399.
 say "waiting up to ${READY_TIMEOUT}s for the input box"
 READY=0
 for _ in $(seq 1 $((READY_TIMEOUT * 2))); do

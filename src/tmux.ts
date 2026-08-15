@@ -1679,8 +1679,8 @@ export function paneCurrentCommand(target: string): string | null {
 // `capture-pane -S -N` returns the whole VISIBLE pane plus N rows of history,
 // not N rows total - measured live at three pane heights on an isolated
 // server (69, 49 and 39 rows returned for `-S -18` against panes 50, 30 and
-// 20 rows tall), which is the same correction this project already had to
-// record once against scripts/restart-lead.sh's `capture_trimmed`.
+// 20 rows tall), the same correction scripts/restart-lead.sh had to record
+// once already, in its own now-deleted `capture_trimmed` (todo 405).
 // `capturePane` then throws that surplus away: trailing blanks stripped, last
 // N rows kept.
 //
@@ -2563,12 +2563,13 @@ const isAwaitingChoiceScreen = (tail: string, wide: string): boolean =>
 // reimplementation for the identical reason: the point is to run what hive
 // runs, not a second approximation of it.
 //
-// PANE-TAKING, NOT SCREEN-TAKING, and that is the half that matters most for
+// PANE-TAKING, NOT SCREEN-TAKING, and that is the half that mattered most for
 // the shell copy. `restart-lead.sh` had to reproduce this file's capture
-// WINDOW as well as its regex - its `capture_trimmed 18` exists only to match
-// `tailCaptureLines()`, and its own comments record getting that mismatch
-// wrong once already. Handing it a pane id moves the window back inside this
-// file, where it cannot drift.
+// WINDOW as well as its regex - its `capture_trimmed 18` existed only to
+// match `tailCaptureLines()`, and its own comments recorded getting that
+// mismatch wrong once already. Handing it a pane id moved the window back
+// inside this file, where it cannot drift; `capture_trimmed` itself was dead
+// code from that point on and todo 405 deleted it.
 //
 // TODO 403, ROUND 2: THE NARROW WINDOW, AND THIS FUNCTION IS WHY THE BOX
 // SEARCH DOES NOT GET ONE ANSWER EVERYWHERE. The first version of this lane

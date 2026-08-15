@@ -147,19 +147,52 @@ describe("a tmux call that never answers", () => {
     // regardless of suite size. Only the RACED read - the log never got
     // written at all - is retried; a log that captured the wrong calls is a
     // real regression and fails immediately, on the first attempt it appears.
+    //
+    // SCOPE CORRECTION (todo 404, instrument pass). 1b14a0a's message says the
+    // retry "provably does not survive a correlated burst where every
+    // competitor races the same assertion at once (measured: still failed ...
+    // under a synthetic 40-way xargs -P 40 burst, with or without the retry)"
+    // and that "that regime is not what the retry is claimed to help with."
+    // MEASURED, by that same commit: the 40-way single-parent burst above,
+    // and a 25-way/bursty-40-way SEPARATE-PROCESS background load that
+    // reproduced zero failures in 20 trials with no retry needed. NOT
+    // MEASURED: a post-merge instance on a tree carrying this mitigation
+    // (comment 1032/1034 on todo 404) hit this test's ENOENT signature once
+    // under a plain 7-file parallel `node --test` run - closer to "several
+    // ordinary competitors" than to the synthetic 40-way shape - but the run
+    // kept no failure text, this test has four assertion sites and only this
+    // one is retried, and three immediate reruns of the identical shape never
+    // reproduced it again (206/206 each, one attempt every time per the
+    // logged duration). So whether an ordinary multi-file run already sits in
+    // the regime the retry does not cover is an open INFERENCE, not a
+    // measurement either way - 1b14a0a should not be read as having named the
+    // full boundary, only the one burst it tested.
+    const elapsedMs = [];
     for (let attempt = 1; ; attempt++) {
       const log = join(logDir, `ensure-session-calls-${attempt}`);
       const loggedFake = fakeHangingTmux({ log });
       try {
+        const attemptStarted = Date.now();
         const calls = withEnv({ PATH: `${loggedFake}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
           const started = Date.now();
           assert.throws(() => ensureSession("hive-timeout-probe", process.cwd()), TmuxTimeoutError);
           assert.ok(Date.now() - started < 10_000, "the probe returned within its bound");
           return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
         });
+        elapsedMs.push(Date.now() - attemptStarted);
         if (calls.length === 0 || calls[0] === "") {
           if (attempt < 3) continue;
-          assert.fail(`the fake's log was never written after ${attempt} attempts (todo 404's fork-loses-the-race case)`);
+          // Attempt count and per-attempt elapsed ms name the failure's own
+          // regime without another triage (todo 404): three attempts that
+          // each ran out the full bound is a correlated burst: this same
+          // scheduling problem hit every attempt, which is the shape the
+          // retry does not claim to survive. One attempt failing near-
+          // instantly, well under the bound, is something else - the retry
+          // itself never getting a fair scheduling shot.
+          assert.fail(
+            `the fake's log was never written after ${attempt} attempts (todo 404's fork-loses-the-race case); ` +
+              `per-attempt elapsed ms: [${elapsedMs.join(", ")}]`,
+          );
         }
         assert.deepEqual(
           calls,
