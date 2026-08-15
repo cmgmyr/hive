@@ -426,7 +426,7 @@ Todo 375, from the second crew-wide tmux loss in one day. `execFileSync` with no
 ## Two shell traps
 
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings. Target a session by id when its name starts with `=`.
-- **Never run `tmux kill-server`.** It takes down whatever server the ambient env points at, which during development is the session the lead and workers are running in. Tear down with `kill-session -t =<name>`.
+- **Never run `tmux kill-server`.** It takes down whatever server the ambient env points at, which during development is the session the lead and workers are running in. Tear down with `kill-session -t =<name>`. This rule alone failed twice in one hour on 2026-08-14 (`dead-ends/2026-08-14-kill-server-as-a-tidy-up-step.md`), so todo 417 enforces it in code for this repo: a `PreToolUse` hook wired from `.claude/settings.json`, running `scripts/tmux-kill-guard.mjs`, denies the bare form on the Bash tool before it runs. Know its limit before leaning on it: it guards the Bash TOOL, not the machine, so it does not see a kill inside a shell script file or a node `child_process` call.
 
 ## All process execution goes through `execFileSync` with argument arrays
 
