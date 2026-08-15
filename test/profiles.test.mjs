@@ -22,6 +22,8 @@ const {
   profileNames,
   profileStatus,
   readProfileFile,
+  referencedPads,
+  referencedPaths,
   renderTemplate,
   resolveProfileFile,
   REWRITE_THRESHOLD,
@@ -238,6 +240,70 @@ describe("template rendering", () => {
     assert.match(out, /cmgmyr\/hive/);
     assert.doesNotMatch(out, /TICKET LANE \(/, "the ticket section drops without ticket_prefix");
     assert.match(out, /A fresh worktree has no dependencies installed: npm install/);
+  });
+});
+
+// Todo 332. Pure-function level: the four high-confidence shapes doctor
+// scans for, and the false-positive traps found measuring this detector
+// against the real orchestration fork at ~/.hive/profiles/orchestration
+// (recorded in the PR body and in profiles.ts's own comment above
+// referencedPaths).
+describe("referenced pads and paths (todo 332)", () => {
+  it("catches all four high-confidence pad shapes", () => {
+    const text = [
+      "Read the pad with `hive pad lessons --save`.",
+      'pad_read(name="board")',
+      'pad_write(name="scratch")',
+      '"goal-prompts" pad is optional.',
+      'append to pad "lane-ledger" when you ship.',
+    ].join("\n");
+    assert.deepEqual(referencedPads(text), ["board", "goal-prompts", "lane-ledger", "lessons", "scratch"]);
+  });
+
+  it("does not read `hive pad <name>`'s own placeholder syntax as a pad name", () => {
+    // The orchestration fork's own worker.md documents the CLI this way:
+    // a literal `<name>` describing the syntax, not a real pad. `<` is not
+    // a name character, so the match never starts.
+    assert.deepEqual(referencedPads("`hive pad\n<name> --save` when a pad is too large to edit."), []);
+  });
+
+  it("does not read a CLI flag after `hive pad` as the pad name", () => {
+    // profiles/orchestration/worker.md: `hive pad --save <file>` for a large
+    // pad. The flag comes first here, not a name.
+    assert.deepEqual(referencedPads("use `hive pad --save <file>` for a large pad."), []);
+  });
+
+  it("catches both path shapes from the sideproj regression", () => {
+    const text = "See `.claude/rules/` and `scripts/covering-rules.mjs` for the covering rules.";
+    assert.deepEqual(referencedPaths(text), [".claude/rules/", "scripts/covering-rules.mjs"]);
+  });
+
+  it("resolves a glob suffix to its directory, matching the real fork's `.claude/rules/*.md`", () => {
+    assert.deepEqual(referencedPaths("Every `.claude/rules/*.md` file declares `paths:` globs."), [
+      ".claude/rules/*.md",
+    ]);
+  });
+
+  it("ignores an absolute or home-relative path - not repo-relative, out of scope", () => {
+    assert.deepEqual(referencedPaths("run `python3 ~/.claude/skills/usage/scripts/usage.py`."), []);
+    assert.deepEqual(referencedPaths("see `/etc/hosts` for details."), []);
+  });
+
+  it("ignores a shell command with flags, even one containing a slash", () => {
+    assert.deepEqual(referencedPaths("run `git commit --no-gpg-sign` first."), []);
+    assert.deepEqual(referencedPaths("check `hive doctor --strict` output."), []);
+  });
+
+  it("ignores a bare filename with a known extension and no slash (measured false positive)", () => {
+    // .claude/sessions/ is established one sentence earlier in the real
+    // fork's runbook.md; `working-on.md` alone means the file in that
+    // directory, not one at the project root. See referencedPaths's own
+    // comment in profiles.ts for the measurement this narrowed on.
+    assert.deepEqual(referencedPaths("Read `working-on.md` plus every dead-end that applies."), []);
+  });
+
+  it("ignores an unbackticked path in prose", () => {
+    assert.deepEqual(referencedPaths("tooling that exists only in hive (.claude/rules/, scripts/x.mjs)"), []);
   });
 });
 

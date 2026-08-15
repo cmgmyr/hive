@@ -164,6 +164,8 @@ import {
   profileNames,
   profileStatus,
   readProfileFile,
+  referencedPads,
+  referencedPaths,
   renderProfileFile,
   resolveProfileFile,
   REWRITE_THRESHOLD,
@@ -3228,6 +3230,47 @@ function cmdDoctor(argv: string[]): void {
       if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);
       if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
     }
+
+    // todo 332. Same shape as the vars report above, on the RENDERED text
+    // (posture + runbook + worker, vars substituted) rather than the raw
+    // template: a reference inside a dropped <!--if:--> section never
+    // actually reaches a reader, so it must not be reported as missing
+    // either. worker.md is included here, unlike the vars report - its
+    // vars are excluded because agent-identity vars always read "not set
+    // here", but a pad or path it names is a real reference like any other.
+    const vars = cfg?.vars ?? {};
+    const renderedText = PROFILE_FILES.map((file) => renderProfileFile(name, file, vars))
+      .filter((t): t is string => t != null)
+      .join("\n");
+    const pads = referencedPads(renderedText);
+    const paths = referencedPaths(renderedText);
+    // A project not yet registered has no pad rows to check against, and
+    // every referenced pad would trivially read "missing" - not a finding,
+    // just the fact of being unregistered. Skip rather than report noise;
+    // paths still resolve against the filesystem regardless.
+    const missingPads = here ? pads.filter((p) => getActivePadByName(here.id, p) == null) : [];
+    // process.cwd() is a real fallback only for a genuinely unregistered
+    // project (no path to prefer instead); run from a worktree of one,
+    // cwd is not the project root and a path that exists in the primary
+    // checkout can misreport here. Accepted: `here` covers the ordinary
+    // case (a worktree resolves to its primary checkout's project row,
+    // per CLAUDE.md's project-scoping invariant), so this branch is
+    // reached only pre-registration, and doctor already treats that state
+    // as informational rather than authoritative elsewhere in this function.
+    const projectRoot = here?.path ?? process.cwd();
+    const missingPaths = paths.filter((p) => {
+      const clean = p.endsWith("/") ? p.slice(0, -1) : p;
+      const segments = clean.split("/");
+      const last = segments[segments.length - 1];
+      const target = last.includes("*") ? segments.slice(0, -1).join("/") : clean;
+      return target !== "" && !existsSync(join(projectRoot, target));
+    });
+    // NON-GATING, plain info() same as the vars report: a fork's referenced
+    // pad that this project has not needed yet is normal, per the runbook's
+    // own "a new project has only board" - never a failure.
+    // (decisions/2026-08-07-strict-promotes-only-gating-warns.md)
+    if (missingPads.length > 0) info("profile references", `pad(s) referenced but not here: ${missingPads.join(", ")}`);
+    if (missingPaths.length > 0) info("profile references", `path(s) referenced but not here: ${missingPaths.join(", ")}`);
   };
 
   // `here &&` is gone from this branch (counselors finding 3): a fresh

@@ -321,3 +321,54 @@ export function templateVars(text: string): string[] {
   for (const match of text.matchAll(VAR_REF)) found.add(match[1]);
   return [...found].sort();
 }
+
+// todo 332: `hive doctor` scans the same rendered profile text for pad and
+// path references, so a referenced-but-missing pad or file announces itself
+// the way a referenced-but-unset var already does. High-confidence shapes
+// only (issue argued on the todo and the lead's own dispatch note): a fork's
+// own prose is covered for free, at the cost of missing a bare unmarked
+// mention like "the lessons pad". That miss is deliberate, not an oversight
+// - it is what keeps this cheap enough to run unconditionally as a note.
+const PAD_NAME = "[A-Za-z0-9][A-Za-z0-9_.-]*";
+const HIVE_PAD_CMD = new RegExp(`\`hive pad (${PAD_NAME})`, "g");
+const PAD_TOOL_CALL = /\bpad_(?:read|write)\([^)]*name\s*=\s*"([^"]+)"/g;
+const QUOTED_PAD_BEFORE = new RegExp(`"(${PAD_NAME})"\\s+pad\\b`, "gi");
+const QUOTED_PAD_AFTER = new RegExp(`\\bpad\\s+"(${PAD_NAME})"`, "gi");
+
+export function referencedPads(text: string): string[] {
+  const found = new Set<string>();
+  for (const re of [HIVE_PAD_CMD, PAD_TOOL_CALL, QUOTED_PAD_BEFORE, QUOTED_PAD_AFTER]) {
+    for (const m of text.matchAll(re)) found.add(m[1]);
+  }
+  return [...found].sort();
+}
+
+// Backticked only, deliberately: every real path reference in this project's
+// own profiles is backticked, and restricting to it is what keeps a shell
+// command or a prose sentence with a stray "/" from reading as a path. A
+// token qualifies as path-shaped when it has no spaces, resolves as
+// repo-relative (no leading `/` or `~`, so an absolute or home-relative path
+// is out of scope on purpose - it is not "the project"), and contains a `/`.
+//
+// MEASURED, NOT SPECULATIVE: the plan for this check also allowed a bare
+// filename with a known extension and no `/` (a `CLAUDE.md`-shaped
+// reference). Run against the real orchestration fork at
+// ~/.hive/profiles/orchestration, that branch's only catch was a false
+// positive: runbook.md's "Read `working-on.md`" leans on a directory named
+// one sentence earlier (`.claude/sessions/`) and means
+// `.claude/sessions/working-on.md`, not a project-root file. Neither
+// regression-bar path case (`.claude/rules/`, `scripts/covering-rules.mjs`)
+// needs the bare-extension branch - both already contain a `/` - so it was
+// dropped rather than special-cased. Narrowing per the plan's own license to
+// do so on measurement, never to widen without saying why.
+const PATH_TOKEN = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.*-]+)+\/?$/;
+
+export function referencedPaths(text: string): string[] {
+  const found = new Set<string>();
+  for (const m of text.matchAll(/`([^`\n]+)`/g)) {
+    const token = m[1].trim();
+    if (!PATH_TOKEN.test(token)) continue;
+    found.add(token);
+  }
+  return [...found].sort();
+}
