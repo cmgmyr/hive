@@ -1617,12 +1617,44 @@ export function registerAgents(server: McpServer): void {
               `Not retitled: the pane's input box holds unsubmitted text, so /rename would be pasted onto the end of it and submitted as prose rather than run as a command. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Clear the line with agent_send(keys: ["C-a", "C-k"]) once you can attribute the text, then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
             heldTail = tail;
           } else {
+            // Todo 418, sibling of todo 414's fix for agent_send's identical
+            // paste-then-Enter split (src/tmux.ts's sendText). onPasted fires
+            // the instant the paste call returns, before the Enter is ever
+            // attempted, so a throw reaching the catch below can tell
+            // "nothing landed" from "the /rename text is stranded on screen"
+            // instead of asserting the former unconditionally, which is what
+            // this catch used to do.
+            //
+            // A NOTE, NOT A THROW - unlike agent_send's fix, deliberately.
+            // agent_send carries arbitrary caller text, and its own next call
+            // is the thing most likely to merge onto a stranded fragment, so
+            // todo 414 rewrote that failure into a throw a caller cannot
+            // silently ignore. agent_rename sends one fixed, short command to
+            // a claude pane only (isClaudeCommand, above), and a retry is
+            // already refused on both paths that could send one:
+            // holdsHumanInput above catches it on the next agent_rename, and
+            // agent_send's own text path refuses on the same predicate. The
+            // merge is already guarded; only the receipt's truthfulness was
+            // missing, so this reuses the existing heldNote/heldTail shape
+            // rather than adding a second failure mechanism next to it.
+            let pasted = false;
             try {
-              await sendText(agent.tmux_target, `/rename ${newName}`);
+              await sendText(agent.tmux_target, `/rename ${newName}`, true, () => {
+                pasted = true;
+              });
               retitled = true;
             } catch {
-              // Pane died between the liveness check and the keystrokes; the
-              // rename itself already landed in the store.
+              if (pasted) {
+                heldNote =
+                  `Not retitled: the rename command reached the pane but the Enter that submits it failed, so "/rename ${newName}" is sitting on screen unsubmitted. The row IS renamed - it is "${newName}" now - only the pane's own title was left alone. Do not resend /rename: agent_send(name: ${JSON.stringify(newName)}, keys: ["Enter"]) finishes this exact delivery, or agent_send(name: ${JSON.stringify(newName)}, keys: ["C-a", "C-k"]) clears it.`;
+                try {
+                  heldTail = capturePane(agent.tmux_target, 15);
+                } catch {
+                  // Pane died between the failed Enter and this read.
+                }
+              }
+              // else: pane died between the liveness check and the
+              // keystrokes; the rename itself already landed in the store.
             }
           }
         }
