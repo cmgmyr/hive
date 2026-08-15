@@ -32,19 +32,29 @@ function stripControlChars(text: string): string {
 const ELLIPSIS = "…";
 const CUT_BUDGET = SLUG_MAX_LEN - 1;
 
+// Todo 411. Walks whole code points (a `for...of` over a string iterates by
+// code point, the same as Array.from), accumulating until the NEXT one would
+// push the running UTF-16-unit count past `budget`, rather than slicing at a
+// fixed code-point count or a fixed code-unit count - either of those can
+// still split a surrogate pair or overrun the unit bound. This is the one
+// surrogate-safe cut in the codebase; every truncation site reuses it rather
+// than reimplementing it slightly weaker (the failure todo 318's own
+// /simplify pass found one step earlier, with findUnsafeControlChar).
+// Deliberately does ONLY the cut: no ellipsis, no word-boundary trimming,
+// since callers disagree on both and those are policy, not the hazard.
+export function cutToUnitBudget(text: string, budget: number): string {
+  let cut = "";
+  for (const ch of text) {
+    if (cut.length + ch.length > budget) break;
+    cut += ch;
+  }
+  return cut;
+}
+
 export function fallbackSlug(title: string): string {
   const trimmed = stripControlChars(title).trim();
   if (trimmed.length <= SLUG_MAX_LEN) return trimmed;
-  // Walk whole code points (a `for...of` over a string iterates by code
-  // point, the same as Array.from), accumulating until the NEXT one would
-  // push the running UTF-16-unit count past CUT_BUDGET, rather than slicing
-  // at a fixed code-point count or a fixed code-unit count - either of those
-  // can still split a surrogate pair or overrun the unit bound.
-  let cut = "";
-  for (const ch of trimmed) {
-    if (cut.length + ch.length > CUT_BUDGET) break;
-    cut += ch;
-  }
+  const cut = cutToUnitBudget(trimmed, CUT_BUDGET);
   const lastSpace = cut.lastIndexOf(" ");
   return (lastSpace > CUT_BUDGET / 2 ? cut.slice(0, lastSpace) : cut) + ELLIPSIS;
 }

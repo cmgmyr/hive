@@ -6,6 +6,13 @@ import { fileURLToPath } from "node:url";
 // every session start pays (unlike a value import of stateProvenance.js,
 // which stays inside digest() below for that reason).
 import type { ProvenanceRow } from "./stateProvenance.js";
+// This file's first top-level value import of a local module - a deliberate
+// exception to the deferral pattern above, not an oversight. The pattern
+// exists for modules like stateProvenance.js that drag in the database and
+// the native addon; slug.js is a leaf with no imports of its own (see its
+// header), so importing it here costs one small parse and nothing else on
+// the cold path every session start pays. Todo 411.
+import { cutToUnitBudget } from "./slug.js";
 
 // SessionStart entry point. This runs on EVERY session start in EVERY
 // directory on the machine, so it is built to say nothing as fast as
@@ -49,9 +56,12 @@ function currentBranch(dir: string): string | null {
   }
 }
 
-function truncate(text: string, limit: number): string {
+// Todo 411: cutToUnitBudget stops the cut from landing inside an astral
+// character's surrogate pair. No round-trip constraint on this output, so
+// the "\n[truncated]" suffix is not counted against limit - same as before.
+export function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit).trimEnd()}\n[truncated]`;
+  return `${cutToUnitBudget(text, limit).trimEnd()}\n[truncated]`;
 }
 
 // The live digest. Imported lazily by run() so a directory that fails an

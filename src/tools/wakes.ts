@@ -12,6 +12,7 @@ import {
   type TimerRow,
 } from "../scheduler.js";
 import { idParam, projectIdParam } from "./params.js";
+import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { findUnsafeControlChar, liveTargets, TEXT_ALLOWED_CONTROL_CHARS } from "../tmux.js";
@@ -234,7 +235,13 @@ function deliveryState(
   };
 }
 
-const truncateBody = (body: string): string => (body.length > 120 ? `${body.slice(0, 120)}…` : body);
+// Todo 411: cutToUnitBudget stops the cut from landing inside an astral
+// character's surrogate pair, which used to be able to reach a wake body -
+// delivered VERBATIM into a pane (worker-state.md) - as a lone surrogate
+// half. No round-trip constraint on this output, so the ellipsis is not
+// counted against the 120 bound - same as before this fix.
+export const truncateBody = (body: string): string =>
+  body.length > 120 ? `${cutToUnitBudget(body, 120)}…` : body;
 
 // Issue #150. A wake body is delivered verbatim into a pane by sendText
 // (worker-state.md: "Wake-up bodies are delivered verbatim"), so an

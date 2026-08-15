@@ -9,7 +9,7 @@ import { awaitingFirstPrompt } from "./firstPrompt.js";
 // reused rather than reimplemented (todo 329/333). Not imported from
 // src/tools/todos.ts, which re-exports the same functions but pulls in
 // ../tmux.js at module load, exactly the coupling this file stays free of.
-import { fallbackSlug } from "./slug.js";
+import { cutToUnitBudget, fallbackSlug } from "./slug.js";
 
 // Pure: reads the store for one project and returns a complete, self-contained
 // HTML document as a string. Never touches the filesystem and never decides
@@ -32,8 +32,12 @@ export const ACTIVITY_DISPLAY_CAP = 40; // after merge, what actually renders
 // dashboard.ts is deliberately free of (see the module header comment).
 // Same shape, different cap per call site (wake bodies vs comment bodies),
 // kept local rather than imported.
-function truncateWithEllipsis(text: string, maxLength: number): string {
-  return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text;
+// Todo 411: the cut itself (never the ellipsis, appended after) goes through
+// cutToUnitBudget so it cannot land inside an astral character's surrogate
+// pair. No round-trip constraint here (unlike fallbackSlug's zod .max()), so
+// the ellipsis is not counted against maxLength - same as before this fix.
+export function truncateWithEllipsis(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${cutToUnitBudget(text, maxLength)}…` : text;
 }
 
 function escapeHtml(input: string): string {
