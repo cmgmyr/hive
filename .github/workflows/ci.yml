@@ -148,15 +148,36 @@ jobs:
         # pass would prove nothing. CI CONFIRMED THE COUNT rather than it
         # being read off the diff: the first run against this branch reported
         # exactly 20 skipped on both Linux legs, against the budget of 19.
+        #
+        # 20 -> 21 (todo 419). One new darwin-gated case in
+        # test/open-call-guard.test.mjs: its end-to-end reproduction spawns a
+        # real `hive lead` and asserts the run failed on a resolved `open`
+        # call, which needs maybeOpenDashboard's darwin-only `open` branch
+        # (src/cli.ts) to be reachable at all - a Linux run cannot reach the
+        # branch this test exists to catch escaping, so it skips there for
+        # the identical construction reason as the other twenty.
+        # MEASURED PER FILE, not read off the diff, and not by forcing the
+        # WHOLE suite to report as linux: that was tried first and measured
+        # to corrupt unrelated behaviour (native module and tmux-spawn code
+        # elsewhere in the suite that reads process.platform for real
+        # OS-specific decisions, not just this file's skip gate), so
+        # test/restart-lead.test.mjs in particular failed outright under it
+        # rather than reporting a clean skip. Scoped instead: run just
+        # test/open-call-guard.test.mjs alone, process.platform forced to
+        # "linux", 0 -> 1. test/restart-lead.test.mjs's own edit in the same
+        # branch (adding --no-dashboard to one existing `hive lead` call)
+        # touches no skip condition - confirmed by inspection, since its
+        # gates are all `hasTmux`, never darwin - so it carries no delta of
+        # its own. CI CONFIRMS THE FINAL COUNT on push, per every bump above.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 20
+            skipped: 21
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 20
+            skipped: 21
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5

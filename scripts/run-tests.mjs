@@ -15,9 +15,10 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { describeOpenCalls, installFakeOpen, openCallsFailed, readOpenCalls } from "./open-guard.mjs";
 import {
   acquireSuiteLock,
   currentHolder,
@@ -106,9 +107,46 @@ if (!lockBlocked) {
   const manifestDir = mkdtempSync(join(tmpdir(), "hive-leakcheck-"));
   const manifest = join(manifestDir, "sockets");
 
+  // Todo 419. `hive lead`/`hive attach` (maybeOpenDashboard, src/cli.ts) and
+  // `hive pad --edit` both reach a bare `open` resolved off PATH, and a real
+  // one pops a browser window or editor on whoever runs the suite - three
+  // windows during one real `npm test` on the main checkout (`open` on a
+  // file:// URL duplicates 1:1 per call and never focuses an existing one, so
+  // three windows means three separate escaping invocations). Reproduced and
+  // traced to test/restart-lead.test.mjs's REPO-registered lead spawn, fixed
+  // there with --no-dashboard; see that test's own comment and
+  // scripts/open-guard.mjs's header for the two preconditions the escape
+  // needs and why a fresh worktree could not reproduce it at first.
+  //
+  // This installs a fake `open` on PATH for the WHOLE run, from the RUNNER
+  // that spawns every test file - not a shared bootstrap a test file has to
+  // import. That distinction is load-bearing, not decoration:
+  // .claude/sessions/decisions/2026-07-28-two-guards-for-test-store-isolation.md
+  // rejected "a shared test bootstrap imported first by every test file" on
+  // exactly this shape, because it converts "remember to call the helper"
+  // into "remember to import the bootstrap FIRST" - the same failure with the
+  // same trigger, since a hoisted static import can land above it and
+  // nothing enforces the ordering. A PATH fake set here cannot be beaten that
+  // way: it is on PATH before `node --test` even starts, no test file has to
+  // do anything to get it, and the only way past it is to actively rewrite
+  // PATH - which is exactly what test/dashboard-open.test.mjs and
+  // test/dashboard-open-lead.test.mjs already do on purpose (their own
+  // makeFakeOpen bin prepended ahead of this one), so those two keep
+  // exercising the real open path with their own fake, unchanged.
+  //
+  // The run FAILS on any recorded call, the same shape as the tmux leak check
+  // just below: a guard that only reports is a guard someone reads once. See
+  // scripts/open-guard.mjs's header for why "any call at all" is the right
+  // bar here, unlike the tmux check's clean-but-present cases.
+  const fakeOpen = installFakeOpen();
+
   const child = spawn(process.execPath, ["--test", ...passthrough, ...files], {
     stdio: "inherit",
-    env: { ...process.env, HIVE_TMUX_LEAK_MANIFEST: manifest },
+    env: {
+      ...process.env,
+      PATH: `${fakeOpen.bin}${delimiter}${process.env.PATH}`,
+      HIVE_TMUX_LEAK_MANIFEST: manifest,
+    },
   });
   // Counselors round 1 (codex): the lock was acquired against THIS process's
   // pid, but this process is the supervisor, not the one running the suite.
@@ -173,7 +211,16 @@ if (!lockBlocked) {
     const leaked = leakCheckFailed(result, { requireManifest: !named });
     console.log(`\n${leaked ? "tmux leak check FAILED" : "tmux leak check"}: ${lines[0]}`);
     for (const line of lines.slice(1)) console.log(line);
+
+    // Todo 419: read before reap() removes the log's directory.
+    const openCalls = readOpenCalls(fakeOpen.log);
+    const openEscaped = openCallsFailed(openCalls);
+    const openLines = describeOpenCalls(openCalls);
+    console.log(`\n${openEscaped ? "open-call check FAILED" : "open-call check"}: ${openLines[0]}`);
+    for (const line of openLines.slice(1)) console.log(line);
+
     rmSync(manifestDir, { recursive: true, force: true });
+    fakeOpen.reap();
     // RELEASE ON EVERY PATH this handler can be reached by: normal exit,
     // test failure, and a signal forwarded above - all three land here, the
     // same reasoning the manifest cleanup above already relies on. Nothing
@@ -191,6 +238,6 @@ if (!lockBlocked) {
     // list, or a reader that has stalled, does not. Setting the code and
     // letting the process end on its own costs nothing here: the child has
     // exited and no handles are left to keep the loop alive.
-    process.exitCode = suiteFailed ? (code ?? 1) : leaked ? 1 : 0;
+    process.exitCode = suiteFailed ? (code ?? 1) : leaked ? 1 : openEscaped ? 1 : 0;
   });
 }

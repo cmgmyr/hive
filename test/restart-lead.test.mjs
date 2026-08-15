@@ -97,8 +97,8 @@ function insertProject(name, path) {
 // real fake-claude pane to work with, and waits for the fixture to actually
 // render - see the comment on the first describe block's own test for why
 // that wait matters (a receipt is not proof the pane has content yet).
-async function startRealLead(proj, cwd) {
-  const lead = await runCli(["lead"], { cwd, dataDir: dirs.dataDir, tmp: dirs.tmp, env: { PATH } });
+async function startRealLead(proj, cwd, extraArgs = []) {
+  const lead = await runCli(["lead", ...extraArgs], { cwd, dataDir: dirs.dataDir, tmp: dirs.tmp, env: { PATH } });
   assert.equal(lead.code, 0, lead.stderr);
   const pane = leadRow(db, proj.id).tmux_target;
   const rendered = await until(() =>
@@ -244,7 +244,15 @@ describe(
       // project row at the same path.
       const proj = insertProject("restart-lead-repo-derivation", REPO);
       const projSession = sessionName();
-      await startRealLead(proj, REPO);
+      // --no-dashboard: this test is about REPO PATH DERIVATION, not
+      // dashboard behavior, and REPO is the real checkout - its own hive.yml
+      // has `dashboard: true` for real (hive dogfoods its own feature), and
+      // its own .claude/dashboard/index.html exists for real whenever a live
+      // hive MCP instance has ticked it. Without this flag, maybeOpenDashboard
+      // (src/cli.ts) would reach a real `open` here - the suite-wide fake
+      // (scripts/open-guard.mjs, todo 419) catches it either way, but this
+      // call is the one this test should not be making in the first place.
+      await startRealLead(proj, REPO, ["--no-dashboard"]);
       after(() => cleanup(projSession));
 
       // REPO's real hive.yml (this checkout's own) does define a `lead:`
