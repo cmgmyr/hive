@@ -11,9 +11,9 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { currentActor, findProjectForDir, getProject, resolveProject } from "../context.js";
+import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
-import { activeProfile, loadProjectYml } from "../projectYml.js";
+import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
@@ -836,6 +836,72 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
   };
 }
 
+// Todo 406. `git worktree add` leaves a fresh worktree with none of the
+// primary checkout's installed dependencies, and nothing in hive's shipped
+// workflow ever verifies an install ran before a lead spawns a worker into
+// one - `npm run build` even reports success anyway, because node's module
+// resolution walks UP from the worktree into the primary checkout's
+// node_modules and finds tsc there. Detection only: this never runs the
+// declared command, never blocks or retries the spawn, and never guesses
+// one - the project already declares it in hive.yml's `vars.install`, and
+// inferring one from package.json or any other ecosystem file is exactly
+// the guess todo 406 rules out by name ("do not have hive infer the install
+// command from the ecosystem").
+//
+// UNCONDITIONAL ON A LINKED WORKTREE, DELIBERATELY, RATHER THAN CHECKING
+// WHETHER THE INSTALL ALREADY RAN. "Installed" has no generic definition
+// this function could check for: `vars.install` is an opaque string that
+// could be `npm install`, `composer install`, `bundle install`, each with a
+// different marker (node_modules, vendor, Gemfile.lock) hive has no
+// business knowing about - checking for one would be exactly the ecosystem
+// sniffing ruled out above, aimed at a different question. A lead who
+// re-spawns into a worktree it already installed gets a redundant one-line
+// notice; a lead who spawns into a fresh one gets the one that matters. The
+// asymmetry favors the redundant note: a slim, always-true line a lead
+// learns to skip costs far less than the silent miss this todo was filed
+// over.
+//
+// COUNSELORS ROUND, FIX 1. `config?.vars?.install` is trimmed before the
+// emptiness check and before it is returned: projectYml.ts coerces every
+// YAML scalar with String(), so a value with NO NON-WHITESPACE CHARACTERS
+// (an all-whitespace string, or an install key present but blank) reads as
+// truthy to a bare `!install` check and used to ship a present-but-blank
+// `worktree_install` field - a slim-receipt violation of a different shape
+// than an absent one. This is a syntax check only, not a semantics one: it
+// does not ask whether the trimmed text is a SENSIBLE command (that stays
+// the caller's problem, same as `install: false` reading as the literal
+// string "false") and does not reopen the "install is an opaque string hive
+// has no business interpreting" decision two paragraphs up, which is about
+// what the string MEANS and still stands.
+//
+// COUNSELORS ROUND, FIX 2. `cwd`'s own linked-worktree primary root must
+// equal `projectPath` - the project whose hive.yml is actually supplying
+// `config` - or this says nothing. Without this, a linked worktree of an
+// UNRELATED repo sitting inside a registered project's own directory tree
+// (project-scoping.md's own accepted containment residual;
+// test/spawn-cwd-scope.test.mjs case (h) pins the precondition) resolved to
+// the containing project for STORE purposes, and this function printed the
+// CONTAINING project's install command against a cwd whose real files
+// belong to a different repo entirely - hive's own `npm install && npm run
+// build` offered for a worktree of, say, someone's PHP project.
+// `findProjectForDir(cwd)` was considered for this comparison and measured
+// wrong: it is the SAME containment-aware resolution that produces the bug
+// in the first place, so `findProjectForDir(cwd)?.id === project.id` is
+// true in exactly the case it needs to catch (verified against case (h)'s
+// own fixture - both resolve to the containing project's id). This project
+// already states the reason as an invariant: files come from cwd, the
+// store comes from the project row, and they are separate questions
+// (project-scoping.md). `linkedWorktreePrimaryRoot` answers the FILES
+// question with no containment involved - literally which repository cwd's
+// worktree belongs to - which is the fact this comparison actually needs.
+export function worktreeInstallNotice(cwd: string, projectPath: string, config: ProjectYml | null): string | undefined {
+  const install = config?.vars?.install?.trim();
+  if (!install) return undefined;
+  const primaryRoot = linkedWorktreePrimaryRoot(cwd);
+  if (primaryRoot === null || primaryRoot !== projectPath) return undefined;
+  return install;
+}
+
 export function registerAgents(server: McpServer): void {
   server.registerTool(
     "agent_spawn",
@@ -921,6 +987,7 @@ export function registerAgents(server: McpServer): void {
         // The brief names the agent, so it can only be written once the row
         // exists; launchAgent calls this back with the ids it just allocated.
         const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
+        const worktreeInstall = worktreeInstallNotice(cwd, project.path, projectConfig);
         const briefFor = (actorId: string) => ({
           name,
           actorId,
@@ -1051,6 +1118,11 @@ export function registerAgents(server: McpServer): void {
           // clean. Reported, never fatal, and omitted when there is nothing to
           // say (slim receipts).
           ...(configWarnings.length > 0 ? { config_warnings: configWarnings } : {}),
+          // Todo 406: cwd is a linked worktree and hive.yml declares an
+          // install command - said once, unconditionally, never executed.
+          // See worktreeInstallNotice's own comment for why this does not
+          // try to tell an installed worktree from a fresh one first.
+          ...(worktreeInstall ? { worktree_install: worktreeInstall } : {}),
           ...(isClaude
             ? {
                 brief_path: agentBriefPath(agentId),

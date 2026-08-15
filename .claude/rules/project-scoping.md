@@ -37,4 +37,6 @@ All three are real and deliberately unfixed. Do not rediscover any of them as a 
 
 What would change the answer: the first worktree of something other than hive.
 
+**A caller that needs the FILES question must not reach for containment resolution, and there is now a function for it.** The residual above is about which STORE a nested foreign worktree resolves to, and it stays accepted. But `findProjectForDir` is containment-aware by design, so a caller asking "which repository do this directory's files actually belong to" gets the containing project rather than the answer it wanted - true in exactly the case it needed to catch. Todo 406 measured that: `agent_spawn`'s worktree-install notice, keyed on `findProjectForDir(cwd)?.id === project.id`, would have printed hive's own install command for a linked worktree of an unrelated repo nested inside this checkout. Use `linkedWorktreePrimaryRoot` (`src/context.ts`) instead, which asks git directly and has no containment in it. This is the split CLAUDE.md states as an invariant - files come from `cwd`, the store comes from the project row - arriving as two different functions rather than one.
+
 `HIVE_PROJECT_LOCK=1` disables cross-project access entirely, and every spawned worker gets it.

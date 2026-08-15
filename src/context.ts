@@ -257,16 +257,137 @@ function gitPrimaryRoot(dir: string): string | null {
 // checkout, where it resolves to an ANCESTOR of dir (verified: a
 // subdirectory two levels into an ordinary checkout reports its
 // grandparent's .git), or a linked worktree, where it resolves to the
-// primary checkout, a sibling, NOT an ancestor (verified). A separate-git-dir
-// checkout or a bare repo's worktree now gets null instead (verified against
-// real repos of all four shapes), and null can never outrank `direct`.
+// primary checkout. THAT PRIMARY CHECKOUT IS NOT ALWAYS A SIBLING - this
+// sentence used to claim it always was, and todo 406 measured that false: a
+// worktree cut INSIDE the primary checkout's own tree
+// (.claude/worktrees/<lane-tag>-<slug>, this project's own layout) resolves
+// to an ANCESTOR too, identical in that respect to an ordinary checkout. A
+// sibling only for a worktree cut OUTSIDE the primary checkout. See
+// isLinkedWorktree's own comment below, which exists precisely because this
+// function's ancestor/sibling answer alone cannot tell a nested linked
+// worktree from an ordinary subdirectory. A separate-git-dir checkout or a
+// bare repo's worktree now gets null instead (verified against real repos
+// of all four shapes), and null can never outrank `direct`.
 //
-// So the NO-OP claim is true again, restated correctly: for the two shapes
-// where gitPrimaryRoot resolves at all, it is either an ancestor of dir
-// (ordinary checkout - direct, already the longest registered prefix, can
-// never be less specific) or the one deliberate exception (linked worktree).
-// For the two shapes it now rejects, it returns null and cannot participate.
-// The rule changes behaviour only for a genuine linked worktree.
+// So the NO-OP claim is true again, but not for the reason this paragraph
+// used to give - "ancestor of dir means ordinary checkout, non-ancestor
+// means linked worktree" is false now that a NESTED linked worktree is also
+// an ancestor case, indistinguishable from an ordinary checkout by this
+// fact alone. What actually keeps the claim true is narrower: `direct` is
+// already the LONGEST REGISTERED prefix of dir, and a nested worktree's own
+// root is always reachable that way too - it is registered, and dir sits
+// literally under it - so `hasStricterMatch` ordinarily finds nothing for
+// it to change and this function is never even called for that shape, short-
+// circuited above before this comment's ancestor/sibling answer matters at
+// all. The shape that DOES reach here with a real effect on the outcome is
+// a linked worktree cut OUTSIDE its own repo's registered path - the
+// sibling case - because that is the one shape plain prefix matching cannot
+// already resolve on its own. For the two shapes it now rejects, it returns
+// null and cannot participate. The rule changes behaviour only for that
+// sibling-cut linked worktree; a nested one reaches the same no-op outcome
+// for a different reason - never being asked - not because this function
+// answers it identically.
+
+// True when `dir` sits inside a linked git worktree rather than the primary
+// checkout - the shape `git worktree add` leaves with none of the primary
+// checkout's installed dependencies (todo 406).
+//
+// AN EARLIER VERSION OF THIS FUNCTION REUSED gitPrimaryRoot AND WAS WRONG,
+// MEASURED AGAINST THIS PROJECT'S OWN LAYOUT. It compared dir's path against
+// gitPrimaryRoot's answer, on the premise (gitPrimaryRoot's own comment)
+// that a linked worktree's primary root is always a SIBLING, never an
+// ancestor. That premise holds only for a worktree cut OUTSIDE the primary
+// checkout. This project's own runbook puts worktrees INSIDE it, at
+// `.claude/worktrees/<lane-tag>-<slug>`, so the primary root IS an ancestor
+// of the worktree dir there, and the sibling-based check read every one of
+// this project's own worktrees as an ordinary checkout - the exact case
+// todo 406 was filed over, reproduced by the comparison rather than fixed
+// by it.
+//
+// THIS VERSION ASKS GIT DIRECTLY, LAYOUT-INDEPENDENT BY CONSTRUCTION. `git
+// rev-parse --git-dir` and `--git-common-dir` name the SAME directory for
+// an ordinary checkout (or any subdirectory of one) and DIFFERENT ones for
+// a linked worktree: git-dir is the worktree's own private
+// `<primary>/.git/worktrees/<name>`, common-dir is always the primary
+// checkout's real `<primary>/.git`. Git resolves both from `dir` by walking
+// up its own tree, not from any assumption about where dir sits relative to
+// the primary root, so this is correct whether the worktree is a sibling,
+// nested inside the primary checkout, or several directories below either
+// one. Verified live against this repo: from the primary checkout and from
+// a subdirectory of it, both paths resolve to the identical `.git`; from
+// this project's own nested worktree, they resolve to
+// `<primary>/.git/worktrees/<name>` and `<primary>/.git` respectively.
+//
+// One git fork, same as the earlier version's reuse of gitPrimaryRoot, and
+// deliberately NOT the same call: gitPrimaryRoot's `--git-common-dir`-only
+// answer collapses exactly the distinction this function needs (nested vs.
+// sibling), because it only ever returns the ROOT, discarding whether dir's
+// own git-dir agreed with it. `--git-dir --git-common-dir` in one
+// `rev-parse` invocation answers both questions, cheaper than two forks.
+//
+// COUNSELORS ROUND, FIX 3: git-dir and common-dir are resolved FROM `dir` by
+// git's own discovery only when nothing overrides it. GIT_DIR, GIT_COMMON_DIR
+// and GIT_WORK_TREE are the three repository-SELECTION env vars - when any
+// is inherited from the calling process, `rev-parse` honours it instead of
+// discovering from cwd, which is exactly the "resolves both from dir" claim
+// this function's own comment makes above. Measured: with GIT_DIR set, an
+// ordinary checkout can read as linked and a real linked worktree can read
+// as ordinary. Stripped from the child's env below - deliberately narrow to
+// just these three; no attempt to sanitize every GIT_* variable, since these
+// are the only ones that change WHICH repository is being asked about.
+
+// COUNSELORS ROUND, ACCEPTED RESIDUAL (recorded on todo 406, not fixed): the
+// `--git-dir --git-common-dir` argument order is unpinned by anything that
+// reads THIS return value, because both call sites so far only ever compare
+// gitDir and commonDir against each other or discard one - a symmetric `!==`
+// and a same-position `out[1]`. Inert today. It stops being inert the moment
+// any caller reads `.gitDir` for its VALUE rather than for the comparison;
+// if you are that caller, verify which output line is which before trusting
+// this object's field names.
+function gitDirs(dir: string): { gitDir: string; commonDir: string } | null {
+  try {
+    // Destructured out, deliberately unused, rather than spread-then-deleted.
+    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
+    const out = execFileSync("git", ["rev-parse", "--git-dir", "--git-common-dir"], {
+      cwd: dir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+      env,
+    })
+      .trim()
+      .split("\n");
+    if (out.length !== 2) return null;
+    return {
+      gitDir: realpathSync(resolve(dir, out[0])),
+      commonDir: realpathSync(resolve(dir, out[1])),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function isLinkedWorktree(dir: string): boolean {
+  return linkedWorktreePrimaryRoot(dir) !== null;
+}
+
+// COUNSELORS ROUND, FIX 2. The primary checkout's root when `dir` is a
+// linked worktree of it, else null - built on the same gitDirs() call as
+// isLinkedWorktree (common-dir's own directory name IS the primary
+// checkout's root), so a caller that needs both facts pays for one fork,
+// not two. This is what src/tools/agents.ts's worktreeInstallNotice
+// compares against the SPAWNING project's own path: findProjectForDir(cwd)
+// was the wrong tool for that comparison (project-scoping.md's own
+// containment rule deliberately resolves a foreign worktree nested inside a
+// registered project to the CONTAINING project, not the worktree's own repo
+// - accepted there for STORE scoping, wrong here for naming an install
+// command). This function answers a plainer question with no containment
+// involved: which repository does dir's own worktree actually belong to.
+export function linkedWorktreePrimaryRoot(dir: string): string | null {
+  const dirs = gitDirs(dir);
+  if (dirs === null || dirs.gitDir === dirs.commonDir) return null;
+  return dirname(dirs.commonDir);
+}
 
 // Whether some registered project could possibly outrank `directPath`.
 // gitPrimaryRoot can only change detectFromDir's answer by naming a project
