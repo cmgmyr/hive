@@ -33,6 +33,7 @@ import {
   sendText,
   tailCaptureLines,
   type AliveSnapshot,
+  type InputBoxState,
 } from "./tmux.js";
 
 // Every hive MCP server instance runs this scheduler; SQLite conditional
@@ -60,6 +61,12 @@ export interface TimerRow {
   held_reason: string | null;
   confirmed_at: string | null;
   typed_busy: number | null;
+  // Todo 407, pad 142 PART 2. deliverable()'s own four facts at the moment it
+  // judged a delivering row safe to type - see deliver()'s own write of this
+  // column for the encoding and src/db.ts's migration for why it exists.
+  // NULL for a held wake (no delivery was judged safe) and for any row
+  // written before this migration.
+  typed_seen: string | null;
   // Issue #73, D6. Joined from agents.tmux_socket via deliver_actor, never a
   // column on timers itself - see the candidates query in tick() and the
   // janitor's own timers sweep above. Coalesced to '' in SQL for a join miss
@@ -1036,9 +1043,15 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 // needs "-e" for the ghost/pending SGR discriminator, which paneAwaitingChoice's
 // plain capture does not carry), so this does not save that fork, only caps
 // it at one per pane per tick rather than one per due timer.
-type ChoiceCache = Map<string, { choice?: boolean | null; inputHeld?: boolean }>;
+// `box` holds the RAW InputBoxState (undefined until read, null when
+// inputBoxState found none) rather than a derived boolean, because todo 407's
+// typed_seen needs the box's classified STATE ("empty"/"ghost"/"unknown"), not
+// only whether it holds the wake - and reading it a second time to get that
+// would cost a second capture-pane fork on the very pane this cache exists to
+// cap at one read per tick.
+type ChoiceCache = Map<string, { choice?: boolean | null; box?: InputBoxState | null }>;
 
-function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null; inputHeld?: boolean } {
+function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null; box?: InputBoxState | null } {
   let entry = cache.get(pane);
   if (!entry) {
     entry = {};
@@ -1070,8 +1083,8 @@ function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
 // nowhere to put the paste is not).
 function inputBoxHoldsWake(pane: string, cache: ChoiceCache): boolean {
   const entry = cacheEntry(pane, cache);
-  if (entry.inputHeld === undefined) entry.inputHeld = holdsHumanInput(inputBoxState(pane));
-  return entry.inputHeld;
+  if (entry.box === undefined) entry.box = inputBoxState(pane);
+  return holdsHumanInput(entry.box);
 }
 
 // TODO 321. A BOUND ON THE ONE FORK NOTHING ELSE BOUNDS, and it is the only
@@ -3962,6 +3975,26 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
   }
 }
 
+// Todo 407, pad 142 PART 2. deliverable() used to return a bare boolean, used
+// in `&&` chains at all three call sites. THE SIGNATURE CHANGE IS DELIBERATE,
+// not the smaller diff pad 142 named as the alternative (stashing the
+// observation on the ChoiceCache entry the tick already holds). Rejected that
+// route because the fact this function is asked to record is "what THIS call
+// saw for THIS timer", and ChoiceCache is keyed by PANE, not by timer - two
+// wakes due for the same pane in one tick would share one entry, so a
+// stash-and-read-back through the cache is only correct because deliver() is
+// awaited immediately after deliverable() returns true, before the tick's
+// candidate loop can reach a second timer on the same pane. That is a real
+// invariant today, but it is an ordering invariant nothing enforces or tests,
+// and a future change to the loop (concurrent candidates, reordered work)
+// would silently start writing one timer's typed_seen from another timer's
+// observation - the exact false-green shape this project's own corpus warns
+// about (common-issues/a-lanes-own-new-tests-are-where-its-false-greens-
+// live.md: a test that passes by construction rather than by the invariant it
+// claims to check). Returning the record makes the fact travel with the
+// timer it describes, so it is correct regardless of call order.
+type DeliverableResult = { ok: true; typedSeen: string } | { ok: false };
+
 // NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION (counselors, both seats).
 // noteModalHold below opens one with `.immediate()` to take the store's
 // writer slot, and better-sqlite3 turns a nested transaction into a SAVEPOINT
@@ -3970,7 +4003,7 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // nothing failing to say so (.claude/rules/store-and-datadir.md names this
 // hazard for withWindowClaim; it is the same one). tick() holds no
 // transaction, and it is the only caller today.
-function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): boolean {
+function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): DeliverableResult {
   // Todo 336, widened by issue #149 (todo 348). *Probe rather than plain
   // rowAlive/rowLive: the pane-identity check below needs the pane's CURRENT
   // pid, for every target now, and it has to come from this exact same tmux
@@ -4014,7 +4047,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // pending-and-invisible for more than a few ticks running - a probe error
   // that resolves within a tick or two is the expected, already-accounted-for
   // case, not this.
-  if (live === null) return false;
+  if (live === null) return { ok: false };
   if (!live) {
     // A lead-owned wake gets the same exemption janitor()'s timer sweep does,
     // and for the same reason: this check has no SETTLE_WINDOW grace at all,
@@ -4084,7 +4117,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
         cancelTimer(timer.id);
       }
     }
-    return false;
+    return { ok: false };
   }
   // Todo 336, widened by issue #149 (todo 348). `live` above answers "does a
   // pane with this id exist", never "is it the pane we meant" - tmux pane
@@ -4155,7 +4188,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
         ? HELD_REASON_PANE_REISSUED_LEAD
         : HELD_REASON_PANE_REISSUED_WORKER,
     );
-    return false;
+    return { ok: false };
   }
   // Todo 65. A pane sitting on a modal choice eats the paste and reads the
   // Enter as an answer, so delivering into one loses the wake AND approves
@@ -4226,7 +4259,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // still returns false either way - what a notification changes is who
     // hears about the hold, never the hold.
     noteModalHold(timer, snapshot);
-    return false;
+    return { ok: false };
   }
   // Todo 270. The dialog check above guards a MODAL: the input box gone
   // entirely, replaced by a footer with nowhere to put a paste. This is its
@@ -4245,9 +4278,66 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // than building a second policy for "a human is busy with this pane".
   if (inputBoxHoldsWake(timer.deliver_pane, choices)) {
     holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
-    return false;
+    return { ok: false };
   }
-  return true;
+  // Todo 407, pad 142 PART 2. The four facts this function decided on, in the
+  // order it computed them, as a short fixed vocabulary rather than JSON or
+  // prose - it rides into wake_get/wake_list receipts, which are slim by
+  // contract (.claude/rules/tool-contract.md), and a human has to read it at
+  // a glance. Every branch above this line that could still be true here has
+  // already returned, so `live` is always "yes" and `pid` is never
+  // "reissued" on a DELIVERING row - recorded anyway, because the point is
+  // what was true, not only what varies.
+  //
+  // pid: mirrors paneReissued()'s own "cannot judge" condition exactly
+  // (recordedPid === "" or probe.pid === null both mean no fact), so this
+  // reads "no-fact" for every pre-todo-336 row and "ok" once both sides
+  // agree - "reissued" is unreachable here because that branch already
+  // returned above. "ok" rather than "pid-ok": pad 142's own worked example
+  // is `live=yes pid=ok dialog=no box=absent` - none of the other three
+  // facts repeat their own key inside the value (`live=yes`, not
+  // `live=live-yes`), and pid should not either.
+  const pid =
+    timer.deliver_pane_pid === "" || probe.pid === null
+      ? "no-fact"
+      : probe.pid === timer.deliver_pane_pid
+        ? "ok"
+        : "reissued";
+  // dialog: re-reads the SAME cached answer the modal check above already
+  // computed (ChoiceCache caps this at one capture-pane fork per pane per
+  // tick) - true is unreachable here for the identical reason `pid` above
+  // cannot read "reissued".
+  const dialogVerdict = awaitingChoice(timer.deliver_pane, choices);
+  const dialog = dialogVerdict === true ? "yes" : dialogVerdict === false ? "no" : "unknown";
+  // box: THE FIFTH VALUE, "absent", HAS THREE CAUSES, NOT ONE (counselors,
+  // two seats, independently). inputBoxState(pane) - called just above, by
+  // inputBoxHoldsWake - returns null from THREE distinct routes: (1)
+  // findInputBox found no bracketing box on a genuinely drifted claude pane -
+  // the total-drift case pad 142 Part 1 diagnosed; (2) the pane is not running
+  // claude at all, so there was never any box chrome to find - the ordinary,
+  // PERMANENT state of every bash/codex worker's pane, on every delivery,
+  // forever, not a fault; (3) the capture-pane call itself threw (a caught
+  // exception in inputBoxState's own try/catch, e.g. a tmux timeout). A
+  // reader must establish the pane runs claude, and recently answered, before
+  // reading box=absent as drift - on any other pane it names nothing on
+  // sight. Read off the ChoiceCache entry inputBoxHoldsWake just populated,
+  // not a second capture-pane call: a fresh read here could observe a
+  // different screen than the one that decision was actually made against.
+  const boxState = cacheEntry(timer.deliver_pane, choices).box;
+  // undefined (never populated) is a DIFFERENT unreachable than pid's
+  // "reissued" or dialog's "yes" above: those are real vocabulary values a
+  // different return already claimed. THE GUARANTEE THIS RELIES ON IS NOT
+  // cacheEntry() (counselors: it returns `{}` on a miss and proves nothing by
+  // itself) - it is that inputBoxHoldsWake, immediately above, ALWAYS runs
+  // and ALWAYS writes `.box` before this line is reached, on every path that
+  // reaches here. Kept as a defensive fallback rather than an assertion: this
+  // function must never throw (it runs inside tick()'s candidate loop, and a
+  // throw here costs every later candidate this tick, not just this one's
+  // typed_seen). "unknown" is still real vocabulary - the classifier-drift
+  // case (inputBoxState found a box but could not find the prompt row inside
+  // it) reads it from `boxState.state` below, not from this branch.
+  const box = boxState === undefined ? "unknown" : boxState === null ? "absent" : boxState.state;
+  return { ok: true, typedSeen: `live=yes pid=${pid} dialog=${dialog} box=${box}` };
 }
 
 async function fireDelay(
@@ -4296,7 +4386,8 @@ async function fireDelay(
     );
     return;
   }
-  if (!deliverable(timer, snapshot, choices)) return;
+  const decision = deliverable(timer, snapshot, choices);
+  if (!decision.ok) return;
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
@@ -4332,6 +4423,19 @@ async function fireDelay(
     // same claim, so it is held-stale by the exact same window, for the exact
     // same reason, covered by the exact same evidence above. No separate
     // acceptance needed; this is the same window, one more column wide.
+    //
+    // Todo 407 counselors round: typed_seen rides this identical window, and
+    // a SIBLING one - deliver()'s own post-send UPDATE (below) is guarded
+    // only by `WHERE id = ?`, with no cycle token, so a slow instance's
+    // post-send write for cycle N can land AFTER a concurrent instance has
+    // already claimed and delivered cycle N+1, overwriting N+1's fresh
+    // typed_at/typed_busy/typed_seen with N's stale ones. Measured in SQL,
+    // real, and unchanged in KIND by this column - the same claim discipline
+    // gap this whole acceptance already covers, one more column wide again.
+    // Same evidence, same trigger to reopen: this project's first repeating
+    // wake. Raised, measured, and deliberately not fixed here; fixing it
+    // means guarding a statement that governs three pre-existing columns,
+    // which is a different lane than one that adds a fourth.
     // Counselors round on #101, P1. This claim's own WHERE now guards every
     // field wake_update can touch, not just due_at - see claimOneShot's
     // comment below for why one column was not enough, including the
@@ -4346,13 +4450,14 @@ async function fireDelay(
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
            fired_at = datetime('now'), fire_count = fire_count + 1,
-           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL
+           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+           typed_seen = NULL
          WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
       ).run(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1;
   } else {
     claimed = claimOneShot(timer);
   }
-  if (claimed) await deliver(timer, "", choices);
+  if (claimed) await deliver(timer, "", choices, decision.typedSeen);
 }
 
 // Issue #96. wake_update is the first tool that can change a PENDING timer's
@@ -4544,8 +4649,11 @@ async function maybeFireIdle(
     // a candidate for more ticks, and it must not spend them filing notices
     // that say it is still watching.
     if (snapshot !== null && !timedOut) noteBlockedWatched(timer, snapshot, choices);
-    if (timedOut && deliverable(timer, snapshot, choices) && claimOneShot(timer)) {
-      await deliver(timer, STANDING_EXPIRED_NOTE, choices);
+    if (timedOut) {
+      const decision = deliverable(timer, snapshot, choices);
+      if (decision.ok && claimOneShot(timer)) {
+        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen);
+      }
     }
     return;
   }
@@ -4581,8 +4689,11 @@ async function maybeFireIdle(
     // path above says so with the right words.
     if (!ready) noteBlockedWatched(timer, snapshot, choices);
   }
-  if (ready && deliverable(timer, snapshot, choices) && claimOneShot(timer)) {
-    await deliver(timer, timedOut ? "max wait reached" : "", choices);
+  if (ready) {
+    const decision = deliverable(timer, snapshot, choices);
+    if (decision.ok && claimOneShot(timer)) {
+      await deliver(timer, timedOut ? "max wait reached" : "", choices, decision.typedSeen);
+    }
   }
 }
 
@@ -4904,7 +5015,12 @@ function noticeStalenessNote(timer: TimerRow): string {
   }
 }
 
-async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Promise<void> {
+async function deliver(
+  timer: TimerRow,
+  note: string,
+  choices: ChoiceCache,
+  typedSeen: string,
+): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
   // Issue #75. typed_busy is an OBSERVATION, not a prediction: the target's
@@ -5101,10 +5217,46 @@ async function deliver(timer: TimerRow, note: string, choices: ChoiceCache): Pro
   // wake it had not been sent yet. typed_at is brand new in this lane and
   // nothing else reads its format, so there is no compatibility reason to
   // keep it coarse.
+  //
+  // Todo 407, pad 142 PART 2. typed_seen COSTS ZERO ADDITIONAL WRITES: it is
+  // one more column on the UPDATE this function already runs, carrying the
+  // observation deliverable() already computed and handed down through its
+  // return value (see DeliverableResult's own comment for why it travels as
+  // a return value rather than through the ChoiceCache the tick already
+  // holds). Reset to NULL by the repeating-timer claim UPDATE (fireDelay,
+  // above) alongside typed_at/confirmed_at/held_at/held_reason/typed_busy,
+  // the identical cycle discipline typed_busy's own comment states: it
+  // describes THIS delivery's moment, and a repeating timer must not carry
+  // cycle N's observation into cycle N+1's report.
+  //
+  // WHAT THIS COLUMN BUYS, STATED PRECISELY SO A LATER READER DOES NOT
+  // OVERCLAIM IT. On a DELIVERING row it names WHY that delivery was judged
+  // safe, turning pad 142 Part 1's three hypotheses - box=empty (legitimate),
+  // box=absent (a drifted claude pane, a non-claude pane, or a failed read -
+  // see the box comment above for all three), box=pending (a logic error
+  // above the guard, since `pending` always holds and should never reach a
+  // delivering row) - into a one-line read instead of a two-table stopwatch
+  // reconstruction. On a pane KNOWN to be running claude, box=absent is the
+  // value that would have named todo 389's root cause on sight; on any other
+  // pane it names nothing until that is established first.
+  //
+  // WHAT IT DOES NOT BUY. It does NOT distinguish a wake that was HELD and
+  // then delivered from one that was never held - not alone, and not
+  // combined with held_at/held_reason, because this same UPDATE clears both
+  // unconditionally on every delivery, held or not (see the paragraph two
+  // above). typed_seen records the state at the MOMENT delivery is judged
+  // safe, and that moment reads "safe" by construction whether the wake sat
+  // held for ten minutes first or fired on its very first tick - proven by
+  // test/typed-seen.test.mjs's own post-hold case, whose typed_seen is
+  // byte-identical to an ordinary immediate delivery's. That was true before
+  // this column existed and is true after it; this column does not touch it
+  // in either direction. An earlier draft of this lane's own plan (pad 142)
+  // claimed the opposite; struck after this test disproved it.
   bestEffortRun(
     `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
-       held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
+       typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
     typedBusy,
+    typedSeen,
     timer.id,
   );
 }

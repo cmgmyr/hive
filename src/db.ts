@@ -1077,6 +1077,40 @@ ALTER TABLE agents ADD COLUMN resumed_at TEXT NOT NULL DEFAULT '';
   `
 ALTER TABLE todos ADD COLUMN slug TEXT NOT NULL DEFAULT '';
 `,
+  // Todo 407, pad 142 PART 2. A delivery that decides to TYPE writes nothing
+  // about what it saw: held_reason is set only when deliverable() HOLDS a
+  // wake, and deliver() clears held_at/held_reason on the same write that
+  // records success - so a wake held for ten minutes and then delivered is
+  // byte-identical afterwards to one that was never held at all (measured
+  // live twice, todo 389 and its own re-verification a day later). typed_seen
+  // is deliverable()'s own four facts, in the order it computes them - pane
+  // liveness, pane identity, dialog verdict, input box - encoded as a short
+  // fixed vocabulary, e.g. "live=yes pid=ok dialog=no box=absent", written
+  // into the UPDATE deliver() already runs. THIS IS FORENSICS, NOT A GUARD:
+  // it prevents nothing, and it records only what was true at the moment a
+  // DELIVERING row was judged safe to type. Nullable, no default, so every
+  // row an old-code writer has NEVER touched reads as "no fact recorded" -
+  // the same shape issue #73 used for tmux_socket.
+  //
+  // SCOPED, NOT UNQUALIFIED (counselors, measured in SQL): that "no fact
+  // recorded" claim does NOT survive a mixed-version window for a REPEATING
+  // timer, and this migration inherits the identical mechanism the D2 item
+  // beside issue #75/typed_busy already accepts (src/scheduler.ts, next to
+  // "Counselors round 1 (todo 209, item D2)"). A new-code server delivers
+  // cycle N and writes typed_seen; an old, pre-407 server then claims and
+  // delivers cycle N+1 with a compiled UPDATE carrying no `typed_seen`
+  // clause at all, so SQLite leaves cycle N's value exactly as it was.
+  // wake_get then reports cycle N's typed_seen as if it described cycle
+  // N+1 - not "no fact recorded" but a WRONG fact, and a reassuring-shaped
+  // one (it reads as a valid observation of the current cycle). Accepted on
+  // the identical evidence D2 already cites: zero repeating timers in this
+  // project's history, so no row has ever had a second cycle for a
+  // mixed-version claim to corrupt. ACCEPT AND RECORD, not fixed here;
+  // reopen under the same trigger as D2 - this project's first repeating
+  // wake.
+  `
+ALTER TABLE timers ADD COLUMN typed_seen TEXT;
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

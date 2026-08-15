@@ -175,11 +175,24 @@ type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no
 // 'waiting' row is visible through a channel built to show staleness, even
 // though this field deliberately does not try. Reopen if unconfirmed_busy is
 // ever the ONLY place a stuck target would have been visible.
+// Todo 407, pad 142 PART 2. typed_seen names WHY a delivering row was judged
+// safe to type - it does NOT make a held-then-delivered row distinguishable
+// from a never-held one, not even combined with held_at/held_reason, since
+// deliver() clears both unconditionally on every delivery regardless of this
+// column (src/scheduler.ts's own DeliverableResult write site has the full
+// argument, and the retraction of this comment's own first-shipped claim to
+// the contrary - todo 407, comment 1057). Passed through verbatim - NULL for
+// a row this migration predates, or one still pending - rather than reshaped
+// into a structured field, matching held_reason's own precedent one line
+// above and the slim-receipt contract (.claude/rules/tool-contract.md): it is
+// already a short fixed-vocabulary string, so a reader gets it exactly as
+// deliverable() wrote it.
 function deliveryState(
   t: TimerRow,
   hasChannel: (actorId: string) => boolean,
 ): {
   typed_at: string | null;
+  typed_seen: string | null;
   held_at: string | null;
   held_reason: string | null;
   confirmed_at: string | null;
@@ -187,6 +200,7 @@ function deliveryState(
 } {
   return {
     typed_at: t.typed_at,
+    typed_seen: t.typed_seen,
     held_at: t.held_at,
     held_reason: t.held_reason,
     confirmed_at: t.confirmed_at,
