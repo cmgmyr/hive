@@ -39,12 +39,55 @@ const positionalArgs = passthrough.filter((arg) => !arg.startsWith("-"));
 // that directory, which is this wrapper deciding something node --test is
 // better at. Flags-only invocations still get the full list.
 const named = positionalArgs.length > 0;
+// Longest-file-first hoist, todo 423. Measured 2026-08-15: wake-hold-notify.
+// test.mjs is the suite's critical path - under 16-way concurrency it doesn't
+// start until +36.6s, queued behind other files, then runs ~143s regardless
+// of what else is happening, so the run is bounded by 36.6 + 143 rather than
+// by its own ~143s. Hoisting it to start FIRST measured 183.05s -> 154.39s
+// wall (4 alternated full runs: baseline, hoisted, baseline, hoisted), ~15.7%,
+// well clear of this machine's ~6s run-to-run noise floor (todo 420).
+//
+// MECHANISM: node --test sorts its file list by path STRING before
+// scheduling - it ignores the order given on argv, proven experimentally (see
+// .claude/sessions/dead-ends/2026-08-15-node-test-does-not-honour-argv-file-order.md)
+// - and an absolute path always sorts before a "test/..." relative one,
+// because "/" < "t". Spelling ONE file's path as absolute hoists it to the
+// front without touching the others, their order, or the file's own name.
+//
+// WHAT THIS RIDES, AND WHAT GOES RED IF IT STOPS BEING TRUE: node comparing
+// relative and absolute spellings against each other by raw string, rather
+// than resolving every path to absolute first before sorting. That's an
+// implementation detail of node's own test runner, not a documented
+// contract, so a future node could change it silently - the suite would just
+// get ~29s slower again, nothing would fail. test/run-tests-file-order.test.mjs
+// pins exactly this assumption against a throwaway two-file fixture; if it
+// goes red, this hoist has stopped working and needs a different mechanism.
+//
+// WHY NOT RENAME THE FILE INSTEAD (durable against the above, but rejected):
+// eight references to test/wake-hold-notify.test.mjs by name across
+// src/scheduler.ts, src/tmux.ts, test/stall-report-panes.test.mjs and
+// .claude/rules/tmux-and-panes.md - one of which, src/scheduler.ts:1464, has
+// already broken on a previous rename - and it would put a scheduling hint
+// in a filename with nothing to tell a future reader why it's there. With
+// the guard test above pinning the fragility directly, the rename's
+// durability advantage costs real, immediate breakage for a benefit the
+// guard already delivers more cheaply.
+//
+// RE-DERIVING WHICH FILE BELONGS HERE, if wake-hold-notify.test.mjs stops
+// being the longest: run
+//   npm test -- --test-reporter=junit --test-reporter-destination=/tmp/j.xml
+// twice, join each testsuite's timestamp+time to its file via junit's
+// `file=` testcase attribute, and find whichever file's span ends last
+// relative to the run's own start - see todo 420 comment 1131 for the full
+// method. Getting this stale costs only the ~15.7% win back, silently -
+// nothing goes red for staleness itself, only for the mechanism breaking.
+const LONGEST_FILE_HOIST = "wake-hold-notify.test.mjs";
 const files = named
   ? []
   : readdirSync(testDir)
       .filter((file) => file.endsWith(".test.mjs"))
       .sort()
-      .map((file) => join("test", file));
+      .map((file) => (file === LONGEST_FILE_HOIST ? join(testDir, file) : join("test", file)));
 
 // Todo 401 fix round 1 (counselors, all three seats independently): "named
 // ⇒ cheap, skip the lock" was too broad. `npm test -- test/` and `npm test
