@@ -1111,6 +1111,163 @@ ALTER TABLE todos ADD COLUMN slug TEXT NOT NULL DEFAULT '';
   `
 ALTER TABLE timers ADD COLUMN typed_seen TEXT;
 `,
+  // Todo 409, pad-todo-409-hold-visibility. deliver()'s own UPDATE clears
+  // held_at/held_reason unconditionally on every successful delivery
+  // (src/scheduler.ts's recordTyped), so a wake held for ten minutes and one
+  // delivered on its first tick are byte-identical rows once delivered - the
+  // gap the migration above's own comment already names as typed_seen's
+  // limit, not its fix. Option A (stop clearing) was rejected: held_reason is
+  // live debounce state, keyed by `AND held_reason IS NOT ?` in
+  // claimModalHoldWithNotice's own UPDATE, so leaving it populated through
+  // delivery would break that debounce, not just confuse a reader. Option C
+  // (an append-only hold log, matching agent_state_log's own reasoning) was
+  // rejected on cost: a timer is not an actor, so it would need a new table,
+  // a retention policy and a reader to answer what one accumulating
+  // timestamp already answers.
+  //
+  //   first_held_at  the FIRST tick THIS HOLD EPISODE was held. Written by
+  //                  every hold write (holdTimer, claimModalHoldWithNotice)
+  //                  with `COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE
+  //                  first_held_at END, datetime('now'))`, not a plain
+  //                  COALESCE - see those two call sites' own comments for
+  //                  why a plain COALESCE lets a later cycle's genuine hold
+  //                  inherit an earlier cycle's leftover timestamp.
+  //
+  // first_held_at IS NOT NULL answers "was this delivery ever held", and
+  // first_held_at -> typed_at is a POSITIVE bound on how long, in place of
+  // the timing inference dead-ends/2026-08-14-delivery-gap-as-hold-
+  // evidence.md already ruled out (a busy lead absorbed a wake for 407s,
+  // longer than a real modal hold held one, so due_at -> typed_at cannot
+  // separate the two). NARROWER THAN THAT SOUNDS, SAID PLAINLY: it holds
+  // only for a hold that routes through holdTimer or
+  // claimModalHoldWithNotice. deliverable()'s `live === null` branch (a
+  // foreign socket, or a tmux probe that itself failed) returns `{ok: false}`
+  // and calls neither - issue #69's own accepted-not-fixed residual, already
+  // described where that branch lives - so a wake delayed many ticks through
+  // that door delivers with first_held_at NULL even though it was never
+  // "immediately deliverable" either. Pre-existing, not introduced here, and
+  // not fixed here; naming it is this migration's whole obligation.
+  //
+  // A ROUND-1 DRAFT OF THIS COLUMN ALSO SHIPPED held_ticks, A PER-TICK
+  // COUNT, AND IT WAS WRONG - removed before ever merging, on adversarial
+  // review, not carried forward as a second migration (this one has not run
+  // anywhere real, so editing it in place is correct; append-only governs a
+  // migration that HAS run somewhere, not a draft still in review).
+  // holdTimer()'s own comment states why in full: this write runs once per
+  // held wake per tick PER CONCURRENTLY RUNNING SERVER INSTANCE - the exact
+  // fact deliverable()'s modal-hold write already states ("Several MCP
+  // server instances tick concurrently against the same WAL store, so every
+  // one of them writes this same row on every tick") - and janitor()'s
+  // reissued-pane branch can call it a second time in the same tick on top
+  // of that. A wake held for ten ticks with four sessions open (the ordinary
+  // hive configuration) would have reported 40, under a multiplier nobody
+  // reading the number could reconstruct. A count nobody can interpret is
+  // worse than no count: first_held_at plus typed_at already answers both
+  // halves of todo 409's own question - was this held, and for how long -
+  // and needed no second column to do it.
+  //
+  // NEVER CLEARED BY deliver()'s UPDATE, AND THAT SENTENCE ALONE WAS ALSO
+  // WRONG UNTIL ROUND 2. For a REPEATING timer, fireDelay's own per-cycle
+  // claim UPDATE (below) resets first_held_at as part of opening what it
+  // treats as a fresh cycle, and that claim runs BEFORE deliver() - so
+  // "deliver() never touches it" left a repeating wake's hold wiped
+  // microseconds before its own delivery could record it, for precisely the
+  // case this column exists to cover. deliver() now WRITES first_held_at
+  // explicitly, from a value captured off the row's TimerRow (deliverable()'s
+  // own DeliverableResult.firstHeldAt) BEFORE the claim ever runs and
+  // threaded through the same way typed_seen's own decision.typedSeen
+  // already is - not "declines to clear", but "re-asserts what was already
+  // true of this delivery after the claim reset the row for the next one".
+  //
+  // THAT CAPTURE IS ITSELF GATED, AND MISSING THE GATE WAS A SECOND, DEEPER
+  // VERSION OF THE SAME BUG, found on the same re-verification pass and
+  // proven with a real failing run before the gate was added. Reading
+  // `timer.first_held_at` bare - the value sitting in the row at the
+  // candidates SELECT - is not "no fact recorded" once deliver() writes it
+  // back on every delivery: the write from cycle N's own delivery becomes a
+  // LEFTOVER sitting in the row the moment due_at advances to cycle N+1,
+  // and it is not cleared until cycle N+1's OWN claim finally runs - so an
+  // UNHELD cycle N+1, read before that claim, would recapture cycle N's
+  // leftover and report itself as held when it never was. Gated on
+  // `timer.held_at` instead: deliver() always clears held_at to NULL,
+  // unconditionally, and never writes it back with a captured value (unlike
+  // first_held_at), so a non-null held_at at the candidates SELECT can only
+  // mean a tick since the last delivery genuinely held THIS due_at.
+  // `firstHeldAt: timer.held_at != null ? timer.first_held_at : null`.
+  // See src/scheduler.ts's DeliverableResult and deliver() for the
+  // mechanism, and deliverable()'s own return statement for this gate.
+  //
+  // CLEARED BY THE REPEATING-TIMER PER-CYCLE RESET (fireDelay's claim
+  // UPDATE, src/scheduler.ts), the same statement that already resets
+  // typed_at/confirmed_at/held_at/held_reason/typed_busy/typed_seen for the
+  // identical reason: without it, cycle 1's hold would be reported as every
+  // later cycle's, forever.
+  //
+  // A THIRD WRITER TOUCHES held_at/held_reason AND LEAVES first_held_at IN
+  // THE ROW UNTOUCHED - named here so a future reader who finds it does not
+  // read the omission as a miss. `hive lead`'s restart CAS (src/cli.ts, the
+  // UPDATE re-pointing every pending lead-owned wake to a fresh pane after a
+  // restart) sets held_at/held_reason to NULL on re-point, because the pane
+  // a wake was held against is gone and the hold-for-a-dead-pane reason no
+  // longer applies. It does not touch first_held_at's own column, so the
+  // TIMESTAMP stays sitting in the row.
+  //
+  // SAY WHAT THE held_at GATE (above) DOES WITH THAT, PRECISELY, RATHER THAN
+  // CLAIMING A SURVIVAL IT DOES NOT PRODUCE - an earlier draft of this
+  // paragraph said the fact "must survive the re-point exactly as it
+  // survives an ordinary hold-then-clear-then-deliver sequence", and that is
+  // false: the gate is `timer.held_at != null ? timer.first_held_at : null`,
+  // the CAS is what set held_at NULL, and every candidates SELECT from the
+  // re-point onward reads held_at NULL - so the eventual delivery captures
+  // NULL and reports "not held", even though the row still carries a
+  // pre-repoint first_held_at nobody reads. The ordinary sequence differs in
+  // exactly the timing this draft glossed over: there, held_at stays
+  // non-null right up to the claim and deliver() that finally clear it, both
+  // of which run AFTER the candidates read that captures it - so the capture
+  // sees a live held_at and the value reaches the report. The CAS clears
+  // held_at BEFORE any of that, which is the one fact that makes the two
+  // sequences different rather than the same.
+  //
+  // AND A HOLD RECORDED AFTER THE RE-POINT STARTS FRESH, not continuing from
+  // the pre-repoint value still sitting in the row: holdTimer's own
+  // `CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END` reads that
+  // same NULL held_at and treats the row as a new episode, so the first
+  // hold tick against the FRESH pane sets first_held_at to that tick's own
+  // time rather than COALESCING onto the stale one.
+  //
+  // BOTH ARE THE RIGHT ANSWER, NOT A LOSS. The pre-repoint value described a
+  // hold against a pane that no longer exists - `hive lead` re-pointed this
+  // wake precisely because that pane is gone - so attributing it to
+  // whatever pane the wake eventually reaches would be reporting a fact
+  // about the wrong delivery target. Losing it silently rather than
+  // reporting it is consistent with `held_reason`'s own re-point behaviour
+  // one line up: neither column claims anything about the NEW pane that the
+  // OLD pane's hold history did not actually establish.
+  //
+  // SCOPED, NOT UNQUALIFIED, on the identical mixed-version evidence
+  // typed_seen's own migration cites: nullable, no default, additive, so a
+  // pre-409 server's compiled UPDATE carries no clause for this column and
+  // leaves it exactly as it was - "no fact recorded" for a row no old-code
+  // writer has touched. TWO DIRECTIONS OF STALENESS, NOT ONE, and the first
+  // draft of this paragraph named only the first. The FALSE-POSITIVE
+  // residual is the repeating-timer window D2/typed_seen already accept: an
+  // old server claiming cycle N+1 with no reset clause for this column would
+  // carry cycle N's hold record into N+1's report - bounded by the same
+  // evidence as D2 (zero repeating timers have ever fired twice in this
+  // project's history, so no row has ever had a second cycle for a
+  // mixed-version claim to corrupt). The FALSE-NEGATIVE residual needs no
+  // repeating timer and that evidence does not cover it: a wake held
+  // entirely by pre-409 instances (holdTimer's compiled UPDATE on that
+  // version carries no first_held_at clause at all, so it is never written)
+  // and then delivered by an already-upgraded instance reports
+  // first_held_at NULL for a wake that genuinely was held - "never held"
+  // read off a wake that was. Self-closing once every instance on the
+  // machine has restarted onto this migration, the same way every other
+  // mixed-version window here is, but it is a real gap for that window and
+  // belongs in the acceptance text rather than only in this comment.
+  `
+ALTER TABLE timers ADD COLUMN first_held_at TEXT;
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

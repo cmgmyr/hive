@@ -666,6 +666,18 @@ export function registerWakes(server: McpServer): void {
           repeating: t.repeat_every_ms != null,
           fire_count: t.fire_count,
           cancelled_at: t.cancelled_at,
+          // Todo 409. Deliberately NOT in deliveryState() (below), which also
+          // feeds wake_list's two arrays: the tool-contract rule's slim-
+          // receipt discipline is a per-row cost across every pending and
+          // recently-delivered wake in a project, and this is a diagnostic
+          // fact for the ONE wake a caller already named by id. held_at is
+          // "is this wake held right now"; this is "was it ever held this
+          // cycle, and since when" - a question wake_list's summary view has
+          // never answered and does not need to for every row to stay
+          // useful. No companion tick count: see holdTimer's own comment
+          // (src/scheduler.ts) for why a count here would be counting writes
+          // across concurrently-running server instances, not ticks.
+          first_held_at: t.first_held_at,
           ...deliveryState(t, hasChannel),
         };
       }),

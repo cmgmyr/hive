@@ -67,6 +67,29 @@ export interface TimerRow {
   // NULL for a held wake (no delivery was judged safe) and for any row
   // written before this migration.
   typed_seen: string | null;
+  // Todo 409. The first tick THIS HOLD EPISODE was held - see src/db.ts's
+  // migration for the full argument. Written by holdTimer() and
+  // claimModalHoldWithNotice()'s own UPDATE, both gated on held_at (see
+  // holdTimer's own comment for why a plain COALESCE is not enough) so it is
+  // set once per episode and never overwritten by a later tick's own hold.
+  //
+  // Round 2 correction: this field is NOT simply "never cleared by
+  // deliver()". For a REPEATING timer, fireDelay's own claim UPDATE (the
+  // same statement typed_seen's own migration already documents this
+  // exposure for) NULLS this column as part of opening what it treats as a
+  // fresh cycle - and that claim runs BEFORE deliver(), so a naive "deliver()
+  // never touches it" leaves a repeating wake's hold wiped microseconds
+  // before its own delivery is recorded. deliver() now WRITES this column
+  // explicitly, from a value captured off the TimerRow before that claim
+  // ever runs (deliverable()'s own DeliverableResult.firstHeldAt, threaded
+  // through exactly the way typedSeen already is, but GATED on held_at
+  // rather than taken bare - a bare read can recapture a PRIOR cycle's
+  // leftover, since deliver() writes this column back on every delivery) -
+  // rather than merely declining to clear it. That is what survives the
+  // repeating-timer reset: the claim resets the DATABASE ROW for the next
+  // cycle, and deliver() re-asserts what was already true of THIS one from
+  // the value it captured before the reset ran.
+  first_held_at: string | null;
   // Issue #73, D6. Joined from agents.tmux_socket via deliver_actor, never a
   // column on timers itself - see the candidates query in tick() and the
   // janitor's own timers sweep above. Coalesced to '' in SQL for a join miss
@@ -1242,9 +1265,42 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
 // sweep (issue #149, todo 348, fix round 1) selects a narrower row shape than
 // the scheduler's own due-timer candidates query does, and holding it there
 // needs no field this signature does not already ask for.
+// Todo 409. first_held_at rides the same WHERE as held_at/held_reason above,
+// written so it is set once, on the FIRST tick THIS HOLD EPISODE is held, and
+// never overwritten by a later tick's own call within the same episode.
+// There is deliberately no companion tick COUNT: this same function runs
+// once per held wake per tick PER CONCURRENTLY RUNNING SERVER INSTANCE -
+// deliverable()'s own modal-hold write says so explicitly ("Several MCP
+// server instances tick concurrently against the same WAL store, so every
+// one of them writes this same row on every tick"), and janitor()'s
+// reissued-pane branch can call this a second time in the SAME tick for the
+// same row on top of that. A count kept here would count writes, not ticks,
+// under an unknown and unstated multiplier, which is a number worse than no
+// number. See src/db.ts's migration for the full argument, including why
+// deliver() must explicitly re-write this value rather than merely decline
+// to clear it.
+//
+// PLAIN COALESCE IS NOT ENOUGH, found the same way the read-side gate above
+// deliverable()'s return was: a real failing run, not reasoning alone. Once
+// deliver() writes first_held_at back into the row on a cycle's own
+// delivery (so THAT delivery's record survives), the value sits there as a
+// leftover until the NEXT cycle's claim resets it - and that reset does not
+// run until the row is finally claimed for delivery, so a hold on the VERY
+// NEXT cycle would COALESCE against the PRIOR cycle's leftover and report
+// the wrong (too-early) first-hold time for itself. `CASE WHEN held_at IS
+// NULL THEN NULL ELSE first_held_at END` reads the OLD held_at - SQLite
+// UPDATE SET expressions see pre-update values throughout, regardless of
+// clause order - and held_at is never written back by deliver() (always
+// cleared to NULL there, unconditionally), so a NULL held_at reliably means
+// "no hold recorded since the last delivery or reset", i.e. a NEW episode:
+// treat any first_held_at sitting in the row as a leftover and start fresh.
+// A non-null held_at means this episode is already running (a prior tick on
+// the SAME due_at already set it): keep the earlier first_held_at exactly as
+// plain COALESCE would.
 function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void {
   bestEffortRun(
-    `UPDATE timers SET held_at = datetime('now'), held_reason = ?
+    `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+       first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
      WHERE id = ? AND cancelled_at IS NULL
        AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
     reason,
@@ -1952,9 +2008,17 @@ const claimModalHoldWithNotice = db.transaction(
     // pane about a wake that is no longer due for an hour. `IS` throughout,
     // never `=`: an idle_any/idle_all timer always has a NULL due_at and a
     // one-shot always has a NULL repeat_every_ms, and `= NULL` is never true.
+    // Todo 409. This is the OTHER hold-writing statement (holdTimer above is
+    // the general one); a modal hold that wins the notify debounce reaches
+    // this UPDATE instead of holdTimer's, so it needs the identical
+    // first_held_at write - the same held_at-gated CASE, not a plain
+    // COALESCE, and for the identical reason holdTimer's own comment states
+    // in full: a plain COALESCE against a prior cycle's leftover reports the
+    // wrong (too-early) first-hold time for a genuinely new episode.
     const claimed =
       stmt(
-        `UPDATE timers SET held_at = datetime('now'), held_reason = ?
+        `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+           first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
           WHERE id = ? AND cancelled_at IS NULL
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
             AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
@@ -4018,7 +4082,16 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // live.md: a test that passes by construction rather than by the invariant it
 // claims to check). Returning the record makes the fact travel with the
 // timer it describes, so it is correct regardless of call order.
-type DeliverableResult = { ok: true; typedSeen: string } | { ok: false };
+// Todo 409, round 2. firstHeldAt rides beside typedSeen for the identical
+// reason typedSeen itself was added here rather than read back off the row
+// later: for a REPEATING timer, fireDelay's own claim UPDATE resets
+// first_held_at (and typed_seen) BEFORE deliver() runs, to open the next
+// cycle. Capturing it here, off the TimerRow this call was actually given -
+// before that claim ever executes - is what lets deliver() re-assert the
+// fact for THIS delivery once the claim has already reset the column for the
+// next one. A value read back from the row inside deliver() would read the
+// claim's own NULL instead.
+type DeliverableResult = { ok: true; typedSeen: string; firstHeldAt: string | null } | { ok: false };
 
 // NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION (counselors, both seats).
 // noteModalHold below opens one with `.immediate()` to take the store's
@@ -4362,7 +4435,33 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // case (inputBoxState found a box but could not find the prompt row inside
   // it) reads it from `boxState.state` below, not from this branch.
   const box = boxState === undefined ? "unknown" : boxState === null ? "absent" : boxState.state;
-  return { ok: true, typedSeen: `live=yes pid=${pid} dialog=${dialog} box=${box}` };
+  return {
+    ok: true,
+    typedSeen: `live=yes pid=${pid} dialog=${dialog} box=${box}`,
+    // Captured from `timer` - the row THIS call was given, read at the
+    // candidates SELECT before any claim this tick could run - not a fresh
+    // read of the table. See DeliverableResult's own comment.
+    //
+    // GATED ON timer.held_at, NOT taken bare - found on re-verifying this
+    // exact mechanism (proven with a real failing run, not reasoned about):
+    // unlike typedSeen, first_held_at is a PERSISTED column, so a bare read
+    // can return a PRIOR cycle's leftover rather than "no fact for this
+    // cycle". deliver()'s own recordTyped (below) writes first_held_at back
+    // into the row on every delivery, held or not, and that write lands
+    // AFTER the reset that opened THIS row's next due_at - so on a repeating
+    // wake, an unheld cycle N+1 would otherwise re-capture cycle N's own
+    // leftover value one tick later and report itself as held when it never
+    // was, reproducing this lane's own edge-1 defect through recordTyped's
+    // write instead of through the missing reset. held_at is the reliable
+    // discriminator because deliver() ALWAYS clears it to NULL on delivery
+    // and NEVER writes it back with a captured value (unlike first_held_at):
+    // non-null here can only mean some tick since the last delivery/reset
+    // genuinely held THIS due_at, matching holdTimer's own due_at-scoped
+    // WHERE. Proven red first: test/hold-visibility-repeat-reset.test.mjs
+    // failed with the exact leaked timestamp as `actual` before this gate
+    // was added.
+    firstHeldAt: timer.held_at != null ? timer.first_held_at : null,
+  };
 }
 
 async function fireDelay(
@@ -4497,18 +4596,29 @@ async function fireDelay(
     // repeat_every_ms here means that stale `seconds` can never be
     // committed; a concurrent change makes this claim a no-op, and the next
     // tick recomputes `seconds` from the row it reads fresh.
+    // Todo 409. first_held_at resets here alongside held_at/held_reason, for
+    // the identical reason: without it, a hold recorded on one cycle would
+    // read as describing every later cycle's delivery too, once a hold that
+    // never repeats stops being the only case that matters (this project's
+    // first repeating wake - see src/db.ts's migration for the mixed-version
+    // window this inherits from typed_seen/typed_busy). This is the reset
+    // fireDelay's own deliver() call below immediately re-writes from the
+    // value it captured BEFORE this claim ran - see deliver()'s own
+    // firstHeldAt parameter and DeliverableResult's comment for why that
+    // ordering, not "leave it alone", is what makes this cycle's own hold
+    // survive.
     claimed =
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
            fired_at = datetime('now'), fire_count = fire_count + 1,
            typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
-           typed_seen = NULL
+           typed_seen = NULL, first_held_at = NULL
          WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
       ).run(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1;
   } else {
     claimed = claimOneShot(timer);
   }
-  if (claimed) await deliver(timer, "", choices, decision.typedSeen);
+  if (claimed) await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt);
 }
 
 // Issue #96. wake_update is the first tool that can change a PENDING timer's
@@ -4703,7 +4813,7 @@ async function maybeFireIdle(
     if (timedOut) {
       const decision = deliverable(timer, snapshot, choices);
       if (decision.ok && claimOneShot(timer)) {
-        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen);
+        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt);
       }
     }
     return;
@@ -4743,7 +4853,7 @@ async function maybeFireIdle(
   if (ready) {
     const decision = deliverable(timer, snapshot, choices);
     if (decision.ok && claimOneShot(timer)) {
-      await deliver(timer, timedOut ? "max wait reached" : "", choices, decision.typedSeen);
+      await deliver(timer, timedOut ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
     }
   }
 }
@@ -5071,6 +5181,12 @@ async function deliver(
   note: string,
   choices: ChoiceCache,
   typedSeen: string,
+  // Todo 409, round 2. Threaded through exactly like typedSeen, and for the
+  // identical reason: captured off the row BEFORE fireDelay's repeating-timer
+  // claim can reset it, so it survives into this delivery's own record even
+  // when the claim already nulled the column in the database. See
+  // DeliverableResult's own comment.
+  firstHeldAt: string | null,
 ): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
@@ -5401,12 +5517,35 @@ async function deliver(
   // this column existed and is true after it; this column does not touch it
   // in either direction. An earlier draft of this lane's own plan (pad 142)
   // claimed the opposite; struck after this test disproved it.
+  //
+  // TODO 409 CLOSED THAT GAP - first_held_at (TimerRow's own comment;
+  // src/db.ts's migration) answers the exact question this paragraph says
+  // typed_seen cannot: whether this delivery followed a hold, and since when.
+  //
+  // ROUND 1 OF THIS LANE SHIPPED "deliver() must never clear it" and that was
+  // WRONG for a repeating timer, caught on adversarial review before it ever
+  // merged anywhere. fireDelay's own claim UPDATE resets first_held_at as
+  // part of opening the next cycle, and that claim runs BEFORE this function
+  // for a repeating timer - so "never clear it" left the column nulled by the
+  // time this UPDATE ran, microseconds after the reset, for exactly the case
+  // the lane exists to fix. This UPDATE now WRITES first_held_at explicitly,
+  // from `firstHeldAt` - the value deliverable() captured off the row before
+  // that claim ever executed (DeliverableResult's own comment) - rather than
+  // merely declining to touch the column. For a one-shot wake, whose claim
+  // (claimOneShot) never touches first_held_at at all, this is a no-op
+  // rewrite of the value already there; for a repeating wake held on the
+  // cycle it then delivers, this is what makes the fact survive the reset
+  // that already ran. Held_at/held_reason are still cleared here unconditionally,
+  // unchanged from before this lane: their live-debounce meaning is "held
+  // RIGHT NOW", and a delivering row is never that.
   const recordTyped = () =>
     bestEffortRun(
       `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
-         typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
+         typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+       WHERE id = ?`,
       typedBusy,
       typedSeen,
+      firstHeldAt,
       timer.id,
     );
   // The box deliverable() already read for this same delivery, off the same

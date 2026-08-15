@@ -134,6 +134,12 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
       assert.ok(held, "the wake must be held first, or this test is not exercising the post-hold path");
       assert.equal(held.typed_seen, null, "nothing has been judged safe to type yet, so nothing is recorded");
 
+      // Todo 409. While still held, first_held_at must already be recording
+      // the fact - read through wake_get, since wake_list deliberately does
+      // not carry it (see wake_get's own comment).
+      const heldGet = await mcp.call("wake_get", { wake_id: wake.wake_id });
+      assert.ok(heldGet.first_held_at != null, "a wake that is visibly held must have a first_held_at recorded");
+
       repaintPaneAsSameWorker(db, spawned.tmux_target, replayFixture("ready-idle.txt"));
 
       let delivered;
@@ -149,6 +155,21 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
         "once the hold clears and delivery actually happens, typed_seen must be populated exactly as an unheld delivery's is",
       );
       assert.equal(delivered.held_at, null, "a resolved hold must stop being reported as current (unchanged behaviour)");
+
+      // Todo 409's own acceptance criterion: a wake held at least once and
+      // then delivered must be distinguishable, AFTER delivery, from one
+      // delivered on its first tick. held_at/held_reason no longer carry
+      // that fact (deliver() clears them, unchanged); first_held_at must,
+      // via deliver()'s explicit re-write of the value it captured before
+      // this ONE-SHOT wake's claim (claimOneShot, which never touches
+      // first_held_at at all - see test/hold-visibility-repeat-hold.test.mjs
+      // for the REPEATING case, where the claim does touch it and the
+      // ordering is what makes this survive).
+      const deliveredGet = await mcp.call("wake_get", { wake_id: wake.wake_id });
+      assert.ok(
+        deliveredGet.first_held_at != null,
+        "a delivery that followed a real hold must still show first_held_at after delivery, unlike an immediate one",
+      );
     },
   );
 
