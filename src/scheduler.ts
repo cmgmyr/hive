@@ -4436,6 +4436,32 @@ async function fireDelay(
     // wake. Raised, measured, and deliberately not fixed here; fixing it
     // means guarding a statement that governs three pre-existing columns,
     // which is a different lane than one that adds a fourth.
+    //
+    // TODO 386 COUNSELORS ROUND 1 (codex P2#3) FOUND A THIRD MEMBER OF THIS
+    // SAME FAMILY, AND IT IS SETTLED HERE RATHER THAN IN THAT LANE because
+    // this is the paragraph a reader of the repeating path will reach. A
+    // repeating timer REUSES ITS ID, deliver() builds its marker from that id
+    // (`[hive wake #<id>]`), and checkConfirmations matches any prompt row for
+    // deliver_actor carrying that marker at or after the CURRENT cycle's
+    // typed_at. So a target's genuine acknowledgement of cycle N, landing
+    // after cycle N+1's typed_at, sets confirmed_at on N+1 - a real false
+    // CONFIRMED, and one the marker requirement cannot catch, because the
+    // marker is the same string in both cycles. The other seat's reading (no
+    // finding, the marker makes false confirmation impossible) is correct for
+    // an UNRELATED prompt and does not reach reuse across cycles of one
+    // repeating timer; the two seats are answering different questions rather
+    // than contradicting each other on a fact.
+    // NOT INTRODUCED BY TODO 386, and the honest statement of what that lane
+    // did to it: the defect needs only a marker-carrying prompt row after a
+    // later cycle's typed_at, which was reachable before that lane existed.
+    // Moving typed_at from after the Enter to the moment the paste lands
+    // WIDENS the window by the paste-to-Enter gap (ENTER_DELAY_MS plus, under
+    // writer-slot contention, up to busy_timeout - see deliver()'s own note).
+    // Filed rather than fixed or pinned: a test here would either be red
+    // against a defect out of that lane's scope, or would pin the wrong
+    // behaviour as expected, and the only real fix is a per-cycle token in the
+    // marker, which is a wire-format change to a string checkConfirmations,
+    // this file's own delivery prefix and .claude/rules all read.
     // Counselors round on #101, P1. This claim's own WHERE now guards every
     // field wake_update can touch, not just due_at - see claimOneShot's
     // comment below for why one column was not enough, including the
@@ -5164,23 +5190,121 @@ async function deliver(
   } catch {
     typedBusy = null;
   }
-  try {
-    await sendText(timer.deliver_pane, prefix + timer.body + noticeStalenessNote(timer) + tail, true);
-  } finally {
-    // Unchanged from before this lane: a throw out of sendText still
-    // propagates from here, past the typed_at write below, so typed_at
-    // stays NULL exactly as the column's acceptance requires. Cache
-    // invalidation runs on both the success and the throw path, exactly as
-    // it did before typed_at existed.
-    // Todo 321: one call, both caches. Typing is the one thing that can change
-    // a pane's answer, and forgetPaneAnswers is where that rule lives.
-    forgetPaneAnswers(timer.deliver_pane, choices);
-  }
-  // Issue #27. typed_at is the attempt, set only once sendText above has
-  // returned without throwing. This write sits OUTSIDE the try/finally on
-  // purpose: sendText has already succeeded by this line, so a failure
-  // recording that fact must cost the record, never retroactively turn an
-  // already-successful delivery into a thrown exception that aborts the
+  // TODO 386. THE RECORD IS WRITTEN THE MOMENT THE TEXT REACHES THE PANE, not
+  // when sendText returns, and the difference is a whole class of duplicate
+  // report. sendText is a paste and then, ENTER_DELAY_MS later, a SECOND tmux
+  // call for the Enter; a failure between them leaves the wake on the reader's
+  // screen with this row saying it was never typed. That is not hypothetical -
+  // it is what notice 412 did on 2026-08-13 (see sendText's own comment for the
+  // captured evidence), and a standing watch's cursor reads typed_at IS NULL as
+  // "the delivery was lost", so rearmSpentEpisode deleted the claim 60 seconds
+  // later and filed the same obituary again.
+  //
+  // WHICH SIDE OF THE PASTE THIS SITS ON IS THE WHOLE FIX, so state both
+  // directions rather than only the one being repaired. A throw BEFORE the
+  // paste still leaves typed_at NULL, which is what keeps NOTICE_RETRY_AFTER's
+  // repair alive for the case it was built for: nothing reached the pane, so
+  // the episode really is unreported and must be reported again. A throw AFTER
+  // the paste no longer looks like that case.
+  //
+  // ONLY WHERE THE HOLD ACTUALLY EXISTS, and that condition is the fix rather
+  // than a refinement of it (counselors round 1, BOTH SEATS independently:
+  // codex P1#2, claude F7). Everything the trade below sells rests on the
+  // stranded paste being VISIBLE and BLOCKING - and both of those are claude
+  // chrome. inputBoxState returns null on a pane that is not running claude,
+  // which is the permanent state of every bash or codex worker's pane, so
+  // there holdsHumanInput is false, nothing holds behind the stranded text,
+  // and recording it as delivered would lose the episode with nothing left to
+  // notice. So the early record is taken ONLY when this delivery's own box
+  // read - the one deliverable() already made, off the same ChoiceCache entry,
+  // never a second capture - found a box AND could classify it. Anything else
+  // keeps the pre-lane behaviour exactly: record after sendText returns, and
+  // let NOTICE_RETRY_AFTER repair a delivery that failed.
+  //
+  // `unknown` IS ON THE PRE-LANE SIDE OF THAT LINE, deliberately. It means the
+  // box was found and the prompt row inside it was not (classifyInputBox's own
+  // partial-drift case), and a stranded paste on such a pane classifies
+  // `unknown` too - which holdsHumanInput does not hold on. No hold, so no
+  // early record. The split is "will the text block the pane", not "is this
+  // claude".
+  //
+  // WHAT IT SELLS, named rather than left for a reader to discover. A paste
+  // whose Enter fails and whose text is then CLEARED rather than submitted -
+  // the human hits Escape, or the pane dies - is now silent where it used to
+  // be re-reported after a minute. Taken because the text is ON THE READER'S
+  // SCREEN in the meantime, and because since todo 403 that stranded text
+  // reads as `pending` to inputBoxState, so every later wake at that pane
+  // HOLDS behind it and shows up in wake_list and `hive status`'s heldWakes
+  // rather than being pasted on top of it. The old behaviour's own cost was
+  // paid every time: a duplicate obituary sends a lead to excavate a branch,
+  // a todo and a pad for work that was never lost.
+  //
+  // THE "HOLDS BEHIND IT" HALF IS MEASURED, NOT ASSUMED, and the measurement
+  // answers the one objection that would have made this a hole rather than a
+  // trade (claude seat F1: a tall body might overflow BOX_MAX_ROWS=24, find no
+  // box, and hold nothing). Taken on a real lead pane during this lane: a
+  // 31-line body pasted without submitting is COLLAPSED BY CLAUDE CODE TO A
+  // ONE-ROW CHIP - "[Pasted text #6 +31 lines]" - and hive read
+  // input_box.state as `pending`. So a stranded wake body does not produce a
+  // tall box at all, findInputBox sees it well inside the cap, and the hold
+  // fires. F1 is refuted for a claude pane; for any other pane the split
+  // above means it never arises.
+  //
+  // WHAT THIS DOES NOT CLAIM (claude seat F5). "The duplicate obituary is
+  // fixed" is true of the paste/Enter split and of nothing else. The write
+  // below is bestEffortRun, so a swallowed SQLITE_BUSY still leaves fired_at
+  // set with typed_at NULL and still produces the duplicate - the residual
+  // named at the end of this block. This lane closes one producer of that
+  // shape, not the shape.
+  //
+  // THE WORST CASE IS NOT THAT ONE, AND IT IS NOT COVERED BY THE SENTENCE
+  // ABOVE. If the PANE ITSELF DIES between the paste and the Enter, there is
+  // no screen for the text to be on and no box for a later wake to hold
+  // behind, so both halves of that argument are simply absent - and this row
+  // now says the wake was delivered, so the re-arm that used to repair
+  // exactly this case no longer fires. Nothing else covers it: `hive lead`
+  // re-points every active lead-owned timer at the fresh pane on restart
+  // (src/cli.ts), but this notice is spent rather than pending by then, so it
+  // is not among them. What survives is the WATCH, which is neither fired nor
+  // cancelled by any of this, so every LATER finish still reports - the loss
+  // is bounded at the one episode whose notice was in flight.
+  //
+  // ACCEPTED, and it is the residual already named below rather than a new
+  // one: this row cannot be trusted to mean "the reader saw it", and closing
+  // that needs either a retry of the submit or a column recording which half
+  // of sendText completed. Both are a separate lane.
+  //
+  // THE WINDOW IS NOT 300ms, AND THE FIRST VERSION OF THIS PARAGRAPH RESTED ON
+  // THAT NUMBER (counselors round 1, codex P1#1). ENTER_DELAY_MS is 300ms, but
+  // recordTyped is a SYNCHRONOUS SQLite write that now runs inside the gap,
+  // ahead of the sleep, and src/db.ts sets busy_timeout to 5000 - so under
+  // contention for the machine's single writer slot the paste-to-Enter gap is
+  // up to ~5.3 SECONDS, not 300ms. Fifteen instances ticking one store is
+  // exactly the condition this incident happened under, so that is the number
+  // to reason with.
+  //
+  // IT CHANGES THE WORDING AND NOT THE TRADE, which is worth saying explicitly
+  // rather than quietly restating the figure. The case being repaired - a
+  // submit that fails against a pane that is still there - gets MORE likely as
+  // the gap widens, not less, and it is the case that was actually observed on
+  // 2026-08-13 and cost a duplicate obituary on every occurrence. The case
+  // being sold - the pane dying inside the gap - gets more likely by the same
+  // factor. A seventeen-fold wider window on both sides leaves their ratio
+  // where it was, and the asymmetry that decides this is not the width: a
+  // stranded paste on a claude pane is visible and blocks the pane, while the
+  // duplicate it used to buy was paid unconditionally.
+  //
+  // ONE WRITE, NOT TWO. This is the same UPDATE that always ran, moved
+  // ~300ms earlier on the success path, so typed_busy/typed_seen keep the
+  // cycle discipline their own comments describe and confirmed_at still
+  // cannot match a prompt row written before the wake was on screen.
+  // Issue #27. typed_at is the attempt. It used to be written after sendText
+  // returned, i.e. only once the Enter had also succeeded; todo 386 (above)
+  // moved it to the moment the PASTE lands, which is when the attempt has
+  // actually been made. bestEffortRun rather than a bare run for the reason
+  // that has not changed: the text is on the pane by the time this runs, so a
+  // failure recording that fact must cost the record, never retroactively turn
+  // an already-delivered wake into a thrown exception that aborts the
   // rest of this tick's candidates (bestEffortRun is the same precedent as
   // deliverable()'s held_at write, above, and src/hook.ts's record(); see
   // .claude/rules/worker-state.md). held_at/held_reason are cleared on the
@@ -5212,7 +5336,7 @@ async function deliver(
   // false red, fixed in #63, is the opposite case: floor to the coarser
   // resolution when a lenient match is wanted). A whole-second typed_at
   // would match any prompt row in the same wall second, including one
-  // written up to 999ms before this line ever ran, and that is a FALSE
+  // written up to 999ms before this write ever ran, and that is a FALSE
   // CONFIRMED - a target's own unrelated turn read as having acknowledged a
   // wake it had not been sent yet. typed_at is brand new in this lane and
   // nothing else reads its format, so there is no compatibility reason to
@@ -5252,11 +5376,42 @@ async function deliver(
   // this column existed and is true after it; this column does not touch it
   // in either direction. An earlier draft of this lane's own plan (pad 142)
   // claimed the opposite; struck after this test disproved it.
-  bestEffortRun(
-    `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
-       typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
-    typedBusy,
-    typedSeen,
-    timer.id,
-  );
+  const recordTyped = () =>
+    bestEffortRun(
+      `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
+         typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL WHERE id = ?`,
+      typedBusy,
+      typedSeen,
+      timer.id,
+    );
+  // The box deliverable() already read for this same delivery, off the same
+  // ChoiceCache entry rather than a second capture-pane fork: a fresh read
+  // here could observe a different screen than the decision was made against,
+  // which is the reason typed_seen's own box value is taken this way too.
+  const box = cacheEntry(timer.deliver_pane, choices).box;
+  const strandedTextWouldHold = box !== undefined && box !== null && box.state !== "unknown";
+  try {
+    await sendText(
+      timer.deliver_pane,
+      prefix + timer.body + noticeStalenessNote(timer) + tail,
+      true,
+      strandedTextWouldHold ? recordTyped : undefined,
+    );
+  } finally {
+    // A throw out of sendText still propagates from here, unchanged: nothing
+    // in this lane catches it, so the tick's own catch is still what keeps the
+    // server alive through it. What changed is only WHETHER typed_at was
+    // already written by the time it throws - written if the paste landed,
+    // still NULL if it did not, which is todo 386's whole split. Cache
+    // invalidation runs on both the success and the throw path, exactly as
+    // it did before typed_at existed.
+    // Todo 321: one call, both caches. Typing is the one thing that can change
+    // a pane's answer, and forgetPaneAnswers is where that rule lives.
+    forgetPaneAnswers(timer.deliver_pane, choices);
+  }
+  // The pre-lane position, kept for every pane where a stranded paste would
+  // NOT hold: record only once both tmux calls have returned. Reached only
+  // when the callback above was not passed, so exactly one of the two runs on
+  // a successful delivery, and neither runs when the paste itself failed.
+  if (!strandedTextWouldHold) recordTyped();
 }

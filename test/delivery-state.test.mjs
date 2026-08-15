@@ -67,6 +67,13 @@ const timerRow = (id) =>
     .get(id);
 
 describe("issue #27: the scheduler records what it did, not just that it claimed", () => {
+  // TODO 386 NARROWED WHAT THIS PINS, so read the title as "a sendText whose
+  // PASTE throws". A throw from the Enter - the second tmux call, 300ms later,
+  // with the body already on the reader's screen - now DOES record typed_at,
+  // deliberately: reading that as "nothing was delivered" is what made a
+  // standing watch file the same worker's obituary twice
+  // (test/notice-partial-send.test.mjs). This case still asserts NULL because
+  // %999999 fails the paste itself, so nothing ever reached a pane.
   it("a sendText that throws leaves fired_at set and typed_at NULL", async () => {
     if (!hasTmux) return;
     const project = seedProject();
@@ -93,7 +100,7 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
 
     const row = timerRow(timerId);
     assert.notEqual(row.fired_at, null, "the claim still happens before delivery is attempted");
-    assert.equal(row.typed_at, null, "sendText threw, so the attempt must not be recorded as having happened");
+    assert.equal(row.typed_at, null, "the paste never reached a pane, so no attempt may be recorded");
   });
 
   it("the repeating-timer claim path (due_at UPDATE, not claimOneShot) also records typed_at", async () => {

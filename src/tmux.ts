@@ -3285,13 +3285,63 @@ export function findUnsafeControlChar(text: string, allowed: Set<string>): Unsaf
 // pre-bound behaviour, which was this call never returning at all. Same
 // mechanism, milder: a timed-out set-buffer leaks a named tmux buffer, since
 // -d never runs.
-export async function sendText(target: string, text: string, submit = true): Promise<void> {
+// TODO 386 MADE THAT PARAGRAPH OBSERVED RATHER THAN CONSTRUCTED, AND `onPasted`
+// IS WHAT A CALLER NEEDS TO SURVIVE IT. Read out of the live store: notice 412
+// (2026-08-13) had fired_at set and typed_at NULL, while agent_state_log row
+// 4346 carried ONE user turn holding 412's body and 413's concatenated
+// mid-line. The paste landed; only the Enter did not. So the state the seats
+// could not construct is reachable through any failure of the second call, not
+// only a timeout - and to every reader of the store it looked as though
+// NOTHING had been delivered, which is what made the standing watch report
+// that worker's death a second time (src/scheduler.ts's deliver(), and
+// rearmSpentEpisode's own comment).
+//
+// THE PASTE IS THE MOMENT THE TEXT REACHES THE READER; the Enter only decides
+// whether it becomes a turn now or sits in the box waiting for one. A caller
+// keeping a record of "this was delivered" therefore has to write it HERE, in
+// the gap, not after this function returns - by the time the throw arrives the
+// text is already on screen and no catch block can tell that from a paste that
+// never happened.
+//
+// It runs inside its own try/catch for the reason every other write on a
+// delivery path here does: a bookkeeping failure must never cost the delivery
+// it is bookkeeping about (src/scheduler.ts's typedBusy read states the same
+// rule, and .claude/rules/worker-state.md's log write is the original).
+//
+// THAT CATCH IS INERT FOR THE ONLY CALLER THAT EXISTS, and a reader should not
+// take it for a load-bearing guard (counselors round 1, claude F4). deliver()
+// passes a callback whose entire body is bestEffortRun, which already swallows
+// its own failure, so nothing this catch could catch is currently reachable.
+// It is here for the NEXT caller, and the sentences below are the argument for
+// what it should do when one arrives.
+//
+// IT IS BLANKET AND SILENT, AND "SILENT" IS THE WRONG WORD FOR WHAT IT
+// DOES - which is the whole reason it is not logged. Letting a callback's
+// throw propagate would skip the Enter and strand the paste, i.e. manufacture
+// the exact defect this parameter exists to close, so propagating is strictly
+// worse than swallowing. And a swallowed throw does not disappear: the caller
+// simply has no record written, which is byte-for-byte the pre-todo-386 state,
+// so a standing watch re-arms the episode and files a duplicate - the loud,
+// already-familiar symptom that got todo 386 filed in the first place. A log
+// line would add a channel nobody reads to a failure that already announces
+// itself in the one a lead does.
+export async function sendText(
+  target: string,
+  text: string,
+  submit = true,
+  onPasted?: () => void,
+): Promise<void> {
   if (text.includes("\n")) {
     const buffer = nextBufferName();
     tmux("set-buffer", "-b", buffer, "--", text);
     tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
   } else {
     tmux("send-keys", "-t", target, "-l", "--", text);
+  }
+  try {
+    onPasted?.();
+  } catch {
+    // Deliberately swallowed: see above.
   }
   if (submit) {
     await sleep(ENTER_DELAY_MS);

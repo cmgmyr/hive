@@ -210,6 +210,17 @@ function deliveryState(
     // completed (issue #27's own motivating defect). Neither is "waiting on
     // an ack", so forcing either into the confirmed/unconfirmed pair would
     // hide the more urgent fact that nothing was ever typed at all.
+    //
+    // TODO 386 NARROWED "NEVER COMPLETED", and the narrowing matters to
+    // anyone diagnosing from this field. sendText is a paste and then a
+    // second tmux call for the Enter; on a pane where a stranded paste would
+    // HOLD later wakes (claude chrome on screen), src/scheduler.ts's
+    // deliver() now records typed_at the moment the PASTE lands, so a null
+    // here means specifically that the paste never reached the pane - not
+    // that some part of sendText failed. On every other pane the pre-lane
+    // reading still applies, because the record is still written after both
+    // calls return. Read this null as "nothing reached the pane" only once
+    // you know which of the two the target was.
     confirmation:
       t.typed_at == null
         ? null
