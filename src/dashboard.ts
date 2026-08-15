@@ -5,6 +5,11 @@ import { getProject } from "./context.js";
 // where src/stateProvenance.ts is not (that module reaches src/tmux.ts, and
 // this file's header explains why it stays free of that). Todos 373/366.
 import { awaitingFirstPrompt } from "./firstPrompt.js";
+// Also a leaf module (see its own header) - the canonical slug fallback,
+// reused rather than reimplemented (todo 329/333). Not imported from
+// src/tools/todos.ts, which re-exports the same functions but pulls in
+// ../tmux.js at module load, exactly the coupling this file stays free of.
+import { fallbackSlug } from "./slug.js";
 
 // Pure: reads the store for one project and returns a complete, self-contained
 // HTML document as a string. Never touches the filesystem and never decides
@@ -380,6 +385,8 @@ function renderBoardSection(projectId: number): string {
 interface OpenTodoRow {
   id: number;
   title: string;
+  body: string;
+  slug: string;
   status: string;
   priority: string;
   open_blockers: number;
@@ -397,7 +404,7 @@ interface BlockerRef {
 // explicit that visual distinctness, not a separate ordering, is what marks a
 // blocked todo.
 const OPEN_TODOS_SQL = `
-  SELECT t.id, t.title, t.status, t.priority,
+  SELECT t.id, t.title, t.body, t.slug, t.status, t.priority,
     (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
       WHERE b.todo_id = t.id AND bt.status != 'completed') AS open_blockers
   FROM todos t
@@ -425,6 +432,24 @@ function fetchBlockersFor(todoIds: number[]): Map<number, BlockerRef[]> {
   return byTodo;
 }
 
+// 333's fix: the badge used to print "blocked"/"open" - a word the status
+// column already owns - so a todo that is in_progress AND blocked read "ok
+// open" next to "(in_progress)", contradicting itself. The badge now carries
+// the LIFECYCLE status word instead (option 2 from the todo's own body), and
+// its color still flags blockedness (warn) so that fact is not lost - it is
+// just no longer a second word. "blocked by #N" (below, unconditional on
+// blocked) is what actually says a row is blocked; the color is a hint atop
+// it, not the only signal.
+function todoBadgeLevel(status: string, blocked: boolean): StatusLevel {
+  if (blocked) return "warn";
+  return status === "in_progress" ? "live" : "ok";
+}
+
+// 329's fix: title and body were never fetched at all, so there was nothing
+// collapsed to expand. Copied from renderPadsSection's <details> (this file
+// does not design a new expander shape), with the "blocked by" line kept
+// OUTSIDE the <details> - it must stay visible without expanding, exactly as
+// it already did before this change.
 function renderTodosSection(projectId: number): string {
   const all = db.prepare(OPEN_TODOS_SQL).all(projectId) as OpenTodoRow[];
   const shown = all.slice(0, TODO_CAP);
@@ -436,12 +461,20 @@ function renderTodosSection(projectId: number): string {
       const blockers = blocked
         ? (blockersByTodo.get(t.id) ?? []).map((b) => `#${b.id} ${prose(b.title)}`).join(", ")
         : "";
+      const slug = t.slug || fallbackSlug(t.title) || `todo ${t.id}`;
+      const body =
+        `<div class="todo-body">${prose(t.title)}</div>` +
+        (t.body ? `<div class="todo-body">${prose(t.body)}</div>` : "");
       return (
         `<li class="todo ${blocked ? "todo-blocked" : "todo-open"}">` +
-        `${statusBadge(blocked ? "warn" : "ok", blocked ? "blocked" : "open")} ` +
+        `<details class="todo-item" id="todo-${t.id}">` +
+        `<summary class="pane-border pane-border-sub"><span class="pb-label">` +
+        `${statusBadge(todoBadgeLevel(t.status, blocked), t.status)} ` +
         `<span class="priority priority-${escapeHtml(t.priority)}">${escapeHtml(t.priority)}</span> ` +
-        `#${t.id} ${prose(t.title)} ` +
-        `<span class="muted">(${escapeHtml(t.status)})</span>` +
+        `#${t.id} ${prose(slug)}` +
+        `</span></summary>` +
+        `<div class="section-body">${body}</div>` +
+        `</details>` +
         (blocked ? `<div class="blockers">blocked by ${blockers}</div>` : "") +
         `</li>`
       );
@@ -1013,6 +1046,10 @@ const STYLE = `
   .section-body { padding: 0.35rem 0 0.85rem; }
   details.pad-item { margin: 0.2rem 0; }
   details.pad-item .section-body { padding: 0.3rem 0 0.6rem; }
+  details.todo-item { margin: 0.2rem 0; }
+  details.todo-item .section-body { padding: 0.3rem 0 0.6rem; }
+  .todo-body { white-space: pre-wrap; }
+  .todo-body + .todo-body { margin-top: 0.5rem; }
 
   .meta, .muted { color: var(--fg-muted); font-size: 0.82rem; }
   .cap-note { color: var(--fg-muted); font-size: 0.8rem; font-style: italic; }

@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
 import { findUnsafeControlChar } from "../tmux.js";
+import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 
 interface TodoRow {
@@ -37,7 +38,6 @@ const priorityParam = z.enum(["high", "medium", "low"]);
 // round-trips: on todo_update it clears the stored slug back to the
 // computed fallback (see summarize() below); on todo_create it is
 // equivalent to omitting the argument.
-export const SLUG_MAX_LEN = 40;
 const slugParam = z
   .string()
   .trim()
@@ -53,53 +53,10 @@ const slugParam = z
   )
   .optional();
 
-// Same character class findUnsafeControlChar (src/tmux.ts) REFUSES for a
-// supplied slug, but REPLACED here rather than refused: `title` has no such
-// guard (an existing, unconstrained parameter this lane does not widen) and
-// carries it for ~300 pre-existing rows and every title-only todo_create, so
-// this fallback still has to produce something safe to carry into a wake
-// body, which is delivered VERBATIM into a pane - a bare CR submits the line
-// early. Collapses a run to one space rather than deleting, so the words on
-// either side of a stripped character don't glue together.
-const CONTROL_CHARS_RE = /[\x00-\x1F\x7F]+/g;
-function stripControlChars(text: string): string {
-  return text.replace(CONTROL_CHARS_RE, " ");
-}
+// fallbackSlug and SLUG_MAX_LEN live in src/slug.ts now (todo 329/333) -
+// re-exported here so nothing that imports them from this file breaks.
+export { SLUG_MAX_LEN, fallbackSlug };
 
-// slugParam bounds a SUPPLIED slug with zod's z.string().max(), which counts
-// UTF-16 CODE UNITS (.length), not code points - so the fallback's own
-// output must respect that same unit or a slug read back from todo_get and
-// fed straight into todo_update({slug}) is refused by the very tool that
-// produced it. CUT_BUDGET reserves one unit for the appended ellipsis
-// (U+2026, a single BMP code unit) so cut.length + 1 never exceeds
-// SLUG_MAX_LEN.
-const ELLIPSIS = "…";
-const CUT_BUDGET = SLUG_MAX_LEN - 1;
-
-export function fallbackSlug(title: string): string {
-  const trimmed = stripControlChars(title).trim();
-  if (trimmed.length <= SLUG_MAX_LEN) return trimmed;
-  // Walk whole code points (a `for...of` over a string iterates by code
-  // point, the same as Array.from), accumulating until the NEXT one would
-  // push the running UTF-16-unit count past CUT_BUDGET, rather than slicing
-  // at a fixed code-point count or a fixed code-unit count - either of
-  // those can still split a surrogate pair or overrun the unit bound.
-  // Measured: the naive `trimmed.slice(0, 40)` on a title with an emoji
-  // straddling position 40 produced a lone, unpaired surrogate half - not
-  // valid UTF-16 - and this label rides into wake bodies, board entries and
-  // receipts, where an invalid string survives several hops before it
-  // breaks a reader. This guarantees a code point is never split; it does
-  // not guarantee a full grapheme cluster is never split (a combining
-  // accent, a multi-code-point emoji sequence), a different, larger fix
-  // this lane's reported defect did not ask for.
-  let cut = "";
-  for (const ch of trimmed) {
-    if (cut.length + ch.length > CUT_BUDGET) break;
-    cut += ch;
-  }
-  const lastSpace = cut.lastIndexOf(" ");
-  return (lastSpace > CUT_BUDGET / 2 ? cut.slice(0, lastSpace) : cut) + ELLIPSIS;
-}
 // Shared with the CLI (hive todos --status): one list of valid statuses, so
 // a status the MCP schema would reject can't slip past the CLI's own check
 // and read as "you have no todos" instead of "that isn't a status".

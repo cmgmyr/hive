@@ -176,10 +176,12 @@ function seedPad(projectId, name, content) {
   );
 }
 
-function seedTodo(projectId, { title, priority = "medium", status = "open" }) {
+function seedTodo(projectId, { title, priority = "medium", status = "open", body = "", slug = "" }) {
   return db
-    .prepare("INSERT INTO todos (project_id, title, priority, status) VALUES (?, ?, ?, ?) RETURNING id")
-    .get(projectId, title, priority, status).id;
+    .prepare(
+      "INSERT INTO todos (project_id, title, priority, status, body, slug) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+    )
+    .get(projectId, title, priority, status, body, slug).id;
 }
 
 function blockOn(todoId, blockerId) {
@@ -273,16 +275,17 @@ describe("renderDashboard: open todos", () => {
     assert.ok(idxHigh < idxLow, "a high-priority todo must render before a low-priority one");
     assert.ok(idxBlocked < idxLow, "a high-priority blocked todo still outranks a low-priority open one");
 
-    // Visual distinctness: a blocked todo carries hive doctor's own "warn"
-    // status word (visual redesign - status badges reuse doctor's ok/warn/
-    // FAIL vocabulary rather than invented badge words like the old
-    // "BLOCKED"/"OPEN" pills) and names its blocker by id and title; a
-    // dispatchable one reads "ok" instead.
+    // Visual distinctness (todo 333): the badge carries the LIFECYCLE status
+    // word (both rows are "open" here), not a "blocked"/"open" word of its
+    // own - that word belonged to the status column and duplicating it is
+    // the bug 333 filed. Blockedness shows through the badge's color (warn)
+    // and the "blocked by #N" line, which stays visible unconditionally.
     const blockedLi = html.slice(html.lastIndexOf("<li", idxBlocked), html.indexOf("</li>", idxBlocked) + 6);
     assert.ok(
-      blockedLi.includes('<span class="status status-warn">warn</span> blocked'),
-      "a blocked todo must carry the warn status word, not an invented badge",
+      blockedLi.includes('<span class="status status-warn">warn</span> open'),
+      "a blocked todo's badge must carry the warn color and the lifecycle status word",
     );
+    assert.ok(blockedLi.includes("blocked by"), "a blocked todo must say so on its own line");
     assert.ok(blockedLi.includes(`#${blockerId}`), "the blocker's id must be named");
     assert.ok(blockedLi.includes("the blocker itself"), "the blocker's title must be named");
 
@@ -292,6 +295,7 @@ describe("renderDashboard: open todos", () => {
       "a dispatchable todo must carry the ok status word, not warn",
     );
     assert.ok(!highLi.includes("status-warn"), "a dispatchable todo must not carry the warn status");
+    assert.ok(!highLi.includes("blocked by"), "a dispatchable todo must not claim to be blocked");
   });
 
   it("excludes completed and archived todos from the open list", () => {
@@ -319,6 +323,67 @@ describe("renderDashboard: open todos", () => {
       html.includes(`Showing ${TODO_CAP} of ${total} open todos (capped)`),
       "the page must say it is capped, and by how much",
     );
+  });
+
+  it("renders a todo's body inside a collapsed expander (todo 329) - the reasoning was never on the page before", () => {
+    const project = seedProject("todos-body-test");
+    seedTodo(project, { title: "has a body", body: "the reasoning a human actually needs to read" });
+    const html = renderDashboard(project);
+    assert.ok(
+      html.includes('<span class="prose">the reasoning a human actually needs to read</span>'),
+      "the body must reach the HTML, not just the title",
+    );
+    assert.ok(html.includes('<details class="todo-item"'), "the body must sit behind a collapsed expander");
+    assert.ok(!/<details class="todo-item"[^>]*\bopen\b/.test(html), "the expander must default closed");
+  });
+
+  it("falls back to a computed slug when a todo has no stored one (todo 329/333) - most of the backlog has none", () => {
+    const project = seedProject("todos-slug-fallback-test");
+    const long = "a".repeat(80);
+    seedTodo(project, { title: "irrelevant title", slug: "stored slug" });
+    const withoutStored = seedTodo(project, { title: long });
+    const html = renderDashboard(project);
+    assert.ok(html.includes('<span class="prose">stored slug</span>'), "a stored slug must render as-is");
+
+    // The row's SUMMARY (badge/priority/id/slug, collapsed by default) must
+    // carry fallbackSlug's own truncation, not the bare 80-char title - the
+    // full title is still on the page, deliberately, inside the expander
+    // this same row's body renders, so an "absent anywhere" check would be
+    // wrong: the point is where each form appears, not whether the long
+    // form exists at all.
+    const li = html.slice(html.lastIndexOf("<li", html.indexOf(`#${withoutStored}`)));
+    const summary = li.slice(0, li.indexOf("</summary>"));
+    assert.ok(summary.includes("…"), "the row's summary must carry the truncated fallback, not the bare title");
+    assert.ok(
+      !summary.includes(long),
+      "the row's summary must not carry the full 80-char title unbounded",
+    );
+  });
+
+  it("puts the lifecycle status in the badge, not a second 'blocked'/'open' word (todo 333)", () => {
+    const project = seedProject("todos-lifecycle-badge-test");
+    seedTodo(project, { title: "in flight", status: "in_progress" });
+    const html = renderDashboard(project);
+    assert.ok(
+      html.includes('<span class="status status-live">live</span> in_progress'),
+      "an in_progress todo must show its real lifecycle status, not a stale 'open'",
+    );
+    assert.ok(!html.includes(">(in_progress)<"), "the old trailing (status) span must be gone - one token, not two");
+  });
+
+  it("keeps both facts readable for a todo that is in_progress AND blocked (333's own stated check)", () => {
+    const project = seedProject("todos-both-facts-test");
+    const blocker = seedTodo(project, { title: "the blocker" });
+    const busy = seedTodo(project, { title: "working but stuck", status: "in_progress" });
+    blockOn(busy, blocker);
+    const html = renderDashboard(project);
+    const li = html.slice(html.lastIndexOf("<li", html.indexOf("working but stuck")));
+    const row = li.slice(0, li.indexOf("</li>") + 5);
+    assert.ok(
+      row.includes('<span class="status status-warn">warn</span> in_progress'),
+      "blockedness (warn) and the lifecycle status (in_progress) must both survive on the same row",
+    );
+    assert.ok(row.includes("blocked by"), "the blocked-by line must still name the blocker");
   });
 });
 
@@ -1396,6 +1461,34 @@ describe("the scheduler hook: dirty check does not regenerate an unchanged store
 
     const secondMtime = statSync(indexPath(root)).mtimeMs;
     assert.equal(secondMtime, firstMtime, "an elapsed claim window alone must not force a rewrite of an unchanged store");
+  });
+
+  // Todo 329's own trap, named twice in the plan pad: a todo body is stable
+  // STORE content, not a per-render value like the generated-at stamp, so
+  // inlining it must not make the hash move on every tick. This is the
+  // regression this file has shipped before - pin it directly rather than
+  // trusting the general "nothing changed" case above to cover a new field.
+  it("does not rewrite the file on a second unclaimed-window tick, with a todo body inlined (todo 329)", async () => {
+    const { id, root } = seedProjectAt("dirty-check-todo-body");
+    db.prepare(
+      "INSERT INTO todos (project_id, title, body, priority, status) VALUES (?, 'has a body', 'stable reasoning that must not move the hash', 'high', 'open')",
+    ).run(id);
+    setDashboardKey(root, true);
+    await tick(null);
+    const firstMtime = statSync(indexPath(root)).mtimeMs;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    db.prepare(
+      "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
+    ).run(id);
+    await tick(null);
+
+    const secondMtime = statSync(indexPath(root)).mtimeMs;
+    assert.equal(
+      secondMtime,
+      firstMtime,
+      "a todo body inlined into the page must not defeat the dirty check the way a per-render value would",
+    );
   });
 });
 
