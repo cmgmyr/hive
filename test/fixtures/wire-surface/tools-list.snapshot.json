@@ -961,7 +961,7 @@
     }
   },
   "todo_create": {
-    "description": "Create a project-scoped todo. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+    "description": "Create a project-scoped todo. Pass a short slug so it reads the same way everywhere it's referenced by id. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -994,6 +994,11 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug": {
+          "description": "Short label, ~3-5 words (40 chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to the automatic fallback.",
+          "maxLength": 40,
+          "type": "string"
         },
         "tags": {
           "items": {
@@ -1042,7 +1047,7 @@
     }
   },
   "todo_list": {
-    "description": "List todo summaries. is_blocked=false finds dispatchable work. query matches title and body. Archived todos are excluded by default; include_archived=true retrieves them too.",
+    "description": "List todo summaries. is_blocked=false finds dispatchable work. query matches title, body, and slug. Archived todos are excluded by default; include_archived=true retrieves them too.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1160,6 +1165,11 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug": {
+          "description": "Short label, ~3-5 words (40 chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to the automatic fallback.",
+          "maxLength": 40,
+          "type": "string"
         },
         "status": {
           "enum": [

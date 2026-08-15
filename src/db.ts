@@ -749,7 +749,7 @@ CREATE INDEX idx_wake_idle_notices_notified ON wake_idle_notices(notified_at);
   //     content change: bumpPad (src/tools/pads.ts:57-62 - pad_write,
   //     pad_edit, pad_append, and `hive pad --save` via
   //     overwritePadContent all go through it); updateTodo
-  //     (src/tools/todos.ts:309-348, the only writer of todos.title/body);
+  //     (src/tools/todos.ts:402-450, the only writer of todos.title/body);
   //     kv_set's INSERT ... ON CONFLICT DO UPDATE
   //     (src/tools/kv.ts:49-64). touch(), archiveTodo and completeTodo
   //     (src/tools/todos.ts) change updated_at alone or alongside
@@ -1033,6 +1033,49 @@ ALTER TABLE agents ADD COLUMN parked_branch TEXT NOT NULL DEFAULT '';
   // whether to STAY QUIET, which is the safe direction of the same rule.
   `
 ALTER TABLE agents ADD COLUMN resumed_at TEXT NOT NULL DEFAULT '';
+`,
+  // Todo 318. A todo is addressed by a bare number everywhere it is passed
+  // around - a wake body, a board line, a comment - and a number alone tells
+  // a reader nothing. `title` already exists and is deliberately long and
+  // argumentative (this project's own convention; see the todo's own body),
+  // so the fix is not to shorten it, it is a second, short field: a label
+  // meant to be read next to the number, not instead of the title.
+  //
+  // DEFAULT '' is this table's own established convention (archived_at
+  // aside, every additive column above uses it) for "no fact recorded", and
+  // every row written before this migration reads that way.
+  //
+  // DECISION 1, RECORDED HERE PER THE LANE'S OWN INSTRUCTION: no backfill for
+  // the ~300 existing todos. src/tools/todos.ts's summarize() falls back to a
+  // deterministic truncation of `title` when `slug` is ''. That reads
+  // IDENTICALLY every time it is computed, which is the same property a
+  // stored slug has - the fallback is a pure function of title, not a fresh
+  // judgement call the way an agent paraphrasing a title on demand would be.
+  // A backfill would have to make ~300 of those judgement calls once, by
+  // some process, and freeze whichever ones it produced; the deterministic
+  // fallback needs none of that and never goes stale against a title that is
+  // later edited.
+  //
+  // DECISION 2, RECORDED HERE PER THE LANE'S OWN INSTRUCTION: free text, not
+  // kebab-case. Chris asked for a 3-5 word label, which is prose ("focus
+  // bug", "pane steal" - his own examples on the todo), not an identifier;
+  // kebab-casing it would fight the thing he asked for. Enforced as a
+  // character bound rather than a word count, because splitting on
+  // whitespace to count "words" is itself a judgement call a todo's own
+  // title already shows can go wrong (hyphenated compounds, punctuation).
+  // 40 characters is roughly 5 short English words plus their spaces. It is
+  // also the exact bound slugParam enforces on a SUPPLIED slug (zod's
+  // z.string().max(40), counting UTF-16 code units) - src/tools/todos.ts's
+  // fallbackSlug truncates a bare title to fit that same bound, deliberately,
+  // so the value a slug-less todo computes on read can always be fed straight
+  // back into todo_update({slug}) without being refused by the tool that
+  // would have produced it. Counselors caught an earlier version of this
+  // migration comment claiming the fallback's own truncation length matched
+  // 40 CHARACTERS, which was true of the code-point-counting truncation that
+  // shipped first and stopped being true once the truncation was corrected
+  // to count code UNITS instead - see fallbackSlug's own comment for why.
+  `
+ALTER TABLE todos ADD COLUMN slug TEXT NOT NULL DEFAULT '';
 `,
 ];
 

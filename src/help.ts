@@ -315,14 +315,15 @@ since every read pays for its full length.`,
 
   todos: `TODOS — shared task tracking
 
-  todo_create(title, body?, priority?, tags?, blocked_by?) — priority is
-    high|medium|low
+  todo_create(title, body?, priority?, tags?, slug?, blocked_by?) — priority
+    is high|medium|low; slug is a short label (~3-5 words) so this todo
+    reads the same way everywhere it's referenced by id
   todo_list(status?, is_blocked?, priority?, query?, tags?, include_archived?, limit?, offset?)
     — status is open|in_progress|backlog|completed; is_blocked=false finds
     dispatchable work; archived todos are excluded unless include_archived
   todo_get(todo_id, include_comments?) — full body, blockers, comments;
     always reaches an archived todo too, by id
-  todo_update(todo_id, title?, body?, priority?, status?, tags?)
+  todo_update(todo_id, title?, body?, priority?, status?, tags?, slug?)
   todo_archive(todo_id, archived?) — retires a todo but keeps it readable
     by id; archived=false reverses it. Refuses if this todo still blocks
     a non-completed todo, unless this todo is itself completed

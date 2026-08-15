@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
+import { findUnsafeControlChar } from "../tmux.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 
 interface TodoRow {
@@ -14,6 +15,7 @@ interface TodoRow {
   status: string;
   locked_by: string | null;
   tags: string;
+  slug: string;
   created_at: string;
   completed_at: string | null;
   archived_at: string | null;
@@ -23,6 +25,81 @@ interface TodoRow {
 }
 
 const priorityParam = z.enum(["high", "medium", "low"]);
+
+// Todo 318. Full rationale (free text vs kebab-case, the character bound,
+// why a fallback rather than a backfill) is in the migration's own comment
+// in src/db.ts; not repeated at each site below.
+//
+// No .min(1): counselors found the codebase's own precedent for "clear a
+// text field back to its default" is passing "" (this file's own `body` has
+// no min(1) either), and slug had no way to do that at all - COALESCE(?,
+// slug) plus a min(1) meant no value could ever reset the column. "" now
+// round-trips: on todo_update it clears the stored slug back to the
+// computed fallback (see summarize() below); on todo_create it is
+// equivalent to omitting the argument.
+export const SLUG_MAX_LEN = 40;
+const slugParam = z
+  .string()
+  .trim()
+  .max(SLUG_MAX_LEN)
+  .refine((s) => findUnsafeControlChar(s, new Set()) === null, {
+    // Same detector and no-exceptions policy as normalizeAgentName
+    // (src/tools/agents.ts): a slug is a short label, not prose, and it
+    // reaches a pane through a wake body the same way a name does.
+    message: "slug cannot contain control characters, including tabs or newlines",
+  })
+  .describe(
+    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to the automatic fallback.`,
+  )
+  .optional();
+
+// Same character class findUnsafeControlChar (src/tmux.ts) REFUSES for a
+// supplied slug, but REPLACED here rather than refused: `title` has no such
+// guard (an existing, unconstrained parameter this lane does not widen) and
+// carries it for ~300 pre-existing rows and every title-only todo_create, so
+// this fallback still has to produce something safe to carry into a wake
+// body, which is delivered VERBATIM into a pane - a bare CR submits the line
+// early. Collapses a run to one space rather than deleting, so the words on
+// either side of a stripped character don't glue together.
+const CONTROL_CHARS_RE = /[\x00-\x1F\x7F]+/g;
+function stripControlChars(text: string): string {
+  return text.replace(CONTROL_CHARS_RE, " ");
+}
+
+// slugParam bounds a SUPPLIED slug with zod's z.string().max(), which counts
+// UTF-16 CODE UNITS (.length), not code points - so the fallback's own
+// output must respect that same unit or a slug read back from todo_get and
+// fed straight into todo_update({slug}) is refused by the very tool that
+// produced it. CUT_BUDGET reserves one unit for the appended ellipsis
+// (U+2026, a single BMP code unit) so cut.length + 1 never exceeds
+// SLUG_MAX_LEN.
+const ELLIPSIS = "…";
+const CUT_BUDGET = SLUG_MAX_LEN - 1;
+
+export function fallbackSlug(title: string): string {
+  const trimmed = stripControlChars(title).trim();
+  if (trimmed.length <= SLUG_MAX_LEN) return trimmed;
+  // Walk whole code points (a `for...of` over a string iterates by code
+  // point, the same as Array.from), accumulating until the NEXT one would
+  // push the running UTF-16-unit count past CUT_BUDGET, rather than slicing
+  // at a fixed code-point count or a fixed code-unit count - either of
+  // those can still split a surrogate pair or overrun the unit bound.
+  // Measured: the naive `trimmed.slice(0, 40)` on a title with an emoji
+  // straddling position 40 produced a lone, unpaired surrogate half - not
+  // valid UTF-16 - and this label rides into wake bodies, board entries and
+  // receipts, where an invalid string survives several hops before it
+  // breaks a reader. This guarantees a code point is never split; it does
+  // not guarantee a full grapheme cluster is never split (a combining
+  // accent, a multi-code-point emoji sequence), a different, larger fix
+  // this lane's reported defect did not ask for.
+  let cut = "";
+  for (const ch of trimmed) {
+    if (cut.length + ch.length > CUT_BUDGET) break;
+    cut += ch;
+  }
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > CUT_BUDGET / 2 ? cut.slice(0, lastSpace) : cut) + ELLIPSIS;
+}
 // Shared with the CLI (hive todos --status): one list of valid statuses, so
 // a status the MCP schema would reject can't slip past the CLI's own check
 // and read as "you have no todos" instead of "that isn't a status".
@@ -77,6 +154,7 @@ function getTodo(projectId: number, todoId: number): TodoRow {
 export interface TodoSummary {
   todo_id: number;
   title: string;
+  slug: string;
   status: string;
   priority: string;
   tags: string[];
@@ -91,6 +169,13 @@ function summarize(row: TodoRow): TodoSummary {
   return {
     todo_id: row.id,
     title: row.title,
+    // '' means no slug was set (this table's DEFAULT) or was explicitly
+    // cleared back to it; fall back to a truncation of the title. That can
+    // itself read '' for a title that is all whitespace/control characters
+    // (fallbackSlug strips both before checking), so the last resort names
+    // the row by id - a synthetic label, never blank, and always well under
+    // SLUG_MAX_LEN so it round-trips through todo_update like any other slug.
+    slug: row.slug || fallbackSlug(row.title) || `todo ${row.id}`,
     status: row.status,
     priority: row.priority,
     tags: parseTags(row.tags),
@@ -136,8 +221,11 @@ export function listTodoSummaries(projectId: number, filter: TodoListFilter = {}
     params.push(filter.priority);
   }
   if (filter.query) {
-    sql += " AND (t.title LIKE ? OR t.body LIKE ?)";
-    params.push(`%${filter.query}%`, `%${filter.query}%`);
+    // slug is the field's whole purpose - a lead who knows a todo as "pane
+    // steal" and searches that gets zero results without it, since that
+    // string may appear nowhere in title or body at all.
+    sql += " AND (t.title LIKE ? OR t.body LIKE ? OR t.slug LIKE ?)";
+    params.push(`%${filter.query}%`, `%${filter.query}%`, `%${filter.query}%`);
   }
   sql += " ORDER BY t.updated_at DESC";
   let rows = (db.prepare(sql).all(...params) as TodoRow[]).filter((r) =>
@@ -315,7 +403,14 @@ const updateTodo = db.transaction(
   (
     projectId: number,
     todoId: number,
-    patch: { title?: string; body?: string; priority?: string; status?: string; tags?: string[] },
+    patch: {
+      title?: string;
+      body?: string;
+      priority?: string;
+      status?: string;
+      tags?: string[];
+      slug?: string;
+    },
   ) => {
     const todo = getTodo(projectId, todoId);
     // Moving TO completed, or changing status on a todo that was never
@@ -333,6 +428,7 @@ const updateTodo = db.transaction(
          priority = COALESCE(?, priority),
          status = COALESCE(?, status),
          tags = COALESCE(?, tags),
+         slug = COALESCE(?, slug),
          completed_at = CASE WHEN ? = 'completed' THEN datetime('now')
                              WHEN ? IS NOT NULL THEN NULL
                              ELSE completed_at END,
@@ -344,6 +440,7 @@ const updateTodo = db.transaction(
       patch.priority ?? null,
       patch.status ?? null,
       patch.tags ? JSON.stringify(patch.tags) : null,
+      patch.slug ?? null,
       patch.status ?? null,
       patch.status ?? null,
       todo.id,
@@ -397,12 +494,13 @@ export function registerTodos(server: McpServer): void {
     "todo_create",
     {
       description:
-        "Create a project-scoped todo. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+        "Create a project-scoped todo. Pass a short slug so it reads the same way everywhere it's referenced by id. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
       inputSchema: {
         title: z.string(),
         body: z.string().optional().describe("Objective, owned files, acceptance criteria."),
         priority: priorityParam.optional(),
         tags: z.array(z.string()).optional(),
+        slug: slugParam,
         blocked_by: z.array(idParam).optional(),
         project_id: projectIdParam,
       },
@@ -413,7 +511,7 @@ export function registerTodos(server: McpServer): void {
         currentActor();
         const info = db
           .prepare(
-            "INSERT INTO todos (project_id, title, body, priority, tags) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO todos (project_id, title, body, priority, tags, slug) VALUES (?, ?, ?, ?, ?, ?)",
           )
           .run(
             projectId,
@@ -421,6 +519,7 @@ export function registerTodos(server: McpServer): void {
             args.body ?? "",
             args.priority ?? "medium",
             JSON.stringify(args.tags ?? []),
+            args.slug ?? "",
           );
         const todoId = Number(info.lastInsertRowid);
         for (const blockerId of args.blocked_by ?? []) {
@@ -434,7 +533,7 @@ export function registerTodos(server: McpServer): void {
     "todo_list",
     {
       description:
-        "List todo summaries. is_blocked=false finds dispatchable work. query matches title and body. Archived todos are excluded by default; include_archived=true retrieves them too.",
+        "List todo summaries. is_blocked=false finds dispatchable work. query matches title, body, and slug. Archived todos are excluded by default; include_archived=true retrieves them too.",
       inputSchema: {
         status: statusParam.optional(),
         is_blocked: z.boolean().optional(),
@@ -496,6 +595,7 @@ export function registerTodos(server: McpServer): void {
         priority: priorityParam.optional(),
         status: statusParam.optional(),
         tags: z.array(z.string()).optional(),
+        slug: slugParam,
         project_id: projectIdParam,
       },
     },
@@ -508,6 +608,7 @@ export function registerTodos(server: McpServer): void {
           priority: args.priority,
           status: args.status,
           tags: args.tags,
+          slug: args.slug,
         });
         return { project_id: projectId, ...result };
       }),
