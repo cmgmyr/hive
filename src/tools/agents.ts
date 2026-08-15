@@ -50,6 +50,7 @@ import {
   sleep,
   TEXT_ALLOWED_CONTROL_CHARS,
   tmux,
+  TmuxTimeoutError,
   waitForPaneInput,
   WINDOW_LAYOUTS,
   windowLayout,
@@ -1927,7 +1928,103 @@ export function registerAgents(server: McpServer): void {
               };
             }
           }
-          await sendText(target, args.text, submitting);
+          // TODO 414. sendText is a paste and then, ENTER_DELAY_MS later, a
+          // SEPARATE tmux call for the Enter (src/tmux.ts). A throw from that
+          // second call used to propagate as-is - a bare TmuxError - and a
+          // caller reading a throw as "nothing was sent" retries the whole
+          // send, pasting the same text onto the end of the stranded copy and
+          // submitting both as one message. On a plain shell pane (no claude
+          // chrome for holdsHumanInput to see) that merged line EXECUTES.
+          //
+          // THE FIX IS THE ERROR TEXT, NOT A RETRY. onPasted (todo 386's own
+          // mechanism, src/tmux.ts) fires the instant the PASTE CALL RETURNS,
+          // before the Enter is ever attempted, so by the time a throw
+          // reaches this catch the flag says whether that call reported
+          // success. THAT IS NOT THE SAME CLAIM AS "the pane holds the text"
+          // (fix round 1, adversarial round): a tmux call that never answers
+          // is a THIRD outcome, not a failure (src/tmux.ts, the paragraph
+          // above sendText - "A TIMED-OUT PASTE THE SERVER ALREADY EXECUTED
+          // LEAVES HIVE'S OWN TEXT IN THE BOX"). execFileSync's timeout kills
+          // the CLIENT, not a command the server already ran, so a
+          // TmuxTimeoutError on the paste call can throw before onPasted ever
+          // runs even though the text landed. `pasted === false` therefore
+          // only proves nothing happened when the paste call failed for a
+          // reason OTHER than a timeout; a timed-out paste gets its own,
+          // honestly-hedged message below instead of either extreme.
+          //
+          // Deliberately a throw, not a returned `sent: false` receipt, to
+          // match every other real tmux failure on this path (a TmuxError or
+          // TmuxTimeoutError already throws here) rather than the proactive
+          // REFUSALS above (dialog, pending box), which decide not to send
+          // before ever touching tmux and so have something normal to report.
+          // This is a failure mid-send; the receipt shape for a failure on
+          // this path has always been a throw. A returned `{pasted: true,
+          // submitted: false}` receipt was considered on the adversarial
+          // round (the tool already KNOWS a write occurred, so why make the
+          // caller parse prose to learn it) and rejected: the send genuinely
+          // failed, and folding that into a success-shaped receipt invites a
+          // caller polling only `sent` (as most of this file's own tests do)
+          // to read a botched delivery as fine - the exact lie slim receipts
+          // exist to avoid (.claude/rules/tool-contract.md). MCP's own
+          // isError is already the machine-checkable "this failed" signal;
+          // what it does not carry is WHICH failure, so the thrown message
+          // below opens with a stable, bracketed, never-reworded tag
+          // (`[agent_send:paste-landed-enter-failed]`) a future caller can
+          // branch on without parsing the English that follows it - the
+          // concrete ask from the adversarial round's finding 6, layered
+          // onto the throw rather than replacing it.
+          let pasted = false;
+          try {
+            await sendText(target, args.text, submitting, () => {
+              pasted = true;
+            });
+          } catch (err) {
+            if (!pasted) {
+              // Ambiguous, not the honest negative: the paste call itself
+              // timed out, so this process never learned whether it landed.
+              // Read as "nothing was sent" it repeats the exact lie this
+              // lane exists to close, one call earlier.
+              if (err instanceof TmuxTimeoutError) {
+                throw new Error(
+                  `[agent_send:paste-timeout-ambiguous] agent_send's paste call to ${agent.name}'s pane timed out. A timed-out tmux call does not prove nothing happened - the server can finish a command after the client gives up waiting on it - so the text MAY already be on that screen, unsubmitted. Do not resend blindly: read the pane first with agent_output(name: ${JSON.stringify(agent.name)}), and only send again if the text genuinely is not there.`,
+                  { cause: err },
+                );
+              }
+              throw err;
+            }
+            // JSON.stringify, not a bare template literal: normalizeAgentName
+            // (above, near line 604) blocks control characters and nothing
+            // else, so a name carrying a double quote is valid and a naive
+            // `"${agent.name}"` splice would emit
+            // `agent_send(name: "ba"tch", ...)` - a call that does not
+            // parse, making the only advertised recovery unusable.
+            // "was on the target's screen ... though a concurrent send could
+            // have changed the screen since" rather than "IS on screen right
+            // now" (adversarial-round finding 5): the confident claim is
+            // only true at the moment the paste returned. This process has
+            // no way to know whether a DIFFERENT concurrent send has since
+            // submitted or altered that same box, so the message should say
+            // what it actually knows - the paste landed - not assert the
+            // live state of a screen it has not re-read.
+            // THE REMEDY BRANCHES ON WHETHER THE CALLER CAN ACTUALLY REACH
+            // IT, tested with the identical predicate the keys-path refusal
+            // and the pending-box refusal above both use (todo 169), so this
+            // can never recommend a call that path would itself refuse.
+            // BLOCKING, found on the adversarial round: this message used to
+            // always name agent_send(keys:["Enter"]), which the keys-path
+            // guard a few lines above REFUSES for a worker calling it
+            // against the lead - exactly the human's-pane scenario todo 414
+            // was filed about. A refused remedy reads as an instruction the
+            // caller can follow and is not; that is worse than naming none.
+            const canFinishItself = !(agent.kind === LEAD_KIND && !isRunningLeadActor(currentActor()));
+            throw new Error(
+              `[agent_send:paste-landed-enter-failed] agent_send's Enter failed after the paste to ${agent.name}'s pane already succeeded: that text was on the target's screen, unsubmitted, the moment the paste returned - it was pasted, not lost, though a concurrent send could have changed the screen since. Do NOT resend it: retrying pastes a second copy onto the end of the first, and the Enter that follows submits both as one message (on a non-claude pane, that merged line EXECUTES). ` +
+                (canFinishItself
+                  ? `Finish this exact delivery instead: agent_send(name: ${JSON.stringify(agent.name)}, keys: ["Enter"]).`
+                  : `That target is a LEAD session, so agent_send's keys path is refused against it from a non-lead caller: you cannot finish this yourself. A human at that terminal, or another lead, has to press Enter there. Leave it and try again later.`),
+              { cause: err },
+            );
+          }
         } else {
           throw new Error("Pass text or keys.");
         }
