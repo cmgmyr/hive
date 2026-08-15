@@ -61,44 +61,44 @@ export interface TimerRow {
   held_reason: string | null;
   confirmed_at: string | null;
   typed_busy: number | null;
-  // Todo 407, pad 142 PART 2. deliverable()'s own four facts at the moment it
-  // judged a delivering row safe to type - see deliver()'s own write of this
-  // column for the encoding and src/db.ts's migration for why it exists.
-  // NULL for a held wake (no delivery was judged safe) and for any row
-  // written before this migration.
+  // deliverable()'s own four facts at the moment it judged a delivering row
+  // safe to type - see deliver()'s own write of this column for the
+  // encoding and src/db.ts's migration for why it exists. NULL for a held
+  // wake (no delivery was judged safe) and for any row written before this
+  // migration.
   typed_seen: string | null;
-  // Todo 409. The first tick THIS HOLD EPISODE was held - see src/db.ts's
-  // migration for the full argument. Written by holdTimer() and
+  // The first tick THIS HOLD EPISODE was held - see src/db.ts's migration
+  // for the full argument. Written by holdTimer() and
   // claimModalHoldWithNotice()'s own UPDATE, both gated on held_at (see
   // holdTimer's own comment for why a plain COALESCE is not enough) so it is
   // set once per episode and never overwritten by a later tick's own hold.
   //
-  // Round 2 correction: this field is NOT simply "never cleared by
-  // deliver()". For a REPEATING timer, fireDelay's own claim UPDATE (the
-  // same statement typed_seen's own migration already documents this
-  // exposure for) NULLS this column as part of opening what it treats as a
-  // fresh cycle - and that claim runs BEFORE deliver(), so a naive "deliver()
-  // never touches it" leaves a repeating wake's hold wiped microseconds
-  // before its own delivery is recorded. deliver() now WRITES this column
-  // explicitly, from a value captured off the TimerRow before that claim
-  // ever runs (deliverable()'s own DeliverableResult.firstHeldAt, threaded
-  // through exactly the way typedSeen already is, but GATED on held_at
-  // rather than taken bare - a bare read can recapture a PRIOR cycle's
-  // leftover, since deliver() writes this column back on every delivery) -
-  // rather than merely declining to clear it. That is what survives the
-  // repeating-timer reset: the claim resets the DATABASE ROW for the next
-  // cycle, and deliver() re-asserts what was already true of THIS one from
-  // the value it captured before the reset ran.
+  // This field is NOT simply "never cleared by deliver()". For a REPEATING
+  // timer, fireDelay's own claim UPDATE (the same statement typed_seen's own
+  // migration already documents this exposure for) NULLS this column as
+  // part of opening what it treats as a fresh cycle - and that claim runs
+  // BEFORE deliver(), so a naive "deliver() never touches it" leaves a
+  // repeating wake's hold wiped microseconds before its own delivery is
+  // recorded. deliver() now WRITES this column explicitly, from a value
+  // captured off the TimerRow before that claim ever runs (deliverable()'s
+  // own DeliverableResult.firstHeldAt, threaded through exactly the way
+  // typedSeen already is, but GATED on held_at rather than taken bare - a
+  // bare read can recapture a PRIOR cycle's leftover, since deliver() writes
+  // this column back on every delivery) - rather than merely declining to
+  // clear it. That is what survives the repeating-timer reset: the claim
+  // resets the DATABASE ROW for the next cycle, and deliver() re-asserts
+  // what was already true of THIS one from the value it captured before the
+  // reset ran.
   first_held_at: string | null;
-  // Issue #73, D6. Joined from agents.tmux_socket via deliver_actor, never a
+  // Issue #73. Joined from agents.tmux_socket via deliver_actor, never a
   // column on timers itself - see the candidates query in tick() and the
   // janitor's own timers sweep above. Coalesced to '' in SQL for a join miss
   // (a plain `user:` target with no agents row), so this reads exactly like
-  // the '' "no fact recorded" case at every call site - D2 - with one
+  // the '' "no fact recorded" case at every call site, with one
   // representation of "unset" instead of two.
   deliver_socket: string;
-  // Todo 336. Joined from agents.pane_pid via deliver_actor, the same shape
-  // as deliver_socket immediately above and for the same reason: a pane id
+  // Joined from agents.pane_pid via deliver_actor, the same shape as
+  // deliver_socket immediately above and for the same reason: a pane id
   // only means something relative to the tmux GENERATION that issued it, and
   // nothing on a timer row said which generation until this join. '' means
   // "no fact recorded" (a pre-migration row, or a deliver_actor with no
@@ -106,23 +106,23 @@ export interface TimerRow {
   // deliverable()'s own use of it. Coalesced to '' in SQL for the identical
   // join-miss reason deliver_socket already is.
   deliver_pane_pid: string;
-  // Todo 315. NULL for every wake but a standing watch; see src/db.ts's own
-  // migration for why this is a flag on an idle_any row rather than a kind.
+  // NULL for every wake but a standing watch; see src/db.ts's own migration
+  // for why this is a flag on an idle_any row rather than a kind.
   watch_scope: string | null;
-  // Todo 315. Set on a FINISH notice a standing watch filed, NULL on
-  // everything else - todo 314's own notices, and (todo 321) a standing
-  // watch's BLOCK notices, which are filed with no parent while todo 322
-  // decides whether they should have one. So a null here does not mean "not
-  // from a standing watch"; it means "not covered by the parent link", which
-  // is what noticeStillDeliverable and wake_cancel's cascade both key on.
+  // Set on a FINISH notice a standing watch filed, NULL on everything else -
+  // the modal-hold notices, and a standing watch's BLOCK notices, which
+  // are filed with no parent while it remains undecided whether they should
+  // have one. So a null here does not mean "not from a standing watch"; it
+  // means "not covered by the parent link", which is what
+  // noticeStillDeliverable and wake_cancel's cascade both key on.
   parent_timer_id: number | null;
 }
 
-// Todo 315. The one value watch_scope takes today. Membership is a PARAMETER
-// - project, group or list (.claude/sessions/decisions/2026-08-08-watch-
-// membership-is-a-parameter.md) - and only the crew ships, so the membership
-// query below has no branch in it. Groups are blocked on agent labels, which
-// do not exist; list scope is what a one-shot already does.
+// The one value watch_scope takes today. Membership is a PARAMETER - project,
+// group or list (.claude/sessions/decisions/2026-08-08-watch-membership-is-a-
+// parameter.md) - and only the crew ships, so the membership query below has
+// no branch in it. Groups are blocked on agent labels, which do not exist;
+// list scope is what a one-shot already does.
 export const WATCH_SCOPE_PROJECT = "project";
 
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
@@ -130,33 +130,34 @@ const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATC
 // Shared by the janitor's timers sweep and tick()'s candidates query, the
 // same reason ACTIVE_TIMER_WHERE (below) is named rather than retyped in
 // both: a timer names a pane, not an agents row, so its own recorded socket
-// (issue #73, D6) has to be reached through deliver_actor.
+// (issue #73) has to be reached through deliver_actor.
 //
 // Resolves the PREFERRED agents row for deliver_actor rather than filtering
-// rows out - that distinction is the fix (counselors round 2, R2-1). The
-// first version of this join filtered with `AND agents.status = 'running'`
-// on the theory that a closed row sharing an actor_id with a running
-// successor should never be allowed to answer for it (see F1's reasoning
-// below). But closeAgentRow() (src/spawn.ts) never cancels that actor's
-// timers, so a timer can go on being active after ITS OWN owning row closes
-// with no running successor at all. Filtered out, that join misses
-// entirely, deliver_socket reads '' (D2's "no fact recorded"), and the
-// closed row's real, possibly-foreign recorded socket is silently treated
-// as local: rowAlive() then judges the pane against THIS process's own
+// rows out - that distinction is the fix. The first version of this join
+// filtered with `AND agents.status = 'running'` on the theory that a closed
+// row sharing an actor_id with a running successor should never be allowed
+// to answer for it (see the running-only filter's reasoning below). But
+// closeAgentRow() (src/spawn.ts) never cancels that actor's timers, so a
+// timer can go on being active after ITS OWN owning row closes with no
+// running successor at all. Filtered out, that join misses entirely,
+// deliver_socket reads '' (the "no fact recorded" case), and the closed
+// row's real, possibly-foreign recorded socket is silently treated as
+// local: rowAlive() then judges the pane against THIS process's own
 // server, where a small pane id can easily name a live stranger's pane.
 // Before the filter existed the closed row matched and the wake was held;
-// the filter traded the laundering hole F1 fixed for a new hole in the same
-// function. The subquery below still prefers a running row when one shares
-// the actor_id (the ORIGINAL F1 scenario: a closed row must not outvote a
+// the filter traded the laundering hole the running-only filter fixed for a
+// new hole in the same function. The subquery below still prefers a
+// running row when one shares the actor_id (the ORIGINAL scenario the
+// running-only filter was written for: a closed row must not outvote a
 // live successor), falling back to the most recently created row - closed
 // or not - only when no running row exists, so a lone closed row keeps its
 // own fact readable instead of being discarded.
 //
-// F1's original comment claimed the running-only filter made this join
-// "at most one-to-one, since idx_agents_running_name permits only one
-// running row per name". That claim was WRONG (counselors round 2, R2-2):
-// the index is UNIQUE(project_id, name COLLATE NOCASE) WHERE
-// status='running' - it constrains NAME, not actor_id or kind, and
+// The running-only filter's original comment claimed it made this join "at
+// most one-to-one, since idx_agents_running_name permits only one running
+// row per name". That claim was WRONG: the index is UNIQUE(project_id, name
+// COLLATE NOCASE) WHERE status='running' - it constrains NAME, not actor_id
+// or kind, and
 // ensureLeadRow's own comment (src/cli.ts) documents a reachable path where
 // a pre-fix server leaves TWO running kind='lead' rows in one project,
 // because the index has nothing to say about kind. If the second inherits
@@ -171,10 +172,10 @@ export const DELIVER_SOCKET_JOIN = `LEFT JOIN agents ON agents.id = (
    ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1
 )`;
 
-// Issue #73 counselors A2, accepted and recorded, not fixed here. A timer
-// whose deliver_actor names no agents row at all - a wake set by a plain
-// `user:` session - joins to nothing here, reads deliver_socket = '' (D2's
-// "no fact recorded"), and is treated as local. Deriving the socket from
+// Issue #73, accepted and recorded, not fixed here. A timer whose
+// deliver_actor names no agents row at all - a wake set by a plain `user:`
+// session - joins to nothing here, reads deliver_socket = '' (the "no fact
+// recorded" case), and is treated as local. Deriving the socket from
 // deliver_actor cannot protect a rowless session; there is no row to derive
 // it FROM. NOT a regression: timers had zero socket protection before this
 // lane, and this join strictly narrows the gap (every timer that DOES join
@@ -256,7 +257,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   if (snapshot === null) return { closed_agents: 0, cancelled_timers: 0, probed: false };
   let closedAgents = 0;
   let cancelledTimers = 0;
-  // kind != LEAD_KIND: issue #27's L4 fix round, DECISION 3. A reused lead
+  // kind != LEAD_KIND is from issue #27's fix round. A reused lead
   // row's created_at is from its ORIGINAL insert, not this restart, so
   // SETTLE_WINDOW gives it no grace the way a freshly spawned worker gets one
   // - closing it here would cost the very identity ensureLeadRow (src/cli.ts)
@@ -274,14 +275,14 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
     pane_pid: string;
   }[];
   for (const agent of agents) {
-    // Issue #73, D2/D4/D6: a foreign socket reads unknown (null), never dead,
-    // so this loop must sweep only an explicit `false` - the same trap the
-    // old `!targetAlive(...)` truthiness check would otherwise fall into the
+    // Issue #73: a foreign socket reads unknown (null), never dead, so this
+    // loop must sweep only an explicit `false` - the same trap the old
+    // `!targetAlive(...)` truthiness check would otherwise fall into the
     // moment rowAlive starts answering null for a row this process cannot
     // honestly judge.
     //
-    // Issue #149 (todo 348). rowAliveProbe rather than plain rowAlive: a
-    // reissued pane reads `live: true` (see paneReissued's own comment,
+    // Issue #149. rowAliveProbe rather than plain rowAlive: a reissued pane
+    // reads `live: true` (see paneReissued's own comment,
     // src/tmux.ts), so a row whose recorded pane_pid no longer matches the
     // live pane at that target is reaped here too, not only a row whose pane
     // is dead outright. Without this half, a reissued worker row kept
@@ -308,7 +309,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // lead-owned wake whose pane is gone is never cancelled by this sweep. It
   // sits pending (deliverable() below holds it, HELD_REASON_LEAD_PANE_DEAD)
   // until either a human runs wake_cancel, or the lead's next `hive lead`
-  // reaches it - and as of issue #27's L4 fix round R6 (todo 166), `hive
+  // reaches it - and as of issue #27's fix round, `hive
   // lead` ACTUALLY re-points every pending lead-owned wake's deliver_pane to
   // the fresh pane in the same transaction that records it, rather than
   // merely hoping a future tick's own liveness probe would notice. So the
@@ -320,11 +321,11 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // hidden, so that gap was judged the lesser one, not zero.
   // LEFT JOIN, not JOIN: a timer's deliver_actor can name a plain `user:`
   // session with no agents row at all, which has no recorded fact and must
-  // behave exactly as before this lane (D2/D6) - COALESCE reads that join
+  // behave exactly as before this lane - COALESCE reads that join
   // miss as '' (the same "no fact recorded" case), so there is one
   // representation of "unset" for callers, not NULL from the join and '' from
   // the column.
-  // Issue #149 (todo 348). Deliberately NOT widened with paneReissued the way
+  // Issue #149. Deliberately NOT widened with paneReissued the way
   // the agents sweep above was. A reissued pane is not gone - deliverable()
   // (below) now holds a timer in that state for every actor, lead or not,
   // rather than cancelling it, specifically because a hold is recoverable
@@ -336,7 +337,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   // that reads unambiguously gone - and stays, with one exemption directly
   // below.
   //
-  // Fix round 1, finding 1 (counselors). That dead-pane cancellation used to
+  // That dead-pane cancellation used to
   // be unconditional, and it reaches a timer this SAME sweep held for
   // pane-reissue on an earlier tick just as easily as it reaches an ordinary
   // one: the pane the wake was reissued to is its own process, and nothing
@@ -389,7 +390,7 @@ function cancelTimer(timerId: number): void {
 // cap in hook.ts keeps the worst case near 200MB rather than unbounded. Those
 // two constants multiply, so moving either one moves that figure: see
 // PAYLOAD_LIMIT in src/hook.ts.
-// Exported (counselors A6) so wake_list's recently_delivered section can
+// Exported so wake_list's recently_delivered section can
 // bound itself by the same window: past this, checkConfirmations() can never
 // find a matching prompt row again regardless, so a stale one-shot's
 // "unconfirmed" would otherwise mean "hive stopped looking days ago" rather
@@ -437,7 +438,7 @@ function pruneStateLog(): void {
     if (hi != null && lo != null && hi - lo >= LOG_MAX_ROWS) {
       stmt("DELETE FROM agent_state_log WHERE id <= ?").run(hi - LOG_MAX_ROWS);
     }
-    // Todo 314. wake_block_notices grows by one row per (wake, blocked
+    // wake_block_notices grows by one row per (wake, blocked
     // agent, block episode) and nothing else ever deletes from it - timers
     // rows are never deleted in src/, so its ON DELETE CASCADE is hygiene
     // rather than a live path. LOG_RETENTION, the same window as the rows
@@ -451,20 +452,20 @@ function pruneStateLog(): void {
     // outlives the retention window is reported again, once per window.
     //
     // READ BEFORE WRITE, the rule this function states forty lines above and
-    // that this DELETE broke on its first version (counselors round 2, both
-    // seats). A DELETE matching nothing still opens a write transaction and
-    // takes SQLite's single machine-wide writer slot, and this table is
-    // empty on nearly every machine while every session's scheduler runs
-    // this every three seconds. notified_at is not indexed either (the PK is
-    // the episode key), so the matching case is a scan - which is fine once
-    // a week and not fine as an unconditional per-tick write.
+    // that this DELETE broke on its first version. A DELETE matching nothing
+    // still opens a write transaction and takes SQLite's single machine-wide
+    // writer slot, and this table is empty on nearly every machine while every
+    // session's scheduler runs this every three seconds. notified_at is not
+    // indexed either (the PK is the episode key), so the matching case is a
+    // scan - which is fine once a week and not fine as an unconditional
+    // per-tick write.
     const staleNotices = stmt(
       "SELECT 1 AS hit FROM wake_block_notices WHERE notified_at < datetime('now', ?) LIMIT 1",
     ).get(LOG_RETENTION);
     if (staleNotices) {
       stmt("DELETE FROM wake_block_notices WHERE notified_at < datetime('now', ?)").run(LOG_RETENTION);
     }
-    // Todo 315. wake_idle_notices grows by one row per (standing watch, crew
+    // wake_idle_notices grows by one row per (standing watch, crew
     // member, condition, episode) and nothing else deletes from it. Same
     // window and same read-before-write discipline as the table above, for
     // the same reasons - and with the same one stated consequence: a finish
@@ -484,7 +485,7 @@ function pruneStateLog(): void {
   }
 }
 
-// Todo 309, step 2 of the dashboard lane. Writes src/dashboard.ts's
+// Writes src/dashboard.ts's
 // renderDashboard() output to <project root>/.claude/dashboard/index.html
 // for every project that has opted in, on the same "must never throw" terms
 // as maybeBackupHourly above: file IO is a new throw surface in a function
@@ -493,19 +494,18 @@ function pruneStateLog(): void {
 // try/catch as the thing that actually protects the interval.
 //
 // THE ENABLE GATE IS hive.yml's `dashboard` KEY, not a directory's presence.
-// Chris's own call, superseding plan-dashboard-v1's original decision 3 (a
-// directory switch) after the pad was already written - the pad has since
-// been corrected and this comment states the current design, not the
-// abandoned one. src/projectYml.ts resolves absent, null, and false all to
-// the same `false`, so this is a plain truthy check with no null-handling
-// of its own to get wrong. Because the KEY is now the switch, this function
-// CREATES the directory (recursive mkdir) the first time it finds the key
-// true and the directory missing - the opposite of the old directory-switch
-// design, where creating it was forbidden. Absence now means "first run",
-// never "not enabled".
+// Chris's own call, and it superseded an earlier design (a directory switch)
+// that had already been written up and has since been corrected to match - this
+// comment states the current design, not the abandoned one. src/projectYml.ts
+// resolves absent, null, and false all to the same `false`, so this is a plain
+// truthy check with no null-handling of its own to get wrong. Because the KEY
+// is now the switch, this function CREATES the directory (recursive mkdir) the
+// first time it finds the key true and the directory missing - the opposite of
+// the old directory-switch design, where creating it was forbidden. Absence now
+// means "first run", never "not enabled".
 const DASHBOARD_MIN_INTERVAL_SECONDS = 5;
 
-// Counselors (brief-dashboard-successor, item A). Every tick's loop below
+// Every tick's loop below
 // calls loadProjectYml - a real readFileSync - for every registered project,
 // dashboard-enabled or not, synchronously on the scheduler's own interval
 // callback. A registered project on a stalled network mount blocks that
@@ -535,7 +535,7 @@ const DASHBOARD_MIN_INTERVAL_SECONDS = 5;
 // disk write, not a whole-store copy, and the page's own 10s meta-refresh
 // only ever asks for one write for every two of its own reloads at most.
 //
-// Counselors (brief-dashboard-successor, item B). This is a RATE LIMIT, not
+// This is a RATE LIMIT, not
 // mutual exclusion: a process paused past DASHBOARD_MIN_INTERVAL_SECONDS
 // after winning this claim lets another instance win the next claim and
 // regenerate concurrently, and if a store change lands in between, the
@@ -592,7 +592,7 @@ function writeDashboardAtomically(dashboardDir: string, html: string): void {
   }
 }
 
-// Counselors P1 (both seats, brief-dashboard-successor item 1). A repo can
+// A repo can
 // commit `dashboard: true` in hive.yml plus `.claude/dashboard` as a SYMLINK
 // pointing outside the project - `.claude/` is only gitignored by pattern
 // (.gitignore:10), which does not stop an already-tracked or force-added
@@ -642,7 +642,7 @@ function writeDashboardAtomically(dashboardDir: string, html: string): void {
 // output, so every consumer downstream (writeDashboardAtomically, the tests)
 // keeps seeing the same spelling it always has.
 // Shared by resolveDashboardDir below and by maybeOpenDashboard's own
-// file-level check (src/cli.ts, todo 356 counselors round 3): "is this
+// file-level check (src/cli.ts): "is this
 // EXISTING path's real location inside the resolved project root" is one
 // comparison, needed at two different granularities (a directory that may
 // not exist yet vs. a file already confirmed to exist) - factored out so the
@@ -653,7 +653,7 @@ function realpathContained(existingPath: string, projectPath: string): boolean {
   return resolved === resolvedProjectPath || resolved.startsWith(resolvedProjectPath + sep);
 }
 
-// Exported for reuse by cmdAttach/cmdLead (src/cli.ts, todo 356): the OPEN
+// Exported for reuse by cmdAttach/cmdLead (src/cli.ts): the OPEN
 // path deserves the identical containment guarantee the WRITE path already
 // argues for above, not a hand-rolled join() with none of it.
 export function resolveDashboardDir(projectPath: string): string | null {
@@ -668,8 +668,8 @@ export function resolveDashboardDir(projectPath: string): string | null {
   return dashboardDir;
 }
 
-// Counselors, round 3 (posted four times across four syncs before it was
-// actually read - see todo 356's record): resolveDashboardDir above only
+// Found and reported four separate times before it was actually acted on:
+// resolveDashboardDir above only
 // realpath-checks the DIRECTORY chain. When .claude/dashboard already exists
 // as an ordinary, project-contained directory - the common case once the
 // scheduler has ticked once, or a directory a repo ships pre-populated -
@@ -768,7 +768,7 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
     // project's attempt for the rest of this tick over one project's
     // failure.
     if (!claimDashboardAttempt(project.id)) return;
-    // Counselors (brief-dashboard-successor items 2-4, both seats). Render
+    // Render
     // unconditionally - the claim above already rate-limits this to once
     // per DASHBOARD_MIN_INTERVAL_SECONDS per project - then compare the
     // rendered content's own hash to what was last WRITTEN. See
@@ -780,8 +780,8 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
     const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(project.id) as {
       last_mark: string | null;
     };
-    // existsSync(target): closes counselors P2 (a deleted index.html is
-    // never regenerated). An unchanged store with a hash match used to be
+    // existsSync(target): closes a gap where a deleted index.html was
+    // never regenerated. An unchanged store with a hash match used to be
     // sufficient to skip the write outright; now it is sufficient only when
     // the file is ALSO still there, so `git clean -xdf` (routine after a
     // lane; .gitignore:10 makes .claude/* ignored) removing the directory
@@ -800,17 +800,16 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
     // function's own operations is caught right here, never left to escape
     // the loop in maybeGenerateDashboards below.
     //
-    // Counselors (brief-dashboard-successor item C). A PERSISTENT failure
+    // A PERSISTENT failure
     // here - an unwritable directory, a full disk - is swallowed forever by
     // this same catch, and the browser keeps refreshing a stale-but-complete
     // page that looks identical to an idle project with nothing to report.
     // Accepted: this is the honest cost of CLAUDE.md's "the scheduler must
-    // never throw", the same trade maybeBackupHourly already makes for
-    // backup failures. See dashboard_meta's own migration comment in
-    // src/db.ts for why no last_error/last_error_at column was added here,
-    // and todo 311 (hive doctor should report PTY headroom) for the proposal
-    // to teach `hive doctor` to surface exactly this class of silent
-    // per-project failure, rather than a column nothing reads.
+    // never throw", the same trade maybeBackupHourly already makes for backup
+    // failures. See dashboard_meta's own migration comment in src/db.ts for why
+    // no last_error/last_error_at column was added here. The proposal instead
+    // is to teach `hive doctor` to surface exactly this class of silent
+    // per-project failure, rather than add a column nothing reads.
   }
 }
 
@@ -837,7 +836,7 @@ function maybeGenerateDashboards(): void {
 // so silence is not evidence of loss; this drives REPORTING only and must
 // never drive retry.
 //
-// Counselors A1. (actor, time) ALONE is a proxy, not an observation: any
+// (actor, time) ALONE is a proxy, not an observation: any
 // prompt row for deliver_actor at or after typed_at matched, including one
 // caused by something else entirely - two wakes to one pane where the first
 // answers a dialog nobody read while the second's legitimate prompt row
@@ -876,7 +875,7 @@ function maybeGenerateDashboards(): void {
 // clause's confirmed_at IS NULL once IN. That promise is about one delivery,
 // not about a row a REPEATING timer reuses across many - fireDelay's own
 // claim (below) resets confirmed_at to NULL at the start of each new cycle,
-// counselors A3, precisely so a stale confirmation from cycle N-1 cannot
+// precisely so a stale confirmation from cycle N-1 cannot
 // outlive cycle N.
 //
 // Bounded to timers typed within LOG_RETENTION, the same window
@@ -897,28 +896,26 @@ function maybeGenerateDashboards(): void {
 // here can ever move a timer OUT of the WHERE clause's confirmed_at IS NULL
 // once it has been set.
 //
-// Counselors A5. That "harmless no-op" is still a WRITE: an UPDATE opens its
-// transaction at statement start regardless of whether any row's value
-// actually changes, and nothing prunes `timers` (no DELETE FROM timers
-// anywhere in src/), so the typed-but-unconfirmed set only grows - until L4
-// lands, every lead-targeted wake is permanently unconfirmable and
-// accumulates for the whole retention window. pruneStateLog, just above,
-// states the rule this used to violate: "A DELETE that matches nothing still
-// opens a write transaction... so the common case must not take the write
-// lock at all." Same shape here: a cheap read-first guard (SELECT 1 LIMIT 1)
-// decides whether there is anything to confirm at all before the UPDATE ever
-// runs, and AND EXISTS inside the UPDATE itself means even a false positive
-// from the read-then-write race (a matching row evicted in between) still
-// touches no row. That race is benign for the same reason it is in
-// pruneStateLog: a missed pass is corrected by the next tick, 3 seconds
-// later. Deliberately NOT adding an index here even though the read is still
-// a full scan when it DOES find something to do: that is a second migration,
-// #15 (todo_archive) is already queued behind this one, and two lanes
-// appending to MIGRATIONS concurrently collide at rebase.
-// Exported so a test can pin the AND EXISTS guard's row count directly via
-// SQLite's changes(), rather than through tick()'s noisy total_changes()
-// (janitor, pruneStateLog and maybeBackupHourly all write independently of
-// this).
+// That "harmless no-op" is still a WRITE: an UPDATE opens its transaction at
+// statement start regardless of whether any row's value actually changes, and
+// nothing prunes `timers` (no DELETE FROM timers anywhere in src/), so the
+// typed-but-unconfirmed set only grows - until issue #27's fix round lands,
+// every lead-targeted wake is permanently unconfirmable and accumulates for the
+// whole retention window. pruneStateLog, just above, states the rule this used
+// to violate: "A DELETE that matches nothing still opens a write transaction...
+// so the common case must not take the write lock at all." Same shape here: a
+// cheap read-first guard (SELECT 1 LIMIT 1) decides whether there is anything
+// to confirm at all before the UPDATE ever runs, and AND EXISTS inside the
+// UPDATE itself means even a false positive from the read-then-write race (a
+// matching row evicted in between) still touches no row. That race is benign
+// for the same reason it is in pruneStateLog: a missed pass is corrected by the
+// next tick, 3 seconds later. Deliberately NOT adding an index here even though
+// the read is still a full scan when it DOES find something to do: that is a
+// second migration, #15 (todo_archive) is already queued behind this one, and
+// two lanes appending to MIGRATIONS concurrently collide at rebase. Exported so
+// a test can pin the AND EXISTS guard's row count directly via SQLite's
+// changes(), rather than through tick()'s noisy total_changes() (janitor,
+// pruneStateLog and maybeBackupHourly all write independently of this).
 export function checkConfirmations(): void {
   const confirmationQuery = `
        SELECT MIN(created_at) FROM agent_state_log
@@ -983,7 +980,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // per-tick housekeeping for the same reason pruneStateLog is: it must
     // run regardless of whether tmux answered this tick.
     //
-    // NOTE (PR #36, counselors N1, not fixed here - deliberately out of
+    // NOTE (PR #36, not fixed here - deliberately out of
     // scope for this lane, flagged for a follow-up issue): this call is
     // synchronous and runs BEFORE timer delivery below. A slow VACUUM INTO
     // (a large store, a slow disk) blocks this tick's event loop turn and
@@ -993,14 +990,14 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     // architectural change - reordering, or moving the vacuum off this
     // synchronous path entirely - not a fix that belongs in this diff.
     maybeBackupHourly(db, dataDir);
-    // Todo 309. Same placement logic as maybeBackupHourly immediately above:
+    // Same placement logic as maybeBackupHourly immediately above:
     // per-project housekeeping that must run regardless of whether tmux
     // answered this tick, rate-limited internally (claimDashboardAttempt) so
     // this call is cheap on every tick where nothing is due.
     maybeGenerateDashboards();
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
-    // LEFT JOIN for deliver_socket (issue #73, D6) and deliver_pane_pid
-    // (todo 336): see TimerRow's own comments on both fields. timers.* keeps
+    // LEFT JOIN for deliver_socket (issue #73) and deliver_pane_pid: see
+    // TimerRow's own comments on both fields. timers.* keeps
     // every bare column reference below unambiguous against agents' own
     // id/project_id/kind/created_at columns.
     const candidates = stmt(
@@ -1056,7 +1053,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 // scope of the repair: the batching still holds for panes nothing was delivered
 // to, and for a timer held by a dialog, which is where it was worth having.
 //
-// Widened (todo 270) to carry a SECOND, independently-lazy answer alongside
+// Widened to carry a SECOND, independently-lazy answer alongside
 // the choice one: whether the pane's input box holds real unsubmitted human
 // text. One cache, not two, because both answers are invalidated by the
 // identical event (this tick typed into the pane) and a second Map would
@@ -1067,7 +1064,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 // plain capture does not carry), so this does not save that fork, only caps
 // it at one per pane per tick rather than one per due timer.
 // `box` holds the RAW InputBoxState (undefined until read, null when
-// inputBoxState found none) rather than a derived boolean, because todo 407's
+// inputBoxState found none) rather than a derived boolean, because
 // typed_seen needs the box's classified STATE ("empty"/"ghost"/"unknown"), not
 // only whether it holds the wake - and reading it a second time to get that
 // would cost a second capture-pane fork on the very pane this cache exists to
@@ -1089,14 +1086,14 @@ function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
   return entry.choice;
 }
 
-// Todo 270. inputBoxState's OWN consumer (agent_status/agent_output's
-// input_box field) already tells real unsubmitted text apart from claude's
-// ghost hint and from empty; this reuses that same detector as a HOLD
-// condition, exactly the way paneAwaitingChoice already is one, rather than
-// inventing a second signal. Which states count is holdsHumanInput's call,
-// not this function's (src/tmux.ts, next to InputBoxState) - todo 317 added
-// two more callers of the same policy and pulled it to one place before the
-// three could drift onto three definitions of "a human is typing here".
+// inputBoxState's OWN consumer (agent_status/agent_output's input_box field)
+// already tells real unsubmitted text apart from claude's ghost hint and from
+// empty; this reuses that same detector as a HOLD condition, exactly the way
+// paneAwaitingChoice already is one, rather than inventing a second signal.
+// Which states count is holdsHumanInput's call, not this function's
+// (src/tmux.ts, next to InputBoxState) - an earlier lane added two more callers
+// of the same policy and pulled it to one place before the three could drift
+// onto three definitions of "a human is typing here".
 //
 // What is local here is the CACHING and the hold-vs-refuse choice. A pane
 // with no box at all (null: a modal, or mid-turn) is not this function's
@@ -1110,34 +1107,34 @@ function inputBoxHoldsWake(pane: string, cache: ChoiceCache): boolean {
   return holdsHumanInput(entry.box);
 }
 
-// TODO 321. A BOUND ON THE ONE FORK NOTHING ELSE BOUNDS, and it is the only
+// A BOUND ON THE ONE FORK NOTHING ELSE BOUNDS, and it is the only
 // thing in this file that is a cache rather than a claim - so the argument for
 // that has to be here, or the next reader deletes it as a bug.
 //
 // WHAT IS UNBOUNDED. noteBlockedWatched reads a pane for every crew member
-// latched `waiting`, and the cheap gate in front of it (alreadyToldAbout)
-// only covers a REPORTED block. A worker that answered its prompt and carried
-// on still reads `waiting` - the latch is never cleared
+// latched `waiting`, and the cheap gate in front of it (alreadyToldAbout) only
+// covers a REPORTED block. A worker that answered its prompt and carried on
+// still reads `waiting` - the latch is never cleared
 // (.claude/rules/worker-state.md, issue #28) - and its pane has no dialog on
 // it, so nothing is ever reported and nothing is ever skipped. The tick's
-// ChoiceCache dedupes that read WITHIN one tick, across every wake watching
-// the same pane; it is discarded at the end of the tick, so it bounds nothing
-// ACROSS ticks. Todo 314 accepted the cost knowingly and argued the acceptance
-// on the set being "bounded by watched agents with a pending idle wake, which
-// is small by construction". PROJECT SCOPE IS EXACTLY WHAT REMOVED THAT
-// BOUND: the set is now every latched crew member, and a standing watch stays
-// a candidate for its whole life where a one-shot leaves at fired_at. At 3.5ms
-// a capture-pane (measured, .claude/rules/tmux-and-panes.md), five workers and
-// six sessions is ~105ms of forks every three seconds, forever, to re-learn a
-// fact that has not changed.
+// ChoiceCache dedupes that read WITHIN one tick, across every wake watching the
+// same pane; it is discarded at the end of the tick, so it bounds nothing
+// ACROSS ticks. An earlier fix accepted the cost knowingly and argued the
+// acceptance on the set being "bounded by watched agents with a pending idle
+// wake, which is small by construction". PROJECT SCOPE IS EXACTLY WHAT REMOVED
+// THAT BOUND: the set is now every latched crew member, and a standing watch
+// stays a candidate for its whole life where a one-shot leaves at fired_at. At
+// 3.5ms a capture-pane (measured, .claude/rules/tmux-and-panes.md), five
+// workers and six sessions is ~105ms of forks every three seconds, forever, to
+// re-learn a fact that has not changed.
 //
-// WHY THIS IS NOT WHAT TODO 314 REJECTED, which is the first thing it looks
-// like. That rejection was of recording the negative under the SAME EPISODE
-// KEY as the claim: "looked, no dialog" would then suppress a REAL dialog
-// appearing later in the same episode, with nothing to un-suppress it - an
-// unbounded silent false negative, in a feature whose whole defect is silence.
-// The bound is the difference. Thirty seconds delays a real dialog by at most
-// thirty seconds, against a fifteen-minute max_wait, against a standing
+// WHY THIS IS NOT WHAT THAT EARLIER DESIGN REJECTED, which is the first thing
+// it looks like. That rejection was of recording the negative under the SAME
+// EPISODE KEY as the claim: "looked, no dialog" would then suppress a REAL
+// dialog appearing later in the same episode, with nothing to un-suppress it -
+// an unbounded silent false negative, in a feature whose whole defect is
+// silence. The bound is the difference. Thirty seconds delays a real dialog by
+// at most thirty seconds, against a fifteen-minute max_wait, against a standing
 // watch's four-hour lifetime, and against a baseline of being told NOTHING.
 // Different trade, not the same one re-argued.
 //
@@ -1179,7 +1176,7 @@ const NO_DIALOG_MAX_ENTRIES = 512;
 // WHAT ACTUALLY BOUNDS A STALE ANSWER IS THE TTL, ALONE. An earlier version of
 // this comment claimed the upstream rowAlive() filter made a collision
 // unreachable, "so every entry written here carries this process's own
-// socket". BOTH counselors seats refuted that, and they are right on two
+// socket". That claim was wrong on two
 // counts. foreignSocket("") is FALSE by design (issue #73's "no fact
 // recorded", src/tmux.ts), so a pre-#73 agents row with an empty tmux_socket
 // passes rowAlive and writes an entry whose socket is a SENTINEL, not this
@@ -1238,8 +1235,8 @@ function rememberNoDialog(socket: string, pane: string): void {
 // dialog, and the worst case is a notice up to thirty seconds late.
 //
 // ONLY deliver() CALLS THIS, AND THREE OTHER PATHS TYPE INTO THESE SAME PANES
-// (counselors round 1, opus F10 - a fourth, the spawn announcement, existed
-// until todo 387 removed it): agent_send's text and keys paths and
+// (a fourth, the spawn announcement, existed until it was removed):
+// agent_send's text and keys paths and
 // agent_rename, all in this same process and all unable to reach a
 // module-private function in the scheduler. So
 // agent_send(text:...) -> the worker starts a turn -> a permission prompt goes
@@ -1254,7 +1251,7 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
   noDialogUntil.delete(pane);
 }
 
-// Counselors R2-A on the L4 fix round's todo 161. The lead exemption below
+// The lead exemption below
 // used to just `return false` with nothing written, so a lead wake blocked
 // on a dead pane sat with typed_at, held_at and held_reason all NULL - the
 // identical shape wake_list already uses for "not due yet", the exact
@@ -1262,10 +1259,10 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
 // same guarded write the modal-choice hold below uses, not a second
 // mechanism, with its own reason string.
 // Pick<TimerRow, "id" | "due_at">, not the full TimerRow: janitor()'s timers
-// sweep (issue #149, todo 348, fix round 1) selects a narrower row shape than
+// sweep (issue #149) selects a narrower row shape than
 // the scheduler's own due-timer candidates query does, and holding it there
 // needs no field this signature does not already ask for.
-// Todo 409. first_held_at rides the same WHERE as held_at/held_reason above,
+// first_held_at rides the same WHERE as held_at/held_reason above,
 // written so it is set once, on the FIRST tick THIS HOLD EPISODE is held, and
 // never overwritten by a later tick's own call within the same episode.
 // There is deliberately no companion tick COUNT: this same function runs
@@ -1313,9 +1310,9 @@ const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust 
 const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
-// Issue #149 (todo 348). Two reasons, not one, because the remedy differs:
+// Issue #149. Two reasons, not one, because the remedy differs:
 // `hive lead` re-points every pending LEAD-owned wake to its fresh pane
-// (issue #27 L4 R6, todo 166), so that remedy is honest to name. Nothing
+// (issue #27's fix round), so that remedy is honest to name. Nothing
 // re-points a worker's wake the same way, so the worker-facing text says
 // that plainly instead of pointing at a command that would not help -
 // naming a remedy the caller cannot actually reach is exactly what
@@ -1334,8 +1331,7 @@ const HELD_REASON_PANE_REISSUED_WORKER =
   "it with wake_cancel and set a fresh one once the worker's pane is confirmed live, or leave it: " +
   "it will keep holding rather than deliver wrongly";
 
-// Issue #149 (todo 348) comment 763, fix round 1, finding 1 (counselors, both
-// seats). Without this, a hold for pane-reissue was only ever a ONE-TICK
+// Issue #149. Without this, a hold for pane-reissue was only ever a ONE-TICK
 // promise: if the pane the wake was reissued to later exits on its own (a
 // transient shell, minutes away for the common case), the janitor's timers
 // sweep and deliverable()'s own dead-pane branch both see rowAlive === false
@@ -1371,7 +1367,7 @@ const HELD_REASON_UNSUBMITTED_INPUT =
   "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
   "and submit both as one message";
 
-// Todo 314, issue #28's fourth path. hive already DETECTS this condition -
+// Issue #28's fourth path. hive already DETECTS this condition -
 // the hold below records HELD_REASON_MODAL_CHOICE and wake_get/wake_list
 // already report it. What was missing is the PUSH: a lead sets a wake, goes
 // quiet because the runbook tells it to, and is never told that the worker it
@@ -1389,7 +1385,7 @@ const HELD_REASON_UNSUBMITTED_INPUT =
 // That wake is not fired, not cancelled, not rescheduled: it stays pending
 // and delivers on its own once the dialog goes, exactly as before. Anything
 // that changes the original's firing condition is the withdrawn design coming
-// back; stop and say so on todo 314 rather than building it.
+// back; stop and flag it rather than building it.
 // The one residual, stated rather than hidden: the pane read and the
 // notification landing are seconds apart, so a human who answers the dialog
 // in that gap gets told about a dialog that is already gone. Seconds of
@@ -1407,10 +1403,10 @@ const HELD_REASON_UNSUBMITTED_INPUT =
 // a row a later tick can pick up again. No fifth path types into a pane
 // (.claude/rules/tmux-and-panes.md): this adds none, it queues work for the
 // one path that already exists.
-// kind, not just the name (counselors round on this lane, opus 5). The held
+// kind, not just the name. The held
 // target can BE a lead - a worker is allowed to set a wake on the lead's own
 // pane - and agent_send refuses `keys` on a kind='lead' target when the
-// caller is a worker (.claude/rules/tmux-and-panes.md, R8/todo 175). Telling
+// caller is a worker (.claude/rules/tmux-and-panes.md). Telling
 // a worker to make a call hive will reject is worse than telling it nothing,
 // so the body below says something different for that case.
 function heldTarget(timer: TimerRow): {
@@ -1445,32 +1441,31 @@ function heldTarget(timer: TimerRow): {
 // dialog - agent_send's `text` path refuses a pane sitting on one - and a
 // lead that has been quiet for an hour will not remember that.
 //
-// IT SAYS "look first", and that ordering is load-bearing rather than polite
-// (counselors, codex 1). This body is a snapshot of what hive saw at one
-// tick, and it can be delivered late - the notification itself holds while
-// the OWNER's pane is busy with a dialog of its own, and the target's dialog
-// can be answered by a human in the meantime. A reader who sends keys without
-// looking would be typing them into a pane that has moved on. Every wake body
-// in hive is stale by nature; this one names the check that resolves it.
-// THE TWO CALLS A READER IS TOLD TO MAKE, WRITTEN ONCE. Three bodies suggest
-// them (this one, the standing roster below, and standingNoticeBody's advice
-// line), and until todo 321 all three wrote them out by hand - which is how
-// all three came to name a parameter no tool declares (`agent:` where
-// agent_output and agent_send both take `name`), refused at runtime with a
-// -32602 rather than coerced. test/wire-surface.test.mjs now catches a
-// parameter that does not exist, but it cannot catch two bodies disagreeing
-// about the keys, the order, or which tool to reach for first. One renderer
-// can. This lane's own test file reached the identical conclusion about its
-// matcher after the rename broke it (test/wake-hold-notify.test.mjs's
-// readCall); this is that fix on the side that emits the string.
-// JSON.stringify, NOT `"${name}"` (counselors round 1, codex 4).
-// normalizeAgentName (src/tools/agents.ts) rejects CONTROL characters and
-// nothing else, so a quote or a backslash is a legal agent name - and a worker
-// called `qa"red` rendered agent_output(name: "qa"red"), which the reader
-// cannot run. Same defect class as the `agent:` parameter, one layer down, and
-// test/wire-surface.test.mjs cannot see it: that guard reads the TEMPLATE in
-// source, never a rendered body. Output is byte-identical for every name
-// without a quote or backslash in it.
+// IT SAYS "look first", and that ordering is load-bearing rather than polite.
+// This body is a snapshot of what hive saw at one tick, and it can be delivered
+// late - the notification itself holds while the OWNER's pane is busy with a
+// dialog of its own, and the target's dialog can be answered by a human in the
+// meantime. A reader who sends keys without looking would be typing them into a
+// pane that has moved on. Every wake body in hive is stale by nature; this one
+// names the check that resolves it. THE TWO CALLS A READER IS TOLD TO MAKE,
+// WRITTEN ONCE. Three bodies suggest them (this one, the standing roster below,
+// and standingNoticeBody's advice line), and until this fix landed all three
+// wrote them out by hand - which is how all three came to name a parameter no
+// tool declares (`agent:` where agent_output and agent_send both take `name`),
+// refused at runtime with a -32602 rather than coerced.
+// test/wire-surface.test.mjs now catches a parameter that does not exist, but
+// it cannot catch two bodies disagreeing about the keys, the order, or which
+// tool to reach for first. One renderer can. This lane's own test file reached
+// the identical conclusion about its matcher after the rename broke it
+// (test/wake-hold-notify.test.mjs's readCall); this is that fix on the side
+// that emits the string. JSON.stringify, NOT `"${name}"`. normalizeAgentName
+// (src/tools/agents.ts) rejects CONTROL characters and nothing else, so a quote
+// or a backslash is a legal agent name - and a worker called `qa"red` rendered
+// agent_output(name: "qa"red"), which the reader cannot run. Same defect class
+// as the `agent:` parameter, one layer down, and test/wire-surface.test.mjs
+// cannot see it: that guard reads the TEMPLATE in source, never a rendered
+// body. Output is byte-identical for every name without a quote or backslash in
+// it.
 const readPaneCall = (name: string) => `agent_output(name: ${JSON.stringify(name)})`;
 const answerDialogCall = (name: string) => `agent_send(name: ${JSON.stringify(name)}, keys: ["1", "Enter"])`;
 
@@ -1491,12 +1486,12 @@ function holdNoticeBody(timer: TimerRow, target: { name: string; isLead: boolean
   );
 }
 
-// The WIDE half's body (todo 314, amendment 1). Different situation, so a
+// The WIDE half's body. Different situation, so a
 // different sentence: this wake is not held, it is not even due. A
 // wake_when_idle fires when a watched worker goes IDLE, and a worker sitting
 // on a dialog is `waiting` forever - so without this the owner waits out
 // max_wait_seconds (fifteen minutes by default) to be told that nothing
-// happened, which is what amendment 1 exists to fix.
+// happened, which is what the WIDE half exists to fix.
 function blockNoticeBody(timer: TimerRow, name: string): string {
   return (
     `"${name}" is stopped on a dialog in its pane, waiting for a human to answer it, so it cannot go idle. ` +
@@ -1567,8 +1562,8 @@ function standingBlockNoticeBody(timer: TimerRow, names: string[]): string {
 // the weaker of the two: `timer.deliver_pane` was frozen when that row was
 // written while the lookup below re-resolves the owner's pane now, so a lead
 // restart or the two-running-lead-rows shape this file documents above
-// (DELIVER_SOCKET_JOIN's own comment) can make them disagree. Counselors
-// found the chain that opens - a notification whose owner row moved panes
+// (DELIVER_SOCKET_JOIN's own comment) can make them disagree. That chain was
+// found - a notification whose owner row moved panes
 // files a second notification - which is why the actor check above was added
 // and is stated as the guard rather than this one. This still earns its place
 // for the case the actor check cannot see: two different actors whose rows
@@ -1590,15 +1585,15 @@ function standingBlockNoticeBody(timer: TimerRow, names: string[]): string {
 // row speaks for an actor, not two that can disagree.
 
 // THE WIDE PATH'S version, and the pane it answers was WRONG for one caller
-// until todo 321 measured it (test/wake-hold-notify.test.mjs, "tells a rowless
+// until this was measured (test/wake-hold-notify.test.mjs, "tells a rowless
 // owner..."). ownerPane() above is a lookup in `agents`, so it answers null
 // for a session with no running row - and resolveDelivery (src/tools/wakes.ts)
 // DELIBERATELY supports exactly that caller, falling back to the TMUX_PANE the
 // session is running in. So a plain `user:` session that set wake_when_idle
 // had a perfectly good delivery pane recorded on its own wake and was told
 // NOTHING about a worker stopped on a dialog: the silence this half exists to
-// remove, in the same configuration todo 315 found the standing watch inert
-// in.
+// remove, in the same configuration an earlier fix found the standing watch
+// inert in.
 //
 // THE OWNER COMES FIRST AND THE DELIVERY TARGET IS THE FALLBACK, which is the
 // opposite ordering from noteStandingTransitions' notices, and the difference
@@ -1624,8 +1619,8 @@ function standingBlockNoticeBody(timer: TimerRow, names: string[]): string {
 // a mixed pair is a notice that reads as delivered to a session that never got
 // it.
 // THE OWNER'S PANE HAS TO BE POSITIVELY LIVE, NOT MERELY RECORDED RUNNING
-// (counselors round 1, codex 3, and it was this lane's own defect reintroduced
-// by this lane's own targeting rule). ownerPane() asks `status = 'running'` and
+// - this lane's own defect, reintroduced
+// by this lane's own targeting rule. ownerPane() asks `status = 'running'` and
 // nothing else - and the janitor EXEMPTS kind='lead' rows, so a lead whose pane
 // died keeps a running row naming a dead pane indefinitely. Owner-first then
 // picked that dead pane over a LIVE deliver_to, claimed the episode against it,
@@ -1668,7 +1663,7 @@ function ownerPaneIfLive(timer: TimerRow, snapshot: AliveSnapshot | null): strin
   return rowAlive(row.tmux_socket, row.tmux_target, snapshot) === true ? row.tmux_target : null;
 }
 
-// TODO 391 WIDENED THE SNAPSHOT TO NULLABLE, and that changes nothing for the
+// THE SNAPSHOT TYPE WAS WIDENED TO NULLABLE, and that changes nothing for the
 // block half, which is still called only under a non-null snapshot.
 // ownerPaneIfLive already answers null for a null snapshot ("no fact, not
 // probe it"), so a null snapshot here simply falls through to the wake's own
@@ -1752,7 +1747,7 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
 // when the wake finally delivers (deliver() clears held_at/held_reason), when
 // a different hold reason takes over, or when `hive lead` restarts and clears
 // held_at/held_reason for every wake aimed at the lead's pane (src/cli.ts's
-// restart CAS - a third writer, found by counselors, and one per human
+// restart CAS - a third writer, found in review, and one per human
 // restart rather than per tick). A dialog after any of those is a new
 // condition and notifies again.
 //
@@ -1773,7 +1768,7 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
 // and none of them can produce a SECOND notification, which is the direction
 // that costs a human's terminal. Closing them means recording delivery
 // separately from the hold: a notified_at (or notice_timer_id) column, i.e.
-// the schema migration todo 314 was scoped to avoid. REOPEN TRIGGER, not a
+// the schema migration this design was scoped to avoid. REOPEN TRIGGER, not a
 // judgement call: a real lane where a stuck worker went unreported through
 // one of these three, observed rather than imagined.
 //
@@ -1815,7 +1810,7 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
 // are equal is what ownerPaneToTell's first line turns into the recursion
 // guard. Do not set one without the other.
 //
-// ACCEPTED RESIDUAL (counselors, opus 7): if the owner's row is on a foreign
+// ACCEPTED RESIDUAL: if the owner's row is on a foreign
 // tmux socket, deliverable() answers null for this notification on every tick
 // and the janitor's rowAlive answers null too, so it is never delivered and
 // never cancelled - one permanently pending row per condition, visible in
@@ -1823,13 +1818,13 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
 // door, not a new class of problem, and it costs a row rather than a pane
 // being typed into.
 //
-// Todo 315 added parent_timer_id, a returned id, and an explicit DELIVERY
-// ACTOR, and left every other column exactly as todo 314 wrote it. The two
-// todo 314 callers pass timer.owner and null, which is byte-for-byte what they
-// wrote before, so nothing about their notices changes.
+// A later change added parent_timer_id, a returned id, and an explicit
+// DELIVERY ACTOR, and left every other column exactly as originally written.
+// The two original callers pass timer.owner and null, which is byte-for-byte
+// what they wrote before, so nothing about their notices changes.
 //
-// THAT RULE IS ABOUT PAYLOAD NOTICES, and todo 321 added the exception rather
-// than breaking it (counselors round 1, opus F6). A standing watch's FINISH
+// THAT RULE IS ABOUT PAYLOAD NOTICES, and this later change added the
+// exception rather than breaking it. A standing watch's FINISH
 // notice is the wake's own payload - the roster plus the caller's body - so it
 // goes where the caller said. Its BLOCK notice is a meta-notice ABOUT the wake
 // ("this cannot report anything while that dialog is up"), and it goes to the
@@ -1839,7 +1834,7 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
 // is told at all. See blockNoticeTarget.
 //
 // THE DELIVERY ACTOR IS A PARAMETER BECAUSE A STANDING WATCH HAS A REAL
-// TARGET (counselors, both seats, P1). todo 314's notices are always "tell the
+// TARGET. The original design's notices are always "tell the
 // session that set this wake", so owner and deliver_actor being the same value
 // was not a choice there, it was the only thing they could be. A standing
 // watch resolves a delivery target at CREATION - its own session by default,
@@ -1862,30 +1857,28 @@ function insertNotice(
   ).id;
 }
 
-// TODO 390 (pad 142 PART 3, Q3). A held pane must never accumulate a second
+// A held pane must never accumulate a second
 // pending notice from the SAME parent: never queue a new one, update the one
 // already there. Looked up by parent_timer_id ALONE, not also by pane -
 // `hive lead` re-points a pending notice's own deliver_pane on restart, so
 // the row this finds already carries whatever pane is current.
 //
-// COUNSELORS ROUND 3, F1: parent_timer_id ALONE is not enough, because a
-// standing watch's finish batch (claimStandingBatch) and its stall batch
-// (claimStallBatch) share the SAME parent - the watch's own id - and used to
-// share this lookup too. So a finish batch could find a PENDING STALL
-// notice, overwrite its transcript-staleness diagnosis with a finish
-// roster, and leave its deliver_actor/deliver_pane untouched from
-// blockNoticeTarget - reopening the wrong-pane defect :3345's own comment
-// records as already fixed. `conditions` scopes the lookup to notices whose
-// stamped episodes (wake_idle_notices.condition) are ALL one of the caller's
-// own kinds, via EXISTS rather than a JOIN, so a notice this batch never
-// wrote to can never be mistaken for a pending one of its own. Every row
-// stamped against a notice always shares one condition set, because
-// stampEpisodeNotice only ever stamps episodes a single batch just claimed -
-// so "at least one episode of this batch's own kind" is equivalent to "every
-// episode is", and the cheaper existence check is the one worth writing.
+// parent_timer_id ALONE is not enough, because a standing watch's finish batch
+// (claimStandingBatch) and its stall batch (claimStallBatch) share the SAME
+// parent - the watch's own id - and used to share this lookup too. So a finish
+// batch could find a PENDING STALL notice, overwrite its transcript-staleness
+// diagnosis with a finish roster, and leave its deliver_actor/deliver_pane
+// untouched from blockNoticeTarget - reopening the wrong-pane defect
+// blockNoticeTarget's own comment records as already fixed. `conditions` scopes
+// the lookup to notices whose stamped episodes (wake_idle_notices.condition)
+// are ALL one of the caller's own kinds, via EXISTS rather than a JOIN, so a
+// notice this batch never wrote to can never be mistaken for a pending one of
+// its own. Every row stamped against a notice always shares one condition set,
+// because stampEpisodeNotice only ever stamps episodes a single batch just
+// claimed - so "at least one episode of this batch's own kind" is equivalent to
+// "every episode is", and the cheaper existence check is the one worth writing.
 //
-// `conditions` IS BOUND, NOT INTERPOLATED (lead's own note on this lane,
-// round 3 follow-up). The one call site only ever passes
+// `conditions` IS BOUND, NOT INTERPOLATED. The one call site only ever passes
 // [CONDITION_IDLE, CONDITION_GONE] - internal constants, never caller data -
 // so string-building the IN list would have been safe in practice, but
 // "safe because the only caller behaves" is a property of the caller, not
@@ -1908,10 +1901,9 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
 
 // GUARDED ON fired_at IS NULL, the same optimistic-token shape
 // claimModalHoldWithNotice already uses - kept as DEFENSE IN DEPTH, not as
-// the mechanism that actually closes the race Q3 names.
+// the mechanism that actually closes the coalescing race.
 //
-// TODO 390 COUNSELORS ROUND 3, F7 (fable; codex and opus independently
-// confirmed the correction). The original comment here claimed this guard
+// The original comment here claimed this guard
 // is what stops "an update racing a delivery that has just claimed this
 // notice." It is not reachable from the caller this function has, and
 // saying so plainly is the fix: claimStandingBatch's whole read-then-write
@@ -1951,7 +1943,7 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
 // stays exempt from the janitor's dead-pane timers sweep
 // (SETTLE_WINDOW-gated on created_at, above) for as long as unrelated crew
 // keep finishing fast enough to keep refreshing it. A lead-owned watch - the
-// ordinary case, and pad 142's whole story - is already exempt from that
+// ordinary case this whole mechanism exists for - is already exempt from that
 // sweep by `deliver_actor NOT LIKE LEAD_ACTOR_PREFIX%` regardless of
 // created_at, so this cost never reaches it at all.
 function updateNoticeInPlace(noticeId: number, body: string): boolean {
@@ -1976,11 +1968,11 @@ function updateNoticeInPlace(noticeId: number, body: string): boolean {
 // path speaks while the wake is not ready, and later, once some other watched
 // agent goes idle, the wake becomes ready and the held-wake path sees the
 // same dialog on the same pane. (Within ONE tick they can no longer both run
-// - maybeFireIdle skips the wide path when the wake is ready, counselors
-// round 2 - so this claim is what covers the sequence, not the instant.) Both
+// - maybeFireIdle skips the wide path when the wake is ready - so this claim
+// is what covers the sequence, not the instant.) Both
 // compute the same (timer, agent, episode) key, so the second one loses.
 //
-// ACCEPTED, SELF-CLOSING (counselors round 2, opus 5 / codex 1): a session
+// ACCEPTED, SELF-CLOSING: a session
 // still running the PREVIOUS commit ticks against the new schema with old
 // code, and its held-wake path has no claim here at all. It can file a narrow
 // notice and leave this key unclaimed, so a new-code instance's wide path
@@ -2000,21 +1992,20 @@ function claimBlockNotice(timerId: number, agentId: number, blockedSince: string
 const claimModalHoldWithNotice = db.transaction(
   (timer: TimerRow, pane: string, body: string, target: { agentId: number | null; blockedSince: string }): boolean => {
     // The optimistic token is EVERY field wake_update can change, not just
-    // due_at, for the reason claimOneShot's own comment gives at length
-    // (counselors on this lane, opus 4 / codex 3, and it is stricter than
-    // holdTimer's guard on purpose): a wake_update landing between tick()'s
-    // candidates SELECT and this write leaves holdTimer recording a wrong
-    // column, but would leave THIS write typing a paragraph into a human's
-    // pane about a wake that is no longer due for an hour. `IS` throughout,
-    // never `=`: an idle_any/idle_all timer always has a NULL due_at and a
-    // one-shot always has a NULL repeat_every_ms, and `= NULL` is never true.
-    // Todo 409. This is the OTHER hold-writing statement (holdTimer above is
-    // the general one); a modal hold that wins the notify debounce reaches
-    // this UPDATE instead of holdTimer's, so it needs the identical
-    // first_held_at write - the same held_at-gated CASE, not a plain
-    // COALESCE, and for the identical reason holdTimer's own comment states
-    // in full: a plain COALESCE against a prior cycle's leftover reports the
-    // wrong (too-early) first-hold time for a genuinely new episode.
+    // due_at, for the reason claimOneShot's own comment gives at length and it
+    // is stricter than holdTimer's guard on purpose: a wake_update landing
+    // between tick()'s candidates SELECT and this write leaves holdTimer
+    // recording a wrong column, but would leave THIS write typing a paragraph
+    // into a human's pane about a wake that is no longer due for an hour. `IS`
+    // throughout, never `=`: an idle_any/idle_all timer always has a NULL
+    // due_at and a one-shot always has a NULL repeat_every_ms, and `= NULL` is
+    // never true. This is the OTHER hold-writing statement (holdTimer above is
+    // the general one); a modal hold that wins the notify debounce reaches this
+    // UPDATE instead of holdTimer's, so it needs the identical first_held_at
+    // write - the same held_at-gated CASE, not a plain COALESCE, and for the
+    // identical reason holdTimer's own comment states in full: a plain COALESCE
+    // against a prior cycle's leftover reports the wrong (too-early) first-hold
+    // time for a genuinely new episode.
     const claimed =
       stmt(
         `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
@@ -2044,8 +2035,8 @@ const claimModalHoldWithNotice = db.transaction(
     // there is nothing to integrate with: the wide path only ever fires for
     // WATCHED AGENTS, which by definition have rows.
     //
-    // AN EMPTY blockedSince IS NOT AN EPISODE and must not be claimed
-    // (counselors round 2, opus 4). src/hook.ts writes state_changed_at only
+    // AN EMPTY blockedSince IS NOT AN EPISODE and must not be claimed.
+    // src/hook.ts writes state_changed_at only
     // `WHERE ... kind = 'agent'`, so a kind='lead' or kind='command' row
     // carries NULL for its whole life and coalesces to "" here. Claimed, that
     // constant key is consumed by the FIRST modal hold on this timer and
@@ -2071,10 +2062,10 @@ const claimModalHoldWithNotice = db.transaction(
 // failure anywhere here must cost the notification, never the hold and never
 // the rest of this tick's candidates. Every path that does not notify falls
 // through to the same holdTimer call this function replaced, so the hold
-// itself behaves precisely as it did before todo 314 - including for a wake
+// itself behaves precisely as it did before this lane - including for a wake
 // with nobody to tell, which is most of them.
 function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
-  // Counselors, codex 4. A CONTINUING hold - the overwhelmingly common case,
+  // A CONTINUING hold - the overwhelmingly common case,
   // one per held wake per tick for as long as a dialog is up - must not pay
   // for the claim at all. `.immediate()` takes the store's single
   // machine-wide writer slot, so running it before every fallback would
@@ -2099,7 +2090,7 @@ function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
   holdTimer(timer, HELD_REASON_MODAL_CHOICE);
 }
 
-// THE WIDE HALF (todo 314, amendment 1), and the reason the narrow half above
+// THE WIDE HALF, and the reason the narrow half above
 // is not the fix on its own: maybeFireIdle gates on `ready` BEFORE it ever
 // consults deliverable(), and for a wake_when_idle `ready` means a watched
 // agent went IDLE. A worker stopped on a dialog is `waiting`, never idle, so
@@ -2136,10 +2127,10 @@ function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
 //      watch it.
 // Step 3 matters more than it looks: without it a permanently stuck worker
 // costs a capture-pane fork every three seconds forever, which is the version
-// amendment 1 exists to avoid.
+// the WIDE half exists to avoid.
 //
 // WHAT STEP 3 DOES NOT COVER, said plainly because the first version of this
-// comment read as if it did (counselors round 2, opus 2). Only a REPORTED
+// comment read as if it did. Only a REPORTED
 // block is recorded, so an agent whose latch says `waiting` while its pane
 // has NO dialog on it - a worker that answered its prompt and carried on,
 // which is the ordinary stale latch this design is built to tolerate, or
@@ -2155,13 +2146,13 @@ function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
 // imagined - the set is bounded by watched agents with a pending idle wake,
 // which is small by construction.
 //
-// ONE MORE HONEST LIMIT ON THE EPISODE KEY (counselors round 2, both seats).
+// ONE MORE HONEST LIMIT ON THE EPISODE KEY.
 // state_changed_at is "when the state was last WRITTEN", not "when the block
 // began": src/hook.ts rewrites it on every state-writing hook, and it writes
 // `waiting` for any notification hive does not recognise as idle_prompt. If
 // Claude Code emits two such notifications during ONE continuous dialog, the
-// key moves and the owner is told twice about one block. Unmeasured - todo
-// 313's capture saw exactly one Notification per prompt across seven blocks -
+// key moves and the owner is told twice about one block. Unmeasured - one
+// capture saw exactly one Notification per prompt across seven blocks -
 // and hive pins no Claude Code version, so this is the thing to watch rather
 // than a fix to build now.
 //
@@ -2172,9 +2163,10 @@ function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
 // that reads it.
 //
 // THE COLUMN LIST IS CREW_COLUMNS, THE SAME ONE BOTH HALVES OF THE STANDING
-// WATCH ALREADY SELECT (defined with CrewRow further down, in todo 315's
-// section - the block half is a standing-watch feature now, so it reads that
-// section's vocabulary rather than growing a parallel one). The claim these
+// WATCH ALREADY SELECT (defined with CrewRow further down, in the standing
+// watch's own section below - the block half is a standing-watch feature
+// now, so it reads that section's vocabulary rather than growing a parallel
+// one). The claim these
 // queries make is that the block half and the finish half select from the SAME
 // POPULATION; a second column list and a second row type would leave that as
 // prose, and the next column either half needs would have to be added twice
@@ -2214,7 +2206,7 @@ const standingBlockedRows = (timer: TimerRow, tellActor: string): CrewRow[] =>
       ORDER BY a.id`,
   ).all(timer.project_id, tellActor) as CrewRow[];
 
-// TODO 321: MEMBERSHIP IS THE WATCH'S OWN, WHICH IS WHAT MAKES THIS HALF WORK
+// MEMBERSHIP IS THE WATCH'S OWN, WHICH IS WHAT MAKES THIS HALF WORK
 // FOR A STANDING WATCH AT ALL. This used to be `JSON.parse(timer.watch)` and
 // nothing else, returning [] for an empty list - and a standing watch stores
 // watch='[]' because its MEMBERSHIP IS A QUERY rather than a list, which is a
@@ -2240,7 +2232,7 @@ const standingBlockedRows = (timer: TimerRow, tellActor: string): CrewRow[] =>
 // one substitution: agent_state 'waiting' where the finish half reads 'idle'.
 //
 // THEY ARE NOT ONE POPULATION, and an earlier version of this comment claimed
-// they were (counselors round 1, codex 5b). The two exclude DIFFERENT actors -
+// they were. The two exclude DIFFERENT actors -
 // this half excludes the actor being TOLD, which blockNoticeTarget resolves
 // owner-first, while the finish half excludes timer.deliver_actor - so they
 // diverge exactly when owner != deliver_actor. That is correct in both places
@@ -2284,8 +2276,8 @@ function blockedWatchedAgents(
     }));
 }
 
-// The optimistic token this path needs, and counselors round 2 (opus 1) is
-// right that it had none at all. Nothing else here re-reads the timer: this
+// The optimistic token this path needs - an earlier version had none at all.
+// Nothing else here re-reads the timer: this
 // tick's candidates SELECT can be many timers and several of deliver()'s real
 // 300ms Enter sleeps old by the time this runs, so a concurrent instance can
 // have fired the wake, or wake_cancel can have cancelled it, in between. The
@@ -2312,10 +2304,10 @@ const claimBlockNoticeWithNotice = db.transaction(
   },
 );
 
-// ONE NOTICE PER TICK FOR THE STANDING HALF, not one per blocked worker
-// (lead review of todo 321 step 1), and it is claimStandingBatch's shape with
-// the same reasoning behind it. Todo 315 had to build "a batch identity across
-// agents" precisely because project scope removed the bound the one-shot's
+// ONE NOTICE PER TICK FOR THE STANDING HALF, not one per blocked worker, and
+// it is claimStandingBatch's shape with the same reasoning behind it. An
+// earlier fix had to build "a batch identity across agents" precisely
+// because project scope removed the bound the one-shot's
 // explicit list gave it, and this half inherited the scope without inheriting
 // the batching. A notice is delivered by a PASTE into a pane, so three crew
 // members blocked in one tick was three pastes and three user turns in a
@@ -2332,11 +2324,11 @@ const claimBlockNoticeWithNotice = db.transaction(
 // than an oversight. Its membership is a list the caller wrote, so its notice
 // count is bounded by what the caller asked for; project scope is what removed
 // that bound. It also has to stay unchanged this lane
-// (test/wake-hold-notify.test.mjs's three todo 314 fixtures assert its body
+// (test/wake-hold-notify.test.mjs's three fixtures assert its body
 // and its per-wake counts), and there is no reader complaining about it.
 //
-// "UNCHANGED" MEANS ITS BODY AND ITS PER-WAKE COUNTS, NOT ITS TIMING
-// (counselors round 1, opus F2). recentlyHadNoDialog sits in the SHARED loop
+// "UNCHANGED" MEANS ITS BODY AND ITS PER-WAKE COUNTS, NOT ITS TIMING.
+// recentlyHadNoDialog sits in the SHARED loop
 // above, so the 30-second bound applies to the one-shot half too: its block
 // notice can now arrive up to 30s after the dialog goes up where it used to
 // arrive on the first tick that saw it. That is a real behaviour change to a
@@ -2344,14 +2336,14 @@ const claimBlockNoticeWithNotice = db.transaction(
 // bound is worth more than 27 seconds of latency on a dialog a human will take
 // minutes to answer.
 //
-// WHAT BATCHING WIDENS, stated rather than discovered later: todo 314 accepted
-// that a claim records "a notice was FILED", not "the owner was told", and a
-// batch makes one lost notice cost N reports instead of one. The finish half
-// buys its way out with wake_idle_notices.notice_timer_id and the
-// NOTICE_RETRY_AFTER re-arm; wake_block_notices has no such column, and adding
-// one is a migration for a residual todo 314 already accepted knowingly. The
+// WHAT BATCHING WIDENS, stated rather than discovered later: an earlier
+// design accepted that a claim records "a notice was FILED", not "the owner
+// was told", and a batch makes one lost notice cost N reports instead of one.
+// The finish half buys its way out with wake_idle_notices.notice_timer_id and
+// the NOTICE_RETRY_AFTER re-arm; wake_block_notices has no such column, and
+// adding one is a migration for a residual already accepted knowingly. The
 // LOSS PATHS ARE MORE THAN ONE, and an earlier version of this comment named
-// only a throwing sendText (counselors round 1, opus F4/codex 2). The second
+// only a throwing sendText. The second
 // is already written down 400 lines above, at claimModalHoldWithNotice: a
 // notice whose pane dies before its first delivery is CANCELLED by
 // deliverable() for a non-lead target, and the janitor's timers sweep reaches
@@ -2406,18 +2398,18 @@ function noteBlockedWatched(timer: TimerRow, snapshot: AliveSnapshot, choices: C
       // into that dialog.
       //
       // A CHAIN IS IMPOSSIBLE ON THIS PATH regardless, and structurally so -
-      // but the FACT that makes it structural changed in todo 321 while the
+      // but the FACT that makes it structural changed in a later fix while the
       // conclusion did not, so read the reason rather than the shape. It used
       // to be "a notification carries the default EMPTY WATCH LIST, so
-      // blockedWatchedAgents answers [] for it". An empty watch list is
-      // exactly what stopped meaning "watches nothing" in this lane: for a
-      // standing row it means "ask the project". What holds now is that
-      // insertNotice sets neither watch nor watch_scope, and src/db.ts
-      // declares watch NOT NULL DEFAULT '[]' and watch_scope NULLABLE with no
-      // default - so a notice row carries watch_scope IS NULL, isStandingWatch
-      // is false for it, and it stays on the id-IN branch with an empty list.
-      // That, plus kind 'delay' keeping it out of maybeFireIdle entirely, is
-      // two independent reasons. Pinned by the watch_scope assertion inside
+      // blockedWatchedAgents answers [] for it". An empty watch list is exactly
+      // what stopped meaning "watches nothing" in this lane: for a standing row
+      // it means "ask the project". What holds now is that insertNotice sets
+      // neither watch nor watch_scope, and src/db.ts declares watch NOT NULL
+      // DEFAULT '[]' and watch_scope NULLABLE with no default - so a notice row
+      // carries watch_scope IS NULL, isStandingWatch is false for it, and it
+      // stays on the id-IN branch with an empty list. That, plus kind 'delay'
+      // keeping it out of maybeFireIdle entirely, is two independent reasons.
+      // Pinned by the watch_scope assertion inside
       // test/wake-hold-notify.test.mjs's "files a block notice for a crew
       // member it never had in a watch list" - an earlier version of this
       // comment cited that assertion's own MESSAGE as if it were the test's
@@ -2426,7 +2418,7 @@ function noteBlockedWatched(timer: TimerRow, snapshot: AliveSnapshot, choices: C
       if (alreadyToldAbout(timer.id, agent.id, agent.blockedSince)) continue;
       // The last cheap question before the only expensive one, and it is
       // asked for BOTH watch shapes on purpose: a one-shot's set is small by
-      // construction (todo 314's own acceptance) but never zero-cost, and one
+      // construction but never zero-cost, and one
       // loop with one rule beats a bound that applies to whichever branch
       // someone remembered.
       //
@@ -2487,7 +2479,7 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
 }
 
 // ===========================================================================
-// TODO 315, THE STANDING WATCH.
+// THE STANDING WATCH.
 //
 // wake_when_idle is a one-shot: it fires once and stops watching. Between the
 // fire and a re-arm nobody is watched, and the re-arm depends on the lead
@@ -2498,16 +2490,16 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
 // notice to its owner naming every crew member that has finished or gone away
 // since it last spoke.
 //
-// THE MECHANISM IS TODO 314's, POINTED AT A SECOND CONDITION, and the pieces
-// that carry over are named so the next reader does not look for a second
-// design: the atomic claim (INSERT OR IGNORE against a primary key), the
+// THE MECHANISM IS THE MODAL-HOLD ONE, POINTED AT A SECOND CONDITION, and the
+// pieces that carry over are named so the next reader does not look for a
+// second design: the atomic claim (INSERT OR IGNORE against a primary key), the
 // read-gate in front of that claim so the common case never takes SQLite's
-// single machine-wide writer slot, and delivery through a real timer row so
-// no FIFTH path types into a pane (.claude/rules/tmux-and-panes.md). What
-// todo 314 does NOT supply, and what the rest of this section is, is: a batch
-// identity across agents, a cursor that survives a delivery failure, a parent
-// link, a lifetime, a key for a worker that DIES, and the discrimination
-// between a block notice and a finish notice.
+// single machine-wide writer slot, and delivery through a real timer row so no
+// FIFTH path types into a pane (.claude/rules/tmux-and-panes.md). What the
+// modal-hold mechanism does NOT supply, and what the rest of this section is,
+// is: a batch identity across agents, a cursor that survives a delivery
+// failure, a parent link, a lifetime, a key for a worker that DIES, and the
+// discrimination between a block notice and a finish notice.
 //
 // WHAT THIS IS NOT: the withdrawn also_when_stuck
 // (.claude/sessions/dead-ends/2026-07-29-also-when-stuck-on-latched-waiting.md).
@@ -2523,9 +2515,9 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
 const CONDITION_IDLE = "idle";
 const CONDITION_GONE = "gone";
 
-// A claim records "a notice was FILED", not "the owner was told" - counselors
-// C3 on this design, and todo 314 accepted exactly this residual for a
-// stuck-worker notice. THE ACCEPTANCE DOES NOT TRANSFER, because the thing
+// A claim records "a notice was FILED", not "the owner was told" - and an
+// earlier design accepted exactly this residual for a stuck-worker notice.
+// THE ACCEPTANCE DOES NOT TRANSFER, because the thing
 // lost here is the finish this whole feature exists to report. So a claim
 // whose notice was spent WITHOUT EVER BEING TYPED - fired_at set (a claim
 // committed), typed_at still NULL (sendText threw), not cancelled - stops
@@ -2554,7 +2546,7 @@ const CONDITION_GONE = "gone";
 // fired_at NULL and never matches this at all.
 const NOTICE_RETRY_AFTER = "-60 seconds";
 
-// The valid-until half of the parent link (counselors C4). wake_cancel now
+// The valid-until half of the parent link. wake_cancel now
 // cascades to a watch's filed notices, but cancellation is not the only way a
 // notice goes stale: `hive lead` re-points EVERY active lead-owned timer at
 // the fresh pane on restart (src/cli.ts), and a lead-owned notice held on a
@@ -2562,7 +2554,7 @@ const NOTICE_RETRY_AFTER = "-60 seconds";
 // indefinitely and then be delivered days later into a session that has moved
 // on. An hour is well past any lane that a "worker X just finished" sentence
 // is still true for, and this bound applies ONLY to rows that carry a parent
-// - todo 314's notices have none, so their behaviour is untouched.
+// - the modal-hold notices have none, so their behaviour is untouched.
 const NOTICE_MAX_AGE = "-1 hours";
 
 // How many still-running crew members the roster names before summarising.
@@ -2571,7 +2563,7 @@ const NOTICE_MAX_AGE = "-1 hours";
 // past a handful it is a wall of text pasted into a terminal.
 const ROSTER_STILL_GOING = 8;
 
-// TODO 390 COUNSELORS ROUND 3, F5. The same cap, same reasoning, applied to
+// The same cap, same reasoning, applied to
 // the FINISHED list rather than the still-running roster: an ordinary crew
 // is naturally small, but a coalesced notice's finished list grows one line
 // per episode for as long as the pane stays held, with no bound at all
@@ -2607,7 +2599,7 @@ const unreported = (condition: string, episode: string): string => `NOT EXISTS (
 // `episode` is aliased per query - state_changed_at for a finish, closed_at
 // for a death - which is exactly the difference the alias exists to hide from
 // everything downstream.
-// closed_at IS ADDITIVE, TODO 390 COUNSELORS ROUND 3 (F2). Added so
+// closed_at IS ADDITIVE. Added so
 // crewRowForRender's re-render can compare a carried-forward GONE
 // candidate's STORED episode against the row's CURRENT close, not merely
 // whether it is closed at all - see standingNoticeBody's own comment on the
@@ -2645,10 +2637,9 @@ interface StandingCandidate {
 }
 
 // THE MEMBERSHIP QUERY, AND IT HAS NO BRANCH IN IT. Scope is a parameter with
-// one value today; if you are about to add a second membership shape here,
-// read comment 631 on todo 315 first - groups are blocked on agent labels
-// that do not exist AND on an undecided overlap-dedup rule, and neither is
-// smuggled in as a WHERE clause.
+// one value today; a second membership shape (groups) is blocked on agent
+// labels that do not exist AND on an undecided overlap-dedup rule, and neither
+// is smuggled in as a WHERE clause.
 //
 // kind = 'agent': a lead writes no agent_state at all (src/hook.ts's UPDATE
 // is scoped to kind='agent', .claude/rules/worker-state.md), so a lead could
@@ -2656,25 +2647,24 @@ interface StandingCandidate {
 // worker anyone is waiting on. This is the same allowlist hook.ts uses, for
 // the same reason: a future third kind defaults to silence.
 //
-// a.actor_id != the watch's DELIVERY ACTOR, not its owner: the exclusion
-// exists so a session is never told about itself, and the session being told
-// is the delivery target. Those are the same actor for the ordinary lead
-// watching its own crew; they differ the moment deliver_to names a crew
-// member, and it is that case the exclusion is actually for - a worker being
-// told it went idle, by a paste into the pane it is reading from.
-// ISSUE #156, D3, WIDENED BY TODO 373. A WORKER'S FIRST TURN IS NOT A FINISH,
-// and this one predicate is the whole fix on the read side. `claude --resume`
-// replays the restored conversation, ends that turn, and fires a Stop hook; a
-// SPAWNED worker answers the `[hive]` line agent_spawn types into its pane and
-// ends that turn the same way. Either way the row goes idle, genuinely and
-// freshly, for a worker nobody has given anything to. A standing watch then
-// reports it as finished, and a lead that trusts the wake tears down a worker
-// that never started. Both halves observed live - the resume twice, the spawn
-// four times in one evening, on every worker spawned during a wave - and both
-// reproduced end to end before the fix existed, in
-// test/resume-false-finish.test.mjs and test/spawn-false-finish.test.mjs: a
-// real spawn, a real park and resume, and real Claude Code payloads through
-// the built dist/hook.js.
+// a.actor_id != the watch's DELIVERY ACTOR, not its owner: the exclusion exists
+// so a session is never told about itself, and the session being told is the
+// delivery target. Those are the same actor for the ordinary lead watching its
+// own crew; they differ the moment deliver_to names a crew member, and it is
+// that case the exclusion is actually for - a worker being told it went idle,
+// by a paste into the pane it is reading from. ISSUE #156, LATER WIDENED BY THE
+// SPAWN-WIDENING FIX. A WORKER'S FIRST TURN IS NOT A FINISH, and this one
+// predicate is the whole fix on the read side. `claude --resume` replays the
+// restored conversation, ends that turn, and fires a Stop hook; a SPAWNED
+// worker answers the `[hive]` line agent_spawn types into its pane and ends
+// that turn the same way. Either way the row goes idle, genuinely and freshly,
+// for a worker nobody has given anything to. A standing watch then reports it
+// as finished, and a lead that trusts the wake tears down a worker that never
+// started. Both halves observed live - the resume twice, the spawn four times
+// in one evening, on every worker spawned during a wave - and both reproduced
+// end to end before the fix existed, in test/resume-false-finish.test.mjs and
+// test/spawn-false-finish.test.mjs: a real spawn, a real park and resume, and
+// real Claude Code payloads through the built dist/hook.js.
 //
 // WHY THE LATCH RESET LANE A ALREADY SHIPPED CANNOT COVER THIS. resumeAgent
 // clears agent_state/state_changed_at, which closed the case where a PRE-CLOSE
@@ -2684,8 +2674,9 @@ interface StandingCandidate {
 // defects that produce the same wrong sentence.
 //
 // `resumed_at != ''` reads as "resumed, and not yet given anything" -
-// resumeAgent stamps it in its flip (todo 373 widened this to cover a second
-// start path, spawn; todo 387 narrowed it back to this one, see
+// resumeAgent stamps it in its flip (the spawn-widening fix widened this to
+// cover a second start path, spawn; the spawn-announcement-removal fix
+// narrowed it back to this one, see
 // src/firstPrompt.ts's own header for the full history) - and src/hook.ts
 // clears it on the worker's first `prompt`, a real UserPromptSubmit, the
 // first moment anyone gave this worker anything. That is why this is a
@@ -2700,26 +2691,27 @@ interface StandingCandidate {
 // emits a `prompt` hook that hive already wires and already writes on.
 //
 // THE ACCEPTED RESIDUAL, stated because it is reachable and this project has
-// shipped silent narrowing before. A delivery into a BUSY pane is absorbed
-// into the running turn as an attachment and fires no UserPromptSubmit at all
+// shipped silent narrowing before. A delivery into a BUSY pane is absorbed into
+// the running turn as an attachment and fires no UserPromptSubmit at all
 // (.claude/rules/tmux-and-panes.md), so an assignment sent while the restore
 // turn is still running leaves the column set, and THAT turn's genuine finish
 // is suppressed too. It is bounded rather than permanent: the next delivery
 // that lands on an idle pane is a real user turn, writes a `prompt` row, and
-// clears the column. TODO 387 CLOSED THE SPAWN-SIDE TWIN OF THIS RESIDUAL
-// RATHER THAN LEAVING IT BOUNDED: agent_spawn no longer types anything into a
-// fresh pane, so there is no announcement turn left for an assignment to be
-// absorbed into on the spawn side - only the restore turn above remains.
+// clears the column. THE SPAWN-ANNOUNCEMENT-REMOVAL FIX CLOSED THE SPAWN-SIDE
+// TWIN OF THIS RESIDUAL RATHER THAN LEAVING IT BOUNDED: agent_spawn no longer
+// types anything into a fresh pane, so there is no announcement turn left for
+// an assignment to be absorbed into on the spawn side - only the restore turn
+// above remains.
 //
-// TODO 377 NARROWED THE NEXT SENTENCE, which used to read "the store cannot do
-// better here ... no evidence of any kind distinguishing them". That
+// A LATER CORRECTION NARROWED THE NEXT SENTENCE, which used to read "the store
+// cannot do better here ... no evidence of any kind distinguishing them". That
 // overstates the ignorance: hive's OWN delivery sites - agent_send's text path
 // and deliver() below - are first-person evidence that something WAS given to
 // this worker. What hive cannot tell is whether the in-flight turn's END
-// includes that work, because between the restore turn and an
-// attachment-driven turn there is no prompt and no `working` latch to separate
-// them. So the limit is on attributing the FINISH, not on knowing a delivery
-// happened - and the silence itself is now REPORTED rather than only accepted:
+// includes that work, because between the restore turn and an attachment-driven
+// turn there is no prompt and no `working` latch to separate them. So the limit
+// is on attributing the FINISH, not on knowing a delivery happened - and the
+// silence itself is now REPORTED rather than only accepted:
 // reportUnbriefedWorkers (src/cli.ts) names a worker that has sat latched past
 // a bound, which is the mitigation available for a class no check here can
 // close.
@@ -2730,7 +2722,7 @@ interface StandingCandidate {
 // worker that cannot report itself.
 //
 // THAT SENTENCE WAS TRUE OF THE INTENT AND FALSE OF THE CODE for one commit,
-// and counselors caught it. The gone half excludes `agent_state = 'idle'` on
+// and it was caught in review. The gone half excludes `agent_state = 'idle'` on
 // the premise "idle means it had finished and this watch has ALREADY SAID SO"
 // - and that premise is exactly what this suppression falsifies: the idle was
 // deliberately NOT said. So a worker resumed at 09:00 whose restore turn ended
@@ -2740,12 +2732,12 @@ interface StandingCandidate {
 // worst outcome available, reached by two correct-looking guards meeting.
 // standingGoneRows now reads `(agent_state != 'idle' OR resumed_at != '')`:
 // a suppressed idle was never said, so it cannot be the reason to stay quiet.
-// TODO 373 IS WHY THAT PAIR IS SPELLED WITH ONE COLUMN RATHER THAN TWO. This
-// reader is a WHERE clause and cannot call the predicate below, so a second
-// column for the spawn half would have meant remembering an OR here, inside a
-// string, on a query whose whole job is to disagree with the filter below.
-// Widening the existing column instead means this line needed no edit at all
-// to stay correct for spawned workers.
+// THE SPAWN-WIDENING FIX IS WHY THAT PAIR IS SPELLED WITH ONE COLUMN RATHER
+// THAN TWO. This reader is a WHERE clause and cannot call the predicate below,
+// so a second column for the spawn half would have meant remembering an OR
+// here, inside a string, on a query whose whole job is to disagree with the
+// filter below. Widening the existing column instead means this line needed no
+// edit at all to stay correct for spawned workers.
 //
 // FILTERED IN JS, NOT IN THE WHERE CLAUSE, and the first version of this lane
 // had it the other way. As a SQL fragment it read cheaper - it prunes before
@@ -2784,7 +2776,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 //
 // closed_at is the key, because it is the only value that moves. GONE's own
 // `since` is null by construction, and agent_close/closeAgentRow never touch
-// state_changed_at. CORRECTED, TODO 391: this used to say src/hook.ts is that
+// state_changed_at. CORRECTED LATER: this used to say src/hook.ts is that
 // column's ONLY writer, and it is not - resumeAgent's flip and
 // restoreFlippedRow both list state_changed_at in RESUME_FLIP_COLUMNS
 // (src/spawn.ts) and write it to NULL and back again. Nothing about this
@@ -2797,7 +2789,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 // so its own death is a new key with nothing to clear.
 //
 // A DEATH BEFORE THE WATCH EXISTED IS NOT NEWS, and the way that bound is
-// drawn is the fix rather than a preference (counselors, codex P2). It used to
+// drawn is the fix rather than a preference. It used to
 // be `closed_at >= the watch's created_at`, and BOTH stamps are whole seconds
 // (datetime('now')): a worker closed at 12:00:00.100 and a watch created at
 // 12:00:00.900 store the identical value, so an already-dead worker was
@@ -2817,7 +2809,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 // INSERT..SELECT over a bounded set at creation.
 //
 // A CLOSE FROM `idle` IS NOT A DEATH, and this discriminator is what stops
-// the intended loop from alarming (counselors, both seats). Worker finishes ->
+// the intended loop from alarming. Worker finishes ->
 // idle notice -> lead reads it, completes the todo, calls agent_close: without
 // this the next tick files a SECOND notice about the same worker, saying it
 // went away and its unwritten work is lost. At three to five workers that is
@@ -2828,11 +2820,11 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
 // on it. src/hook.ts is the only writer of agents.agent_state ON THE CLOSE
 // PATH (.claude/rules/worker-state.md, "enumerate every writer before picking
 // one" - checked, not assumed: closeAgentRow in src/spawn.ts writes status and
-// closed_at and never this column). CORRECTED, TODO 391: the unqualified
+// closed_at and never this column). CORRECTED LATER: the unqualified
 // version of that sentence shipped here and is false. resumeAgent's flip
 // resets agent_state to 'unknown' and restoreFlippedRow puts it back, both via
-// RESUME_FLIP_COLUMNS (src/spawn.ts) - which is precisely the third door todo
-// 374 found into a false obituary, documented in worker-state.md and
+// RESUME_FLIP_COLUMNS (src/spawn.ts) - which is precisely the third door a
+// later fix found into a false obituary, documented in worker-state.md and
 // contradicted by this comment. Scoped to the close path, the justification
 // stands: a closed row's state is FROZEN at whatever the worker last reported
 // on its way out. `idle` means
@@ -2917,7 +2909,7 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
 // queries that have to agree forever.
 //
 // ONLY 'gone'. There is no matching seed for 'idle', and adding one would
-// silently revert decision A (todo 315 comment 638): a worker already idle
+// silently revert an earlier decision: a worker already idle
 // when the watch was set IS reported on the first tick, on purpose, because
 // that is the finish the one-shot loses.
 //
@@ -2988,7 +2980,7 @@ export function seedGoneCursor(timerId: number, projectId: number): void {
 }
 
 // THE CURSOR CANNOT BE "THE TIMESTAMP MOVED", and this is the finding that
-// most shapes this design (counselors C6). src/hook.ts writes
+// most shapes this design. src/hook.ts writes
 // `agent_state = ?, state_changed_at = datetime('now')` in one UPDATE
 // whenever stateFor returns non-null - INCLUDING when the state it is writing
 // is the one already there. Under a /goal, Claude Code fires Stop after every
@@ -3010,40 +3002,38 @@ export function seedGoneCursor(timerId: number, projectId: number): void {
 // TWO PLACES THIS DELIBERATELY FAILS OPEN, and both are the same rule: for a
 // feature whose entire defect is silence, an unanswerable question must
 // resolve to "report it".
-//   - NO PREVIOUS EPISODE. There is no interval to look in, so there is
-//     nothing to discriminate, and the first tick of a standing watch reports
-//     a worker that was ALREADY idle when it was set. That is a deliberate
-//     difference from mode=any's `state_changed_at >= timers.created_at`
-//     test, decided on todo 315 (comment 638, decision A) rather than
-//     inherited: that test is listed in the todo's own body as one of the
-//     three ways the one-shot fails at N workers, and a design that fixes two
-//     of three and re-ships the third is not the fix. The asymmetry decides
-//     it - reporting a stale idle costs ONE EXTRA LINE in a notice; not
-//     reporting it costs a silently missed finish.
-//   - THE LOG CANNOT ANSWER FOR THIS INTERVAL, because retention truncated
-//     its start. This is the case the FIRST version of this function got
-//     wrong, and counselors found it on both seats. It failed open only when
-//     the log held NO row after the previous episode - and pruneStateLog
-//     deletes a PREFIX (`WHERE id <= hi - LOG_MAX_ROWS`, and by age), which is
-//     the one shape that cannot produce. A prefix delete removes the OLDER
+//   - NO PREVIOUS EPISODE. There is no interval to look in, so there is nothing
+//     to discriminate, and the first tick of a standing watch reports a worker
+//     that was ALREADY idle when it was set. That is a deliberate difference
+//     from mode=any's `state_changed_at >= timers.created_at` test, decided
+//     deliberately rather than inherited: that test was one of the three ways
+//     the one-shot fails at N workers, and a design that fixes two of three and
+//     re-ships the third is not the fix. The asymmetry decides it - reporting a
+//     stale idle costs ONE EXTRA LINE in a notice; not reporting it costs a
+//     silently missed finish.
+//   - THE LOG CANNOT ANSWER FOR THIS INTERVAL, because retention truncated its
+//     start. This is the case the FIRST version of this function got wrong, and
+//     it was found independently, more than once. It failed open only when the
+//     log held NO row after the previous episode - and pruneStateLog deletes a
+//     PREFIX (`WHERE id <= hi - LOG_MAX_ROWS`, and by age), which is the one
+//     shape that cannot produce. A prefix delete removes the OLDER
 //     prompt|working row and KEEPS the newer stop|idle row, so the probe below
 //     found no work, returned false, and the finish was lost for the watch's
 //     whole life while wake_list showed it healthy. The test seeded a store
-//     with zero log rows, pinning the unreachable branch.
-//     THE CONDITION THAT ACTUALLY DECIDES IT is whether the log still covers
-//     the interval's own start: if the oldest surviving row in the whole table
-//     is NEWER than the previous episode, everything this probe would have
-//     needed has been pruned, and the answer is unknowable. Global rather than
-//     per-actor deliberately - the row-count bound deletes across every actor
-//     by id, so an unrelated actor's churn is what evicts a quiet worker's
-//     evidence, and a per-actor MIN would read a quiet worker's natural
-//     silence as truncation. Indexed by idx_agent_state_log_created, so it is
-//     a seek, and it REPLACES the old probe rather than adding a read.
-//     THE OTHER DIRECTION IS NOW TIGHTER, and that is deliberate too
-//     (counselors, codex P2): an INTACT log that simply records no work is
-//     evidence, not absence of it, so a latch that moved with nothing logged
-//     behind it is no longer reported as a finish. Untrusted log -> report;
-//     trusted log with no work in it -> stay quiet.
+//     with zero log rows, pinning the unreachable branch. THE CONDITION THAT
+//     ACTUALLY DECIDES IT is whether the log still covers the interval's own
+//     start: if the oldest surviving row in the whole table is NEWER than the
+//     previous episode, everything this probe would have needed has been
+//     pruned, and the answer is unknowable. Global rather than per-actor
+//     deliberately - the row-count bound deletes across every actor by id, so
+//     an unrelated actor's churn is what evicts a quiet worker's evidence, and
+//     a per-actor MIN would read a quiet worker's natural silence as
+//     truncation. Indexed by idx_agent_state_log_created, so it is a seek, and
+//     it REPLACES the old probe rather than adding a read. THE OTHER DIRECTION
+//     IS NOW TIGHTER, and that is deliberate too: an INTACT log that simply
+//     records no work is evidence, not absence of it, so a latch that moved
+//     with nothing logged behind it is no longer reported as a finish.
+//     Untrusted log -> report; trusted log with no work in it -> stay quiet.
 //
 // The upper bound is `< episode + 1 second`, not `<= episode`, because
 // state_changed_at is whole seconds (datetime('now')) while this log carries
@@ -3084,7 +3074,7 @@ function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
 // body worth more than one line per worker: it is the crew status, which is
 // the thing that removes the reason to poll in the first place.
 //
-// NOT `watch` REUSED (counselors C9). A notice carries the default EMPTY
+// NOT `watch` REUSED. A notice carries the default EMPTY
 // watch list, so deliver()'s watchedTail() answers "" for it and no
 // capture-pane runs. Putting the crew in a notice's watch list instead would
 // embed up to three worker SCREENS in a body typed into the lead's own pane,
@@ -3095,9 +3085,9 @@ function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
 // (.claude/rules/worker-state.md), so this is written to stand on its own for
 // a reader with none of the context that produced it: what happened, what is
 // still running, what to read before acting, and how to stop it.
-// `finished` is CAPPED to FINISHED_SHOWN_CAP by the caller (round 3, F5) -
+// `finished` is CAPPED to FINISHED_SHOWN_CAP by the caller -
 // `totalFinished` is the TRUE count this notice covers, always. `carriedTotal`
-// is TODO 390 (pad 142 PART 3, Q1/Q3): how many episodes were already
+// is how many episodes were already
 // reported in an earlier update to THIS SAME pending notice, re-derived
 // fresh rather than recomputed from the tick that first claimed them (see
 // crewRowForRender) - zero for an ordinary, uncoalesced notice, and it is
@@ -3119,8 +3109,7 @@ function standingNoticeBody(
   for (const c of finished) {
     lines.push(
       c.condition === CONDITION_GONE
-        ? // TODO 390, REVIEW ROUND 2 (Claude Code Review on PR #181) then
-          // ROUND 3 (F2, fable + codex independently). crewRowForRender's
+        ? // Claude Code Review on PR #181 found that crewRowForRender's
           // OWN comment claimed "a closed row does not move again", and
           // that premise is false: agent_resume's flip (src/spawn.ts) sets
           // status = 'running' and clears closed_at with no awareness that
@@ -3129,7 +3118,7 @@ function standingNoticeBody(
           // code rendered a GONE candidate exactly once, from the row the
           // same tick claimed it, and never read the row again.
           //
-          // ROUND 2's OWN FIX WAS INCOMPLETE: it asked "is the row still
+          // THAT FIRST FIX WAS INCOMPLETE: it asked "is the row still
           // closed", not "is the row's CURRENT close still THIS episode".
           // A worker dying again after a resume closes the row a SECOND
           // time - status back to 'closed', but closed_at now a LATER
@@ -3142,8 +3131,8 @@ function standingNoticeBody(
           // closed_at !== episode) - either way this candidate's own
           // snapshot has gone stale and must not be trusted, because both
           // GONE sentences below assert "there is no terminal left to
-          // read" - the false-obituary shape worker-state.md's
-          // #156/373/374 already fought at length, reopened through the
+          // read" - the false-obituary shape worker-state.md
+          // already fought at length, reopened through the
           // one path here that re-reads live state.
           c.row.status !== "closed" || c.row.closed_at !== c.row.episode
             ? `  ${c.row.name}: was reported GONE earlier in this hold, but its row's state has moved since - ` +
@@ -3159,9 +3148,9 @@ function standingNoticeBody(
               // .claude/rules/worker-state.md rules out. Two observations and a
               // next action instead.
               //
-              // UNLESS THE ROW WAS NEVER GIVEN ANYTHING (todo 384 comment 944) -
+              // UNLESS THE ROW WAS NEVER GIVEN ANYTHING -
               // and saying so takes airtight evidence, not merely an unset latch
-              // (fix round 1, finding 4; the first version of this condition
+              // (the first version of this condition
               // OR'd in `awaitingFirstPrompt(c.row)` and overclaimed on exactly
               // the row the surrounding comment already warns against: a
               // RESUMED worker whose real assignment landed inside its still-
@@ -3192,7 +3181,7 @@ function standingNoticeBody(
         : `  ${c.row.name}: ${stateNowClause(c.row)}`,
     );
   }
-  // TODO 390 COUNSELORS ROUND 3, F5: the finished list is CAPPED, matching
+  // The finished list is CAPPED, matching
   // ROSTER_STILL_GOING's own precedent below - an unbounded hold otherwise
   // grows one line per wake_idle_notices row forever, with no bound on
   // either the pasted text or the per-row crewRowForRender query this
@@ -3200,8 +3189,8 @@ function standingNoticeBody(
   if (totalFinished > finished.length) {
     lines.push(`...and ${totalFinished - finished.length} more finish(es) not shown above.`);
   }
-  // TODO 390 (pad 142 PART 3, Q1): "one notice describing the current crew,
-  // saying how many notices it replaced and over what interval." carried
+  // This satisfies the requirement of one notice describing the current
+  // crew, saying how many notices it replaced and over what interval. Carried
   // FORWARD episodes are already named above (up to the cap), so this line
   // says only that the list is a merge, and over what TRUE span - span
   // covers every episode this notice has ever carried, not only the shown
@@ -3221,11 +3210,12 @@ function standingNoticeBody(
     // used to claim a whole CrewRow, four fields of which this query does not
     // select at all, so a future reader could take id or tmux_target off it
     // and get undefined with the compiler agreeing.
-    // TODO 373, COUNSELORS ALL THREE SEATS: A WORKER AWAITING ITS FIRST
+    // A WORKER AWAITING ITS FIRST
     // ASSIGNMENT BELONGS IN THIS CENSUS, and leaving it out is not an
     // omission. `agent_state != 'idle'` alone used to drop a worker whose
-    // only completed turn was its own spawn announcement (todo 387 removed
-    // that turn - a never-briefed spawned worker now reads 'unknown', which
+    // only completed turn was its own spawn announcement (the
+    // spawn-announcement-removal fix removed that turn - a never-briefed
+    // spawned worker now reads 'unknown', which
     // already fails `!= 'idle'` on its own; the shape below survives for the
     // RESUME side, where a worker whose only completed turn is its restore
     // still latches 'idle' with resumed_at set), and when that empties the
@@ -3297,7 +3287,7 @@ function standingNoticeBody(
       "each worker's own hook state, so a terminal still showing work means that worker is NOT finished. A " +
       "worker reading `waiting` may be stopped on a dialog nobody has answered; read its pane.",
   );
-  // THE CALLER'S OWN BODY, ON EVERY NOTICE (counselors, both seats, P1). body
+  // THE CALLER'S OWN BODY, ON EVERY NOTICE. body
   // is a REQUIRED parameter, help.ts teaches leads to write one, and
   // .claude/rules/worker-state.md tells them to make it self-contained - the
   // ids, the context, the next action. The first version of this function
@@ -3328,7 +3318,7 @@ function standingNoticeBody(
 // back onto each winning cursor row - which is what gives a batch a durable
 // identity, and what the delivery-failure re-arm above reads.
 //
-// PER-TICK COALESCING IS NOT STRUCTURAL ACROSS INSTANCES (counselors C5), and
+// PER-TICK COALESCING IS NOT STRUCTURAL ACROSS INSTANCES, and
 // that is accepted rather than hidden. Every session runs its own scheduler
 // against this store, so two instances can claim two DIFFERENT agents in the
 // same tick and each file a notice naming its own. The claim still guarantees
@@ -3339,16 +3329,16 @@ function standingNoticeBody(
 //
 // stillPending() is the read-gate the wake_cancel and expiry races need: the
 // candidates SELECT that produced `timer` can be several deliveries and their
-// real 300ms Enter sleeps old by the time this runs, so the watch may have
-// been cancelled or expired in between. Inside the transaction, so a claim
-// cannot outlive the watch it belongs to.
-// THE THREE STATEMENTS THAT MAKE UP ONE EPISODE CLAIM, extracted so the two
-// batches that make one - the standing watch's finish/death batch below and
-// todo 391's stall batch further down - cannot drift onto two spellings of it.
-// This is CREW_COLUMNS' rule applied to the write side: the two batches are
-// allowed to differ in WHICH rows they claim and WHAT they then say, never in
-// what a claim IS. The extraction moved no statement across a guard - all
-// three still run in the same order, inside the caller's own transaction.
+// real 300ms Enter sleeps old by the time this runs, so the watch may have been
+// cancelled or expired in between. Inside the transaction, so a claim cannot
+// outlive the watch it belongs to. THE THREE STATEMENTS THAT MAKE UP ONE
+// EPISODE CLAIM, extracted so the two batches that make one - the standing
+// watch's finish/death batch below and the stall detector's batch further down
+// - cannot drift onto two spellings of it. This is CREW_COLUMNS' rule applied
+// to the write side: the two batches are allowed to differ in WHICH rows they
+// claim and WHAT they then say, never in what a claim IS. The extraction moved
+// no statement across a guard - all three still run in the same order, inside
+// the caller's own transaction.
 //
 // EVERY ONE OF THESE MUST BE CALLED INSIDE `db.transaction(...).immediate()`.
 // The claim IS the record that the notice was filed, so a throwing INSERT
@@ -3385,13 +3375,13 @@ function rearmSpentEpisode(timerId: number, agentId: number, condition: string, 
 // deleted and re-claimed, and a row whose notified_at predates it was stamped
 // in place. There is no other difference between those two histories.
 //
-// THAT DISTINCTION IS WHAT DIAGNOSED TODO 386, so it is worth more than its
-// size. The incident's cursor row named a notice filed 61 seconds after the
+// THAT DISTINCTION IS WHAT DIAGNOSED A REAL INCIDENT, so it is worth more than
+// its size. The incident's cursor row named a notice filed 61 seconds after the
 // one actually delivered, which is equally consistent with "the claim was
 // overwritten" (a real defect in this table) and with "the re-arm worked as
-// designed" (no defect at all). notified_at read 15:29:51 rather than
-// 15:28:50, which rules out stampEpisodeNotice by itself and settles it. The
-// lane's whole diagnosis turns on that one column.
+// designed" (no defect at all). notified_at read 15:29:51 rather than 15:28:50,
+// which rules out stampEpisodeNotice by itself and settles it. The lane's whole
+// diagnosis turns on that one column.
 //
 // TWO CHANGES WOULD KILL IT SILENTLY, and neither would fail a test today:
 // adding an ON CONFLICT DO UPDATE clause to this statement (an upsert makes a
@@ -3425,7 +3415,7 @@ function stampEpisodeNotice(
   ).run(noticeId, timerId, agentId, condition, episode);
 }
 
-// TODO 390. Re-derives a StandingCandidate's row for a worker already
+// Re-derives a StandingCandidate's row for a worker already
 // recorded against a PENDING notice (wake_idle_notices.notice_timer_id), so a
 // coalescing update can re-render an earlier tick's finish rather than carry
 // a frozen snapshot forward. Everything but `episode` is read fresh from
@@ -3434,13 +3424,13 @@ function stampEpisodeNotice(
 // state can have moved past it by the time this runs, and only the stored
 // value still names the moment this candidate is about.
 //
-// THE ACCEPTED COST, named rather than hidden (pad 142 PART 3, Q1's own
-// mitigation is "name every worker", not "freeze every worker's detail"):
+// THE ACCEPTED COST, named rather than hidden (the mitigation is "name
+// every worker", not "freeze every worker's detail"):
 // for a CONDITION_IDLE candidate, re-deriving fresh means its line can grow
 // more current (a longer idle duration) or, rarely, describe a worker that
 // has since been reassigned and gone busy again. Every worker is still
-// named; only the DETAIL can age between updates, exactly the loss Q1
-// accepts.
+// named; only the DETAIL can age between updates, exactly the loss that
+// mitigation accepts.
 //
 // "A CLOSED ROW DOES NOT MOVE AGAIN" WAS FALSE, AND IT WAS THIS COMMENT'S OWN
 // CLAIM (Claude Code Review, PR #181). agent_resume's flip (src/spawn.ts)
@@ -3451,8 +3441,8 @@ function stampEpisodeNotice(
 // NOT fixed here, because the fix has to know the ORIGINAL condition
 // (`gone`) to recognise the row disagreeing with it - standingNoticeBody's
 // own CONDITION_GONE branch is where that check lives now, comparing the
-// row's CURRENT `status`/`closed_at` against the STORED `episode` (round 3,
-// F2: `status !== "closed"` alone missed a row resumed and closed AGAIN at
+// row's CURRENT `status`/`closed_at` against the STORED `episode` (a status
+// check alone missed a row resumed and closed AGAIN at
 // a different time) before trusting either GONE sentence.
 function crewRowForRender(agentId: number, episode: string): CrewRow | null {
   const row = stmt(`SELECT ${CREW_COLUMNS} FROM agents a WHERE a.id = ?`).get(agentId) as
@@ -3470,31 +3460,30 @@ const claimStandingBatch = db.transaction(
       if (claimEpisode(timer.id, c.row.id, c.condition, c.row.episode)) won.push(c);
     }
     if (won.length === 0) return false;
-    // TODO 390 (pad 142 PART 3, Q3): file at most one pending notice per
+    // File at most one pending notice per
     // watch. A pane held across several ticks used to get a fresh row every
     // tick something new finished, all queued behind the hold and released
     // together the instant it cleared - the thundering herd this lane
     // exists to remove. parent_timer_id = timer.id scopes the lookup to
-    // THIS watch, never a different one sharing the same pane (pad 142 Q4:
-    // one queue per pane holds only within a single watch's own notices).
-    // CONDITION_IDLE/CONDITION_GONE (round 3, F1): this batch's own kinds
+    // THIS watch, never a different one sharing the same pane (one queue per
+    // pane holds only within a single watch's own notices).
+    // CONDITION_IDLE/CONDITION_GONE: this batch's own kinds
     // only, so a pending STALL notice from claimStallBatch - which shares
     // this same parent_timer_id - is never mistaken for one of these.
     //
-    // "BOUNDED AT ONE ROW", NAMED RESIDUAL (counselors round 3, accept and
-    // record, codex): true only among instances running THIS code. During a
-    // mixed-version rollout, a session still on a pre-this-lane build has no
-    // pendingNoticeFor concept at all and files a fresh notice unconditionally
-    // on every batch, exactly as every version before this one did - so a
-    // watch can still see a burst of TWO notices (one per version) for the
-    // span of the rollout, never more, and never once every session has
-    // restarted onto this code. Same shape this file already accepts for
-    // #71/#73/#75's own mixed-version windows; recorded here so this
-    // function's "at most one pending notice" is read as "one per code
+    // "BOUNDED AT ONE ROW", NAMED RESIDUAL: true only among instances running
+    // THIS code. During a mixed-version rollout, a session still on a
+    // pre-this-lane build has no pendingNoticeFor concept at all and files a
+    // fresh notice unconditionally on every batch, exactly as every version
+    // before this one did - so a watch can still see a burst of TWO notices
+    // (one per version) for the span of the rollout, never more, and never once
+    // every session has restarted onto this code. Same shape this file already
+    // accepts for #71/#73/#75's own mixed-version windows; recorded here so
+    // this function's "at most one pending notice" is read as "one per code
     // version present," not as an absolute guarantee.
     const pending = pendingNoticeFor(timer.id, [CONDITION_IDLE, CONDITION_GONE]);
     if (pending !== undefined) {
-      // TODO 390 COUNSELORS ROUND 3, F5. Two reads instead of one: an
+      // Two reads instead of one: an
       // aggregate for the TRUE total and TRUE span (cheap, no per-row
       // rendering), and a capped, most-recent-first SELECT for what is
       // actually rendered - so the O(N) crewRowForRender cost inside this
@@ -3512,9 +3501,10 @@ const claimStandingBatch = db.transaction(
       const carried: StandingCandidate[] = [];
       for (const p of prior) {
         const row = crewRowForRender(p.agent_id, p.episode);
-        // BELIEVED UNREACHABLE, STATED RATHER THAN SILENTLY TRUSTED (Q1's
-        // mitigation is "name every worker whose episode it stands in for",
-        // and a dropped row is the one loss Q1 promised not to take). The
+        // BELIEVED UNREACHABLE, STATED RATHER THAN SILENTLY TRUSTED (the
+        // coalescing design's own mitigation is "name every worker whose
+        // episode it stands in for", and a dropped row is the one loss that
+        // mitigation promised not to take). The
         // only statement in this codebase that hard-DELETEs an agents row is
         // `launchAgent`'s own catch in src/spawn.ts, and it fires ONLY while
         // `paneUp` is still false - before that row's pane exists, so before
@@ -3551,7 +3541,7 @@ const claimStandingBatch = db.transaction(
       // changes === 0 here: not a live race (this whole block runs inside
       // one .immediate() transaction, so nothing else could have touched
       // pending.id between the SELECT above and this write - see
-      // updateNoticeInPlace's own comment, round 3 F7). The reachable cause
+      // updateNoticeInPlace's own comment). The reachable cause
       // is a throw or a constraint failure on the write itself. Either way,
       // fall through and file a fresh notice for this tick's winners only -
       // the carried-forward ones already belong to whatever pending.id
@@ -3588,7 +3578,7 @@ const claimStandingBatch = db.transaction(
 // IGNORE would give anyway.
 //
 // IT FILES AT timer.deliver_pane, NOT AT ownerPane(), AND THAT WAS A REAL
-// DEFECT (counselors, both seats, P1). ownerPane() is `SELECT tmux_target FROM
+// DEFECT. ownerPane() is `SELECT tmux_target FROM
 // agents WHERE actor_id = ? AND status = 'running'`, so it answers null for a
 // session with no agents row - and resolveDelivery (src/tools/wakes.ts)
 // DELIBERATELY supports exactly that caller, falling back to the TMUX_PANE the
@@ -3634,7 +3624,7 @@ function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null
 }
 
 // ===========================================================================
-// TODO 391, THE STALL DETECTOR. TWO ARMS, AND BOTH ARE REQUIRED.
+// THE STALL DETECTOR. TWO ARMS, AND BOTH ARE REQUIRED.
 //
 // A worker's turn can die mid-response - an API error, a killed process, a
 // host tmux server going away. hive's hooks fire on UserPromptSubmit, Stop and
@@ -3647,7 +3637,7 @@ function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null
 // pushes). Reported from two independent sites before this was built.
 //
 // THREE MEASURED FACTS DECIDE THE DESIGN, taken against the live store on
-// 2026-08-14 (todo 391, pad spec-391-stall). They are settled; do not
+// 2026-08-14. They are settled; do not
 // re-derive them.
 //
 //   F1 - THE LATCH IS NOT EVIDENCE OF A STALL, so the latch cannot be the
@@ -3897,23 +3887,23 @@ function stallNoticeBody(timer: TimerRow, stalled: StallCandidate[], observedAt:
 // reporting at all. REOPEN TRIGGER: a real lane where an arm-2 stall went
 // unreported through exactly this path.
 //
-// TODO 390 SCOPE: THIS BATCH IS DELIBERATELY NOT COALESCED, even though it
-// files through insertNotice with the identical unconditional-per-tick shape
-// claimStandingBatch used to have. The blocker is crewRowForRender's own
-// trick, above: it re-derives a carried-forward candidate by trusting only
-// the STORED episode value and re-fetching everything else fresh, which is
-// safe for CONDITION_IDLE/CONDITION_GONE because both describe a fact on the
-// worker's own `agents` row. A stall candidate's `stale` (TranscriptStaleness)
-// is not stored anywhere at all - it would have to be RE-MEASURED against the
-// same worker's transcript at update time, which can have moved on (the
-// worker resumed writing) since the tick that first flagged it, so a
-// carried-forward stall line could describe a transcript state that is no
-// longer the one that raised the flag. Coalescing this batch honestly needs
-// either a stored snapshot (a column, out of this lane's scope by the same
-// rule PART 2's typed_seen is) or a live re-probe inside this transaction
-// (a tmux fork on the store's single writer slot, the exact cost this file
-// elsewhere refuses). Left as the pre-existing per-tick shape; reopen as its
-// own lane if arm 2's own burst is measured to matter in practice.
+// THIS BATCH IS DELIBERATELY NOT COALESCED, even though it files through
+// insertNotice with the identical unconditional-per-tick shape
+// claimStandingBatch used to have. The blocker is crewRowForRender's own trick,
+// above: it re-derives a carried-forward candidate by trusting only the STORED
+// episode value and re-fetching everything else fresh, which is safe for
+// CONDITION_IDLE/CONDITION_GONE because both describe a fact on the worker's
+// own `agents` row. A stall candidate's `stale` (TranscriptStaleness) is not
+// stored anywhere at all - it would have to be RE-MEASURED against the same
+// worker's transcript at update time, which can have moved on (the worker
+// resumed writing) since the tick that first flagged it, so a carried-forward
+// stall line could describe a transcript state that is no longer the one that
+// raised the flag. Coalescing this batch honestly needs either a stored
+// snapshot (a column, out of this lane's scope by the same rule typed_seen's
+// own migration is) or a live re-probe inside this transaction (a tmux fork on
+// the store's single writer slot, the exact cost this file elsewhere refuses).
+// Left as the pre-existing per-tick shape; reopen as its own lane if arm 2's
+// own burst is measured to matter in practice.
 const claimStallBatch = db.transaction(
   (
     timer: TimerRow,
@@ -4042,7 +4032,7 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
 // A notice a standing watch filed is deliverable only while the watch that
 // filed it still stands and the notice is still recent. Both halves are
 // scoped to rows that CARRY a parent, so every wake that existed before this
-// lane - including todo 314's own notices - answers true here and behaves
+// lane - including the modal-hold notices - answers true here and behaves
 // exactly as it did.
 //
 // Fails OPEN on a throw, and that direction is deliberate: this runs between
@@ -4064,9 +4054,9 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
   }
 }
 
-// Todo 407, pad 142 PART 2. deliverable() used to return a bare boolean, used
+// deliverable() used to return a bare boolean, used
 // in `&&` chains at all three call sites. THE SIGNATURE CHANGE IS DELIBERATE,
-// not the smaller diff pad 142 named as the alternative (stashing the
+// not the smaller diff considered as the alternative (stashing the
 // observation on the ChoiceCache entry the tick already holds). Rejected that
 // route because the fact this function is asked to record is "what THIS call
 // saw for THIS timer", and ChoiceCache is keyed by PANE, not by timer - two
@@ -4082,7 +4072,7 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // live.md: a test that passes by construction rather than by the invariant it
 // claims to check). Returning the record makes the fact travel with the
 // timer it describes, so it is correct regardless of call order.
-// Todo 409, round 2. firstHeldAt rides beside typedSeen for the identical
+// firstHeldAt rides beside typedSeen for the identical
 // reason typedSeen itself was added here rather than read back off the row
 // later: for a REPEATING timer, fireDelay's own claim UPDATE resets
 // first_held_at (and typed_seen) BEFORE deliver() runs, to open the next
@@ -4093,7 +4083,7 @@ function noticeStillDeliverable(timer: TimerRow): boolean {
 // claim's own NULL instead.
 type DeliverableResult = { ok: true; typedSeen: string; firstHeldAt: string | null } | { ok: false };
 
-// NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION (counselors, both seats).
+// NEVER CALL THIS FROM INSIDE AN OPEN TRANSACTION.
 // noteModalHold below opens one with `.immediate()` to take the store's
 // writer slot, and better-sqlite3 turns a nested transaction into a SAVEPOINT
 // rather than throwing - so a caller that wrapped its own tick in a
@@ -4102,7 +4092,7 @@ type DeliverableResult = { ok: true; typedSeen: string; firstHeldAt: string | nu
 // hazard for withWindowClaim; it is the same one). tick() holds no
 // transaction, and it is the only caller today.
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): DeliverableResult {
-  // Todo 336, widened by issue #149 (todo 348). *Probe rather than plain
+  // Issue #149 widened this: *Probe rather than plain
   // rowAlive/rowLive: the pane-identity check below needs the pane's CURRENT
   // pid, for every target now, and it has to come from this exact same tmux
   // read - a second probe taken later could observe a different pane
@@ -4118,41 +4108,42 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // Issue #69, accepted 2026-08-02, not fixed. live === null means the tmux
   // probe could not answer, and every due wake renders byte-identical to one
   // that is not due yet for as long as that holds - this branch records
-  // nothing. Counselors round 1 (todo 209, item F) corrected this comment's
-  // own boundary: the original text said null occurs ONLY when
-  // untrustedTmuxServer() refuses a private tmux server paired with the
-  // default store (.claude/rules/tmux-and-panes.md), and named any other
-  // occurrence as this acceptance's reopen trigger. That is false as written
-  // - targetLive()/liveTargets() (src/tmux.ts) also answer null for ANY
-  // unexpected tmux error the caught exception does not recognise as "no
-  // such pane" (tmuxSaysNothingThere returning false), so a correctly
-  // configured, trusted shared server with a transiently erroring socket
-  // hits this exact branch too, which is precisely the "outside that refused
-  // configuration" case the old text said would trigger a reopen. The
-  // refused pairing is still the common, by-design case this acceptance was
-  // argued against; a transient probe error is rarer and, like the refused
-  // pairing, self-corrects the next tick a live snapshot resolves this timer
-  // again. The acceptance still stands under either cause: a correct fix
-  // needs a hold that writes once per condition rather than once per tick
-  // for every due wake from every concurrent instance - real design work in
-  // the hottest loop hive has, bought for a state that is either refused by
-  // design or transient. A THIRD source joined this acceptance's null case in
-  // issue #73: deliver_socket disagreeing with this process's own socket
-  // (D6/D2) - a wake whose pane lives on a server this process cannot see
-  // into, never one this project has any business typing into either. Same
-  // shape, same handling: held, not lost, and it clears the moment a tick with
-  // the matching socket observes it. Reopen if a wake is ever observed
-  // pending-and-invisible for more than a few ticks running - a probe error
-  // that resolves within a tick or two is the expected, already-accounted-for
-  // case, not this.
+  // nothing. A later review round corrected this comment's own boundary: the
+  // original text said null occurs ONLY when untrustedTmuxServer() refuses a
+  // private tmux server paired with the default store
+  // (.claude/rules/tmux-and-panes.md), and named any other occurrence as this
+  // acceptance's reopen trigger. That is false as written -
+  // targetLive()/liveTargets() (src/tmux.ts) also answer null for ANY
+  // unexpected tmux error the caught exception does not recognise as "no such
+  // pane" (tmuxSaysNothingThere returning false), so a correctly configured,
+  // trusted shared server with a transiently erroring socket hits this exact
+  // branch too, which is precisely the "outside that refused configuration"
+  // case the old text said would trigger a reopen. The refused pairing is still
+  // the common, by-design case this acceptance was argued against; a transient
+  // probe error is rarer and, like the refused pairing, self-corrects the next
+  // tick a live snapshot resolves this timer again. The acceptance still stands
+  // under either cause: a correct fix needs a hold that writes once per
+  // condition rather than once per tick for every due wake from every
+  // concurrent instance - real design work in the hottest loop hive has, bought
+  // for a state that is either refused by design or transient.
+  //
+  // A THIRD source joined this acceptance's null case in issue #73:
+  // deliver_socket disagreeing with this process's own socket - a recorded
+  // socket that does not match, not the empty no-fact case - a wake whose pane
+  // lives on a server this process cannot see into, never one this project has
+  // any business typing into either. Same shape, same handling:
+  // held, not lost, and it clears the moment a tick with the matching socket
+  // observes it. Reopen if a wake is ever observed pending-and-invisible for
+  // more than a few ticks running - a probe error that resolves within a tick
+  // or two is the expected, already-accounted-for case, not this.
   if (live === null) return { ok: false };
   if (!live) {
     // A lead-owned wake gets the same exemption janitor()'s timer sweep does,
     // and for the same reason: this check has no SETTLE_WINDOW grace at all,
     // so a wake becoming due in the exact gap between the lead's old pane
     // dying and a restart recording the new one would otherwise be cancelled
-    // outright rather than just held for a tick. Held, not silently skipped
-    // (counselors R2-A): wake_list must be able to tell this apart from a
+    // outright rather than just held for a tick. Held, not silently skipped:
+    // wake_list must be able to tell this apart from a
     // wake that simply is not due yet.
     if (isLeadActorId(timer.deliver_actor)) {
       holdTimer(timer, HELD_REASON_LEAD_PANE_DEAD);
@@ -4173,42 +4164,40 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
       // again. Reopen if a lead-owned wake is ever observed cancelled during
       // a real restart outside this mixed-version window, not inside it.
       //
-      // Counselors round 1 (todo 209, item D2) found a second mixed-version
-      // window in this same self-closing family, on the typed_busy column
-      // (#75) rather than this cancellation. A pre-#75 server's repeating-
-      // timer claim UPDATE (fireDelay, below) has no `typed_busy = NULL`
-      // clause in its compiled SQL - that clause did not exist yet - so when
-      // such a server claims and delivers a LATER cycle of a repeating timer
-      // whose EARLIER cycle a new-code server already delivered, SQLite
-      // leaves typed_busy exactly as that earlier cycle set it. A reader on
-      // new code then reports the later, unrelated cycle's confirmation
-      // state using the earlier cycle's stale typed_busy. Unlike this
-      // cancellation window, which errs toward LOSING a wake, this one errs
-      // toward the QUIET direction: a cycle typed at a genuinely idle target
-      // and genuinely lost can still read unconfirmed_busy, the reassuring
-      // value, for what is the real alarm. Same self-closing argument, same
-      // evidence: 82 timers created in this project's entire history, 0
-      // repeating, 0 fired more than once (recorded above, dba5a29), so no
-      // row has ever had a second cycle for a mixed-version claim to corrupt.
-      // The one-shot direction stays clean regardless of server version -
-      // claimOneShot never touches typed_busy, and an old-code deliver()
-      // simply never sets it, so an old-code one-shot degrades to NULL
-      // (plain unconfirmed), never a stale busy claim. ACCEPT AND RECORD;
-      // reopen under the same trigger as #70, above: this project's first
-      // repeating wake.
+      // A later review round found a second mixed-version window in this same
+      // self-closing family, on the typed_busy column (#75) rather than this
+      // cancellation. A pre-#75 server's repeating-timer claim UPDATE
+      // (fireDelay, below) has no `typed_busy = NULL` clause in its compiled
+      // SQL - that clause did not exist yet - so when such a server claims and
+      // delivers a LATER cycle of a repeating timer whose EARLIER cycle a
+      // new-code server already delivered, SQLite leaves typed_busy exactly as
+      // that earlier cycle set it. A reader on new code then reports the later,
+      // unrelated cycle's confirmation state using the earlier cycle's stale
+      // typed_busy. Unlike this cancellation window, which errs toward LOSING a
+      // wake, this one errs toward the QUIET direction: a cycle typed at a
+      // genuinely idle target and genuinely lost can still read
+      // unconfirmed_busy, the reassuring value, for what is the real alarm.
+      // Same self-closing argument, same evidence: 82 timers created in this
+      // project's entire history, 0 repeating, 0 fired more than once (recorded
+      // above, dba5a29), so no row has ever had a second cycle for a
+      // mixed-version claim to corrupt. The one-shot direction stays clean
+      // regardless of server version - claimOneShot never touches typed_busy,
+      // and an old-code deliver() simply never sets it, so an old-code one-shot
+      // degrades to NULL (plain unconfirmed), never a stale busy claim. ACCEPT
+      // AND RECORD; reopen under the same trigger as #70, above: this project's
+      // first repeating wake.
       //
-      // Fix round 1, finding 1 (counselors), same exemption janitor()'s own
-      // timers sweep now carries and for the identical reason: a timer this
-      // very function held for pane-reissue on an earlier tick, whose target
-      // has since gone from reissued to genuinely dead, is not an ordinary
-      // dead-pane timer - cancelling it here erases that history exactly as
-      // silently as the janitor sweep used to. Reached only in the narrow
-      // window the janitor sweep's own SETTLE_WINDOW leaves open (a timer
-      // younger than 15 seconds that is already due), so in practice the
-      // janitor sweep is the one that usually gets here first; this stays as
-      // the second, defensive copy of the identical check rather than a
-      // second definition - both read wasHeldForPaneReissue over the same
-      // held_reason column.
+      // Same exemption janitor()'s own timers sweep now carries and for the
+      // identical reason: a timer this very function held for pane-reissue on
+      // an earlier tick, whose target has since gone from reissued to genuinely
+      // dead, is not an ordinary dead-pane timer - cancelling it here erases
+      // that history exactly as silently as the janitor sweep used to. Reached
+      // only in the narrow window the janitor sweep's own SETTLE_WINDOW leaves
+      // open (a timer younger than 15 seconds that is already due), so in
+      // practice the janitor sweep is the one that usually gets here first;
+      // this stays as the second, defensive copy of the identical check rather
+      // than a second definition - both read wasHeldForPaneReissue over the
+      // same held_reason column.
       if (wasHeldForPaneReissue(timer.held_reason)) {
         holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
       } else {
@@ -4217,7 +4206,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     }
     return { ok: false };
   }
-  // Todo 336, widened by issue #149 (todo 348). `live` above answers "does a
+  // Issue #149 widened this. `live` above answers "does a
   // pane with this id exist", never "is it the pane we meant" - tmux pane
   // ids restart from %0 whenever the server that issued them is gone (a
   // reboot, an explicit kill-server, or simply the last session in the
@@ -4228,21 +4217,20 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // without this check a pending wake sails through and types into a
   // stranger's pane.
   //
-  // NO LONGER GATED ON isLeadActorId. Todo 336 gated this to leads on the
-  // stated grounds that "worker rows are already reaped by janitor()'s
-  // sweep at the top of every tick" - true for a DEAD pane
-  // (`rowAlive(...) === false`, the condition that sweep actually checks),
-  // false for a REISSUED one, which reads live and is exactly the case this
-  // check exists to catch. That gap is issue #149: the sweep cited to make
-  // the gate safe was blind to precisely the condition pane_pid was added to
-  // detect, so a worker's wake could sail through into whatever pane
-  // inherited its id, and if that pane was a shell rather than claude the
-  // paste would execute. deliver_pane_pid is written for every pane hive
-  // records (src/spawn.ts), so the fact needed to refuse was already read
-  // every tick and simply discarded for non-lead targets. paneReissued(),
-  // above janitor(), is the same predicate both this check and the agents
-  // sweep now share, so the two cannot drift onto different definitions of
-  // "reissued".
+  // NO LONGER GATED ON isLeadActorId. An earlier version gated this to leads on
+  // the stated grounds that "worker rows are already reaped by janitor()'s
+  // sweep at the top of every tick" - true for a DEAD pane (`rowAlive(...) ===
+  // false`, the condition that sweep actually checks), false for a REISSUED
+  // one, which reads live and is exactly the case this check exists to catch.
+  // That gap is issue #149: the sweep cited to make the gate safe was blind to
+  // precisely the condition pane_pid was added to detect, so a worker's wake
+  // could sail through into whatever pane inherited its id, and if that pane
+  // was a shell rather than claude the paste would execute. deliver_pane_pid is
+  // written for every pane hive records (src/spawn.ts), so the fact needed to
+  // refuse was already read every tick and simply discarded for non-lead
+  // targets. paneReissued(), above janitor(), is the same predicate both this
+  // check and the agents sweep now share, so the two cannot drift onto
+  // different definitions of "reissued".
   //
   // deliver_pane_pid === "" (no fact recorded: a pre-migration row, or a
   // deliver_actor with no agents row) and probe.pid === null (this exact
@@ -4267,7 +4255,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // other in severity. Argued explicitly because the mechanism that makes
   // this safe for a lead does NOT exist for a worker: `hive lead`
   // re-points every pending lead-owned wake to its fresh pane in the same
-  // transaction that records it (issue #27 L4 R6, todo 166); nothing does
+  // transaction that records it (issue #27's fix round); nothing does
   // the equivalent for a worker, so a held worker wake has no rescue and
   // sits until a human notices it in wake_list, cancels it, or its own
   // max_wait_at passes. Judged the better default anyway: silence (a
@@ -4288,7 +4276,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     );
     return { ok: false };
   }
-  // Todo 65. A pane sitting on a modal choice eats the paste and reads the
+  // A pane sitting on a modal choice eats the paste and reads the
   // Enter as an answer, so delivering into one loses the wake AND approves
   // whatever claude has highlighted. Wait instead: not cancelled, not claimed,
   // just still pending, so the next tick tries again once the dialog is gone
@@ -4335,7 +4323,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // this is forensics about a hold, not the hold itself, so a failure to
     // record it costs the record, never the candidates after it in this tick.
     //
-    // Counselors A4. GUARDED by due_at, the same optimistic token fireDelay's
+    // GUARDED by due_at, the same optimistic token fireDelay's
     // own claim already uses - the write used to carry no guard at all.
     // `timer` here is the row THIS tick read at its candidates SELECT, and a
     // concurrent instance can claim and fully deliver the SAME repeating
@@ -4351,7 +4339,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     // write a no-op exactly when a concurrent claim has already moved this row
     // past the state this tick observed.
     //
-    // Todo 314: the same hold write, now routed through noteModalHold so the
+    // The same hold write, now routed through noteModalHold so the
     // TRANSITION into this reason also tells the wake's owner (above). The
     // write itself is unchanged whenever there is nobody to tell, and this
     // still returns false either way - what a notification changes is who
@@ -4359,7 +4347,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     noteModalHold(timer, snapshot);
     return { ok: false };
   }
-  // Todo 270. The dialog check above guards a MODAL: the input box gone
+  // The dialog check above guards a MODAL: the input box gone
   // entirely, replaced by a footer with nowhere to put a paste. This is its
   // sibling condition, not a reversal of it - a human mid-typing has an
   // input box very much present, so the modal check above cannot see this
@@ -4378,7 +4366,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
     return { ok: false };
   }
-  // Todo 407, pad 142 PART 2. The four facts this function decided on, in the
+  // The four facts this function decided on, in the
   // order it computed them, as a short fixed vocabulary rather than JSON or
   // prose - it rides into wake_get/wake_list receipts, which are slim by
   // contract (.claude/rules/tool-contract.md), and a human has to read it at
@@ -4389,9 +4377,9 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   //
   // pid: mirrors paneReissued()'s own "cannot judge" condition exactly
   // (recordedPid === "" or probe.pid === null both mean no fact), so this
-  // reads "no-fact" for every pre-todo-336 row and "ok" once both sides
+  // reads "no-fact" for every pre-migration row and "ok" once both sides
   // agree - "reissued" is unreachable here because that branch already
-  // returned above. "ok" rather than "pid-ok": pad 142's own worked example
+  // returned above. "ok" rather than "pid-ok": the worked example
   // is `live=yes pid=ok dialog=no box=absent` - none of the other three
   // facts repeat their own key inside the value (`live=yes`, not
   // `live=live-yes`), and pid should not either.
@@ -4407,11 +4395,11 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // cannot read "reissued".
   const dialogVerdict = awaitingChoice(timer.deliver_pane, choices);
   const dialog = dialogVerdict === true ? "yes" : dialogVerdict === false ? "no" : "unknown";
-  // box: THE FIFTH VALUE, "absent", HAS THREE CAUSES, NOT ONE (counselors,
-  // two seats, independently). inputBoxState(pane) - called just above, by
+  // box: THE FIFTH VALUE, "absent", HAS THREE CAUSES, NOT ONE.
+  // inputBoxState(pane) - called just above, by
   // inputBoxHoldsWake - returns null from THREE distinct routes: (1)
   // findInputBox found no bracketing box on a genuinely drifted claude pane -
-  // the total-drift case pad 142 Part 1 diagnosed; (2) the pane is not running
+  // the total-drift case diagnosed earlier; (2) the pane is not running
   // claude at all, so there was never any box chrome to find - the ordinary,
   // PERMANENT state of every bash/codex worker's pane, on every delivery,
   // forever, not a fault; (3) the capture-pane call itself threw (a caught
@@ -4425,7 +4413,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // undefined (never populated) is a DIFFERENT unreachable than pid's
   // "reissued" or dialog's "yes" above: those are real vocabulary values a
   // different return already claimed. THE GUARANTEE THIS RELIES ON IS NOT
-  // cacheEntry() (counselors: it returns `{}` on a miss and proves nothing by
+  // cacheEntry() (it returns `{}` on a miss and proves nothing by
   // itself) - it is that inputBoxHoldsWake, immediately above, ALWAYS runs
   // and ALWAYS writes `.box` before this line is reached, on every path that
   // reaches here. Kept as a defensive fallback rather than an assertion: this
@@ -4469,15 +4457,15 @@ async function fireDelay(
   snapshot: AliveSnapshot | null,
   choices: ChoiceCache,
 ): Promise<void> {
-  // Todo 315. A notice whose standing watch was cancelled, or that has sat
+  // A notice whose standing watch was cancelled, or that has sat
   // pending long enough to be about a lane that has moved on, is cancelled
   // rather than typed. Above deliverable() for the same reason every other
   // decision in that function sits above claimOneShot: after the claim, "not
   // now" and "never" are the same thing.
   //
   // THE CANCEL IS BEST-EFFORT, and that is the "the scheduler must never
-  // throw" invariant rather than a style choice (CLAUDE.md; counselors,
-  // codex). fireDelay is called from tick()'s candidate loop, so an exception
+  // throw" invariant rather than a style choice (CLAUDE.md).
+  // fireDelay is called from tick()'s candidate loop, so an exception
   // escaping here - SQLITE_BUSY outliving db.ts's 5s busy_timeout, an I/O
   // error - is caught by the outer catch and every LATER candidate in that
   // tick is skipped. A notice that keeps failing this write would starve every
@@ -4487,7 +4475,7 @@ async function fireDelay(
   // refuse it. bestEffortRun is this file's existing precedent for exactly
   // this trade (see its own comment).
   if (!noticeStillDeliverable(timer)) {
-    // TODO 390 COUNSELORS ROUND 3, F8 (verified, not assumed): the `timer`
+    // Verified, not assumed: the `timer`
     // this function is passed is a member of THIS TICK'S candidates array,
     // captured once at the top of tick() - so `timer.created_at` here is
     // exactly the in-memory-and-possibly-stale value this file elsewhere
@@ -4515,7 +4503,7 @@ async function fireDelay(
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
-    // Issue #27, counselors A3. A repeating timer reuses one row across many
+    // Issue #27. A repeating timer reuses one row across many
     // deliveries, and this claim - not deliver()'s post-send write - is where
     // a NEW delivery cycle begins. The previous version only reset these
     // columns after sendText returned, so a THROWING sendText on cycle 5 left
@@ -4541,14 +4529,14 @@ async function fireDelay(
     // contention. Reopen if this project ever creates its first repeating
     // wake; the query above is the trigger, not a judgement call.
     //
-    // Counselors round 1 (todo 209, item D1) extended this same acceptance to
+    // A later review round extended this same acceptance to
     // typed_busy (#75), added to this claim's reset list below alongside
     // typed_at/confirmed_at/held_at/held_reason: it is reset by the exact
     // same claim, so it is held-stale by the exact same window, for the exact
     // same reason, covered by the exact same evidence above. No separate
     // acceptance needed; this is the same window, one more column wide.
     //
-    // Todo 407 counselors round: typed_seen rides this identical window, and
+    // typed_seen rides this identical window, and
     // a SIBLING one - deliver()'s own post-send UPDATE (below) is guarded
     // only by `WHERE id = ?`, with no cycle token, so a slow instance's
     // post-send write for cycle N can land AFTER a concurrent instance has
@@ -4561,52 +4549,51 @@ async function fireDelay(
     // means guarding a statement that governs three pre-existing columns,
     // which is a different lane than one that adds a fourth.
     //
-    // TODO 386 COUNSELORS ROUND 1 (codex P2#3) FOUND A THIRD MEMBER OF THIS
-    // SAME FAMILY, AND IT IS SETTLED HERE RATHER THAN IN THAT LANE because
-    // this is the paragraph a reader of the repeating path will reach. A
-    // repeating timer REUSES ITS ID, deliver() builds its marker from that id
-    // (`[hive wake #<id>]`), and checkConfirmations matches any prompt row for
+    // A THIRD MEMBER OF THIS SAME FAMILY WAS FOUND WHILE WORKING ON THE
+    // PASTE-TIMING FIX, AND IT IS SETTLED HERE RATHER THAN THERE because this
+    // is the paragraph a reader of the repeating path will reach. A repeating
+    // timer REUSES ITS ID, deliver() builds its marker from that id (`[hive
+    // wake #<id>]`), and checkConfirmations matches any prompt row for
     // deliver_actor carrying that marker at or after the CURRENT cycle's
-    // typed_at. So a target's genuine acknowledgement of cycle N, landing
-    // after cycle N+1's typed_at, sets confirmed_at on N+1 - a real false
-    // CONFIRMED, and one the marker requirement cannot catch, because the
-    // marker is the same string in both cycles. The other seat's reading (no
-    // finding, the marker makes false confirmation impossible) is correct for
-    // an UNRELATED prompt and does not reach reuse across cycles of one
-    // repeating timer; the two seats are answering different questions rather
-    // than contradicting each other on a fact.
-    // NOT INTRODUCED BY TODO 386, and the honest statement of what that lane
-    // did to it: the defect needs only a marker-carrying prompt row after a
-    // later cycle's typed_at, which was reachable before that lane existed.
-    // Moving typed_at from after the Enter to the moment the paste lands
-    // WIDENS the window by the paste-to-Enter gap (ENTER_DELAY_MS plus, under
+    // typed_at. So a
+    // target's genuine acknowledgement of cycle N, landing after cycle N+1's
+    // typed_at, sets confirmed_at on N+1 - a real false CONFIRMED, and one the
+    // marker requirement cannot catch, because the marker is the same string in
+    // both cycles. The other reading (no finding, the marker makes false
+    // confirmation impossible) is correct for an UNRELATED prompt and does not
+    // reach reuse across cycles of one repeating timer; the two readings are
+    // answering different questions rather than contradicting each other on a
+    // fact. NOT INTRODUCED BY THE PASTE-TIMING FIX, and the honest statement of
+    // what it did to it: the defect needs only a marker-carrying prompt row
+    // after a later cycle's typed_at, which was reachable before that fix
+    // existed.
+    // Moving typed_at from after the Enter to the moment the paste lands WIDENS
+    // the window by the paste-to-Enter gap (ENTER_DELAY_MS plus, under
     // writer-slot contention, up to busy_timeout - see deliver()'s own note).
     // Filed rather than fixed or pinned: a test here would either be red
     // against a defect out of that lane's scope, or would pin the wrong
     // behaviour as expected, and the only real fix is a per-cycle token in the
     // marker, which is a wire-format change to a string checkConfirmations,
-    // this file's own delivery prefix and .claude/rules all read.
-    // Counselors round on #101, P1. This claim's own WHERE now guards every
-    // field wake_update can touch, not just due_at - see claimOneShot's
-    // comment below for why one column was not enough, including the
-    // stale-branch scenario specific to this repeating path: a repeat-only
-    // wake_update on an already-repeating wake changes repeat_every_ms
-    // without touching due_at, and `seconds` above is computed from the
-    // STALE in-memory value the moment this branch was chosen - guarding
-    // repeat_every_ms here means that stale `seconds` can never be
+    // this file's own delivery prefix and .claude/rules all read. Issue #101's
+    // fix: this claim's own WHERE now guards every field wake_update can touch,
+    // not just due_at - see claimOneShot's comment below for why one column was
+    // not enough, including the stale-branch scenario specific to this
+    // repeating path: a repeat-only wake_update on an already-repeating wake
+    // changes repeat_every_ms without touching due_at, and `seconds` above is
+    // computed from the STALE in-memory value the moment this branch was chosen
+    // - guarding repeat_every_ms here means that stale `seconds` can never be
     // committed; a concurrent change makes this claim a no-op, and the next
-    // tick recomputes `seconds` from the row it reads fresh.
-    // Todo 409. first_held_at resets here alongside held_at/held_reason, for
-    // the identical reason: without it, a hold recorded on one cycle would
-    // read as describing every later cycle's delivery too, once a hold that
-    // never repeats stops being the only case that matters (this project's
-    // first repeating wake - see src/db.ts's migration for the mixed-version
-    // window this inherits from typed_seen/typed_busy). This is the reset
-    // fireDelay's own deliver() call below immediately re-writes from the
-    // value it captured BEFORE this claim ran - see deliver()'s own
-    // firstHeldAt parameter and DeliverableResult's comment for why that
-    // ordering, not "leave it alone", is what makes this cycle's own hold
-    // survive.
+    // tick recomputes `seconds` from the row it reads fresh. first_held_at
+    // resets here alongside held_at/held_reason, for the identical reason:
+    // without it, a hold recorded on one cycle would read as describing every
+    // later cycle's delivery too, once a hold that never repeats stops being
+    // the only case that matters (this project's first repeating wake - see
+    // src/db.ts's migration for the mixed-version window this inherits from
+    // typed_seen/typed_busy). This is the reset fireDelay's own deliver() call
+    // below immediately re-writes from the value it captured BEFORE this claim
+    // ran - see deliver()'s own firstHeldAt parameter and DeliverableResult's
+    // comment for why that ordering, not "leave it alone", is what makes this
+    // cycle's own hold survive.
     claimed =
       stmt(
         `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
@@ -4627,9 +4614,9 @@ async function fireDelay(
 // (tick(), above) - the exact staleness window the repeating claim above and
 // holdTimer()'s own write already guard against.
 //
-// Counselors round on #101, P1. The CI review gate on this PR's first
+// Issue #101. The CI review gate on this PR's first
 // version of this fix caught the missing due_at guard; a follow-up
-// counselors round on the FIX ITSELF found due_at alone was not enough. A
+// review round on the FIX ITSELF found due_at alone was not enough. A
 // wake_update that changes body or repeat_every_seconds WITHOUT touching
 // due_at left a due_at-only guard satisfied while delivering the stale
 // in-memory body - the identical bug, reached through a sibling field. Worse:
@@ -4700,7 +4687,7 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       | undefined;
     if (!agent || agent.status !== "running") return GONE;
     const alive = rowAlive(agent.tmux_socket, agent.tmux_target, snapshot);
-    // Issue #73, D2/D4/D6: unknown (a foreign socket) is reported as UNKNOWN,
+    // Issue #73: unknown (a foreign socket) is reported as UNKNOWN,
     // never folded into GONE. Collapsing it there would let a watched agent
     // this process cannot honestly judge fire an idle_any wake (via its own
     // `gone` disjunct) or silently drop out of an idle_all wait, exactly the
@@ -4714,12 +4701,13 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
       if (!agent.settled) return UNKNOWN;
       return GONE;
     }
-    // Issue #156, D3, THE ONE-SHOT HALF. The defect was observed through a
+    // Issue #156, THE ONE-SHOT HALF. The defect was observed through a
     // standing watch, but nothing about it is standing-specific: a one-shot
     // wake_when_idle over a named list reads the same row, through this
-    // function, and would fire on the same restore turn (todo 373 briefly
-    // widened this to a spawn-side announcement turn too; todo 387 removed
-    // that turn rather than leaving a second case to keep in step). Both
+    // function, and would fire on the same restore turn (the spawn-widening
+    // fix briefly widened this to a spawn-side announcement turn too; the
+    // spawn-announcement-removal fix removed that turn rather than leaving a
+    // second case to keep in step). Both
     // halves call the same predicate - see standingIdleRows above, and
     // src/firstPrompt.ts for the full reasoning and the accepted residual.
     //
@@ -4743,13 +4731,13 @@ async function maybeFireIdle(
   choices: ChoiceCache,
 ): Promise<void> {
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
-  // Todo 315. A standing watch shares this row shape and this dispatch, and
+  // A standing watch shares this row shape and this dispatch, and
   // nothing else: it never becomes "ready", it files notices instead, and the
   // only thing that ever claims its own row is the expiry below.
   //
   // max_wait_at IS THE LIFETIME, reusing the column every idle wake already
   // carries rather than adding a second lifetime parameter that could
-  // contradict it (counselors C2). That is not only cheaper, it is REQUIRED:
+  // contradict it. That is not only cheaper, it is REQUIRED:
   // the timedOut branch below sets ready unconditionally for any non-delay
   // kind, so without this the max-wait firing would claim a standing watch
   // fifteen minutes in, set fired_at, drop it from the candidates query, and
@@ -4764,7 +4752,7 @@ async function maybeFireIdle(
   // stated here rather than claimed away.
   //
   // REPORTING RUNS FIRST AND RUNS UNCONDITIONALLY, and the ordering is the
-  // fix rather than a preference (counselors, opus 6). The first version read
+  // fix rather than a preference. The first version read
   // `if (timedOut) { ...deliver...; return; }` ABOVE the reporting call, and
   // the expiry branch only completes when deliverable() says yes. So: max_wait
   // passes while the lead's input box holds unsubmitted human text.
@@ -4783,7 +4771,7 @@ async function maybeFireIdle(
   // tick that expires the watch used to be dropped with no final sweep.
   if (isStandingWatch(timer)) {
     noteStandingTransitions(timer, snapshot);
-    // Todo 391, the stall half, and it sits HERE - beside the transitions call
+    // The stall half, and it sits HERE - beside the transitions call
     // and ABOVE the `snapshot !== null` gate below - deliberately. Its arm 1
     // needs nothing tmux can refuse, so borrowing the block half's call-site
     // gate would silence it in exactly the environments a stalled worker is
@@ -4792,7 +4780,7 @@ async function maybeFireIdle(
     // unconditionally, and this notice's body makes no claim about the wake's
     // own future that an expiry could falsify.
     noteStalledCrew(timer, snapshot, choices);
-    // Todo 321, the block half, and the two conditions on it are the one-shot
+    // The block half, and the two conditions on it are the one-shot
     // branch's own conditions reached by a different route.
     //
     // A NULL SNAPSHOT MEANS NO PANE IS READ. blockedWatchedAgents filters on
@@ -4837,8 +4825,8 @@ async function maybeFireIdle(
       timer.kind === "idle_any"
         ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
         : states.length > 0 && states.every((s) => s.idle);
-    // Todo 314, amendment 1, and it sits AFTER `ready` on purpose - the first
-    // version ran it above and counselors round 2 (opus 1) found the false
+    // It sits AFTER `ready` on purpose - the first
+    // version ran it above and an earlier review round found the false
     // alarm that opens. A mode=any wake watching A and B, where B is on a
     // dialog and A goes idle in this very tick, is READY: it fires this tick.
     // Filing a notice first means the owner is told "wake #N will not fire
@@ -4888,7 +4876,7 @@ const TAIL_AGENTS = 3;
 // deliver nothing in its place. Every read is individually optional: a pane
 // that died between the decision and this call costs its own line, not the
 // wake.
-// Counselors round 1, both seats: the first version of this function reported
+// The first version of this function reported
 // ONLY describeLastLogEvent()'s fact and that hid the exact stall it was
 // built to show. describeLastLogEvent() (stateProvenance.ts) answers "what did
 // the log most recently record", and a Notification hive reads as
@@ -4906,7 +4894,7 @@ const TAIL_AGENTS = 3;
 //     the same source deriveProvenance() uses for age, reused directly here
 //     rather than through that function, since its own `event` field
 //     deliberately skips 'unchanged' rows and this needs the opposite). Only
-//     while status='running' (round 2, both seats, P2): agent_close never
+//     while status='running': agent_close never
 //     touches state_changed_at (hook.ts:285 is the only writer), so a closed
 //     row's latch is frozen at whatever it read on its way out, and "now
 //     minus that" ages a state nothing is observing any more - a worker that
@@ -4920,13 +4908,13 @@ const TAIL_AGENTS = 3;
 //     (lastLogEvent(), #72), which says the session is still ALIVE and
 //     emitting hooks even when the latch has not moved.
 //
-// WHAT THE PAIR ACTUALLY SEPARATES, AND WHAT IT DOES NOT. Round 2, both
-// seats independently: the previous version of this comment stated a general
-// rule ("divergence means stall, convergence means healthy") and both seats
-// found a real worker it misclassifies. The pair reliably flags a stall ONLY
-// when something has logged an event AFTER the state being reported - a
-// fresh notify (or any other event) sitting on an old latch, #38's own
-// shape. It does NOT separate:
+// WHAT THE PAIR ACTUALLY SEPARATES, AND WHAT IT DOES NOT. The previous version
+// of this comment stated a general rule ("divergence means stall, convergence
+// means healthy"), and that was found wrong independently, more than once,
+// against a real worker it misclassifies. The pair reliably flags a stall ONLY
+// when something has logged an event AFTER the state being reported - a fresh
+// notify (or any other event) sitting on an old latch, #38's own shape. It does
+// NOT separate:
 //   - A worker genuinely, continuously busy for 40 minutes with no event
 //     logged since, from a #38 worker whose turn died 40 minutes ago and has
 //     logged nothing since either: both render byte-identical ("working for
@@ -4958,8 +4946,8 @@ const TAIL_AGENTS = 3;
 //
 // TWO SEPARATE try/catches below, not one, so a failure in either clause
 // costs only itself, never the other - matching this file's own contract
-// that a lookup failure here costs its own clause, never the wake. Round 2
-// (opus): the latch-age read used to sit OUTSIDE any try at all, so an
+// that a lookup failure here costs its own clause, never the wake. An
+// earlier version had the latch-age read sit OUTSIDE any try at all, so an
 // exception there would escape this function entirely, be swallowed by
 // watchedTail's outer catch, and drop the ENTIRE "what hive sees" block for
 // every watched agent - exactly the failure mode deliver()'s own reliance on
@@ -4983,7 +4971,7 @@ function stateNowClause(agent: {
     if (agent.status === "running") {
       if (agent.state_changed_at) {
         const seconds = ageSecondsSince(agent.state_changed_at);
-        // Round 2 (opus): a null latch used to drop this clause silently,
+        // A null latch used to drop this clause silently,
         // indistinguishable from "nothing to say" - exactly the broken-
         // instrumentation case (agent_state defaults to 'unknown',
         // state_changed_at has no default) where a lead most needs the
@@ -5029,7 +5017,7 @@ function watchedTail(timer: TimerRow): string {
           }
         | undefined;
       if (!agent) continue;
-      // Counselors round 1, item 7. A wake firing BECAUSE a watched worker
+      // A wake firing BECAUSE a watched worker
       // went away is exactly a wake where "what was it doing" matters most,
       // so this carries the same fact every other branch below does rather
       // than narrowing the file's own "one added fact per watched agent"
@@ -5039,8 +5027,8 @@ function watchedTail(timer: TimerRow): string {
         shown.push(`${agent.name} (hive state now: ${stateNowClause(agent)}): closed, so there is no terminal left to read.`);
         continue;
       }
-      // Issue #73 counselors F2. This used to capturePane() any running row
-      // with no socket check at all, so a foreign-socket watched agent (D6) -
+      // Issue #73. This used to capturePane() any running row
+      // with no socket check at all, so a foreign-socket watched agent -
       // one whose pane lives on a server this process cannot see into - had
       // its OWN tmux_target probed against THIS process's server instead.
       // Any pane genuinely alive here under that id gets captured and typed
@@ -5057,14 +5045,15 @@ function watchedTail(timer: TimerRow): string {
       }
       let tail = "";
       try {
-        // Round 2, D5. This embeds a worker's screen into a wake body that
-        // hive itself types into the LEAD's pane next. A worker sitting on a
-        // real dialog carries "Esc to cancel" in its tail, so without the
-        // mask the lead's own pane would end up showing hive's own dialog
-        // marker, and deliver()'s cache invalidation guarantees the very
-        // next tick re-reads it. D5 already stops that pane from being
-        // misread as a dialog (the lead's input box is on screen too), but
-        // masking it here is one line and does not depend on that holding.
+        // This embeds a worker's screen into a wake body that hive itself
+        // types into the LEAD's pane next. A worker sitting on a real dialog
+        // carries "Esc to cancel" in its tail, so without the mask the lead's
+        // own pane would end up showing hive's own dialog marker, and
+        // deliver()'s cache invalidation guarantees the very next tick
+        // re-reads it. The dialog check's own input-box requirement already
+        // stops that pane from being misread as a dialog (the lead's input box
+        // is on screen too), but masking it here is one line and does not
+        // depend on that holding.
         tail = maskChoiceMarker(sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines())));
       } catch {
         // Pane gone or tmux unreachable; say so rather than dropping the agent.
@@ -5111,12 +5100,12 @@ function watchedTail(timer: TimerRow): string {
 // delivery to stop meaning "typed at a terminal" (issue #27). What is fixed is
 // the part hive causes itself.
 
-// TODO 390 REVIEW ROUND 1: created_at ANSWERS "how fresh is the CONTENT",
+// created_at ANSWERS "how fresh is the CONTENT",
 // NEVER "how long has this notice been held", and the first version of this
 // function used it for both. updateNoticeInPlace's own comment explains why
 // created_at has to refresh on every coalescing update - but that refresh is
-// exactly what makes it the wrong clock for the HOLD's own age: on pad 142's
-// own scenario (a 45-minute lunch, workers finishing every few minutes, the
+// exactly what makes it the wrong clock for the HOLD's own age: on this
+// scenario (a 45-minute lunch, workers finishing every few minutes, the
 // notice updated in place six times) created_at is only minutes old at
 // delivery, so a trailer built from it alone would read "held 5 minutes" on
 // a notice whose oldest finish is 45 minutes gone - understating staleness
@@ -5145,10 +5134,10 @@ function firstEpisodeFiledAt(noticeId: number): string | null {
 // ordinary single-episode notice held behind even a short dialog is exactly
 // as stale on arrival - only a coalesced one can additionally have HELD SINCE
 // and CONTENT REFRESHED disagree by more than a few seconds. parent_timer_id
-// IS NOT NULL is pad 142 Q2's own proven discriminator for "hive rendered
+// IS NOT NULL is the proven discriminator for "hive rendered
 // this body", so this can never touch a caller's own wake_set text.
 //
-// TODO 390 COUNSELORS ROUND 3, F3 (fable + codex, independently). This runs
+// This runs
 // AFTER fireDelay's claim has already committed fired_at, inline in the
 // sendText argument expression - deliver()'s own comment on the adjacent
 // typed_busy read states the rule this used to break: "every other read or
@@ -5181,7 +5170,7 @@ async function deliver(
   note: string,
   choices: ChoiceCache,
   typedSeen: string,
-  // Todo 409, round 2. Threaded through exactly like typedSeen, and for the
+  // Threaded through exactly like typedSeen, and for the
   // identical reason: captured off the row BEFORE fireDelay's repeating-timer
   // claim can reset it, so it survives into this delivery's own record even
   // when the claim already nulled the column in the database. See
@@ -5194,7 +5183,7 @@ async function deliver(
   // own last agent_state_log row, read right before typing. It records what
   // hive saw at the moment it typed - nothing about what happens afterward.
   //
-  // Counselors round 1 (todo 209, item B) corrected the first version of
+  // A later review round corrected the first version of
   // this comment, and the matching ones in src/db.ts's migration and
   // src/tools/wakes.ts's deliveryState(), all of which asserted that a busy
   // delivery "can never confirm" / "structurally" / "no acknowledgement was
@@ -5204,7 +5193,7 @@ async function deliver(
   // observation and let a reader judge:
   //   - .claude/rules/tmux-and-panes.md:49-57 and this project's board
   //     disagree about whether a queued paste eventually confirms once the
-  //     target's turn ends. Round 2 (opus): the citation used to point at
+  //     target's turn ends. The citation used to point at
   //     line 43, the unrelated `display-message` paragraph, and the
   //     characterisation was stale - the rule file no longer claims
   //     verification on the confirms side of this; it now records a measured
@@ -5226,7 +5215,7 @@ async function deliver(
   //     mid-response and never recovers, or a dropped API response leaving a
   //     stale prompt|working row) reports unconfirmed_busy, the QUIET value,
   //     for what is actually the real alarm: a target that is not coming
-  //     back, not one genuinely mid-turn. Item C1 (below) puts 'waiting' in
+  //     back, not one genuinely mid-turn. The rule below puts 'waiting' in
   //     this same busy bucket, so a permanently stuck 'waiting' (issue #28: a
   //     worker blocked on a permission prompt nobody ever answers - "'waiting'
   //     is LATCHED... nothing clears it") is the identical shape, not a
@@ -5239,8 +5228,8 @@ async function deliver(
   //     why a freshness bound does not belong here either). Reopen if
   //     unconfirmed_busy is ever the ONLY place a stuck target would have
   //     been visible - i.e. if #72's channel stops covering it.
-  //     THAT REOPEN CONDITION WAS MET IN PRACTICE AND IS NOW ANSWERED (todo
-  //     391). #72's channel covers this on PULL and never pushes, and the
+  //     THAT REOPEN CONDITION WAS MET IN PRACTICE AND IS NOW ANSWERED.
+  //     #72's channel covers this on PULL and never pushes, and the
   //     runbook tells every lead to arm a standing watch and go quiet - so the
   //     lead that most needs the fact is the one not running agent_list. Two
   //     independent sites reported exactly that. noteStalledCrew (above) is
@@ -5275,7 +5264,7 @@ async function deliver(
   // silently no-oping this fix for the exact target the issue was filed
   // against. The log is the only channel a lead writes to at all.
   //
-  // Counselors round 1, item C1: 'working' OR 'waiting' both count as busy.
+  // 'working' OR 'waiting' both count as busy.
   // The first version of this line read only literal 'working', arguing that
   // a blocking dialog is caught earlier and separately by deliverable()'s
   // own awaitingChoice() hold above. That argument covers the pane WHILE a
@@ -5293,7 +5282,7 @@ async function deliver(
   // when a notification left the latch alone - the idle_prompt case, Claude
   // signalling it is genuinely free), now read as not-busy.
   //
-  // Counselors round 1, item C2 - a STATED LIMIT, not a fix. Under a /goal,
+  // A STATED LIMIT, not a fix. Under a /goal,
   // Claude Code fires Stop after every turn while immediately starting
   // another, so a lead's log alternates stop|idle / prompt|working
   // continuously - worker-state.md measured nine consecutive false idles in
@@ -5307,8 +5296,7 @@ async function deliver(
   // reason. This bounds the fix for its own motivating case (a lead) without
   // claiming to close it.
   //
-  // A THROW HERE MUST NOT COST THE DELIVERY (counselors round 1, item A,
-  // both seats, the lane's only real bug). This read used to run unguarded
+  // A THROW HERE MUST NOT COST THE DELIVERY. This read used to run unguarded
   // between the claim (fireDelay/claimOneShot, above) and sendText (below);
   // every other read or write in this function is guarded on exactly that
   // ground - watchedTail carries its own try/catch, the post-send write uses
@@ -5331,15 +5319,15 @@ async function deliver(
   } catch {
     typedBusy = null;
   }
-  // TODO 386. THE RECORD IS WRITTEN THE MOMENT THE TEXT REACHES THE PANE, not
-  // when sendText returns, and the difference is a whole class of duplicate
-  // report. sendText is a paste and then, ENTER_DELAY_MS later, a SECOND tmux
-  // call for the Enter; a failure between them leaves the wake on the reader's
-  // screen with this row saying it was never typed. That is not hypothetical -
-  // it is what notice 412 did on 2026-08-13 (see sendText's own comment for the
-  // captured evidence), and a standing watch's cursor reads typed_at IS NULL as
-  // "the delivery was lost", so rearmSpentEpisode deleted the claim 60 seconds
-  // later and filed the same obituary again.
+  // THE PASTE-TIMING FIX: THE RECORD IS WRITTEN THE MOMENT THE TEXT REACHES THE
+  // PANE, not when sendText returns, and the difference is a whole class of
+  // duplicate report. sendText is a paste and then, ENTER_DELAY_MS later, a
+  // SECOND tmux call for the Enter; a failure between them leaves the wake on
+  // the reader's screen with this row saying it was never typed. That is not
+  // hypothetical - it is what notice 412 did on 2026-08-13 (see sendText's own
+  // comment for the captured evidence), and a standing watch's cursor reads
+  // typed_at IS NULL as "the delivery was lost", so rearmSpentEpisode deleted
+  // the claim 60 seconds later and filed the same obituary again.
   //
   // WHICH SIDE OF THE PASTE THIS SITS ON IS THE WHOLE FIX, so state both
   // directions rather than only the one being repaired. A throw BEFORE the
@@ -5349,8 +5337,7 @@ async function deliver(
   // the paste no longer looks like that case.
   //
   // ONLY WHERE THE HOLD ACTUALLY EXISTS, and that condition is the fix rather
-  // than a refinement of it (counselors round 1, BOTH SEATS independently:
-  // codex P1#2, claude F7). Everything the trade below sells rests on the
+  // than a refinement of it. Everything the trade below sells rests on the
   // stranded paste being VISIBLE and BLOCKING - and both of those are claude
   // chrome. inputBoxState returns null on a pane that is not running claude,
   // which is the permanent state of every bash or codex worker's pane, so
@@ -5373,8 +5360,8 @@ async function deliver(
   // whose Enter fails and whose text is then CLEARED rather than submitted -
   // the human hits Escape, or the pane dies - is now silent where it used to
   // be re-reported after a minute. Taken because the text is ON THE READER'S
-  // SCREEN in the meantime, and because since todo 403 that stranded text
-  // reads as `pending` to inputBoxState, so every later wake at that pane
+  // SCREEN in the meantime, and because a later fix made that stranded text
+  // read as `pending` to inputBoxState, so every later wake at that pane
   // HOLDS behind it and shows up in wake_list and `hive status`'s heldWakes
   // rather than being pasted on top of it. The old behaviour's own cost was
   // paid every time: a duplicate obituary sends a lead to excavate a branch,
@@ -5382,16 +5369,16 @@ async function deliver(
   //
   // THE "HOLDS BEHIND IT" HALF IS MEASURED, NOT ASSUMED, and the measurement
   // answers the one objection that would have made this a hole rather than a
-  // trade (claude seat F1: a tall body might overflow BOX_MAX_ROWS=24, find no
+  // trade (a tall body might overflow BOX_MAX_ROWS=24, find no
   // box, and hold nothing). Taken on a real lead pane during this lane: a
   // 31-line body pasted without submitting is COLLAPSED BY CLAUDE CODE TO A
   // ONE-ROW CHIP - "[Pasted text #6 +31 lines]" - and hive read
   // input_box.state as `pending`. So a stranded wake body does not produce a
   // tall box at all, findInputBox sees it well inside the cap, and the hold
-  // fires. F1 is refuted for a claude pane; for any other pane the split
-  // above means it never arises.
+  // fires. That objection is refuted for a claude pane; for any other pane
+  // the split above means it never arises.
   //
-  // WHAT THIS DOES NOT CLAIM (claude seat F5). "The duplicate obituary is
+  // WHAT THIS DOES NOT CLAIM. "The duplicate obituary is
   // fixed" is true of the paste/Enter split and of nothing else. The write
   // below is bestEffortRun, so a swallowed SQLITE_BUSY still leaves fired_at
   // set with typed_at NULL and still produces the duplicate - the residual
@@ -5416,7 +5403,7 @@ async function deliver(
   // of sendText completed. Both are a separate lane.
   //
   // THE WINDOW IS NOT 300ms, AND THE FIRST VERSION OF THIS PARAGRAPH RESTED ON
-  // THAT NUMBER (counselors round 1, codex P1#1). ENTER_DELAY_MS is 300ms, but
+  // THAT NUMBER. ENTER_DELAY_MS is 300ms, but
   // recordTyped is a SYNCHRONOUS SQLite write that now runs inside the gap,
   // ahead of the sleep, and src/db.ts sets busy_timeout to 5000 - so under
   // contention for the machine's single writer slot the paste-to-Enter gap is
@@ -5435,27 +5422,26 @@ async function deliver(
   // stranded paste on a claude pane is visible and blocks the pane, while the
   // duplicate it used to buy was paid unconditionally.
   //
-  // ONE WRITE, NOT TWO. This is the same UPDATE that always ran, moved
-  // ~300ms earlier on the success path, so typed_busy/typed_seen keep the
-  // cycle discipline their own comments describe and confirmed_at still
-  // cannot match a prompt row written before the wake was on screen.
-  // Issue #27. typed_at is the attempt. It used to be written after sendText
-  // returned, i.e. only once the Enter had also succeeded; todo 386 (above)
-  // moved it to the moment the PASTE lands, which is when the attempt has
-  // actually been made. bestEffortRun rather than a bare run for the reason
-  // that has not changed: the text is on the pane by the time this runs, so a
-  // failure recording that fact must cost the record, never retroactively turn
-  // an already-delivered wake into a thrown exception that aborts the
-  // rest of this tick's candidates (bestEffortRun is the same precedent as
-  // deliverable()'s held_at write, above, and src/hook.ts's record(); see
-  // .claude/rules/worker-state.md). held_at/held_reason are cleared on the
-  // same write, since a hold that is now resolved should stop being
-  // reported as the wake's current state.
+  // ONE WRITE, NOT TWO. This is the same UPDATE that always ran, moved ~300ms
+  // earlier on the success path, so typed_busy/typed_seen keep the cycle
+  // discipline their own comments describe and confirmed_at still cannot match
+  // a prompt row written before the wake was on screen. Issue #27. typed_at is
+  // the attempt. It used to be written after sendText returned, i.e. only once
+  // the Enter had also succeeded; the paste-timing fix (above) moved it to the
+  // moment the PASTE lands, which is when the attempt has actually been made.
+  // bestEffortRun rather than a bare run for the reason that has not changed:
+  // the text is on the pane by the time this runs, so a failure recording that
+  // fact must cost the record, never retroactively turn an already-delivered
+  // wake into a thrown exception that aborts the rest of this tick's candidates
+  // (bestEffortRun is the same precedent as deliverable()'s held_at write,
+  // above, and src/hook.ts's record(); see .claude/rules/worker-state.md).
+  // held_at/held_reason are cleared on the same write, since a hold that is now
+  // resolved should stop being reported as the wake's current state.
   //
   // confirmed_at IS ALSO CLEARED HERE, redundantly for a repeating timer -
   // the due_at claim UPDATE above (fireDelay) already reset it, along with
   // typed_at/held_at/held_reason, the moment this cycle was claimed, which is
-  // where a NEW delivery cycle actually begins (counselors A3: a throwing
+  // where a NEW delivery cycle actually begins (a throwing
   // sendText must not leave a previous cycle's success recorded against this
   // one). For a ONE-SHOT wake, claimOneShot never touches these columns, so
   // this line is the only place held_at/held_reason get cleared once a
@@ -5483,7 +5469,7 @@ async function deliver(
   // nothing else reads its format, so there is no compatibility reason to
   // keep it coarse.
   //
-  // Todo 407, pad 142 PART 2. typed_seen COSTS ZERO ADDITIONAL WRITES: it is
+  // typed_seen COSTS ZERO ADDITIONAL WRITES: it is
   // one more column on the UPDATE this function already runs, carrying the
   // observation deliverable() already computed and handed down through its
   // return value (see DeliverableResult's own comment for why it travels as
@@ -5496,14 +5482,14 @@ async function deliver(
   //
   // WHAT THIS COLUMN BUYS, STATED PRECISELY SO A LATER READER DOES NOT
   // OVERCLAIM IT. On a DELIVERING row it names WHY that delivery was judged
-  // safe, turning pad 142 Part 1's three hypotheses - box=empty (legitimate),
-  // box=absent (a drifted claude pane, a non-claude pane, or a failed read -
-  // see the box comment above for all three), box=pending (a logic error
-  // above the guard, since `pending` always holds and should never reach a
-  // delivering row) - into a one-line read instead of a two-table stopwatch
-  // reconstruction. On a pane KNOWN to be running claude, box=absent is the
-  // value that would have named todo 389's root cause on sight; on any other
-  // pane it names nothing until that is established first.
+  // safe, turning the box classifier's three hypotheses - box=empty
+  // (legitimate), box=absent (a drifted claude pane, a non-claude pane, or a
+  // failed read - see the box comment above for all three), box=pending (a
+  // logic error above the guard, since `pending` always holds and should never
+  // reach a delivering row) - into a one-line read instead of a two-table
+  // stopwatch reconstruction. On a pane KNOWN to be running claude, box=absent
+  // is the value that would have named an earlier incident's root cause on
+  // sight; on any other pane it names nothing until that is established first.
   //
   // WHAT IT DOES NOT BUY. It does NOT distinguish a wake that was HELD and
   // then delivered from one that was never held - not alone, and not
@@ -5515,29 +5501,29 @@ async function deliver(
   // test/typed-seen.test.mjs's own post-hold case, whose typed_seen is
   // byte-identical to an ordinary immediate delivery's. That was true before
   // this column existed and is true after it; this column does not touch it
-  // in either direction. An earlier draft of this lane's own plan (pad 142)
+  // in either direction. An earlier draft of this lane's own plan
   // claimed the opposite; struck after this test disproved it.
   //
-  // TODO 409 CLOSED THAT GAP - first_held_at (TimerRow's own comment;
+  // An earlier fix closed that gap - first_held_at (TimerRow's own comment;
   // src/db.ts's migration) answers the exact question this paragraph says
   // typed_seen cannot: whether this delivery followed a hold, and since when.
   //
-  // ROUND 1 OF THIS LANE SHIPPED "deliver() must never clear it" and that was
-  // WRONG for a repeating timer, caught on adversarial review before it ever
-  // merged anywhere. fireDelay's own claim UPDATE resets first_held_at as
-  // part of opening the next cycle, and that claim runs BEFORE this function
+  // AN EARLIER VERSION OF THIS LANE SHIPPED "deliver() must never clear it" and
+  // that was WRONG for a repeating timer, caught on adversarial review before
+  // it ever merged anywhere. fireDelay's own claim UPDATE resets first_held_at
+  // as part of opening the next cycle, and that claim runs BEFORE this function
   // for a repeating timer - so "never clear it" left the column nulled by the
   // time this UPDATE ran, microseconds after the reset, for exactly the case
   // the lane exists to fix. This UPDATE now WRITES first_held_at explicitly,
   // from `firstHeldAt` - the value deliverable() captured off the row before
   // that claim ever executed (DeliverableResult's own comment) - rather than
   // merely declining to touch the column. For a one-shot wake, whose claim
-  // (claimOneShot) never touches first_held_at at all, this is a no-op
-  // rewrite of the value already there; for a repeating wake held on the
-  // cycle it then delivers, this is what makes the fact survive the reset
-  // that already ran. Held_at/held_reason are still cleared here unconditionally,
-  // unchanged from before this lane: their live-debounce meaning is "held
-  // RIGHT NOW", and a delivering row is never that.
+  // (claimOneShot) never touches first_held_at at all, this is a no-op rewrite
+  // of the value already there; for a repeating wake held on the cycle it then
+  // delivers, this is what makes the fact survive the reset that already ran.
+  // Held_at/held_reason are still cleared here unconditionally, unchanged from
+  // before this lane: their live-debounce meaning is "held RIGHT NOW", and a
+  // delivering row is never that.
   const recordTyped = () =>
     bestEffortRun(
       `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
@@ -5562,15 +5548,15 @@ async function deliver(
       strandedTextWouldHold ? recordTyped : undefined,
     );
   } finally {
-    // A throw out of sendText still propagates from here, unchanged: nothing
-    // in this lane catches it, so the tick's own catch is still what keeps the
+    // A throw out of sendText still propagates from here, unchanged: nothing in
+    // this lane catches it, so the tick's own catch is still what keeps the
     // server alive through it. What changed is only WHETHER typed_at was
     // already written by the time it throws - written if the paste landed,
-    // still NULL if it did not, which is todo 386's whole split. Cache
-    // invalidation runs on both the success and the throw path, exactly as
-    // it did before typed_at existed.
-    // Todo 321: one call, both caches. Typing is the one thing that can change
-    // a pane's answer, and forgetPaneAnswers is where that rule lives.
+    // still NULL if it did not, which is the paste-timing fix's whole split.
+    // Cache invalidation runs on both the success and the throw path, exactly
+    // as it did before typed_at existed. One call, both caches. Typing is the
+    // one thing that can change a pane's answer, and forgetPaneAnswers is where
+    // that rule lives.
     forgetPaneAnswers(timer.deliver_pane, choices);
   }
   // The pre-lane position, kept for every pane where a stranded paste would
