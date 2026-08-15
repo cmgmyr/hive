@@ -11,7 +11,7 @@ import type { ProvenanceRow } from "./stateProvenance.js";
 // exists for modules like stateProvenance.js that drag in the database and
 // the native addon; slug.js is a leaf with no imports of its own (see its
 // header), so importing it here costs one small parse and nothing else on
-// the cold path every session start pays. Todo 411.
+// the cold path every session start pays.
 import { cutToUnitBudget } from "./slug.js";
 
 // SessionStart entry point. This runs on EVERY session start in EVERY
@@ -56,7 +56,7 @@ function currentBranch(dir: string): string | null {
   }
 }
 
-// Todo 411: cutToUnitBudget stops the cut from landing inside an astral
+// cutToUnitBudget stops the cut from landing inside an astral
 // character's surrogate pair. No round-trip constraint on this output, so
 // the "\n[truncated]" suffix is not counted against limit - same as before.
 export function truncate(text: string, limit: number): string {
@@ -137,7 +137,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   const agents = db
     .prepare(
-      // resumed_at (todo 373, counselors F3): this block is INJECTED into a
+      // resumed_at: this block is INJECTED into a
       // fresh lead's context next to the instruction to triage it, so a worker
       // that has been given nothing must not read here as one that finished.
       // deriveProvenance needs the column to say so.
@@ -156,13 +156,13 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     }
   }
 
-  // Issue #156 (counselors, opus F7). THE DIGEST IS THE ONE SURFACE THAT
-  // REQUIRES NOBODY TO REMEMBER ANYTHING, which is exactly this feature's
-  // thesis: the issue's complaint is that "anything the lead has to remember to
-  // write down is a thing that gets skipped at 18:00 on a Friday". D4 put
-  // parked lanes in `hive status`, which is right and is still a command
-  // somebody has to run. A crew parked on Friday and not mentioned at 09:00 on
-  // Monday is the failure the issue describes, reached from inside the fix.
+  // Issue #156. THE DIGEST IS THE ONE SURFACE THAT REQUIRES NOBODY TO REMEMBER
+  // ANYTHING, which is exactly this feature's thesis: the issue's complaint is
+  // that "anything the lead has to remember to write down is a thing that gets
+  // skipped at 18:00 on a Friday". Parked lanes now appear in `hive status`,
+  // which is right and is still a command somebody has to run. A crew parked on
+  // Friday and not mentioned at 09:00 on Monday is the failure the issue
+  // describes, reached from inside the fix.
   //
   // A COUNT AND A POINTER, not a listing, and the two reasons differ from
   // `hive status`'s. This text is INJECTED into every session's context and is
@@ -210,12 +210,11 @@ export async function evaluate(cwd: string): Promise<KickoffResult> {
   // free in every unrelated directory on the machine, and it runs before
   // check 2 opens hive.yml, let alone the store two gates further down.
   //
-  // === "1", not truthiness (issue #27's L4 fix round, DECISION 7a): a
-  // worker's env carries HIVE_LEAD unset today, but a truthy check treats
-  // ANY non-empty value as "this is the lead", including the literal string
-  // "0" - the one value a future caller would most plausibly write meaning
-  // false. That would let a worker past the one gate that exists specifically
-  // to keep it from opening the store at all.
+  // === "1", not truthiness (issue #27): a worker's env carries HIVE_LEAD unset
+  // today, but a truthy check treats ANY non-empty value as "this is the lead",
+  // including the literal string "0" - the one value a future caller would most
+  // plausibly write meaning false. That would let a worker past the one gate
+  // that exists specifically to keep it from opening the store at all.
   if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") {
     return { fired: false, reason: "worker session (HIVE_AGENT_ID is set)" };
   }

@@ -100,8 +100,7 @@ function record(actorId: string, event: string, state: string): void {
 //
 // The payload can tell the two apart. Stop carries background_tasks: [] when
 // nothing is in flight and one entry per live background task when something
-// is. Captured against Claude Code 2.1.220, headless and in a real tmux pane;
-// the payloads are on todo 57.
+// is. Captured against Claude Code 2.1.220, headless and in a real tmux pane.
 //
 // Only subagents count, deliberately. A backgrounded Bash tool call rides in
 // the same array tagged type "shell", and counting those would leave a worker
@@ -155,9 +154,8 @@ function waitingOnSubagents(payload: HookPayload): boolean {
 //
 // hive read that message and wrote "idle". So a worker blocked on four live
 // subagents was recorded idle 60 seconds after its turn ended, every time, and
-// the lead's wake fired on a lane with subagents still running. The full
-// capture is on todo 61. The stop branch above was correct throughout; it was
-// never the branch that wrote the idle.
+// the lead's wake fired on a lane with subagents still running. The stop branch
+// above was correct throughout; it was never the branch that wrote the idle.
 //
 // THE FIX IS TO DELETE AN INFERENCE, NOT TO PROP IT UP. That notification says
 // the input box has been quiet for sixty seconds. That is equally true of a
@@ -232,7 +230,7 @@ function stateForNotification(payload: HookPayload): string | null {
   return idlePrompt ? null : "waiting";
 }
 
-// Issue #154, D1 (todo 353's plan pad). agent_spawn writes a UUID onto the
+// Issue #154. agent_spawn writes a UUID onto the
 // row at spawn time via claude's own --session-id, so this is a RECONCILE,
 // not the primary write: the hook is the authority, and this is what makes
 // the CLI flag non-load-bearing rather than redundant. If --session-id is
@@ -323,7 +321,7 @@ try {
         "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
       ).run(state, actorId);
     }
-    // Issue #156, D3 - THE OTHER HALF OF THE FALSE-FINISH FIX, and the half
+    // Issue #156 - THE OTHER HALF OF THE FALSE-FINISH FIX, and the half
     // that makes it self-clearing instead of a latch.
     //
     // resumeAgent's flip stamps agents.resumed_at, and while it is set every
@@ -336,10 +334,10 @@ try {
     // the scheduler keeps the whole condition readable as one sentence on the
     // row and needs no log subquery on the hottest loop hive has.
     //
-    // TODO 373 ONCE WIDENED THIS TO A SPAWN-SIDE STAMP TOO, WITH AN EXCEPTION
+    // THIS ONCE WIDENED TO A SPAWN-SIDE STAMP TOO, WITH AN EXCEPTION
     // HERE FOR HIVE'S OWN ANNOUNCEMENT PROMPT (isSpawnAnnouncement,
-    // src/firstPrompt.ts), SO THAT PROMPT DID NOT CLEAR ITS OWN LATCH. Todo
-    // 387 removed the announcement instead of widening the discriminator
+    // src/firstPrompt.ts), SO THAT PROMPT DID NOT CLEAR ITS OWN LATCH. That
+    // announcement was later removed instead of widening the discriminator
     // further: agent_spawn no longer types anything into a fresh pane, so
     // there is no self-inflicted prompt to except and no payload-drift risk
     // riding on Claude Code's `prompt` field shape. Every prompt event a
@@ -356,7 +354,7 @@ try {
     if (event === "prompt") {
       db.prepare(
         // The WRITER reads the same fact through the same helper the readers
-        // do (/simplify, two seats independently): this UPDATE used to
+        // do (found by a /simplify pass): this UPDATE used to
         // hand-spell `resumed_at != ''`, which is the one site
         // awaitingFirstPromptSql's own promise missed - and it is the site
         // that fails in the worst direction, since a clearer that matches

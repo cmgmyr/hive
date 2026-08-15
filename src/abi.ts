@@ -17,7 +17,7 @@
 // load happens here, in a try/catch, and db.ts calls guardAbi() before it
 // constructs a Database. Keep that call above the `new Database`.
 //
-// Issue #105 lane B: better-sqlite3 13 moved to N-API (NAPI_VERSION=10 in its
+// Issue #105: better-sqlite3 13 moved to N-API (NAPI_VERSION=10 in its
 // own binding.gyp, via node-addon-api). THAT DID NOT RETIRE THIS FILE, and an
 // earlier revision of this comment claimed it had. N-API replaced an EQUALITY
 // constraint with a MINIMUM one. The addon no longer has to match the running
@@ -451,7 +451,7 @@ function workingInterpreterFromDispatcher(): string | null {
   return node && node !== process.execPath && existsSync(node) ? node : null;
 }
 
-// Todo 307's naming, at the place the banner actually prints.
+// Named here, at the place the banner actually prints.
 //
 // The SessionStart hook is registered under a bare `node` (hooks.json is
 // tracked in git and cannot carry an absolute path), so in a directory pinning
@@ -508,7 +508,7 @@ export function guardAbi(): void {
     ...prunedPinLines(),
     "",
     ...abiFixLines(status, workingInterpreterFromDispatcher()),
-    // The same shape cmdDoctor's own summary line has since todo 292, warn
+    // The same shape cmdDoctor's own summary line has, warn
     // count included. This path emits no warns and never can - it runs during
     // db.ts's import, before any check exists to warn - so the zero is a fact
     // rather than a placeholder. It matters because docs/troubleshooting.md's

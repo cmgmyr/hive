@@ -4,8 +4,8 @@
 // plus what else the store knows about the same actor, into something a
 // reader can judge for themselves instead of trusting blindly. It reports;
 // it never judges. There is no bound, threshold, or "stuck" verdict here and
-// there must never be one added -- that is lane L2 (design-worker-state pad),
-// and it was redesigned away from a bound after a query against the live
+// there must never be one added -- that is lane L2, and it was redesigned
+// away from a bound after a query against the live
 // store. Every surface that shows a worker's state calls deriveProvenance()
 // so the clock arithmetic and the source labelling exist in exactly one
 // place; five surfaces each doing their own is how they drift apart.
@@ -18,9 +18,9 @@
 // by a GLOBAL id span across every actor and project (pruneStateLog,
 // src/scheduler.ts), so a quiet worker's own rows can be evicted by a
 // completely different actor's churn while its latch survives untouched.
-// Consequence for deriveProvenance()/StateProvenance specifically (fix round
-// 1, item 3 narrowed this from a module-wide claim, which lastLogEvent below
-// now makes false as written): AGE NEVER DEPENDS ON THE LOG THERE.
+// Consequence for deriveProvenance()/StateProvenance specifically (narrowed
+// from a module-wide claim, which lastLogEvent below now makes false as
+// written): AGE NEVER DEPENDS ON THE LOG THERE.
 // age_seconds and since come only from state_changed_at. Only the EVENT that
 // explains the current state can be missing, and when it is, that is
 // reported as its own named answer (source "no-record") rather than as an
@@ -87,7 +87,7 @@ export interface StateProvenance {
   since: string | null;
   age_seconds: number | null;
   last_seen: string | null;
-  // TODO 373, COUNSELORS F3. "This worker has not been given anything yet"
+  // "This worker has not been given anything yet"
   // (src/firstPrompt.ts), carried here because three of this function's four
   // callers need it and one of them is read by a MODEL rather than a person:
   // src/kickoff.ts injects its WORKERS block into a fresh lead's context
@@ -112,7 +112,7 @@ export interface ProvenanceRow {
   agent_state: string;
   state_changed_at: string | null;
   kind: string;
-  // Todo 373. src/cli.ts and src/tools/agents.ts reach this through SELECT *;
+  // src/cli.ts and src/tools/agents.ts reach this through SELECT *;
   // src/kickoff.ts names its columns and had to gain this one.
   resumed_at: string;
 }
@@ -174,11 +174,11 @@ export function deriveProvenance(
   // kind = 'agent' (worker-state.md), so agent_state never leaves its
   // 'unknown' default. isClaudeCommand(row.command) alone cannot tell that
   // apart from a genuinely fresh, about-to-report worker - which is exactly
-  // "no-record"'s meaning, and reporting a lead that way (issue #27's L4 fix
-  // round, DECISION 4) reads as a worker that just hasn't checked in yet
+  // "no-record"'s meaning, and reporting a lead that way (issue #27) reads
+  // as a worker that just hasn't checked in yet
   // rather than one with no state channel at all, permanently, by design.
   //
-  // Fix round 1, item 4. This used to be `!isClaudeCommand(row.command) ||
+  // This used to be `!isClaudeCommand(row.command) ||
   // row.kind === LEAD_KIND` -- a blocklist naming leads specifically, and
   // wrong for a kind='command' row (a hive.yml process started by `hive
   // start`, src/cli.ts): launchAgent gives a non-'agent' kind no
@@ -187,7 +187,7 @@ export function deriveProvenance(
   // either, exactly like a lead. The old gate let it fall through to the
   // instrumented branch below and report "no-record" forever -- "a claude
   // worker that hasn't checked in yet" -- which is precisely the misreport
-  // DECISION 4 fixed for the lead, just for a different kind. Now shares
+  // the lead fix above addressed, just for a different kind. Now shares
   // reportsAgentStateLog (below) with agent_list/hive status/hive doctor, an
   // ALLOWLIST on kind='agent' rather than a lead-specific exclusion, so the
   // two cannot independently drift onto different readings of the same row
@@ -242,7 +242,7 @@ export function deriveProvenance(
 // directly instead of this string: a caller parsing JSON should not have to
 // re-derive a sentence hive already threw away.
 export function describeForHuman(prov: StateProvenance, now: number = Date.now()): string {
-  // TODO 373, COUNSELORS F3. `idle` about a worker nobody has briefed is the
+  // `idle` about a worker nobody has briefed is the
   // same misreading the wake path suppresses and the dashboard badge relabels,
   // and this string is where it reaches a lead: `hive status`, and the
   // SessionStart digest a fresh lead is told to triage. The event is dropped
@@ -344,15 +344,15 @@ export function reportsAgentStateLog(row: { kind: string; command: string }): bo
   return row.kind === "agent" && isClaudeCommand(row.command);
 }
 
-// Issue #156, D3 lived here as awaitingFirstPostResumePrompt. TODO 373 MOVED
-// IT to src/firstPrompt.ts, unchanged in what it means and widened in what it
+// Issue #156 lived here as awaitingFirstPostResumePrompt. It later MOVED
+// to src/firstPrompt.ts, unchanged in what it means and widened in what it
 // covers: a spawned worker's announcement turn produces the same false finish
 // a resumed worker's restore turn does, so the fact is now "started, and not
 // yet given anything" rather than "resumed, and not yet spoken to".
 //
 // THE MOVE IS FORCED, NOT TIDYING, and the reason belongs here because this is
 // the module whose header claims to be the one place such a fact may live.
-// src/dashboard.ts is two of that fact's readers (todo 366) and is
+// src/dashboard.ts is two of that fact's readers and is
 // deliberately free of any tmux or scheduler dependency - it hand-rolls its
 // own lastLogEvent rather than importing this module's - while THIS module
 // imports src/tmux.ts for sanitizeEventForDisplay. A leaf module with no

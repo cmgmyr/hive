@@ -20,7 +20,7 @@ export function registerKv(server: McpServer): void {
       inputSchema: {
         key: z.string(),
         // The only z.any() in the codebase, and DO NOT make it .optional().
-        // Issue #105 lane C: under zod 3 this emitted required: ["key"] while
+        // Issue #105: under zod 3 this emitted required: ["key"] while
         // z.any() also accepted a missing `value` at runtime, so a kv_set with
         // no value at all SUCCEEDED and stored the key with JSON null in it -
         // measured, not inferred. zod 4 treats a bare z.any() in a required

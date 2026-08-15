@@ -1,4 +1,4 @@
-// Todo 311. The 2026-08-07 morning incident: a box hit its PTY ceiling (518
+// The 2026-08-07 morning incident: a box hit its PTY ceiling (518
 // allocated against kern.tty.ptmx_max=511), every tmux new-session/split/
 // respawn failed with "fork failed: Device not configured", and that string
 // named nothing a human could act on. Getting from it to "you are out of
@@ -101,7 +101,7 @@ export function countAllocatedTtys(rows: PsRow[]): number {
 // launchd, so ppid 1 means the parent tmux server is gone and this shell
 // outlived it.
 //
-// Counselors review caught a second, platform-specific version of the same
+// A second, platform-specific version of the same
 // trap: on linux, `ps -o comm=` is the kernel's task->comm, set from the
 // executable's own basename at exec and NEVER from argv[0] -- it cannot
 // carry the leading dash no matter how the shell was invoked. Only `args=`
@@ -111,7 +111,7 @@ export function countAllocatedTtys(rows: PsRow[]): number {
 // used and confirmed correct. Taking only the first whitespace token here
 // is what makes one function work against either column: `comm=` is always
 // one token already, and `args=`'s first token is argv[0].
-// Exported for scripts/sweep-scratch.mjs (todo 402): the dev sweep reaps this
+// Exported for scripts/sweep-scratch.mjs: the dev sweep reaps this
 // exact population and must use the identical predicate doctor's count
 // already rests on, not a second hand-copied version - the tmux-and-panes.md
 // rule about one predicate rather than three copies applies just as much

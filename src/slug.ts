@@ -1,11 +1,11 @@
 // A leaf module with no imports of its own. Split out of src/tools/todos.ts
-// (todo 329/333) so src/dashboard.ts can reuse fallbackSlug without pulling
+// so src/dashboard.ts can reuse fallbackSlug without pulling
 // in that file's `../tmux.js` import - dashboard.ts's own header comment
 // documents why it stays free of that dependency, the same reason
 // src/firstPrompt.ts exists rather than reading its predicate off
 // src/stateProvenance.ts.
 
-// Todo 318. Full rationale (free text vs kebab-case, the character bound,
+// Full rationale (free text vs kebab-case, the character bound,
 // why a fallback rather than a backfill) is in the migration's own comment
 // in src/db.ts; not repeated at each site below.
 export const SLUG_MAX_LEN = 40;
@@ -32,14 +32,14 @@ function stripControlChars(text: string): string {
 const ELLIPSIS = "…";
 const CUT_BUDGET = SLUG_MAX_LEN - 1;
 
-// Todo 411. Walks whole code points (a `for...of` over a string iterates by
+// Walks whole code points (a `for...of` over a string iterates by
 // code point, the same as Array.from), accumulating until the NEXT one would
 // push the running UTF-16-unit count past `budget`, rather than slicing at a
 // fixed code-point count or a fixed code-unit count - either of those can
 // still split a surrogate pair or overrun the unit bound. This is the one
 // surrogate-safe cut in the codebase; every truncation site reuses it rather
-// than reimplementing it slightly weaker (the failure todo 318's own
-// /simplify pass found one step earlier, with findUnsafeControlChar).
+// than reimplementing it slightly weaker (the failure a /simplify pass found
+// one step earlier, with findUnsafeControlChar).
 // Deliberately does ONLY the cut: no ellipsis, no word-boundary trimming,
 // since callers disagree on both and those are policy, not the hazard.
 export function cutToUnitBudget(text: string, budget: number): string {

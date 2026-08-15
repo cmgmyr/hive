@@ -120,7 +120,7 @@ export function hiveRegistrations(projectPath: string | null): McpRegistration[]
 // Offered, not warned. A fresh install with no hive registration yet is doing
 // the right thing in the right order; the README hands over this same line one
 // step below `hive setup`. Both doctor and setup print it, from here, so the
-// two surfaces keep the single voice they got in round 2.
+// two surfaces keep one voice.
 export function registrationOffer(pinned: string, found: McpRegistration[]): string[] | null {
   if (found.length > 0) return null;
   const source = userConfigPath();

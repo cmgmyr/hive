@@ -3,10 +3,10 @@ import { db } from "./db.js";
 import { getProject } from "./context.js";
 // A leaf module with no imports of its own, which is why this one is allowed
 // where src/stateProvenance.ts is not (that module reaches src/tmux.ts, and
-// this file's header explains why it stays free of that). Todos 373/366.
+// this file's header explains why it stays free of that).
 import { awaitingFirstPrompt } from "./firstPrompt.js";
 // Also a leaf module (see its own header) - the canonical slug fallback,
-// reused rather than reimplemented (todo 329/333). Not imported from
+// reused rather than reimplemented. Not imported from
 // src/tools/todos.ts, which re-exports the same functions but pulls in
 // ../tmux.js at module load, exactly the coupling this file stays free of.
 import { cutToUnitBudget, fallbackSlug } from "./slug.js";
@@ -32,7 +32,7 @@ export const ACTIVITY_DISPLAY_CAP = 40; // after merge, what actually renders
 // dashboard.ts is deliberately free of (see the module header comment).
 // Same shape, different cap per call site (wake bodies vs comment bodies),
 // kept local rather than imported.
-// Todo 411: the cut itself (never the ellipsis, appended after) goes through
+// The cut itself (never the ellipsis, appended after) goes through
 // cutToUnitBudget so it cannot land inside an astral character's surrogate
 // pair. No round-trip constraint here (unlike fallbackSlug's zod .max()), so
 // the ellipsis is not counted against maxLength - same as before this fix.
@@ -91,9 +91,9 @@ function formatDate(d: Date): string {
 
 // Store timestamps are UTC ('YYYY-MM-DD HH:MM:SS', or with a milliseconds
 // suffix for agent_state_log). Rendered in the reading machine's local zone,
-// labelled explicitly as "local" so a reader hours away from UTC is never
-// left guessing which zone a bare time is in - getting this wrong makes the
-// wakes section worse than useless (plan-dashboard-v1).
+// labelled explicitly as "local" so a reader hours away from UTC is never left
+// guessing which zone a bare time is in - getting this wrong makes the wakes
+// section worse than useless.
 function formatLocal(utc: string | null): string {
   if (!utc) return "-";
   const d = new Date(`${utc.replace(" ", "T")}Z`);
@@ -151,36 +151,35 @@ function agentStatusLevel(state: string): StatusLevel {
   return "warn";
 }
 
-// TODOS 366 AND 373. THE BADGE IS A FOURTH AND FIFTH READER of the fact
-// src/firstPrompt.ts owns, and it used to read the latch alone: a worker
-// whose only completed turn is a resumed worker's restore turn (todo 373
-// briefly widened this to a spawn-side announcement turn too; todo 387
-// removed that turn) renders a green "idle" - a plain pass for a worker that
-// has been given nothing. The wake path was the one that could get a worker
-// torn down, which is why 366 is low; the display saying "finished" about a
-// worker that never started is the same misreading with a smaller blast
-// radius.
+// THE BADGE IS A FOURTH AND FIFTH READER of the fact src/firstPrompt.ts owns,
+// and it used to read the latch alone: a worker whose only completed turn is a
+// resumed worker's restore turn (a spawn-side announcement turn briefly had the
+// same shape, later removed) renders a green "idle" - a plain pass for a worker
+// that has been given nothing. The wake path was the one that could get a
+// worker torn down, which is why this defect is the less severe of the two; the
+// display saying "finished" about a worker that never started is the same
+// misreading with a smaller blast radius.
 //
 // ONE HELPER, TWO CALL SITES, and the second site is the reason this is a
-// helper at all: todo 366 describes "the dashboard" as one reader and this
-// file has two badges (the NOW strip and In Flight). Fixing the one a reader
-// happens to be looking at is this project's most repeated defect shape
+// helper at all: an earlier description of "the dashboard" as one reader
+// undercounted, since this file has two badges (the NOW strip and In Flight).
+// Fixing the one a reader happens to be looking at is this project's most
+// repeated defect shape
 // (common-issues/a-fix-applied-to-only-some-call-sites.md), reachable here
 // without leaving the file.
 //
 // AN OLD SERVER RENDERS THIS ROW THE OLD WAY, AND IT CAN WIN, recorded here
-// because this file is the surface it shows up on (counselors, codex seat).
-// Every hive instance on the machine takes the same periodic dashboard claim
-// and writes the same shared artifact, so an MCP server started before this
-// branch - running old dist for the life of its session, see
-// common-issues/stale-mcp-server-runs-old-code.md - re-renders an unbriefed
-// worker as a plain green idle and overwrites the corrected page. A newer
-// server rewrites it correctly on its next turn, so the page can alternate,
-// and it stays wrong for as long as the old process keeps winning the claim.
-// The accepted stale-dist class rather than a new failure - the page is a
-// display, it self-corrects on restart, and the wake path (which is what could
-// get a worker torn down) is unaffected because the old server's own
-// suppression reads the same column. Written down because the shape of the
+// because this file is the surface it shows up on. Every hive instance on the
+// machine takes the same periodic dashboard claim and writes the same shared
+// artifact, so an MCP server started before this branch - running old dist for
+// the life of its session, see common-issues/stale-mcp-server-runs-old-code.md
+// - re-renders an unbriefed worker as a plain green idle and overwrites the
+// corrected page. A newer server rewrites it correctly on its next turn, so the
+// page can alternate, and it stays wrong for as long as the old process keeps
+// winning the claim. The accepted stale-dist class rather than a new failure -
+// the page is a display, it self-corrects on restart, and the wake path (which
+// is what could get a worker torn down) is unaffected because the old server's
+// own suppression reads the same column. Written down because the shape of the
 // stale-dist argument recorded in src/db.ts is about SQL that would fail
 // loudly, and this one is silent.
 //
@@ -568,16 +567,15 @@ const CHART_PAD_BOTTOM = 26;
 const CHART_COMPLETED_COLOR = "#2f9e63"; // matches --ok
 const CHART_BACKLOG_COLOR = "#3a7dc4"; // matches --live
 
-// Hand-drawn, inline SVG - no chart library, no CDN (plan-dashboard-v1
-// decision 5: the page is one self-contained file that has to work from
-// file:// with no network). Axes are sized to whatever the real data is
-// (no hardcoded scale): the y-axis max is the largest value EITHER series
-// actually reaches this render, with a little headroom so the top point's
-// own dot never clips against the plot's edge. Every one of the
-// CHART_DAYS days is always plotted, including a day whose count is
-// genuinely zero - the data is never filtered down to "days with activity",
-// so a zero renders as a point sitting on the baseline, not as a gap in the
-// line.
+// Hand-drawn, inline SVG - no chart library, no CDN (the page is one
+// self-contained file that has to work from file:// with no network). Axes are
+// sized to whatever the real data is (no hardcoded scale): the y-axis max is
+// the largest value EITHER series actually reaches this render, with a little
+// headroom so the top point's own dot never clips against the plot's edge.
+// Every one of the CHART_DAYS days is always plotted, including a day whose
+// count is genuinely zero - the data is never filtered down to "days with
+// activity", so a zero renders as a point sitting on the baseline, not as a gap
+// in the line.
 function buildThroughputChart(stats: DayStats[]): string {
   const plotWidth = CHART_WIDTH - CHART_PAD_LEFT - CHART_PAD_RIGHT;
   const plotHeight = CHART_HEIGHT - CHART_PAD_TOP - CHART_PAD_BOTTOM;
@@ -1101,12 +1099,11 @@ const STYLE = `
   }
 `;
 
-// Persists scroll position, every <details>'s open/closed state, and the
-// Live toggle in sessionStorage, restored on load. Required because a
-// reload (meta refresh originally, now this file's own timer below) is a
-// full navigation: without this the page scroll-jumps to the top and
-// re-expands every section on every cycle, which is unusable at this data
-// volume (plan-dashboard-v1).
+// Persists scroll position, every <details>'s open/closed state, and the Live
+// toggle in sessionStorage, restored on load. Required because a reload (meta
+// refresh originally, now this file's own timer below) is a full navigation:
+// without this the page scroll-jumps to the top and re-expands every section on
+// every cycle, which is unusable at this data volume.
 //
 // Selects every "details[id]", not just "details.section": the pads section
 // (renderPadsSection) nests one <details id="pad-..."> per pad, and a reader
@@ -1144,12 +1141,12 @@ const SCRIPT = `
     if (typeof state.scrollY === "number") window.scrollTo(0, state.scrollY);
 
     // Live toggle. Replaces <meta http-equiv="refresh">, which the browser
-    // schedules at PARSE TIME - removing the tag afterward does not cancel
-    // it, so a toggle could never turn it off. A setTimeout can be cleared,
-    // so this is a timer instead, stored in a variable for exactly that.
-    // location.reload() is a NAVIGATION, not a fetch(), so it still works
-    // from file:// - the fetch() restriction that forced meta refresh in
-    // the first place (plan-dashboard-v1, decision 6) does not apply to it.
+    // schedules at PARSE TIME - removing the tag afterward does not cancel it,
+    // so a toggle could never turn it off. A setTimeout can be cleared, so this
+    // is a timer instead, stored in a variable for exactly that.
+    // location.reload() is a NAVIGATION, not a fetch(), so it still works from
+    // file:// - the fetch() restriction that forced meta refresh in the first
+    // place does not apply to it.
     var reloadTimer = null;
     function armReload() {
       if (reloadTimer !== null) return;
@@ -1189,23 +1186,20 @@ const SCRIPT = `
   })();
 `;
 
-// Counselors (brief-dashboard-successor items 2-4, both seats,
-// independently). The dashboard_meta.last_mark column used to hold a
-// hand-picked set of MAX() columns (see dashboard_meta's own migration
-// comment in src/db.ts for that design's history) that was a SHADOW of
-// exactly what the render functions above actually read - and the shadow
-// was already wrong four ways: wake_update(body) changes rendered text
-// (renderWakesSection) but touches none of the timer columns the old mark
-// watched; agent_rename writes agents.name with no timestamp at all;
-// pad_delete is a hard DELETE, so MAX(updated_at) stays monotonic and can go
-// on describing a pad that no longer exists; and two writes inside one
-// whole-second timestamp can make the second one invisible. None of those
-// were "stale for one interval" - they were stale until some UNRELATED
-// watched value happened to change, which on a quiet project could be
-// never. And per counselors' own finding 5, the shadow was not even cheap:
-// its state_log_mark clause ran the identical expensive correlated join
-// fetchStateLogActivity does, once per agent_state_log row, defeating its
-// own purpose.
+// The dashboard_meta.last_mark column used to hold a hand-picked set of MAX()
+// columns (see dashboard_meta's own migration comment in src/db.ts for that
+// design's history) that was a SHADOW of exactly what the render functions
+// above actually read - and the shadow was already wrong four ways:
+// wake_update(body) changes rendered text (renderWakesSection) but touches none
+// of the timer columns the old mark watched; agent_rename writes agents.name
+// with no timestamp at all; pad_delete is a hard DELETE, so MAX(updated_at)
+// stays monotonic and can go on describing a pad that no longer exists; and two
+// writes inside one whole-second timestamp can make the second one invisible.
+// None of those were "stale for one interval" - they were stale until some
+// UNRELATED watched value happened to change, which on a quiet project could be
+// never. And the shadow was not even cheap: its state_log_mark clause ran the
+// identical expensive correlated join fetchStateLogActivity does, once per
+// agent_state_log row, defeating its own purpose.
 //
 // Replaced with a hash of the RENDERED CONTENT itself - correct by
 // construction, since there is no second query to drift out of sync with

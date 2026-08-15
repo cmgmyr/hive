@@ -14,14 +14,13 @@ import { errorMessage, run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
 import { idParam } from "./params.js";
 
-// Counselors round on PR #100, finding 2. project_prune and actor_prune
-// sweep the WHOLE store, across every project and actor - a lead operation.
-// A project-locked session (every spawned worker, per CLAUDE.md's strict
-// scoping) must not be able to reach past its own project through these,
-// the same way agent_spawn refuses a cross-project cwd for one. Read the
-// lock the same way src/tools/agents.ts already does (there is no exported
-// helper for it; context.ts's own `projectLock` const is private to its
-// module), rather than inventing a second way to ask.
+// PR #100. project_prune and actor_prune sweep the WHOLE store, across every
+// project and actor - a lead operation. A project-locked session (every spawned
+// worker, per CLAUDE.md's strict scoping) must not be able to reach past its
+// own project through these, the same way agent_spawn refuses a cross-project
+// cwd for one. Read the lock the same way src/tools/agents.ts already does
+// (there is no exported helper for it; context.ts's own `projectLock` const is
+// private to its module), rather than inventing a second way to ask.
 function refuseIfLocked(tool: string): void {
   if (process.env.HIVE_PROJECT_LOCK === "1") {
     throw new Error(
@@ -52,8 +51,8 @@ function refuseIfLocked(tool: string): void {
 // project_id at all (deliberately, see its own migration comment) and is
 // not a project-owned table.
 // Exported so test/prune.test.mjs can iterate this list itself, rather than
-// keeping its own copy that could silently drop an entry with nothing to
-// notice - counselors round on PR #100, finding 5.
+// keeping its own copy that could silently drop an entry with nothing to notice
+// (PR #100).
 export const PROJECT_OWNER_TABLES = [
   "scratchpads",
   "todos",
@@ -102,13 +101,12 @@ const pruneProjectIfEmpty = db.transaction((projectId: number): boolean => {
   return db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes > 0;
 });
 
-// Every column that can hold an actor id, verified against src/db.ts as part
-// of #97's todo 235 (that todo's comment has the full audit trail). Only
-// todos.locked_by and locks.owner carry a foreign key at all; the other
-// eight are plain TEXT with no referential integrity, todo_comments.author
-// most notably - deleting an actor that wrote comments would silently
-// orphan the only record of what a worker did, with nothing to stop it.
-// Exported for the same reason as PROJECT_OWNER_TABLES above.
+// Every column that can hold an actor id, verified against src/db.ts as part of
+// #97. Only todos.locked_by and locks.owner carry a foreign key at all; the
+// other eight are plain TEXT with no referential integrity,
+// todo_comments.author most notably - deleting an actor that wrote comments
+// would silently orphan the only record of what a worker did, with nothing to
+// stop it. Exported for the same reason as PROJECT_OWNER_TABLES above.
 export const ACTOR_OWNER_COLUMNS: readonly [string, string][] = [
   ["agents", "actor_id"],
   ["agents", "parent_actor_id"],
@@ -126,16 +124,15 @@ function actorOwnsRows(actorId: string): boolean {
   return ACTOR_OWNER_COLUMNS.some(([table, column]) => existsWhere(table, column, actorId));
 }
 
-// Counselors round on PR #100, finding 1 (P1). Ownership is not the whole
-// liveness question: a session identified by a manual HIVE_AGENT_ID (the
-// documented identity mechanism in context.ts, claimable without ever being
-// spawned or getting a backing agents row) is "inert" by actorOwnsRows the
-// moment it exists, before it has written anything at all. currentActor()
-// caches its id for the rest of the process and never revalidates it, so a
-// session pruned in that window keeps writing the deleted id into columns
-// like todo_comments.author, which has no foreign key to catch it - silent
-// orphaning, the exact failure this whole tool exists to prevent, reached
-// through a liveness gap in the check rather than a missing column.
+// PR #100. Ownership is not the whole liveness question: a session identified
+// by a manual HIVE_AGENT_ID (the documented identity mechanism in context.ts,
+// claimable without ever being spawned or getting a backing agents row) is
+// "inert" by actorOwnsRows the moment it exists, before it has written anything
+// at all. currentActor() caches its id for the rest of the process and never
+// revalidates it, so a session pruned in that window keeps writing the deleted
+// id into columns like todo_comments.author, which has no foreign key to catch
+// it - silent orphaning, the exact failure this whole tool exists to prevent,
+// reached through a liveness gap in the check rather than a missing column.
 //
 // actors.last_seen_at is the fact hive already keeps for this: currentActor()
 // stamps it at creation and refreshes it at most once per TOUCH_INTERVAL_MS
@@ -288,7 +285,7 @@ export function registerMeta(server: McpServer): void {
         // memory, never on a row, so there is nothing here to check it
         // against. Two DIFFERENT things happen next, depending on whether
         // that session had already resolved before this prune ran -
-        // corrected here after counselors traced both (PR #100 round; the
+        // corrected here after both were traced through (PR #100; the
         // prior version of this comment claimed both cases fail loudly,
         // which is only true for the first):
         //   Already resolved (selectedId cached in that session's memory):
@@ -313,14 +310,13 @@ export function registerMeta(server: McpServer): void {
         const errors: { id: number; name: string; error: string }[] = [];
         for (const project of listProjects()) {
           if (project.id === homeId) continue;
-          // Counselors round on PR #100, finding 4. A per-row transaction
-          // can still throw (SQLITE_BUSY_SNAPSHOT under real contention,
-          // most plausibly), and a destructive tool must report what it
-          // actually did rather than let one row's failure erase every
-          // deletion that already committed before it. Caught here, kept
-          // going: the remaining candidates are independent of this one's
-          // failure, and a partial sweep is more useful reported than
-          // discarded.
+          // PR #100. A per-row transaction can still throw
+          // (SQLITE_BUSY_SNAPSHOT under real contention, most plausibly), and a
+          // destructive tool must report what it actually did rather than let
+          // one row's failure erase every deletion that already committed
+          // before it. Caught here, kept going: the remaining candidates are
+          // independent of this one's failure, and a partial sweep is more
+          // useful reported than discarded.
           try {
             if (pruneProjectIfEmpty.immediate(project.id)) {
               deleted.push({ id: project.id, name: project.name });
@@ -358,8 +354,8 @@ export function registerMeta(server: McpServer): void {
         const errors: { id: string; name: string; error: string }[] = [];
         for (const actor of actors) {
           if (actor.id === homeActor) continue;
-          // Same reasoning as project_prune's own try/catch above (PR #100
-          // counselors finding 4): a per-row throw must not erase every
+          // Same reasoning as project_prune's own try/catch above (PR #100):
+          // a per-row throw must not erase every
           // deletion that already committed.
           try {
             const outcome = pruneActorIfInert.immediate(actor.id);

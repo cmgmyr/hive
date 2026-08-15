@@ -47,29 +47,29 @@ function timestampPart(now: Date): string {
 const SQL_DATETIME_FMT = "%Y-%m-%d %H:%M:%f";
 const SQL_NOW = `strftime('${SQL_DATETIME_FMT}', 'now')`;
 
-// KNOWN RESIDUAL, deliberately deferred (PR #42 review, D1/D2). During a
-// rolling upgrade, an already-running OLD server keeps executing
-// second-resolution code (plain datetime('now')) until it is restarted,
-// while a NEW server in the same store writes millisecond-resolution values
-// through SQL_NOW above. A second-resolution string sorts as the EARLIEST
-// point in its second (a shorter same-prefix string compares smaller), so an
-// OLD writer's failure at, say, .900 stores "...:00" and can lose an
-// ordering comparison to a NEW writer's earlier success at .100 - the
-// deliberate >= tie-break in backupHealth no longer helps once the two
-// strings are no longer equal (D1). The same mismatch can make an OLD
-// server's future-skew check (claimStatement's third disjunct) misjudge a
-// NEW server's millisecond value as being in the future, double-firing the
-// hourly claim (D2). Both are OLD code reading NEW data: nothing this branch
-// writes can fix a process still running old code, since the only value an
-// old reader orders correctly is a second-resolution one - the very thing
-// #39 exists to move away from. Both are bounded (D2 costs one extra backup
-// per hourly claim for the length of the upgrade window and settles on its
-// own once every server restarts; D1 needs two writers in the same second,
-// one of them stale) and every hive session already restarts to pick up a
-// new dist. The SAFE direction - a second-resolution value read by the NEW
-// code - is pinned by a test (a recent second-resolution last_attempt_at
-// must not be misjudged as future); the unsafe direction needs an old
-// process actually running old code, which this branch cannot reproduce.
+// KNOWN RESIDUAL, deliberately deferred (PR #42). During a rolling upgrade, an
+// already-running OLD server keeps executing second-resolution code (plain
+// datetime('now')) until it is restarted, while a NEW server in the same store
+// writes millisecond-resolution values through SQL_NOW above. A
+// second-resolution string sorts as the EARLIEST point in its second (a shorter
+// same-prefix string compares smaller), so an OLD writer's failure at, say,
+// .900 stores "...:00" and can lose an ordering comparison to a NEW writer's
+// earlier success at .100 - the deliberate >= tie-break in backupHealth no
+// longer helps once the two strings are no longer equal (the ORDERING case).
+// The same mismatch can make an OLD server's future-skew check
+// (claimStatement's third disjunct) misjudge a NEW server's millisecond value
+// as being in the future, double-firing the hourly claim (the FUTURE-SKEW
+// case). Both are OLD code reading NEW data: nothing this branch writes can fix
+// a process still running old code, since the only value an old reader orders
+// correctly is a second-resolution one - the very thing #39 exists to move away
+// from. Both are bounded (the future-skew case costs one extra backup per
+// hourly claim for the length of the upgrade window and settles on its own once
+// every server restarts; the ordering case needs two writers in the same
+// second, one of them stale) and every hive session already restarts to pick up
+// a new dist. The SAFE direction - a second-resolution value read by the NEW
+// code - is pinned by a test (a recent second-resolution last_attempt_at must
+// not be misjudged as future); the unsafe direction needs an old process
+// actually running old code, which this branch cannot reproduce.
 
 function finalSnapshotName(reason: BackupReason, now: Date, n: number): string {
   const base = `${timestampPart(now)}-${reason}`;
@@ -166,9 +166,9 @@ export interface BackupResult {
 // issue body and test/backup.test.mjs for the reproduction.
 //
 // Built in a private staging directory and renamed into place only once
-// complete (PR #36, B3, folding in an earlier same-issue fix): a directory
-// under backups/ with a real timestamp name is never anything but a
-// finished snapshot, by construction, for two reasons at once.
+// complete (PR #36, folding in an earlier same-issue fix): a directory under
+// backups/ with a real timestamp name is never anything but a finished
+// snapshot, by construction, for two reasons at once.
 //
 // First, durability: a large VACUUM INTO takes real time, and writing
 // straight to the final name meant a SIGKILL or power loss mid-write left an
@@ -190,12 +190,12 @@ export interface BackupResult {
 // private staging directory - never anything a name search could not have
 // invented itself.
 // `now` defaults to the real clock for every real caller; it is a parameter
-// (mirroring pruneSnapshots, PR #36, B6's fix) so a test can force two real
-// racing processes onto the IDENTICAL candidate name deterministically,
-// rather than hoping two independently-started processes happen to land in
-// the same millisecond (they often do - see the comment above pruneSnapshots'
-// cousin logic - but "often" is not "always", and this needs "always" to be
-// a real regression test rather than an occasionally-quiet one).
+// (the same fix that gave pruneSnapshots its own `now` parameter, PR #36) so a
+// test can force two real racing processes onto the IDENTICAL candidate name
+// deterministically, rather than hoping two independently-started processes
+// happen to land in the same millisecond (they often do - see the comment above
+// pruneSnapshots' cousin logic - but "often" is not "always", and this needs
+// "always" to be a real regression test rather than an occasionally-quiet one).
 export function takeSnapshot(
   db: Database.Database,
   dataDir: string,
@@ -215,23 +215,23 @@ export function takeSnapshot(
     mkdirSync(parent, { recursive: true });
     mkdirSync(staging, { recursive: true });
     db.prepare("VACUUM INTO ?").run(join(staging, "hive.db"));
-    // G2a (PR #42 review, counselors - nobody else, including the lead,
-    // caught this): captured HERE, after the vacuum returns, never from
-    // `now` above (the function's START time, still reserved below for the
-    // directory NAME, the deterministic race fixture B6 needs). Every
-    // session runs its own server against the SAME store, so two writers is
-    // the normal case, not a contrived one: a DIFFERENT server can write a
-    // failure onto the LIVE row while this vacuum is still running, and
-    // VACUUM INTO reads whatever is committed at the moment it executes -
-    // if that failure landed before the vacuum's read, it is already inside
-    // the staged copy's own last_error_at. Stamping last_success_at with
-    // `now` (the start time, captured BEFORE the vacuum) could then be
-    // OLDER than an error the copy itself already contains, so restoring a
-    // perfectly good snapshot would report another server's already-resolved
-    // failure as current. completedAt is captured strictly after the
-    // vacuum's read, on this same process's clock, so it is guaranteed to be
-    // >= anything the vacuum could have seen: same machine, same clock, and
-    // completion necessarily happens after whatever the vacuum read.
+    // Captured HERE, after the vacuum returns (a subtle timing bug found in PR
+    // #42's review, missed by everyone including the lead), never from `now`
+    // above (the function's START time, still reserved below for the directory
+    // NAME, which the deterministic race fixture above needs). Every session
+    // runs its own server against the SAME store, so two writers is the normal
+    // case, not a contrived one: a DIFFERENT server can write a failure onto
+    // the LIVE row while this vacuum is still running, and VACUUM INTO reads
+    // whatever is committed at the moment it executes - if that failure landed
+    // before the vacuum's read, it is already inside the staged copy's own
+    // last_error_at. Stamping last_success_at with `now` (the start time,
+    // captured BEFORE the vacuum) could then be OLDER than an error the copy
+    // itself already contains, so restoring a perfectly good snapshot would
+    // report another server's already-resolved failure as current. completedAt
+    // is captured strictly after the vacuum's read, on this same process's
+    // clock, so it is guaranteed to be >= anything the vacuum could have seen:
+    // same machine, same clock, and completion necessarily happens after
+    // whatever the vacuum read.
     completedAt = new Date();
     const profilesSrc = join(dataDir, "profiles");
     if (existsSync(profilesSrc)) {
@@ -249,20 +249,19 @@ export function takeSnapshot(
     return { ok: false, error: errorMessage(e) };
   }
 
-  // Issue #41: write this snapshot's OWN backup_meta row into the staged
-  // copy, before it becomes a real snapshot by renaming. The live store's
-  // backup_meta records history as of the moment BEFORE this backup, since
-  // backupNow's success UPDATE runs after takeSnapshot returns - so a
-  // restored snapshot that only ever carried the live row's copy would
-  // always understate its own backup history by exactly one backup. Writing
-  // last_success_at here instead is safe for a structural reason, not a
-  // timing coincidence: takeSnapshot only renames a COMPLETE copy into
-  // backups/ (see the staging-then-rename comment above), so a snapshot
-  // asserting "a backup succeeded at my own timestamp" is proven by its own
-  // existence, not by anyone's bookkeeping. Doing the equivalent write
-  // against the LIVE store before the vacuum would be wrong the same way
-  // counselors' C3 was wrong: if the vacuum then failed, the live store
-  // would claim a success that never happened.
+  // Issue #41: write this snapshot's OWN backup_meta row into the staged copy,
+  // before it becomes a real snapshot by renaming. The live store's backup_meta
+  // records history as of the moment BEFORE this backup, since backupNow's
+  // success UPDATE runs after takeSnapshot returns - so a restored snapshot
+  // that only ever carried the live row's copy would always understate its own
+  // backup history by exactly one backup. Writing last_success_at here instead
+  // is safe for a structural reason, not a timing coincidence: takeSnapshot
+  // only renames a COMPLETE copy into backups/ (see the staging-then-rename
+  // comment above), so a snapshot asserting "a backup succeeded at my own
+  // timestamp" is proven by its own existence, not by anyone's bookkeeping.
+  // Doing the equivalent write against the LIVE store before the vacuum would
+  // be wrong: if the vacuum then failed, the live store would claim a success
+  // that never happened.
   //
   // last_error/last_error_at are deliberately left untouched, not cleared:
   // a restore of a snapshot taken while a real failure was still the most
@@ -278,17 +277,17 @@ export function takeSnapshot(
   // and already-VACUUMed - open, one UPDATE, close - so there is nothing
   // for a busy_timeout or an explicit journal_mode to protect against.
   //
-  // G4 (PR #42 review): the value is bound as an ISO string and formatted BY
-  // SQLite itself (strftime, the same SQL_DATETIME_FMT every other write in
-  // this module uses), not by a JS-side reimplementation of that format -
-  // there used to be a separate sqliteDatetime() JS helper here, kept in
-  // sync with SQL_DATETIME_FMT only by a comment, and nothing would have
-  // caught the two drifting apart (a snapshot-written timestamp silently
-  // stopping being orderable against a SQL-written one is exactly what half
-  // C exists to prevent). Deleted; this is the only format literal in the
-  // module now, used everywhere, never duplicated.
+  // The value is bound as an ISO string and formatted BY SQLite itself
+  // (strftime, the same SQL_DATETIME_FMT every other write in this module
+  // uses), not by a JS-side reimplementation of that format - there used to be
+  // a separate sqliteDatetime() JS helper here, kept in sync with
+  // SQL_DATETIME_FMT only by a comment, and nothing would have caught the two
+  // drifting apart (a snapshot-written timestamp silently stopping being
+  // orderable against a SQL-written one is exactly what half C exists to
+  // prevent). Deleted; this is the only format literal in the module now, used
+  // everywhere, never duplicated.
   //
-  // G2a/G2b/G2c (PR #42 review) share this one open connection, in the order
+  // Three checks (PR #42) share this one open connection, in the order
   // an operator would ask them: can the copy even be opened as a database;
   // does the write itself prove it is corrupt; and does a rollback journal
   // survive the write. Best-effort still governs everything EXCEPT proof the
@@ -298,7 +297,7 @@ export function takeSnapshot(
   try {
     metaDb = new SqliteDb(join(staging, "hive.db"));
   } catch (e) {
-    // G2b: a failure to even OPEN the staged copy as a database is itself
+    // A failure to even OPEN the staged copy as a database is itself
     // proof the copy is unusable. Fail the snapshot rather than publish it.
     try {
       rmSync(staging, { recursive: true, force: true });
@@ -316,7 +315,7 @@ export function takeSnapshot(
       )
       .run(iso, iso);
   } catch (e) {
-    // G2b: half A is the FIRST thing this module has ever opened a vacuum's
+    // Half A is the FIRST thing this module has ever opened a vacuum's
     // output as a database, so NOTADB/CORRUPT here is the first integrity
     // signal that has ever existed for it. A truncated or short-written
     // VACUUM INTO can open fine (sqlite3_open reads no page, confirmed
@@ -335,7 +334,7 @@ export function takeSnapshot(
       metaDb.close();
     } catch {
       // Best-effort; a close failure that leaves a rollback journal behind
-      // is caught by the G2c check below, which is what actually protects a
+      // is caught by the journal check below, which is what actually protects a
       // caller of this snapshot - not this close() call succeeding.
     }
   }
@@ -348,7 +347,7 @@ export function takeSnapshot(
     return { ok: false, error: errorMessage(corruptError) };
   }
 
-  // G2c: half A is the first write ever made to a staged snapshot, so
+  // Half A is the first write ever made to a staged snapshot, so
   // hive.db-journal exists for the duration of the UPDATE above. If the
   // UPDATE or metaDb.close() failed in a way this function swallowed, the
   // journal can still be on disk when the rename below publishes the
@@ -421,22 +420,21 @@ export function retentionPolicy(): RetentionPolicy {
 // Snapshots are read newest-first, so "the newest one seen for a given day"
 // falls out of a single pass with a Set rather than needing a second sort.
 // `now` defaults to the real clock for every real caller; it exists as a
-// parameter (PR #36, B6) so a test can pin retention's day-boundary logic to
-// a fixed instant instead of reading the clock. A test that computed its own
-// fake snapshots relative to a local `now` while this function computed its
-// cutoff from a SEPARATE `new Date()` at call time was really two clocks
-// that happened to agree in one part of the day and disagree in another:
-// whether "12 hours ago" falls on the same UTC calendar date as "now" flips
-// exactly at 12:00Z, so the same test failed or passed depending on when it
-// happened to run, and adjusting the fake offsets would only have moved the
-// flip to a different hour rather than removing it.
-// A staging directory (see takeSnapshot's B3 fix) that is still older than
-// this when retention runs is orphaned: a SIGKILL or power loss mid-VACUUM
-// leaves one behind forever, since nothing else ever looks at it -
-// parseSnapshotDirName rejects the name on purpose, so it is invisible to
-// listing, restore, and this very function's own keep/prune logic. Left
-// alone, orphans accumulate and can fill the disk, silently, in the
-// direction of making every LATER backup fail too (PR #36, C4).
+// parameter (PR #36) so a test can pin retention's day-boundary logic to a
+// fixed instant instead of reading the clock. A test that computed its own fake
+// snapshots relative to a local `now` while this function computed its cutoff
+// from a SEPARATE `new Date()` at call time was really two clocks that happened
+// to agree in one part of the day and disagree in another: whether "12 hours
+// ago" falls on the same UTC calendar date as "now" flips exactly at 12:00Z, so
+// the same test failed or passed depending on when it happened to run, and
+// adjusting the fake offsets would only have moved the flip to a different hour
+// rather than removing it. A staging directory (see takeSnapshot's
+// staging-then-rename fix) that is still older than this when retention runs is
+// orphaned: a SIGKILL or power loss mid-VACUUM leaves one behind forever, since
+// nothing else ever looks at it - parseSnapshotDirName rejects the name on
+// purpose, so it is invisible to listing, restore, and this very function's own
+// keep/prune logic. Left alone, orphans accumulate and can fill the disk,
+// silently, in the direction of making every LATER backup fail too (PR #36).
 //
 // An hour, not the length of a real VACUUM INTO: a directory's mtime only
 // moves when an entry is added or removed inside it (hive.db's own
@@ -477,22 +475,21 @@ export function pruneSnapshots(
 ): string[] {
   sweepStaleStagingDirs(dataDir);
   const snapshots = listSnapshotRefs(dataDir);
-  // Floored at 1 (PR #36, B8): HIVE_BACKUP_KEEP_LAST=0 combined with
-  // KEEP_DAILY_DAYS=0 would otherwise delete every snapshot, including the
-  // one backupNow just created two statements ago, on every single backup,
-  // forever, with doctor still reporting success. A retention policy can
-  // empty itself down to nothing, never down to a store with no backups at
-  // all.
+  // Floored at 1 (PR #36): HIVE_BACKUP_KEEP_LAST=0 combined with
+  // KEEP_DAILY_DAYS=0 would otherwise delete every snapshot, including the one
+  // backupNow just created two statements ago, on every single backup, forever,
+  // with doctor still reporting success. A retention policy can empty itself
+  // down to nothing, never down to a store with no backups at all.
   const keepLast = Math.max(1, policy.keepLast);
   const keep = new Set<string>(snapshots.slice(0, keepLast).map((s) => s.name));
-  // Second counselors pass, C2: cmdRestore's pre-restore backup calls
-  // backupNow with the RESTORE TARGET named here, so retention can never
-  // delete the one snapshot the operator just confirmed. Without this, ten
-  // same-day snapshots plus the default keepLast=10 meant taking an
-  // eleventh (the pre-restore backup itself) pruned the oldest - which, if
-  // that was the operator's chosen target, restoreSnapshot would then
-  // report as not existing. The headline feature deleting the thing it was
-  // just asked to restore is not a corner case worth leaving open.
+  // cmdRestore's pre-restore backup calls backupNow with the RESTORE TARGET
+  // named here, so retention can never delete the one snapshot the operator
+  // just confirmed. Without this, ten same-day snapshots plus the default
+  // keepLast=10 meant taking an eleventh (the pre-restore backup itself) pruned
+  // the oldest - which, if that was the operator's chosen target,
+  // restoreSnapshot would then report as not existing. The headline feature
+  // deleting the thing it was just asked to restore is not a corner case worth
+  // leaving open.
   for (const name of protect) keep.add(name);
 
   const cutoff = new Date(now);
@@ -517,7 +514,7 @@ export function pruneSnapshots(
 
 // Takes a snapshot and records the result on the store-global backup_meta
 // row. Three independently-caught steps, not one try around all of them
-// (PR #36, B2/B9): a failure in any one must not skip the others, which a
+// (PR #36): a failure in any one must not skip the others, which a
 // shared try did - on a fresh store, backup_meta could briefly not exist
 // yet (db.ts now bootstraps it unconditionally so that specific case cannot
 // happen any more, but the independence is worth keeping regardless, since
@@ -532,7 +529,7 @@ export function pruneSnapshots(
 // last_error_at to last_success_at to tell "has recovered" from "is still
 // failing" without deleting either timestamp.
 //
-// `protect` (PR #36, C2) is passed straight through to pruneSnapshots: a
+// `protect` (PR #36) is passed straight through to pruneSnapshots: a
 // caller taking this backup FOR a specific purpose - cmdRestore backing up
 // the live store right before overwriting it - names the snapshot it is
 // about to restore FROM, so retention can never be the thing that deletes
@@ -577,7 +574,7 @@ const hourlyClaimStmt = new WeakMap<Database.Database, Database.Statement>();
 function claimStatement(db: Database.Database): Database.Statement {
   let stmt = hourlyClaimStmt.get(db);
   if (!stmt) {
-    // The third disjunct is PR #36's B7: a future last_attempt_at (clock
+    // The third disjunct is from PR #36: a future last_attempt_at (clock
     // skew on wake from sleep, or a restored snapshot carrying one) would
     // otherwise wedge every hourly backup for as long as the skew lasts,
     // silently, since nothing else ever moves this value backward. Claiming
@@ -617,7 +614,7 @@ export function maybeBackupHourly(db: Database.Database, dataDir: string): void 
 // nothing pending. No claim on backup_meta needed here the way the hourly
 // path has one: two processes racing to apply the same first migration both
 // see it pending and both call backupNow, which is wasteful, not wrong -
-// but only because takeSnapshot's staging-then-rename claim (B3) gives each
+// but only because takeSnapshot's staging-then-rename claim gives each
 // one its own snapshot even when they land on the identical candidate name,
 // which per its own comment is the common case, not the rare one. Before
 // that fix this exact reasoning was the bug (PR #36): a second concurrency
@@ -654,105 +651,101 @@ export interface BackupHealth {
 
 // The single place that decides whether the backup feature itself is
 // healthy, so `hive doctor` renders a decision rather than making one
-// (PR #36, B2/B9).
+// (PR #36).
 //
-// Group 1 redesign (PR #42 review, counselors G1a-G1d): the previous shape
-// judged freshness and "has one ever succeeded" from last_success_at on the
-// row, with one special-cased branch (half B) that consulted the DISK
-// instead, but only for the optimistic case. That is the same bug this whole
-// issue is about, worn as this PR's own clothes: a 59-day-old snapshot with
-// success NULL read as ok ("restorable"), while the SAME snapshot with
-// success recorded read as FAIL ("more than 7 day(s) old") - the
-// LESS-informed state reported healthier, and the false ok applied exactly
-// when no session had ever run a backup, i.e. forever, which is worse than
-// the false FAIL it replaced (self-limiting: the next hourly claim fixed it
-// within the hour).
+// Group 1 redesign (PR #42 review): the previous shape judged freshness and
+// "has one ever succeeded" from last_success_at on the row, with one
+// special-cased branch (half B) that consulted the DISK instead, but only for
+// the optimistic case. That is the same bug this whole issue is about, worn as
+// this PR's own clothes: a 59-day-old snapshot with success NULL read as ok
+// ("restorable"), while the SAME snapshot with success recorded read as FAIL
+// ("more than 7 day(s) old") - the LESS-informed state reported healthier, and
+// the false ok applied exactly when no session had ever run a backup, i.e.
+// forever, which is worse than the false FAIL it replaced (self-limiting: the
+// next hourly claim fixed it within the hour).
 //
 // The fix judges health on the evidence that is actually strongest - the
 // snapshots on disk - and uses the row for what only the row knows. A
-// snapshot's own existence proves a backup completed at its own timestamp;
-// it needs no corroboration from backup_meta, the same argument half A
-// already relies on for a snapshot's OWN row. So freshness comes from the
-// newest RESTORABLE snapshot's own directory timestamp, not last_success_at,
-// and needs no special case for a null or stale row: an ancient snapshot
-// fails whether or not a success was ever recorded, and a fresh one is
-// healthy for the same reason. What only the row knows is last_error/
-// last_error_at: a FAILED attempt leaves no snapshot, so the disk is silent
-// about it. A snapshot NEWER than the recorded error is proof a backup
-// completed after that failure - resolving it, the same "existence proves
-// completion" argument - while a snapshot at or before the error is not
-// proof of anything, and that store must still FAIL: this restates C3's
-// rule, a real current failure can never read as ok, it does not relax it.
+// snapshot's own existence proves a backup completed at its own timestamp; it
+// needs no corroboration from backup_meta, the same argument half A already
+// relies on for a snapshot's OWN row. So freshness comes from the newest
+// RESTORABLE snapshot's own directory timestamp, not last_success_at, and needs
+// no special case for a null or stale row: an ancient snapshot fails whether or
+// not a success was ever recorded, and a fresh one is healthy for the same
+// reason. What only the row knows is last_error/last_error_at: a FAILED attempt
+// leaves no snapshot, so the disk is silent about it. A snapshot NEWER than the
+// recorded error is proof a backup completed after that failure - resolving it,
+// the same "existence proves completion" argument - while a snapshot at or
+// before the error is not proof of anything, and that store must still FAIL:
+// this is the same principle the `!newest` check below applies - a real current
+// failure can never read as ok, it does not relax it.
 export function backupHealth(db: Database.Database, dataDir: string): BackupHealth {
-  // D3 (PR #42 review, a non-finding): `meta` undefined (readBackupMeta
-  // finds no row - unreachable through migrate(), which bootstraps it
-  // unconditionally) used to reach the old null-success branch and read as
-  // ok. The Group 1 redesign makes this moot rather than needing its own
-  // guard: `meta?.last_error_at != null` is false when meta is undefined,
-  // so an absent row simply contributes no error evidence and health falls
-  // through to judging freshness from `newest` alone - no special branch
-  // added for a state that cannot occur.
+  // A non-finding from PR #42's review: `meta` undefined (readBackupMeta finds
+  // no row - unreachable through migrate(), which bootstraps it
+  // unconditionally) used to reach the old null-success branch and read as ok.
+  // The Group 1 redesign makes this moot rather than needing its own guard:
+  // `meta?.last_error_at != null` is false when meta is undefined, so an absent
+  // row simply contributes no error evidence and health falls through to
+  // judging freshness from `newest` alone - no special branch added for a state
+  // that cannot occur.
   const meta = readBackupMeta(db);
   const snapshots = listSnapshots(dataDir);
   const summary = `${snapshots.length} snapshot(s), ${formatBytes(totalSizeBytes(snapshots))} total`;
 
-  // G1d: a directory's NAME matching NAME_PATTERN is not proof it is
-  // restorable - listSnapshotRefs never opens it. An interrupted
-  // pruneSnapshots rmSync, or a partial hand `cp` install, can leave a
-  // timestamp-named directory with no hive.db inside; naming it as
-  // restorable here converts a broken store into an explicit positive
-  // claim, and `hive restore` would then die with ENOENT trying to act on
-  // it. Checked HERE, not inside listSnapshotRefs/listSnapshots: retention
-  // still has to see a junk directory as a snapshot name to sweep it, or it
-  // never gets cleaned up.
+  // A directory's NAME matching NAME_PATTERN is not proof it is restorable -
+  // listSnapshotRefs never opens it. An interrupted pruneSnapshots rmSync, or a
+  // partial hand `cp` install, can leave a timestamp-named directory with no
+  // hive.db inside; naming it as restorable here converts a broken store into
+  // an explicit positive claim, and `hive restore` would then die with ENOENT
+  // trying to act on it. Checked HERE, not inside
+  // listSnapshotRefs/listSnapshots: retention still has to see a junk directory
+  // as a snapshot name to sweep it, or it never gets cleaned up.
   const newest = snapshots.find((s) => existsSync(join(s.path, "hive.db")));
 
-  // Second counselors pass, C3 (PR #36), generalized: `newest` is undefined
-  // both when snapshots.length === 0 and when every listed directory is
-  // junk. Either way there is nothing on disk an operator can restore from,
-  // which is C3's whole point stated one level more general than "zero
-  // snapshots".
+  // Generalized (PR #36): `newest` is undefined both when snapshots.length ===
+  // 0 and when every listed directory is junk. Either way there is nothing on
+  // disk an operator can restore from, which is the same point stated one level
+  // more general than "zero snapshots".
   if (!newest) {
     return { ok: false, message: `${summary}, nothing to restore from` };
   }
 
-  // G4 (PR #42 review): formatted BY SQLite itself, not by a JS-side
-  // reimplementation of SQL_DATETIME_FMT - see the comment on the staged
-  // write in takeSnapshot for why that used to be two independent copies of
-  // the format literal, kept in sync only by a comment nothing enforced.
+  // Formatted BY SQLite itself, not by a JS-side reimplementation of
+  // SQL_DATETIME_FMT - see the comment on the staged write in takeSnapshot for
+  // why that used to be two independent copies of the format literal, kept in
+  // sync only by a comment nothing enforced.
   const dirAt = (
     db.prepare(`SELECT strftime('${SQL_DATETIME_FMT}', ?) AS ts`).get(newest.createdAt.toISOString()) as {
       ts: string;
     }
   ).ts;
 
-  // Found while implementing this redesign, not in the pad: the directory
-  // name is the snapshot's START time (`now` in takeSnapshot, captured
-  // BEFORE the VACUUM INTO, deliberately - B6 needs it fixed for the race
-  // test), not its completion. Reproduced: seed a live-row failure timed to
-  // land DURING a simulated long vacuum (after the directory-name `now` but
-  // before the snapshot's own row is written), take the snapshot, and it
-  // reports FAIL "last attempt failed" even though the snapshot's OWN row
-  // (last_success_at, G2a's completion time - captured strictly after the
-  // vacuum returns, guaranteed >= anything the vacuum's read could have
-  // seen) proves that exact failure was resolved. A large VACUUM INTO can
-  // run long enough for a DIFFERENT server to record a failure in the
-  // window between the two, and the directory name alone cannot see past
-  // it.
+  // Found while implementing this redesign, not in the pad: the directory name
+  // is the snapshot's START time (`now` in takeSnapshot, captured BEFORE the
+  // VACUUM INTO, deliberately - the deterministic race fixture needs it fixed
+  // for the race test), not its completion. Reproduced: seed a live-row failure
+  // timed to land DURING a simulated long vacuum (after the directory-name
+  // `now` but before the snapshot's own row is written), take the snapshot, and
+  // it reports FAIL "last attempt failed" even though the snapshot's OWN row
+  // (last_success_at, completedAt's own completion time - captured strictly
+  // after the vacuum returns, guaranteed >= anything the vacuum's read could
+  // have seen) proves that exact failure was resolved. A large VACUUM INTO can
+  // run long enough for a DIFFERENT server to record a failure in the window
+  // between the two, and the directory name alone cannot see past it.
   //
   // Fix: take the LATER of the directory name and the snapshot's own
-  // last_success_at, never the row alone. MAX, not "prefer the row",
-  // because the row is not always trustworthy - that is G1b/G1c's whole
-  // point, and it is still true here: a pre-half-A or hand-copied
-  // snapshot's row can show an OLDER backup's success (one-behind, the
-  // original #41 bug) or be NULL. A row like that is SMALLER than the
-  // directory name, so MAX correctly ignores it and falls back to the
-  // directory name - the same case G1d and the null-success case already
-  // rely on this function not trusting the row at all. A post-half-A row is
-  // never smaller than the directory name (G2a guarantees completedAt >=
-  // the function's start time), so MAX correctly picks it up whenever it is
-  // genuinely more precise, which is exactly the concurrent-writer case
-  // above.
+  // last_success_at, never the row alone. MAX, not "prefer the row", because
+  // the row is not always trustworthy - that is the Group 1 redesign's whole
+  // point, and it is still true here: a pre-half-A or hand-copied snapshot's
+  // row can show an OLDER backup's success (one-behind, the original #41 bug)
+  // or be NULL. A row like that is SMALLER than the directory name, so MAX
+  // correctly ignores it and falls back to the directory name - the same case
+  // the restorability check above and the null-success case already rely on
+  // this function not trusting the row at all. A post-half-A row is never
+  // smaller than the directory name (the completedAt timing above guarantees
+  // completedAt >= the function's start time), so MAX correctly picks it up
+  // whenever it is genuinely more precise, which is exactly the
+  // concurrent-writer case above.
   let newestAt = dirAt;
   try {
     const snapDb = new SqliteDb(join(newest.path, "hive.db"), { readonly: true });
@@ -869,29 +862,28 @@ export function restoreSnapshot(dataDir: string, name: string): { restoredProfil
     rmSync(preview.currentDbPath + suffix, { force: true });
   }
 
-  // Stage-and-rename here too (PR #36, S3), not rmSync-then-cpSync: that was
-  // the exact remove-then-copy shape the comment two lines up rejects for
-  // hive.db, just for profiles/ instead. A failure mid-cpSync used to leave
-  // the user's overrides gone and a partial tree in their place. A directory
-  // rename cannot atomically REPLACE a non-empty one the way it can an empty
-  // one (renameSync throws ENOTEMPTY, same as the disambiguation retry in
-  // takeSnapshot's B3 fix), so this is two renames rather than one: move the
-  // live profiles/ aside, move the newly-staged one into place, then remove
-  // the old one. Each step is atomic on its own; the narrow window between
-  // the two renames is "profiles/ briefly absent, profiles.old/ present",
-  // which is recoverable by hand and strictly better than a directory left
+  // Stage-and-rename here too (PR #36), not rmSync-then-cpSync: that was the
+  // exact remove-then-copy shape the comment two lines up rejects for hive.db,
+  // just for profiles/ instead. A failure mid-cpSync used to leave the user's
+  // overrides gone and a partial tree in their place. A directory rename cannot
+  // atomically REPLACE a non-empty one the way it can an empty one (renameSync
+  // throws ENOTEMPTY, same as the disambiguation retry in takeSnapshot's
+  // staging-then-rename fix), so this is two renames rather than one: move the
+  // live profiles/ aside, move the newly-staged one into place, then remove the
+  // old one. Each step is atomic on its own; the narrow window between the two
+  // renames is "profiles/ briefly absent, profiles.old/ present", which is
+  // recoverable by hand and strictly better than a directory left
   // half-overwritten by an interrupted copy.
   const liveProfiles = join(dataDir, "profiles");
   const stagingProfiles = `${liveProfiles}.restoring`;
   const oldProfiles = `${liveProfiles}.old`;
-  // Second counselors pass, C5. An unconditional rmSync of oldProfiles used
-  // to destroy the one rollback copy a PRIOR crashed restore left behind.
-  // If that crash landed between the two renames below - live moved aside,
-  // staged one not yet installed - profiles.old/ is not garbage, it is the
-  // only surviving copy of the user's overrides, and liveProfiles is
-  // missing precisely because of that. Recover it back into place first,
-  // establishing that a good profiles/ exists again, before this function
-  // ever deletes anything named .old.
+  // An unconditional rmSync of oldProfiles used to destroy the one rollback
+  // copy a PRIOR crashed restore left behind. If that crash landed between the
+  // two renames below - live moved aside, staged one not yet installed -
+  // profiles.old/ is not garbage, it is the only surviving copy of the user's
+  // overrides, and liveProfiles is missing precisely because of that. Recover
+  // it back into place first, establishing that a good profiles/ exists again,
+  // before this function ever deletes anything named .old.
   //
   // Unconditional on preview.hasProfiles, deliberately, unlike the rest of
   // this block: a prior crash can leave this exact signature regardless of

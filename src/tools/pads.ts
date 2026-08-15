@@ -118,17 +118,16 @@ export function bumpPad(padId: number, predicateRevision: number | undefined, se
   return row!.revision;
 }
 
-// Fix round 1, both counselor seats independently. pad_append's own content
-// concatenation is safe against the live column, but the SEPARATOR used to
-// be decided in JS from `pad.content` AS READ - a `joined` variable computed
-// once, well before this statement runs. Two sessions both reading content
-// that ends in a newline both decide joined = "", and whichever writes
-// second glues its entry onto the first's with no separator at all ("alpha\n"
-// + A's "" + "A-entry" landing on top of B's own already-appended
-// "alpha\nB-entry" produces "alpha\nB-entryA-entry"). The CASE here reads
-// the live `content` column in the SAME statement as the append, so there is
-// no read-then-decide step left to go stale - exactly the property pad_append
-// already had for the append itself, extended to the separator too.
+// pad_append's own content concatenation is safe against the live column, but
+// the SEPARATOR used to be decided in JS from `pad.content` AS READ - a
+// `joined` variable computed once, well before this statement runs. Two
+// sessions both reading content that ends in a newline both decide joined = "",
+// and whichever writes second glues its entry onto the first's with no
+// separator at all ("alpha\n" + A's "" + "A-entry" landing on top of B's own
+// already-appended "alpha\nB-entry" produces "alpha\nB-entryA-entry"). The CASE
+// here reads the live `content` column in the SAME statement as the append, so
+// there is no read-then-decide step left to go stale - exactly the property
+// pad_append already had for the append itself, extended to the separator too.
 // Exported so test/pad-append-live-separator.test.mjs exercises the real
 // fragment rather than a copy of it.
 export const APPEND_WITH_SEPARATOR_SET =
@@ -361,7 +360,7 @@ export function registerPads(server: McpServer): void {
         try {
           // No predicate: archived is a metadata flag, not content, so a
           // lost race here at worst flips it back and forth rather than
-          // destroying anything - out of this fix's scope (todo 345/issue
+          // destroying anything - out of this fix's scope (issue
           // #148 names pads.ts's content-rewriting writes, not this one).
           revision = bumpPad(pad.id, undefined, "archived = ?", archived ? 1 : 0);
         } catch (e) {

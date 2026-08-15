@@ -3,7 +3,7 @@ import { z } from "zod";
 // WHY EVERY INTEGER PARAMETER IN THIS SURFACE CARRIES AN EXPLICIT LOWER BOUND,
 // and why a new one that does not is a bug rather than a style choice.
 //
-// zod 4 (issue #105 lane C) emits a bound for every `z.number().int()`. A bare
+// zod 4 (issue #105) emits a bound for every `z.number().int()`. A bare
 // one emits minimum: -9007199254740991 AND maximum: 9007199254740991. Only the
 // MAXIMUM is a fact about the tool: past Number.MAX_SAFE_INTEGER a JSON integer
 // stops round-tripping through a double, so 9007199254740993 arrives as ...992,

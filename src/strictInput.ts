@@ -4,7 +4,7 @@ import { z } from "zod";
 // WHY EVERY TOOL'S INPUT IS PARSED STRICTLY, AND WHY THE CHANGE LIVES HERE
 // RATHER THAN AT THE 42 CALL SITES.
 //
-// Todo 298, from counselors run 22 on PR #123. zod strips an unknown key
+// PR #123 found this: zod strips an unknown key
 // silently, so `pad_delete({pad_id: 7, expected_revison: 3})` - one letter
 // wrong - arrives at the handler as `{pad_id: 7}`. That is the SAME call a
 // caller who deliberately omitted the guard makes, `checkRevision` returns
@@ -25,7 +25,7 @@ import { z } from "zod";
 //                     validation error: Invalid arguments for tool pad_delete:
 //                     Unrecognized key: \"expected_revison\""
 // So the advertised schema and the runtime stop disagreeing, which is the
-// state issue #105 lane C found and removed for being dishonest in the other
+// state issue #105 found and removed for being dishonest in the other
 // direction (it advertised strictness nothing enforced).
 //
 // THE SERVER IS THE CHOKE POINT, NOT THE CALL SITE. 42 registerTool calls
@@ -49,7 +49,7 @@ import { z } from "zod";
 // nothing, which is a reason not to reach for it rather than a reason to widen
 // this wrapper to chase two paths no call site uses.
 //
-// PER-TOOL PERMISSIVENESS AUDIT, 2026-08-07 (todo 301). THE AUDIT RAN AND
+// PER-TOOL PERMISSIVENESS AUDIT, 2026-08-07. THE AUDIT RAN AND
 // FOUND NONE: no tool in the surface has a reason to accept a key it does not
 // declare, so there is no exemption list rather than an exemption list nobody
 // filled in. A tool would need one only if it FORWARDED its arguments
@@ -95,7 +95,7 @@ import { z } from "zod";
 // additionalProperties: false on every object node in it, nested ones
 // included, so a z.object parameter fails there with its path named.
 //
-// ACCEPTED RESIDUAL (todo 298 comment 556, Chris's call). Strict parsing costs
+// ACCEPTED RESIDUAL, decided deliberately. Strict parsing costs
 // hive a backward compatibility it had for free: a server running older dist
 // used to IGNORE a newly added optional parameter, and now REFUSES the call.
 // An MCP server loads dist once at session start, so the session that merges a

@@ -4,8 +4,8 @@
 // bin, which a version manager reshims per directory, so `hive` vanishes
 // wherever another version is pinned.
 //
-// "the interpreter that built it" is what this said, and issue #105 lane B
-// retired the claim under it: better-sqlite3 13 ships a prebuilt N-API addon,
+// "the interpreter that built it" is what this said, and issue #105 retired
+// the claim under it: better-sqlite3 13 ships a prebuilt N-API addon,
 // so nothing builds it here and it is not tied to one Node major. The pin is
 // still the fix, for the OTHER half of the same sentence - a Node resolved per
 // directory can be one the addon cannot load, which after the N-API move means

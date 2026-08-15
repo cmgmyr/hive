@@ -23,9 +23,9 @@ function purgeExpired(projectId: number): void {
 // worth re-reading (a failed insert, a lost extend race) is itself evidence
 // something else is changing this row, and a release can remove it in the
 // same window. Both call sites below used to cast one of these two reads
-// `as LeaseRow` with no `| undefined` and dereference it unguarded (fix
-// round 1, P2 - one of the two casts was already guarded, the other was
-// not; this makes both go through the one function instead of disagreeing).
+// `as LeaseRow` with no `| undefined` and dereference it unguarded (one of
+// the two casts was already guarded, the other was not; this makes both go
+// through the one function instead of disagreeing).
 //
 // Exported for test/lease-acquire-conflict-undefined.test.mjs: proves the
 // guard directly rather than racing the couple of statements between a
@@ -92,17 +92,16 @@ export function registerLeases(server: McpServer): void {
         const projectId = effectiveProjectId(args.project_id);
         purgeExpired(projectId);
         const actor = currentActor();
-        // RETURNING, not a separate SELECT afterward: fix round 1, both
-        // counselor seats. A inserts a one-second lease and stalls before a
-        // follow-up SELECT could run; the lease expires, B purges it and
-        // inserts its own, and A's SELECT - reached only after the stall -
-        // reads B's row instead of the one A itself just created. A then
-        // reports B's future expiry as evidence of its OWN acquisition.
-        // RETURNING makes the receipt come from the exact row this
+        // RETURNING, not a separate SELECT afterward. A inserts a one-second
+        // lease and stalls before a follow-up SELECT could run; the lease
+        // expires, B purges it and inserts its own, and A's SELECT - reached
+        // only after the stall - reads B's row instead of the one A itself just
+        // created. A then reports B's future expiry as evidence of its OWN
+        // acquisition. RETURNING makes the receipt come from the exact row this
         // statement inserted, with no later read that could observe a
-        // replacement. DO NOTHING's conflict branch returns no row, so
-        // `.get()` returning undefined already tells us whether we won -
-        // no separate changes count needed.
+        // replacement. DO NOTHING's conflict branch returns no row, so `.get()`
+        // returning undefined already tells us whether we won - no separate
+        // changes count needed.
         const inserted = db
           .prepare(
             `INSERT INTO locks (project_id, lock_key, owner, expires_at)

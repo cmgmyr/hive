@@ -1,5 +1,5 @@
 // "Could a Claude Code session starting in THAT directory actually use hive?"
-// - asked per project by `hive doctor` (todo 306).
+// - asked per project by `hive doctor`.
 //
 // WHY THE QUESTION IS PER DIRECTORY AT ALL. Everything hive executes is pinned
 // to an absolute interpreter except one thing: the SessionStart hook.
@@ -10,9 +10,9 @@
 // better-sqlite3's Node-API floor therefore starts sessions that cannot load
 // hive's addon, and the only thing standing between that and a banner is
 // kickoff.mjs's re-exec into the dispatcher's pinned interpreter. That is one
-// asdf prune away from returning (todo 307), and nothing in hive said which
-// project was doing it - a sub-floor project made the symptom look
-// intermittent and project-specific for as long as it existed.
+// asdf prune away from returning, and nothing in hive said which project was
+// doing it - a sub-floor project made the symptom look intermittent and
+// project-specific for as long as it existed.
 //
 // HOW THE PROBE MEASURES IT, and this is the decision worth reading before
 // changing anything here.
@@ -73,7 +73,7 @@ export type SessionProbe =
 //
 // The first version of this carried `exists: boolean` and the verdict read an
 // existing pin as proof that session start survives. IT PROVES A FILE EXISTS.
-// Counselors' scenario, and it is ordinary: doctor runs under Node 24, the
+// One ordinary scenario: doctor runs under Node 24, the
 // project resolves Node 20, and a stale dispatcher pins an existing Node
 // 22.13. The hook does re-exec, into an interpreter that is ALSO below the
 // Node-API 10 floor, and the banner prints anyway while doctor reports the
@@ -209,7 +209,7 @@ export type SessionVerdict = { level: "info" | "warn"; lines: string[] };
 // ALWAYS A WARN, NEVER A FAIL, whatever it finds. A project pinning a Node
 // below the addon's floor is often perfectly legitimate - it may never run a
 // hive worker - and doctor must not exit 1 over another project's business.
-// `hive doctor --strict` (todo 292) is how a caller that wants to gate on this
+// `hive doctor --strict` is how a caller that wants to gate on this
 // opts in.
 // `target` is a THUNK because resolving it costs a spawn (reexecTarget probes
 // the pinned interpreter now, rather than trusting that a file exists). Only

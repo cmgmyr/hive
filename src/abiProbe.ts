@@ -1,6 +1,6 @@
 // A child-process entry point, not a library. `hive doctor` spawns this under
 // the `node` that a given project directory resolves, and reads one line of
-// JSON back off stdout (src/sessionProbe.ts, todo 306).
+// JSON back off stdout (src/sessionProbe.ts).
 //
 // It exists as its own file because the question is about ANOTHER
 // INTERPRETER. checkAbi() reads `process.versions` and dlopens the addon into

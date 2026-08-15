@@ -27,11 +27,11 @@ interface TodoRow {
 
 const priorityParam = z.enum(["high", "medium", "low"]);
 
-// Todo 318. Full rationale (free text vs kebab-case, the character bound,
+// Full rationale (free text vs kebab-case, the character bound,
 // why a fallback rather than a backfill) is in the migration's own comment
 // in src/db.ts; not repeated at each site below.
 //
-// No .min(1): counselors found the codebase's own precedent for "clear a
+// No .min(1): the codebase's own precedent for "clear a
 // text field back to its default" is passing "" (this file's own `body` has
 // no min(1) either), and slug had no way to do that at all - COALESCE(?,
 // slug) plus a min(1) meant no value could ever reset the column. "" now
@@ -53,7 +53,7 @@ const slugParam = z
   )
   .optional();
 
-// fallbackSlug and SLUG_MAX_LEN live in src/slug.ts now (todo 329/333) -
+// fallbackSlug and SLUG_MAX_LEN live in src/slug.ts now -
 // re-exported here so nothing that imports them from this file breaks.
 export { SLUG_MAX_LEN, fallbackSlug };
 
@@ -77,7 +77,7 @@ export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON
 // check and todo_archive's refusal both need exactly this join; extracted
 // so the two cannot drift on what "still depends on this one" means.
 //
-// archived_at IS NULL (counselors round on #15, P2): an archived dependent
+// archived_at IS NULL (#15): an archived dependent
 // is not something anyone is waiting on - it is already invisible from
 // every default list, same as the blocker it would otherwise strand.
 // Without this, archiving a blocked dependent first and then its blocker
@@ -86,7 +86,7 @@ export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
    WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
 
-// Shared with the CLI (hive doctor's review-findings check, todo 349): the
+// Shared with the CLI (hive doctor's review-findings check): the
 // same "does this todo have a comment" subquery SUMMARY_SQL embeds below, so
 // the two cannot drift on what counts as commented-on.
 export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id)`;
@@ -272,7 +272,7 @@ function transitiveBlockers(startId: number): Set<number> {
   return seen;
 }
 
-// Counselors round on #15 (CI gate, second pass): the archived-blocker check
+// #15 (found by the CI gate): the archived-blocker check
 // and the INSERT were two separate statements, so a concurrent todo_archive
 // could land in the gap - archiving the blocker AFTER this check passed and
 // BEFORE the edge was written, recreating the exact invisible-active-blocker
@@ -302,7 +302,7 @@ function touch(todoId: number): void {
   db.prepare("UPDATE todos SET updated_at = datetime('now') WHERE id = ?").run(todoId);
 }
 
-// Counselors round on #15, P1: the blocker check and the UPDATE were two
+// #15: the blocker check and the UPDATE were two
 // separate statements, so another session's todo_block/todo_create could
 // insert a live blocker edge in the gap between them - the same shape #97's
 // CI gate caught in src/tools/meta.ts, whose own comment has the fuller
@@ -348,7 +348,7 @@ const archiveTodo = db.transaction((projectId: number, todoId: number, archived:
   return { todo_id: todo.id, archived };
 });
 
-// Counselors round on #15 (CI gate, second pass): the un-completing guard
+// #15 (found by the CI gate): the un-completing guard
 // below read todo.archived_at/status through an earlier getTodo and wrote
 // later, with nothing between - the same gap as addBlocker above, reached
 // through todo_update instead. A concurrent todo_archive could archive this

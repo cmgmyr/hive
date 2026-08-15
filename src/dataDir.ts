@@ -200,7 +200,7 @@ export function guardStoreDir(): string {
 // (isProductEntryPoint, above) is refused too, UNLESS the human running it
 // set HIVE_ALLOW_DEFAULT_STORE=1 -- the deliberate opt-in for a legitimate
 // one-off against the real store, which isProductEntryPoint cannot itself
-// recognise. This is the todo 324 gap: a hand-rolled driver script that sets
+// recognise. This is the gap: a hand-rolled driver script that sets
 // HIVE_DATA_DIR for a child it spawns, then imports dist/db.js in ITSELF to
 // seed or inspect a row, was never a test runner and was never refused.
 function defaultStoreRefusal(dir: string): "test-runner" | "not-product-entry" | null {

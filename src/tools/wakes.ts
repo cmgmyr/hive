@@ -79,7 +79,7 @@ function pendingWakes(projectId: number): TimerRow[] {
 // receipts; token cost is a design input", CLAUDE.md).
 const RECENTLY_FIRED_LIMIT = 10;
 
-// Counselors A6. Also bounded by LOG_RETENTION (the same window
+// Also bounded by LOG_RETENTION (the same window
 // checkConfirmations, src/scheduler.ts, uses to decide what it can still
 // confirm), and that second bound is not cosmetic. Past LOG_RETENTION, a
 // typed one-shot's confirmed_at can never change again - hive has
@@ -90,7 +90,7 @@ const RECENTLY_FIRED_LIMIT = 10;
 // waiting on an ack it structurally cannot ever receive. Dropping those rows
 // loses no information a lead could act on; it just stops the section lying
 // about what "unconfirmed" means.
-// Counselors A7. `, id DESC` is a real tiebreaker, not decoration: fired_at
+// `, id DESC` is a real tiebreaker, not decoration: fired_at
 // is whole-second (src/scheduler.ts's datetime('now')) and a single tick
 // fires every due timer in one loop, so a burst sharing one second is
 // ordinary, not exotic. Without a tiebreak, ORDER BY carries no stability
@@ -108,11 +108,10 @@ function recentlyFiredWakes(projectId: number): TimerRow[] {
 }
 
 // A wake's target has never written a hook row at all (the lead, until issue
-// #27's L4 lands) versus a target that writes hook rows but simply has not
+// #27 lands) versus a target that writes hook rows but simply has not
 // submitted one yet: an absent confirmed_at means one of those two very
 // different things, and reporting only "not confirmed" for both is exactly
-// the kind of small lie #27 exists to remove (see plan-l3-delivery-states,
-// "WHAT L3 CAN AND CANNOT REPORT ABOUT THE LEAD"). Every spawned agent gets
+// the kind of small lie issue #27 exists to remove. Every spawned agent gets
 // an agents row (running or closed) the moment it is spawned; the lead does
 // not, today. Existence, not liveness - a closed worker's earlier prompt
 // rows are still real evidence.
@@ -146,16 +145,15 @@ type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no
 // recorded hook state, AT THE MOMENT HIVE TYPED, was mid-turn. It is an
 // OBSERVATION, not a prediction of whether this wake will go on to confirm.
 //
-// Counselors round 1 (todo 209, item B) corrected an earlier version of this
-// comment, which claimed a busy delivery "can structurally never confirm".
-// .claude/rules/tmux-and-panes.md:43 and this project's board disagree about
-// exactly that - both claim verification - and this value does not need
-// either one to be right (see deliver()'s own comment for the full
-// argument). If a genuine prompt row DOES arrive later, confirmed_at is set
-// exactly as it is for any other wake and this branch is never reached: the
-// ternary below checks confirmed_at first. unconfirmed_busy only ever means
-// "still unconfirmed, and the target's last recorded state at typing time
-// was mid-turn" - nothing stronger.
+// An earlier version of this comment claimed a busy delivery "can structurally
+// never confirm", and was corrected. .claude/rules/tmux-and-panes.md:43 and
+// this project's board disagree about exactly that - both claim verification -
+// and this value does not need either one to be right (see deliver()'s own
+// comment for the full argument). If a genuine prompt row DOES arrive later,
+// confirmed_at is set exactly as it is for any other wake and this branch is
+// never reached: the ternary below checks confirmed_at first. unconfirmed_busy
+// only ever means "still unconfirmed, and the target's last recorded state at
+// typing time was mid-turn" - nothing stronger.
 //
 // typed_busy === 0 or null (idle, or no hook row to ask at all) still
 // reports plain "unconfirmed": that is the real alarm this tri-, now four-,
@@ -176,13 +174,13 @@ type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no
 // 'waiting' row is visible through a channel built to show staleness, even
 // though this field deliberately does not try. Reopen if unconfirmed_busy is
 // ever the ONLY place a stuck target would have been visible.
-// Todo 407, pad 142 PART 2. typed_seen names WHY a delivering row was judged
+// typed_seen names WHY a delivering row was judged
 // safe to type - it does NOT make a held-then-delivered row distinguishable
 // from a never-held one, not even combined with held_at/held_reason, since
 // deliver() clears both unconditionally on every delivery regardless of this
 // column (src/scheduler.ts's own DeliverableResult write site has the full
-// argument, and the retraction of this comment's own first-shipped claim to
-// the contrary - todo 407, comment 1057). Passed through verbatim - NULL for
+// argument; this comment's own first-shipped claim to
+// the contrary was retracted). Passed through verbatim - NULL for
 // a row this migration predates, or one still pending - rather than reshaped
 // into a structured field, matching held_reason's own precedent one line
 // above and the slim-receipt contract (.claude/rules/tool-contract.md): it is
@@ -212,16 +210,16 @@ function deliveryState(
     // an ack", so forcing either into the confirmed/unconfirmed pair would
     // hide the more urgent fact that nothing was ever typed at all.
     //
-    // TODO 386 NARROWED "NEVER COMPLETED", and the narrowing matters to
-    // anyone diagnosing from this field. sendText is a paste and then a
-    // second tmux call for the Enter; on a pane where a stranded paste would
-    // HOLD later wakes (claude chrome on screen), src/scheduler.ts's
-    // deliver() now records typed_at the moment the PASTE lands, so a null
-    // here means specifically that the paste never reached the pane - not
-    // that some part of sendText failed. On every other pane the pre-lane
-    // reading still applies, because the record is still written after both
-    // calls return. Read this null as "nothing reached the pane" only once
-    // you know which of the two the target was.
+    // "NEVER COMPLETED" NARROWED LATER, and the narrowing matters to anyone
+    // diagnosing from this field. sendText is a paste and then a second tmux
+    // call for the Enter; on a pane where a stranded paste would HOLD later
+    // wakes (claude chrome on screen), src/scheduler.ts's deliver() now records
+    // typed_at the moment the PASTE lands, so a null here means specifically
+    // that the paste never reached the pane - not that some part of sendText
+    // failed. On every other pane the pre-lane reading still applies, because
+    // the record is still written after both calls return. Read this null as
+    // "nothing reached the pane" only once you know which of the two the target
+    // was.
     confirmation:
       t.typed_at == null
         ? null
@@ -235,7 +233,7 @@ function deliveryState(
   };
 }
 
-// Todo 411: cutToUnitBudget stops the cut from landing inside an astral
+// cutToUnitBudget stops the cut from landing inside an astral
 // character's surrogate pair, which used to be able to reach a wake body -
 // delivered VERBATIM into a pane (worker-state.md) - as a lone surrogate
 // half. No round-trip constraint on this output, so the ellipsis is not
@@ -269,7 +267,7 @@ function rejectUnsafeBody(body: string): void {
 // are all supposed to report identically. truncate defaults to true for
 // wake_list's two sections; wake_get passes false, since an untruncated body
 // is its whole reason to exist.
-// Todo 315. scope and parent_wake_id appear only when they are set, rather
+// scope and parent_wake_id appear only when they are set, rather
 // than as two nulls on every wake in every list: a standing watch and a
 // notice it filed are both a small minority of rows, and "write tools return
 // slim receipts; token cost is a design input" (.claude/rules/tool-contract.md)
@@ -287,7 +285,7 @@ const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   ...(t.parent_timer_id != null ? { parent_wake_id: t.parent_timer_id } : {}),
 });
 
-// Todo 315, decision B, made by the lead on 2026-08-08 and RECORDED HERE AS A
+// Made by the lead on 2026-08-08 and RECORDED HERE AS A
 // JUDGEMENT rather than left in a pad, because a number the code depends on
 // must not live only in a comment thread. FOUR HOURS IS A GUESS, not a
 // measurement, and it is the design's own proposal accepted as a default: it
@@ -333,8 +331,8 @@ const STANDING_WATCH_LIFETIME_SECONDS = 4 * 60 * 60;
 // names the existing id so the answer is one call.
 //   SCOPED TO THE OWNER, NOT THE PROJECT, and that boundary is deliberate.
 //   Refusing project-wide would stop a SECOND LEAD from watching a crew it
-//   shares, which decides the cross-lead question todo 315 comment 631 item 4
-//   records as explicitly UNANSWERED - and this lane does not get to settle it
+//   shares, which is a cross-lead question this project records as
+//   explicitly UNANSWERED - and this lane does not get to settle it
 //   by picking a WHERE clause.
 //   Not narrowed to (project, owner, deliver_actor) either, which would allow
 //   one lead to watch its crew and have a reviewer told as well: a second
@@ -482,7 +480,7 @@ export function registerWakes(server: McpServer): void {
           .describe("Agents to watch, as a ONE-SHOT. Mutually exclusive with scope."),
         body: z.string(),
         mode: z.enum(["any", "all"]).optional().describe("Defaults to any. Only meaningful with agents."),
-        // Todo 315. A single-value enum is the shape on purpose, not a
+        // A single-value enum is the shape on purpose, not a
         // placeholder: a watch is (owner, SCOPE, lifetime), and scope takes
         // project / group / list (.claude/sessions/decisions/2026-08-08-
         // watch-membership-is-a-parameter.md). Only the crew ships. Groups
@@ -544,7 +542,7 @@ export function registerWakes(server: McpServer): void {
         if (args.scope != null) return createStandingWatch(projectId, args);
         const mode = args.mode ?? "any";
         const watched = (args.agents ?? []).map((ref) => resolveAgentRef(projectId, ref));
-        // Issue #27's L4 fix round, DECISION 4/5. The lead's hook writes only
+        // Issue #27. The lead's hook writes only
         // its append-only log row, never agents.agent_state (worker-state.md,
         // src/hook.ts's UPDATE is scoped to kind = 'agent') - so watchedStates
         // (src/scheduler.ts) can never read a lead as idle, "idle" is false
@@ -577,11 +575,11 @@ export function registerWakes(server: McpServer): void {
           // the lead proceeds on a completion that never happened.
           const allIdle = watched.every((a) => {
             const live = summaryLiveness(a, snapshot);
-            // Issue #156, D3, AND THIS IS THE READER THAT LANE ALMOST MISSED.
+            // Issue #156, AND THIS IS THE READER THAT LANE ALMOST MISSED.
             // A worker's restore turn ends in a real Stop hook and writes a
-            // real, fresh idle for a turn nobody asked for (todo 373 briefly
-            // widened this to a spawn-side announcement turn too; todo 387
-            // removed that turn instead of leaving a second case for every
+            // real, fresh idle for a turn nobody asked for (a spawn-side
+            // announcement turn briefly had the same shape too, later removed
+            // rather than leaving a second case for every
             // reader here to keep in step with). This shortcut never reaches
             // watchedStates (src/scheduler.ts), so without the same predicate
             // a lead that resumes a crew and immediately sets a mode="all"
@@ -622,9 +620,7 @@ export function registerWakes(server: McpServer): void {
           mode,
           // provenance is decoration only: it does not change what this call
           // schedules or what already_satisfied above fired on (that stays a
-          // bare liveness + agent_state check, deliberately -- see
-          // src/tools/wakes.ts's design pad note on why a freshness check
-          // there is out of scope for this lane).
+          // bare liveness + agent_state check, deliberately).
           watching: watched.map((a) => {
             // `state` replaces the sibling field below rather than duplicating
             // it: deriveProvenance already applies the "gone" override when
@@ -716,7 +712,7 @@ export function registerWakes(server: McpServer): void {
         // never be a candidate again - a permanently-pending wake that can
         // never fire, visible in wake_list forever.
         //
-        // Counselors round on #101, P2. Scoped by the SAME predicate the
+        // #101. Scoped by the SAME predicate the
         // final UPDATE below uses (id, project_id, owner, ACTIVE_TIMER_WHERE)
         // - not project_id alone, which the first version of this check used.
         // A wake's kind never changes after creation, so there is no
@@ -772,7 +768,7 @@ export function registerWakes(server: McpServer): void {
         // claim UPDATE (src/scheduler.ts's fireDelay), using repeat_every_ms
         // read from the row AT THAT FIRING - so updating this column here
         // never moves a due_at already set by the prior cycle. Verified
-        // against src/scheduler.ts as todo 236's own check, not assumed.
+        // against src/scheduler.ts directly, not assumed.
         if (args.repeat_every_seconds != null) {
           sets.push("repeat_every_ms = ?");
           params.push(args.repeat_every_seconds * 1000);
@@ -792,10 +788,9 @@ export function registerWakes(server: McpServer): void {
         // pending) reads as updated: false, the same soft-failure shape
         // wake_cancel already uses for the identical predicate shape.
         //
-        // parent_timer_id IS NULL (todo 390 counselors round 3, F4). Pad
-        // 142 Q2 proves a caller cannot SET parent_timer_id - no MCP tool
-        // declares it, and strictInput refuses an undeclared key - but that
-        // is a proof about ORIGIN, not about immutability once a row has
+        // parent_timer_id IS NULL. A caller cannot SET parent_timer_id - no MCP
+        // tool declares it, and strictInput refuses an undeclared key - but
+        // that is a proof about ORIGIN, not about immutability once a row has
         // one. A standing watch's owner also owns every notice it files
         // (insertNotice writes the WATCH's own owner onto each), so without
         // this exclusion that owner could wake_update a filed notice's body
@@ -829,22 +824,21 @@ export function registerWakes(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        // Issue #149 (todo 348) comment 763, fix round 1, finding 2. Owner-only
-        // used to mean literally unreachable for a wake whose owner is also its
-        // deliver_actor (the common case for a plain wake_set with no
-        // deliver_to) once that actor's own agents row is closed - no session
-        // can ever call currentActor() and get that actor_id back, since
-        // identity comes from the caller's own environment (HIVE_AGENT_ID),
-        // never something one session can assume on another's behalf. That is
-        // exactly the shape HELD_REASON_PANE_REISSUED_WORKER's remedy text
-        // points at: a worker's row gets reaped by the widened janitor sweep
-        // (src/scheduler.ts), and the hold's whole argument is that a lead
-        // ends up watching it in wake_list - so the lead needs the power to
-        // act on what it can already see. isRunningLeadActor is the same
-        // row-verified check agent_close's lead-target refusal uses, not a
+        // Issue #149. Owner-only used to mean literally unreachable for a wake
+        // whose owner is also its deliver_actor (the common case for a plain
+        // wake_set with no deliver_to) once that actor's own agents row is
+        // closed - no session can ever call currentActor() and get that
+        // actor_id back, since identity comes from the caller's own environment
+        // (HIVE_AGENT_ID), never something one session can assume on another's
+        // behalf. That is exactly the shape HELD_REASON_PANE_REISSUED_WORKER's
+        // remedy text points at: a worker's row gets reaped by the widened
+        // janitor sweep (src/scheduler.ts), and the hold's whole argument is
+        // that a lead ends up watching it in wake_list - so the lead needs the
+        // power to act on what it can already see. isRunningLeadActor is the
+        // same row-verified check agent_close's lead-target refusal uses, not a
         // string prefix on HIVE_AGENT_ID (src/spawn.ts's own comment on why
-        // isLeadActorId alone is not enough). Ownership is still the only
-        // route for anyone who is not a running lead - this does not open
+        // isLeadActorId alone is not enough). Ownership is still the only route
+        // for anyone who is not a running lead - this does not open
         // cross-worker cancellation.
         const isLead = isRunningLeadActor(currentActor());
         const info = isLead
@@ -860,7 +854,7 @@ export function registerWakes(server: McpServer): void {
                  WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
               )
               .run(args.wake_id, projectId, currentActor());
-        // Todo 315. A standing watch files notices as separate timer rows, and
+        // A standing watch files notices as separate timer rows, and
         // before parent_timer_id existed they were ORPHANS: this UPDATE
         // touches only the row it was given, so a notice filed ten seconds
         // before the cancel still typed into the owner's pane afterwards. The

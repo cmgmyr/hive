@@ -16,7 +16,7 @@ export function transcriptDir(cwd: string): string {
   return join(claudeConfigDir(), "projects", transcriptDirName(cwd));
 }
 
-// D5: a heuristic that admits it, and admits it precisely. The stat below
+// A heuristic that admits it, and admits it precisely. The stat below
 // proves only "a directory by this name exists", not "this is that worker's
 // transcript" -- the encoding is not injective, since both `/` and `.`
 // collapse to the same `-`, so "/a/b.c" and "/a/b/c" both encode to

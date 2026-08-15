@@ -218,12 +218,12 @@ function gitPrimaryRoot(dir: string): string | null {
 // (is git's path the direct match's path, or under it?) decides the
 // cross-tree case deliberately instead of by accident.
 //
-// THAT CROSS-TREE ANSWER WAS CHALLENGED AND IS ACCEPTED, NOT OVERLOOKED. On
-// PR #64 a codex counselors seat raised it as a P1: a linked worktree of repo
-// B sitting inside registered project A resolves to A, and it argued that is
-// incorrect, since the files being edited are B's. It was rejected as a change
-// there (identical to main, so the branch neither introduced nor worsened it)
-// and then decided outright with Chris on 2026-08-02: ACCEPT, CHANGE NOTHING.
+// THAT CROSS-TREE ANSWER WAS CHALLENGED AND IS ACCEPTED, NOT OVERLOOKED: a
+// linked worktree of repo B sitting inside registered project A resolves to A.
+// It was challenged on PR #64 as incorrect, since the files being edited are
+// B's. It was rejected as a change there (identical to main, so the branch
+// neither introduced nor worsened it) and then decided outright with Chris on
+// 2026-08-02: ACCEPT, CHANGE NOTHING.
 // Recorded here rather than only on a pad, because the next review pass will
 // have the code and not the argument, and will otherwise rediscover it as a
 // defect - which is exactly what happened the first time.
@@ -258,7 +258,7 @@ function gitPrimaryRoot(dir: string): string | null {
 // subdirectory two levels into an ordinary checkout reports its
 // grandparent's .git), or a linked worktree, where it resolves to the
 // primary checkout. THAT PRIMARY CHECKOUT IS NOT ALWAYS A SIBLING - this
-// sentence used to claim it always was, and todo 406 measured that false: a
+// sentence used to claim it always was, and that was measured false: a
 // worktree cut INSIDE the primary checkout's own tree
 // (.claude/worktrees/<lane-tag>-<slug>, this project's own layout) resolves
 // to an ANCESTOR too, identical in that respect to an ordinary checkout. A
@@ -290,7 +290,7 @@ function gitPrimaryRoot(dir: string): string | null {
 
 // True when `dir` sits inside a linked git worktree rather than the primary
 // checkout - the shape `git worktree add` leaves with none of the primary
-// checkout's installed dependencies (todo 406).
+// checkout's installed dependencies.
 //
 // AN EARLIER VERSION OF THIS FUNCTION REUSED gitPrimaryRoot AND WAS WRONG,
 // MEASURED AGAINST THIS PROJECT'S OWN LAYOUT. It compared dir's path against
@@ -300,8 +300,8 @@ function gitPrimaryRoot(dir: string): string | null {
 // checkout. This project's own runbook puts worktrees INSIDE it, at
 // `.claude/worktrees/<lane-tag>-<slug>`, so the primary root IS an ancestor
 // of the worktree dir there, and the sibling-based check read every one of
-// this project's own worktrees as an ordinary checkout - the exact case
-// todo 406 was filed over, reproduced by the comparison rather than fixed
+// this project's own worktrees as an ordinary checkout - the exact defect
+// this function exists to fix, reproduced by the comparison rather than fixed
 // by it.
 //
 // THIS VERSION ASKS GIT DIRECTLY, LAYOUT-INDEPENDENT BY CONSTRUCTION. `git
@@ -325,7 +325,7 @@ function gitPrimaryRoot(dir: string): string | null {
 // own git-dir agreed with it. `--git-dir --git-common-dir` in one
 // `rev-parse` invocation answers both questions, cheaper than two forks.
 //
-// COUNSELORS ROUND, FIX 3: git-dir and common-dir are resolved FROM `dir` by
+// Git-dir and common-dir are resolved FROM `dir` by
 // git's own discovery only when nothing overrides it. GIT_DIR, GIT_COMMON_DIR
 // and GIT_WORK_TREE are the three repository-SELECTION env vars - when any
 // is inherited from the calling process, `rev-parse` honours it instead of
@@ -336,14 +336,13 @@ function gitPrimaryRoot(dir: string): string | null {
 // just these three; no attempt to sanitize every GIT_* variable, since these
 // are the only ones that change WHICH repository is being asked about.
 
-// COUNSELORS ROUND, ACCEPTED RESIDUAL (recorded on todo 406, not fixed): the
-// `--git-dir --git-common-dir` argument order is unpinned by anything that
-// reads THIS return value, because both call sites so far only ever compare
-// gitDir and commonDir against each other or discard one - a symmetric `!==`
-// and a same-position `out[1]`. Inert today. It stops being inert the moment
-// any caller reads `.gitDir` for its VALUE rather than for the comparison;
-// if you are that caller, verify which output line is which before trusting
-// this object's field names.
+// ACCEPTED RESIDUAL, not fixed: the `--git-dir --git-common-dir` argument order
+// is unpinned by anything that reads THIS return value, because both call sites
+// so far only ever compare gitDir and commonDir against each other or discard
+// one - a symmetric `!==` and a same-position `out[1]`. Inert today. It stops
+// being inert the moment any caller reads `.gitDir` for its VALUE rather than
+// for the comparison; if you are that caller, verify which output line is which
+// before trusting this object's field names.
 function gitDirs(dir: string): { gitDir: string; commonDir: string } | null {
   try {
     // Destructured out, deliberately unused, rather than spread-then-deleted.
@@ -371,7 +370,7 @@ export function isLinkedWorktree(dir: string): boolean {
   return linkedWorktreePrimaryRoot(dir) !== null;
 }
 
-// COUNSELORS ROUND, FIX 2. The primary checkout's root when `dir` is a
+// The primary checkout's root when `dir` is a
 // linked worktree of it, else null - built on the same gitDirs() call as
 // isLinkedWorktree (common-dir's own directory name IS the primary
 // checkout's root), so a caller that needs both facts pays for one fork,
@@ -543,18 +542,17 @@ export function agentProjectPin(): number | null {
   // "redundant" with the identity check above it.
   const actorId = process.env.HIVE_AGENT_ID;
   if (!actorId || process.env.HIVE_PROJECT_LOCK !== "1") return null;
-  // Issue #27's L4 fix round R6, todo 170 (counselors opus F6). actor_id
-  // stopped being unique across agents ROWS the moment decision 2 shipped: a
-  // lead row closed by someone else has its actor_id inherited by the NEXT
-  // `hive lead`'s freshly INSERTed row (src/cli.ts's ensureLeadRow), so one
-  // actor_id can now legitimately name two rows, one closed and one running.
-  // A bare SELECT with no ORDER BY leaves SQLite free to return either -
-  // this query is unreachable for a lead today (a lead's env carries no
-  // HIVE_PROJECT_LOCK=1, todo 167), but that is one lane away from mattering,
-  // not a guarantee this function can lean on. Prefer a RUNNING row over a
-  // CLOSED one when both exist, tie-broken by the most recent id; when only a
-  // closed row exists (the ordinary, single-row worker case this branch was
-  // written for), that is still exactly what falls out.
+  // Issue #27. actor_id stopped being unique across agents ROWS once a lead row
+  // closed by someone else could have its actor_id inherited by the NEXT `hive
+  // lead`'s freshly INSERTed row (src/cli.ts's ensureLeadRow), so one actor_id
+  // can now legitimately name two rows, one closed and one running. A bare
+  // SELECT with no ORDER BY leaves SQLite free to return either - this query is
+  // unreachable for a lead today (a lead's env carries no HIVE_PROJECT_LOCK=1),
+  // but that is one lane away from mattering, not a guarantee this function can
+  // lean on. Prefer a RUNNING row over a CLOSED one when both exist, tie-broken
+  // by the most recent id; when only a closed row exists (the ordinary,
+  // single-row worker case this branch was written for), that is still exactly
+  // what falls out.
   const row = db
     .prepare(
       "SELECT project_id, status FROM agents WHERE actor_id = ? ORDER BY (status = 'running') DESC, id DESC LIMIT 1",

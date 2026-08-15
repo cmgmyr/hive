@@ -136,8 +136,7 @@ export interface ProfileFileStatus extends ResolvedFile {
   // compares a hash recorded at fork time against hive's default today, which
   // says whether hive moved but nothing about how far your fork is from it.
   // This compares live content instead, so a doctor check can tell "you
-  // edited a few lines" from "this is a different document" - see todo 326
-  // comment 721.
+  // edited a few lines" from "this is a different document".
   divergence: number | null;
 }
 
@@ -322,13 +321,12 @@ export function templateVars(text: string): string[] {
   return [...found].sort();
 }
 
-// todo 332: `hive doctor` scans the same rendered profile text for pad and
-// path references, so a referenced-but-missing pad or file announces itself
-// the way a referenced-but-unset var already does. High-confidence shapes
-// only (issue argued on the todo and the lead's own dispatch note): a fork's
-// own prose is covered for free, at the cost of missing a bare unmarked
-// mention like "the lessons pad". That miss is deliberate, not an oversight
-// - it is what keeps this cheap enough to run unconditionally as a note.
+// `hive doctor` scans the same rendered profile text for pad and path
+// references, so a referenced-but-missing pad or file announces itself the way
+// a referenced-but-unset var already does. High-confidence shapes only: a
+// fork's own prose is covered for free, at the cost of missing a bare unmarked
+// mention like "the lessons pad". That miss is deliberate, not an oversight -
+// it is what keeps this cheap enough to run unconditionally as a note.
 const PAD_NAME = "[A-Za-z0-9][A-Za-z0-9_.-]*";
 const HIVE_PAD_CMD = new RegExp(`\`hive pad (${PAD_NAME})`, "g");
 const PAD_TOOL_CALL = /\bpad_(?:read|write)\([^)]*name\s*=\s*"([^"]+)"/g;
