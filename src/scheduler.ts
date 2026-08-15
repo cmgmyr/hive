@@ -3310,6 +3310,31 @@ function rearmSpentEpisode(timerId: number, agentId: number, condition: string, 
 
 // The atomic claim: INSERT OR IGNORE against the primary key, won when
 // changes === 1 exactly once across every concurrent instance.
+//
+// `notified_at` IS THE ONLY THING THAT TELLS A RE-INSERTED CLAIM FROM AN
+// UPDATED ONE, AND THAT IS LOAD-BEARING FORENSICS RATHER THAN A TIMESTAMP.
+// src/db.ts declares it DEFAULT (datetime('now')) and this INSERT does not
+// name it, so every claim carries the moment it was WRITTEN; no writer
+// anywhere touches it on update - stampEpisodeNotice below sets
+// notice_timer_id and nothing else, and rearmSpentEpisode DELETEs rather than
+// clearing. So a row whose notified_at is later than the notice it names was
+// deleted and re-claimed, and a row whose notified_at predates it was stamped
+// in place. There is no other difference between those two histories.
+//
+// THAT DISTINCTION IS WHAT DIAGNOSED TODO 386, so it is worth more than its
+// size. The incident's cursor row named a notice filed 61 seconds after the
+// one actually delivered, which is equally consistent with "the claim was
+// overwritten" (a real defect in this table) and with "the re-arm worked as
+// designed" (no defect at all). notified_at read 15:29:51 rather than
+// 15:28:50, which rules out stampEpisodeNotice by itself and settles it. The
+// lane's whole diagnosis turns on that one column.
+//
+// TWO CHANGES WOULD KILL IT SILENTLY, and neither would fail a test today:
+// adding an ON CONFLICT DO UPDATE clause to this statement (an upsert makes a
+// re-claim indistinguishable from a stamp), or stamping notified_at on any
+// UPDATE to this table for freshness. If you are about to do either, the
+// column is not free to reuse - and nothing pins this, which is filed rather
+// than fixed here.
 function claimEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
   return (
     stmt(
