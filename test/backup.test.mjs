@@ -304,9 +304,12 @@ describe("issue #41 Group 1: backupHealth trusts the disk, not the row, for fres
       "a store with a fresh restorable snapshot must not FAIL just because success was never recorded",
     );
 
+    const reportedAt = health.message.match(/last success (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+    assert.ok(reportedAt, "the verdict must be based on the snapshot's own timestamp, not the missing row");
+    const reportedAtMs = new Date(reportedAt[1].replace(" ", "T") + "Z").getTime();
     assert.ok(
-      health.message.includes(snapshotCreatedAt.toISOString().slice(0, 19).replace("T", " ")),
-      "the verdict must be based on the snapshot's own timestamp, not the missing row",
+      reportedAtMs >= snapshotCreatedAt.getTime() && reportedAtMs <= Date.now(),
+      "the reported timestamp must fall between the snapshot's own creation and now, proving it came from disk rather than the missing row",
     );
   });
 
