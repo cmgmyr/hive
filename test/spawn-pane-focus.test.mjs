@@ -3,14 +3,6 @@ import { after, describe, it } from "node:test";
 
 import { isolateTmux, makeFakeClaude, McpClient, scratchDirs, tmux } from "./helpers.mjs";
 
-// Todo 316. tmux makes a newly split pane, or a newly created window, ACTIVE
-// by default. A human typing into the pane or window that had focus when a
-// spawn lands gets some of their keystrokes stolen by the worker's pane
-// instead - confirmed in real use, not a hypothetical. This exercises the
-// actual launchAgent code path (through agent_spawn) against a real tmux
-// server, not a reimplementation of it, for the same reason
-// worker-first-window-naming.test.mjs does.
-
 const { hasTmux, cleanup } = isolateTmux("the spawn pane focus test");
 
 const dirs = scratchDirs();
@@ -39,10 +31,6 @@ describe(
       mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "500" } });
       await mcp.start();
 
-      // First split-placed worker for this project claims the session's
-      // fresh initial window (claimInitialWindow, not the split-window path
-      // under test) and is the window's only pane, so it starts active -
-      // stand-in for "the human's pane already had focus".
       const first = await mcp.call("agent_spawn", {
         name: "worker-1",
         command: fakeClaude("sleep 600"),
@@ -56,9 +44,6 @@ describe(
         "the only pane in a freshly claimed window must start active",
       );
 
-      // Second split-placed worker goes through splitTargetWindow -> the
-      // split-window call in launchAgent (src/spawn.ts) - the exact call
-      // this todo is about, since worker-1's window already exists.
       await mcp.call("agent_spawn", {
         name: "worker-2",
         command: fakeClaude("sleep 600"),
@@ -86,9 +71,6 @@ describe(
       assert.ok(before, "expected exactly one active window before the spawn");
       const currentWindowId = before.split(" ")[1];
 
-      // placement="window" runs through createWindow's new-window call
-      // (src/tmux.ts) - the sibling call this todo names explicitly ("check
-      // it rather than assuming they behave the same").
       await mcp.call("agent_spawn", {
         name: "worker-3",
         command: fakeClaude("sleep 600"),

@@ -4,12 +4,9 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
-// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
 const { cleanup: cleanupTmux } = isolateTmux("the init tests");
 after(() => cleanupTmux());
 
-// runCli never has a TTY, which is also the non-interactive path hive init
-// has to handle without prompting and without failing.
 const optsFor = () => {
   const dirs = scratchDirs();
   return { dirs, cli: { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp } };
@@ -17,23 +14,13 @@ const optsFor = () => {
 
 const ymlOf = (dirs) => readFileSync(join(dirs.projectDir, "hive.yml"), "utf8");
 
-// Todo 323 audit (generated-data assertions). `hive init` unconditionally
-// prints `Project: ${project.name} (${project.path})` as its first line
-// (src/cli.ts, cmdInit), and both project.name and project.path are built
-// from scratchDirs()'s mkdtempSync() calls (helpers.mjs), so `stdout` below
-// genuinely can carry generated data. The `/ln -s/` doesNotMatch checks
-// further down are safe anyway only because mkdtempSync's random
-// six-character suffix is drawn from [0-9a-zA-Z] and can never contain a
-// space: a pattern requiring one (like the literal space in "ln -s") cannot
-// be satisfied by the random segment alone, whatever it happens to spell.
 describe("hive init profile selection", () => {
   it("writes the profile and skips the runbook pad", async () => {
     const { dirs, cli } = optsFor();
     const { code, stdout } = await runCli(["init", "--profile", "orchestration"], cli);
     assert.equal(code, 0);
     assert.match(ymlOf(dirs), /^profile: orchestration$/m);
-    // With a profile the process lives in `hive runbook`; a runbook pad would
-    // be a second source of truth nobody updates.
+
     assert.match(stdout, /runbook: from profile "orchestration"/);
     assert.match(stdout, /board pad: seeded/);
 
@@ -42,10 +29,6 @@ describe("hive init profile selection", () => {
     assert.match(pads.stdout, /board/);
   });
 
-  // The plugin is one symlink per machine, so these cases turn on what is in
-  // the home directory, not on the project. HOME points at a scratch dir:
-  // the real ~/.claude must not decide whether a test passes, and hive must
-  // never touch it.
   const withHome = (cli, home) => ({ ...cli, env: { ...(cli.env ?? {}), HOME: home } });
   const pluginDir = new URL("../claude-plugin", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -66,8 +49,7 @@ describe("hive init profile selection", () => {
   });
 
   it("says nothing to do when this checkout is already linked", async () => {
-    // The second project on a machine should not be told to install what the
-    // first one already installed.
+
     const { dirs, cli } = optsFor();
     symlinkSync(pluginDir, join(skillsDir(dirs), "hive"));
 
@@ -78,8 +60,7 @@ describe("hive init profile selection", () => {
   });
 
   it("warns when the link points at a different checkout", async () => {
-    // Two clones, one symlink: sessions run the OTHER checkout's kickoff,
-    // which is invisible until you notice the wrong code ran.
+
     const { dirs, cli } = optsFor();
     const otherCheckout = join(dirs.tmp, "other-hive", "claude-plugin");
     mkdirSync(otherCheckout, { recursive: true });
@@ -92,15 +73,12 @@ describe("hive init profile selection", () => {
   });
 
   it("follows CLAUDE_CONFIG_DIR when claude's state lives outside ~/.claude", async () => {
-    // Claude Code relocates its whole state tree, plugins included, when
-    // CLAUDE_CONFIG_DIR is set. Reading ~/.claude regardless would report "not
-    // installed" to someone who has installed it, and hand them a command that
-    // links it where their claude never looks.
+
     const { dirs, cli } = optsFor();
     const configDir = join(dirs.tmp, "elsewhere-config");
     mkdirSync(join(configDir, "skills"), { recursive: true });
     symlinkSync(pluginDir, join(configDir, "skills", "hive"));
-    // ~/.claude stays empty, so a homedir()-only implementation says "missing".
+
     skillsDir(dirs);
 
     const env = { ...withHome(cli, join(dirs.tmp, "home")).env, CLAUDE_CONFIG_DIR: configDir };
@@ -111,8 +89,7 @@ describe("hive init profile selection", () => {
   });
 
   it("prints the real path, not ~, when the config dir is relocated", async () => {
-    // The install line has to be pasteable. "~/.claude/skills/hive" is a lie
-    // when claude is reading somewhere else.
+
     const { dirs, cli } = optsFor();
     const configDir = join(dirs.tmp, "elsewhere-config-2");
     mkdirSync(join(configDir, "skills"), { recursive: true });
@@ -154,7 +131,6 @@ describe("hive init profile selection", () => {
     assert.ok(updated.startsWith(original), "the human's file must survive verbatim");
     assert.match(updated, /^profile: orchestration$/m);
 
-    // The project still parses, with both the old keys and the new one.
     const status = await runCli(["profile", "list"], cli);
     assert.match(status.stdout, /\* orchestration/);
   });

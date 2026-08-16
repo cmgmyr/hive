@@ -5,13 +5,9 @@ import { after, before, describe, it } from "node:test";
 import Database from "better-sqlite3";
 import { McpClient, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
-// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
 const { cleanup: cleanupTmux } = isolateTmux("the CLI tests");
 after(() => cleanupTmux());
 
-// End to end through the built CLI: init seeds the runbook pad, then the
-// pads/pad commands cover print, edit export, save, and conflict handling.
-// HIVE_EDITOR=true (set in runCli) keeps any real editor from opening.
 const dirs = scratchDirs();
 const cliOpts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 
@@ -74,10 +70,6 @@ describe("hive CLI pads", () => {
     assert.equal(outside.stdout, "");
   });
 
-  // Issue #27, step 5: the "N agents" count has always filtered kind='agent',
-  // and this confirms that filter also excludes the lead's own row now that
-  // one exists, rather than assuming it. Zero production code changes here -
-  // this is the test that goes red if a future change widens the filter.
   it("does not count the lead's own row as an agent", async () => {
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();
@@ -102,7 +94,7 @@ describe("hive CLI pads", () => {
   });
 
   it("statusline stays silent in a registered project with no live state", async () => {
-    // A single tool call is enough to register a directory as a project.
+
     const emptyDir = dirs.tmp;
     const mcp = new McpClient({ cwd: emptyDir, dataDir: dirs.dataDir });
     await mcp.start();
@@ -123,7 +115,6 @@ describe("hive CLI pads", () => {
     assert.equal(edit.code, 0);
     const file = exportPath();
 
-    // A concurrent session bumps the pad while the human edits.
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();
     try {

@@ -4,9 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-// brief.js resolves paths from HIVE_DATA_DIR at import time, so point it at a
-// scratch dir before the dynamic import below. It reads dataDir.js and never
-// db.js, so importing it creates no store.
 const scratch = mkdtempSync(join(tmpdir(), "hive-brief-"));
 process.env.HIVE_DATA_DIR = scratch;
 const {
@@ -30,9 +27,7 @@ const ctx = {
 
 describe("recognising claude", () => {
   it("sees through an absolute path and trailing arguments", () => {
-    // hive.yml can say `lead: /opt/homebrew/bin/claude --model opus`, and
-    // agent_spawn can be handed the same. One predicate answers for the lead
-    // command, the worker command, and the flags each gets.
+
     for (const command of ["claude", "claude --model opus", "/opt/homebrew/bin/claude", "  claude  "]) {
       assert.equal(isClaudeCommand(command), true, command);
     }
@@ -104,8 +99,6 @@ describe("worker command string", () => {
     assert.match(cmd, /--name 'api worker'/);
   });
 
-  // Whoever typed the flag meant it, and claude would otherwise see --name
-  // twice. extra_args is the caller's escape hatch, so it wins.
   it("yields to an explicit --name in extra args rather than passing two", () => {
     for (const flag of ["--name", "-n"]) {
       const cmd = workerCommandString({
@@ -117,9 +110,6 @@ describe("worker command string", () => {
     }
   });
 
-  // Every form claude's own parser accepts, checked against 2.1.220 rather
-  // than assumed: all four of these set the name, so all four have to count
-  // as the caller having named the worker.
   it("yields to the joined and attached forms too", () => {
     for (const arg of ["--name=chosen", "-n=chosen", "-nchosen"]) {
       const cmd = workerCommandString({
@@ -158,9 +148,7 @@ describe("worker brief file", () => {
     const onDisk = readFileSync(path, "utf8");
     assert.match(onDisk, /You are agent "api-worker" \(actor id: agent:7\)/);
     assert.match(onDisk, /HIVE_PROJECT_LOCK=1/);
-    // Todo 387: this used to be a separate line agent_spawn typed into the
-    // pane and submitted. Nothing types it anymore, so it has to survive here
-    // instead, or a spawned worker is never told to wait for its assignment.
+
     assert.match(onDisk, /Run whoami to confirm scope, then wait for your assignment\./);
     assert.equal(readAgentBrief(7), onDisk);
   });
@@ -171,14 +159,7 @@ describe("worker brief file", () => {
 });
 
 describe("a profile's own worker.md still gets the wait-for-assignment instruction", () => {
-  // FIX ROUND 1, FINDING 7. workerBrief returns a profile's worker.md
-  // VERBATIM (its own early return, above) and never reaches
-  // defaultWorkerBrief when a profile exists and ships that file - so
-  // baking the instruction into defaultWorkerBrief alone silently dropped
-  // it for every profile-using project, including this repo's own
-  // (hive.yml here sets profile: orchestration). This pins that the
-  // instruction survives regardless of which branch produced the rest of
-  // the brief.
+
   it("appends the instruction after a profile's own worker.md content", () => {
     const profileDir = join(scratch, "profiles", "test-profile");
     mkdirSync(profileDir, { recursive: true });
@@ -192,9 +173,7 @@ describe("a profile's own worker.md still gets the wait-for-assignment instructi
   it("still falls through to the default brief for a profile with no worker.md", () => {
     const profileDir = join(scratch, "profiles", "posture-only-profile");
     mkdirSync(profileDir, { recursive: true });
-    // No worker.md written - readProfileFile returns null, workerBrief must
-    // fall all the way through to defaultWorkerBrief rather than returning
-    // an empty or partial brief.
+
     const rendered = workerBrief({ ...ctx, profile: "posture-only-profile" });
     assert.match(rendered, /\[HIVE CONTEXT\]/);
     assert.match(rendered, /Run whoami to confirm scope, then wait for your assignment\./);
@@ -209,16 +188,8 @@ describe("project posture file", () => {
     assert.equal(first, join(scratch, "postures", "project-3.md"));
     assert.equal(readFileSync(first, "utf8"), "Lead for cmgmyr/hive.\n");
 
-    // Bounded by project count and derived from the profile, so `hive lead`
-    // overwrites rather than accumulating a file per run.
     writeProjectPosture(3, "Lead for someone/else.");
     assert.equal(readFileSync(first, "utf8"), "Lead for someone/else.\n");
     assert.notEqual(projectPosturePath(4), first);
   });
 });
-
-// This file used to have a "pane announcement" describe block here, testing
-// paneAnnouncement() - the line agent_spawn typed into a fresh pane and
-// submitted. Todo 387 deleted the function along with the turn it created;
-// the "worker brief file" describe above now covers the one thing it added
-// (the wait-for-your-assignment instruction) as part of the brief text.

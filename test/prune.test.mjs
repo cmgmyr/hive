@@ -4,31 +4,15 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { assertScratchStore, isolateTmux, McpClient, scratchDirs } from "./helpers.mjs";
 
-// The MCP server's scheduler can reach tmux even when a test never calls an
-// agent_* tool; isolate first, same as every other file that starts a real
-// server (test/CLAUDE.md).
 const { cleanup: cleanupTmux } = isolateTmux("the prune tests");
 
-// This file's whole point is DELETE statements against project and actor
-// rows, so it proves the store is scratch before opening it directly, same
-// as test/backup.test.mjs and test/store-isolation.test.mjs.
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
 const { db } = await import("../dist/db.js");
-// Imported from the built tool file, not copied here, so a table or column
-// added to either list picks up test coverage automatically instead of
-// silently going unchecked - counselors round on PR #100, finding 5.
+
 const { PROJECT_OWNER_TABLES, ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
 
-// actor_prune's liveness guard (src/tools/meta.ts) holds back any actor
-// touched within ACTOR_LIVENESS_WINDOW_MS (2 * TOUCH_INTERVAL_MS, 60s) of
-// the prune call. Every actor row defaults last_seen_at to "now" at INSERT
-// time (src/db.ts), so a survivor seeded to prove the OWNERSHIP check works
-// must be backdated well past that window - otherwise it would survive
-// because it looks freshly active, not because of the row proving ownership,
-// and a mutation that broke the ownership check would go uncaught. Comfortably
-// past 60s; not tied to the exact constant since this only needs to clear it.
 const BACKDATE_PAST_LIVENESS = "-150 seconds";
 
 function backdateLastSeen(actorId) {
@@ -38,11 +22,6 @@ function backdateLastSeen(actorId) {
   );
 }
 
-// One insert per PROJECT_OWNER_TABLES entry, each satisfying only that
-// table's NOT NULL columns. A table added to the list with no case here
-// throws loudly at test time rather than silently shipping unchecked -
-// seeding needs domain knowledge (which columns are safe placeholders) that
-// can't be derived generically from the schema.
 function seedProjectOwnerRow(table, projectId, ownerActorId) {
   switch (table) {
     case "scratchpads":
@@ -77,12 +56,10 @@ function seedProjectOwnerRow(table, projectId, ownerActorId) {
   }
 }
 
-// Same idea as seedProjectOwnerRow, one insert per ACTOR_OWNER_COLUMNS pair.
 function seedActorOwnerRow(table, column, actorId, homeProjectId, sharedTodoId) {
   switch (`${table}.${column}`) {
     case "agents.actor_id":
-      // name must be unique per (project_id, name) among running agents
-      // (idx_agents_running_name); actorId is already unique per case here.
+
       db.prepare(
         "INSERT INTO agents (project_id, actor_id, name, command, cwd) VALUES (?, ?, ?, 'sleep', '/tmp')",
       ).run(homeProjectId, actorId, actorId);
@@ -142,11 +119,7 @@ let mcp;
 before(async () => {
   mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
   await mcp.start();
-  // Both prune tools sweep every registered project or actor in the store,
-  // not just this file's fixtures - whoami alone writes no owned row, so
-  // without this the primary project would itself look empty and get swept
-  // by the very first prune call below, taking every other test in this
-  // file down with it.
+
   await mcp.call("todo_create", { title: "keep this project non-empty" });
 });
 
@@ -171,22 +144,11 @@ describe("project_prune", () => {
         "the caller's own empty project must survive its own prune call",
       );
     } finally {
-      // In a finally, not after the assertions: a failed assertion must not
-      // skip this and leak the child process. McpClient's stdout listener
-      // keeps this file's event loop alive until the process exits, so a
-      // leaked client hangs the whole suite instead of just failing one
-      // test - found the hard way while mutation-testing this file.
+
       await solo.close();
     }
   });
 
-  // Mutation-tested and found NECESSARY, not decorative: the table-driven
-  // test below iterates PROJECT_OWNER_TABLES itself, so removing an entry
-  // from the list shrinks the test's own coverage right along with the
-  // check's - the iteration alone gave zero discriminating power against
-  // exactly the mutation that matters most (an edited list). This pins the
-  // list's actual contents independently, so dropping or renaming an entry
-  // reddens HERE even though the table-driven test would stay silent.
   it("PROJECT_OWNER_TABLES is exactly the audited list from #97 (todo 235) - a change here must be deliberate", () => {
     assert.deepEqual(
       [...PROJECT_OWNER_TABLES].sort(),
@@ -194,12 +156,6 @@ describe("project_prune", () => {
     );
   });
 
-  // The whole point of finding 5 (PR #100 counselors round): the old version
-  // of this test protected exactly one table (kv), so it passed with six of
-  // seven PROJECT_OWNER_TABLES entries deleted from the list. This seeds one
-  // survivor per table, iterating the real exported list. Discriminates a
-  // broken CHECK (existsWhere, the .some() call) even though it cannot, on
-  // its own, discriminate an edited LIST - the assertion above covers that.
   it("deletes an empty project, but keeps one owning a row in each PROJECT_OWNER_TABLES table", async () => {
     const ownerActorId = (await mcp.call("whoami")).actor_id;
     const empty = await mcp.call("project_add", { path: scratchDirs().projectDir });
@@ -240,11 +196,6 @@ describe("project_prune", () => {
     }
   });
 
-  // Counselors round on PR #100, finding 4: a per-row transaction can still
-  // throw, and the fix must not let that erase the receipt entirely. This
-  // forces a REAL failure with a genuine competing write lock from a second
-  // connection (no test-only hook in production code), in its own scratch
-  // store so no other candidate from earlier tests shares the wait.
   describe("resilience to a real per-row failure", () => {
     it("reports a blocked row in errors instead of discarding the rest of the receipt", async () => {
       const lockDirs = scratchDirs();
@@ -276,10 +227,7 @@ describe("project_prune", () => {
           "a candidate whose transaction failed must still exist, not be half-deleted",
         );
       } finally {
-        // Outer try/finally, same reasoning as the other McpClient tests in
-        // this file: a failed assertion above must still close lockMcp, or
-        // its leaked stdout listener hangs the whole suite rather than just
-        // failing this one test.
+
         rawDb?.close();
         await lockMcp.close();
       }
@@ -323,10 +271,6 @@ describe("actor_prune", () => {
     }
   });
 
-  // Counselors round on PR #100, finding 1 (P1): ownership is not the whole
-  // liveness question. A manually-identified session that has called a tool
-  // but not yet written anything owned must be held back, not treated as
-  // inert, and reported separately from the caller's-own-actor case.
   it("holds back a recently-seen actor that owns nothing yet, separately from the caller's own actor", async () => {
     const live = new McpClient({
       cwd: dirs.projectDir,
@@ -334,12 +278,8 @@ describe("actor_prune", () => {
       env: { HIVE_AGENT_ID: "agent:prune-live", HIVE_AGENT_NAME: "prune-live" },
     });
     await live.start();
-    await live.call("whoami"); // creates the actor row; last_seen_at = now; owns nothing
-    // Closed here, before any assertion: an assertion that throws must not
-    // skip this and leak the child - McpClient's stdout listener keeps this
-    // file's event loop alive until the process exits, so a leaked one hangs
-    // the whole suite instead of just failing the one test. Closing the
-    // process does not touch the actor ROW the prune call below reads.
+    await live.call("whoami");
+
     await live.close();
 
     const result = await mcp.call("actor_prune");
@@ -352,13 +292,6 @@ describe("actor_prune", () => {
     assert.ok(db.prepare("SELECT id FROM actors WHERE id = ?").get("agent:prune-live"));
   });
 
-  // The realistic version, via real McpClient sessions and real tool calls
-  // rather than raw inserts, matching the issue's own motivating example
-  // (five real actors kept for real todo_comments they wrote). Both actors
-  // are backdated past the liveness window so this proves the OWNERSHIP
-  // check keeps the commenter, not the new liveness guard - todo_comments
-  // .author has no foreign key, so it is the one column a miss silently
-  // orphans.
   it("deletes an inert actor, but keeps one whose only trace is a todo_comments.author row", async () => {
     const commenter = new McpClient({
       cwd: dirs.projectDir,
@@ -396,11 +329,6 @@ describe("actor_prune", () => {
     );
   });
 
-  // Same reasoning as PROJECT_OWNER_TABLES's own pin above: the table-driven
-  // test below iterates this list itself, so it cannot catch a REMOVED
-  // entry on its own (both the check and the test's coverage would shrink
-  // together) - mutation-tested and confirmed. This pins the contents
-  // independently.
   it("ACTOR_OWNER_COLUMNS is exactly the audited list from #97 (todo 235) - a change here must be deliberate", () => {
     assert.deepEqual(
       ACTOR_OWNER_COLUMNS.map(([table, column]) => `${table}.${column}`).sort(),
@@ -419,13 +347,6 @@ describe("actor_prune", () => {
     );
   });
 
-  // The exhaustive version of the above, covering every ACTOR_OWNER_COLUMNS
-  // entry, not just todo_comments.author - counselors round on PR #100,
-  // finding 5. The old single-column test passed with nine of the ten
-  // columns deleted from the list; this seeds one survivor per column,
-  // iterating the real exported list, all backdated past the liveness
-  // window so only ownership is under test. Discriminates a broken CHECK,
-  // not an edited LIST - the assertion above covers that.
   it("deletes an inert actor, but keeps one owning a row in each ACTOR_OWNER_COLUMNS column", async () => {
     const homeProjectId = (await mcp.call("whoami")).project.id;
     const sharedTodo = await mcp.call("todo_create", { title: "shared todo for locked_by / author" });

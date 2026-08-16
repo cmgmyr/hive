@@ -7,21 +7,6 @@ import { after, before, beforeEach, describe, it } from "node:test";
 
 import { clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
 
-// Issue #73, todo 211 (step 2 of the lane): D2/D4/D6 on plan-73-tmux-socket.
-// A row whose recorded tmux_socket disagrees with the one THIS process would
-// talk to must read as UNKNOWN liveness everywhere hive decides "is this row
-// alive" - never as dead, or the janitor (and everything downstream of it)
-// destroys state it cannot honestly judge. D4 is the trap this file exists to
-// pin: targetAlive/targetLive returning a plain boolean used to be safe to
-// read with `!`, and rowAlive/rowLive returning Liveness (boolean | null) for
-// exactly this new foreign case means every `!` at a call site had to become
-// an explicit `=== false`/`=== true` check, or a foreign row gets swept as
-// dead instead of held as unknown.
-//
-// Each test below pairs the new refusal with the SAME scenario under a
-// matching socket and a legacy empty socket, per test/CLAUDE.md's own rule:
-// a test that only asserts the refusal cannot tell a real fix from a
-// predicate hard-coded to always return null.
 const { hasTmux, cleanup } = isolateTmux("the foreign-socket liveness tests");
 
 clearHiveEnv();
@@ -98,10 +83,7 @@ describe("foreignSocket/rowLive/rowAlive: the predicate itself, no tmux fork nee
   });
 
   it("rowLive/rowAlive short-circuit to null on a foreign socket without ever needing to probe tmux", () => {
-    // Deliberately garbage targets: if either function tried to ask tmux
-    // about them first, this would still pass by coincidence (tmux would
-    // just say "no such pane"). The point is that foreignSocket alone
-    // decides this, before targetLive/targetAlive ever run.
+
     assert.equal(rowLive(FOREIGN_SOCKET, "%not-a-real-target-at-all"), null);
     assert.equal(
       rowAlive(FOREIGN_SOCKET, "%not-a-real-target-at-all", { panes: new Set(), windows: new Set() }),
@@ -205,16 +187,6 @@ describe(
       assert.equal(result.cancelled_timers, 1);
     });
 
-    // Counselors round 2, R2-1. The ORIGINAL F1 fix filtered this join with
-    // `AND agents.status = 'running'`, which also drops the ONLY row for an
-    // actor_id when that row is closed with no running successor at all -
-    // closeAgentRow() never cancels the actor's timers, so this is reachable
-    // any time a worker or command row closes while a wake naming it is still
-    // pending. Filtered out, the join misses, deliver_socket reads '' (local),
-    // and this test's foreign fact goes unread. Without the fix (a bare
-    // status filter instead of the preferred-row subquery) this test cancels
-    // the timer instead of holding it, because the row's foreign socket never
-    // reaches the query at all.
     it("leaves the timer pending when the ONLY matching agents row is CLOSED and carries a foreign socket (R2-1)", () => {
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, created_at)
@@ -257,14 +229,6 @@ describe(
   () => {
     beforeEach(reset);
 
-    // ensureLeadRow (src/cli.ts) reuses a closed lead row's own actor_id for
-    // the row that replaces it, so one project can have many agents rows -
-    // at most one of them running - sharing a single actor_id. Without
-    // AND agents.status = 'running' on DELIVER_SOCKET_JOIN, that join is
-    // one-to-many: this fixture's closed row (recorded on THIS process's own
-    // socket) matches the same timer as the running row (recorded on a
-    // FOREIGN one), and whichever candidate the closed row produced reads as
-    // local.
     function seedDuplicateActorLead() {
       const closedId = db
         .prepare(
@@ -284,10 +248,7 @@ describe(
 
     it("never delivers into a pane this process only coincidentally shares with the running lead's foreign server", async () => {
       const actorId = seedDuplicateActorLead();
-      // livePane is real and alive on THIS process's own (isolated) tmux
-      // server, standing in for the coincidental pane-id collision the
-      // counselors finding depends on: the running lead's ACTUAL pane lives
-      // on the foreign server; this id merely happens to also be alive here.
+
       const timer = timerRow({ pane: livePane, deliverActor: actorId, due: "-1 seconds" });
 
       await tick();
@@ -314,14 +275,6 @@ describe(
       );
     });
 
-    // Counselors round 2, R2-1. Same regression as the janitor's timers sweep
-    // above, on the delivery path this finding actually names: closeAgentRow()
-    // never cancels the actor's timers, so a lone CLOSED row's foreign socket
-    // has to keep being read after the row closes, not discarded the moment
-    // no running row shares its actor_id. livePane stands in for the
-    // coincidental pane-id collision the finding depends on: the closed row's
-    // real pane lived on the foreign server; this id merely happens to also
-    // be alive here, on the server tick() would actually type into.
     it("never delivers when the ONLY matching agents row is CLOSED and carries a foreign socket (R2-1)", async () => {
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, created_at)
@@ -356,15 +309,7 @@ describe(
 );
 
 describe("tmuxSocketPath: counselors F3 - an unlinked socket file must not read the identical server as foreign", () => {
-  // Every recorded value is `tmuxSocketPath(TMUX, TMUX_TMPDIR)`, computed
-  // fresh on every read (foreignSocket calls it live, never a cached
-  // constant). Before the fix, tmuxSocketPath's own `canonical()` ran
-  // realpathSync on the FULL socket path - the leaf "default" file itself -
-  // which tmux can transiently unlink and recreate with the server's
-  // identity completely unchanged. `linkDir` below aliases `scratch` under a
-  // different name, standing in for exactly the kind of string mismatch a
-  // real macOS box produces for free (/tmp vs /private/tmp): two path
-  // strings naming the SAME real directory.
+
   const scratch = mkdtempSync(join(tmpdir(), "hive-f3-"));
   const uid = process.getuid?.() ?? 0;
   const uidDirName = `tmux-${uid}`;
@@ -373,14 +318,7 @@ describe("tmuxSocketPath: counselors F3 - an unlinked socket file must not read 
   const linkDir = join(scratch, "..", `hive-f3-alias-${process.pid}`);
   symlinkSync(scratch, linkDir);
   const aliasedSocket = join(linkDir, uidDirName, "default");
-  // Computed independently of tmuxSocketPath itself (plain node:fs
-  // realpathSync on the directory these fixtures actually built), so it can
-  // pin what the resolved value must BE, not merely that two calls agree
-  // with each other. Counselors round 2, R2-3: without this, a
-  // canonicalSocketPath hard-coded to return one constant string passes
-  // every assertion below - the only earlier check in this file was
-  // self-agreement (`viaReal === viaAlias`) and a "does not contain this
-  // substring" match, both of which a constant satisfies trivially.
+
   const expectedSocket = join(realpathSync(scratch), uidDirName, "default");
 
   after(() => {
@@ -389,36 +327,16 @@ describe("tmuxSocketPath: counselors F3 - an unlinked socket file must not read 
   });
 
   it("resolves the aliased path to the SAME canonical socket the real path resolves to, even with no leaf file at all", () => {
-    // Neither path's leaf ("default") has ever existed - the strongest form
-    // of "unlinked". Old code's canonical() would realpathSync-fail on both
-    // full paths and fall back to each RAW string verbatim, so the two would
-    // disagree (one still carrying the "hive-f3-alias-..." segment). The fix
-    // only ever realpaths the containing directory, which resolves the
-    // symlink regardless of the leaf's existence.
+
     const viaReal = tmuxSocketPath(`${realSocket},123,0`, undefined);
     const viaAlias = tmuxSocketPath(`${aliasedSocket},123,0`, undefined);
     assert.equal(viaReal, viaAlias, "both name the identical real directory and must canonicalise to one string");
-    // Counselors review (both seats, independently): a `doesNotMatch(viaAlias,
-    // /hive-f3-alias/)` used to sit here, annotated as immune-by-probability.
-    // Removed rather than kept: it added no protection this equality does
-    // not already give. Any regression that left the alias segment in
-    // viaAlias also makes it disagree with expectedSocket (built
-    // independently from `scratch`, which never carries that segment), so
-    // the exact-equality check below already catches the identical failure
-    // - more informatively, since it names both strings instead of just
-    // ruling one substring out. Node asserts run in order, so the removed
-    // check could only ever have failed FIRST and masked this one; it could
-    // never be the assertion that alone caught a real regression.
+
     assert.equal(viaAlias, expectedSocket, "must canonicalise to the actual real path, not merely agree with itself");
   });
 
   it("keeps answering the SAME socket after the leaf that let it resolve fully is unlinked", () => {
-    // This time the leaf genuinely exists at the ALIASED path when first
-    // read - reproducing a real spawn: TMUX pointed at the alias, the socket
-    // was live, canonical() resolved the full path (following the symlink)
-    // and recorded it. Then the leaf is removed while the server (the
-    // directory) is still there, the exact "unlinked but still running" case
-    // counselors F3 names.
+
     const fd = openSync(aliasedSocket, "w");
     closeSync(fd);
     try {

@@ -3,14 +3,6 @@ import { after, before, beforeEach, describe, it } from "node:test";
 
 import { isolateTmux, McpClient, scratchDirs, seedLeadRow } from "./helpers.mjs";
 
-// Issue #27's L4 fix round, DECISION 4/5. "lead" is the addressing handle
-// every wake, pad and todo comment uses for this project's lead, and
-// ensureLeadRow (src/cli.ts) keys its own lookup on kind='lead' + running
-// rather than on the name (DECISION 5) - so a rename would not strand the
-// row, it would let the NEXT `hive lead` mint a SECOND lead identity under
-// the freed name while the renamed row goes on being the real one under a
-// name nothing points at any more. agent_rename refuses a lead outright.
-
 const { hasTmux, cleanup } = isolateTmux("the agent_rename lead guard tests");
 
 const dirs = scratchDirs();
@@ -33,10 +25,6 @@ describe("agent_rename refuses the lead", { skip: hasTmux ? false : "tmux is not
     cleanup(sessionName());
   });
 
-  // Same reasoning as agent-close-lead-guard.test.mjs: only one running
-  // "lead" row per project (idx_agents_running_name), so a refused rename
-  // that correctly leaves the row alone would collide with the next test's
-  // seed unless cleared first.
   beforeEach(() => {
     db.prepare("DELETE FROM agents WHERE project_id = ? AND kind = 'lead'").run(projectId);
   });

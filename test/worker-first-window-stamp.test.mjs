@@ -4,15 +4,6 @@ import { after, describe, it } from "node:test";
 
 import { isolateTmux, leadRow, makeFakeClaude, McpClient, runCli, scratchDirs, tmux, windowOwners } from "./helpers.mjs";
 
-// The placement="window" sibling of test/worker-first-window-naming.test.mjs
-// (that file's own header explains why this needs its own file: a session
-// that does not exist yet, which no other lead-*.test.mjs file starts from).
-// A worker's own dedicated window (placement="window") must never carry
-// @hive-project-id: that stamp is cmdLead's and splitTargetWindow's lookup
-// key for "the project's shared window", and stamping a worker's PRIVATE
-// window with it hands a later `hive lead` (or another split-placed worker)
-// that private window to land in, defeating placement="window" outright.
-
 const { hasTmux, cleanup } = isolateTmux("the worker-first window stamp test");
 
 const dirs = scratchDirs();
@@ -21,10 +12,6 @@ const { db, migrate } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 migrate();
 
-// show-options errors ("invalid option") on a custom option that was never
-// set anywhere, rather than answering empty - measured live against a real
-// tmux while building todo 265/266 (.claude/rules/tmux-and-panes.md). Read
-// that as "unset", the same as an empty stamp.
 function stampOf(target) {
   try {
     return tmux("show-options", "-w", "-v", "-t", target, "@hive-project-id");
@@ -58,10 +45,7 @@ describe(
         extra_args: [],
         placement: "window",
       });
-      // todo 371: a row's tmux_target is a PANE id for every placement now, so
-      // the window has to be resolved from that pane. Reading it off the receipt
-      // made this comparison a pane id against a `session:@n` string, which can
-      // never be equal - the assertion below stopped being able to fail.
+
       const workerWindow = tmux("list-panes", "-t", spawned.tmux_target, "-F", "#{window_id}").trim().split("\n")[0];
       assert.equal(
         stampOf(workerWindow),

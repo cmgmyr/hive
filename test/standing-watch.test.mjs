@@ -6,44 +6,12 @@ import { after, before, describe, it } from "node:test";
 
 import { DIST, isolateTmux, McpClient, runFixture, scratchDirs, until } from "./helpers.mjs";
 
-// Todo 315. wake_when_idle is a ONE-SHOT: it fires once and stops watching, so
-// a lead running three to five workers is structurally guaranteed to miss a
-// finish. wake_when_idle(scope: "project") is a STANDING watch that keeps
-// watching and reports each crew member as it finishes or goes away.
-//
-// EVERY ASSERTION HERE IS OVER A RECORD OF WHAT HAPPENED - timers rows, and
-// wake_idle_notices rows - never over a sample of agents.agent_state
-// (.claude/rules/worker-state.md, test/CLAUDE.md). The notice IS a timers row,
-// so COUNTING those rows is what makes the cursor testable at all: a watch
-// with no cursor files one every three seconds forever, and a watch with a
-// broken cursor files none at all, and those two are only distinguishable by
-// a count across ticks.
-//
-// THE SCHEDULER TESTS DRIVE tick() DIRECTLY, in a child process, with a
-// SYNTHETIC AliveSnapshot literal - the method test/scheduler.test.mjs
-// established. A pane in the snapshot is alive; one that is not is dead. That
-// is the whole tmux dependency for the standing watch's own decisions, which
-// touch no tmux at all: they are store reads and one INSERT.
-//
-// WHY THE OWNER IS A LEAD WHOSE PANE IS DEAD, in every fixture but the expiry
-// one. A filed notice is a real due-now timer, so the NEXT tick tries to
-// deliver it, and delivery is a tmux fork. A lead-owned wake whose pane is not
-// live is HELD rather than cancelled or typed (deliverable()'s lead
-// exemption), so these fixtures reach the exact code under test and stop
-// short of typing at a terminal. The one fixture that DOES want a delivery
-// says so.
 const { hasTmux, cleanup } = isolateTmux("the standing watch tests");
 const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 
-// TMUX_TMPDIR is forwarded into every fixture child on purpose. A fixture that
-// does reach a tmux fork (the expiry one, and any accidental future path) must
-// land on this suite's own private socket rather than the developer's server;
-// paired with the scratch HIVE_DATA_DIR below, that is the isolation
-// .claude/rules/tmux-and-panes.md allows, and the pairing it refuses is a
-// private socket with the DEFAULT store.
 const fixtureEnv = (dataDir) => ({ HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR });
 
 const IMPORTS =
@@ -51,10 +19,6 @@ const IMPORTS =
   `const { tick, seedGoneCursor } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
   "migrate();\n";
 
-// One project, one lead that owns the watch, and helpers to add crew. Every
-// row is older than SETTLE_WINDOW so the janitor judges it rather than giving
-// it spawn grace, which is what makes "this pane is not in the snapshot" mean
-// "gone" here instead of "not born yet".
 const SEED = `
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('sw', '/tmp/sw') RETURNING id").get().id;
 db.prepare(
@@ -94,7 +58,6 @@ const cursor = (watchId) =>
   db.prepare("SELECT agent_id, condition, episode, notice_timer_id FROM wake_idle_notices WHERE timer_id = ? ORDER BY agent_id, condition").all(watchId);
 `;
 
-// The lead's own pane is deliberately absent: see the file header.
 const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
 
 const fixture = (name, body, panes = ["%1", "%2"]) => {
@@ -144,19 +107,9 @@ describe("a standing watch keeps watching", () => {
     assert.match(result.first[0], /w1/);
     assert.doesNotMatch(result.first[0], /^ {2}w2:/m, "w2 had not finished and must not be in the finished block");
     assert.match(result.first[0], /Still going: w2/, "the roster names what is still running");
-    // A notice carries the DEFAULT EMPTY watch list, and that is not
-    // incidental: deliver() calls watchedTail() unconditionally, and for a
-    // non-empty list it runs capture-pane for up to three agents and embeds
-    // their SCREENS in the body it types into the lead's own pane. Putting
-    // the crew in a notice's watch list is the obvious-looking way to build
-    // the roster, and it is the one thing that would turn a compact roster
-    // into three worker terminals plus three tmux forks per notice in the
-    // hottest loop hive has.
+
     assert.deepEqual(result.noticeWatchLists, ["[]"], "a notice must watch nothing, or deliver() pastes worker screens");
 
-    // TODO 390: w2's LATER finish must still be reported (this is the
-    // one-shot's own defect), but while the pane stays held it must update
-    // the SAME pending notice rather than queue a second one behind it.
     assert.equal(result.second.length, 1, "the pane is still held; a second finish must not queue a second notice");
     assert.match(result.second[0], /w2/);
     assert.match(result.second[0], /w1/, "and the earlier finish must still be named in the merged notice");
@@ -165,14 +118,6 @@ describe("a standing watch keeps watching", () => {
     assert.equal(result.watch.fire_count, 0);
   });
 
-  // THE CONFIGURATION THE FIRST VERSION OF THIS FEATURE WAS INERT IN, and
-  // which the whole suite ran as without noticing. resolveDelivery
-  // (src/tools/wakes.ts) deliberately accepts a session with NO agents row,
-  // falling back to the TMUX_PANE it is running in - a plain claude session,
-  // or anything using the documented HIVE_AGENT_ID identity. Notices used to
-  // be filed at ownerPane(), which is a lookup in `agents` and answers null
-  // for exactly that caller, so the watch reported nothing for its whole life
-  // and then delivered a working expiry wake saying it had ended.
   it("reports finishes for an owner that has no agents row at all", () => {
     const result = fixture(
       "rowless-owner",
@@ -188,14 +133,7 @@ describe("a standing watch keeps watching", () => {
       const filed = notices(watchId);
       ${out("{ ownerRows, bodies: filed.map((n) => n.body), panes: filed.map((n) => n.deliver_pane) }")}
       `,
-      // %lead IS in this fixture's snapshot, unlike every other one here, and
-      // that is not a detail. A rowless owner is by definition not a `lead:`
-      // actor, so the janitor's timers sweep has no exemption to give it: a
-      // watch whose delivery pane is not live gets CANCELLED on the first
-      // tick, before any of this runs. Correct, pre-existing behaviour, and
-      // it only became reachable for a standing watch once notices started
-      // going to deliver_pane - which is exactly why the fixture has to be
-      // honest about the pane being alive.
+
       ["%1", "%lead"],
     );
     assert.equal(result.ownerRows, 0, "the fixture must really be the rowless case, or it proves nothing");
@@ -205,9 +143,7 @@ describe("a standing watch keeps watching", () => {
   });
 
   it("files notices at deliver_to, the target the receipt named", () => {
-    // deliver_to is resolved at creation, stored, and echoed back. Filing at
-    // the owner instead makes one wake with two destinations, where the
-    // receipt names the one that gets almost nothing.
+
     const result = fixture(
       "deliver-to-target",
       `
@@ -240,10 +176,7 @@ describe("a standing watch keeps watching", () => {
   });
 
   it("delivers the caller's own body on every notice, not only at expiry", () => {
-    // body is REQUIRED, help.ts teaches leads to write one, and
-    // worker-state.md tells them to make it self-contained. A required
-    // parameter that surfaces only when the feature ends is a broken
-    // contract.
+
     const result = fixture(
       "body-on-every-notice",
       `
@@ -261,12 +194,7 @@ describe("a standing watch keeps watching", () => {
   });
 
   it("keeps reporting after max_wait passes while its expiry cannot be delivered", () => {
-    // The expiry branch only completes when deliverable() says yes, and a
-    // pane holding unsubmitted human text holds a wake INDEFINITELY by
-    // design. Returning before the reporting call meant a watch whose expiry
-    // was held stopped watching silently while wake_list showed it pending -
-    // this todo's own defect with a timer on it. Here the delivery pane is
-    // simply not live, which holds the same way for a lead-owned wake.
+
     const result = fixture(
       "expiry-held-keeps-reporting",
       `
@@ -318,9 +246,7 @@ describe("a standing watch keeps watching", () => {
   });
 
   it("reports a worker that was ALREADY idle when the watch was set", () => {
-    // Decision A (todo 315 comment 638), and a deliberate difference from
-    // mode=any. The control below is the whole point of this test: it proves
-    // the two really do differ, rather than restating a default.
+
     const result = fixture(
       "already-idle",
       `
@@ -337,15 +263,7 @@ describe("a standing watch keeps watching", () => {
       `,
     );
     assert.equal(result.standingNotices, 1, "a worker idle before the watch existed is still a finish nobody was told about");
-    // THE CONTROL'S INSTRUMENT IS held_reason, NOT fired_at, and the
-    // difference is the whole value of the control (counselors, opus 9). This
-    // fixture's lead pane is deliberately absent from the snapshot, so a
-    // one-shot that DID become ready would be held rather than fired and would
-    // read fired_at === null too - the assertion held in both states and
-    // discriminated nothing (test/CLAUDE.md shape 7). An unready idle wake is
-    // never offered to deliverable() at all, so a NULL held_reason is what
-    // actually proves it never became ready. The sibling control in "a watched
-    // worker that dies" asserts the same field in the opposite direction.
+
     assert.equal(result.oneShotRow.fired_at, null);
     assert.equal(
       result.oneShotRow.held_reason,
@@ -356,10 +274,7 @@ describe("a standing watch keeps watching", () => {
 });
 
 describe("the cursor is a transition, not a timestamp", () => {
-  // src/hook.ts rewrites state_changed_at even when the state it writes is
-  // the one already there, so a /goal fires Stop after every turn and
-  // .claude/rules/worker-state.md measured NINE false idles in fifty seconds.
-  // Keyed on the timestamp alone, a standing watch reports all nine.
+
   it("does not re-report an idle latch that moved with no work in between", () => {
     const result = fixture(
       "goal-churn",
@@ -390,21 +305,10 @@ describe("the cursor is a transition, not a timestamp", () => {
     );
     assert.equal(result.first, 1);
     assert.equal(result.churned, 1, "a latch that moved with no working|waiting row between is not a new finish");
-    // TODO 390: the lead's pane is deliberately absent from this fixture's
-    // snapshot (the file header explains why), so it stays held across every
-    // tick here. The real finish below is still a NEW episode - the control
-    // this test exists for - but while the pane is held it folds into the
-    // one pending notice rather than queuing a second one behind it.
+
     assert.equal(result.afterRealWork, 1, "control: a real turn between two idles IS a new finish, held in the same notice");
   });
 
-  // THE SHAPE RETENTION ACTUALLY PRODUCES, which the first version of this
-  // test could not reach. pruneStateLog deletes a PREFIX, by age and by a
-  // global row-count bound - so it takes the OLDER prompt|working row and
-  // leaves the NEWER stop|idle row standing. A fail-open keyed on "no rows at
-  // all after the previous episode" is aimed at the one shape a prefix delete
-  // cannot make, and the reachable one silently swallowed a real finish for
-  // the watch's whole life while wake_list showed it healthy.
   it("reports the finish when retention truncated the interval it would have checked", () => {
     const result = fixture(
       "log-pruned-prefix",
@@ -436,16 +340,12 @@ describe("the cursor is a transition, not a timestamp", () => {
       ["idle"],
       "the fixture must really be the partial-retention shape: the working row gone, the idle row kept",
     );
-    // TODO 390: still reported (unanswerable must not mean silent) - and,
-    // the pane being held throughout this fixture, folded into the ONE
-    // notice already pending rather than queued as a second row.
+
     assert.equal(result.notices, 1, "a truncated interval is unanswerable, and unanswerable must not mean silent");
   });
 
   it("control: an INTACT log that records no work is evidence, and stays quiet", () => {
-    // The other direction, and it is what stops the fail-open above from
-    // swallowing the /goal fix: a log that still covers the interval and
-    // simply holds no working row is an answer, not an absence of one.
+
     const result = fixture(
       "log-intact-no-work",
       `
@@ -465,11 +365,7 @@ describe("the cursor is a transition, not a timestamp", () => {
 
 describe("a watched worker that dies", () => {
   it("is reported, even though it has no idle latch and drops out of the crew", () => {
-    // THE STRICT-REGRESSION GUARD. Under the explicit-list wake this
-    // replaces, a watched worker that goes away fires the wake through
-    // watchedStates' GONE branch. Under project scope, membership is a query
-    // over RUNNING agents - so without a key of its own, a dead worker does
-    // not merely lack a fresh latch, it silently leaves the watched set.
+
     const result = fixture(
       "gone-worker",
       `
@@ -508,13 +404,6 @@ describe("a watched worker that dies", () => {
     );
   });
 
-  // THE PAIR, AND IT HAS TO BE A PAIR. Either half alone is green against a
-  // gone query with no state discriminator in it at all: the death below is
-  // reported either way, and "the close filed nothing" is only meaningful
-  // sitting next to a close that DID file something. Delete
-  // `a.agent_state != 'idle'` from standingGoneRows and this test goes red on
-  // the middle assertion, which is the whole reason it is written as one
-  // fixture walking one loop rather than two tidy ones.
   it("stays quiet when the lead closes a worker it already read, and still reports one that died mid-work", () => {
     const result = fixture(
       "close-from-idle-versus-death",
@@ -554,9 +443,7 @@ describe("a watched worker that dies", () => {
       result.afterFinish,
       "closing a worker the lead has already read is its own tidy-up, not a death to be woken for",
     );
-    // TODO 390: the death is still reported (the whole point of this test),
-    // and since the pane is held throughout, it folds into the ONE notice
-    // already pending rather than filing a second row.
+
     assert.equal(result.afterDeath.length, 1, "a row that closed while it still read working IS the death this reports");
     assert.match(result.afterDeath[0], /died: GONE/);
     assert.match(
@@ -582,14 +469,6 @@ describe("a watched worker that dies", () => {
     assert.equal(result.notices, 0, "a death from before the watch existed is history, not news");
   });
 
-  // BOTH DIRECTIONS OF THE SUB-SECOND COLLISION, INSIDE ONE SECOND, which is
-  // the only way to test it: datetime('now') has no sub-second component, so
-  // a death at .100 and a watch at .900 are stored as the identical string
-  // and NO comparison between them can recover the order. `>=` reported the
-  // dead-already worker; `>` would lose the one that died while the watch was
-  // live, which the receipt had just named as watched. The fix is that
-  // neither stamp is compared: the cursor is seeded at creation, so the
-  // question is answered by a row that exists rather than by a timestamp.
   it("tells a death that beat the watch from one that landed in the same second after it", () => {
     const result = fixture(
       "same-second-deaths",
@@ -629,9 +508,7 @@ describe("a watched worker that dies", () => {
   });
 
   it("control: mode=any still fires on a watched agent that goes away", () => {
-    // Not a standing-watch assertion at all. It is the guard that this lane
-    // did not regress the behaviour it is replacing, which is the only way to
-    // know the gone-key work above was needed rather than invented.
+
     const result = fixture(
       "mode-any-gone-not-regressed",
       `
@@ -648,10 +525,7 @@ describe("a watched worker that dies", () => {
       `,
     );
     assert.equal(result.agentClosed, "closed");
-    // The wake becomes READY on the gone branch and then holds only because
-    // this fixture's lead pane is deliberately dead. Held is the proof it got
-    // past `ready`: an unready idle wake is never offered to deliverable() at
-    // all, so held_reason would stay NULL.
+
     assert.equal(result.heldNotFired.fired_at, null);
     assert.match(
       result.heldNotFired.held_reason ?? "",
@@ -734,21 +608,6 @@ describe("the parent link", () => {
     assert.equal(result.after.typed_at, null);
   });
 
-  // CLAUDE.md's "the scheduler must never throw", reached through this lane's
-  // own new write. The cancel is one UPDATE in tick()'s candidate loop, and a
-  // throw from it - SQLITE_BUSY outliving the 5s busy_timeout, an I/O error -
-  // escapes fireDelay into tick()'s outer catch, which skips every later
-  // candidate. A notice that keeps failing that write starves every unrelated
-  // wake in the store on every tick.
-  //
-  // THE THROW IS INJECTED WITH A TRIGGER, because nothing else makes an UPDATE
-  // fail on demand: RAISE(ABORT) throws out of the identical statement, at the
-  // identical point. TWO SIBLING WAKES, one either side of the notice by id,
-  // so the assertion cannot pass by an accident of candidate ordering - the
-  // candidates query has no ORDER BY, and whichever end it starts from, one
-  // sibling is behind the throwing row. held_reason is the instrument rather
-  // than fired_at: these are lead-owned wakes on a dead pane, so being HELD is
-  // what "this candidate was reached" looks like here.
   it("keeps working through the rest of the tick when cancelling a stale notice throws", () => {
     const result = fixture(
       "stale-notice-cancel-throws",
@@ -819,15 +678,6 @@ describe("the parent link", () => {
   });
 });
 
-// TODO 390 (pad 142 PART 3). Wakes held behind a modal (or, here, a dead
-// lead pane - the same hold shape "the parent link" tests above already use
-// to avoid a real tmux fork) used to queue one notice PER finish and release
-// them all together the moment the pane cleared. THE PROPERTY UNDER TEST:
-// N edges arriving while held must leave exactly ONE pending notice, naming
-// every worker whose episode it stands in for - never a sample of the
-// current row taken once, but the full set of rows this project EVER filed
-// for the watch, which is durable precisely because a `timers` row is never
-// deleted (test/CLAUDE.md's own rule: assert over a record, not a sample).
 describe("todo 390: coalescing while held", () => {
   it("holds a pane's second finish in the SAME pending notice instead of queuing a new one, and names both workers", () => {
     const result = fixture(
@@ -874,17 +724,6 @@ describe("todo 390: coalescing while held", () => {
     );
   });
 
-  // COUNSELORS ROUND 3, F7 CORRECTION: this pins pendingNoticeFor's OWN
-  // `fired_at IS NULL` filter, not updateNoticeInPlace's guard of the same
-  // shape - claimStandingBatch's read-then-write runs inside one
-  // .immediate() transaction, so updateNoticeInPlace's guard is never
-  // actually reached with a stale row from this caller (see its own
-  // comment). What this proves instead: a notice that has ALREADY fired by
-  // the time the next finish arrives must not be found as "pending" at
-  // all - w2's finish gets its OWN fresh notice rather than either being
-  // silently dropped or matched against a row that is already being typed.
-  // Delete `AND fired_at IS NULL` from pendingNoticeFor's own query (not
-  // updateNoticeInPlace's) to see this test go red.
   it("falls back to a fresh notice when the pending one was claimed by a delivery in between", () => {
     const result = fixture(
       "coalesce-race-lost",
@@ -917,16 +756,6 @@ describe("todo 390: coalescing while held", () => {
     assert.match(result.secondBody, /w2/, "and the fresh notice carries the winner this tick actually claimed");
   });
 
-  // REVIEW ROUND 1: created_at is refreshed on every in-place update (so
-  // NOTICE_MAX_AGE cannot cancel a long-held coalesced notice out from under
-  // itself), which means it answers "how fresh is the CONTENT", never "how
-  // long has this notice been HELD" - the trailer's first version read the
-  // one number as if it were the other, understating a long hold's own age
-  // worst in exactly the lunch-break case this lane exists for. The fix
-  // reads the hold's own start from wake_idle_notices.notified_at, which
-  // `updateNoticeInPlace` never touches. Proven here by forcing the two
-  // clocks apart with a backdated first episode, matching pad 142's own
-  // 45-minute scenario, rather than waiting on a real clock.
   it("keeps the hold's own start time separate from the content's own refresh time", () => {
     const result = fixture(
       "coalesce-two-clocks",
@@ -961,14 +790,6 @@ describe("todo 390: coalescing while held", () => {
     );
   });
 
-  // REVIEW ROUND 2 (Claude Code Review on PR #181). crewRowForRender's own
-  // comment claimed "a closed row does not move again"; agent_resume's flip
-  // (src/spawn.ts) proves that false, and coalescing is what makes it
-  // reachable - the pre-lane code rendered a GONE candidate once, from the
-  // row the same tick claimed it, and never read the row again. A worker
-  // reported GONE, then resumed while its notice is still held, must not
-  // have the next coalescing update re-assert a stale "no terminal left to
-  // read" obituary about a row that is now live.
   it("does not re-assert a stale obituary for a GONE worker that was resumed while the notice was held", () => {
     const result = fixture(
       "coalesce-gone-then-resumed",
@@ -1015,21 +836,9 @@ describe("todo 390: coalescing while held", () => {
   });
 });
 
-// FIVE GUARDS THAT NO FIXTURE REACHED. Counselors listed five mutations to
-// this lane's source that leave every earlier test in this file green - a
-// guard nothing exercises is a guard the next reader can delete for being
-// dead. Each test below is written against one of them and was checked by
-// applying that mutation, not by reasoning about it.
 describe("the guards nothing else reaches", () => {
   it("never reports the delivery target to itself, even when its pane has moved", () => {
-    // Two guards protect this and they are not redundant: the pane skip in
-    // noteStandingTransitions compares the wake's recorded deliver_pane
-    // against the row's tmux_target, and the actor_id exclusion in the query
-    // compares identities. They agree until a worker's pane MOVES after the
-    // wake was set (a respawn rewrites agents.tmux_target while the timer
-    // keeps the pane it resolved at creation), and then only the actor test
-    // still holds. That is the case here, so this kills the exclusion rather
-    // than passing on the pane skip.
+
     const result = fixture(
       "target-inside-the-crew",
       `
@@ -1054,17 +863,7 @@ describe("the guards nothing else reaches", () => {
   });
 
   it("does not re-arm a delivery that is still in flight", () => {
-    // NOTICE_RETRY_AFTER's LOWER bound, which is the entire reason it is sixty
-    // seconds rather than zero. Delivery is not atomic with the claim
-    // (sendText's own ENTER_DELAY_MS is 300ms, and the path can queue behind
-    // the store's 5s busy_timeout), so a second instance ticking in that gap
-    // must read a healthy in-flight notice as in flight, not as failed.
-    //
-    // WHAT THIS PINS EXACTLY: a claim five seconds old is not re-armed, which
-    // kills any bound shorter than five seconds. It does not distinguish 60s
-    // from 30s, and it does not need to - what a shortened bound breaks is
-    // duplicate delivery of a live notice, and five seconds is already far
-    // past the whole claim-to-typed path.
+
     const result = fixture(
       "in-flight-not-rearmed",
       `
@@ -1085,18 +884,7 @@ describe("the guards nothing else reaches", () => {
   });
 
   it("refuses to file for a watch cancelled after this tick read it", () => {
-    // The read-gate INSIDE the claim, which the cancelled-parent test above
-    // cannot reach: it cancels the watch between ticks, after which tick()'s
-    // own candidates query excludes it and this guard is never consulted. The
-    // race it exists for is the one where the cancel lands DURING a tick,
-    // after the candidates SELECT that produced the in-memory row - real,
-    // because a tick can span several deliveries and their 300ms Enter sleeps.
-    //
-    // Reproduced with a trigger on an EARLIER candidate's own hold, which is
-    // the only way to write "another actor cancelled it mid-tick" from inside
-    // a single-process fixture. If the candidate order were ever reversed the
-    // watch would file its notice and this test would FAIL rather than pass
-    // vacuously, which is the safe direction for an ordering it cannot pin.
+
     const result = fixture(
       "cancelled-mid-tick",
       `
@@ -1124,11 +912,7 @@ describe("the guards nothing else reaches", () => {
   });
 
   it("does not believe a running row whose pane it cannot see, or cannot see into", () => {
-    // The same conservatism watchedStates applies, for the same reason: a row
-    // that says `idle` is a hook's claim about a pane, and if this process
-    // cannot see that pane (dead) or has no business reading it (issue #73's
-    // foreign socket, where a probe answers correctly about someone else's
-    // server) the honest answer is "no fact", not "finished".
+
     const result = fixture(
       "unbelievable-rows",
       `
@@ -1140,8 +924,7 @@ describe("the guards nothing else reaches", () => {
       await tick(snapshot);
       ${out("{ bodies: notices(watchId).map((n) => n.body), cursor: cursor(watchId).length }")}
       `,
-      // %2 is absent: the dead pane. %3 is present, so the only thing that can
-      // exclude `foreign` is its recorded socket.
+
       ["%1", "%3"],
     );
     assert.equal(result.bodies.length, 1, "the live worker is still reported, or this test proves only that nothing ran");
@@ -1152,10 +935,7 @@ describe("the guards nothing else reaches", () => {
   });
 
   it("summarises the roster past its bound instead of pasting the whole crew", () => {
-    // test/CLAUDE.md shape 6, a fixture too small to reach the bound: every
-    // other test here has two workers against a cap of eight, so the cap and
-    // its "and N more" branch were unreachable from the whole file. Ten
-    // running workers plus one that finishes.
+
     const result = fixture(
       "roster-bound",
       `
@@ -1186,9 +966,7 @@ describe("the tool surface", () => {
     try {
       return execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString();
     } catch {
-      // Swallowing this would make every assertion below vacuous on a runner
-      // with no server, so it is deliberately NOT collapsed to "" - the empty
-      // string is a value the assertions accept.
+
       throw new Error(`capture-pane failed for ${target}`);
     }
   };
@@ -1232,33 +1010,19 @@ describe("the tool surface", () => {
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const { db } = await import("../dist/db.js");
     const row = db.prepare("SELECT kind, watch, watch_scope, max_wait_at FROM timers WHERE id = ?").get(receipt.wake_id);
-    // TWO PROPERTIES OF THE ROW, WITH THE REASONS THEY ARE ACTUALLY PINNED
-    // FOR. An earlier version of this test attached the mixed-version
-    // argument to the kind assertion, and that argument was FALSE: an old
-    // scheduler's idle_all branch requires states.length > 0, a guard that
-    // predates this lane, and a standing watch stores an empty watch list
-    // under either design - so a new kind and this flag degrade identically.
-    // The real reason kind stays 'idle_any' is that SQLite cannot ALTER the
-    // CHECK constraint on that column, so a new value means rebuilding
-    // `timers` under live writers. See src/db.ts's migration.
+
     assert.equal(row.kind, "idle_any", "a new kind would need `timers` rebuilt past its CHECK, under live writers");
-    // This one IS load-bearing at runtime: deliver() calls watchedTail()
-    // unconditionally, and a non-empty watch list makes it capture up to
-    // three worker panes and paste their SCREENS into the delivered body.
+
     assert.equal(row.watch, "[]", "a standing watch stores no list: its membership is a query, evaluated every tick");
     assert.equal(row.watch_scope, "project");
     assert.equal(receipt.standing, true);
     assert.equal(receipt.scope, "project");
     assert.ok(typeof receipt.expires_at === "string");
     assert.equal(receipt.max_wait_seconds, 14400, "four hours, and it is a judgement recorded in the code");
-    // A project holds one standing watch per owner, so every test in this
-    // block that sets one hands it back. See the refusal test below.
+
     await mcp.call("wake_cancel", { wake_id: receipt.wake_id });
   });
 
-  // NOTHING REFUSED A SECOND ONE, and the way a lead gets there is ordinary:
-  // calling again after a restart, or having forgotten. The cost is every
-  // finish reported twice for four hours with two wake ids to find.
   it("refuses a second standing watch, and names the one already running", NEEDS_TMUX, async () => {
     const first = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     await assert.rejects(
@@ -1266,9 +1030,7 @@ describe("the tool surface", () => {
       new RegExp(`already have a standing watch[\\s\\S]*wake #${first.wake_id}[\\s\\S]*wake_cancel`),
       "the refusal has to name the id, or the lead is left hunting for what to cancel",
     );
-    // Scoped to (project, OWNER), not to the project: refusing project-wide
-    // would stop a second lead watching a crew it shares, which decides the
-    // cross-lead question todo 315 comment 631 records as unanswered.
+
     const other = new McpClient({
       cwd: dirs.projectDir,
       dataDir: dirs.dataDir,
@@ -1283,38 +1045,16 @@ describe("the tool surface", () => {
       await other.close();
     }
     await mcp.call("wake_cancel", { wake_id: first.wake_id });
-    // And once it is cancelled the owner may set another, or a lead could
-    // never replace its own watch.
+
     const replacement = await mcp.call("wake_when_idle", { body: "a fresh one", scope: "project" });
     await mcp.call("wake_cancel", { wake_id: replacement.wake_id });
   });
 
-  // THE LIFETIME, AGAINST A REAL PANE, and it is here rather than in a
-  // fixture for a reason worth recording. A fixture version of this test
-  // PASSED against the pre-lane source: a row with kind='idle_any', an empty
-  // watch list and a max_wait_at in the past fires through the existing
-  // timeout branch whether or not this lane exists, so the assertion "it
-  // fired" was already true. The only thing that is actually new at expiry is
-  // WHAT IT SAYS, and the only place that exists is the pane. So the test
-  // reads the pane. (workflows/verify-a-test-goes-red-first.md, step 9: ask
-  // what the test would assert if the subject did nothing.)
   it("delivers one last wake saying it expired, and then stops being a candidate", NEEDS_TMUX, async () => {
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const { db } = await import("../dist/db.js");
     db.prepare("UPDATE timers SET max_wait_at = datetime('now', '-1 seconds') WHERE id = ?").run(receipt.wake_id);
-    // The running server's own scheduler delivers it, on its own tick.
-    //
-    // THE MARGIN IS NAMED, and until()'s own 3000ms DEFAULT IS EXACTLY THE
-    // SCHEDULER'S TICK INTERVAL (startScheduler's default, src/scheduler.ts),
-    // so the default gives this delivery ONE tick's chance and no slack for
-    // the ~300ms ENTER_DELAY_MS and the tmux forks after it. That is not a
-    // theoretical race: it failed under the full suite at 3008ms while
-    // passing on its own, and until() RETURNS FALSE rather than throwing, so
-    // it failed on the row assertion below with a message about the wrong
-    // thing. Six tick opportunities, asserted on directly.
-    // (.claude/sessions/decisions/2026-07-31-accept-margin-over-happens-
-    // before.md: a margin is not a happens-before, so anchor it to the real
-    // product constant and make shrinking it loud.)
+
     const SCHEDULER_TICK_MS = 3000;
     const delivered = await until(
       () => capturePaneText(livePane).includes("standing watch has expired"),
@@ -1331,18 +1071,6 @@ describe("the tool surface", () => {
     );
   });
 
-  // TODO 390 (pad 142 PART 3, the cheap win). Every generated notice's body
-  // is a snapshot, so it must say when it was taken and how stale it already
-  // is by the time a human reads it. Proven against a REAL delivery, because
-  // the trailer is appended in deliver() itself, not stored in the row's own
-  // body - a test that only read the `body` column would not see it at all.
-  // ITS OWN SESSION AND PANE, deliberately not the shared `mcp`/`livePane`
-  // above: those accumulate every prior test's pasted text for the life of
-  // this describe block, past the pane's own visible height, and even a
-  // wide `-S` scrollback capture came back with this assertion's own tail
-  // silently missing - a pty input-buffer limit on the "sleep 600" pane's
-  // cooked-mode echo, not anything this lane's own code does. A fresh pane
-  // starts with nothing in it, so this cannot be that.
   it("tells the reader when the notice was observed and how long it sat before this reached them", NEEDS_TMUX, async () => {
     const staleSession = `hive-standing-watch-staleness-${process.pid}`;
     execFileSync("tmux", ["new-session", "-d", "-s", staleSession, "sleep 600"], { stdio: "ignore" });
@@ -1359,8 +1087,7 @@ describe("the tool surface", () => {
       const receipt = await staleMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
       const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
-      // A GONE worker, not an idle one: standingGoneRows consults no tmux at
-      // all, so this needs no second real pane the way an idle finish would.
+
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
             agent_state, state_changed_at, closed_at)
@@ -1383,30 +1110,9 @@ describe("the tool surface", () => {
     }
   });
 
-  // TODO 390 COUNSELORS ROUND 3, F6 (opus + fable, independently). The
-  // fixture-based "keeps the hold's own start time separate..." test
-  // re-implements the MIN(notified_at) query inline and never calls
-  // noticeStalenessNote or delivers anything, and the real-delivery
-  // staleness test above uses a single, uncoalesced notice where both
-  // clocks agree to the second - so neither can fail against a version that
-  // silently reads `heldSince = timer.created_at` for both halves, which is
-  // the exact defect round 1 shipped. THIS test forces the two clocks apart
-  // (a 45-minute backdated first episode, matching pad 142's own scenario)
-  // AND delivers the result through the real, running server, then reads
-  // BOTH numbers back off the DELIVERED PANE TEXT - proving what the
-  // header comment above claims rather than asserting it.
   it("delivers a coalesced notice whose held-since and content-refreshed clocks were genuinely forced apart", NEEDS_TMUX, async () => {
     const clockSession = `hive-standing-watch-clocks-${process.pid}`;
-    // `cat > file`, NOT `sleep 600`: this notice's body (two candidates plus
-    // the coalescing summary) is long enough to hit a real limit `sleep`'s
-    // pane hits elsewhere in this file - nothing reads a `sleep` pane's
-    // stdin, so the pty's own cooked-mode input queue fills and silently
-    // drops the tail of a long paste, independent of this lane's own code
-    // (measured: cut off mid-word, at a different byte offset each run).
-    // `cat` continuously drains stdin, so nothing queues up, and every byte
-    // sent lands in the file - read that back instead of capture-pane's
-    // viewport, which only ever showed what `cat` echoed to its OWN stdout,
-    // a second and unrelated copy.
+
     const captureFile = join(dirs.tmp, "clock-capture.txt");
     execFileSync("tmux", ["new-session", "-d", "-s", clockSession, "bash", "-c", `cat > ${captureFile}`], {
       stdio: "ignore",
@@ -1414,15 +1120,7 @@ describe("the tool surface", () => {
     const clockPane = execFileSync("tmux", ["list-panes", "-t", `=${clockSession}`, "-F", "#{pane_id}"], {
       encoding: "utf8",
     }).trim();
-    // LEAD-SHAPED ACTOR, DELIBERATELY. isLeadActorId is a bare string-prefix
-    // check with no row lookup behind it (worker-state.md), so this needs no
-    // real agents row to get deliverable()'s lead exemption: a dead
-    // deliver_pane HOLDS (retried every tick) rather than being CANCELLED
-    // outright, which is what a non-lead owner gets with no SETTLE_WINDOW
-    // grace at all. That HOLD is what buys the window this test needs
-    // between the two finishes - a live pane throughout would let the FIRST
-    // notice deliver before the second finish ever has a chance to coalesce
-    // into it, which is exactly the race the first version of this test hit.
+
     const clockMcp = new McpClient({
       cwd: dirs.projectDir,
       dataDir: dirs.dataDir,
@@ -1433,11 +1131,9 @@ describe("the tool surface", () => {
       const receipt = await clockMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
       const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
-      // Redirect BEFORE any finish is added, so every notice this watch
-      // files inherits the dead pane and holds from birth.
+
       db.prepare("UPDATE timers SET deliver_pane = '%doesnotexist' WHERE id = ?").run(receipt.wake_id);
-      // GONE workers, not idle ones: standingGoneRows consults no tmux at
-      // all, so neither needs its own real pane the way an idle finish would.
+
       const addDead = (actor, name) =>
         db
           .prepare(
@@ -1469,19 +1165,10 @@ describe("the tool surface", () => {
       }, SCHEDULER_TICK_MS * 4);
       assert.ok(coalesced, "the second finish must update the SAME notice, or this is not testing a coalesced one");
 
-      // RELEASE THE HOLD, matching what `hive lead` does on restart: point
-      // the pending notice at the real, live pane so the next tick delivers.
       db.prepare("UPDATE timers SET deliver_pane = ? WHERE id = ?").run(clockPane, first.id);
 
       const clockCapture = () => (existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "");
-      // Poll for text at the very END of what deliver() sends (the trailer,
-      // appended after the body), not text near the start - `cat`'s own
-      // write-to-file buffering does not guarantee the whole single paste
-      // lands in the file atomically, so polling on an early marker like
-      // "finished or gone away" can see a PARTIAL write that stops short of
-      // the trailer this test exists to check, and read that as "delivered"
-      // before it actually was. Waiting for the trailer's own last words
-      // means everything before it, in the same write, is already there.
+
       const delivered = await until(() => clockCapture().includes("reached you."), SCHEDULER_TICK_MS * 6);
       assert.ok(delivered, "the coalesced notice must actually reach the pane");
 
@@ -1509,14 +1196,9 @@ describe("the tool surface", () => {
     }
   });
 
-  // THE WIRING, which the fixture above cannot see: it calls seedGoneCursor
-  // itself, so it proves the seeded cursor SUPPRESSES a death and proves
-  // nothing about anyone calling it. This is the half that fails if
-  // createStandingWatch stops seeding.
   it("writes the crew's existing dead into its cursor at creation, as history", NEEDS_TMUX, async () => {
     const { db } = await import("../dist/db.js");
-    // The project row the server resolved for this cwd, read off a wake it
-    // created rather than guessed at from a path.
+
     const probe = await mcp.call("wake_when_idle", { body: "probe", scope: "project" });
     const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(probe.wake_id).project_id;
     await mcp.call("wake_cancel", { wake_id: probe.wake_id });
@@ -1545,9 +1227,7 @@ describe("the tool surface", () => {
   it("cancels the notices a watch already filed, along with the watch", NEEDS_TMUX, async () => {
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const { db } = await import("../dist/db.js");
-    // A notice the watch would have filed, written directly: what is under
-    // test is the cascade, not the filing, and the scheduler tests above
-    // already pin the filing.
+
     const notice = db
       .prepare(
         `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id)

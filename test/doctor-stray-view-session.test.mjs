@@ -4,13 +4,6 @@ import { after, before, describe, it } from "node:test";
 
 import { isolateTmux, runCli, scratchDirs, sleep } from "./helpers.mjs";
 
-// Todo 273 / pad 76 "VIEW SESSIONS DESIGNED AND SETTLED WITH CHRIS", point 7,
-// Chris's call: doctor REPORTS a stray (clientless) view session and never
-// kills one - destroy-unattached (set on every view at creation) should
-// already make one unreachable the instant its client detaches, so this is
-// belt-and-braces, not a sweep. The suggested removal command MUST be quoted:
-// a bare leading `=` in a command a human pastes into zsh triggers EQUALS
-// EXPANSION (.claude/rules/tmux-and-panes.md, "Two shell traps").
 const { hasTmux, cleanup } = isolateTmux("doctor's stray view-session report (todo 273)");
 
 const dirs = scratchDirs();
@@ -28,9 +21,6 @@ function hasSession(name) {
   }
 }
 
-// Mirrors view-session.test.mjs's own attachClient: a headless control-mode
-// client registers as a real client (visible in list-clients) with nothing
-// more than PATH and stdio, no pty required - measured against tmux 3.7b.
 function attachClient(target) {
   return spawn("tmux", ["-C", "attach", "-t", target], { stdio: ["pipe", "pipe", "pipe"] });
 }
@@ -53,10 +43,7 @@ describe(
       const init = await runCli(["init"], opts);
       assert.equal(init.code, 0, init.stderr);
       ensureSession(base, dirs.projectDir);
-      // Created with -d (never attached), so it starts with zero clients -
-      // the same end state a real view session reaches if destroy-unattached
-      // somehow failed to fire on a client's detach. Grouped with base
-      // (`-t =base`), the same relationship a real view session has.
+
       execFileSync("tmux", ["new-session", "-d", "-t", `=${base}`, "-s", view]);
     });
 
@@ -69,9 +56,7 @@ describe(
         new RegExp(`warn {2}view session: ${view} has no attached client`),
         `expected a stray-view-session warning for ${view}; stdout:\n${out.stdout}`,
       );
-      // The exact printed string, quotes included - a human pastes this
-      // verbatim, and an unquoted leading `=` is broken advice in the exact
-      // shell this project runs in.
+
       assert.ok(
         out.stdout.includes(`tmux kill-session -t '=${view}'`),
         `expected a quoted kill-session command for ${view}; stdout:\n${out.stdout}`,
@@ -114,16 +99,7 @@ describe(
 
     it("says nothing about a view session that is in active use", async () => {
       const out = await runCli(["doctor"], opts);
-      // IMMUNE to generated data: out.stdout also carries this run's scratch
-      // project path and its real session/view names (sessionName(),
-      // viewSessionName()), but none of those can ever spell the literal
-      // "view session" (two words joined by a space) - tmux session names are
-      // built from SESSION_PREFIX + dataDirTag() + a suffix, all alnum/hyphen,
-      // and dataDirTag() hashes the data dir rather than embedding it, so no
-      // generated name here can ever contain a space. The only place doctor
-      // prints this exact two-word literal is the stray-view warn() call
-      // (src/cli.ts, `warn("view session", ...)`), which this case's setup
-      // never triggers.
+
       assert.doesNotMatch(
         out.stdout,
         /view session/,

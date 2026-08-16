@@ -4,17 +4,6 @@ import { after, describe, it } from "node:test";
 
 import { isolateTmux, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
 
-// Issue #27's L4 fix round, DECISION 6. ensureLeadRow's INSERT, its actor_id
-// UPDATE and upsertActor used to be three separate writes. A process dying
-// between the first two leaves a running row with actor_id = '' that the
-// next invocation used to FIND AND RETURN as if it were a normal hit, so the
-// lead launched with HIVE_AGENT_ID= (empty) and the hook wrote neither a
-// state log row nor last_seen_at for it - and idx_agents_running_name then
-// stood in the way of ever replacing the row outright, since "lead" was
-// already taken by it. This pins the fix: the three writes are now one
-// transaction, and a damaged row found on a later call is healed in place
-// rather than returned as-is or left to collide on a fresh INSERT.
-
 const { hasTmux, cleanup } = isolateTmux("the lead identity transaction tests");
 
 const dirs = scratchDirs();
@@ -40,9 +29,7 @@ describe("a damaged lead row (actor_id = '') is healed, not returned or collided
   after(() => cleanup(session));
 
   it("heals a damaged row into a working identity, rather than launching with HIVE_AGENT_ID empty", async () => {
-    // Simulates exactly what a crash between the INSERT and the actor_id
-    // UPDATE used to leave behind: a running "lead" row with no actor_id at
-    // all.
+
     const damagedId = db
       .prepare(
         `INSERT INTO agents (project_id, name, command, cwd, kind, status)
@@ -66,8 +53,6 @@ describe("a damaged lead row (actor_id = '') is healed, not returned or collided
     assert.equal(rows[0].status, "running");
     assert.notEqual(rows[0].tmux_target, "", "a live pane must still get recorded on the healed row");
 
-    // upsertActor's other half: the actors table row must exist too, since
-    // that is what src/hook.ts's UPDATE and pad/todo attribution key on.
     const actor = db.prepare("SELECT * FROM actors WHERE id = ?").get(rows[0].actor_id);
     assert.ok(actor, "upsertActor must have run as part of healing the row");
     assert.equal(actor.kind, "lead");

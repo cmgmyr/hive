@@ -2,17 +2,6 @@ import assert from "node:assert/strict";
 import { after, describe, it } from "node:test";
 import { McpClient, isolateTmux, scratchDirs } from "./helpers.mjs";
 
-// Ad-hoc lane off pad 71 "tmux-placement-design". resolveHomeProject's
-// registration fallback (src/context.ts) silently creates a project for a cwd
-// no project covers, and run() (src/result.ts) used to say nothing about it.
-// These tests drive a REAL MCP server over stdio against scratch state, not a
-// helper: test/CLAUDE.md's false-green shape #4 and
-// .claude/sessions/dead-ends/2026-08-05-helper-whose-parameters-cannot-disagree.md
-// are both about a unit test whose inputs the real caller can never produce.
-// mcp.request() is used directly here, not mcp.call(), because call() only
-// ever reads content[0].text - exactly the thing this lane is pinning does
-// NOT change - and the notice is a second block.
-
 const { cleanup: cleanupTmux } = isolateTmux("the project-registration-notice tests");
 after(() => cleanupTmux());
 

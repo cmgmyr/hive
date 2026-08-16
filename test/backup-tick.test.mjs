@@ -5,20 +5,12 @@ import { after, before, describe, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
 
-// PR #36, B4 (the third item): the containment claim this whole lane rests
-// on - a broken backup path must never cost a due wake-up its delivery - had
-// no test. Both existing per-tick jobs (janitor, pruneStateLog) are already
-// proven independent of tmux answering or of each other; this is the same
-// proof for maybeBackupHourly, done for real rather than by reading the
-// try/catch and trusting it.
-
 const { hasTmux, cleanup } = isolateTmux("the backup/tick containment test");
 const { dataDir, projectDir } = scratchDirs();
 
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dataDir;
-// This file writes timer and backup_meta rows directly. Prove the store is
-// scratch before opening it, not after.
+
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
@@ -56,9 +48,6 @@ describe("tick() delivers a due wake-up even when the backup path is broken", ()
       )
       .get(project, pane).id;
 
-    // Force maybeBackupHourly to both attempt (eligible: last_attempt_at
-    // cleared) and fail (backups/ is a plain file, so mkdirSync for the
-    // staging directory throws) during the tick this test drives.
     db.prepare(
       "UPDATE backup_meta SET last_attempt_at = NULL, last_success_at = NULL, last_error = NULL, last_error_at = NULL WHERE id = 1",
     ).run();
@@ -66,9 +55,6 @@ describe("tick() delivers a due wake-up even when the backup path is broken", ()
     rmSync(backupsPath, { recursive: true, force: true });
     writeFileSync(backupsPath, "not a directory");
 
-    // tick() awaits delivery internally (fireDelay claims the timer, setting
-    // fired_at, then awaits deliver()), so this is synchronously true the
-    // moment tick() resolves - no polling needed.
     await tick();
 
     const row = db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(timerId);

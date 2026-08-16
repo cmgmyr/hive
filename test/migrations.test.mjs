@@ -3,34 +3,14 @@ import { describe, it } from "node:test";
 
 import { scratchDirs } from "./helpers.mjs";
 
-// The one path in the name-uniqueness work the rest of the suite cannot see:
-// what a store that ALREADY holds duplicate running names does when the
-// unique index arrives. Creating that index over violating rows fails, so the
-// migration renames the losers first, and a failure here would surface as a
-// store that cannot be opened at all.
-//
-// db.js resolves its file from HIVE_DATA_DIR at import time, so point it at a
-// scratch dir before the dynamic import. No tmux, no server, no agents: this
-// is the schema on its own.
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 
 const INDEX = "idx_agents_running_name";
 
-// The version in MIGRATIONS that creates INDEX. Pinned by number rather than
-// found with MAX(version), which is what this used to do and which quietly
-// meant "whatever migration was added most recently". The next migration to
-// land broke all three tests here: the rewind forgot THAT version instead,
-// migrate() replayed its CREATE TABLE against a table that was still there, and
-// the index this file exists to test was never recreated. Migrations are
-// append-only, so a version number is a stable handle and MAX is not.
 const NAME_INDEX_VERSION = 5;
 
-// Rewind to the state a store was in before that migration existed. It adds
-// exactly one index and mutates data, so dropping the index and forgetting the
-// version reproduces the old store faithfully. Rewinding beats hand-writing the
-// old schema, which would silently drift from db.ts.
 function rewindOneMigration() {
   migrate();
   assert.ok(
@@ -72,14 +52,12 @@ describe("the running-name unique index arriving on a store that violates it", (
 
     const keeper = seedAgent(first, "dup");
     const loser = seedAgent(first, "dup");
-    // Differs only by case, which the index folds together, so it is a
-    // duplicate too even though a plain string comparison says otherwise.
+
     const shouty = seedAgent(first, "DUP");
     seedAgent(first, "solo");
-    // A closed row by a running row's name is not a conflict; the index is
-    // partial for exactly this reason.
+
     seedAgent(first, "solo", "closed");
-    // Names are unique per project, not per store.
+
     seedAgent(second, "dup");
 
     migrate();
@@ -91,10 +69,9 @@ describe("the running-name unique index arriving on a store that violates it", (
       "solo:running",
       "solo:closed",
     ]);
-    // The lowest id keeps the name it was spawned with; a lead's muscle
-    // memory for the original worker still lands on the original worker.
+
     assert.equal(db.prepare("SELECT name FROM agents WHERE id = ?").get(keeper).name, "dup");
-    // The other project is untouched: it never violated anything.
+
     assert.deepEqual(names(second), ["dup:running"]);
   });
 
@@ -103,7 +80,7 @@ describe("the running-name unique index arriving on a store that violates it", (
     assert.ok(indexed, `${INDEX} should exist after the migration`);
     assert.throws(() => seedAgent(first, "solo"), /UNIQUE/);
     assert.throws(() => seedAgent(first, "SOLO"), /UNIQUE/);
-    // The renamed rows are addressable again rather than colliding forever.
+
     assert.doesNotThrow(() => seedAgent(first, "dup-fresh"));
   });
 
@@ -114,19 +91,8 @@ describe("the running-name unique index arriving on a store that violates it", (
   });
 });
 
-// Issue #15, counselors round: without this, the suite would pass exactly as
-// well if archived_at had been added by EDITING migration 1 and omitting the
-// v11 entry entirely - fine for a fresh scratch store (which is all every
-// other test here uses), even though every real v10 store would then never
-// gain the column at all. This is the append-only invariant itself, pinned.
 const ARCHIVED_AT_VERSION = 11;
 
-// Same rewind technique as rewindOneMigration above, applied to an ADD
-// COLUMN instead of a CREATE INDEX: drop the column (DROP COLUMN needs
-// SQLite 3.35+; better-sqlite3 here bundles 3.53) and forget the version, so
-// the next migrate() call replays the exact ALTER TABLE a real v10 store
-// would run, rather than a hand-written approximation that could drift from
-// db.ts.
 function rewindArchivedAt() {
   migrate();
   assert.ok(
@@ -154,9 +120,7 @@ describe("issue #15: archived_at arriving on a v10 store", () => {
 
     const after = db.prepare("SELECT * FROM todos WHERE project_id = ?").get(projectId);
     assert.equal(after.archived_at, null, "a pre-existing row must read as not-archived, never backfilled");
-    // Every other column on the pre-existing row survives untouched - the
-    // append-only invariant itself: v11 must be purely additive, not a
-    // rewrite of a row's own data.
+
     assert.equal(after.id, before.id);
     assert.equal(after.title, before.title);
     assert.equal(after.body, before.body);
@@ -164,15 +128,6 @@ describe("issue #15: archived_at arriving on a v10 store", () => {
     assert.equal(after.status, before.status);
     assert.equal(after.created_at, before.created_at);
 
-    // Not MAX(version): that only ever meant "v11 was applied" while v11
-    // happened to be the newest migration that existed. Todo 309 added a
-    // v12 (dashboard_meta) that this rewind never touches - v12 stays
-    // recorded as applied throughout, so MAX(version) reads 12 here
-    // regardless of whether v11's own replay worked, and would keep reading
-    // as whatever the newest migration is forever after, silently stopping
-    // this assertion from checking anything. What the test actually means -
-    // v11 itself got applied via its own real replay, not skipped - is a
-    // membership check, not a maximum.
     assert.ok(
       db.prepare("SELECT 1 FROM migrations WHERE version = ?").get(ARCHIVED_AT_VERSION),
       "the migrations table must record v11 as applied, not skip past it",

@@ -4,29 +4,17 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, scratchDirs } from "./helpers.mjs";
 
-// Issue #5, todo 90: agent_status and agent_list wiring for the transcript
-// directory. Pure encoding and existence gating are pinned in
-// transcript.test.mjs with no server involved; this file pins the policy
-// choices layered on top -- D2 (agent_status always reports it for a claude
-// worker), D3 (agent_list only for a row that is not confirmed alive), and D4
-// (never for a non-claude command) -- against the real tools.
 const { hasTmux, cleanup } = isolateTmux("the transcript field tests");
 
 const dirs = scratchDirs();
-// sessionName tags itself from HIVE_DATA_DIR, so the test process has to
-// resolve the same store the server does to name the session cleanup targets.
+
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
 const { transcriptDirName } = await import("../dist/transcript.js");
 
-// A private CLAUDE_CONFIG_DIR for this file, so the assertions below do not
-// depend on (or risk misreading) whatever the real ~/.claude/projects holds.
 const claudeConfigDir = join(dirs.tmp, "claude-config");
 mkdirSync(join(claudeConfigDir, "projects"), { recursive: true });
 
-// One real directory a worker can be spawned into, with its transcript
-// directory pre-created under the scratch config dir, so the "found it" path
-// is tested against an actual resolved value, not just presence of the key.
 const seededCwdPath = join(dirs.tmp, "seeded-cwd");
 mkdirSync(seededCwdPath, { recursive: true });
 const seededCwd = realpathSync(seededCwdPath);

@@ -5,14 +5,9 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
-// runCli spawns hive, whose commands probe tmux; isolate first (see helpers.mjs).
 const { cleanup: cleanupTmux } = isolateTmux("the profile tests");
 after(() => cleanupTmux());
 
-// profiles.js reads HIVE_DATA_DIR when asked rather than at import time, so
-// this only has to be set before a profile path is resolved. Set here anyway:
-// storeDir() refuses the real store under a test runner, and every case below
-// wants this scratch one.
 const scratch = mkdtempSync(join(tmpdir(), "hive-profiles-"));
 process.env.HIVE_DATA_DIR = scratch;
 const {
@@ -55,7 +50,7 @@ describe("profile resolution", () => {
 
     assert.equal(resolveProfileFile("orchestration", "posture.md").source, "user");
     assert.equal(readProfileFile("orchestration", "posture.md"), "mine\n");
-    // The files not overridden keep tracking hive's defaults.
+
     assert.equal(resolveProfileFile("orchestration", "runbook.md").source, "shipped");
     assert.equal(resolveProfileFile("orchestration", "worker.md").source, "shipped");
   });
@@ -66,7 +61,7 @@ describe("profile resolution", () => {
   });
 
   it("refuses names that could walk out of the profile directories", () => {
-    // hive.yml is repo-controlled and posture.md becomes a system prompt.
+
     for (const bad of ["../evil", "a/b", "..", "/etc/passwd", "", ".hidden"]) {
       assert.equal(isValidProfileName(bad), false, `${bad} should be rejected`);
       assert.equal(resolveProfileFile(bad, "posture.md"), null);
@@ -91,8 +86,7 @@ describe("profile fork", () => {
   });
 
   it("reports when hive's default moved after a fork", () => {
-    // profileStatus compares the shipped file against the hash recorded at
-    // fork time; the fork itself is never touched.
+
     const before = profileStatus("simple").files.find((f) => f.file === "posture.md");
     assert.equal(before.source, "user");
     assert.equal(before.upstreamMoved, false);
@@ -106,11 +100,7 @@ describe("profile fork", () => {
 });
 
 describe("profile divergence", () => {
-  // Own data dir, isolated from `scratch`: forking "orchestration" here would
-  // otherwise shadow the shipped runbook.md/worker.md content that later
-  // describe blocks in this file read back (e.g. "renders hive's shipped
-  // runbook without leaving markers behind"), since resolution is per-file
-  // copy-on-write and HIVE_DATA_DIR is read at call time, not import time.
+
   const divergenceScratch = mkdtempSync(join(tmpdir(), "hive-profiles-divergence-"));
   after(() => rmSync(divergenceScratch, { recursive: true, force: true }));
 
@@ -217,8 +207,7 @@ describe("template rendering", () => {
   });
 
   it("leaves an undefined {{var}} visible instead of silently emptying it", () => {
-    // A runbook missing a value should look wrong, not read as though it had
-    // one. `hive doctor` reports the same gap.
+
     assert.match(renderTemplate("repo {{repo}}", {}), /repo \{\{repo\}\}/);
   });
 
@@ -243,11 +232,6 @@ describe("template rendering", () => {
   });
 });
 
-// Todo 332. Pure-function level: the four high-confidence shapes doctor
-// scans for, and the false-positive traps found measuring this detector
-// against the real orchestration fork at ~/.hive/profiles/orchestration
-// (recorded in the PR body and in profiles.ts's own comment above
-// referencedPaths).
 describe("referenced pads and paths (todo 332)", () => {
   it("catches all four high-confidence pad shapes", () => {
     const text = [
@@ -261,15 +245,12 @@ describe("referenced pads and paths (todo 332)", () => {
   });
 
   it("does not read `hive pad <name>`'s own placeholder syntax as a pad name", () => {
-    // The orchestration fork's own worker.md documents the CLI this way:
-    // a literal `<name>` describing the syntax, not a real pad. `<` is not
-    // a name character, so the match never starts.
+
     assert.deepEqual(referencedPads("`hive pad\n<name> --save` when a pad is too large to edit."), []);
   });
 
   it("does not read a CLI flag after `hive pad` as the pad name", () => {
-    // profiles/orchestration/worker.md: `hive pad --save <file>` for a large
-    // pad. The flag comes first here, not a name.
+
     assert.deepEqual(referencedPads("use `hive pad --save <file>` for a large pad."), []);
   });
 
@@ -295,10 +276,7 @@ describe("referenced pads and paths (todo 332)", () => {
   });
 
   it("ignores a bare filename with a known extension and no slash (measured false positive)", () => {
-    // .claude/sessions/ is established one sentence earlier in the real
-    // fork's runbook.md; `working-on.md` alone means the file in that
-    // directory, not one at the project root. See referencedPaths's own
-    // comment in profiles.ts for the measurement this narrowed on.
+
     assert.deepEqual(referencedPaths("Read `working-on.md` plus every dead-end that applies."), []);
   });
 
@@ -319,8 +297,7 @@ describe("hive.yml profile keys", () => {
   });
 
   it("keeps absent apart from none", () => {
-    // Absent means "never asked", so hive init may offer the prompt; none is
-    // a decision hive must not re-litigate.
+
     assert.equal(loadProjectYml(ymlProject("placement: split\n")).config.profile, null);
     assert.equal(loadProjectYml(ymlProject("profile: none\n")).config.profile, "none");
     assert.deepEqual(loadProjectYml(ymlProject("placement: split\n")).config.lead_branches, null);
@@ -354,17 +331,14 @@ describe("hive runbook and hive profile", () => {
     assert.equal(code, 0);
     assert.match(stdout, /RUNBOOK/);
     assert.doesNotMatch(stdout, /<!--/);
-    // vars declared in hive.yml render with no approval step. They reach a
-    // system prompt, which is a deliberate trade recorded in CLAUDE.md: hive
-    // gates what it EXECUTES, not what it quotes into a prompt.
+
     assert.match(stdout, /DEVX-NNN/, "a declared var substitutes and opens its section");
     assert.match(stdout, /cmgmyr\/hive/);
     assert.doesNotMatch(stdout, /not approved/, "there is no approval step any more");
   });
 
   it("falls back to the runbook pad when the project chose profile: none", async () => {
-    // Through the real path: --no-profile is what writes the key AND seeds
-    // the pad, so a project on none always has something to print.
+
     writeFileSync(join(dirs.projectDir, "hive.yml"), "placement: split\n");
     const init = await runCli(["init", "--no-profile"], cliOpts);
     assert.equal(init.code, 0, init.stderr);
@@ -385,10 +359,7 @@ describe("hive runbook and hive profile", () => {
   });
 
   it("names a fork's drift the same way doctor does (todo 326 comment 723)", async () => {
-    // Own scratch, isolated from `dirs`: a later test in this describe
-    // ("forks into the data dir...") forks orchestration/posture.md into
-    // `dirs.dataDir` itself and asserts on the CLI's "forked posture.md"
-    // wording, which this must not race or pre-empt.
+
     const fresh = scratchDirs();
     const freshOpts = { cwd: fresh.projectDir, dataDir: fresh.dataDir, tmp: fresh.tmp };
     mkdirSync(join(fresh.dataDir, "profiles", "orchestration"), { recursive: true });
@@ -396,10 +367,7 @@ describe("hive runbook and hive profile", () => {
       join(fresh.dataDir, "profiles", "orchestration", "runbook.md"),
       "this runbook is written from scratch for this project and shares nothing with hive's shipped default\n",
     );
-    // upstreamMoved also requires an origin recorded at fork time that no
-    // longer matches hive's current shipped hash; a bogus one stands in
-    // (same fixture shape as "reports when hive's default moved after a
-    // fork" above).
+
     writeFileSync(
       join(fresh.dataDir, "profiles", "orchestration", ".hive-origin.json"),
       JSON.stringify({ "runbook.md": "0000000000000000" }),
@@ -409,9 +377,7 @@ describe("hive runbook and hive profile", () => {
     const { code, stdout } = await runCli(["profile", "list"], freshOpts);
 
     assert.equal(code, 0);
-    // Identical sentence to what `hive doctor` prints for the same file and
-    // the same fork - see the "profile divergence: warn survives small
-    // drift, info replaces a rewrite" describe in doctor-profile.test.mjs.
+
     assert.match(stdout, /runbook\.md is a \d+% rewrite of hive's default, not an edited copy of it/);
     assert.doesNotMatch(stdout, /changed since you forked/);
   });
@@ -426,10 +392,7 @@ describe("hive runbook and hive profile", () => {
   });
 
   it("renders posture the same way it renders the runbook", async () => {
-    // posture.md is delivered by path, so `hive lead` writes the rendered
-    // text to a generated file. Without this command there is no way to see
-    // what the lead is actually running with: `hive profile path` shows the
-    // unrendered source.
+
     const forked = join(dirs.dataDir, "profiles", "orchestration");
     mkdirSync(forked, { recursive: true });
     writeFileSync(

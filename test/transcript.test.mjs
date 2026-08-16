@@ -8,18 +8,12 @@ import { resolveTranscriptDir, transcriptDir, transcriptDirName } from "../dist/
 const scratch = mkdtempSync(join(tmpdir(), "hive-transcript-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-// Every test below sets CLAUDE_CONFIG_DIR explicitly to the scratch dir, so
-// none of it depends on (or can pollute) whatever ~/.claude actually holds.
 beforeEach(() => {
   process.env.CLAUDE_CONFIG_DIR = scratch;
 });
 
 describe("transcriptDirName", () => {
-  // Pinned against real directories on a real machine (issue #5, todo 88),
-  // not derived from the issue's prose. A test that only checked "is this
-  // non-null" would pass equally for a resolver that encodes nothing
-  // correctly, since a missing directory and a broken encoding both produce
-  // null -- so this asserts the exact VALUE, with no filesystem involved.
+
   it("replaces every slash and dot with a dash", () => {
     assert.equal(transcriptDirName("/Users/dev/Code/cmgmyr/hive"), "-Users-dev-Code-cmgmyr-hive");
   });
@@ -48,10 +42,7 @@ describe("transcriptDir", () => {
 });
 
 describe("resolveTranscriptDir", () => {
-  // Existence gating tested against a directory this test controls, kept
-  // deliberately separate from the encoding tests above: this is the half
-  // that a naive "assert not null" test would have conflated with a broken
-  // encoding.
+
   it("returns the directory when it exists on disk", () => {
     const cwd = "/some/worker/cwd";
     const encoded = transcriptDirName(cwd);

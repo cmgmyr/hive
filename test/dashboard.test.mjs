@@ -6,36 +6,10 @@ import { describe, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, scratchDirs } from "./helpers.mjs";
 
-// Step 1 of the dashboard lane (todo 308): renderDashboard() is pure - no
-// tmux, no filesystem, no scheduler - so this file needs neither isolateTmux
-// (nothing here can reach a tmux server; see test/suite-isolation.test.mjs's
-// own REACHES_TMUX list) nor a spawned process per case. One store, imported
-// once, reused across every test in this file.
-//
-// Step 2 (todo 309) added tick() itself, which CAN reach tmux - but only
-// when it has a due timer to deliver. Every test below that calls tick()
-// seeds zero timers and always passes tick(null) explicitly ("liveness is
-// unknown, do not ask" - src/scheduler.ts's own comment on tick's snapshot
-// parameter), never bare tick(), so no test in this file ever forks a real
-// tmux process. Keep both of those true for any test added here later, or
-// this file needs isolateTmux() after all.
-
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
 await assertScratchStore();
 
-// Forced rather than left to whatever the runner's default is (CI images are
-// typically UTC, which would make a local-vs-UTC bucketing bug invisible: on
-// a UTC box, local IS UTC, so a broken implementation and a correct one
-// would agree on every day boundary). America/New_York is UTC-4/-5, matching
-// Chris's own report of the bug ("this box is UTC-4"), and a non-zero offset
-// is what lets the boundary test below actually distinguish correct from
-// broken. Measured directly, not assumed: mutating process.env.TZ
-// mid-process changes what better-sqlite3's own 'localtime' modifier reports
-// on the very next query, so setting it here (before the dist modules below
-// ever touch the database) is sufficient - no need to set it in the shell.
-// node:test isolates each file into its own process, so this cannot leak
-// into any other test file.
 process.env.TZ = "America/New_York";
 
 const { db, migrate } = await import("../dist/db.js");
@@ -52,31 +26,12 @@ const {
 const { tick } = await import("../dist/scheduler.js");
 migrate();
 
-// The exact UTC instant that corresponds to a given LOCAL calendar day, N
-// days before today, at a given local time of day. Computed entirely inside
-// SQLite (the 'localtime'/'utc' modifiers), never via JS Date arithmetic, so
-// the day boundary a fixture is seeded against and the day boundary the code
-// under test computes both come from the identical clock - see
-// fetchDayStats's own comment in src/dashboard.ts for why that matters.
 function localDayOffsetUtc(daysAgo, localTime = "12:00:00") {
   return db
     .prepare(`SELECT datetime(date('now', 'localtime', '-${daysAgo} day') || ' ${localTime}', 'utc') AS ts`)
     .get().ts;
 }
 
-// A minimal fake-DOM harness for the Live toggle's client-side SCRIPT. This
-// file has no real browser, so extracting the script's source text and
-// asserting on its STRING CONTENT (as the section-persistence tests below
-// already do, e.g. "the script must select details[id]") proves the code is
-// present, never that it BEHAVES correctly - not enough for something this
-// stateful (a toggle whose whole job is arming/disarming a timer based on
-// stored state). This harness instead EXECUTES the real, extracted script
-// against fake document/window/sessionStorage/setTimeout objects and
-// observes real outcomes: was a timer armed, what got persisted, what the
-// checkbox and stamp end up showing. Deliberately narrow - it does not
-// simulate <details> elements at all (document.querySelectorAll returns an
-// empty array), because the details-restore behavior is already covered
-// elsewhere and this harness exists specifically for the toggle.
 function extractScript(html) {
   const start = html.indexOf("<script>") + "<script>".length;
   const end = html.indexOf("</script>");
@@ -135,7 +90,7 @@ function makeFakeToggleEnv(storedState) {
   };
   env.fakeSetTimeout = () => {
     armedCount++;
-    return armedCount; // any truthy, distinct id is fine - never awaited for real
+    return armedCount;
   };
   env.fakeClearTimeout = () => {
     clearedCount++;
@@ -144,10 +99,6 @@ function makeFakeToggleEnv(storedState) {
   return env;
 }
 
-// Runs the REAL extracted script text (not a reimplementation) with the
-// browser globals it references shadowed by the fakes above - a standard
-// sandboxing technique: `new Function` parameters shadow the identically-
-// named ambient globals for everything inside the function body.
 function runToggleScript(scriptSrc, env) {
   const fn = new Function(
     "document",
@@ -188,12 +139,6 @@ function blockOn(todoId, blockerId) {
   db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(todoId, blockerId);
 }
 
-// awaitingFirstPrompt stamps agents.resumed_at, which src/firstPrompt.ts reads
-// as "started, and not yet given anything" - what launchAgent writes at every
-// spawn and resumeAgent at every resume, cleared by the worker's first real
-// prompt. Seeded rather than driven here because renderDashboard is a pure
-// reader; the end-to-end path through a real spawn and real hooks is
-// test/spawn-false-finish.test.mjs's.
 function seedAgent(projectId, { name, actorId, agentState = "unknown", kind = "agent", awaitingFirstPrompt = false }) {
   return db
     .prepare(
@@ -214,9 +159,6 @@ function seedWake(projectId, { body, dueInSeconds, kind = "delay", maxWaitInSeco
     .get(projectId, body, kind);
 }
 
-// UTC -> the same local formatting renderDashboard uses, computed
-// independently (not by re-reading dashboard.ts's own function) so this is a
-// real check of the derived value, not a tautology.
 function expectedLocal(utc) {
   const d = new Date(`${utc.replace(" ", "T")}Z`);
   const p2 = (n) => String(n).padStart(2, "0");
@@ -232,10 +174,7 @@ describe("renderDashboard: board section", () => {
     const content = ">>> section one\n    indented line carrying meaning\n>>> section two";
     seedPad(project, "board", content);
     const html = renderDashboard(project);
-    // Escaped, not raw: ">" becomes "&gt;" so the pad's own markup can never
-    // be mistaken for the dashboard's, but a browser renders the escaped form
-    // right back to ">>>" visually, so this is the content surviving, not it
-    // being altered.
+
     assert.ok(html.includes("&gt;&gt;&gt; section one"), "leading >>> must survive (escaped)");
     assert.ok(html.includes("    indented line carrying meaning"), "indentation must survive verbatim");
     assert.ok(/<pre class="board">/.test(html), "board content must render inside a <pre>");
@@ -267,19 +206,12 @@ describe("renderDashboard: open todos", () => {
 
     const html = renderDashboard(project);
 
-    // Queue order: high-priority todos (blocker, blocked, high) all precede
-    // the low-priority one, because priority sorts before id.
     const idxLow = html.indexOf("low priority task");
     const idxHigh = html.indexOf("high priority task");
     const idxBlocked = html.indexOf("blocked task");
     assert.ok(idxHigh < idxLow, "a high-priority todo must render before a low-priority one");
     assert.ok(idxBlocked < idxLow, "a high-priority blocked todo still outranks a low-priority open one");
 
-    // Visual distinctness (todo 333): the badge carries the LIFECYCLE status
-    // word (both rows are "open" here), not a "blocked"/"open" word of its
-    // own - that word belonged to the status column and duplicating it is
-    // the bug 333 filed. Blockedness shows through the badge's color (warn)
-    // and the "blocked by #N" line, which stays visible unconditionally.
     const blockedLi = html.slice(html.lastIndexOf("<li", idxBlocked), html.indexOf("</li>", idxBlocked) + 6);
     assert.ok(
       blockedLi.includes('<span class="status status-warn">warn</span> open'),
@@ -345,12 +277,6 @@ describe("renderDashboard: open todos", () => {
     const html = renderDashboard(project);
     assert.ok(html.includes('<span class="prose">stored slug</span>'), "a stored slug must render as-is");
 
-    // The row's SUMMARY (badge/priority/id/slug, collapsed by default) must
-    // carry fallbackSlug's own truncation, not the bare 80-char title - the
-    // full title is still on the page, deliberately, inside the expander
-    // this same row's body renders, so an "absent anywhere" check would be
-    // wrong: the point is where each form appears, not whether the long
-    // form exists at all.
     const li = html.slice(html.lastIndexOf("<li", html.indexOf(`#${withoutStored}`)));
     const summary = li.slice(0, li.indexOf("</summary>"));
     assert.ok(summary.includes("…"), "the row's summary must carry the truncated fallback, not the bare title");
@@ -399,11 +325,7 @@ describe("renderDashboard: 7-day throughput chart (Chris's follow-up request)", 
   });
 
   it("buckets a late-evening-local completion into ITS local day, never the UTC day it crosses into", () => {
-    // 22:00 local yesterday. This file forces TZ=America/New_York (UTC-4/-5),
-    // so 22:00 plus that offset always lands past midnight UTC - the exact
-    // shape from the bug report ("work done after 20:00 local lands on the
-    // next UTC day"). A UTC-day bucketing bug would count this as completed
-    // TODAY; correct local-day bucketing counts it as completed YESTERDAY.
+
     const project = seedProject("chart-local-bucketing");
     const todoId = seedTodo(project, { title: "late finish" });
     db.prepare("UPDATE todos SET status = 'completed', completed_at = ? WHERE id = ?").run(
@@ -478,9 +400,7 @@ describe("renderDashboard: in flight agents", () => {
     seedAgent(project, { name: "impl-worker", actorId: "agent:1001", agentState: "working" });
     const html = renderDashboard(project);
     assert.ok(html.includes("impl-worker"));
-    // Visual redesign: "working" now carries the "live" status word (hive's
-    // own vocabulary for "currently running", the same accent a pending
-    // wake gets) rather than a bespoke colored state badge.
+
     assert.ok(
       html.includes('<span class="status status-live">live</span> working'),
       "the agent's current state must be shown, carrying the live status word",
@@ -488,11 +408,7 @@ describe("renderDashboard: in flight agents", () => {
   });
 
   it("renders no status badge for a lead row - it has no state channel - and shows its last log event instead", () => {
-    // src/hook.ts's agent_state UPDATE is scoped WHERE kind = 'agent', so a
-    // lead's agent_state reads 'unknown' forever by design. Chris, looking
-    // at a real render: that "unknown" reads as broken. It is not, and this
-    // pins the fix: no badge at all for a non-'agent' kind, the real last
-    // agent_state_log event in its place.
+
     const project = seedProject("lead-no-state-channel-test");
     seedAgent(project, { name: "lead-88", actorId: "lead:88", agentState: "unknown", kind: "lead" });
     db.prepare(
@@ -523,19 +439,7 @@ describe("renderDashboard: in flight agents", () => {
   });
 
   it("a worker that has been given nothing yet is not a green idle - and BOTH badges say so (todos 366, 373)", () => {
-    // Todo 366's finding, widened by todo 373. An idle latch means "a turn
-    // ended", and a spawned worker's first turn is hive's own announcement
-    // while a resumed worker's is the restore replay - neither is work anybody
-    // asked for. The wake path was the one that could get a worker torn down,
-    // which is why 366 is low; the page saying a worker finished when it has
-    // been given nothing is the same misreading with a smaller blast radius.
-    //
-    // TWO SITES IN ONE FILE, and that is the whole reason this asserts a
-    // count. src/dashboard.ts badges a running agent in the NOW strip and
-    // again in the In Flight list, so a fix applied to the site a reader
-    // happened to open passes an `includes` and fails this
-    // (common-issues/a-fix-applied-to-only-some-call-sites.md). The NOW strip
-    // caps at NOW_AGENTS_SHOWN, so this project seeds exactly one agent.
+
     const project = seedProject("agent-awaiting-first-prompt-test");
     seedAgent(project, {
       name: "unassigned-worker",
@@ -556,9 +460,7 @@ describe("renderDashboard: in flight agents", () => {
   });
 
   it("only the idle latch is rewritten - a worker awaiting its first prompt that is WORKING still reads working", () => {
-    // The suppression is about one misreading, not about the row being
-    // untrustworthy: a fresh worker mid-turn really is working, and a badge
-    // that hedged about that would be inventing a second fact.
+
     const project = seedProject("agent-awaiting-but-working-test");
     seedAgent(project, {
       name: "busy-fresh-worker",
@@ -669,11 +571,7 @@ describe("renderDashboard: recent activity", () => {
   });
 
   it("caps one noisy source at ACTIVITY_SOURCE_LIMIT, but still reports that source's TRUE total in the cap note", () => {
-    // A comment-only project whose comment count alone exceeds
-    // ACTIVITY_SOURCE_LIMIT. If the cap note reported merged.length (the
-    // post-truncation count) rather than a real COUNT(*), this would read
-    // "Showing 30 of 30" instead of naming the 5 comments actually dropped -
-    // the two-stage version of the silent-cap defect PR #44 nearly shipped.
+
     const project = seedProject("activity-source-cap-test");
     const todo = seedTodo(project, { title: "cap activity todo" });
     const commentTotal = ACTIVITY_SOURCE_LIMIT + 5;
@@ -692,11 +590,7 @@ describe("renderDashboard: recent activity", () => {
   });
 
   it("caps the merged list at ACTIVITY_DISPLAY_CAP when neither source alone was truncated", () => {
-    // Both sources individually stay under ACTIVITY_SOURCE_LIMIT, so nothing
-    // is lost before the merge; the merge itself is what exceeds
-    // ACTIVITY_DISPLAY_CAP. This isolates the second cap from the first -
-    // the source-limit test above cannot exercise this path, since one
-    // source alone can never fetch past ACTIVITY_SOURCE_LIMIT.
+
     const project = seedProject("activity-display-cap-test");
     const todo = seedTodo(project, { title: "display cap todo" });
     const commentTotal = ACTIVITY_SOURCE_LIMIT - 10;
@@ -788,15 +682,7 @@ describe("renderDashboard: project scoping", () => {
 });
 
 describe("renderDashboard: the NOW strip is the only thing expanded by default (visual redesign)", () => {
-  // Superseded by the visual redesign: the earlier round made only the
-  // board default collapsed, with every other section still defaulting
-  // open. Chris's follow-up ("it's a lot of info on screen even when pads
-  // are collapsed") moved the bar - now EVERY <details> section defaults
-  // collapsed, full stop, and the NOW strip (not a <details> at all, no
-  // toggle) is the sole thing a fresh session sees expanded. This test
-  // replaces the old one rather than extending it: the old assertion that
-  // "todos still defaults open" pinned exactly the behavior this round
-  // deliberately changed.
+
   it("every <details class=\"section\"> carries no open attribute - board included, but no longer board alone", () => {
     const project = seedProject("all-sections-collapsed-test");
     seedPad(project, "board", "board content");
@@ -845,10 +731,7 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
   });
 
   it("the NOW strip's compact worker line shows a lead by name only, no status badge and no last-event sentence", () => {
-    // The one-line NOW strip has no room for "last event: ... local" without
-    // defeating its own 3-second-scan purpose - that detail lives in the In
-    // Flight section below. Here a lead is silent about status rather than
-    // fabricating one.
+
     const project = seedProject("now-strip-lead-test");
     seedAgent(project, { name: "lead-88", actorId: "lead:88", agentState: "unknown", kind: "lead" });
     const html = renderDashboard(project);
@@ -868,13 +751,7 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
 });
 
 describe("renderDashboard: escaping is pinned at every sink, not the board pad alone (counselors, finding 4)", () => {
-  // Before this block, test/dashboard.test.mjs's ONLY escaping assertion
-  // covered renderBoardSection alone - dropping escapeHtml from a todo
-  // title, a blocker title, an agent name, a wake body, an activity
-  // comment's author/body/todo_title, or the project name left the whole
-  // suite green. Each test below was run against dashboard.ts with that
-  // sink's escapeHtml call removed and confirmed to fail red before being
-  // restored, per .claude/sessions/workflows/verify-a-test-goes-red-first.md.
+
   const XSS = "<script>alert(1)</script>";
   const XSS_ESCAPED = "&lt;script&gt;alert(1)&lt;/script&gt;";
 
@@ -914,7 +791,7 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
 
   it("truncates a wake body whole, THEN escapes it - never the reverse, which would slice an entity in half", () => {
     const project = seedProject("escape-wake-truncate-order");
-    const raw = "x".repeat(158) + "&" + "y".repeat(50); // longer than the 160-char cap, "&" straddles it
+    const raw = "x".repeat(158) + "&" + "y".repeat(50);
     seedWake(project, { body: raw, dueInSeconds: 60 });
     const html = renderDashboard(project);
     const correctOrder = (raw.slice(0, 160) + "…").replace(/&/g, "&amp;");
@@ -934,10 +811,7 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
       !html.includes(XSS),
       "raw <script> in a comment's author, body, or the todo title it names must never appear unescaped",
     );
-    // The todo's own title is ALSO escaped once more in the Open Todos
-    // section above (already pinned by its own test), so counting over the
-    // WHOLE page would overcount by one. Activity is the last section
-    // rendered, so slicing from its id to the end isolates it.
+
     const activityHtml = html.slice(html.indexOf('id="section-activity"'));
     assert.equal(
       (activityHtml.match(new RegExp(XSS_ESCAPED.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g")) || []).length,
@@ -949,7 +823,7 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
   it("truncates a comment body whole, THEN escapes it - never the reverse", () => {
     const project = seedProject("escape-comment-truncate-order");
     const todo = seedTodo(project, { title: "truncate order todo" });
-    const raw = "x".repeat(198) + "&" + "y".repeat(50); // longer than the 200-char cap, "&" straddles it
+    const raw = "x".repeat(198) + "&" + "y".repeat(50);
     db.prepare(
       "INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, 'user:test', ?, datetime('now'))",
     ).run(todo, raw);
@@ -977,12 +851,7 @@ describe("renderDashboard: self-contained and read-only", () => {
     assert.ok(!/<link\b/.test(html), "no external stylesheet or font link");
     assert.ok(!/<script[^>]+src=/.test(html), "no externally-sourced script");
     assert.ok(!/<form\b/i.test(html), "the dashboard is read-only: no forms");
-    // The Live toggle (checkbox, see the live-toggle describe block below)
-    // is the one deliberate exception: read-only means nothing here writes
-    // back to the STORE, and a display preference kept in sessionStorage
-    // never does. So the bar narrows from "no <input> at all" to "no
-    // data-entry <input> - every <input> present must be the toggle
-    // checkbox and nothing else".
+
     const inputs = [...html.matchAll(/<input\b[^>]*>/gi)];
     assert.equal(inputs.length, 1, "exactly one <input> may appear: the Live toggle");
     assert.match(inputs[0][0], /type="checkbox"/, "the one permitted input must be a checkbox, not data-entry");
@@ -990,14 +859,7 @@ describe("renderDashboard: self-contained and read-only", () => {
   });
 
   it("carries no <meta http-equiv=\"refresh\"> tag - superseded by SCRIPT's own clearable timer", () => {
-    // meta refresh is scheduled by the browser at PARSE TIME; removing the
-    // tag after the fact does not cancel it, which is exactly why the Live
-    // toggle could not have been built on top of it. Checked as the exact
-    // literal tag, not a loose regex: SCRIPT's own comment mentions
-    // "<meta http-equiv=\"refresh\">" by name (explaining what it replaced),
-    // and that comment text is itself embedded verbatim inside the page's
-    // <script> block - a substring match on the tag name alone would false-
-    // positive on prose, never on a real emitted tag.
+
     const project = seedProject("no-meta-refresh-test");
     const html = renderDashboard(project);
     assert.ok(!html.includes('<meta http-equiv="refresh" content="10">'));
@@ -1022,7 +884,7 @@ describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
   it("defaults Live ON with no stored preference, arming the reload timer", () => {
     const project = seedProject("live-toggle-default-on-behavior-test");
     const html = renderDashboard(project);
-    const env = makeFakeToggleEnv(undefined); // fresh session, nothing in sessionStorage yet
+    const env = makeFakeToggleEnv(undefined);
     runToggleScript(extractScript(html), env);
     assert.equal(env.checkbox.checked, true, "the checkbox must read checked with no stored preference");
     assert.equal(env.getArmedCount(), 1, "the reload timer must be armed when Live is ON");
@@ -1063,8 +925,6 @@ describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
     first.checkbox.listeners.change();
     const persisted = JSON.parse(first.getSessionData()["hive-dashboard-state"]);
 
-    // A second, independent script execution reading the SAME sessionStorage
-    // state - simulating exactly what a reload does.
     const second = makeFakeToggleEnv(persisted);
     runToggleScript(scriptSrc, second);
 
@@ -1096,11 +956,7 @@ describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
 });
 
 describe("renderDashboard: every collapsed section still says something, via a count in its summary", () => {
-  // Chris's own framing: a closed section that tells you nothing is just a
-  // wall of chrome. Each of these seeds real data and checks the count in
-  // that section's OWN summary line (isolated the same way the pads-section
-  // tests isolate their section, to avoid matching a number that happens to
-  // appear elsewhere on the page).
+
   function summaryOf(html, sectionId) {
     const start = html.indexOf(`id="section-${sectionId}"`);
     assert.ok(start >= 0, `section-${sectionId} must exist`);
@@ -1261,11 +1117,6 @@ describe("renderDashboard: section headers render as tmux pane-border-status lin
   });
 });
 
-// Step 2 (todo 309): the scheduler hook that writes renderDashboard()'s
-// output to disk. seedProjectAt gives the project a REAL directory on disk -
-// unlike seedProject's fake /scratch/... path above, which is fine for a
-// pure renderDashboard() call but cannot hold a real hive.yml for the
-// enable gate (setDashboardKey, below) or a real .claude/dashboard/.
 function seedProjectAt(name) {
   const root = mkdtempSync(join(tmpdir(), `hive-dashboard-${name}-`));
   const id = db
@@ -1278,10 +1129,6 @@ function indexPath(root) {
   return join(root, ".claude", "dashboard", "index.html");
 }
 
-// Chris's scope change (superseding plan-dashboard-v1's original directory
-// switch): the enable gate is hive.yml's `dashboard` key, not the
-// directory's own presence. Writes (or overwrites) hive.yml at the
-// project's root with just this one key.
 function setDashboardKey(root, value) {
   writeFileSync(join(root, "hive.yml"), `dashboard: ${value}\n`);
 }
@@ -1311,18 +1158,7 @@ describe("the scheduler hook: enable gate is hive.yml's dashboard key (todo 309)
   });
 
   it("never claims - never writes a dashboard_meta row at all - for a project the gate has already rejected", async () => {
-    // The gate (hive.yml's dashboard key) must run BEFORE the claim, not
-    // after. Claiming first means the claim's UPDATE succeeds once every
-    // DASHBOARD_MIN_INTERVAL_SECONDS, forever, for every registered
-    // project - including one that will never render anything - which is
-    // a permanent periodic write to a WAL store shared by every hive
-    // session on the machine. See
-    // .claude/sessions/decisions/2026-08-05-simplify-can-move-a-line-across-a-guard.md:
-    // the transferable argument is the same shape, moving a line ahead of
-    // a guard pays nothing when safe and pays only when risky, and here it
-    // pays most exactly where the work should never happen at all. This
-    // test is the assertion that fails if a future pass reorders this
-    // again the way one already did.
+
     const { id, root } = seedProjectAt("gate-precedes-claim");
     setDashboardKey(root, false);
     await tick(null);
@@ -1347,8 +1183,7 @@ describe("the scheduler hook: enable gate is hive.yml's dashboard key (todo 309)
 
     const written = readFileSync(indexPath(root), "utf8");
     assert.ok(written.includes("should appear in the written file"), "the file must be a real render, not a stub");
-    // Live toggle replaced meta refresh (SCRIPT's own timer); the file must
-    // still declare the Live control that stands in for it.
+
     assert.ok(written.includes('id="live-toggle"'));
   });
 
@@ -1395,10 +1230,7 @@ describe("the scheduler hook: rate-limited claim, not a lockfile (todo 309)", ()
     await tick(null);
 
     seedTodo(id, { title: "added after the claim window elapsed" });
-    // Rewind the claim's own bookkeeping rather than sleeping five real
-    // seconds: the claim is a plain datetime comparison, so backdating
-    // last_attempt_at exercises the exact same branch elapsed real time
-    // would, deterministically and instantly.
+
     db.prepare(
       "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
     ).run(id);
@@ -1409,10 +1241,7 @@ describe("the scheduler hook: rate-limited claim, not a lockfile (todo 309)", ()
   });
 
   it("picks up an existing agent's state transition - an UPDATE to a row already on disk, not a new row", async () => {
-    // The specific case a MAX(id)-only mark would miss: agent_state changes
-    // in place on the same row, so nothing NEW is ever inserted. This is
-    // exactly the residual the dirty-check redesign (src/db.ts's
-    // dashboard_meta comment) exists to close.
+
     const { id, root } = seedProjectAt("claim-window-agent-state");
     db.prepare(
       `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, agent_state)
@@ -1420,8 +1249,7 @@ describe("the scheduler hook: rate-limited claim, not a lockfile (todo 309)", ()
     ).run(id);
     setDashboardKey(root, true);
     await tick(null);
-    // Visual redesign: agent state carries a status word (live/ok/warn),
-    // not a bare state name in its own tag - "working" reads as "live".
+
     assert.ok(readFileSync(indexPath(root), "utf8").includes('status-live">live</span> working'));
 
     db.prepare(
@@ -1446,12 +1274,6 @@ describe("the scheduler hook: dirty check does not regenerate an unchanged store
     await tick(null);
     const firstMtime = statSync(indexPath(root)).mtimeMs;
 
-    // A real, forced gap before the second tick: mtimeMs is only convincing
-    // evidence of "no write happened" if a write in that window would
-    // provably have produced a DIFFERENT mtime. Without this, a broken dirty
-    // check that rewrites unconditionally could still land within the same
-    // instant and pass by coincidence (test/CLAUDE.md's own back-to-back-
-    // backupNow() lesson, applied here).
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     db.prepare(
@@ -1463,11 +1285,6 @@ describe("the scheduler hook: dirty check does not regenerate an unchanged store
     assert.equal(secondMtime, firstMtime, "an elapsed claim window alone must not force a rewrite of an unchanged store");
   });
 
-  // Todo 329's own trap, named twice in the plan pad: a todo body is stable
-  // STORE content, not a per-render value like the generated-at stamp, so
-  // inlining it must not make the hash move on every tick. This is the
-  // regression this file has shipped before - pin it directly rather than
-  // trusting the general "nothing changed" case above to cover a new field.
   it("does not rewrite the file on a second unclaimed-window tick, with a todo body inlined (todo 329)", async () => {
     const { id, root } = seedProjectAt("dirty-check-todo-body");
     db.prepare(
@@ -1500,10 +1317,6 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     await tick(null);
     assert.ok(readFileSync(indexPath(root), "utf8").includes("original wake body"));
 
-    // The old column-mark watched MAX(id)/MAX(due_at)/MAX(fired_at)/
-    // MAX(cancelled_at) on timers - a body-only UPDATE (wake_update with no
-    // delay_seconds) touches none of them, so this edit used to stay
-    // invisible until an unrelated wake changed.
     db.prepare("UPDATE timers SET body = ? WHERE id = ?").run("edited wake body", wakeId);
     db.prepare(
       "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
@@ -1517,8 +1330,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
   });
 
   it("picks up an agent_rename-style name change alone, with no timestamp column to move", async () => {
-    // agent_rename's UPDATE (src/spawn.ts) writes agents.name with no
-    // timestamp at all, so nothing in the old mark ever watched it.
+
     const { id, root } = seedProjectAt("dirty-check-agent-rename");
     const agentId = seedAgent(id, { name: "old-name", actorId: "agent:rename-1" });
     setDashboardKey(root, true);
@@ -1543,10 +1355,6 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     await tick(null);
     assert.ok(readFileSync(indexPath(root), "utf8").includes("the board pad content"));
 
-    // A second pad, seeded AFTER the board pad, so its own updated_at is
-    // later - the exact shape that left the old MAX(updated_at)-based mark
-    // unchanged after a hard DELETE of the board pad (pad_delete has no
-    // soft-delete flag; MAX(updated_at) stays monotonic across the DELETE).
     seedPad(id, "other", "unrelated pad");
     db.prepare("DELETE FROM scratchpads WHERE project_id = ? AND name = 'board'").run(id);
     db.prepare(
@@ -1566,8 +1374,6 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     await tick(null);
     assert.ok(statOrNull(indexPath(root)));
 
-    // .gitignore:10 makes .claude/* ignored, so `git clean -xdf` (routine
-    // after a lane) removes this file with no store change alongside it.
     rmSync(indexPath(root));
     db.prepare(
       "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
@@ -1582,15 +1388,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
 });
 
 describe("the scheduler hook: the throughput chart and pads section must not defeat the content hash", () => {
-  // The lead's own warning on this follow-up round: the chart and pads
-  // sections must not sneak a per-render value into the hashed content, or
-  // the dirty check writes every 5 seconds forever - the exact failure this
-  // page's own "generated at" stamp is already deliberately excluded from
-  // hashing to avoid (buildDashboard's comment in src/dashboard.ts). This is
-  // the same shape as the existing "skips the write when nothing changed"
-  // test above, run again with real chart data (a completed todo, an open
-  // todo) and a real extra pad present, so both new sections are actually
-  // exercised rather than rendering their empty states.
+
   it("does not rewrite the file on a second unclaimed-window tick, with chart data and an extra pad both present", async () => {
     const { id, root } = seedProjectAt("hash-stability-chart-pads");
     seedTodo(id, { title: "an open todo" });
@@ -1668,10 +1466,7 @@ describe("the scheduler hook: a broken generator must not take the scheduler dow
     setDashboardKey(root, true);
     const dashboardDir = join(root, ".claude", "dashboard");
     mkdirSync(dashboardDir, { recursive: true });
-    // Occupy the exact temp-file path the writer will use with a directory
-    // instead of a file. writeFileSync onto an existing directory throws
-    // EISDIR unconditionally - portable, and unlike a permission-bit trick,
-    // not silently bypassed when the suite happens to run as root.
+
     mkdirSync(join(dashboardDir, `.index.html.tmp-${process.pid}`));
 
     await assert.doesNotReject(() => tick(null), "a write failure for one project must not escape the tick");
@@ -1700,19 +1495,13 @@ describe("the scheduler hook: a broken generator must not take the scheduler dow
   });
 
   it("cleans up its own temp file when the rename fails, rather than leaving it behind", async () => {
-    // Distinct from the EISDIR case above, which pre-occupies the TEMP path
-    // and so never gets far enough to create a real temp file at all. This
-    // occupies the TARGET instead: writeFileSync to the temp path succeeds
-    // for real, then renameSync onto an existing directory fails (POSIX
-    // rename refuses a file-onto-directory rename), which is the actual
-    // shape that can strand a temp file if the failure path does not clean
-    // up after itself.
+
     const { id, root } = seedProjectAt("write-failure-temp-cleanup");
     seedTodo(id, { title: "irrelevant" });
     setDashboardKey(root, true);
     const dashboardDir = join(root, ".claude", "dashboard");
     mkdirSync(dashboardDir, { recursive: true });
-    mkdirSync(indexPath(root)); // occupy index.html itself as a directory
+    mkdirSync(indexPath(root));
 
     await assert.doesNotReject(() => tick(null));
 

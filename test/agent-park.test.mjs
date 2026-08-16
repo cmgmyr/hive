@@ -11,18 +11,6 @@ import {
   seedLeadRow,
 } from "./helpers.mjs";
 
-// Issue #156 (todo 353 lane B). agent_park fills .claude/rules/tool-contract.md's
-// RETIRE cell for agents - soft, reversible, still readable by id - where
-// agent_close is Remove. A parked lane is a CLOSED row with parked_at set, never
-// a third `status` value (D1: `status` is branched on in the janitor's sweeps,
-// isLive, requireNameFree, idx_agents_running_name, agent_list, standingIdleRows
-// and `hive status`, and an additive column is ignored by all of them by
-// construction).
-//
-// EVERY ASSERTION HERE READS THE ROW OR THE COMMAND'S OWN OUTPUT, never only a
-// receipt: a receipt is the handler's claim about itself, and this suite has
-// already shipped a green run over a handler that returned {sent: true} without
-// delivering anything (.claude/rules/tmux-and-panes.md).
 const { hasTmux, cleanup } = isolateTmux("the agent_park tests");
 
 const dirs = scratchDirs();
@@ -34,16 +22,6 @@ const { releaseParkRow } = await import("../dist/spawn.js");
 let mcp;
 let projectId;
 
-// A REAL GIT CHECKOUT, because parked_branch is read with real `git rev-parse`
-// and a fixture that stubbed it would prove nothing about the one fact this
-// column exists to capture. Initialised on the project dir itself so the spawn
-// stays inside the project hive resolved (.claude/rules/project-scoping.md);
-// -b names the branch explicitly rather than depending on whatever this
-// machine's init.defaultBranch happens to be, which is exactly the kind of
-// one-machine assumption CI catches late.
-// scratchGit, not a local execFileSync: it also neutralises a developer's
-// global core.hooksPath, and the commit below runs inside before(), so a
-// husky-style global hook would take the whole file down rather than one case.
 const git = (...args) => scratchGit(dirs.projectDir, ...args);
 
 before(async () => {
@@ -80,25 +58,12 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     assert.equal(receipt.parked, true);
     assert.equal(receipt.parked_branch, "park-branch");
 
-    // THE PANE, READ BACK, and this assertion is the reason the file's header
-    // claim is true rather than aspirational. Counselors (all three seats)
-    // found that removing `if (live) killAgentPane(...)` from agent_park left
-    // this entire file green: every other assertion here is a row or a
-    // receipt, resume creates a fresh pane regardless of whether the old one
-    // died, and isolateTmux's exit handler reports leftover SESSIONS, not
-    // panes. So every park would have leaked a running claude nothing tracks,
-    // with a green suite - the {sent: true} shape .claude/rules/tmux-and-
-    // panes.md names by name and this file's own header disclaims.
     assert.equal(
       targetLive(live.tmux_target),
       false,
       "parking must actually end the pane, not just stamp the row",
     );
 
-    // The ROW, not the receipt. A parked lane must be indistinguishable from
-    // an ordinary close to every consumer that gates on `status` - that is
-    // D1's whole argument - and distinguishable to anything that reads
-    // parked_at.
     const row = rowOf(live.agent_id);
     assert.equal(row.status, "closed", "a parked row must be CLOSED, not a third status value");
     assert.ok(row.closed_at, "a parked row still carries closed_at like any other closed row");
@@ -112,11 +77,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
 
     const receipt = await mcp.call("agent_park", { name: "park-board" });
 
-    // The board line is the deliverable half of issue #156 ("anything the lead
-    // has to remember to write down is a thing that gets skipped at 18:00 on a
-    // Friday"), so it is asserted on content rather than on existence: a cold-
-    // boot session needs which lane, on which branch, where, and the one call
-    // that brings it back.
     assert.match(receipt.board_line, /^PARKED \d{4}-\d{2}-\d{2}/);
     assert.match(receipt.board_line, /park-board/);
     assert.match(receipt.board_line, /branch park-branch/);
@@ -130,9 +90,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const todo = await mcp.call("todo_create", { title: "the lane's own todo" });
     const otherProjectNoise = await mcp.call("todo_create", { title: "a todo nobody commented on" });
 
-    // Written by the WORKER's actor_id, which is what a real lane produces by
-    // following the runbook - the point of deriving rather than asking the
-    // lead to pass it.
     db.prepare("INSERT INTO todo_comments (todo_id, author, body) VALUES (?, ?, 'worked on it')").run(
       todo.todo_id,
       live.actor_id,
@@ -153,10 +110,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
 
     await assert.rejects(mcp.call("agent_park", { name: "park-plain" }), /not a claude worker/);
 
-    // REFUSED MEANS NOTHING HAPPENED. The pane must still be up and the row
-    // still running - a park that killed the pane and then declined to stamp
-    // the row would be the worst of both. Both halves asserted, because the
-    // comment claimed both and only one was checked (counselors).
     assert.equal(rowOf(live.agent_id).status, "running");
     assert.equal(targetLive(live.tmux_target), true, "a refused park must leave the pane alone");
     await mcp.call("agent_close", { name: "park-plain" });
@@ -177,9 +130,7 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
   });
 
   it("refuses a lead target - a parked lead would be a state with no way out of it", async () => {
-    // seedLeadRow, the shared fixture for exactly this shape (agent_rename and
-    // wake_when_idle's lead guards use it). Its empty session_id does not
-    // weaken the case: park's lead refusal runs before the session_id check.
+
     const id = seedLeadRow(db, projectId, dirs.projectDir);
 
     await assert.rejects(mcp.call("agent_park", { agent_id: id }), /is this project's lead session/);
@@ -192,12 +143,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     await mcp.call("agent_spawn", { name: "park-nocwd", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "park-nocwd");
 
-    // The case parked_branch exists for, reached from the wrong end. Without
-    // this refusal the park SUCCEEDS and marks the lane resumable, branchAt has
-    // nothing to read so it records '', and next morning agent_resume declines
-    // with advice saying agent_park would have recorded a branch - which it did
-    // run, and could not. The lead removed a worktree out from under a running
-    // worker on 2026-08-11, so this is not hypothetical.
     const gone = `${dirs.projectDir}-park-nocwd-removed`;
     assert.ok(!existsSync(gone), "setup bug: the missing-cwd path must really be missing");
     db.prepare("UPDATE agents SET cwd = ? WHERE id = ?").run(gone, live.agent_id);
@@ -217,10 +162,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const live = await liveAgentRow(mcp, "park-namehint");
     await mcp.call("agent_park", { name: "park-namehint" });
 
-    // The message a lead hits FIRST the next morning, reaching for the worker
-    // by the name it knows. It used to say "is closed. Spawn a new worker" -
-    // the exact confusion issue #156 was filed about, produced by the feature
-    // built to end it (counselors).
     await assert.rejects(mcp.call("agent_status", { name: "park-namehint" }), (e) => {
       assert.match(e.message, /is PARKED/);
       assert.match(e.message, new RegExp(`agent_resume\\(agent_id: ${live.agent_id}\\)`));
@@ -234,18 +175,8 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const live = await liveAgentRow(mcp, "park-releaserace");
     await mcp.call("agent_park", { name: "park-releaserace" });
 
-    // releaseParkRow directly, because the interleaving counselors named lives
-    // INSIDE one agent_close call - findAgent reads the parked row, a
-    // concurrent agent_resume flips it running and clears the stamp, and only
-    // then does the release run. Driving agent_close from outside cannot
-    // produce that ordering: by the time the resume has landed, findAgent sees
-    // a RUNNING row and correctly takes the ordinary close path instead. The
-    // guard is the write, so the write is what this tests.
     assert.equal(releaseParkRow(live.agent_id), true, "the ordinary case still releases");
 
-    // Now the state the race leaves: running, stamp already cleared. An
-    // unconditional UPDATE no-ops here and its caller answered
-    // {closed: true, park_released: true} over a live worker.
     await mcp.call("agent_resume", { name: "park-releaserace" });
     assert.equal(
       releaseParkRow(live.agent_id),
@@ -266,9 +197,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const receipt = await mcp.call("agent_resume", { name: "park-cycle" });
     assert.ok(receipt.was_parked_at, "the receipt tells a parked resume from an ordinary one");
 
-    // The stale-state failure D4 exists to prevent, reached from inside the
-    // feature: a parked_at left behind would make `hive status` report this
-    // lane parked for the rest of the row's life.
     const row = rowOf(live.agent_id);
     assert.equal(row.status, "running");
     assert.equal(row.parked_at, "", "resume must clear the stamp");
@@ -295,23 +223,13 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const live = await liveAgentRow(mcp, "park-gone");
     await mcp.call("agent_park", { name: "park-gone" });
 
-    // The cwd is rewritten to a path that never existed rather than deleting
-    // the real project dir out from under the running MCP server, which would
-    // take the rest of this file with it. The condition under test is
-    // existsSync(cwd) either way.
     const gone = `${dirs.projectDir}-removed-worktree`;
     assert.ok(!existsSync(gone), "setup bug: the missing-cwd path must really be missing");
     db.prepare("UPDATE agents SET cwd = ? WHERE id = ?").run(gone, live.agent_id);
 
-    // The remedy has to be REACHABLE. Without parked_branch this could only
-    // say "the directory is gone"; the whole return on that column is that the
-    // error carries the line that fixes it. And it must not surface as Node's
-    // own ENOENT, which names the BINARY rather than the missing cwd
-    // (.claude/sessions/common-issues/enoent-names-the-binary-when-the-cwd-is-gone.md).
     await assert.rejects(mcp.call("agent_resume", { agent_id: live.agent_id }), (e) => {
       assert.match(e.message, /working directory is gone/);
-      // One alternative, not two: the second used to subsume the first, so the
-      // test did not actually pin that the RECORDED cwd reaches the command.
+
       assert.ok(e.message.includes(`git worktree add ${gone} park-branch`), e.message);
       assert.match(e.message, /park-branch/, "the recorded branch is what makes the remedy actionable");
       assert.ok(!/posix_spawn|\/bin\/sh/.test(e.message), "must not surface as an ENOENT naming a binary");
@@ -321,18 +239,10 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     db.prepare("UPDATE agents SET cwd = ? WHERE id = ?").run(dirs.projectDir, live.agent_id);
   });
 
-  // Todo 369. agent_park kills the pane, then takes parkAgentRow's own
-  // conditional write - same shape and same reporting gap as agent_close's
-  // (test/agent-close-honest-cas.test.mjs's own header explains why the real
-  // race has no hook to interject on, and why targeting by agent_id against
-  // a row pre-mutated to look already-retired reaches the identical
-  // lost-CAS code path a genuine race would).
   it("reports parked:true, not a denial, when a concurrent agent_park already parked the row first", async () => {
     await mcp.call("agent_spawn", { name: "park-already-parked", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "park-already-parked");
 
-    // The exact write shape parkAgentRow itself performs - stands in for a
-    // concurrent agent_park winning the race this call is about to lose.
     db.prepare(
       `UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'),
          parked_branch = 'raced-in-by-a-concurrent-park' WHERE id = ?`,
@@ -349,10 +259,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     await mcp.call("agent_spawn", { name: "park-already-closed", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "park-already-closed");
 
-    // Stands in for a concurrent PLAIN close winning the race - the row is
-    // retired, but not as a park, so no branch was recorded through this
-    // call and the old "row changed, nothing was parked" message would have
-    // been silent about which of those two very different outcomes happened.
     db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(live.agent_id);
 
     await assert.rejects(mcp.call("agent_park", { agent_id: live.agent_id }), (e) => {
@@ -376,9 +282,6 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     const parked = agents.find((a) => a.name === "park-listed");
     const closed = agents.find((a) => a.name === "park-notlisted");
 
-    // The distinction the issue says a next-morning lead cannot make today:
-    // `closed` currently means both "this lane is done" and "this lane is
-    // paused".
     assert.equal(parked.status, "closed");
     assert.equal(closed.status, "closed");
     assert.ok(parked.parked_at, "a parked lane says so");

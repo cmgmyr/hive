@@ -4,18 +4,6 @@ import { describe, it } from "node:test";
 import { analyzeRows, evaluateRun } from "../scripts/payload-canary.mjs";
 import { deriveManifest } from "../scripts/payload-shape.mjs";
 
-// analyzeRows and evaluateRun are the two pure functions this lane's live
-// wiring script (scripts/payload-canary.mjs) uses to decide, and report,
-// whether a run passed. Both were exported and untouched by `npm test`
-// until this file: exactly the "checker that cannot fire" shape
-// test/payload-shape.test.mjs's own header warns about, one directory over.
-// No isolateTmux() here: plain data in, plain data out, same as
-// test/part-c-assert.test.mjs one door over for the same reason.
-
-// A tiny synthetic corpus, not the real one: these tests are pinning
-// analyzeRows' OWN aggregation (stopCount, anyStopWithBackgroundTasks,
-// parseFailures, findings roll-up), not payload-shape.mjs's derivation,
-// which test/payload-shape.test.mjs already owns against the real corpus.
 const SYNTHETIC_MANIFEST = deriveManifest([
   { event: "Stop", payload: { hook_event_name: "Stop", session_id: "s1", background_tasks: [] } },
   {
@@ -65,8 +53,7 @@ describe("analyzeRows", () => {
   });
 
   it("rolls a real shape finding up into shapeFailures", () => {
-    // Missing background_tasks entirely: required in the synthetic
-    // manifest above (present, if sometimes empty, in both Stop fixtures).
+
     const rows = [row("stop", { hook_event_name: "Stop", session_id: "s1" })];
     const result = analyzeRows(SYNTHETIC_MANIFEST, rows);
     assert.equal(result.shapeFailures.length, 1);
@@ -74,10 +61,7 @@ describe("analyzeRows", () => {
   });
 
   it("keys the manifest lookup on the payload's hook_event_name, never the DB row's own event column", () => {
-    // The row's own `event` column is "stop" (src/hook.ts's CLI arg), which
-    // is not a key the manifest has. If analyzeRows ever used row.event
-    // instead of payload.hook_event_name, this well-formed Stop row would
-    // get an "unknown_event" INFO instead of being checked for real.
+
     const rows = [row("stop", { hook_event_name: "Stop", session_id: "s1", background_tasks: [] })];
     const result = analyzeRows(SYNTHETIC_MANIFEST, rows);
     assert.equal(result.perRow[0].rowEvent, "stop");
@@ -87,10 +71,7 @@ describe("analyzeRows", () => {
 });
 
 describe("evaluateRun", () => {
-  // A fully conformant, fully VALID run: identical git snapshots, a fired
-  // (not cancelled) wake, the branch's own hive-iso server confirmed, at
-  // least one subagent demonstrably ran, and a clean analysis. Each test
-  // below mutates ONE field off this baseline.
+
   function cleanPartial() {
     return {
       gitBefore: { head: "abc123", status: "" },
@@ -134,7 +115,7 @@ describe("evaluateRun", () => {
   it("a dirtied tree FAILS even when the run was ALSO otherwise inconclusive -- git checks first", () => {
     const partial = cleanPartial();
     partial.gitAfter = { head: "def456", status: partial.gitBefore.status };
-    partial.completionFiles = []; // would independently be INCONCLUSIVE
+    partial.completionFiles = [];
     const result = evaluateRun(partial, undefined);
     assert.equal(result.verdict, "FAIL");
     assert.ok(result.reasons.some((r) => /HEAD moved/.test(r)), JSON.stringify(result.reasons));
@@ -164,14 +145,10 @@ describe("evaluateRun", () => {
     assert.ok(result.reasons.some((r) => r.includes("mcp__hive__whoami")), JSON.stringify(result.reasons));
   });
 
-  // THE TWO TESTS THAT MATTER MOST (lead review after run 2): a lazy worker
-  // and a real #24 regression must never produce the same verdict, even
-  // though both leave background_tasks empty. The only thing that tells
-  // them apart is whether a subagent demonstrably ran.
   it("run 2's actual shape: no subagent ran and background_tasks is empty -> INCONCLUSIVE, not FAIL", () => {
     const partial = cleanPartial();
     partial.completionFiles = [];
-    partial.mcpServerConfirmed = null; // run 2's own observed shape: step 0 never ran either
+    partial.mcpServerConfirmed = null;
     partial.analysis.anyStopWithBackgroundTasks = false;
     partial.analysis.runLevelOk = false;
     const result = evaluateRun(partial, undefined);

@@ -1,19 +1,20 @@
 ---
 name: hive-history
-description: Historical rationale for hive's internals - why a guard, a bound, an ordering or a workaround in src/ is the way it is. Search this before re-deriving a tmux, SQLite, Claude Code or scheduler fact, before "simplifying" something that looks arbitrary, and when a change to src/ has no obvious reason not to be safe. Temporary: this is the attic of comments stripped from src/ in todo 436, and it will be deleted once what mattered has been promoted out of it.
+description: Historical rationale for this repo's internals - why a guard, a bound, an ordering, a fixture or a workaround anywhere in src/, test/ or scripts/ is the way it is. Search this before re-deriving a tmux, SQLite, Claude Code or scheduler fact, before "simplifying" something that looks arbitrary, before changing a test whose point is not obvious, and when a change has no obvious reason not to be safe. Temporary: this is the attic of every comment stripped from the repo in todos 436 and 438, and it will be deleted once what mattered has been promoted out of it.
 ---
 
 # hive's attic
 
-`docs/attic/` holds every comment removed from `src/` at fed8064, verbatim, one file per source file with pre-strip line numbers. 16,030 lines of it. It is accurate; the only edits made to it are the `PROMOTED:` notes described below.
+`docs/attic/` holds every comment removed from the repo, verbatim, one file per source file with pre-strip line numbers: 16,030 lines from `src/` at fed8064 (todo 436) and 17,590 from `test/`, `scripts/` and `claude-plugin/` at 67c76c2 (todo 438). 220 files. It is accurate; the only edits made to it are the `PROMOTED:` notes described below.
 
 ## Finding something
 
 One file per source file, named for it:
 
 ```
-grep -rn "unref" docs/attic/                    # by topic, across everything
-cat docs/attic/src__scheduler.ts.md              # everything about one file
+grep -rn "unref" docs/attic/              # by topic, across everything
+cat docs/attic/src__scheduler.ts.md        # one source file
+cat docs/attic/test__helpers.mjs.md        # one test file, same naming
 ```
 
 ## Then promote what you found

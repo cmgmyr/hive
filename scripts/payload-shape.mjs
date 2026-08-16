@@ -1,26 +1,8 @@
 #!/usr/bin/env node
-// Issue #46, step 1: the pure payload-SHAPE conformance module. Diffs an
-// observed Claude Code hook payload against a manifest derived, at runtime,
-// from the committed corpus (test/fixtures/hook-payloads/). No second
-// committed shapes file: the corpus itself is the manifest's only source.
-//
-// SHAPE ONLY. Nothing here decides or asserts what state hive writes for a
-// payload (idle/working/waiting, stateFor, waitingOnSubagents); that surface
-// belongs to test/hook-replay.test.mjs.
-//
-// Everything below loadCorpusFromDir() is a pure function: plain objects in,
-// plain findings out, no I/O. loadCorpusFromDir() is the one exception,
-// isolated so callers (this file's tests, and the live canary script) can
-// build a manifest from real fixtures without the decision logic itself
-// touching a filesystem.
 
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-// The discriminating fields issue #46 names by name: the ones whose VALUE,
-// not just presence, distinguishes one payload shape from another already
-// seen. Array-valued fields are addressed with a trailing "[]", matching
-// collectFieldPaths' own flattening below.
 export const DISCRIMINATOR_PATHS = ["notification_type", "background_tasks[].type", "background_tasks[].status"];
 
 export function jsonType(value) {
@@ -29,11 +11,6 @@ export function jsonType(value) {
   return typeof value;
 }
 
-// Every array element shares the SAME path ("background_tasks[]", not
-// "background_tasks[0]"): a hook payload's arrays are unindexed collections
-// of like-shaped entries, not fixed-position tuples, so per-index paths
-// would fragment one field into as many paths as the corpus happens to have
-// elements for, and required/known derivation below would never converge.
 function walk(value, path, onNode) {
   if (path !== "") onNode(path, value);
   if (Array.isArray(value)) {
@@ -43,11 +20,6 @@ function walk(value, path, onNode) {
   }
 }
 
-// One walk per payload, not one per caller: deriveManifest and checkPayload
-// both need a path's types (for known/required) AND its raw values (for
-// DISCRIMINATOR_PATHS' enums), and re-walking the same tree once per
-// discriminator to re-derive values a single pass already saw was pure
-// waste. Every path's entry keeps both, so no caller pays for a second walk.
 function indexPayload(payload) {
   const map = new Map();
   walk(payload, "", (path, value) => {
@@ -63,12 +35,6 @@ export function collectFieldPaths(payload) {
   return new Map([...indexPayload(payload)].map(([path, { types }]) => [path, types]));
 }
 
-// records: [{ event, payload }, ...]. Per event: KNOWN is the union of field
-// paths seen; REQUIRED is the intersection, so a field present in some
-// fixtures of an event and not others is optional BY CONSTRUCTION -- the
-// honest reading of a small, real corpus, not a hand-picked schema. ENUMS
-// covers only DISCRIMINATOR_PATHS, and only where the corpus actually
-// produced a value for that (event, path) pair.
 export function deriveManifest(records) {
   const payloadsByEvent = new Map();
   for (const { event, payload } of records) {
@@ -89,10 +55,7 @@ export function deriveManifest(records) {
         for (const t of types) known.get(path).add(t);
         if (enumValues.has(path)) for (const v of values) enumValues.get(path).add(v);
       }
-      // Intersect in place: seed from the first payload's paths, then drop
-      // anything later payloads don't also have. A field present in some
-      // fixtures of this event and not others is optional BY CONSTRUCTION --
-      // the honest reading of a small, real corpus, not a hand-picked schema.
+
       const keys = new Set(index.keys());
       if (!required) required = keys;
       else for (const k of required) if (!keys.has(k)) required.delete(k);
@@ -112,9 +75,6 @@ export function deriveManifest(records) {
   return manifest;
 }
 
-// Findings, most-severe first is NOT guaranteed by this function's own
-// ordering (missing-required, then per-path type/new-field, then enums) --
-// callers that care about severity order filter on `severity` themselves.
 export function checkPayload(manifest, event, payload) {
   const spec = manifest[event];
   if (!spec) {
@@ -193,9 +153,6 @@ export function checkPayload(manifest, event, payload) {
   return findings;
 }
 
-// The one I/O function in this file. event comes from the payload's own
-// hook_event_name, never the filename, so a fixture named after what it
-// demonstrates does not silently mislabel its event.
 export function loadCorpusFromDir(dir) {
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))

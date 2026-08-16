@@ -18,47 +18,12 @@ import {
   runAllAssertions,
 } from "../scripts/part-c-assert.mjs";
 
-// SQLite's own shape with no fractional seconds (datetime('now')'s shape,
-// which is what agent_state_log's MIN(created_at) reads back as through this
-// column): 'YYYY-MM-DD HH:MM:SS', UTC, no zone suffix.
 const toSqliteUtc = (d) => d.toISOString().slice(0, 19).replace("T", " ");
 
-// No isolateTmux() here on purpose: these assertions are pure functions over
-// plain data (part-c-gate.mjs's own collected `result` shape), reachable
-// from neither tmux nor a real MCP server, which is the whole point of
-// factoring them out of the real-worker gate -- see that file's own header.
-
-// A genuinely correct run's shape, trimmed to what the assertions read.
-// Timestamps are real SQLite output shapes: agent_state_log's created_at
-// carries fractional seconds (strftime %f), timers.fired_at does not
-// (datetime('now')); both are UTC with no zone suffix. epochSeconds values
-// are the ACTUAL Unix epoch for the matching UTC wall-clock time below, not
-// small arbitrary numbers -- an earlier draft of this fixture used epoch
-// values like 100/106/110 alongside "2026-01-01" timestamps, which are
-// billions of seconds apart, so every comparison in this file was vacuously
-// true regardless of which branch it was meant to exercise. That is
-// precisely the "assertion that cannot fail" shape test/CLAUDE.md warns
-// about, just one level up: a fixture whose own numbers cannot disagree
-// proves nothing about the code reading them, however it turns out.
-//   2026-01-01 00:01:30 UTC = 1767225690  (file 1 completes)
-//   2026-01-01 00:01:40 UTC = 1767225700  (file 2 completes)
-//   2026-01-01 00:01:50 UTC = 1767225710  (file 3 completes -- LAST)
-//   2026-01-01 00:01:55 UTC = idle recorded (good case: after last completion)
-//   2026-01-01 00:01:56 UTC = wake fires (good case: after last completion,
-//                             1s after the triggering idle row, and well
-//                             before max_wait_at)
-//   2026-01-01 00:06:00 UTC = max_wait_at (the wake's own timeout, far later
-//                             than the genuine fire above -- see
-//                             assertWakeFiredByIdleNotMaxWaitTimeout)
 const MAX_WAIT_AT = "2026-01-01 00:06:00";
 
-// A normal, non-dialog claude screen: carries INPUT_BOX_PRESENT's own marker
-// ("for shortcuts") and none of CHOICE_DIALOG's ("Esc to cancel"), same shape
-// as this repo's own test/fixtures/panes/ready-idle.txt and
-// busy-mid-turn.txt.
 const READY_PANE_TAIL = "Claude Code\n> working on the assignment\n  ? for shortcuts\n";
-// A genuine choice dialog: CHOICE_DIALOG's marker present, INPUT_BOX_PRESENT's
-// absent -- same shape as folder-trust-dialog.txt / model-picker-dialog.txt.
+
 const DIALOG_PANE_TAIL = "New MCP server found in this project: hive-iso\n1. Use this MCP server\nEsc to cancel\n";
 
 function goodResult() {
@@ -75,10 +40,7 @@ function goodResult() {
   return {
     agentStateLog: [
       { event: "prompt", state: "working", created_at: "2026-01-01 00:00:00.000", payload: '{"background_tasks":[]}' },
-      // The positive control assertSubagentActuallyObserved looks for: a
-      // `stop` row before the last completion (epoch 1767225710) whose
-      // payload names a live subagent, i.e. hive's actual subject -- a
-      // worker genuinely waiting on background work -- was exercised.
+
       {
         event: "stop",
         state: "working",
@@ -87,17 +49,9 @@ function goodResult() {
       },
       { event: "stop", state: "idle", created_at: "2026-01-01 00:01:55.000", payload: '{"background_tasks":[]}' },
     ],
-    // Real-clock-relative on purpose, unlike every other timestamp in this
-    // fixture: assertRetentionCouldNotHaveEvicted defaults to the real
-    // Date.now() in production, and runAllAssertions calls it that way, so a
-    // fixed "2026-01-01" here would fail this one check more each month
-    // real time passes, for a reason that has nothing to do with the code
-    // under test. See the dedicated describe block below for deterministic,
-    // injected-`nowMs` coverage of this assertion's actual branches.
+
     agentStateLogGlobal: { lo: 1, hi: 3, count: 3, oldest: toSqliteUtc(new Date(Date.now() - 120_000)) },
-    // The scratch store is fresh per `up`, so the boundary captured before
-    // this run's worker ever touched it is always empty -- see
-    // assertRetentionCouldNotHaveEvicted's own header on what that proves.
+
     agentStateLogPreRunSpan: { lo: null, hi: null, count: 0, oldest: null },
     samples: [
       { t: 0, completions: notYetDone, firedAt: null, cancelledAt: null, maxWaitAt: MAX_WAIT_AT, paneTail: READY_PANE_TAIL },
@@ -147,8 +101,7 @@ describe("assertNoIdleWhileSubagentsLive", () => {
 
   it("FAILS when idle was recorded before the last completion -- issue #24's own shape", () => {
     const result = goodResult();
-    // Last completion is epoch 110 (2026-01-01T00:01:50Z); this idle row
-    // lands at :01:45, five seconds before the third subagent finished.
+
     result.agentStateLog = [
       ...result.agentStateLog.filter((r) => r.state !== "idle"),
       { event: "stop", state: "idle", created_at: "2026-01-01 00:01:45.000" },
@@ -177,7 +130,7 @@ describe("assertWakeFiredAfterLastCompletion", () => {
 
   it("FAILS when the wake fired before the last completion", () => {
     const result = goodResult();
-    // Last completion is epoch 110 (:01:50Z); fire it two seconds early.
+
     result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:01:48";
     assert.throws(() => assertWakeFiredAfterLastCompletion(result), /FAILS.*did not wait for the actual last completion/);
   });
@@ -188,10 +141,6 @@ describe("assertWakeFiredAfterLastCompletion", () => {
     assert.throws(() => assertWakeFiredAfterLastCompletion(result), /PROVES NOTHING.*was cancelled at/);
   });
 
-  // Todo 141 item 10: without an explicit Number.isFinite guard in
-  // parseUtcSeconds, a malformed timestamp parses to NaN, and every
-  // comparison against NaN is false -- an assertion built to catch a real
-  // regression would instead read "not violated" and silently PASS.
   it("FAILS loudly on a malformed timestamp, rather than silently passing on NaN", () => {
     const result = goodResult();
     result.samples[result.samples.length - 1].firedAt = "not-a-real-timestamp";
@@ -223,10 +172,6 @@ describe("assertWakeFiredByIdleNotMaxWaitTimeout", () => {
     assert.throws(() => assertWakeFiredByIdleNotMaxWaitTimeout(result), /PROVES NOTHING.*no max_wait_at/);
   });
 
-  // The exact false-green this closes: a max-wait fire lands well after the
-  // last completion (so assertWakeFiredAfterLastCompletion alone passes) but
-  // at or after its own max_wait_at, with no idle transition ever having
-  // caused it.
   it("FAILS when fired_at is at or after max_wait_at -- a max-wait timeout fire, not a genuine idle fire", () => {
     const result = goodResult();
     result.samples[result.samples.length - 1].firedAt = MAX_WAIT_AT;
@@ -241,35 +186,22 @@ describe("assertWakeFiredByIdleNotMaxWaitTimeout", () => {
 
   it("FAILS when fired_at lands well outside the prompt window after the triggering idle row", () => {
     const result = goodResult();
-    // Idle row is at :01:55; fire it 60s later, before max_wait_at but far
-    // outside the 30s prompt window -- coincidental, not idle-triggered.
+
     result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:02:55";
     assert.throws(() => assertWakeFiredByIdleNotMaxWaitTimeout(result), /FAILS.*outside the 30s window/);
   });
 
-  // The real bug this closes, reproduced exactly: fired_at is whole-second
-  // (datetime('now')), agent_state_log.created_at is millisecond
-  // (strftime %f). A wake firing in the SAME wall second as its own
-  // triggering idle row -- the best possible outcome -- must PASS, not read
-  // as firing before the idle row that triggered it just because the idle
-  // row happened to carry a later fractional part within that same second.
   it("PASSES when fired_at and the triggering idle row land in the SAME whole second, even though the idle row's fractional part is later", () => {
     const result = goodResult();
     result.agentStateLog = result.agentStateLog.map((r) =>
       r.state === "idle" ? { ...r, created_at: "2026-01-01 00:01:55.700" } : r,
     );
-    // Same whole second as the idle row above (:55), but its raw millisecond
-    // value (:55.000) is earlier than the idle row's (:55.700) -- exactly
-    // the truncation-artifact negative the floor exists to admit.
+
     result.samples[result.samples.length - 1].firedAt = "2026-01-01 00:01:55";
     const proof = assertWakeFiredByIdleNotMaxWaitTimeout(result);
     assert.match(proof, /a genuine idle fire, not a max-wait timeout/);
   });
 
-  // The negative control: this must still FAIL, or the fix above is just
-  // the check deleted wearing a floor's clothes. A full second (not a
-  // fraction of one) before the triggering idle row is a real ordering
-  // violation no amount of resolution-matching should admit.
   it("still FAILS when fired_at is a full second or more BEFORE the triggering idle row's own whole second", () => {
     const result = goodResult();
     result.agentStateLog = result.agentStateLog.map((r) =>
@@ -297,11 +229,6 @@ describe("assertSubagentActuallyObserved", () => {
     assert.throws(() => assertSubagentActuallyObserved(result), /PROVES NOTHING.*not selected/);
   });
 
-  // The false green this closes, found independently by both counselor
-  // seats: a worker that never calls the Agent tool at all -- e.g. batching
-  // the three sleep-and-write tasks into its own foreground Bash turn --
-  // writes the same three completion files and a single late Stop|idle row.
-  // Every other assertion in this file passes on that run.
   it("FAILS when no stop row before the last completion shows a live subagent (the worker never actually spawned one)", () => {
     const result = goodResult();
     result.agentStateLog = result.agentStateLog.map((r) =>
@@ -314,7 +241,7 @@ describe("assertSubagentActuallyObserved", () => {
     const result = goodResult();
     result.agentStateLog = [
       { event: "prompt", state: "working", created_at: "2026-01-01 00:00:00.000", payload: '{"background_tasks":[]}' },
-      // Moved from :01:00 (before last completion) to :01:52 (after it).
+
       {
         event: "stop",
         state: "working",
@@ -368,7 +295,7 @@ describe("assertWakeHeldThroughoutSubagentWindow", () => {
 
   it("FAILS when a pre-completion sample already shows fired_at set -- the wake fired early", () => {
     const result = goodResult();
-    // Sample index 2 is still pre-completion in goodResult(); set firedAt there.
+
     result.samples[2] = { ...result.samples[2], firedAt: "2026-01-01 00:01:40" };
     assert.throws(() => assertWakeHeldThroughoutSubagentWindow(result), /FAILS.*fired early/);
   });
@@ -385,9 +312,6 @@ describe("assertPaneReadCoverageSufficient", () => {
     assert.throws(() => assertPaneReadCoverageSufficient(result), /PROVES NOTHING.*no samples/);
   });
 
-  // The residual named on the triage pad: agent_output failing becomes
-  // paneTail: null silently, and nothing used to notice a run losing most of
-  // its pane evidence.
   it("FAILS when too many samples have a null paneTail (agent_output kept failing)", () => {
     const result = goodResult();
     result.samples = result.samples.map((s, i) => (i < 5 ? { ...s, paneTail: null } : s));
@@ -419,8 +343,6 @@ describe("assertWakeDidNotDeliverIntoDialog", () => {
     assert.throws(() => assertWakeDidNotDeliverIntoDialog(result), /PROVES NOTHING.*no sample carried a real pane read/);
   });
 
-  // The scenario named on the triage pad: deliverable()'s HOLD breaks and a
-  // wake types into a choice dialog instead of waiting for it to clear.
   it("FAILS when a dialog is showing in the same sample fired_at is already set", () => {
     const result = goodResult();
     const lastIndex = result.samples.length - 1;
@@ -443,9 +365,6 @@ describe("assertWorkerUsedItsOwnMcpServer", () => {
     assert.throws(() => assertWorkerUsedItsOwnMcpServer(result), /PROVES NOTHING.*never completed step 0/);
   });
 
-  // The false green this closes: spawnReceipt.announced === true is equally
-  // true whether the RIGHT server answered or a different one did (e.g. the
-  // machine's user-scoped installed build loading alongside this branch's).
   it("FAILS when the confirmed tool name is not prefixed mcp__hive-iso__ -- a different registration answered", () => {
     const result = { ...goodResult(), mcpServerConfirmed: "mcp__hive__whoami" };
     assert.throws(() => assertWorkerUsedItsOwnMcpServer(result), /FAILS.*different hive registration answered/);
@@ -486,10 +405,6 @@ describe("assertWorkingTreeUnchanged", () => {
     assert.throws(() => assertWorkingTreeUnchanged(result), /PROVES NOTHING.*no dist\/ checksum/);
   });
 
-  // The blind spot this closes (todo 141 item 9): dist/ and .claude/ are
-  // both gitignored, so a worker overwriting dist/hook.js leaves HEAD and
-  // git status --porcelain byte-identical while the actual code under test
-  // was rewritten out from under the run.
   it("FAILS when dist/'s checksum changed even though git HEAD and status did not", () => {
     const result = goodResult();
     result.distChecksumAfter = "f".repeat(64);
@@ -498,9 +413,7 @@ describe("assertWorkingTreeUnchanged", () => {
 });
 
 describe("assertRetentionCouldNotHaveEvicted", () => {
-  // nowMs is injected everywhere here, pinned relative to this block's own
-  // fixture timestamps -- see goodResult()'s comment on why the real clock
-  // and a fixed historical fixture must never be compared directly.
+
   const NOW_MS = Date.parse("2026-01-01T00:02:00Z");
   const EMPTY_PRE_RUN = { lo: null, hi: null, count: 0, oldest: null };
 
@@ -531,16 +444,12 @@ describe("assertRetentionCouldNotHaveEvicted", () => {
 
   it("FAILS when the oldest row is at or over the 7-day retention window -- an age eviction could have run", () => {
     const result = {
-      agentStateLogGlobal: { lo: 1, hi: 4, count: 4, oldest: "2025-12-25 00:00:00" }, // 7 days before NOW_MS
+      agentStateLogGlobal: { lo: 1, hi: 4, count: 4, oldest: "2025-12-25 00:00:00" },
       agentStateLogPreRunSpan: EMPTY_PRE_RUN,
     };
     assert.throws(() => assertRetentionCouldNotHaveEvicted(result, NOW_MS), /FAILS.*retention window/);
   });
 
-  // Todo 141 item 8: the false green this closes. The bounds check above
-  // only ever reads the POST-run span, which cannot tell "bounds were never
-  // close" apart from "a prune already ran and erased its own evidence" -- a
-  // delete shrinks the span it would otherwise be caught by.
   it("PROVES NOTHING when no pre-run boundary was captured", () => {
     const result = { agentStateLogGlobal: { lo: 1, hi: 4, count: 4, oldest: "2026-01-01 00:00:00" } };
     assert.throws(
@@ -577,19 +486,14 @@ describe("runAllAssertions", () => {
     assert.ok(report.every((a) => a.ok === true), JSON.stringify(report));
   });
 
-  // The #55 method correction this file's header cites: a runner that stops
-  // at the first throw can leave a LATER assertion completely dead while an
-  // EARLIER one fails, and "the file went red" cannot tell the two apart.
-  // This pins that runAllAssertions names each failure individually instead.
   it("names each specific assertion that failed, not just that something did, when two independent things are both broken", () => {
     const result = goodResult();
-    // Break "no idle while live" (todo 24's shape)...
+
     result.agentStateLog = [
       ...result.agentStateLog.filter((r) => r.state !== "idle"),
       { event: "stop", state: "idle", created_at: "2026-01-01 00:01:45.000" },
     ];
-    // ...AND independently break "working tree unchanged", so a runner that
-    // stopped at the first failure would never learn about the second.
+
     result.gitAfter = { ...result.gitAfter, status: " M some/file.ts\n" };
 
     const report = runAllAssertions(result);
@@ -598,35 +502,14 @@ describe("runAllAssertions", () => {
     assert.match(byName["no idle while subagents live"].error, /idle while a subagent was still live/);
     assert.equal(byName["working tree unchanged"].ok, false);
     assert.match(byName["working tree unchanged"].error, /working tree changed/);
-    // The two untouched assertions must still report their own real result,
-    // not be swallowed by the two failures above.
+
     assert.equal(byName["wake fired after last completion"].ok, true);
     assert.equal(byName["wake held throughout the subagent window"].ok, true);
   });
 });
 
-// Todo 392 round 1, F4. This file's own header (scripts/part-c-assert.mjs,
-// above CHOICE_DIALOG) says "keep in sync by hand" - this is the mechanical
-// half of that instruction, the same shape scripts/restart-lead.sh's own
-// sync test (test/restart-lead.test.mjs) already has. Both copies are JS
-// regex literals, unlike restart-lead.sh's bash ERE strings, so this can
-// compare them as TEXT directly rather than needing the behavioural
-// cross-dialect comparison that file's view-session test does.
 describe("part-c-assert.mjs does not keep its own copy of the dialog predicate (todo 399)", () => {
-  // WHAT THIS TEST USED TO BE, AND WHY IT WAS REPLACED RATHER THAN REPAIRED.
-  // It extracted `CHOICE_DIALOG` and `INPUT_BOX_PRESENT` from both files as
-  // regex SOURCE TEXT and asserted the strings matched. That pins a copy; it
-  // does not remove one, and it only works while both copies are regex
-  // literals. Todo 399 replaced the input-box half with a structural anchor,
-  // the extraction returned undefined, and this test went red - correctly,
-  // but the copy underneath had been carrying todo 392's bug through that
-  // lane's own acceptance run before anyone noticed. Two lanes bitten by one
-  // structure is a reason to delete the structure.
-  //
-  // So the copy is gone and this asserts the ABSENCE of a new one. Comments
-  // are stripped first: this file's own prose says "INPUT_BOX_PRESENT" while
-  // explaining the history, and a test that cannot tell an explanation from a
-  // declaration would forbid documenting the decision it exists to enforce.
+
   const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
   it("imports the predicate from dist/ instead of transcribing it", () => {

@@ -11,15 +11,6 @@ import {
   loadCorpusFromDir,
 } from "../scripts/payload-shape.mjs";
 
-// Issue #46, step 1. No store, no tmux, no network -- this file reads only
-// the committed JSON fixtures and calls pure functions on them, so it needs
-// none of test/CLAUDE.md's isolation machinery (isolateTmux, scratch dirs).
-//
-// The manifest is derived from the SAME six fixtures test/hook-replay.test.mjs
-// replays, loaded fresh here rather than imported from that file: this
-// module owns no shared state with it, by design (the plan pad's own scope
-// line -- this lane does not touch that file).
-
 const FIXTURES_DIR = join(REPO, "test", "fixtures", "hook-payloads");
 const corpus = loadCorpusFromDir(FIXTURES_DIR);
 const manifest = deriveManifest(corpus);
@@ -30,9 +21,6 @@ function fixture(file) {
   return record;
 }
 
-// Every mutation test below clones before mutating: corpus entries are
-// shared across the whole file, and a test that mutated one in place would
-// silently poison every later assertion that reads the same fixture.
 function mutate(file, fn) {
   const { event, payload } = fixture(file);
   const copy = structuredClone(payload);
@@ -43,9 +31,7 @@ function mutate(file, fn) {
 describe("payload-shape: manifest derivation", () => {
   it("derives REQUIRED as the intersection and KNOWN as the union, per event", () => {
     const stop = manifest.Stop;
-    // Both Stop fixtures carry background_tasks (empty in one, populated in
-    // the other), so its presence is required even though its per-element
-    // shape is not.
+
     assert.ok(stop.required.includes("background_tasks"));
     assert.ok(stop.known["background_tasks[].status"]);
     assert.ok(!stop.required.includes("background_tasks[].status"));
@@ -55,8 +41,7 @@ describe("payload-shape: manifest derivation", () => {
     assert.deepEqual(manifest.Notification.enums.notification_type, ["idle_prompt", "permission_prompt"]);
     assert.deepEqual(manifest.Stop.enums["background_tasks[].type"], ["subagent"]);
     assert.deepEqual(manifest.Stop.enums["background_tasks[].status"], ["running"]);
-    // UserPromptSubmit's fixtures never populate background_tasks or
-    // notification_type at all, so it must derive no enums whatsoever.
+
     assert.deepEqual(manifest.UserPromptSubmit.enums, {});
   });
 
@@ -68,9 +53,7 @@ describe("payload-shape: manifest derivation", () => {
 });
 
 describe("payload-shape: every real fixture is conformant against its own corpus", () => {
-  // This alone does NOT prove the checker can fire -- a checkPayload that
-  // always returns [] would pass every one of these too. It only rules out
-  // false positives; the mutation tests below are what prove detection.
+
   for (const { event, payload, file } of corpus) {
     it(`${file} (${event})`, () => {
       assert.deepEqual(checkPayload(manifest, event, payload), []);

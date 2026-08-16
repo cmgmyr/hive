@@ -15,7 +15,7 @@ hive doctor       # environment check + stale-state sweep
 
 `npm test` runs the suite (`test/*.test.mjs`, node:test) against the built `dist/`, so build first. It runs through `scripts/run-tests.mjs`, which adds three things to a bare `node --test`:
 
-- For the full suite, it hoists the longest file (wake-hold-notify.test.mjs, measured) to the front by spelling only that one path absolute, since node sorts its file list by path string before scheduling and an absolute spelling always sorts before a relative one - worth ~15.7% wall clock, because that file is otherwise queued behind others under 16-way concurrency (the hoist and its fragility are documented at `LONGEST_FILE_HOIST` in `scripts/run-tests.mjs`, pinned by `test/run-tests-file-order.test.mjs`).
+- For the full suite, it hoists the longest file (wake-hold-notify.test.mjs, measured) to the front by spelling only that one path absolute, since node sorts its file list by path string before scheduling and an absolute spelling always sorts before a relative one - worth ~15.7% wall clock, because that file is otherwise queued behind others under 16-way concurrency (the hoist is `LONGEST_FILE_HOIST` in `scripts/run-tests.mjs` and is pinned by `test/run-tests-file-order.test.mjs`; why it is fragile is in `docs/attic/scripts__run-tests.mjs.md`).
 - Any run except a single named `.test.mjs` file first waits on a machine-wide lock file, so two lanes can never run the full suite (or a whole-directory/multi-file target) at once (`scripts/suite-lock.mjs`, `HIVE_TEST_NO_LOCK=1` skips it).
 - After every file has exited, it asks each tmux socket the run created whether a server is still on it, and fails the run on a survivor (`test/CLAUDE.md` has the mechanics).
 
@@ -75,7 +75,9 @@ Every one of them is enforced by code and pinned by a test, except `tool-contrac
 
 ## Where a thing you have learned goes
 
-`src/` carries no comments. All 16,030 of them were stripped to `docs/attic/` in todo 436, verbatim, one file per source file - the prose was accurate and it was never the problem, its volume and its eager loading were. A 5% ceiling on comment lines is pinned by `test/comment-ratio.test.mjs`.
+**This repo carries almost no code comments** - 8 lines against 47,276. All 33,620 that were here got stripped to `docs/attic/`, verbatim, one file per source file: 16,030 from `src/` (todo 436), then 16,803 from `test/` and `scripts/` plus 787 from the shell scripts and `claude-plugin/` (todo 438). The prose was accurate and it was never the problem; its volume and its eager loading were. `test/comment-ratio.test.mjs` pins a 5% ceiling PER GROUP - `src/`, `test/`, `scripts/`, the shell scripts, `claude-plugin/` - never pooled, because one pooled ratio lets `test/`'s 31,920 code lines fund comments that all land in `src/`.
+
+A test is code and the rule applies to it: the test's NAME is where you say what it pins, not a paragraph above it (`test/CLAUDE.md`).
 
 So when you need to know why something is the way it is, **invoke the `hive-history` skill and search `docs/attic/`** before re-deriving a tmux, SQLite, Claude Code or scheduler fact. Having had to look something up is the signal that it earned a permanent home, so promote it rather than leaving it there. Anything nobody ever consults gets deleted with the attic.
 

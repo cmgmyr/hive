@@ -14,57 +14,12 @@ import {
   writeScratchAddon,
 } from "./helpers.mjs";
 
-// Todos 306 and 307. Two questions doctor could not answer, and one silent
-// failure in the hook that makes the second one matter:
-//
-//   306: can a session starting in ANOTHER registered project load hive's
-//        addon? Everything else doctor reports is about the machine and the
-//        directory doctor itself ran in. A single project pinning a Node
-//        below better-sqlite3's floor is why one symptom looked intermittent
-//        and project-specific for as long as that project existed.
-//   307: the SessionStart hook's re-exec resolves ONE pinned interpreter. If
-//        a version manager retires it, the pre-#122 banner returns with the
-//        fix still in place and nothing naming the pin as the reason.
-//
-// WHAT WOULD MAKE THESE TESTS GREEN WHILE THE BEHAVIOUR IS BROKEN, since that
-// is the question test/CLAUDE.md asks and this lane's whole subject is a
-// measurement:
-//
-//   - "doctor names an interpreter per project" would pass trivially if
-//     doctor reported its own process.execPath for every project. So the
-//     per-directory case puts a REAL version-manager-shaped shim first on
-//     PATH and requires doctor to name a DIFFERENT absolute path for the
-//     project that shim redirects - derived from alternateInterpreter(),
-//     never a literal, so the fixture cannot collide with process.execPath.
-//   - "the probe reports a failure" would pass against a mocked verdict. So
-//     the failing verdict is produced by a scratch better-sqlite3 declaring a
-//     Node-API level no interpreter provides, or by a pre-N-API addon a second
-//     real interpreter genuinely cannot load.
-//   - COUNSELORS ROUND 1, FINDING 2, and it is the reason this file grew: the
-//     info-vs-warn decision itself had no test. Mutating sessionStartVerdict
-//     to `if (true)` made doctor report "which loads hive's addon" for a
-//     project that cannot, with the whole suite green. The pure unit block
-//     below pins every branch, and the end-to-end block pins that doctor is
-//     actually wired to it - a unit test alone would still pass with
-//     probeSessionInterpreter hardcoded to ok.
-//   - Exit codes are not asserted anywhere here. Doctor already exits 1 on CI
-//     over a missing `claude`, and exit codes saturate at 1.
-//
-// WHAT THIS FILE CANNOT REACH, stated rather than implied: a REAL sub-floor
-// Node resolved from a real .tool-versions. This machine has one Node and no
-// asdf, and a Node below the floor cannot run doctor in the first place.
 const { cleanup } = isolateTmux("the doctor session-interpreter tests");
 after(() => cleanup());
 
 const dirs = scratchDirs();
 const alt = alternateInterpreter();
 
-// A scratch checkout whose better-sqlite3 declares a Node-API level no
-// interpreter provides, so checkAbi() refuses for real under any Node, on any
-// machine and every CI leg. ONE variable moves: the addon installed is the
-// real, working one, so the tree runs fine with the requirement removed, which
-// is what makes a refusal mean something. The assertion is inside the helper so
-// no caller can drop the control and silently pass `prebuild: undefined`.
 async function brokenAddonTree(dir) {
   const { checkAbi } = await import("../dist/abi.js");
   const real = checkAbi().addon;
@@ -72,9 +27,6 @@ async function brokenAddonTree(dir) {
   return writeScratchAddon(dir, { prebuild: real, napiVersion: 99 });
 }
 
-// The two probe shapes the verdict consumes, built by hand so every branch is
-// reachable without a second machine. These are the only hand-built values in
-// this file; everything they feed is the real function.
 const answered = (over) => ({
   probed: true,
   ok: true,
@@ -87,10 +39,7 @@ const failed = () =>
   answered({ ok: false, detail: "addon is built against Node-API 10, this interpreter provides Node-API 9" });
 
 describe("sessionStartVerdict decides info vs warn, and every branch is reachable", () => {
-  // COUNSELORS FINDING 2. This block exists because the decision it covers had
-  // no test at all: the end-to-end cases below assert which interpreter got
-  // named, never whether hive believed it worked. Pure and exported, so this
-  // needs no second Node, no scratch tree and no spawn.
+
   let verdict;
   let cliPath;
 
@@ -107,8 +56,7 @@ describe("sessionStartVerdict decides info vs warn, and every branch is reachabl
     });
     assert.equal(result.level, "info");
     assert.match(result.lines[0], /which loads hive's addon/);
-    // The thunk is the cost decision made testable: resolving the re-exec
-    // target now costs a spawn, and a healthy machine must never pay it.
+
     assert.equal(asked, 0, "a healthy project must not resolve the re-exec target");
   });
 
@@ -122,10 +70,7 @@ describe("sessionStartVerdict decides info vs warn, and every branch is reachabl
   });
 
   it("does NOT claim the re-exec covers it when the pinned interpreter cannot load it either", () => {
-    // Counselors P1, the scenario in one assertion: doctor runs under Node 24,
-    // the project resolves Node 20, and a stale dispatcher pins an EXISTING
-    // Node 22.13 that is itself below the floor. Before this round the verdict
-    // read "an existing file" as "session start survives" and said so.
+
     const result = verdict(failed(), () => ({
       path: "/opt/nodes/22.13/bin/node",
       state: "cannot",
@@ -182,11 +127,6 @@ describe("sessionStartVerdict decides info vs warn, and every branch is reachabl
   });
 });
 
-// COUNSELORS P2, and .claude/rules/native-addon.md's own words: "Any advice
-// ending in a bare `hive setup` is a loop, and this repo has shipped that loop
-// TWICE." This is the property, asserted at the new site because
-// test/interpreter.test.mjs asserts it over abiFixLines' output specifically
-// and so could not see a fourth remediation surface being added elsewhere.
 function assertNamesAnInterpreter(text, cli) {
   assert.match(text, /<a Node matching .+> ".+" setup/, `the repair must name an interpreter:\n${text}`);
   assert.ok(text.includes(`"${cli}" setup`), `the repair must name the CLI by absolute path:\n${text}`);
@@ -217,9 +157,7 @@ describe("the ABI probe answers for the interpreter running it", () => {
     "reports the interpreter it RAN under, not the one that asked",
     { skip: alt ? false : "no second Node on this machine" },
     async () => {
-      // The control for every per-project claim below. A probe that reported
-      // a constant, or the spawning process's own interpreter, passes the
-      // test above and fails this one.
+
       const { code, stdout, stderr } = await runNode(PROBE, [], { ...opts, node: alt.path });
       assert.equal(code, 0, stderr);
       assert.equal(JSON.parse(stdout).execPath, realpathSync(alt.path));
@@ -227,14 +165,12 @@ describe("the ABI probe answers for the interpreter running it", () => {
   );
 
   it("reports a real Node-API refusal, measured rather than described", async () => {
-    // Same construction interpreter.test.mjs uses for the in-process guard;
-    // see brokenAddonTree for why it discriminates.
+
     const root = join(probeDirs.tmp, "napi-probe");
     mkdirSync(root, { recursive: true });
     const scratch = await brokenAddonTree(root);
     const { code, stdout, stderr } = await runNode(join(scratch.dist, "abiProbe.js"), [], opts);
-    // Exit 0 with a verdict on stdout, NOT a crash: doctor reads this back,
-    // and a probe that dies has told it nothing.
+
     assert.equal(code, 0, stderr);
     const answer = JSON.parse(stdout);
     assert.equal(answer.ok, false);
@@ -243,11 +179,6 @@ describe("the ABI probe answers for the interpreter running it", () => {
   });
 });
 
-// Todo 307, driven by the GENERAL condition rather than the specific one.
-// "asdf pruned 24.12.0 on a second machine" cannot be reproduced here - one Node,
-// no asdf - but "the interpreter the dispatcher pins is no longer on disk" is
-// a scratch dispatcher naming a path nobody ever created, which is the same
-// condition with the version manager taken out of it.
 describe("a pinned interpreter that is gone says so instead of vanishing quietly", () => {
   const goneDirs = scratchDirs();
   const binDir = join(goneDirs.tmp, "gone-bin");
@@ -255,17 +186,12 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
   const goneNode = join(goneDirs.tmp, "pruned-by-a-version-manager", "bin", "node");
   const leadProject = join(goneDirs.tmp, "gone-project");
   const featureProject = join(goneDirs.tmp, "feature-branch-project");
-  // doctor answers "what does typing `hive` run" from PATH, so HIVE_BIN_DIR
-  // alone does not isolate this: a real ~/.local/bin/hive on the developer's
-  // PATH would win and doctor would report THAT dispatcher. Same reasoning as
-  // interpreter.test.mjs's own hivelessPath.
+
   const hivelessPath = `${join(process.execPath, "..")}:/usr/bin:/bin`;
   const opts = { cwd: goneDirs.projectDir, dataDir: goneDirs.dataDir, tmp: goneDirs.tmp };
   let cliPath;
   let report;
-  // One tree, reused: writeScratchAddon copies all of dist/ and claude-plugin/
-  // and symlinks every real node_modules entry, so building it per test is a
-  // real cost. Same pattern as kickoff-reexec.test.mjs's own scratch tree.
+
   let scratch;
 
   before(async () => {
@@ -274,50 +200,37 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
     cliPath = dispatcher.cliPath();
     writeFileSync(join(binDir, "hive"), dispatcher.dispatcherScript(goneNode, cliPath));
     writeFileSync(join(okBin, "hive"), dispatcher.dispatcherScript(process.execPath, cliPath));
-    // A lead checkout: hive.yml, a profile this machine has, and the default
-    // lead branch. This one reaches the store and so reaches the banner.
+
     writeFileSync(join(leadProject, "hive.yml"), "profile: orchestration\n");
     git(leadProject, "init", "-q", "-b", "main");
     git(leadProject, "commit", "-q", "--allow-empty", "-m", "root");
-    // Identical except for the branch, which is what makes it the control.
+
     writeFileSync(join(featureProject, "hive.yml"), "profile: orchestration\n");
     git(featureProject, "init", "-q", "-b", "some-feature");
     git(featureProject, "commit", "-q", "--allow-empty", "-m", "root");
     scratch = await brokenAddonTree(join(goneDirs.tmp, "kickoff-gone"));
-    // One doctor run, read by the two cases below. Doctor is the most
-    // expensive command in this suite and now forks a probe per project.
+
     report = await runCli(["doctor"], { ...opts, env: { HIVE_BIN_DIR: binDir, PATH: hivelessPath } });
   });
 
   it("doctor names the missing interpreter, in the warning itself", () => {
     const line = report.stdout.split("\n").find((l) => l.startsWith("  warn  dispatcher:")) ?? "";
-    // The path on the warn line, not only on the info line above it: this is
-    // the line that gets read on its own out of an update script's output.
+
     assert.ok(line.includes(goneNode), `the warn should name the missing interpreter:\n${report.stdout}`);
   });
 
   it("doctor's repair names an interpreter, because a bare `hive setup` cannot run at all here", () => {
-    // `hive` on PATH is the dispatcher whose exec target just went missing, so
-    // the old advice did not merely re-pin the wrong Node - it failed with an
-    // exec error naming a path the user has never seen.
+
     assert.ok(
       report.stdout.includes(`"${cliPath}" setup`),
       `the repair has to name the CLI by path:\n${report.stdout}`,
     );
-    // IMMUNE to generated data: report.stdout does carry scratch paths (this
-    // describe block's goneNode/leadProject/featureProject), but every
-    // segment of them comes from mkdtempSync/join - alphanumeric and hyphens
-    // only, never a space or "&" - so they can never reproduce this literal,
-    // space-and-&&-laden phrase. A match here can only mean doctor's own
-    // code actually emitted the old, retired remediation advice.
+
     assert.doesNotMatch(report.stdout, /npm install && npm run build && hive setup/);
   });
 
   it("the addon banner names the pruned pin, so the symptom identifies its own cause", async () => {
-    // Todo 307's naming lives in guardAbi() (src/abi.ts), NOT in kickoff.mjs.
-    // The scratch tree declares an impossible Node-API level, so checkAbi()
-    // fails under the running interpreter and this reaches the banner with no
-    // second Node needed.
+
     const { code, stderr } = await runNode(scratch.kickoffMjs, [], {
       cwd: leadProject,
       dataDir: goneDirs.dataDir,
@@ -331,35 +244,20 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
   });
 
   it("stays silent about the pin when the pinned interpreter is there", async () => {
-    // The discriminator. Same broken tree, same failing addon, same banner -
-    // only the pin differs. Without this, "the banner says something about a
-    // dispatcher whenever the addon fails" would satisfy the case above just
-    // as well as "when the PIN is gone".
+
     const { stderr } = await runNode(scratch.kickoffMjs, [], {
       cwd: leadProject,
       dataDir: goneDirs.dataDir,
       tmp: goneDirs.tmp,
       env: { HIVE_BIN_DIR: okBin },
     });
-    // IMMUNE to generated data, same reasoning as the "npm install && npm run
-    // build && hive setup" check above: "is not on disk" is a fixed suffix in
-    // sessionProbe.ts's own template (the dynamic part, `${pinned.path}`, is
-    // interpolated BEFORE it), and every scratch path in this describe block
-    // is alphanumeric-and-hyphen only, so it can never contain the space
-    // characters this phrase requires.
+
     assert.doesNotMatch(stderr, /is not on disk/);
     assert.match(stderr, /hive: this Node is too old/, "the banner is still the control");
   });
 
   it("prints NOTHING in a session that declines before the banner", async () => {
-    // COUNSELORS FINDING 1, and the reason the message moved out of
-    // kickoff.mjs. This is the same directory as the banner case above except
-    // for its branch: kickoff clears its two cheap mirrored gates, checkAbi()
-    // fails, the pin is gone - and then runKickoff declines at the lead-branch
-    // gate (src/kickoff.ts) BEFORE db.js is imported, so no banner follows.
-    // For one commit this printed four [hive] lines here: net-new output on a
-    // session that was silent and working. Kickoff's contract is silence, and
-    // this lane may only replace a misleading message, never add one.
+
     const { code, stdout, stderr } = await runNode(scratch.kickoffMjs, [], {
       cwd: featureProject,
       dataDir: goneDirs.dataDir,
@@ -373,10 +271,7 @@ describe("a pinned interpreter that is gone says so instead of vanishing quietly
 });
 
 describe("hive doctor's per-project loop, on any machine", () => {
-  // COUNSELORS, SMALLER FINDING: these two cases need no second Node, and they
-  // sat inside a describe gated on one - so on a one-Node machine the gate
-  // they pin was untested and the suite still reported green. "A matrix that
-  // hides its own skips is worse than one leg" (.claude/rules/native-addon.md).
+
   const loopDirs = scratchDirs();
   const withYml = join(loopDirs.tmp, "has-yml");
   const withoutYml = join(loopDirs.tmp, "no-yml");
@@ -388,15 +283,12 @@ describe("hive doctor's per-project loop, on any machine", () => {
       const init = await runCli(["init"], { ...opts, cwd: dir });
       assert.equal(init.code, 0, init.stderr);
     }
-    // Registered, then the config removed: `hive init` is the only way to get
-    // a project row here and it always writes one.
+
     rmSync(join(withoutYml, "hive.yml"));
   });
 
   it("skips a registered project with no hive.yml, which never reaches the addon", async () => {
-    // Both kickoff gates return before the addon without one, so a warning
-    // there would be a warning about nothing - and the spawn would be paid for
-    // a project with nothing to say.
+
     const { stdout } = await runCli(["doctor"], opts);
     assert.ok(
       stdout.includes(`(${realpathSync(withYml)})`),
@@ -406,10 +298,7 @@ describe("hive doctor's per-project loop, on any machine", () => {
   });
 
   it("reports only this project under HIVE_PROJECT_LOCK", async () => {
-    // Every spawned worker gets HIVE_PROJECT_LOCK=1, and doctor is a command
-    // workers run. Before this lane doctor was cwd-scoped, so a machine-wide
-    // loop that prints every project's absolute path and spawns a process in
-    // each is new reach into a locked context.
+
     const second = join(loopDirs.tmp, "other-project");
     mkdirSync(second, { recursive: true });
     const init = await runCli(["init"], { ...opts, cwd: second });
@@ -427,9 +316,7 @@ describe("hive doctor's per-project loop, on any machine", () => {
 });
 
 describe("hive doctor resolves an interpreter per project directory", () => {
-  // One shim that resolves a different interpreter per directory - the exact
-  // mechanism a version manager uses, and the reason this question cannot be
-  // answered without spawning something.
+
   const home = join(dirs.tmp, "proj-home");
   const other = join(dirs.tmp, "proj-other");
   const broken = join(dirs.tmp, "proj-broken");
@@ -459,8 +346,7 @@ describe("hive doctor resolves an interpreter per project directory", () => {
       line(home).includes(process.execPath),
       `the home project should resolve this interpreter:\n${report.stdout}`,
     );
-    // The discriminator. If doctor answered from its own process instead of
-    // spawning per directory, this line would name process.execPath too.
+
     assert.ok(
       line(other).includes(realpathSync(alt.path)),
       `the redirected project should resolve ${realpathSync(alt.path)}:\n${report.stdout}`,
@@ -474,16 +360,12 @@ describe("hive doctor resolves an interpreter per project directory", () => {
     assert.ok(index >= 0, `no line for the broken project:\n${report.stdout}`);
     assert.match(lines[index], /^ {2}warn {2}project /);
     assert.match(lines[index], /hive cannot say/);
-    // The shim's own words: doctor has to pass the reason through, or a
-    // reader has nothing to act on.
+
     assert.match(lines[index + 1], /no node version set for this directory/);
     assert.ok(warningCount(report.stdout) >= 1, report.stdout);
   });
 });
 
-// `pwd -P`, not $PWD: a shell inherits PWD from its parent and only corrects it
-// at startup, and the physical path is what the project rows hold (addProject
-// realpaths, and os.tmpdir() sits under a symlinked /var on darwin).
 function writeShim(dir, branches) {
   writeFileSync(
     join(dir, "node"),
@@ -499,16 +381,6 @@ function writeShim(dir, branches) {
   );
 }
 
-// THE END-TO-END HALF OF COUNSELORS FINDING 2, and the only construction on a
-// one-Node-family machine that can produce a genuinely failing project verdict
-// through doctor itself. A scratch checkout carrying test/fixtures'
-// pre-N-API addon built for THIS interpreter's ABI: the scratch `hive doctor`
-// runs fine, and a project whose shim resolves the second interpreter gets a
-// real ERR_DLOPEN_FAILED from Node rather than a fabricated one.
-//
-// Without this block the unit tests above still pass with
-// probeSessionInterpreter hardcoded to `ok: true`. With it, that mutation
-// reports a loading addon for a project that measurably cannot load it.
 describe("hive doctor reports a project that genuinely cannot load the addon", () => {
   const abiDirs = scratchDirs();
   const good = join(abiDirs.tmp, "abi-good");
@@ -542,12 +414,7 @@ describe("hive doctor reports a project that genuinely cannot load the addon", (
     const { dispatcherScript } = await import("../dist/dispatcher.js");
     writeFileSync(join(pinGood, "hive"), dispatcherScript(process.execPath, scratch.cli));
     writeFileSync(join(pinSame, "hive"), dispatcherScript(realpathSync(alt.path), scratch.cli));
-    // AN ALIAS OF THE SAME BROKEN INTERPRETER, which is what makes the
-    // "pinned interpreter cannot load it either" branch reachable with only
-    // two Nodes on the machine: process.execPath always reports the RESOLVED
-    // real path, so a pin naming the symlink is a DIFFERENT path than the
-    // probe reports while being the same binary. kickoff-reexec.test.mjs uses
-    // the identical construction for the same reason.
+
     const altAlias = join(abiDirs.tmp, "alt-node-alias");
     symlinkSync(realpathSync(alt.path), altAlias);
     writeFileSync(join(pinCannot, "hive"), dispatcherScript(altAlias, scratch.cli));
@@ -571,9 +438,7 @@ describe("hive doctor reports a project that genuinely cannot load the addon", (
     assert.ok(badLine >= 0, `no line for the failing project:\n${stdout}`);
     assert.match(lines[badLine], /^ {2}warn {2}project /, stdout);
     assert.match(lines.slice(badLine).join("\n"), /CANNOT load hive's addon/);
-    // The control in the same run: doctor is not simply warning about
-    // everything. This is the mutation guard - `if (true)` in the verdict, or
-    // `ok: true` in the probe, breaks one of these two lines.
+
     const goodLine = lineFor(stdout, good);
     assert.ok(goodLine >= 0, stdout);
     assert.match(lines[goodLine], /^ {2}info {2}project /, stdout);
@@ -588,22 +453,14 @@ describe("hive doctor reports a project that genuinely cannot load the addon", (
   });
 
   it("refuses to call it covered when the pinned interpreter cannot load it either", { skip: SKIP }, async () => {
-    // COUNSELORS P1 END TO END: the dispatcher pins an interpreter that EXISTS
-    // and cannot load the addon. The old code reported this project as covered
-    // by the re-exec; the hook would have re-execed into it and printed the
-    // banner anyway. Nothing but probing the pin can tell these two apart -
-    // existsSync answers identically here and in the covered case above.
+
     const { stdout } = await doctor(pinCannot);
     const from = lineFor(stdout, bad);
     assert.ok(from >= 0, stdout);
     const text = stdout.split("\n").slice(from, from + 8).join("\n");
     assert.match(text, /CANNOT load the addon either/);
     assert.match(text, /does not rescue this/);
-    // IMMUNE to generated data, same reasoning as the unit-level version of
-    // this same assertion above: "survives this" is a fixed phrase inside
-    // sessionProbe.ts's own hard-coded sentence, and this describe block's
-    // scratch paths (good/bad/pinGood/pinSame/pinCannot, all mkdtempSync +
-    // join) never contain a space, so they cannot supply it.
+
     assert.doesNotMatch(text, /survives this/);
   });
 

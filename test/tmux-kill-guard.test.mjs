@@ -8,11 +8,6 @@ import { REPO } from "./helpers.mjs";
 
 import { classify } from "../scripts/tmux-kill-guard.mjs";
 
-// Todo 417. No store, no tmux, no network -- classify() is pure and the
-// wrapper/wiring checks below only spawn the guard script itself or read
-// committed JSON, so this file needs none of test/CLAUDE.md's isolation
-// machinery (isolateTmux, scratch dirs).
-
 const GUARD_SCRIPT = join(REPO, "scripts", "tmux-kill-guard.mjs");
 
 describe("classify: denies a bare tmux kill-server", () => {
@@ -81,12 +76,6 @@ describe("classify: allows commands with no tmux in them", () => {
   }
 });
 
-// Review round 1 (todo 417 comment 1101), finding 1, BLOCKING: an earlier
-// line's own -S used to vouch for a later bare kill-server in the same
-// multi-line Bash-tool command, because splitSegments() only split on
-// [;&|] and a newline-joined debug block is one string with no such
-// character in it. This is the incident's own shape -- the fatal command
-// was the LAST line of a block whose earlier lines were already tmux calls.
 describe("classify: a multi-line block does not let an earlier -S vouch for a later bare kill-server", () => {
   const cases = [
     ["tmux -S /tmp/scratch/sock new-session -d\ntmux kill-server", "review's own verbatim repro"],
@@ -104,10 +93,6 @@ describe("classify: a multi-line block does not let an earlier -S vouch for a la
   }
 });
 
-// Review round 1, finding 2, BLOCKING: TMUX_INVOCATION_RE required tmux to
-// be preceded by whitespace or a segment boundary, so a quote hid the
-// invocation from it entirely -- the exact bypass the original todo
-// predicted ("a bare 'denied' earns a retry with `sh -c`").
 describe("classify: a quote does not hide the invocation from the guard", () => {
   const cases = [
     ['sh -c "tmux kill-server"', "double-quoted, the bypass the todo predicted"],
@@ -122,28 +107,15 @@ describe("classify: a quote does not hide the invocation from the guard", () => 
   }
 });
 
-// A quote hiding the INVOCATION must still deny; a quote hiding only the
-// -S FLAG must still allow -- the fix is symmetric, not one-directional.
 describe("classify: a quoted -S is still recognised as the safe form", () => {
   it('tmux "-S" /tmp/scratch-socket kill-server', () => {
     assert.equal(classify('tmux "-S" /tmp/scratch-socket kill-server').deny, false);
   });
 });
 
-// Review round 1, finding 3, SHOULD FIX: EXPLICIT_S_RE used to test the
-// whole segment, so an -S belonging to something else entirely -- here, an
-// env-var VALUE that happens to spell "-S", sitting before the tmux
-// invocation even starts -- vouched for the kill. Scoping the check to the
-// tmux invocation's own span (from where "tmux" starts onward) closes this
-// without needing a real shell parser.
 describe("classify: an -S that does not belong to the tmux invocation does not vouch for it", () => {
   it("sort -S 1G tmux kill-server", () => {
-    // A prior command's own -S flag, whitespace-bounded and genuinely
-    // matchable by EXPLICIT_S_RE, sitting BEFORE the tmux invocation in the
-    // same segment. Scoping the check to the invocation's own span (from
-    // where "tmux" starts onward) is what tells these apart; a whole-segment
-    // check cannot, because to a whole-segment regex an -S anywhere in the
-    // string looks identical regardless of which command it belongs to.
+
     assert.equal(classify("sort -S 1G tmux kill-server").deny, true);
   });
 });
@@ -157,11 +129,6 @@ describe("classify: edge inputs", () => {
   });
 });
 
-// The wrapper is what Claude Code actually invokes. Exercising classify()
-// alone would not catch a wrapper that classifies correctly but emits the
-// wrong protocol (todo 417 step 1a measured exit-code-2 + stderr as the
-// shape this installed Claude Code honours), or that forgets to print the
-// safe form the denial message is supposed to lead with.
 function runGuard(command) {
   try {
     const stdout = execFileSync("node", [GUARD_SCRIPT], {
@@ -193,13 +160,6 @@ describe("wrapper: denies via exit code 2 + stderr, never stdout", () => {
     assert.match(result.stderr, /gh pr create --body-file <path>/);
   });
 
-  // Review round 2 (todo 417 comment 1103): measured live that TMUX_TMPDIR
-  // cannot protect a worker at all from inside a tmux pane, even when the
-  // directory it names exists -- $TMUX overrides it outright. Only -S
-  // overrides $TMUX. The denial message used to explain only the
-  // directory-fallback failure mode, which reads as "keep the directory
-  // alive and you're fine" -- false for every hive worker, which always
-  // runs inside a pane.
   it("denial message says TMUX_TMPDIR cannot save you from inside a pane, and names $TMUX by name", () => {
     const result = runGuard("tmux kill-server");
     assert.match(result.stderr, /\$TMUX/);
@@ -233,11 +193,6 @@ describe("wrapper: allows via exit 0 and no output", () => {
   });
 });
 
-// Pins that the hook stays wired into THIS repo's tracked settings, not
-// only that the script itself classifies correctly -- a future edit that
-// unwires the hook (renames the matcher, points the command elsewhere,
-// deletes the block) would leave classify()'s own tests green while the
-// guard stopped firing for real.
 describe("settings.json wires the guard for Bash", () => {
   const settings = JSON.parse(readFileSync(join(REPO, ".claude", "settings.json"), "utf8"));
 

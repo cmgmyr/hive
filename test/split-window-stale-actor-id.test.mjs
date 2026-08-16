@@ -4,16 +4,6 @@ import { after, before, describe, it } from "node:test";
 
 import { isolateTmux, leadRow, makeFakeClaude, McpClient, panesIn, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
-// Lead review round 1, item A on todo 267. A lead's actor_id is DELIBERATELY
-// REUSED across a restart: ensureLeadRow (src/cli.ts) mints a NEW running row
-// that carries the CLOSED row's old actor_id forward, so the closed row's
-// stale tmux_target survives for stillThere's own adoption check. So after
-// any lead close-and-restart, two rows can share one actor_id - a closed one
-// holding a STALE pane and a running one holding the real pane -
-// splitTargetWindow's parent lookup (src/spawn.ts) must resolve the RUNNING
-// one, never whichever row an unscoped `WHERE actor_id = ?` with no ORDER BY
-// happens to return first (ordinarily the lower, closed, rowid).
-
 const { hasTmux, cleanup } = isolateTmux("the stale-actor-id parent lookup test");
 
 const dirs = scratchDirs();
@@ -65,10 +55,6 @@ describe(
         "list-panes", "-t", realLead.tmux_target, "-F", "#{session_name}:#{window_id}",
       ).trim();
 
-      // A real, ALIVE pane in a DIFFERENT window - what the closed row's
-      // stale tmux_target looks like when it has not actually died. Built by
-      // spawning a genuine placement="window" worker through the real lead,
-      // not a synthetic fixture, so this is a real pane in a real window.
       const mcpRealLead = mcpAs(realLead.actor_id);
       await mcpRealLead.start();
       const stray = await mcpRealLead.call("agent_spawn", {
@@ -78,23 +64,13 @@ describe(
         placement: "window",
       });
       const staleTarget = tmux("list-panes", "-t", stray.tmux_target, "-F", "#{pane_id}").trim().split("\n")[0];
-      // todo 371: a row's tmux_target is a PANE id for every placement now, so
-      // the window has to be resolved from that pane. Reading it off the receipt
-      // made this comparison a pane id against a `session:@n` string, which can
-      // never be equal - the assertion below stopped being able to fail.
+
       const windowStray = tmux("list-panes", "-t", stray.tmux_target, "-F", "#{session_name}:#{window_id}").trim().split("\n")[0];
       assert.notEqual(windowStray, windowRunning, "sanity: the stray window must differ from the running lead's own window");
 
       const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
       const staleActorId = "lead:stale-actor-id-fixture";
 
-      // Inserted FIRST, so it gets the LOWER id - reproducing the real shape:
-      // the closed row is the OLDER one, and a restart's new running row
-      // always gets a HIGHER id than whatever it reused the actor_id from.
-      // Distinct `name` values: idx_agents_running_name only allows one
-      // status='running' row per (project_id, name), and the real lead row
-      // already holds "lead" - splitTargetWindow's lookup is by actor_id,
-      // not name, so the name here is otherwise irrelevant.
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status)
          VALUES (?, ?, 'lead-fixture-closed', ?, ?, 'claude', '/tmp', 'lead', 'closed')`,

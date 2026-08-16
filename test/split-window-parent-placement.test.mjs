@@ -4,20 +4,6 @@ import { after, before, describe, it } from "node:test";
 
 import { isolateTmux, leadRow, makeFakeClaude, McpClient, panesIn, runCli, scratchDirs, tmux, windowFor } from "./helpers.mjs";
 
-// Todo 267 / plan-lane-3-tmux-topology. splitTargetWindow (src/spawn.ts) used
-// to open with `process.env.TMUX_PANE`, the caller's own ambient pane. That
-// happened to answer "the spawning lead's window" only by luck of derivation
-// (under one shared session, the caller usually IS the lead). This file
-// drives the REAL MCP entry point - two real `agent_spawn` calls chained
-// through a real store row, never a helper - per
-// dead-ends/2026-08-05-helper-whose-parameters-cannot-disagree.md: a helper
-// whose two args are always made to agree proves nothing about the caller
-// that matters. Neither McpClient process here ever runs inside tmux (no
-// TMUX_PANE in its env), so any test that only proves "the worker landed in
-// the project's window" cannot tell the store lookup from the old
-// ambient-primary code's fallback - both give the same answer when ambient
-// is empty. The tests below are built so the two answers DIFFER.
-
 const { hasTmux, cleanup } = isolateTmux("the split-window parent-placement tests");
 
 const dirs = scratchDirs();
@@ -86,11 +72,6 @@ describe(
       const row = leadRow(db, project.id);
       const leadWindow = windowFor(session, project.id);
 
-      // placement="window": worker0 gets its OWN dedicated window, distinct
-      // from and NOT stamped with the project's @hive-project-id
-      // (test/worker-first-window-stamp.test.mjs). So findProjectWindow(session,
-      // project.id) can never resolve to it - the only way a later spawn can
-      // land there is by resolving worker0's OWN pane from the store.
       const mcpLead = mcpAs(row.actor_id);
       await mcpLead.start();
       const worker0 = await mcpLead.call("agent_spawn", {
@@ -99,16 +80,10 @@ describe(
         extra_args: [],
         placement: "window",
       });
-      // todo 371: a row's tmux_target is a PANE id for every placement now, so
-      // the window has to be resolved from that pane. Reading it off the receipt
-      // made this comparison a pane id against a `session:@n` string, which can
-      // never be equal - the assertion below stopped being able to fail.
+
       const worker0Window = tmux("list-panes", "-t", worker0.tmux_target, "-F", "#{window_id}").trim().split("\n")[0];
       assert.notEqual(worker0Window, leadWindow, "worker0's own window must differ from the project's stamped window");
 
-      // Now worker0 itself is the spawning parent - drive the real MCP entry
-      // point as worker0 would (its own pane's process carries
-      // HIVE_AGENT_ID=worker0.actor_id, exactly as a real claude worker's does).
       const mcpWorker0 = mcpAs(worker0.actor_id);
       await mcpWorker0.start();
       const worker1 = await mcpWorker0.call("agent_spawn", {
@@ -142,11 +117,6 @@ describe(
       });
       const worker0Window = worker0.tmux_target;
 
-      // worker0's pane is real, alive, and on OUR OWN server - only the
-      // recorded socket disagrees, the same shape
-      // test/tmux-socket-foreign.test.mjs uses to fake "foreign" without a
-      // second real tmux server. rowLive() must refuse to trust this row's
-      // tmux_target on that basis alone (foreignSocket(), src/tmux.ts).
       db.prepare("UPDATE agents SET tmux_socket = ? WHERE actor_id = ?").run(
         "/nonexistent/foreign-socket-dir/tmux-0/default",
         worker0.actor_id,

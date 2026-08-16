@@ -5,17 +5,6 @@ import { after, before, describe, it } from "node:test";
 
 import { isolateTmux, leadRow, makeFakeClaude, McpClient, panesIn, runCli, scratchDirs, windowFor, windowOwners } from "./helpers.mjs";
 
-// Todo 268 / plan-lane-3-tmux-topology. The case that started the whole
-// investigation: a lead in project A is told to work in another repo, and
-// the worker it spawns there must appear NEXT TO THE LEAD, not off in
-// project B's own tab (pad 71 "THE PLACEMENT RULE, STATED ONCE" - "the
-// worker's project's window" is the exact popping-out behaviour this design
-// exists to stop, wearing a different costume). Todo 267 already built the
-// mechanism (splitTargetWindow resolves the SPAWNING PARENT's window from
-// the store); this file proves it generalizes across projects and that the
-// receipt names where the pane actually landed, since a caller cannot
-// reconstruct that from project_id alone.
-
 const { hasTmux, cleanup } = isolateTmux("the cross-project split-placement test");
 
 const dirs = scratchDirs();
@@ -32,9 +21,7 @@ describe(
     const dirA = mkdtempSync(join(dirs.tmp, "proj-a-"));
     const dirB = mkdtempSync(join(dirs.tmp, "proj-b-"));
     const projA = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get("lead-repo", dirA);
-    // Registered, but no `hive lead` of its own - the ordinary shape of "the
-    // lead is told to work in another repo" (project-scoping.md: cwd's
-    // project need not be running anything).
+
     const projB = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get("other-repo", dirB);
     const session = sessionName();
     let mcp;
@@ -74,23 +61,17 @@ describe(
         project_id: projB.id,
       });
 
-      // WHERE THE PANE IS: next to the lead, in project A's window.
       assert.ok(
         panesIn(windowA).includes(spawned.tmux_target),
         `cross-repo worker must land in the spawning lead's window (${windowA}), got pane ${spawned.tmux_target}`,
       );
 
-      // WHERE THE PANE IS NOT: project B never gets a window of its own out
-      // of this spawn - there is nothing yet for a project-id fallback to
-      // have found, so a passing test here cannot be explained by the OLD
-      // "worker's own project's window" rule happening to agree.
       const owners = windowOwners(session);
       assert.ok(
         !owners.some(([, id]) => id === String(projB.id)),
         `project B must not have been given its own window, got: ${JSON.stringify(owners)}`,
       );
 
-      // STORE SCOPE: a separate question, and it stays project B's.
       const workerRow = db.prepare("SELECT project_id FROM agents WHERE id = ?").get(spawned.agent_id);
       assert.equal(
         workerRow.project_id,
@@ -98,8 +79,6 @@ describe(
         "the worker's own agents row must still record project B - display location and store scope are independent",
       );
 
-      // THE RECEIPT: names the crossing rather than leaving the caller to
-      // reconstruct it from project_id, which is exactly the field it can't.
       assert.equal(
         spawned.landed_in_project,
         "lead-repo",

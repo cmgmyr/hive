@@ -2,12 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { McpClient, isolateTmux, scratchDirs, sleep } from "./helpers.mjs";
 
-// The MCP server drives tmux for the agent tools; isolate first.
 const { cleanup: cleanupTmux } = isolateTmux("the store tests");
 after(() => cleanupTmux());
 
-// One server instance drives the whole file; a second instance with its own
-// actor id joins for the lease-contention case. Both share one database.
 const dirs = scratchDirs();
 let mcp;
 
@@ -117,8 +114,7 @@ describe("kv", () => {
 
   it("expires TTL values on their own", async () => {
     await mcp.call("kv_set", { key: "ephemeral", value: "x", ttl_seconds: 1 });
-    // Expiry compares datetime('now') at whole-second granularity with a
-    // strict <, so a 1s TTL can outlive its deadline by up to ~2s.
+
     await sleep(2300);
     const gone = await mcp.call("kv_get", { key: "ephemeral" });
     assert.equal(gone.found, false);

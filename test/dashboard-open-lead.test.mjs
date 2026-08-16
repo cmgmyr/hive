@@ -5,17 +5,6 @@ import { after, before, describe, it } from "node:test";
 
 import { assertScratchStore, isolateTmux, leadRow, makeFakeClaude, makeFakeOpen, runCli, scratchDirs } from "./helpers.mjs";
 
-// Todo 356, correction round. Counselors (both seats, independently) and
-// Chris's own check at the source (src/cli.ts's `let command = args[0] ??
-// "lead"`) found that bare `hive` dispatches to cmdLead, not cmdAttach - so
-// the first version of this feature, wired to cmdAttach only, never fired on
-// the trigger the todo actually asked for ("when initially calling `hive`").
-// This file is the sibling of test/dashboard-open.test.mjs for that
-// corrected trigger: bare `hive` / `hive lead` opens the dashboard, and
-// `--no-dashboard` (which scripts/restart-lead.sh now always passes) does
-// not. test/dashboard-open.test.mjs still owns the underlying gates
-// (darwin/hive.yml/file-existence/kv-marker/TTL/containment) - not repeated
-// here.
 const { hasTmux, cleanup } = isolateTmux("dashboard auto-open via hive lead (todo 356)");
 
 const dirs = scratchDirs();
@@ -136,8 +125,6 @@ describe("bare `hive` (no subcommand) reaches the same dashboard-open path as `h
   );
 });
 
-// Counselors, delta round on todo 356: three flag-parsing gaps the cmdLead
-// wiring introduced, all fixed in the same commit as these tests.
 describe("--no-dashboard argument-parsing edge cases (todo 356, counselors delta round)", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const dirs3 = scratchDirs();
   const fakeClaude = makeFakeClaude(dirs3.tmp);
@@ -184,8 +171,7 @@ describe("--no-dashboard argument-parsing edge cases (todo 356, counselors delta
     });
     assert.notEqual(led.code, 0, "a misspelled flag must not exit 0");
     assert.match(led.stderr, /unknown flag/);
-    // The whole point of this check: a silently-ignored typo would have
-    // reached maybeOpenDashboard un-suppressed and opened a window.
+
     assert.deepEqual(fakeOpen.calls(), [], "a rejected invocation must never reach the point of opening anything");
   });
 

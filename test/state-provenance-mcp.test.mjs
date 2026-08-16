@@ -11,13 +11,6 @@ import {
   scratchDirs,
 } from "./helpers.mjs";
 
-// L1 (design-l1). test/state-provenance.test.mjs already pins
-// deriveProvenance()'s own logic exhaustively; this file pins that the two
-// decorated MCP surfaces actually carry it through a real server -- agentSummary
-// (agent_list, agent_status) and wake_when_idle's watching array -- and that
-// wake_when_idle's already_satisfied path is untouched, since that predicate
-// is explicitly out of scope for this lane (it belongs to L2).
-
 const { hasTmux, cleanup } = isolateTmux("the state-provenance MCP surface tests");
 const { dataDir, projectDir } = scratchDirs();
 
@@ -33,11 +26,7 @@ const project = db
   .get("state-provenance-mcp-test", projectDir).id;
 
 const session = `hive-provenance-${process.pid}`;
-// Issue #72's pane signal. dialogPane replays a real captured dialog screen
-// (test/fixtures/panes/folder-trust-dialog.txt, same fixture
-// typing-guards.test.mjs pins paneChoiceCheck against) rather than typing
-// anything synthetic: what is under test here is agent_list carrying
-// paneChoiceCheck's answer through, not paneChoiceCheck itself.
+
 let livePane;
 let dialogPane;
 
@@ -52,8 +41,6 @@ function makeActor(actorId) {
   db.prepare("INSERT INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(actorId, actorId);
 }
 
-// stateChangedAgo=null leaves state_changed_at NULL: a latch that has never
-// changed, same as a freshly-spawned row before its first hook event.
 function agentRow({ name, command = "claude", state = "unknown", target = livePane, stateChangedAgo = null }) {
   const actorId = `agent:${name}`;
   makeActor(actorId);
@@ -174,8 +161,7 @@ describe(
     beforeEach(reset);
 
     it("carries last_log_event for a claude worker, the LAST of several rows", async () => {
-      // False-green shape 7 (test/CLAUDE.md): a fixture with only one state
-      // cannot prove this is the last row, not just any row.
+
       agentRow({ name: "sequenced", state: "waiting" });
       logRow("agent:sequenced", "prompt", "working", 300);
       logRow("agent:sequenced", "stop", "idle", 200);
@@ -200,11 +186,7 @@ describe(
     });
 
     it("omits last_log_event and pane entirely for a non-claude worker, which never writes this log", async () => {
-      // Fix round 1, item 5b. paneField's reportsAgentStateLog half used to
-      // be unpinned here: this worker is on a LIVE pane (alive === true), so
-      // a mutant that gated pane only on `alive !== true return {}` -- never
-      // checking reportsAgentStateLog at all -- passed every other test in
-      // this file and would only go red here.
+
       agentRow({ name: "probe-72", command: "sleep 600", state: "unknown" });
       logRow("agent:probe-72", "prompt", "working", 10);
 
@@ -235,9 +217,7 @@ describe(
     });
 
     it("omits pane entirely for a worker the tmux probe cannot find, rather than probing a dead target", async () => {
-      // Same bogus target the existing "dead" case above uses. alive is
-      // false here, and #72's pane signal is specifically about a worker
-      // that IS alive but stuck -- a dead one has nothing to capture.
+
       agentRow({ name: "gone-72", state: "working", target: "%9999", stateChangedAgo: 5 });
 
       const out = await callTool("agent_list", {});
@@ -249,12 +229,7 @@ describe(
     });
 
     it("agent_status does NOT carry a pane field from agentSummary (fix round 1, item 2b)", async () => {
-      // paneField used to live inside the shared agentSummary, so agent_status
-      // silently got a SECOND, independently-timed pane snapshot next to its
-      // own capturePane/inputBoxField below -- a dialog clearing between the
-      // two captures could leave one response with a dialog pane field beside
-      // a top-level tail showing no dialog at all. agent_status must build
-      // its pane picture from its own single capture only.
+
       agentRow({ name: "status-no-pane", state: "waiting", target: dialogPane, stateChangedAgo: 5 });
 
       const out = await callTool("agent_status", { name: "status-no-pane" });
@@ -265,13 +240,6 @@ describe(
   },
 );
 
-// Todo 392. The dialog fixture above (folder-trust-dialog.txt) never carried
-// `╰`, so it could never have caught the bug: an ordinary tool-permission
-// prompt's own preview box closes with `╰`, the same glyph paneChoiceCheck's
-// INPUT_BOX_PRESENT used to trust as proof no dialog was up, and agent_list
-// reported "no dialog" for a worker sitting on a real, unread prompt. Its own
-// session and panes, deliberately: reusing dialogPane above would only prove
-// the fixture that was already fine still works.
 const permissionPromptSession = `hive-provenance-permission-${process.pid}`;
 let permissionPromptDialogPane;
 
@@ -337,12 +305,7 @@ describe(
     });
 
     it("reports gone for a watched agent the tmux probe can't find, matching agent_list", async () => {
-      // src/tools/wakes.ts's `state` field used to come straight from
-      // a.agent_state, so a dead watched agent showed its last real state
-      // ("working") with no hint anything was wrong -- agent_list, on the
-      // same row, already said "gone". Both now derive `state` from the same
-      // deriveProvenance() call, so they cannot disagree about the same
-      // worker again.
+
       agentRow({ name: "watched-dead", state: "working", target: "%9998", stateChangedAgo: 30 });
       logRow("agent:watched-dead", "prompt", "working", 30);
       agentRow({ name: "deliverer", state: "idle" });
@@ -358,9 +321,7 @@ describe(
     });
 
     it("leaves the already_satisfied path alone: no watching field, no freshness check added", async () => {
-      // Pinned because this file touches wakes.ts: the already_satisfied
-      // predicate at src/tools/wakes.ts is explicitly NOT this lane's to
-      // change (that is L2), and this proves the edit here did not brush it.
+
       agentRow({ name: "idle-agent", state: "idle" });
       agentRow({ name: "deliverer", state: "idle" });
 

@@ -13,16 +13,10 @@ import {
   warningCount,
 } from "./helpers.mjs";
 
-// A malformed hive.yml must reach the caller that can act on it. `hive lead`
-// and `hive start` already print loadProjectYml's warnings; these cover the two
-// paths that used to swallow them: the agent_spawn receipt and hive doctor.
-
-// agent_spawn creates a real tmux session, so this suite needs a private one.
 const { hasTmux, cleanup } = isolateTmux("the spawn receipt tests");
 
 const dirs = scratchDirs();
-// sessionName tags itself from HIVE_DATA_DIR, so the test process has to
-// resolve the same store the server does to name the session it must clean up.
+
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
 
@@ -47,13 +41,6 @@ describe("agent_spawn config warnings", { skip: hasTmux ? false : "tmux is not i
     cleanup(sessionName());
   });
 
-  // `sleep` instead of claude: the receipt shape under test is the same, and
-  // the spawn does not have to wait on a real TUI coming up.
-  //
-  // The argument goes in extra_args, NOT in the command string. workerCommandString
-  // shellQuotes `command` as a single token so a claude path containing a space
-  // survives, which turns "sleep 600" into '600'-is-part-of-the-name and the pane
-  // dies with "command not found" before it has drawn anything.
   const spawn = (name) => mcp.call("agent_spawn", { name, command: "sleep", extra_args: ["600"] });
 
   it("reports a bad layout in the receipt and still spawns", async () => {
@@ -90,11 +77,7 @@ describe("hive doctor config warnings", () => {
   const doctorDirs = scratchDirs();
   const doctorOpts = { cwd: doctorDirs.projectDir, dataDir: doctorDirs.dataDir, tmp: doctorDirs.tmp };
   const doctorYml = join(doctorDirs.projectDir, "hive.yml");
-  // doctor fails on a missing claude or tmux, which says nothing about this
-  // change. Compare the counts the summary line carries, across runs, instead
-  // of the exit code.
 
-  // One doctor run per config state, shared by the assertions about it.
   let noYml;
   let broken;
 
@@ -107,10 +90,7 @@ describe("hive doctor config warnings", () => {
   });
 
   it("says nothing about hive.yml when there is none", () => {
-    // Immune: noYml.stdout does carry generated scratch paths (dataDir,
-    // hooksPath, etc. printed by other doctor checks), but mkdtemp's random
-    // path segments are plain alnum with no "." in them, so the literal,
-    // period-bearing "hive.yml" can never appear inside one by coincidence.
+
     assert.doesNotMatch(noYml.stdout, /hive\.yml/);
   });
 
@@ -119,22 +99,16 @@ describe("hive doctor config warnings", () => {
   });
 
   it("does not count a warning as a failed check", () => {
-    // The PROBLEM count, not the whole summary line: todo 292 put the warn
-    // count on that line as well, so the line legitimately differs between
-    // these two runs - by the warning this test is about - while the claim
-    // being made is only about the problem count.
+
     assert.equal(failureCount(broken.stdout), failureCount(noYml.stdout));
-    // Without this, the equality above is vacuous if the malformed hive.yml
-    // somehow produced no warning at all.
+
     assert.equal(warningCount(broken.stdout) - warningCount(noYml.stdout), 1);
   });
 
   it("says nothing when hive.yml parses clean", async () => {
     writeFileSync(doctorYml, "layout: main-vertical\n");
     const { stdout } = await runCli(["doctor"], doctorOpts);
-    // Immune, same reason as the "no hive.yml" case above: no generated path
-    // segment in this suite ever contains a literal ".", so nothing but a
-    // real warn("hive.yml", ...) call can produce this substring.
+
     assert.doesNotMatch(stdout, /warn {2}hive\.yml/);
   });
 });

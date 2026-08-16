@@ -25,11 +25,7 @@ describe("claude-plugin manifest", () => {
   });
 
   it("keeps '..' out of the hook command", () => {
-    // The trap this plugin exists to avoid. ${CLAUDE_PLUGIN_ROOT} is the path
-    // the plugin was FOUND at, which for the documented symlink install is
-    // ~/.claude/skills/hive. node normalizes ".." lexically before touching
-    // the filesystem, so "<root>/../dist/kickoff.js" collapses to
-    // ~/.claude/skills/dist/kickoff.js and dies with MODULE_NOT_FOUND.
+
     const raw = readFileSync(join(pluginDir, "hooks", "hooks.json"), "utf8");
     assert.doesNotMatch(raw, /\.\./, "a '..' in the hook command breaks the symlink install");
   });
@@ -45,8 +41,7 @@ describe("claude-plugin shim", () => {
   });
 
   it("runs through a symlinked plugin directory", () => {
-    // Exactly the documented install: a symlink whose target is the checkout.
-    // Running the shim through it is what proves the path resolution above.
+
     const skills = mkdtempSync(join(tmpdir(), "hive-skills-"));
     const link = join(skills, "hive");
     symlinkSync(pluginDir, link);
@@ -70,8 +65,6 @@ describe("claude-plugin shim", () => {
     symlinkSync(pluginDir, link);
     after(() => rmSync(skills, { recursive: true, force: true }));
 
-    // The literal string the hook would have carried, unnormalized: node is
-    // what collapses it, not the kernel. `test -f` on this same path succeeds.
     const dotdot = `${link}/../dist/kickoff.js`;
     assert.equal(existsSync(dotdot), true, "the kernel resolves this path fine");
 

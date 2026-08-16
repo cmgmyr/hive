@@ -59,15 +59,6 @@ describe("coveringRules", () => {
     assert.deepEqual(hits.map((r) => r.name), ["b.md"]);
   });
 
-  // The defect PR #93's gate caught: an earlier version matched via
-  // fs.globSync against the filesystem, so a changed path with no file
-  // backing it on disk -- exactly what a delete or a rename leaves behind
-  // in `git diff --name-only` -- silently matched nothing. The path here is
-  // deliberately one that does not exist anywhere on this machine, not just
-  // one absent from a fixture: a path that happens to be real in THIS repo
-  // (src/tmux.ts, say) would pass against the old fs.globSync code too,
-  // since old coveringRules() defaulted repoRoot to the real checkout and
-  // would find it there by accident, discriminating nothing.
   it("matches a rule-covered path with no file behind it anywhere, the delete/rename shape", () => {
     const rules = [{ name: "tmux.md", globs: ["src/this-path-has-never-existed-84.ts"] }];
     const hits = coveringRules(["src/this-path-has-never-existed-84.ts"], rules);
@@ -97,12 +88,6 @@ describe("mentionedPaths", () => {
     assert.deepEqual(mentionedPaths("`src/cli.ts` ... later, `src/cli.ts` again"), ["src/cli.ts"]);
   });
 
-  // Counselors (todo 354) measured three real, load-bearing shapes the
-  // original four-pair version missed: a `.claude/rules/*.md` path (the
-  // exact PR #159 CLAUDE.md-table shape, reached from another doc's prose
-  // about a rule rather than the rule's own frontmatter), and a `.md` file
-  // under src/ or test/ (src/AGENTS.md, test/CLAUDE.md), which the original
-  // pairs excluded purely because the extension didn't match that prefix.
   it("extracts a .claude/rules/*.md path", () => {
     assert.deepEqual(mentionedPaths("see `.claude/rules/tmux-and-panes.md`"), [".claude/rules/tmux-and-panes.md"]);
   });
@@ -111,29 +96,14 @@ describe("mentionedPaths", () => {
     assert.deepEqual(mentionedPaths("`src/AGENTS.md` and `test/CLAUDE.md`"), ["src/AGENTS.md", "test/CLAUDE.md"]);
   });
 
-  // Still excluded on purpose: a bare filename with no directory at all.
-  // Recognising it means matching against the real repo's file tree, not a
-  // fixed shape -- the "relevance ranking" escalation line the todo itself
-  // named. See MENTION_RE's own comment.
   it("still ignores a bare filename with no directory prefix, the accepted residual", () => {
     assert.deepEqual(mentionedPaths("`docs.test.mjs` and `CLAUDE.md`"), []);
   });
 
-  // A glob-shaped mention (Hole B): the character class allows `*`, so
-  // `` `src/tools/*.ts` `` is captured as a mention now, not silently
-  // dropped. What it matches against a diff is nameOnlyMentions()'s job, via
-  // matchesGlob -- see that describe block below.
   it("extracts a glob-shaped mention", () => {
     assert.deepEqual(mentionedPaths("the group lives under `src/tools/*.ts`"), ["src/tools/*.ts"]);
   });
 
-  // The index-vs-claim distinction (Chris, todo 354): a table row names
-  // your file because the table names EVERYTHING, which carries no
-  // information; a paragraph names your file because it is making a claim
-  // ABOUT it. Table-row is the cheap syntactic proxy, checked against all
-  // three recorded failures -- see TABLE_ROW_RE's own comment for which
-  // stayed caught and which was dropped, and why dropping the third one
-  // loses nothing.
   it("ignores a mention inside a markdown table row", () => {
     assert.deepEqual(mentionedPaths("| `src/cli.ts` | the CLI entry |"), []);
   });
@@ -175,22 +145,6 @@ describe("nameOnlyMentions", () => {
     assert.deepEqual(nameOnlyMentions(["src/unrelated.ts"], docs), []);
   });
 
-  // Hole B (counselors, todo 354): the original `changedFiles.includes(path)`
-  // check was a plain string equality, so a glob-shaped mention could never
-  // match a literal changed file even after mentionedPaths() started
-  // extracting one. First fix matched through matchesGlob() instead, the
-  // same primitive coveringRules() already uses -- and Chris then measured
-  // that fix against real multi-file lanes (not this file's own small diff)
-  // and found it unusable: `src/tools/*.ts` matched almost any changed
-  // TypeScript file, because matchesGlob answers "is this file under this
-  // glob", not "did this glob's MEMBERSHIP change". A category statement
-  // can never be falsified by editing one member of the category, only by
-  // one being added or removed -- PR #147's real failure shape agrees:
-  // docs/reviewer-preamble.md said "four rule files", and what falsified it
-  // was a rule file being ADDED, not any existing one's content changing.
-  // So a glob mention now matches only against `structuralFiles` (added or
-  // deleted), the third argument, which defaults to `changedFiles` so every
-  // literal-only test above keeps passing unchanged.
   it("reports a glob-shaped mention when the matching file was ADDED, not merely modified", () => {
     const docs = [{ name: "CLAUDE.md", content: "MCP tools live under `src/tools/*.ts`" }];
     const findings = nameOnlyMentions(["src/tools/wakes.ts"], docs, ["src/tools/wakes.ts"]);
@@ -199,16 +153,11 @@ describe("nameOnlyMentions", () => {
 
   it("does NOT report a glob-shaped mention when the matching file was only MODIFIED", () => {
     const docs = [{ name: "CLAUDE.md", content: "MCP tools live under `src/tools/*.ts`" }];
-    // src/tools/wakes.ts changed, but structuralFiles is empty -- nothing
-    // was added or deleted, so the category's membership is unchanged.
+
     const findings = nameOnlyMentions(["src/tools/wakes.ts"], docs, []);
     assert.deepEqual(findings, []);
   });
 
-  // The PR #159 shape stays intact deliberately: a LITERAL mention is
-  // already a claim about that one specific file, so it is unaffected by
-  // the structural restriction and still matches on an ordinary modify --
-  // exactly the case that made tmux-and-panes.md's own prose stale.
   it("still reports a literal mention on a modify-only change, unaffected by the structural restriction", () => {
     const docs = [{ name: "tmux.md", content: "`cmdLead` lives in `src/cli.ts`", globs: ["src/tmux.ts"] }];
     const findings = nameOnlyMentions(["src/cli.ts"], docs, []);
@@ -238,9 +187,7 @@ describe("loadDocs", () => {
       docs.map((d) => d.name).sort(),
       ["CLAUDE.md", "docs/tmux.md"],
     );
-    // Names alone would still pass if content were read from the wrong path
-    // or dropped entirely -- assert the actual bytes, not just that a doc
-    // with the right name showed up.
+
     assert.deepEqual(
       docs.map((d) => d.content).sort(),
       ["root doc", "tmux doc"],
@@ -269,10 +216,7 @@ describe("changedFiles", () => {
   });
 
   it("uses the merge base, not base's tip: a commit landing on main after the branch forked must not appear", () => {
-    // This is the exact two-dot-vs-three-dot trap: `git diff --name-only
-    // main..HEAD` would report main's own post-fork commit (c.txt) as
-    // changed on the branch, because it diffs tip-to-tip rather than from
-    // the point the branch actually diverged.
+
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-behind-"));
     scratchGit(dir, "init", "-q", "-b", "main");
     writeFileSync(join(dir, "a.txt"), "1");
@@ -291,12 +235,6 @@ describe("changedFiles", () => {
     assert.deepEqual(changedFiles("main", dir), ["b.txt"]);
   });
 
-  // The defect PR #93's gate caught on e5afc45: git's own rename detection
-  // (diff.renames, on by default) collapses a `git mv` into just the NEW
-  // path, so a plain `git diff --name-only` never lists the OLD, possibly
-  // rule-covered name at all. Verified by hand first (see the header
-  // comment above changedFiles()) before writing this: default output
-  // prints only src/renamed.ts; --no-renames prints both.
   it("lists both the old and new path across a rename, not just the new one", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-rename-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -340,12 +278,6 @@ describe("changedFilesWithStatus", () => {
     );
   });
 
-  // A `git mv` under --no-renames is a delete-of-old plus an add-of-new,
-  // same reasoning as changedFiles()'s own rename test -- and the right
-  // answer for THIS function specifically, per its own header comment: a
-  // rename really does change glob membership at both the old path (leaves
-  // it) and the new path (joins it), so both must read as structural, never
-  // as a single M that report() would then treat as a non-event.
   it("tags a renamed file as D (old path) and A (new path), never M", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-status-rename-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -405,11 +337,6 @@ describe("report", () => {
     assert.deepEqual(lines, ["CLAUDE.md Invariants section (always in scope, no path glob)", ".claude/rules/tmux.md"]);
   });
 
-  // End-to-end version of the delete/rename gap PR #93's gate found: the
-  // file is genuinely gone from the lane's working tree by the time
-  // report() runs, not just absent from a synthetic fixture. A
-  // filesystem-based matcher fails this exactly because `git diff
-  // --name-only` still lists the path while nothing on disk backs it.
   it("still names a rule whose covered file was deleted, not just added or modified", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-report3-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -428,13 +355,6 @@ describe("report", () => {
     assert.deepEqual(lines, ["CLAUDE.md Invariants section (always in scope, no path glob)", ".claude/rules/tmux.md"]);
   });
 
-  // End-to-end version of the rename gap PR #93's gate found on e5afc45:
-  // the new name (src/renamed.ts) matches no rule at all, so this can only
-  // pass if the OLD, rule-covered name (src/tmux.ts) reaches
-  // coveringRules() too -- exactly what --no-renames in changedFiles() is
-  // for. #81's own incident was this shape: src/config.ts, a second
-  // consumer of store-and-datadir.md's guard, missing from that rule's
-  // frontmatter until it was added by hand.
   it("still names a rule whose covered file was renamed to an uncovered path", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-report4-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -453,10 +373,6 @@ describe("report", () => {
     assert.deepEqual(lines, ["CLAUDE.md Invariants section (always in scope, no path glob)", ".claude/rules/tmux.md"]);
   });
 
-  // End-to-end version of Hole 1/2 (todo 354): CLAUDE.md names a changed file
-  // in prose, and a rule's prose names a second changed file its own globs
-  // do not cover. Neither reaches the strong "covers" list above; both must
-  // still surface, in the separate weaker category.
   it("adds the weaker 'names but does not cover' category after the strong hits", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-report5-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -465,12 +381,7 @@ describe("report", () => {
     scratchGit(dir, "add", "src/a.ts");
     scratchGit(dir, "commit", "-q", "-m", "base");
     scratchGit(dir, "checkout", "-q", "-b", "lane");
-    // Two changed files, the mentioned one listed SECOND -- git sorts
-    // `diff --name-only` output alphabetically, so "aaa-" sorts before
-    // "cli.ts" regardless of add/commit order. An implementation that only
-    // checked changedFiles[0] would pass every other test here and still
-    // miss this one (test/CLAUDE.md shape 6, a fixture too small to reach
-    // the bound).
+
     writeFileSync(join(dir, "src", "aaa-unrelated.ts"), "1");
     writeFileSync(join(dir, "src", "cli.ts"), "1");
     scratchGit(dir, "add", "src/aaa-unrelated.ts", "src/cli.ts");
@@ -493,14 +404,6 @@ describe("report", () => {
     ]);
   });
 
-  // End-to-end version of the measurement that blocked the first version of
-  // this lane from merging: Chris ran covering-rules.mjs against real,
-  // multi-file historical diffs and found a glob-shaped mention like
-  // `` `src/tools/*.ts` `` matching almost any changed file, since
-  // matchesGlob answers "is this file under the glob", not "did the glob's
-  // MEMBERSHIP change" -- wired here as a real `git diff --name-status`
-  // through report() itself, not a hand-built array, so the fix is proven
-  // at the layer it actually has to hold at.
   it("a glob-shaped mention fires on an added file but stays silent on a modify-only one", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-report6-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -509,8 +412,7 @@ describe("report", () => {
     scratchGit(dir, "add", "src/tools/wakes.ts");
     scratchGit(dir, "commit", "-q", "-m", "base");
     scratchGit(dir, "checkout", "-q", "-b", "lane");
-    // A pure modify: wakes.ts's content changes, but the src/tools/*
-    // category gains and loses nothing.
+
     writeFileSync(join(dir, "src", "tools", "wakes.ts"), "2");
     scratchGit(dir, "add", "src/tools/wakes.ts");
     scratchGit(dir, "commit", "-q", "-m", "modify only");
@@ -520,8 +422,6 @@ describe("report", () => {
 
     assert.deepEqual(report("main", dir, rulesDir), ["CLAUDE.md Invariants section (always in scope, no path glob)"]);
 
-    // Now add a second tool file on the same branch -- real category
-    // membership change, and this is the shape that should fire.
     writeFileSync(join(dir, "src", "tools", "reviews.ts"), "1");
     scratchGit(dir, "add", "src/tools/reviews.ts");
     scratchGit(dir, "commit", "-q", "-m", "adds a new tool file");
@@ -533,13 +433,6 @@ describe("report", () => {
     ]);
   });
 
-  // End-to-end version of the fix that reduced CLAUDE.md from a dozen paths
-  // to what a reader would actually open: a table row naming src/cli.ts
-  // (an INDEX, no information -- the table names every module) stays
-  // silent, while a paragraph naming the same file (a CLAIM about it)
-  // still fires. This is PR #159's own two failures side by side in one
-  // doc: the table half is dropped here because it's exactly covered by
-  // the frontmatter-vs-table pin test instead; the prose half stays caught.
   it("drops a table-row mention but keeps a paragraph mention of the same file, in the same doc", () => {
     const dir = mkdtempSync(join(tmpdir(), "covering-rules-git-report7-"));
     scratchGit(dir, "init", "-q", "-b", "main");
@@ -615,25 +508,8 @@ describe("against the real repo", () => {
     assert.deepEqual(nameOnlyMentions(["src/cli.ts"], [tmuxRule]), []);
   });
 
-  // loadDocs()'s CLAUDE.md-optional skip (see its own comment) is deliberate
-  // for scratch fixtures; this is the one assertion that makes the loud
-  // backstop for the REAL repo deliberate too, rather than incidental
-  // cross-coverage from test/docs.test.mjs's own unconditional reads
-  // (counselors, todo 354).
   it("loads CLAUDE.md and every real docs/*.md file, not silently fewer", () => {
-    // Todo 380/382/383 split the README into docs/*.md pages. Every one of
-    // them used to match tmux-and-panes.md's own "docs/*.md" glob, same as
-    // docs/tmux.md already did - the "mildly wasteful and not a defect" cost
-    // the plan pad for todo 380 already named. Todo 437 dropped that glob
-    // (a prohibition about panes does not need to fire on a doc file), so
-    // this loop is now direct coverage of CLAUDE.md's docs list rather than
-    // incidental cross-coverage of a rule's frontmatter.
-    //
-    // docs/reviewer-preamble.md moved to .github/docs/reviewer-preamble.md
-    // in the same lane (todo 383, from Chris): it briefs the PR review
-    // workflow, not a page for a human reading the project's own docs, and
-    // moving it out of docs/ is what drops it from this list and from the
-    // tmux-and-panes.md glob it used to incidentally match.
+
     const docs = loadDocs();
     assert.deepEqual(
       docs.map((d) => d.name).sort(),
@@ -654,17 +530,6 @@ describe("against the real repo", () => {
   });
 });
 
-// Red-proof (todo 354): the exact shape PR #159 nearly shipped. At commit
-// 8440b59 -- the parent of 61b6f6d, the doc-fix commit -- tmux-and-panes.md's
-// own prose already named src/cli.ts (`git show
-// 8440b59:.claude/rules/tmux-and-panes.md`, verified interactively), but its
-// frontmatter did not yet list it. PRE_FIX_PROSE below is that revision's
-// real text, excerpted verbatim (only elided with "..." for length, never
-// paraphrased); PRE_FIX_FRONTMATTER is its real paths list, src/cli.ts
-// missing exactly as it was. Frozen as a fixture rather than a live `git
-// show` for the same reason as docs.test.mjs's sibling check: 8440b59 is
-// unreachable from any branch or tag after PR #159's squash-merge, so it
-// would not survive a fresh clone or a `git gc`, and this suite has to.
 describe("red-proof against real history: tmux-and-panes.md before PR #159's doc fix", () => {
   const PRE_FIX_FRONTMATTER = ["src/tmux.ts", "src/spawn.ts", "src/scheduler.ts", "src/tools/agents.ts", "docs/*.md"];
   const PRE_FIX_PROSE =

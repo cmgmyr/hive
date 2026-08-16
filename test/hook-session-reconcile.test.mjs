@@ -3,14 +3,6 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { DIST, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs } from "./helpers.mjs";
 
-// Issue #154, D1: src/hook.ts parses session_id off every payload and
-// reconciles the row -- the hook is the authority, which is what makes
-// agent_spawn's --session-id flag non-load-bearing rather than redundant.
-//
-// Every seeded row below starts at a session_id DIFFERENT from the one the
-// payload carries (.claude/sessions/dead-ends/2026-07-29-seeding-a-test-row-
-// with-the-value-it-asserts.md): a row already seeded with the asserted
-// value would pass against a hook that does nothing at all.
 isolateTmux("the hook session-id reconcile tests");
 const { dataDir } = scratchDirs();
 

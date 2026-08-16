@@ -18,10 +18,6 @@ import {
   takeover,
 } from "../scripts/suite-lock.mjs";
 
-// Todo 401. Three lanes ran full suites at once; this file has to prove the
-// four things that keep a lock like this from halting a night rather than
-// preventing one, not just that a lock file gets written somewhere.
-
 const unitRoot = mkdtempSync(join(tmpdir(), "hive-suitelock-unit-"));
 after(() => rmSync(unitRoot, { recursive: true, force: true }));
 
@@ -63,24 +59,10 @@ describe("noLockRequested", () => {
   });
 });
 
-// This has to be separate OS processes, not concurrent promises in one
-// process: Node's synchronous fs calls never yield mid-call, so a
-// stat-then-create acquire (or a stat-then-remove takeover) never actually
-// interleaves against ANOTHER promise in the same process - there is no
-// event-loop turn between the two steps for a second promise to run in. Two
-// real processes are scheduled by the kernel independently, which is the
-// only way this repo can exercise the TOCTOU windows `wx`/`link` close, and
-// it is also what "two processes racing for the lock" (todo 401) literally
-// describes.
 const suiteLockUrl = new URL("../scripts/suite-lock.mjs", import.meta.url).href;
 
 function writeRaceWorker(path, holdMs) {
-  // releasedAt is measured AFTER lock.release(), not before (counselors
-  // round 1, fable-5): measuring it before release() means a false
-  // acquisition landing during the gap between the timestamp and the actual
-  // release call is invisible to the overlap check below. Over-approximating
-  // the hold window is the safe direction for an assertion whose whole job
-  // is proving windows never overlap.
+
   writeFileSync(
     path,
     `import { acquireSuiteLock } from ${JSON.stringify(suiteLockUrl)};\n` +
@@ -89,10 +71,7 @@ function writeRaceWorker(path, holdMs) {
       `const lock = await acquireSuiteLock({\n` +
       `  lockPath,\n` +
       `  holder: { pid: process.pid, branch: "race-worker", worktree: "/race" },\n` +
-      // ttlMs bounded (counselors round 2, opus): without this, a real
-      // regression that produces an unreclaimable lock turns this test into
-      // a silent 20-minute CI stall instead of a fast, readable failure. 30s
-      // against a 150ms hold leaves no legitimate case anywhere near it.
+
       `  ttlMs: 30000,\n` +
       `  pollIntervalMs: 5,\n` +
       `  reportIntervalMs: 60000,\n` +
@@ -144,14 +123,6 @@ describe("acquireSuiteLock: atomic acquire, across REAL processes", () => {
     assertNoOverlap(await runRaceWorkers(workerFile, lockPath, 5));
   });
 
-  // Counselors round 1 (all three seats): the test above starts with NO lock
-  // file, so every loser sees a live holder and waits - the takeover branch
-  // (dead-pid, corrupt, invalid-startedAt) is never raced across processes,
-  // only exercised single-process above. That gap hid a real bug: the
-  // original `unlinkSync`-based takeover let two waiters who both read the
-  // same stale holder both "win" - one unlinks the OTHER's freshly-written,
-  // live lock. Seeding a dead-pid lock and racing every worker against the
-  // TAKEOVER path closes that gap.
   it("never lets two separate processes hold the lock at once, racing a TAKEOVER of a dead holder", async () => {
     const lockPath = scratchLockDir();
     const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
@@ -162,16 +133,7 @@ describe("acquireSuiteLock: atomic acquire, across REAL processes", () => {
 
     const workerFile = join(unitRoot, "race-worker-takeover.mjs");
     writeRaceWorker(workerFile, 150);
-    // MEASURED against the unlinkSync-based takeover this replaced: this
-    // test caught the double-hold 1 run in 13 (5 and 10 workers both tried;
-    // more workers did not raise the rate - node's own process-startup time
-    // staggers arrivals enough to swamp the race window more than added
-    // contenders close it). This is a real, low-probability window, not a
-    // flake: the mechanism is proven by that one catch plus the takeover fix
-    // itself being a standard atomic-rename pattern, not by this test's
-    // catch rate. Kept as regression coverage for the path, not as a
-    // reliable single-run detector - do not tune worker count expecting a
-    // higher strike rate; it was tried and did not move the needle.
+
     assertNoOverlap(await runRaceWorkers(workerFile, lockPath, 5));
   });
 });
@@ -212,10 +174,6 @@ describe("acquireSuiteLock: dead-pid takeover", () => {
     lock.release();
   });
 
-  // Split from the "not json" case above (counselors round 1, opus): that
-  // one exercises only the JSON.parse-throws branch of readHolder(), never
-  // the separate "parsed but not a real holder record" branch - dead
-  // alternation, test/CLAUDE.md shape 1.
   it("takes over a lock file with valid JSON but no valid start time", async () => {
     const lockPath = scratchLockDir();
     writeFileSync(lockPath, JSON.stringify({ pid: process.pid, branch: "x", worktree: "/y", startedAt: "not-a-date" }));
@@ -263,7 +221,7 @@ describe("acquireSuiteLock: live holder within TTL", () => {
 
     await new Promise((r) => setTimeout(r, 60));
     waited = true;
-    rmSync(lockPath); // the "other lane" finishes and releases
+    rmSync(lockPath);
     assert.equal(await acquirePromise, "acquired");
   });
 
@@ -283,12 +241,6 @@ describe("acquireSuiteLock: live holder within TTL", () => {
     assert.ok(elapsed < 2000, `bounded wait must not hang - a CI machine with no contention must never see this path stall, took ${elapsed}ms`);
   });
 
-  // Counselors round 1 (opus): the original version of this test only
-  // re-asserted noLockRequested() itself, which stays green even if
-  // run-tests.mjs's OWN wiring is deleted or broken - it pinned nothing
-  // about the wrapper. This reads the wrapper's real source instead, the
-  // same way suite-isolation.test.mjs pins tmux wiring by reading source
-  // rather than by running the whole suite recursively.
   it("run-tests.mjs actually checks noLockRequested() before acquiring, for both lock-gated branches", () => {
     const source = readFileSync(new URL("../scripts/run-tests.mjs", import.meta.url), "utf8");
     const noLockCall = source.indexOf("noLockRequested()");
@@ -298,22 +250,12 @@ describe("acquireSuiteLock: live holder within TTL", () => {
     assert.ok(noLockCall < acquireCall, "the escape-hatch check must be wired ahead of the acquire call, not after it");
   });
 
-  // Counselors round 2 (fable-5): fix 3 (updateHolderPid) and the release()
-  // call in the exit handler had NOTHING pinning their call sites - deleting
-  // either stayed green under every test above, since those only exercise
-  // the functions in isolation. Ordering matters for both: updateHolderPid
-  // is only correct once child.pid exists, and release() has to run from
-  // the SAME handler the manifest cleanup already relies on for every exit
-  // path (normal, failure, forwarded signal).
   it("run-tests.mjs wires updateHolderPid after spawn() and release() inside the exit handler", () => {
     const source = readFileSync(new URL("../scripts/run-tests.mjs", import.meta.url), "utf8");
     const spawnCall = source.indexOf("spawn(process.execPath");
     const updateCall = source.indexOf("updateHolderPid(child.pid)");
     const exitHandler = source.indexOf('child.on("exit"');
-    // Search FROM the exit handler on, not the first occurrence overall:
-    // the child "error" handler added alongside it also calls release(),
-    // for a different, earlier failure path, and that occurrence sits
-    // before "exit" in the source.
+
     const releaseCallInExitHandler = source.indexOf("suiteLock?.release()", exitHandler);
     assert.notEqual(spawnCall, -1);
     assert.notEqual(updateCall, -1, "run-tests.mjs must call updateHolderPid(child.pid)");
@@ -324,10 +266,7 @@ describe("acquireSuiteLock: live holder within TTL", () => {
 });
 
 describe("isSingleFileTarget", () => {
-  // Counselors round 1 (all three seats): the shape that broke the original
-  // "any positional arg is cheap" rule. existsFn is injected (a fake
-  // set, not real fs.existsSync) so this stays a unit test rather than
-  // depending on real files under test/.
+
   const exists = (...realPaths) => (path) => realPaths.includes(path);
 
   it("is true only for exactly one .test.mjs file that actually exists", () => {
@@ -347,25 +286,14 @@ describe("isSingleFileTarget", () => {
     );
   });
 
-  // Counselors round 2 (codex): a suffix match alone still misreads a
-  // flag's own value as a cheap target when it happens to end in
-  // `.test.mjs` but was never meant as one, e.g.
-  // `--test-reporter-destination report.test.mjs` - that destination path
-  // does not exist yet, which is exactly what existsFn now catches.
   it("rejects a .test.mjs-suffixed value that is not a real file", () => {
-    const existsFn = exists(); // nothing exists
+    const existsFn = exists();
     assert.equal(isSingleFileTarget(["report.test.mjs"], "/repo", existsFn), false);
   });
 });
 
 describe("acquireSuiteLock: updateHolderPid", () => {
-  // Counselors round 1 (codex): the lock is acquired before run-tests.mjs
-  // spawns the process that actually runs the suite, so a liveness check
-  // against the original holder pid watches the SUPERVISOR, not the
-  // resource-holding work. A SIGKILL to the wrapper alone would leave the
-  // still-running child behind a lock that reads as dead and gets reclaimed
-  // instantly. updateHolderPid repoints the recorded pid once the real
-  // worker exists, without resetting the TTL clock.
+
   it("repoints the recorded pid without changing startedAt, and release() still recognizes its own lock", async () => {
     const lockPath = scratchLockDir();
     const lock = await acquireSuiteLock({ lockPath, holder: holder({ pid: 424242 }), pollIntervalMs: 5 });
@@ -384,11 +312,7 @@ describe("acquireSuiteLock: updateHolderPid", () => {
 });
 
 describe("takeover: content verification (deterministic, not raced)", () => {
-  // PR gate finding on this PR: the cross-process race test only reaches
-  // the mismatch/restore branch probabilistically (~1 in 13 runs), so a
-  // regression there could stay green on most CI runs. These call
-  // takeover() directly with a deliberately wrong `expectedRaw` to force
-  // both branches every time, deterministically.
+
   it("restores a live lock it accidentally stole, unchanged, when the content no longer matches what was read", () => {
     const lockPath = scratchLockDir();
     const liveContent = JSON.stringify({ pid: process.pid, branch: "live", worktree: "/x", startedAt: new Date().toISOString() });
@@ -409,17 +333,6 @@ describe("takeover: content verification (deterministic, not raced)", () => {
     assert.equal(existsSync(lockPath), false, "a genuine takeover must remove the stale file");
   });
 
-  // PR gate finding (second round): a third test here claimed to pin the
-  // documented accepted-residual EEXIST branch (a third process recreating
-  // lockPath between the restore's rename and its own linkSync) but never
-  // actually reached it - nothing in a single synchronous takeover() call
-  // can recreate lockPath mid-call without real concurrent processes, so
-  // `assert.doesNotThrow` passed identically whether that branch existed,
-  // was deleted, or had its condition inverted. Removed rather than kept as
-  // a test that cannot fail in the direction that matters (test/CLAUDE.md).
-  // The residual itself stays documented in the code comment above
-  // takeover(), which is the honest claim: an accepted, narrow, un-testable-
-  // without-real-processes edge case, not a guaranteed property to pin.
 });
 
 describe("releaseSuiteLock", () => {
@@ -427,7 +340,6 @@ describe("releaseSuiteLock", () => {
     const lockPath = scratchLockDir();
     writeFileSync(lockPath, JSON.stringify({ pid: 999999, branch: "us", worktree: "/x", startedAt: new Date().toISOString() }));
 
-    // Simulate a takeover happening between our write and our release.
     writeFileSync(lockPath, JSON.stringify({ pid: 111111, branch: "new-owner", worktree: "/y", startedAt: new Date().toISOString() }));
 
     releaseSuiteLock(lockPath, 999999);

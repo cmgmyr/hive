@@ -3,18 +3,6 @@ import { describe, it, before, after } from "node:test";
 
 import { McpClient, isolateTmux, scratchDirs } from "./helpers.mjs";
 
-// Todo 331. The guard this file pins is a database-level trigger, not a
-// Node-side check, so the incident it exists to catch has to be reproduced
-// at the SQL layer directly - a raw UPDATE with no project_id predicate,
-// changing content while leaving updated_at untouched, exactly like the
-// python3+sqlite3 heredoc that produced the real incident (todo 331 comment
-// 707). db.js resolves its file from HIVE_DATA_DIR at import time, so point
-// it at a scratch dir before the dynamic import (test/CLAUDE.md).
-//
-// The legitimate-write suite below spawns a real hive server (McpClient),
-// which can reach tmux (the janitor runs on every tool call), so this file
-// isolates it even though none of pad/todo/kv touches tmux directly
-// (test/CLAUDE.md, pinned by test/suite-isolation.test.mjs).
 const { cleanup: cleanupTmux } = isolateTmux("the store-write-trigger tests");
 after(() => cleanupTmux());
 
@@ -28,15 +16,6 @@ function seedProject(path) {
   return db.prepare("SELECT id FROM projects WHERE path = ?").get(path).id;
 }
 
-// A fixed past timestamp, not the INSERT's own datetime('now') default: the
-// trigger now compares NEW.updated_at against a FRESH datetime('now'), not
-// against OLD.updated_at (see the migration's own comment for why - a same-
-// second comparison against OLD produced false positives on ordinary rapid
-// writes). A row seeded with "now" and attacked microseconds later can land
-// in the same wall-clock second as the attack, which is the one case this
-// design does not catch (documented as an accepted residual). The real
-// incident's own row was stale by 17+ minutes, so seeding a genuinely past
-// updated_at is the faithful reproduction, not a workaround for the test.
 const STALE_UPDATED_AT = "2020-01-01 00:00:00";
 
 function seedPad(projectId, name, content) {
@@ -53,10 +32,7 @@ function padRow(id) {
 
 describe("the scratchpads content-vs-updated_at trigger", () => {
   it("aborts the exact incident shape: a name-addressed UPDATE across two projects, changing content, leaving updated_at alone", () => {
-    // Reproduces the real incident: two projects each carry a pad named
-    // "board" (a conventional name the orchestration profile encourages),
-    // and the write that caused it addressed rows by that name with no
-    // project_id predicate at all.
+
     const hive = seedProject("/scratch/hive");
     const sideproj = seedProject("/scratch/sideproj");
     const hivePadId = seedPad(hive, "board", "hive's own board content");
@@ -72,9 +48,6 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
       /leaves updated_at unchanged/,
     );
 
-    // The whole statement is refused, not just the row that tripped it -
-    // neither project's pad was touched, which is what proves this is a
-    // statement-level guard rather than a partial, silently-uneven one.
     assert.deepEqual(padRow(hivePadId), before1);
     assert.deepEqual(padRow(sideprojPadId), before2);
   });
@@ -87,7 +60,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
         db
           .prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE id = ?")
           .run("new content", padId),
-      /hive pad <name> --save <file>/, // no backticks: SQLite string, not markdown
+      /hive pad <name> --save <file>/,
     );
     assert.throws(
       () =>
@@ -99,16 +72,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
   });
 
   it("does not fire on two legitimate content-changing writes to the same row inside one wall-clock second", () => {
-    // Regression for a real false positive found while building this
-    // migration: a first design compared NEW.updated_at to OLD.updated_at,
-    // and datetime('now') is whole-second resolution, so a row created and
-    // then immediately re-written (pad_write followed by pad_append
-    // milliseconds later, ordinary usage) got an identical OLD and NEW
-    // updated_at even though the second write genuinely re-stamped "now" -
-    // the trigger aborted a real pad_append. Seeding via the column DEFAULT
-    // here (not STALE_UPDATED_AT) is deliberate: it puts OLD.updated_at at
-    // the actual current second, the exact condition that broke the first
-    // design.
+
     const projectId = seedProject("/scratch/same-second");
     const padId = db
       .prepare("INSERT INTO scratchpads (project_id, name, content) VALUES (?, 'board', 'v1') RETURNING id")
@@ -122,28 +86,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
   });
 
   it("KNOWN RESIDUAL: does not catch a bypass landing in the same second as the row's own last legitimate write", () => {
-    // Negative control, not a regression test - it pins a documented limit
-    // rather than a bug. A smoke test replaying the incident against a
-    // freshly seeded store found this the same day PR #140 merged: the
-    // migration's own comment originally called this gap "one-in-a-billion",
-    // and it is not. Seed a row through a legitimate-shaped write (content
-    // set alongside updated_at = datetime('now'), as pad_write/todo_create/
-    // kv_set all do), then rewrite it with raw SQL a few milliseconds later
-    // - the natural shape of a hand-rolled driver script that seeds a row
-    // and then mutates it directly (the todo 324 family). Both statements'
-    // updated_at read the same wall-clock second, so the bypass's
-    // NEW.updated_at (carried forward, untouched) reads as "now" too and the
-    // WHEN clause never fires.
-    //
-    // If this test starts FAILING (the bypass throws), that means someone
-    // narrowed or removed the same-second window - a real improvement, not
-    // a break. Update this test and the migration's own comment together
-    // rather than deleting either silently: the documented limit and the
-    // checked one must not drift apart.
-    //
-    // This residual is exactly what todo 331's other lane (a PreToolUse
-    // hook denying a Bash command that writes to the store) is for: it does
-    // not care what second it is.
+
     const projectId = seedProject("/scratch/seed-then-rewrite");
     const padId = db
       .prepare(

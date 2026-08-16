@@ -4,17 +4,6 @@ import { after, describe, it } from "node:test";
 
 import { isolateTmux, leadRow, makeFakeClaude, McpClient, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
-// A worker spawned before its own project's lead has ever run: a real case
-// (the first thing to happen in a brand-new store, e.g. right after a
-// reboot), not an edge case to punt on. launchAgent's createdSession branch
-// (src/spawn.ts) claims the session's fresh initial window directly, the
-// same first-occupant path `hive lead` itself uses via claimInitialWindow -
-// this file exercises it through agent_spawn instead, since it needs a
-// session that does not exist yet, which none of the other lead-*.test.mjs
-// files start from (isolateTmux is one call per file, at module top level,
-// so a fresh-session scenario needs its own file rather than a nested
-// describe reusing an already-created session).
-
 const { hasTmux, cleanup } = isolateTmux("the worker-first window naming test");
 
 const dirs = scratchDirs();

@@ -2,10 +2,6 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, scratchDirs, sleep } from "./helpers.mjs";
 
-// Issue #154, D2/D3: agent_resume is a named operation over `claude
-// --resume`, reusing the closed row and its actor_id rather than minting a
-// new one -- the same precedent ensureLeadRow (src/cli.ts) already set for a
-// lead restart. See src/spawn.ts's resumeAgent for the reasoning.
 const { hasTmux, cleanup } = isolateTmux("the agent_resume tests");
 
 const dirs = scratchDirs();
@@ -56,14 +52,6 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     assert.equal(afterRow.agent_id, beforeRow.agent_id, "must be the SAME row, not a new one");
     assert.equal(afterRow.actor_id, beforeRow.actor_id, "must be the SAME actor_id, not a new one");
 
-    // pane_pid, not tmux_target: a pane id can legitimately repeat once its
-    // window (or the whole session) is destroyed and recreated -
-    // .claude/rules/tmux-and-panes.md documents exactly this ("%0's pid was
-    // 50926 before a restart, 50942 after ... pane id identical"), which is
-    // exactly the shape a single-worker session hits here (agent_close kills
-    // this worker's only pane, which kills its only window, which can take
-    // the session down with it). pane_pid is the fact that actually proves a
-    // new process exists.
     const row = db.prepare("SELECT status, closed_at, command, pane_pid FROM agents WHERE id = ?").get(beforeRow.agent_id);
     assert.notEqual(row.pane_pid, beforePanePid, "must be a fresh process");
     assert.equal(row.status, "running");
@@ -121,24 +109,9 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     const closedRow = await mcp.call("agent_status", { name: "resume-collide" });
     await mcp.call("agent_close", { name: "resume-collide" });
 
-    // A second worker takes the freed name while the first sits closed -
-    // idx_agents_running_name only constrains RUNNING rows, so nothing stops
-    // this, and findClosedAgent's own name search would now find the WRONG
-    // (closed) row anyway - address the original by agent_id to isolate the
-    // collision this test is actually about.
     await mcp.call("agent_spawn", { name: "resume-collide", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-collide");
 
-    // Hits agent_resume's own requireNameFree call (counselors, opus),
-    // which now runs before resumeAgent is ever reached - so this is
-    // requireNameFree's own message, not resumeAgent's SQL-level backstop
-    // (that one only fires on the TOCTOU race between this check and the
-    // write, which a sequential test cannot produce).
-    //
-    // Todo 364. requireNameFree's generic "Pick another name" is impossible
-    // advice here - agent_resume takes no new name for the caller to pick -
-    // so this row's own resume-aware message is what actually fires now,
-    // naming the real remedy (free the name, then retry by agent_id).
     await assert.rejects(mcp.call("agent_resume", { agent_id: closedRow.agent_id }), (e) => {
       assert.match(e.message, new RegExp(`Cannot resume agent ${closedRow.agent_id} \\("resume-collide"\\)`));
       assert.match(e.message, /closed lane is not lost/, "not parked, so the closed wording, not the parked one");
@@ -156,10 +129,6 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     const closedRow = await mcp.call("agent_status", { name: "resume-café" });
     await mcp.call("agent_close", { name: "resume-café" });
 
-    // idx_agents_running_name's COLLATE NOCASE folds ASCII only, so a
-    // differently-cased non-ASCII pair passes the DATABASE'S own unique
-    // index -- this is exactly why requireNameFree (JS-folded) has to run
-    // first rather than leaning on the index alone.
     await mcp.call("agent_spawn", { name: "RESUME-CAFÉ", command: fakeClaude() });
     await liveAgentRow(mcp, "RESUME-CAFÉ");
 
@@ -171,12 +140,6 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "RESUME-CAFÉ" });
   });
 
-  // Todo 364. The parked half of the message fix above: a resume colliding
-  // with a running agent gets the SAME resume-aware sentence whether the
-  // row it is trying to bring back was parked or merely closed, but the
-  // wording says which - "parked" is the reassurance a next-morning lead
-  // actually needs (the lane it deliberately paused is not gone, only
-  // blocked on a name).
   it("names the row PARKED, not merely closed, when a parked lane's own name collides on resume", async () => {
     await mcp.call("agent_spawn", { name: "resume-parked-collide", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-parked-collide");
@@ -228,10 +191,6 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-inversion" });
     assert.ok(rowB.agent_id > rowA.agent_id, "setup bug: B must have the higher agent_id");
 
-    // Resume A (lower id) and reclose it AFTER a real gap, so its closed_at
-    // is unambiguously newer than B's own whole-second timestamp - the
-    // inversion the old `ORDER BY id DESC` could never produce, since id
-    // order never changes once assigned.
     await mcp.call("agent_resume", { agent_id: rowA.agent_id });
     await liveAgentRow(mcp, "resume-inversion");
     await sleep(1100);
@@ -243,18 +202,11 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { agent_id: rowA.agent_id });
   });
 
-  // Todo 364, second half of the reported bug: "park 'impl' at 18:00, spawn
-  // and ordinarily close a fresh 'impl' at 09:00, resume 'impl'" used to
-  // silently resume the WRONG lane - closed_at alone always prefers the
-  // more recent ordinary close over an older park, with no error to notice
-  // by. Parked now outranks closed_at entirely.
   it("prefers a PARKED row over a more recently closed one sharing its name", async () => {
     await mcp.call("agent_spawn", { name: "resume-parked-vs-closed", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-parked-vs-closed");
     const parked = await mcp.call("agent_park", { name: "resume-parked-vs-closed" });
 
-    // A real gap, so the ordinary close below is UNAMBIGUOUSLY later by
-    // closed_at than the park above - the exact condition that used to win.
     await sleep(1100);
 
     await mcp.call("agent_spawn", { name: "resume-parked-vs-closed", command: fakeClaude() });
@@ -296,10 +248,6 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     const beforeRow = await liveAgentRow(mcp, "resume-stale-state");
     await mcp.call("agent_close", { name: "resume-stale-state" });
 
-    // Seeded to a value DIFFERENT from what this test asserts afterward
-    // (.claude/sessions/dead-ends/2026-07-29-seeding-a-test-row-with-the-
-    // value-it-asserts.md): a row that already read 'unknown'/NULL before
-    // resume would pass even with the reset removed.
     db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = '2020-01-01 00:00:00' WHERE id = ?").run(
       beforeRow.agent_id,
     );

@@ -4,20 +4,6 @@ import { describe, it } from "node:test";
 
 import { DIST, FS_SWAP_IMPORT, runFixture, scratchDirs, storeReplaceScript } from "./helpers.mjs";
 
-// Issue #49. Once storeReplaced() (src/db.ts) is tripped, tick() must do none
-// of its work - no janitor sweep, no retention, no hourly backup, no timer
-// delivery - and never throw. Separately, the interval startScheduler created
-// must actually stop, not just keep firing a tick() that no-ops forever.
-//
-// Every fixture below constructs its own AliveSnapshot literal ({ panes,
-// windows }) rather than reaching real tmux, so nothing here needs
-// isolateTmux(): an empty snapshot means "nothing alive", matching what
-// src/tmux.ts documents for a server that answered with nothing running.
-
-// Seeds a project, one running agent whose pane will not be in the snapshot,
-// one stale agent_state_log row, and one due, undeliverable timer. Shared by
-// both the tripped run and its control so the only difference between them
-// is the latch.
 const SEED = `
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('sched-test', '/tmp/sched-test') RETURNING id").get().id;
 db.prepare(
@@ -73,8 +59,7 @@ describe("tick() and an orphaned store", () => {
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
         `migrate();\n${SEED}\n` +
         storeReplaceScript(dbPath) +
-        // If tick() threw, this await would reject and the fixture process
-        // would exit non-zero, which runFixture already asserts against.
+
         `await tick(snapshot);\n${READBACK}`,
       { HIVE_DATA_DIR: dataDir },
     );
@@ -92,8 +77,7 @@ describe("tick() and an orphaned store", () => {
       tmp,
       "interval-stops",
       FS_SWAP_IMPORT +
-        // Observe clearInterval without touching production code: wrap the
-        // globals before startScheduler ever calls setInterval.
+
         `const timers = [];\n` +
         `let cleared = null;\n` +
         `const realSetInterval = globalThis.setInterval;\n` +
@@ -105,7 +89,7 @@ describe("tick() and an orphaned store", () => {
         `migrate();\n` +
         storeReplaceScript(dbPath) +
         `startScheduler(20);\n` +
-        // Long enough for several 20ms ticks to have had the chance to fire.
+
         `await new Promise((r) => setTimeout(r, 300));\n` +
         `process.stdout.write(JSON.stringify({ intervalsCreated: timers.length, clearedTheOneItCreated: cleared !== null && cleared === timers[0] }));\n`,
       { HIVE_DATA_DIR: dataDir },

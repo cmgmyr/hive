@@ -64,9 +64,6 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
   it("configures created windows before respawn while leaving user windows alone", () => {
     tmux("new-session", "-d", "-s", ownedSession, "sleep 600");
 
-    // isolateTmux isolates the socket, not ~/.tmux.conf. Force and re-read
-    // both globals after the server exists so the positive assertions cannot
-    // pass from this machine's real configuration.
     tmux("set-option", "-g", "allow-passthrough", "off");
     tmux("set-option", "-g", "pane-border-status", "off");
     assert.equal(tmux("show-options", "-g", "-v", "allow-passthrough"), "off");
@@ -79,9 +76,6 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", userWindow, "pane-border-status"), "off");
     assert.equal(tmux("display-message", "-p", "-t", userWindow, "#{@hive-owned}"), "");
 
-    // Through ensureSession, which is where the pane and window ids
-    // claimInitialWindow claims now come from (todo 278): it targets what it
-    // was handed rather than asking the session which window is current.
     const started = ensureSession(claimedSession, dirs.projectDir);
     const { pane, window } = claimInitialWindow(started, "claimed", dirs.projectDir, [], "sleep 600");
     assert.equal(tmux("show-options", "-w", "-v", "-t", window, "@hive-owned"), "1");
@@ -93,8 +87,6 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     );
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "monitor-bell"), "on");
 
-    // A stale target must not borrow another window's ownership marker.
-    // display-message silently falls back here; list-panes errors instead.
     const staleWindow = tmux(
       "new-window", "-P", "-F", "#{session_name}:#{window_id}", "-t", `=${claimedSession}`, "sleep 600",
     );
@@ -122,13 +114,7 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
   it("keeps the lead pane main across a spawn and close cycle", () => {
     tmux("new-session", "-d", "-s", session, "-x", "200", "-y", "50", "sleep 600");
     const window = tmux("list-windows", "-t", `=${session}`, "-F", "#{session_name}:#{window_id}").split("\n")[0];
-    // STATE THE GEOMETRY THIS TEST DEPENDS ON RATHER THAN INHERITING IT.
-    // isolateTmux isolates the SOCKET, not the config: tmux reads the
-    // developer's own ~/.tmux.conf when the scratch server starts. A pane
-    // border costs every pane a row, so a developer who follows the raw-attach
-    // advice hive itself now prints (docs/tmux.md, `hive setup --attach raw`)
-    // saw this assert 49 against 50 and had no way to tell it from a real
-    // regression. The recommended setting gets its own case below.
+
     tmux("set-window-option", "-t", window, "pane-border-status", "off");
     const lead = panes(window)[0].id;
 
@@ -146,8 +132,6 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     assert.ok(Math.abs(spawned[0].width - 100) <= 1, `lead should take about half of 200 columns, got ${spawned[0].width}`);
     for (const worker of spawned.slice(1)) assert.ok(worker.left > 0, "workers stack to the right");
 
-    // Closing takes the same path agent_close does: resolve the window from
-    // the pane first, kill it, then re-apply the layout hive recorded.
     const victim = spawned[1].id;
     assert.equal(paneWindow(victim), window);
     tmux("kill-pane", "-t", victim);
@@ -167,9 +151,7 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
   });
 
   it("still gives the lead the main slot under the pane borders hive applies", () => {
-    // Hive applies pane-border-status top to its own windows, so its layout
-    // has to survive the row that border consumes. The setting itself is
-    // pinned by the ownership case above; this case pins the geometry.
+
     tmux("new-session", "-d", "-s", borderSession, "-x", "200", "-y", "50", "sleep 600");
     const window = tmux(
       "list-windows", "-t", `=${borderSession}`, "-F", "#{session_name}:#{window_id}",
