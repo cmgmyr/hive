@@ -53,7 +53,7 @@ hive
 Two more things worth turning on:
 
 - The plugin symlink above loads hive's live state (the board, open todos, running workers) into a new session automatically on a lead branch. See [docs/profiles.md](docs/profiles.md).
-- `hive statusline` prints a one-line summary of agents, todos, and pads, so you can see what's happening without switching windows. It needs a one-line addition to your Claude Code status line config to show up; see [docs/install.md](docs/install.md#status-line) for the exact snippet.
+- `hive statusline` prints a one-line summary of agents, todos, pads, and any held wake-ups, so you can see what's happening without switching windows. A held wake shows the count of every held wake, plus the age and reason for the one it's telling you about - a typing hold when there is one, since that's the one you can clear yourself, otherwise the oldest: `typing` (your own input box has unsubmitted text), `needs you` (nothing clears it without a `hive lead` or `wake_cancel`), or `blocked` (waiting on something else to resolve, such as a dialog). It needs a one-line addition to your Claude Code status line config to show up; see [docs/install.md](docs/install.md#status-line) for the exact snippet.
 
 ## Commands
 

@@ -210,7 +210,7 @@ describe(
       assert.equal(notice.owner, notice.deliver_actor, "the structural half of the guard: a notice owns itself");
     });
 
-    it("says nothing when the hold is unsubmitted human text rather than a dialog", async () => {
+    it("notifies the owner for unsubmitted human text too, not only for a dialog (todo 320)", async () => {
       const owner = await spawnShowing("hold-notify-typing-owner", replayFixture("ready-idle.txt"));
       const stuck = await spawnShowing("hold-notify-typing", replayFixture("real-input.txt"));
       const wakeId = await ownedWake("hold-notify-typing-owner", stuck.agent_id, "INTEGRATION hold-notify typing");
@@ -222,8 +222,10 @@ describe(
 
       await until(async () => timerRow(wakeId).held_at != null, 15000);
       assert.match(timerRow(wakeId).held_reason, /unsubmitted/, "held for the input-box reason, not the dialog one");
-      await until(async () => noticesAbout(wakeId).length > 0, 9000);
-      assert.equal(noticesAbout(wakeId).length, 0, "only the modal hold notifies; this one must stay silent");
+      await until(async () => noticesAbout(wakeId).length > 0, 15000);
+      assert.equal(noticesAbout(wakeId).length, 1, "this hold now notifies too - see wake-hold-unsubmitted-input-notify.test.mjs");
+      assert.equal(noticesAbout(wakeId)[0].deliver_pane, owner.tmux_target, "delivered to the owner's own pane");
+      assert.match(noticesAbout(wakeId)[0].body, /unsubmitted/, "and it must say what kind of hold this is");
     });
   },
 );

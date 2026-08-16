@@ -36,7 +36,7 @@ None of these apply under `hive setup --attach raw`: iTerm's tmux integration (a
 
 ## Status line
 
-`hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing when a project has no live state (no agents, todos, pads, or wake-ups) or is not registered at all, so it is safe to run everywhere. If you use a custom status line script, append it:
+`hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing when a project has no live state (no agents, todos, pads, or wake-ups) or is not registered at all, so it is safe to run everywhere. When a wake-up is held, it adds a segment naming the count of every held wake, plus the age and reason for the one it's telling you about - a typing hold when there is one, since that's the one you can clear yourself, otherwise the oldest: `2 wakes · 2 held (4m, typing)` means an input box (most likely your own) has unsubmitted text sitting in it, even if an older hold for another reason is also waiting. The other two reasons are `needs you` (nothing clears it without running `hive lead` or `wake_cancel`) and `blocked` (waiting on something else to resolve, such as a dialog). If you use a custom status line script, append it:
 
 ```bash
 # Hive store summary (second line, only inside hive-enabled projects).

@@ -75,6 +75,8 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 **THIS PROTECTION IS CLAUDE-CHROME-SHAPED, AND A NON-CLAUDE PANE HAS NONE OF IT.** In a worker spawned as `agent_spawn(name: "build", command: "bash")`, the send goes through. There the merge does not just submit a message, it **executes**: a human who typed `rm -rf ./buil` and walked away, plus an `agent_send(text: "npm test")`, is a shell running `rm -rf ./builnpm test`. `agent_rename` is the one path that cannot reach this, because it is gated on `isClaudeCommand` before it types; `agent_send`'s text path and the scheduler's delivery are not.
 
+**The hold now has two reason strings sharing one prefix.** Code asking "is this an unsubmitted-input hold" must use the prefix predicate (`isUnsubmittedInputHold`), never an equality check against the plain constant, or it silently misses the transient retry variant.
+
 ## A tmux call that never answers is `null`, and it is a THIRD outcome
 
 `execFileSync` with no `timeout` blocks for as long as the child runs, which against a wedged server is forever. Every call now carries a bound and `killSignal: "SIGKILL"`, since a wedged tmux is the process least likely to act on a SIGTERM.

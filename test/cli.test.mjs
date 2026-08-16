@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import Database from "better-sqlite3";
@@ -70,6 +70,12 @@ describe("hive CLI pads", () => {
     assert.equal(outside.stdout, "");
   });
 
+  it("says nothing about held wakes when none are held", async () => {
+    const { code, stdout } = await runCli(["statusline"], cliOpts);
+    assert.equal(code, 0);
+    assert.doesNotMatch(stdout, /held/, "no wake is held yet, so the segment must not appear");
+  });
+
   it("does not count the lead's own row as an agent", async () => {
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();
@@ -91,6 +97,122 @@ describe("hive CLI pads", () => {
     const { code, stdout } = await runCli(["statusline"], cliOpts);
     assert.equal(code, 0);
     assert.match(stdout, /0 agents/, "a running lead row must not inflate the agent count");
+  });
+
+  it("names the count, the oldest hold's age, and its reason in the held-wake segment", async () => {
+    const HELD_REASON_UNSUBMITTED_INPUT =
+      "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
+      "and submit both as one message";
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store
+        .prepare(
+          `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
+             held_at, held_reason, first_held_at)
+           VALUES (?, 'agent:1', 'go on', 'delay', 'agent:1', '%1', datetime('now', '-60 seconds'),
+             datetime('now', '-54 seconds'), ?, datetime('now', '-3240 seconds'))`,
+        )
+        .run(projectId, HELD_REASON_UNSUBMITTED_INPUT);
+    } finally {
+      store.close();
+    }
+
+    const { code, stdout } = await runCli(["statusline"], cliOpts);
+    assert.equal(code, 0);
+    assert.match(stdout, /1 held \(54m, typing\)/, "the count, the oldest hold's age, and its reason word");
+  });
+
+  async function freshHeldProject(dirName) {
+    const cwd = join(dirs.tmp, dirName);
+    mkdirSync(cwd, { recursive: true });
+    const mcp = new McpClient({ cwd, dataDir: dirs.dataDir });
+    await mcp.start();
+    const projectId = (await mcp.call("whoami")).project.id;
+    await mcp.close();
+    return { cwd, projectId };
+  }
+
+  // firstHeldAtExpr is raw SQL (a datetime(...) expression or the literal NULL), interpolated
+  // directly: it must be evaluated by SQLite, not bound as text.
+  function seedHeldTimer(projectId, { reason, firstHeldAtExpr }) {
+    const store = new Database(join(dirs.dataDir, "hive.db"));
+    try {
+      store
+        .prepare(
+          `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
+             held_at, held_reason, first_held_at)
+           VALUES (?, 'agent:1', 'go on', 'delay', 'agent:1', '%1', datetime('now', '-60 seconds'),
+             datetime('now', '-1 seconds'), ?, ${firstHeldAtExpr})`,
+        )
+        .run(projectId, reason);
+    } finally {
+      store.close();
+    }
+  }
+
+  const HELD_REASON_UNSUBMITTED_INPUT =
+    "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
+    "and submit both as one message";
+  const HELD_REASON_OTHER = "the lead's pane is not live right now (likely mid-restart)";
+
+  it("does not pluralise 'held': two held wakes read '2 held', not '2 helds'", async () => {
+    const { cwd, projectId } = await freshHeldProject("held-plural");
+    seedHeldTimer(projectId, { reason: HELD_REASON_UNSUBMITTED_INPUT, firstHeldAtExpr: "datetime('now', '-60 seconds')" });
+    seedHeldTimer(projectId, { reason: HELD_REASON_UNSUBMITTED_INPUT, firstHeldAtExpr: "datetime('now', '-120 seconds')" });
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+    assert.equal(code, 0);
+    assert.match(stdout, /2 held \(/, "'held' names a state, not a countable noun");
+    assert.doesNotMatch(stdout, /helds/, "must never pluralise 'held'");
+  });
+
+  it("does not let a hold with no first_held_at (a pre-409 row) win the age query and hide a real one", async () => {
+    const { cwd, projectId } = await freshHeldProject("held-null-first-held-at");
+    seedHeldTimer(projectId, { reason: HELD_REASON_OTHER, firstHeldAtExpr: "NULL" });
+    seedHeldTimer(projectId, { reason: HELD_REASON_OTHER, firstHeldAtExpr: "datetime('now', '-240 seconds')" });
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+    assert.equal(code, 0);
+    assert.match(
+      stdout,
+      /2 held \(4m, blocked\)/,
+      "the row with a real first_held_at must win the age, not the NULL row sorting first",
+    );
+  });
+
+  it("shows the typing hold's own reason and age even when an older non-typing hold exists (todo 320)", async () => {
+    const { cwd, projectId } = await freshHeldProject("held-typing-priority");
+    seedHeldTimer(projectId, { reason: HELD_REASON_OTHER, firstHeldAtExpr: "datetime('now', '-5700 seconds')" });
+    seedHeldTimer(projectId, { reason: HELD_REASON_UNSUBMITTED_INPUT, firstHeldAtExpr: "datetime('now', '-240 seconds')" });
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+    assert.equal(code, 0);
+    assert.match(
+      stdout,
+      /2 held \(4m, typing\)/,
+      "a typing hold must win the reason and supply its own age, not the older blocked hold's",
+    );
+  });
+
+  it("gives a hold that never clears on its own its own reason word, not 'blocked'", async () => {
+    const HELD_REASON_LEAD_PANE_DEAD =
+      "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
+      "cancellation for this alone, so it is held rather than lost";
+    const { cwd, projectId } = await freshHeldProject("held-needs-you");
+    seedHeldTimer(projectId, { reason: HELD_REASON_LEAD_PANE_DEAD, firstHeldAtExpr: "datetime('now', '-60 seconds')" });
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+    assert.equal(code, 0);
+    assert.match(
+      stdout,
+      /1 held \(1m, needs you\)/,
+      "a hold nothing clears automatically must read 'needs you', not the generic 'blocked'",
+    );
   });
 
   it("statusline stays silent in a registered project with no live state", async () => {

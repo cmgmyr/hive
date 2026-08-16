@@ -432,7 +432,7 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void
 }
 
 const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
-const HELD_REASON_LEAD_PANE_DEAD =
+export const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
 
@@ -451,13 +451,24 @@ const HELD_REASON_PANE_REISSUED_THEN_DEAD =
   `${HELD_REASON_PANE_REISSUED_PREFIX}the pane it was reissued to has since gone dead too; nothing ` +
   "re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may do " +
   "this even though the wake is not theirs) if it is no longer needed";
-function wasHeldForPaneReissue(heldReason: string | null): boolean {
+export function wasHeldForPaneReissue(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
 }
 
-const HELD_REASON_UNSUBMITTED_INPUT =
-  "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it " +
-  "and submit both as one message";
+export const HELD_REASON_UNSUBMITTED_INPUT_PREFIX = "the pane's input box has unsubmitted human text; ";
+export const HELD_REASON_UNSUBMITTED_INPUT =
+  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}delivering now would paste the wake body onto it and submit ` +
+  "both as one message";
+
+// Distinct from HELD_REASON_UNSUBMITTED_INPUT so the claim's debounce doesn't latch a transient
+// pane-resolution failure shut forever - the next tick retries instead of giving up permanently.
+const HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED =
+  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}hive could not resolve a live pane for the wake's owner on ` +
+  "this tick - retrying, since that may be transient rather than permanent";
+
+export function isUnsubmittedInputHold(heldReason: string | null): boolean {
+  return heldReason != null && heldReason.startsWith(HELD_REASON_UNSUBMITTED_INPUT_PREFIX);
+}
 
 function heldTarget(timer: TimerRow): {
   name: string;
@@ -497,6 +508,17 @@ function holdNoticeBody(timer: TimerRow, target: { name: string; isLead: boolean
     `"${target.name}" has a dialog up in its pane and is waiting for a human to answer it. hive is HOLDING ` +
     `wake #${timer.id} for it rather than typing the wake body into the dialog. That wake is not lost: it ` +
     `stays pending and delivers on its own once the dialog clears. ${howToClearIt(target.name, target.isLead)}`
+  );
+}
+
+function unsubmittedInputNoticeBody(timer: TimerRow, target: { name: string }): string {
+  return (
+    `"${target.name}" has unsubmitted text sitting in its own pane's input box - something was typed there and ` +
+    `never submitted. hive is HOLDING wake #${timer.id} for it rather than pasting the wake body on top of that ` +
+    `text and submitting both together as one message. That wake is not lost: it stays pending and delivers on ` +
+    `its own once the box is empty. Clearing it needs a human at "${target.name}"'s own terminal to submit or ` +
+    `delete what's there - hive will not type into a pane holding unsubmitted human text, because that is ` +
+    `exactly the merge this hold exists to prevent.`
   );
 }
 
@@ -649,6 +671,61 @@ function noteModalHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
     }
   }
   holdTimer(timer, HELD_REASON_MODAL_CHOICE);
+}
+
+const claimUnsubmittedInputHoldWithNotice = db.transaction(
+  (timer: TimerRow, pane: string, body: string): boolean => {
+
+    const claimed =
+      stmt(
+        `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+           first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
+          WHERE id = ? AND cancelled_at IS NULL
+            AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
+            AND held_reason IS NOT ?`,
+      ).run(
+        HELD_REASON_UNSUBMITTED_INPUT,
+        timer.id,
+        timer.due_at,
+        timer.body,
+        timer.repeat_every_ms,
+        HELD_REASON_UNSUBMITTED_INPUT,
+      ).changes === 1;
+    if (!claimed) return false;
+
+    insertNotice(timer, timer.owner, pane, body, null);
+    return true;
+  },
+);
+
+function noteUnsubmittedInputHold(timer: TimerRow, snapshot: AliveSnapshot | null): void {
+
+  if (timer.held_reason === HELD_REASON_UNSUBMITTED_INPUT) {
+    holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
+    return;
+  }
+
+  if (timer.owner === timer.deliver_actor) {
+
+    holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
+    return;
+  }
+
+  try {
+    const pane = ownerPaneToTell(timer, snapshot);
+    if (pane !== null) {
+      const target = heldTarget(timer);
+      const body = unsubmittedInputNoticeBody(timer, target);
+      if (claimUnsubmittedInputHoldWithNotice.immediate(timer, pane, body)) return;
+
+      holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
+      return;
+    }
+  } catch {
+
+  }
+  holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED);
 }
 
 const BLOCKED_EPISODE = `COALESCE(a.state_changed_at, '') AS episode`;
@@ -1308,7 +1385,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   }
 
   if (inputBoxHoldsWake(timer.deliver_pane, choices)) {
-    holdTimer(timer, HELD_REASON_UNSUBMITTED_INPUT);
+    noteUnsubmittedInputHold(timer, snapshot);
     return { ok: false };
   }
 

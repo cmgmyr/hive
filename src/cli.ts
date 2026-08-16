@@ -65,10 +65,14 @@ import {
   ACTIVE_TIMER_WHERE,
   dashboardFileContained,
   describeStall,
+  HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  isUnsubmittedInputHold,
   janitor,
   resolveDashboardDir,
   STALL_BOUND_SECONDS,
   transcriptStaleness,
+  wasHeldForPaneReissue,
 } from "./scheduler.js";
 import {
   probeSessionInterpreter,
@@ -2155,6 +2159,27 @@ function cmdStatusline(): void {
   const pads = count("SELECT COUNT(*) AS n FROM scratchpads WHERE project_id = ? AND archived = 0");
   const wakes = count(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
 
+  // One statement, not two: the count and the chosen row must come from the same read, or a wake that
+  // delivers/re-arms between two separate queries leaves the second with no row to read.
+  const held = db
+    .prepare(
+      `WITH chosen AS (
+         SELECT held_reason, first_held_at FROM timers
+          WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL
+          ORDER BY (held_reason LIKE ?) DESC, first_held_at IS NULL ASC, first_held_at ASC
+          LIMIT 1
+       )
+       SELECT
+         (SELECT COUNT(*) FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL) AS n,
+         (SELECT held_reason FROM chosen) AS held_reason,
+         (SELECT first_held_at FROM chosen) AS first_held_at`,
+    )
+    .get(project.id, `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}%`, project.id) as {
+    n: number;
+    held_reason: string | null;
+    first_held_at: string | null;
+  };
+
   if (agents + commands + todos + pads + wakes === 0) return;
 
   const s = (n: number) => (n === 1 ? "" : "s");
@@ -2165,6 +2190,15 @@ function cmdStatusline(): void {
   ];
   if (commands > 0) parts.push(`${commands} cmd${s(commands)}`);
   if (wakes > 0) parts.push(`${wakes} wake${s(wakes)}`);
+  if (held.n > 0) {
+    const age = held.first_held_at ? humanizeAge(ageSecondsSince(held.first_held_at)) : "?";
+    const reason = isUnsubmittedInputHold(held.held_reason)
+      ? "typing"
+      : held.held_reason === HELD_REASON_LEAD_PANE_DEAD || wasHeldForPaneReissue(held.held_reason)
+        ? "needs you"
+        : "blocked";
+    parts.push(`${held.n} held (${age}, ${reason})`);
+  }
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
 }
 
