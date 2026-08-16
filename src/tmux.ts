@@ -3,7 +3,14 @@ import { readdirSync, realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { attachMode, AutoAttach, resolvedAutoAttach } from "./config.js";
-import { DEFAULT_DATA_DIR, dataDirTag, isDefaultStore, storeDir } from "./dataDir.js";
+import {
+  DEFAULT_DATA_DIR,
+  dataDirTag,
+  isDefaultStore,
+  isProductEntryPoint,
+  storeDir,
+  underTestRunner,
+} from "./dataDir.js";
 
 export class TmuxError extends Error {
   constructor(
@@ -42,7 +49,52 @@ export function tmuxTimeoutOverride(): number | null {
   return process.env.HIVE_TMUX_TIMEOUT_MS === undefined ? null : tmuxTimeoutMs();
 }
 
+// A third question from untrustedTmuxServer() (private socket + default store) and ensureAttached()
+// (socket alone): refuses a NON-DEFAULT store paired with the SHARED socket, the shape produced once
+// TMUX_TMPDIR has gone unreachable. See .claude/rules/store-and-datadir.md.
+//
+// A non-default HIVE_DATA_DIR is a documented user setting (README.md), not evidence of a test or a
+// hand-rolled driver on its own - namespacing session names by data-dir tag exists precisely so a
+// custom store can share the real server. So this only fires for the shapes todo 368 is actually
+// about: a test runner, or a process that is not hive's own CLI/MCP/hooks entry point at all. A real
+// `hive lead` (or any product entry point) with a custom store is exempt, matching storeDir()'s own
+// defaultStoreRefusal() reasoning one door over.
+export function scratchStoreOnSharedSocket(): boolean {
+  if (privateTmuxSocket(process.env.TMUX, process.env.TMUX_TMPDIR)) return false;
+  if (!underTestRunner() && isProductEntryPoint()) return false;
+  try {
+    return !isDefaultStore(storeDir());
+  } catch {
+
+    return false;
+  }
+}
+
+// Names whichever input tmuxSocketPath() actually decided on, not just TMUX_TMPDIR: TMUX's first
+// field wins whenever it is set, so a TMUX_TMPDIR that is itself fine can be entirely irrelevant to
+// why the socket resolved to the shared one, and blaming it anyway leaves the advice unable to clear
+// the refusal.
+function decidingTmuxInput(): string {
+  const inherited = process.env.TMUX?.split(",")[0];
+  if (inherited) return `an inherited TMUX names the shared socket directly (TMUX=${process.env.TMUX})`;
+  if (process.env.TMUX_TMPDIR) return `TMUX_TMPDIR (${process.env.TMUX_TMPDIR}) is set but unreachable`;
+  return "TMUX_TMPDIR is unset";
+}
+
+function refuseIfSharedSocketFromScratchStore(): void {
+  if (!scratchStoreOnSharedSocket()) return;
+  const resolved = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+  throw new Error(
+    `Refusing to run tmux against the shared socket ${resolved}: HIVE_DATA_DIR is a scratch store ` +
+      `(${storeDir()}) and the resolved socket is the shared one because ${decidingTmuxInput()}. Point ` +
+      "TMUX_TMPDIR at a directory this process can reach - recreate it if it was removed, or unset TMUX " +
+      "if it is what is naming the shared socket - rather than letting this call fall through to the " +
+      "server every other lead and worker on this machine depends on.",
+  );
+}
+
 export function tmux(...args: string[]): string {
+  refuseIfSharedSocketFromScratchStore();
   return tmuxWithin(tmuxTimeoutMs(), ...args);
 }
 

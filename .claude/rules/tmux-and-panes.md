@@ -89,10 +89,11 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 **IT BOUNDS THE DAMAGE AND LEAVES THE CAUSE OPEN.** `execFileSync`'s timeout kills the CHILD, not the tmux SERVER it was talking to, so a wedge now costs ten seconds per call instead of an hour of a core, and the wedged server keeps running. It REPORTS and never reaps.
 
-## Two shell traps
+## Three shell traps
 
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings. Target a session by id when its name starts with `=`.
 - **Never run `tmux kill-server`.** It takes down whatever server the ambient env points at, which during development is the session the lead and workers are running in. Tear down with `kill-session -t =<name>`.
+- **`-S` is overloaded.** In `tmux -S <path> ...` it names the socket. In `capture-pane -S -<n>` (`src/tmux.ts`'s `captureRawPane`/`inputBoxState`) it is the capture's START LINE, nothing to do with a socket. A check that scans nearby args for a bare `-S` to confirm a call is socket-pinned will misread a `capture-pane` start-line flag as one and silently stop refusing.
 
 ## All process execution goes through `execFileSync` with argument arrays
 

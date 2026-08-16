@@ -129,6 +129,28 @@ export function tmuxSocketUnder(tmuxTmpDir) {
   return join(tmuxTmpDir, `tmux-${process.getuid?.() ?? 0}`, "default");
 }
 
+function sharedTmuxSocket() {
+  return tmuxSocketUnder(realpathSync("/tmp"));
+}
+
+// Mirrors tmuxSocketPath()'s precedence (src/tmux.ts): TMUX's first field wins, else a reachable
+// TMUX_TMPDIR. Diverges on purpose where that function falls back to the shared default socket -
+// this returns null instead, so callers refuse rather than silently resolving to it. Applies to BOTH
+// branches: an inherited TMUX that happens to name the shared socket directly is exactly the "on the
+// crew's server already" case this exists to catch, not something to trust because it came from TMUX.
+export function resolvedTmuxSocket() {
+  const shared = sharedTmuxSocket();
+  const inherited = process.env.TMUX?.split(",")[0];
+  if (inherited) return inherited === shared ? null : inherited;
+  if (!process.env.TMUX_TMPDIR) return null;
+  try {
+    const resolved = tmuxSocketUnder(realpathSync(process.env.TMUX_TMPDIR));
+    return resolved === shared ? null : resolved;
+  } catch {
+    return null;
+  }
+}
+
 export function recordScratchTmuxSocket(socket) {
   if (!LEAK_MANIFEST) return;
   try {
@@ -226,9 +248,21 @@ export function isolateTmux(suite) {
   });
 
   const cleanup = (...sessions) => {
+    if (sessions.length === 0) return;
+
+    const target = resolvedTmuxSocket();
+    if (!target) {
+      console.error(
+        `${suite}: cleanup() cannot resolve a reachable tmux socket (TMUX_TMPDIR=` +
+          `${process.env.TMUX_TMPDIR ?? "unset"}); refusing to kill-session ${sessions.join(", ")} ` +
+          "rather than fall through to the shared socket.",
+      );
+      process.exitCode = 1;
+      return;
+    }
     for (const session of sessions) {
       try {
-        execFileSync("tmux", ["kill-session", "-t", `=${session}`], {
+        execFileSync("tmux", ["-S", target, "kill-session", "-t", `=${session}`], {
           stdio: "ignore",
           timeout: 5000,
           killSignal: "SIGKILL",
@@ -295,8 +329,17 @@ export function fakeFailingTmux({ failOn, stderr = "tmux: operation not permitte
   return dir;
 }
 
+// The most-used tmux helper in the suite, driving mutating verbs (kill-window, kill-pane, respawn-pane,
+// split-window, set-option, new-session...) from dozens of files - exactly the shape that needs pinning
+// most, per the same reasoning that already scopes cleanup()/createLiveAndDialogPanes()/
+// repaintPaneAsSameWorker() to helpers.mjs rather than each call site.
 export function tmux(...args) {
-  return execFileSync("tmux", args, { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" }).replace(/\n$/, "");
+  const socket = resolvedTmuxSocket();
+  if (!socket) {
+    throw new Error(`tmux(): cannot resolve a reachable tmux socket (TMUX_TMPDIR=${process.env.TMUX_TMPDIR ?? "unset"})`);
+  }
+  return execFileSync("tmux", ["-S", socket, ...args], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" })
+    .replace(/\n$/, "");
 }
 
 export function windowOwners(session) {
@@ -562,8 +605,20 @@ export function insertStateLogRow(db, actorId, event, state, agoSeconds, payload
 }
 
 export function createLiveAndDialogPanes(session, fixtureFile) {
-  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "300", "-y", "60", "sleep 600"], { stdio: "ignore" });
-  const livePane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
+  const socket = resolvedTmuxSocket();
+  if (!socket) {
+    throw new Error(
+      `createLiveAndDialogPanes: cannot resolve a reachable tmux socket (TMUX_TMPDIR=${process.env.TMUX_TMPDIR ?? "unset"})`,
+    );
+  }
+
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  execFileSync(
+    "tmux",
+    ["-S", socket, "new-session", "-d", "-s", session, "-x", "300", "-y", "60", "sleep 600"],
+    { stdio: "ignore" },
+  );
+  const livePane = execFileSync("tmux", ["-S", socket, "list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
     encoding: "utf8",
   })
     .trim()
@@ -571,6 +626,8 @@ export function createLiveAndDialogPanes(session, fixtureFile) {
   const dialogPane = execFileSync(
     "tmux",
     [
+      "-S",
+      socket,
       "new-window",
       "-t",
       `=${session}`,
@@ -604,7 +661,13 @@ export function seedLeadRow(db, projectId, projectDir, socket = "") {
 }
 
 export function repaintPaneAsSameWorker(db, target, command) {
-  execFileSync("tmux", ["respawn-pane", "-k", "-t", target, command], { stdio: "ignore" });
+  const socket = resolvedTmuxSocket();
+  if (!socket) {
+    throw new Error(
+      `repaintPaneAsSameWorker: cannot resolve a reachable tmux socket (TMUX_TMPDIR=${process.env.TMUX_TMPDIR ?? "unset"})`,
+    );
+  }
+  execFileSync("tmux", ["-S", socket, "respawn-pane", "-k", "-t", target, command], { stdio: "ignore" });
   const pid = paneField(target, "#{pane_pid}");
   assert.ok(pid, `respawn-pane left no readable pid for ${target}`);
 

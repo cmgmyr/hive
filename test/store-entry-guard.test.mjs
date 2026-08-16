@@ -126,3 +126,52 @@ describe("hive's own entry points", () => {
     assert.equal(JSON.parse(stdout), false);
   });
 });
+
+describe("scratchStoreOnSharedSocket exempts a real product entry point (todo 368 finding E)", () => {
+
+  // HIVE_DATA_DIR is a documented user setting (README.md), not evidence of a test or a hand-rolled
+  // driver on its own - hive namespaces session names by data-dir tag precisely so a custom store can
+  // share the real server. None of these fixtures touch a real tmux binary: scratchStoreOnSharedSocket()
+  // only computes paths and reads env, so no isolateTmux() is needed here.
+
+  it("does not refuse a non-default store on the shared socket from one of hive's own entry points", () => {
+    const source =
+      `process.argv[1] = ${JSON.stringify(join(DIST, "cli.js"))};\n` +
+      `const { scratchStoreOnSharedSocket } = await import("${DIST}/tmux.js");\n` +
+      `process.stdout.write(JSON.stringify(scratchStoreOnSharedSocket()));\n`;
+    const { code, stdout, stderr } = runFixture(
+      "product-entry-custom-store",
+      source,
+      { HIVE_DATA_DIR: dirs.dataDir },
+    );
+    assert.equal(code, 0, stderr);
+    assert.equal(JSON.parse(stdout), false, "a real product entry point with a custom store must not be refused");
+  });
+
+  it("still refuses the identical pairing from a hand-rolled driver - not a blanket bypass", () => {
+    const source =
+      `const { scratchStoreOnSharedSocket } = await import("${DIST}/tmux.js");\n` +
+      `process.stdout.write(JSON.stringify(scratchStoreOnSharedSocket()));\n`;
+    const { code, stdout, stderr } = runFixture(
+      "hand-rolled-custom-store",
+      source,
+      { HIVE_DATA_DIR: dirs.dataDir },
+    );
+    assert.equal(code, 0, stderr);
+    assert.equal(JSON.parse(stdout), true, "a driver outside hive's own entry points must still be refused");
+  });
+
+  it("still refuses under a test runner even from a recognised entry point", () => {
+    const source =
+      `process.argv[1] = ${JSON.stringify(join(DIST, "cli.js"))};\n` +
+      `const { scratchStoreOnSharedSocket } = await import("${DIST}/tmux.js");\n` +
+      `process.stdout.write(JSON.stringify(scratchStoreOnSharedSocket()));\n`;
+    const { code, stdout, stderr } = runFixture(
+      "product-entry-under-test-runner",
+      source,
+      { HIVE_DATA_DIR: dirs.dataDir, NODE_TEST_CONTEXT: "child-v8" },
+    );
+    assert.equal(code, 0, stderr);
+    assert.equal(JSON.parse(stdout), true, "a test runner must be refused regardless of argv[1]");
+  });
+});

@@ -169,15 +169,31 @@ jobs:
         # touches no skip condition - confirmed by inspection, since its
         # gates are all `hasTmux`, never darwin - so it carries no delta of
         # its own. CI CONFIRMS THE FINAL COUNT on push, per every bump above.
+        #
+        # 21 -> 24 (todo 368 lane 1). Three new darwin-gated cases in
+        # test/auto-attach-scope.test.mjs: round 3 of that lane narrowed the
+        # shared-socket guard's predicate and restored the file's five
+        # original ensureAttached behaviours to their end-to-end assertions,
+        # keeping the three refusal tests added along the way as ADDITIONS
+        # beside them rather than replacing anything - eight darwin-gated
+        # cases in that file now where there were five, for the identical
+        # construction reason as every other case in it. The delta is darwin
+        # gating, not coverage leaving. CI CONFIRMED THE COUNT on both Linux
+        # legs: 24 skipped against the old budget of 21.
+        #
+        # This bump is a live worked example for todo 421: the budget is a
+        # ledger you edit whenever coverage moves deliberately, the exact
+        # per-change churn that decided 421 against converting its ~136
+        # describe-level skip sites to this same it-level, budget-visible shape.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 21
+            skipped: 24
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 21
+            skipped: 24
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5

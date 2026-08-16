@@ -40,6 +40,10 @@ The refusal is the load-bearing half, since the assignment can be defeated by an
 
 This is a fourth guard, in a different layer from the three above: those three hold up test isolation, this one is about project scoping. A raw SQL mutation against the default store's database file (`~/.hive/hive.db`), issued through the Bash tool from a Claude Code session in this repo, is refused by a `PreToolUse` hook (`scripts/store-write-guard.mjs`, wired in `.claude/settings.json`). Use the tool layer instead: `pad_write`/`pad_edit`/`pad_append`, `todo_update`, `kv_set`. `HIVE_ALLOW_DEFAULT_STORE=1` is the deliberate way through, for a documented one-off.
 
+## hive's own tmux calls are refused when a scratch store would fall through to the shared socket
+
+This is a fifth guard, a different question again from the four above: the first three hold up test isolation and the fourth is about project scoping, this one is about which tmux SERVER a scratch-store process ends up talking to. `tmux()`'s `scratchStoreOnSharedSocket()` check (`src/tmux.ts`) refuses hive's own tmux calls outright when a scratch `HIVE_DATA_DIR` is paired with a resolved socket that is the shared one - the shape `tmuxSocketPath()` produces once `TMUX_TMPDIR` has gone unreachable, was never set, or an inherited `TMUX` names the shared socket directly. A different question from `untrustedTmuxServer()` (`.claude/rules/tmux-and-panes.md`): that refuses a private socket plus the DEFAULT store; this refuses the shared socket plus a SCRATCH store, and stays silent whenever the resolved socket is already private - the pairing the whole suite depends on. It sits on `tmux()` only, not on the lower-level `tmuxWithin()` that `orphanScratchServers()` calls directly with its own explicit `-S` - that call is pinned by construction and does not need this guard.
+
 ## Migrations are append-only
 
 Never edit an existing entry in `MIGRATIONS`; add a new one.

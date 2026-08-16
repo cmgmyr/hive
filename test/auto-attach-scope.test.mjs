@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { isolateTmux, scratchDirs, withEnv } from "./helpers.mjs";
+import { DIST, isolateTmux, scratchDirs, withEnv } from "./helpers.mjs";
 
 const { hasTmux } = isolateTmux("auto-attach scope");
 
@@ -62,7 +62,7 @@ chmodSync(join(bin, "osascript"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
 const { setAutoAttach } = await import("../dist/config.js");
-const { autoAttachProbe, defaultTmuxSocketPath, ensureAttached } = await import("../dist/tmux.js");
+const { autoAttachProbe, defaultTmuxSocketPath, ensureAttached, privateTmuxSocket } = await import("../dist/tmux.js");
 
 const ON_DEFAULT_SOCKET = { TMUX: `${defaultTmuxSocketPath()},1,0` };
 
@@ -97,6 +97,28 @@ const probes = () => read(PROBES).trim().split("\n").filter(Boolean);
 
 const attachFrom = (socket, session) => withEnv(socket, () => ensureAttached(session));
 
+// todo 368 finding E: scratchStoreOnSharedSocket() exempts a real product entry point outside a test
+// runner, so ensureAttached()'s probe can be reached without touching HIVE_DATA_DIR at all - keeping
+// this file's own scratch store in place, which is what resolvedAutoAttach()/resolvedAttachMode()/
+// dataDirTag() need to succeed (none of them refuse a non-default path, under a test runner or not).
+// underTestRunner() checks NODE_TEST_CONTEXT first; this node's own --test invocation does not put a
+// literal "--test" in process.execArgv (measured), so deleting the env var alone is enough here. If a
+// future node version changes that, this fails LOUD (the guard refuses again) rather than silently.
+function asProductEntryPoint(fn) {
+  const savedArgv1 = process.argv[1];
+  const savedNodeTestContext = process.env.NODE_TEST_CONTEXT;
+  process.argv[1] = join(DIST, "cli.js");
+  delete process.env.NODE_TEST_CONTEXT;
+  try {
+    return fn();
+  } finally {
+    process.argv[1] = savedArgv1;
+    if (savedNodeTestContext !== undefined) process.env.NODE_TEST_CONTEXT = savedNodeTestContext;
+  }
+}
+const attachFromAsProductEntry = (socket, session) =>
+  withEnv(socket, () => asProductEntryPoint(() => ensureAttached(session)));
+
 describe("which clients auto-attach counts", () => {
   it("names the probe per mode", () => {
     assert.deepEqual(autoAttachProbe("on", "hive-1"), ["list-clients", "-t", "=hive-1"]);
@@ -111,7 +133,7 @@ describe("which clients auto-attach counts", () => {
     { skip: runnable ? false : "darwin-only behaviour" },
     () => {
       world({ mode: "auto", sessionClients: false, serverClients: true });
-      attachFrom(ON_DEFAULT_SOCKET, "hive-1");
+      attachFromAsProductEntry(ON_DEFAULT_SOCKET, "hive-1");
       assert.equal(openedAWindow(), false, "this is the case that opened a window on every spawn");
       assert.deepEqual(probes(), ["list-clients"], "auto must ask the server, never one session");
     },
@@ -122,7 +144,7 @@ describe("which clients auto-attach counts", () => {
     { skip: runnable ? false : "darwin-only behaviour" },
     () => {
       world({ mode: "auto", sessionClients: false, serverClients: false });
-      attachFrom(ON_DEFAULT_SOCKET, "hive-1");
+      attachFromAsProductEntry(ON_DEFAULT_SOCKET, "hive-1");
       assert.equal(openedAWindow(), true);
     },
   );
@@ -132,7 +154,7 @@ describe("which clients auto-attach counts", () => {
     { skip: runnable ? false : "darwin-only behaviour" },
     () => {
       world({ mode: "on", sessionClients: false, serverClients: true });
-      attachFrom(ON_DEFAULT_SOCKET, "hive-1");
+      attachFromAsProductEntry(ON_DEFAULT_SOCKET, "hive-1");
       assert.equal(openedAWindow(), true);
 
       const seen = probes();
@@ -148,12 +170,14 @@ describe("which clients auto-attach counts", () => {
     () => {
 
       world({ mode: "on", sessionClients: false, serverClients: true });
-      withEnv({ ...ON_DEFAULT_SOCKET, HIVE_TEST_HANG_HAS_SESSION: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
-        assert.doesNotThrow(
-          () => ensureAttached("hive-1"),
-          "auto-attach is best-effort; a wedged server must not fail a spawn that already succeeded",
-        );
-      });
+      withEnv({ ...ON_DEFAULT_SOCKET, HIVE_TEST_HANG_HAS_SESSION: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, () =>
+        asProductEntryPoint(() => {
+          assert.doesNotThrow(
+            () => ensureAttached("hive-1"),
+            "auto-attach is best-effort; a wedged server must not fail a spawn that already succeeded",
+          );
+        }),
+      );
       assert.equal(openedAWindow(), false, "with no view name there is nothing to open");
 
       const seen = probes();
@@ -167,9 +191,43 @@ describe("which clients auto-attach counts", () => {
     { skip: runnable ? false : "darwin-only behaviour" },
     () => {
       world({ mode: "off", sessionClients: false, serverClients: false });
-      attachFrom(ON_DEFAULT_SOCKET, "hive-1");
+      attachFromAsProductEntry(ON_DEFAULT_SOCKET, "hive-1");
       assert.equal(openedAWindow(), false);
       assert.deepEqual(probes(), [], "off must short-circuit before probing");
+    },
+  );
+});
+
+describe("the shared-socket/scratch-store pair itself is refused (todo 368)", () => {
+  const runnable = process.platform === "darwin" && hasTmux;
+
+  // Unlike the block above, these use attachFrom (this file's ordinary scratch store, still under the
+  // test runner) to demonstrate the guard actually firing, rather than routing around it.
+
+  it(
+    "auto refuses before probing under the scratch-store/shared-socket pair",
+    { skip: runnable ? false : "darwin-only behaviour" },
+    () => {
+      world({ mode: "auto", sessionClients: false, serverClients: true });
+      attachFrom(ON_DEFAULT_SOCKET, "hive-1");
+      assert.equal(openedAWindow(), false);
+      assert.deepEqual(probes(), [], "the todo 368 guard must refuse before asking tmux anything");
+    },
+  );
+
+  it(
+    "the refusal itself does not throw out of ensureAttached, matching wedge handling",
+    { skip: runnable ? false : "darwin-only behaviour" },
+    () => {
+      world({ mode: "on", sessionClients: false, serverClients: true });
+      withEnv({ ...ON_DEFAULT_SOCKET, HIVE_TEST_HANG_HAS_SESSION: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
+        assert.doesNotThrow(
+          () => ensureAttached("hive-1"),
+          "auto-attach is best-effort; a refusal must not throw out any more than a wedge would",
+        );
+      });
+      assert.equal(openedAWindow(), false);
+      assert.deepEqual(probes(), [], "the guard refuses before the client probe that used to answer first");
     },
   );
 });
@@ -207,9 +265,35 @@ describe("a private tmux socket refuses to attach at all (todo 355)", () => {
     () => {
 
       world({ mode: "auto", sessionClients: false, serverClients: false });
-      attachFrom(NO_TMUX_ENV, "hive-1");
+      attachFromAsProductEntry(NO_TMUX_ENV, "hive-1");
       assert.equal(openedAWindow(), true, "the guard must not reach the ordinary case");
       assert.equal(probes()[0], "list-clients", "and it must reach the probe to get there");
+    },
+  );
+
+  it(
+    "todo 355's own guard - privateTmuxSocket - reads the ordinary no-tmux-env case as NOT private, straight from the predicate",
+    () => {
+      // Belt and suspenders alongside the end-to-end test above: pins the same invariant directly
+      // against todo 355's own predicate, matching "names the probe per mode" for autoAttachProbe.
+      assert.equal(privateTmuxSocket(undefined, undefined), false, "todo 355's guard must not treat no tmux env at all as private");
+    },
+  );
+
+  it(
+    "with no tmux environment at all but THIS file's necessarily-scratch store, todo 368's guard refuses where todo 355's does not",
+    { skip: runnable ? false : "darwin-only behaviour" },
+    () => {
+
+      // A real ordinary spawn has no TMUX env AND the real default store, which neither guard refuses -
+      // confirmed directly above via privateTmuxSocket() itself. A test-runner process can never
+      // legitimately point at the real default store (store-and-datadir.md), so this uses the file's
+      // own ordinary scratch one instead, to show todo 368's guard catching what todo 355's
+      // deliberately does not: a scratch store that would otherwise reach the shared socket unguarded.
+      world({ mode: "auto", sessionClients: false, serverClients: false });
+      attachFrom(NO_TMUX_ENV, "hive-1");
+      assert.equal(openedAWindow(), false);
+      assert.deepEqual(probes(), [], "todo 355's socket-only guard is not what stops this - todo 368's store pairing is");
     },
   );
 });

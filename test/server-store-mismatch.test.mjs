@@ -21,8 +21,10 @@ const {
   ensureSession,
   liveTargets,
   privateTmuxSocket,
+  scratchStoreOnSharedSocket,
   sessionName,
   targetLive,
+  tmux,
   tmuxSocketPath,
   untrustedTmuxServer,
 } = await import("../dist/tmux.js");
@@ -223,6 +225,90 @@ describe("hive refuses to read liveness off a tmux server its store does not liv
     });
   });
 });
+
+describe(
+  "hive refuses its own tmux calls when a scratch store's socket falls through to the shared one (todo 368)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    // A third question, not a widening of either guard above: untrustedTmuxServer() refuses a PRIVATE
+    // socket paired with the DEFAULT store; this refuses the DEFAULT socket paired with a SCRATCH
+    // store - the shape produced when TMUX_TMPDIR is set but its directory has gone unreachable.
+
+    it("allows the suite's own configuration: private tmux AND a scratch store", () => {
+
+      assert.equal(scratchStoreOnSharedSocket(), false);
+      assert.doesNotThrow(() => tmux("list-sessions"));
+    });
+
+    it("refuses when a scratch store's TMUX_TMPDIR is unset, so the socket falls through to the shared one", () => {
+
+      withTmuxTmpDir(undefined, () => {
+        assert.equal(scratchStoreOnSharedSocket(), true);
+        assert.throws(() => tmux("list-sessions"), /Refusing to run tmux against the shared socket/);
+      });
+    });
+
+    it("refuses when a scratch store's TMUX_TMPDIR points at a directory that has gone unreachable - the measured mechanism behind comment 1088", () => {
+
+      const missing = join(tmpdir(), `hive-368-missing-${process.pid}`);
+      assert.equal(existsSync(missing), false, "precondition: the directory is not there");
+      withTmuxTmpDir(missing, () => {
+        assert.equal(scratchStoreOnSharedSocket(), true);
+        assert.throws(() => tmux("list-sessions"), /Refusing to run tmux against the shared socket/);
+      });
+    });
+
+    it("fails open (does not refuse) when storeDir() itself cannot be resolved, e.g. under a test runner - a guard that cannot tell what store it is on must not refuse", () => {
+
+      // Not a pin of a genuine default store: storeDir() refuses the default path outright under a
+      // test runner, so this always hits the catch branch, never isDefaultStore(storeDir()) itself.
+      // That branch cannot be reached from any test runner at all; isDefaultStore(DEFAULT_DATA_DIR) is
+      // pinned directly elsewhere instead (test/isolated-hive.test.mjs, test/store-isolation.test.mjs).
+      withTmuxTmpDir(undefined, () => {
+        assert.equal(asDefaultStore(() => scratchStoreOnSharedSocket()), false);
+      });
+    });
+
+    it("names both halves in the message, so the way out is obvious", () => {
+
+      let message = "";
+      withTmuxTmpDir(undefined, () => {
+        try {
+          tmux("list-sessions");
+        } catch (e) {
+          message = e.message;
+        }
+      });
+      assert.match(message, /TMUX_TMPDIR/, "names the tmux half");
+      assert.match(message, /HIVE_DATA_DIR is a/, "names the store half");
+    });
+
+    it("blames the deciding input, not TMUX_TMPDIR, when an inherited TMUX is what actually named the shared socket (todo 368 finding H)", () => {
+
+      const scratch = mkdtempSync(join(tmpdir(), "hive-368-reachable-"));
+      try {
+        let message = "";
+        withEnv({ TMUX: paneOn(defaultTmuxSocketPath()), TMUX_TMPDIR: scratch }, () => {
+          try {
+            tmux("list-sessions");
+          } catch (e) {
+            message = e.message;
+          }
+        });
+        assert.match(message, /an inherited TMUX names the shared socket directly/, message);
+        assert.match(message, new RegExp(`TMUX=${paneOn(defaultTmuxSocketPath()).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), message);
+        assert.doesNotMatch(
+          message,
+          /TMUX_TMPDIR \(.*\) is set but unreachable/,
+          `TMUX_TMPDIR (${scratch}) is reachable and irrelevant here - blaming it cannot clear the refusal: ${message}`,
+        );
+        assert.match(message, new RegExp(defaultTmuxSocketPath().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "names the resolved socket");
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    });
+  },
+);
 
 describe(
   "an empty tmux_target is never live (todo 180)",
