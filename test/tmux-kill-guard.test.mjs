@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -190,6 +191,44 @@ describe("wrapper: allows via exit 0 and no output", () => {
   it("an ordinary command", () => {
     const result = runGuard("echo hello");
     assert.equal(result.status, 0);
+  });
+});
+
+function runGuardViaSymlink(command) {
+  const dir = mkdtempSync(join(tmpdir(), "hive-tmux-guard-symlink-"));
+  const link = join(dir, "tmux-kill-guard.mjs");
+  symlinkSync(GUARD_SCRIPT, link);
+  try {
+    const stdout = execFileSync("node", [link], {
+      input: JSON.stringify({ tool_input: { command } }),
+      encoding: "utf8",
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    return { status: err.status, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
+describe("wrapper: entry-point detection survives a symlinked invocation path, review round 2 finding 2", () => {
+  it("still denies a bare kill-server when node is invoked through a symlink to the guard", () => {
+    const result = runGuardViaSymlink("tmux kill-server");
+    assert.equal(result.status, 2, "a symlinked invocation must not fail open");
+    assert.match(result.stderr, /BLOCKED/);
+  });
+});
+
+describe("module load: does not throw when process.argv[1] is unusable, review round 3", () => {
+  it("importing the module the way `node -e` does (no real argv[1]) succeeds and exports classify", () => {
+    const result = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import(${JSON.stringify(GUARD_SCRIPT)}).then(m => console.log(typeof m.classify)).catch(e => { console.error(e.message); process.exit(1); })`,
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.trim(), "function");
   });
 });
 

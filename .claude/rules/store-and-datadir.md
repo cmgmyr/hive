@@ -36,6 +36,10 @@ if (!db.name.startsWith(scratchDataDir)) throw new Error(`refusing: opened ${db.
 
 The refusal is the load-bearing half, since the assignment can be defeated by an import that is hoisted above it.
 
+## A raw SQL write to the default store's database file is denied before it runs
+
+This is a fourth guard, in a different layer from the three above: those three hold up test isolation, this one is about project scoping. A raw SQL mutation against the default store's database file (`~/.hive/hive.db`), issued through the Bash tool from a Claude Code session in this repo, is refused by a `PreToolUse` hook (`scripts/store-write-guard.mjs`, wired in `.claude/settings.json`). Use the tool layer instead: `pad_write`/`pad_edit`/`pad_append`, `todo_update`, `kv_set`. `HIVE_ALLOW_DEFAULT_STORE=1` is the deliberate way through, for a documented one-off.
+
 ## Migrations are append-only
 
 Never edit an existing entry in `MIGRATIONS`; add a new one.

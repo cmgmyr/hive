@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 function splitSegments(command) {
   return command.split(/[;&|\n]+/);
@@ -72,6 +73,19 @@ function main() {
   process.exit(0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isDirectInvocation() {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(argv1) === fileURLToPath(import.meta.url);
+  } catch {
+    // realpathSync throws on a path that does not resolve (e.g. argv1 stringified from
+    // undefined under `node -e`); a throw here is a module-load crash the hook contract
+    // cannot see as a denial, so treat "can't tell" the same as "not the entry point".
+    return false;
+  }
+}
+
+if (isDirectInvocation()) {
   main();
 }
