@@ -1,9 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { HELP_TOPICS } from "./help.js";
 
-// Playbooks surface as slash commands in MCP clients (Claude Code shows
-// them as /mcp__hive__<name>), giving the daily rituals a first-class
-// trigger instead of relying on the model noticing server instructions.
 const PLAYBOOKS: { name: string; description: string; text: string }[] = [
   {
     name: "triage",

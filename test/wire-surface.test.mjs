@@ -216,7 +216,15 @@ describe("MCP wire surface", () => {
   // It scans COMMENTS as well as strings, on purpose: this project treats a
   // comment as an assertion (.claude/sessions/decisions/2026-08-09-a-comment-
   // is-an-assertion.md), and a comment teaching the wrong call is wrong in the
-  // same way a body is, just cheaper.
+  // same way a body is, just cheaper. src/ carries no comments as of todo 436,
+  // so today it reads strings alone; the comment arm stays for the backfill.
+  //
+  // It also carried an exemption for the one DELIBERATE bad call in the tree -
+  // src/strictInput.ts quoted `pad_delete({expected_revison: 3})`, the
+  // misspelling that motivated strict parsing. That comment is now in
+  // docs/attic/src__strictInput.ts.md and the exemption went with it. Restore
+  // both together or neither: an allowlist covering nothing is the rot the
+  // present-assertion beside it existed to catch.
   it("every tool call hive suggests in its own source names real parameters", async () => {
     const listed = await mcp.request("tools/list", {});
     const declared = new Map(
@@ -230,14 +238,6 @@ describe("MCP wire surface", () => {
     const files = readdirSync(dir, { recursive: true })
       .filter((f) => f.endsWith(".ts"))
       .map((f) => join(dir, f));
-    // THE ONE DELIBERATE COUNTER-EXAMPLE IN THE TREE. src/strictInput.ts's own
-    // comment quotes `pad_delete({pad_id: 7, expected_revison: 3})` - the
-    // misspelling that motivated strict parsing - so it is a bad key on
-    // purpose, and it is prose ABOUT a refused call rather than an instruction
-    // to make one. Exempted by exact string, and asserted to still be present
-    // below: an allowlist that silently covers nothing after a rewording is
-    // the same rot as a stale comment.
-    const DELIBERATE = "src/strictInput.ts: pad_delete(expected_revison: ...)";
     const offenders = [];
     let checked = 0;
     for (const file of files) {
@@ -260,12 +260,8 @@ describe("MCP wire surface", () => {
     // Guards against a vacuous pass: a regex that stopped matching anything at
     // all would report no offenders and look exactly like a clean tree.
     assert.ok(checked > 10, `only ${checked} suggested parameters found; this assertion has stopped matching`);
-    assert.ok(
-      offenders.includes(DELIBERATE),
-      `the deliberate counter-example in ${DELIBERATE.split(":")[0]} is no longer found; re-read it and update or drop the exemption`,
-    );
     assert.deepEqual(
-      offenders.filter((o) => o !== DELIBERATE),
+      offenders,
       [],
       `these suggested calls name parameters no tool declares, and would be refused with a -32602: ${offenders.join(", ")}`,
     );

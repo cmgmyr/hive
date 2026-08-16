@@ -13,11 +13,6 @@ import { registerPrompts } from "./prompts.js";
 import { startScheduler } from "./scheduler.js";
 import { enforceStrictInput } from "./strictInput.js";
 
-// Every tool registered below refuses an argument key it does not declare,
-// instead of letting zod strip it silently. The reasoning is in
-// src/strictInput.ts. Wrapped around the constructor rather than applied on
-// the next line so there is no name in this file for an unwrapped server, and
-// registering before the wrapper is in place cannot be written by accident.
 const server = enforceStrictInput(
   new McpServer(
     { name: "hive", version: "0.1.0" },

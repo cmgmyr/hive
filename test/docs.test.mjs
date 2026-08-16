@@ -15,6 +15,14 @@ after(() => cleanupTmux());
 const dirs = scratchDirs();
 const REPO = new URL("..", import.meta.url).pathname;
 const readRepo = (file) => readFileSync(join(REPO, file), "utf8");
+// A rule is now TWO files: the eager prohibitions under .claude/rules/ and the
+// evidence behind them in the hive-internals skill, which loads only when
+// something invokes it (todo 437). The assertions below pin that a claim is
+// WRITTEN DOWN and that what it cites exists - questions about the pair, not
+// about which half a sentence landed in. Asserting against the remnant alone
+// would make every future move of a paragraph between the two a test failure.
+const readRuleAndReference = (name) =>
+  readRepo(`.claude/rules/${name}`) + "\n" + readRepo(`.claude/skills/hive-internals/references/${name}`);
 // Shared by the CLAUDE.md-table-vs-frontmatter pin below and its red-proof:
 // both pull the list of backtick-quoted globs out of one table cell's text.
 const backtickPaths = (cell) => [...cell.matchAll(/`([^`]+)`/g)].map((m) => m[1]).sort();
@@ -144,7 +152,7 @@ describe("docs keep up with the CLI", () => {
     // cares which interpreter built it - the rule's opening claim changed
     // with it (see the rule itself for the measurement). The lazy-binding
     // trap this test exists for is unchanged, so that half is still pinned.
-    const rule = readRepo(".claude/rules/native-addon.md");
+    const rule = readRuleAndReference("native-addon.md");
     assert.match(rule, /deliberately ABI-stable across Node majors/);
     assert.match(rule, /does NOT load the addon/);
     assert.match(rule, /binding loads lazily inside `new Database\(\)`/);
@@ -168,7 +176,7 @@ describe("docs keep up with the CLI", () => {
     // it was a convention, and it was false on the day it mattered. The
     // invariant names what enforces it instead, which is only worth more than
     // the old sentence for as long as the things it names are real.
-    const rule = readRepo(".claude/rules/store-and-datadir.md");
+    const rule = readRuleAndReference("store-and-datadir.md");
     assert.match(rule, /Test isolation is enforced, not conventional/);
     assert.match(rule, /The data dir is read at call time/);
     // The exact old claim, not the phrase: the rule quotes it to say what it
@@ -215,9 +223,19 @@ describe("docs keep up with the CLI", () => {
       }
 
       // 3. Every repo path the prose cites must exist, same as for CLAUDE.md.
-      const cited = new Set([...body.matchAll(/`((?:src|test)\/[\w./-]+\.(?:ts|mjs))`/g)].map((m) => m[1]));
+      // OVER THE PAIR, not the remnant. Todo 437 moved the evidence into the
+      // skill and took 68 of the 78 citations with it, leaving 10 under this
+      // check: rename src/firstPrompt.ts and six references would go on citing
+      // a file that does not exist, with the suite green, which is the exact
+      // rot this is for. The reference half is required to exist, so a rule
+      // shipped without one fails here rather than silently losing its
+      // evidence.
+      const referencePath = `.claude/skills/hive-internals/references/${name}`;
+      assert.ok(existsSync(join(REPO, referencePath)), `${name} has no reference half at ${referencePath}`);
+      const pair = body + "\n" + readRepo(referencePath);
+      const cited = new Set([...pair.matchAll(/`((?:src|test)\/[\w./-]+\.(?:ts|mjs))`/g)].map((m) => m[1]));
       for (const path of cited) {
-        assert.ok(existsSync(join(REPO, path)), `${name} cites ${path}, which does not exist`);
+        assert.ok(existsSync(join(REPO, path)), `${name} or its reference cites ${path}, which does not exist`);
       }
 
       // 4. A rule the root does not index is invisible while planning, which
@@ -325,6 +343,15 @@ describe("docs keep up with the CLI", () => {
     const srcAgents = readRepo("src/AGENTS.md");
     for (const name of globSync("*.md", { cwd: join(REPO, ".claude/rules") })) {
       assert.match(srcAgents, new RegExp(name.replace(".", "\\.")), `src/AGENTS.md does not name ${name}`);
+      // Codex also has no skill mechanism, so the evidence behind each rule
+      // (todo 437) is equally invisible unless this file names the reference
+      // path beside it.
+      const refName = name.replace(/\.md$/, "");
+      assert.match(
+        srcAgents,
+        new RegExp(`references/${refName}\\.md`),
+        `src/AGENTS.md does not name the hive-internals reference for ${name}`,
+      );
     }
   });
 

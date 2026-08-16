@@ -1,5 +1,3 @@
-// A function so the topic list is derived from HELP_TOPICS (defined below)
-// and cannot drift.
 export function helpOverview(): string {
   return `HIVE — shared memory and coordination across Claude Code sessions
 

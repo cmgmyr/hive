@@ -621,10 +621,13 @@ describe("against the real repo", () => {
   // cross-coverage from test/docs.test.mjs's own unconditional reads
   // (counselors, todo 354).
   it("loads CLAUDE.md and every real docs/*.md file, not silently fewer", () => {
-    // Todo 380/382/383 split the README into docs/*.md pages, every one of
-    // which matches tmux-and-panes.md's own "docs/*.md" glob same as
+    // Todo 380/382/383 split the README into docs/*.md pages. Every one of
+    // them used to match tmux-and-panes.md's own "docs/*.md" glob, same as
     // docs/tmux.md already did - the "mildly wasteful and not a defect" cost
-    // the plan pad for todo 380 already named.
+    // the plan pad for todo 380 already named. Todo 437 dropped that glob
+    // (a prohibition about panes does not need to fire on a doc file), so
+    // this loop is now direct coverage of CLAUDE.md's docs list rather than
+    // incidental cross-coverage of a rule's frontmatter.
     //
     // docs/reviewer-preamble.md moved to .github/docs/reviewer-preamble.md
     // in the same lane (todo 383, from Chris): it briefs the PR review

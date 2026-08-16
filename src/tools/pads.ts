@@ -31,24 +31,10 @@ function getPad(projectId: number, padId: number): PadRow {
   return selectPad<PadRow>(projectId, padId, "*");
 }
 
-// Pads hold the large blobs in this store; mutations that never touch the
-// content skip fetching it. Exported for test/pad-revision-race.test.mjs:
-// the real race window is a handful of synchronous SQL statements wide,
-// too narrow to hit reliably by racing two real OS processes (their IPC and
-// scheduling jitter is milliseconds; the window is sub-microsecond), so that
-// test reconstructs the interleaving directly by calling this and bumpPad
-// as a deliberately-raced pair of sessions rather than chasing a flaky
-// racer - see that file's own comment.
 export function getPadMeta(projectId: number, padId: number): PadMeta {
   return selectPad<PadMeta>(projectId, padId, "id, name, revision, archived");
 }
 
-// Shared by checkRevision's early check and bumpPad/deletePad's SQL-level
-// guard below, so a caller sees the same sentence whether the mismatch was
-// visible from our own read or only showed up in the WHERE clause. `current
-// == null` means the row is gone entirely (deleted by a concurrent write
-// between our read and this one), which is a different fact than a changed
-// revision and gets its own message.
 function revisionMismatchError(padId: number, expected: number | undefined, current: number | null): Error {
   if (current == null) {
     return new Error(
@@ -67,19 +53,12 @@ function currentRevisionOrDeleted(padId: number): number | null {
   return row?.revision ?? null;
 }
 
-// Shared by bumpPad and pad_delete's own guarded DELETE: both run a
-// predicate-conditioned write and need the identical "0 rows changed" throw.
 function assertRowChanged(padId: number, predicateRevision: number | undefined, changed: boolean): void {
   if (!changed) {
     throw revisionMismatchError(padId, predicateRevision, currentRevisionOrDeleted(padId));
   }
 }
 
-// The friendly PRE-check: rejects early, with a clear message, when the
-// caller supplied expected_revision and it already disagrees with our own
-// read. This cannot be the actual guard - another write can still land
-// between this check and the UPDATE below - so bumpPad's WHERE clause is
-// what a concurrent write is actually checked against.
 function checkRevision(pad: PadMeta, expected: number | undefined, required: boolean): void {
   if (expected == null) {
     if (required) {
@@ -94,17 +73,6 @@ function checkRevision(pad: PadMeta, expected: number | undefined, required: boo
   }
 }
 
-// Every pad mutation bumps the revision and stamps the writer. When
-// predicateRevision is given, the UPDATE itself is conditioned on it (`AND
-// revision = ?`), so a write that raced in between checkRevision's read and
-// this statement makes THIS call a no-op instead of silently overwriting it
-// - the actual guard, not just the friendly pre-check above. RETURNING hands
-// back the authoritative post-write revision instead of a value computed
-// from a stale read, which is also why a caller with no predicate (pad_append
-// with no expected_revision, pad_archive) still goes through this path
-// rather than a bare .run(): the previous version discarded the write's own
-// row count and could report success for zero rows changed. Exported for the
-// same test as getPadMeta above.
 export function bumpPad(padId: number, predicateRevision: number | undefined, set: string, ...params: unknown[]): number {
   const where = predicateRevision != null ? "id = ? AND revision = ?" : "id = ?";
   const whereParams = predicateRevision != null ? [padId, predicateRevision] : [padId];
@@ -118,29 +86,15 @@ export function bumpPad(padId: number, predicateRevision: number | undefined, se
   return row!.revision;
 }
 
-// pad_append's own content concatenation is safe against the live column, but
-// the SEPARATOR used to be decided in JS from `pad.content` AS READ - a
-// `joined` variable computed once, well before this statement runs. Two
-// sessions both reading content that ends in a newline both decide joined = "",
-// and whichever writes second glues its entry onto the first's with no
-// separator at all ("alpha\n" + A's "" + "A-entry" landing on top of B's own
-// already-appended "alpha\nB-entry" produces "alpha\nB-entryA-entry"). The CASE
-// here reads the live `content` column in the SAME statement as the append, so
-// there is no read-then-decide step left to go stale - exactly the property
-// pad_append already had for the append itself, extended to the separator too.
-// Exported so test/pad-append-live-separator.test.mjs exercises the real
-// fragment rather than a copy of it.
 export const APPEND_WITH_SEPARATOR_SET =
   "content = content || (CASE WHEN content = '' OR substr(content, -1) = char(10) THEN '' ELSE char(10) END) || ?";
 
-// Shared with the CLI (hive pad): exact-name lookup among active pads.
 export function getActivePadByName(projectId: number, name: string): PadRow | undefined {
   return db
     .prepare("SELECT * FROM scratchpads WHERE project_id = ? AND name = ? AND archived = 0")
     .get(projectId, name) as PadRow | undefined;
 }
 
-// Shared with the CLI (hive pads).
 export type PadListRow = Pick<PadRow, "name" | "revision" | "updated_by" | "updated_at"> & {
   content_length: number;
 };
@@ -154,8 +108,6 @@ export function listActivePads(projectId: number): PadListRow[] {
     .all(projectId) as PadListRow[];
 }
 
-// Shared with the CLI (hive pad --save): revision-guarded overwrite.
-// Returns the new revision.
 export function overwritePadContent(
   projectId: number,
   padId: number,
@@ -167,8 +119,6 @@ export function overwritePadContent(
   return bumpPad(padId, pad.revision, "content = ?", content);
 }
 
-// Shared with the CLI (hive init). Returns null when an active pad already
-// holds the name; the partial unique index enforces that race-free.
 export function createPad(
   projectId: number,
   name: string,
@@ -279,20 +229,10 @@ export function registerPads(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
-        // getPadMeta, not getPad: content is no longer read in JS at all
-        // (see APPEND_WITH_SEPARATOR_SET) now that the separator decision
-        // moved into the write statement itself, so there is nothing left
-        // here that needs the content column.
+
         const pad = getPadMeta(projectId, args.pad_id);
         checkRevision(pad, args.expected_revision, false);
-        // Predicate is the CALLER'S expected_revision, not our own read: the
-        // append itself concatenates in SQL against the live row, so it never
-        // clobbers a concurrent change and needs no guard when the caller
-        // did not ask for one. When they did, the predicate closes the gap
-        // between checkRevision's read above and this statement. The
-        // separator is decided in the same statement too (see
-        // APPEND_WITH_SEPARATOR_SET) - not from `pad.content` above, which
-        // may already be stale by the time this runs.
+
         const revision = bumpPad(pad.id, args.expected_revision, APPEND_WITH_SEPARATOR_SET, args.content);
         return { pad_id: pad.id, revision };
       }),
@@ -326,12 +266,7 @@ export function registerPads(server: McpServer): void {
             `old_text matches ${occurrences} places in pad ${pad.id}. Include more surrounding context so it matches exactly once.`,
           );
         }
-        // Predicate is ALWAYS our own read revision, expected_revision or
-        // not: old_text/new_text is computed here in JS against pad.content
-        // as read above, so a write is lost exactly like pad_write's full
-        // overwrite would be if this UPDATE were unconditional. An omitted
-        // expected_revision means the caller stated no expectation, not that
-        // losing a concurrent write is fine.
+
         const revision = bumpPad(pad.id, pad.revision, "content = ?", parts.join(args.new_text));
         return { pad_id: pad.id, revision };
       }),
@@ -358,10 +293,7 @@ export function registerPads(server: McpServer): void {
         }
         let revision: number;
         try {
-          // No predicate: archived is a metadata flag, not content, so a
-          // lost race here at worst flips it back and forth rather than
-          // destroying anything - out of this fix's scope (issue
-          // #148 names pads.ts's content-rewriting writes, not this one).
+
           revision = bumpPad(pad.id, undefined, "archived = ?", archived ? 1 : 0);
         } catch (e) {
           if (e instanceof Error && e.message.includes("UNIQUE")) {
@@ -391,10 +323,7 @@ export function registerPads(server: McpServer): void {
         const projectId = effectiveProjectId(args.project_id);
         const pad = getPadMeta(projectId, args.pad_id);
         checkRevision(pad, args.expected_revision, false);
-        // Predicate is always our own read revision, same reasoning as
-        // pad_edit: delete is irreversible, so "expected_revision guards
-        // against deleting a pad someone just updated" (the tool's own
-        // description) has to hold whether or not the caller passed one.
+
         const info = db.prepare("DELETE FROM scratchpads WHERE id = ? AND revision = ?").run(pad.id, pad.revision);
         assertRowChanged(pad.id, pad.revision, info.changes > 0);
         return { pad_id: pad.id, deleted: true };
@@ -420,8 +349,7 @@ export function registerPads(server: McpServer): void {
         const project = resolveProject(args.project_id);
         const limit = Math.min(args.limit ?? 50, 200);
         const offset = args.offset ?? 0;
-        // Pads hold the large blobs in this store; only pull content when a
-        // query needs a snippet.
+
         const columns = `id, name, revision, tags, archived, updated_by, updated_at,
           length(content) AS content_length${args.query ? ", content" : ""}`;
         let sql = `SELECT ${columns} FROM scratchpads WHERE project_id = ?`;
