@@ -175,8 +175,8 @@ jobs:
         # shared-socket guard's predicate and restored the file's five
         # original ensureAttached behaviours to their end-to-end assertions,
         # keeping the three refusal tests added along the way as ADDITIONS
-        # beside them rather than replacing anything - eight darwin-gated
-        # cases in that file now where there were five, for the identical
+        # beside them rather than replacing anything - eleven darwin-gated
+        # cases in that file now where there were eight, for the identical
         # construction reason as every other case in it. The delta is darwin
         # gating, not coverage leaving. CI CONFIRMED THE COUNT on both Linux
         # legs: 24 skipped against the old budget of 21.
@@ -304,8 +304,10 @@ jobs:
   # legs' steps or their `if:` at all.
   #
   # WHAT THIS COVERS THAT `test` NOW CANNOT: test/auto-attach-scope.test.mjs's
-  # four darwin-only cases (ensureAttached is a no-op off darwin, so Linux
-  # skips them by design - `skipped: 4` there, `skipped: 0` here), and a
+  # eleven darwin-only cases (ensureAttached is a no-op off darwin, so Linux
+  # skips them by design - they are the largest contributor to the Linux legs'
+  # `skipped: 24`, which also counts dashboard-open, dashboard-open-lead and
+  # open-call-guard; `skipped: 0` here), and a
   # clean-environment build of the native addon on the platform hive actually
   # ships on. Everything else - the addon's ABI logic, the CLI, the MCP tools
   # - is architecture-general and the Linux legs already cover it on every

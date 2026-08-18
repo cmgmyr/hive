@@ -307,6 +307,24 @@ describe(
         rmSync(scratch, { recursive: true, force: true });
       }
     });
+
+    it("does not call a REACHABLE TMUX_TMPDIR unreachable when it is the shared socket's own directory", () => {
+
+      let message = "";
+      withEnv({ TMUX: undefined, TMUX_TMPDIR: "/tmp" }, () => {
+        try {
+          tmux("list-sessions");
+        } catch (e) {
+          message = e.message;
+        }
+      });
+      assert.doesNotMatch(
+        message,
+        /is set but unreachable/,
+        `/tmp exists, so "recreate it if it was removed" is a no-op and the refusal can never be cleared: ${message}`,
+      );
+      assert.match(message, /TMUX_TMPDIR \(\/tmp\) is reachable but resolves to the shared socket/, message);
+    });
   },
 );
 

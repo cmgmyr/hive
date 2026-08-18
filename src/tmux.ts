@@ -74,22 +74,41 @@ export function scratchStoreOnSharedSocket(): boolean {
 // field wins whenever it is set, so a TMUX_TMPDIR that is itself fine can be entirely irrelevant to
 // why the socket resolved to the shared one, and blaming it anyway leaves the advice unable to clear
 // the refusal.
-function decidingTmuxInput(): string {
+function decidingTmuxInput(): { because: string; remedy: string } {
   const inherited = process.env.TMUX?.split(",")[0];
-  if (inherited) return `an inherited TMUX names the shared socket directly (TMUX=${process.env.TMUX})`;
-  if (process.env.TMUX_TMPDIR) return `TMUX_TMPDIR (${process.env.TMUX_TMPDIR}) is set but unreachable`;
-  return "TMUX_TMPDIR is unset";
+  if (inherited) {
+    return {
+      because: `an inherited TMUX names the shared socket directly (TMUX=${process.env.TMUX})`,
+      remedy: "Unset TMUX - it wins over TMUX_TMPDIR here, so changing TMUX_TMPDIR cannot clear this",
+    };
+  }
+  if (process.env.TMUX_TMPDIR) {
+    const dir = process.env.TMUX_TMPDIR;
+    return realpathOr(dir, null) === null
+      ? {
+          because: `TMUX_TMPDIR (${dir}) is set but unreachable`,
+          remedy: "Recreate that directory, or point TMUX_TMPDIR at a private one this process can reach",
+        }
+      : {
+          because: `TMUX_TMPDIR (${dir}) is reachable but resolves to the shared socket`,
+          remedy: "Point TMUX_TMPDIR at a private directory instead - it exists, so recreating it changes nothing",
+        };
+  }
+  return {
+    because: "TMUX_TMPDIR is unset",
+    remedy: "Set TMUX_TMPDIR to a private directory this process can reach",
+  };
 }
 
 function refuseIfSharedSocketFromScratchStore(): void {
   if (!scratchStoreOnSharedSocket()) return;
   const resolved = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+  const { because, remedy } = decidingTmuxInput();
   throw new Error(
     `Refusing to run tmux against the shared socket ${resolved}: HIVE_DATA_DIR is a scratch store ` +
-      `(${storeDir()}) and the resolved socket is the shared one because ${decidingTmuxInput()}. Point ` +
-      "TMUX_TMPDIR at a directory this process can reach - recreate it if it was removed, or unset TMUX " +
-      "if it is what is naming the shared socket - rather than letting this call fall through to the " +
-      "server every other lead and worker on this machine depends on.",
+      `(${storeDir()}) and the resolved socket is the shared one because ${because}. ${remedy} - ` +
+      "rather than letting this call fall through to the server every other lead and worker on this " +
+      "machine depends on.",
   );
 }
 

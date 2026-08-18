@@ -97,7 +97,11 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 ## All process execution goes through `execFileSync` with argument arrays
 
-`tmux()` in `src/tmux.ts` is the only way `src/` reaches tmux, and it takes an array. Never build a shell command string out of data. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
+Never build a shell command string out of data.
+
+`tmux()` in `src/tmux.ts` is the way to reach tmux, but it is **not the only path**, so do not read it as a coverage claim. Known others, not guaranteed exhaustive: `src/cli.ts`'s `attach()` calls `spawnSync("tmux", argv, { stdio: "inherit" })` twice (`:362`, `:373`) because it hands the terminal over rather than capturing output; doctor probes `execFileSync("tmux", ["-V"])` (`:1678`); and `ensureAttached` runs `execFileSync("osascript", ["-e", script])` (`src/tmux.ts:946`) where `script` comes from `attachScripts()` and **is a built string carrying the session name** - the one live exception to the sentence above, and the reason it is called out here rather than left to be discovered.
+
+What those paths do NOT carry is what `tmux()` itself adds, which is exactly two things: the timeout bound, and `scratchStoreOnSharedSocket()`. **`untrustedTmuxServer()` is NOT one of them** - it is applied per call site (`ensureSession`, `targetLiveProbe`, `src/tmux.ts:416`, `src/spawn.ts:184`/`:295`, `src/cli.ts:1775`), so a NEW read path built on `tmux()` gets the timeout and the socket guard for free and still needs its own cross-server check. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
 
 ## iTerm profile commands run with no shell and a minimal PATH
 

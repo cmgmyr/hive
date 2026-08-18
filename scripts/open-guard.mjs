@@ -35,7 +35,7 @@ export function readOpenCalls(log) {
   const raw = readFileSync(log, "utf8").trim();
   if (raw.length === 0) return [];
   return raw
-    .split(/\n?---\n?/)
+    .split(/^---$/m)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }

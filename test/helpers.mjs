@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -138,10 +138,25 @@ function sharedTmuxSocket() {
 // this returns null instead, so callers refuse rather than silently resolving to it. Applies to BOTH
 // branches: an inherited TMUX that happens to name the shared socket directly is exactly the "on the
 // crew's server already" case this exists to catch, not something to trust because it came from TMUX.
+// Canonicalise before comparing, exactly as canonicalSocketPath() does: /tmp and /private/tmp name
+// one server, so a raw compare reads the shared socket as private.
+function canonicalSocketPath(path) {
+  const uidDir = dirname(path);
+  const base = dirname(uidDir);
+  let canonicalBase = base;
+  try {
+    canonicalBase = realpathSync(base);
+  } catch {}
+  return join(canonicalBase, basename(uidDir), basename(path));
+}
+
 export function resolvedTmuxSocket() {
   const shared = sharedTmuxSocket();
   const inherited = process.env.TMUX?.split(",")[0];
-  if (inherited) return inherited === shared ? null : inherited;
+  if (inherited) {
+    const canonical = canonicalSocketPath(inherited);
+    return canonical === shared ? null : canonical;
+  }
   if (!process.env.TMUX_TMPDIR) return null;
   try {
     const resolved = tmuxSocketUnder(realpathSync(process.env.TMUX_TMPDIR));

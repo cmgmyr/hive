@@ -124,3 +124,18 @@ describe("the run-level open-call check", () => {
     },
   );
 });
+
+describe("readOpenCalls' record separator (found by a suite run whose own ancestry contained the separator)", () => {
+  it("does not split a record when an ANCESTOR command line contains the --- separator inline", () => {
+    const record =
+      'ARGS: file:///x/index.html\nCWD: /x\nHIVE_DATA_DIR: /x\nANCESTOR[0] pid=1 cmd=zsh -c echo "--- failing ---"\n';
+    const dir = mkdtempSync(join(tmpdir(), "hive-open-sep-"));
+    const log = join(dir, "calls.log");
+    writeFileSync(log, `${record}---\n`);
+    try {
+      assert.equal(readOpenCalls(log).length, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
