@@ -17,18 +17,23 @@ export function isValidProfileName(name: string): boolean {
   return NAME_PATTERN.test(name) && !name.includes("..");
 }
 
+const FILE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\.md$/;
+export function isValidProfileFileName(file: string): boolean {
+  return FILE_NAME_PATTERN.test(file) && !file.includes("..");
+}
+
 export interface ResolvedFile {
-  file: ProfileFile;
+  file: string;
   path: string;
   source: "user" | "shipped";
 }
 
-function candidate(dir: string, name: string, file: ProfileFile): string {
+function candidate(dir: string, name: string, file: string): string {
   return join(dir, name, file);
 }
 
-export function resolveProfileFile(name: string, file: ProfileFile): ResolvedFile | null {
-  if (!isValidProfileName(name)) return null;
+export function resolveProfileFile(name: string, file: string): ResolvedFile | null {
+  if (!isValidProfileName(name) || !isValidProfileFileName(file)) return null;
   const user = candidate(userProfilesDir(), name, file);
   if (existsSync(user)) return { file, path: user, source: "user" };
   const shipped = candidate(shippedProfilesDir, name, file);
@@ -36,7 +41,7 @@ export function resolveProfileFile(name: string, file: ProfileFile): ResolvedFil
   return null;
 }
 
-export function readProfileFile(name: string, file: ProfileFile): string | null {
+export function readProfileFile(name: string, file: string): string | null {
   const resolved = resolveProfileFile(name, file);
   if (!resolved) return null;
   try {
@@ -48,7 +53,7 @@ export function readProfileFile(name: string, file: ProfileFile): string | null 
 
 export function renderProfileFile(
   name: string,
-  file: ProfileFile,
+  file: string,
   vars: Record<string, string>,
 ): string | null {
   const template = readProfileFile(name, file);
@@ -72,6 +77,27 @@ function namesIn(dir: string): string[] {
 
 export function profileNames(): string[] {
   return [...new Set([...namesIn(shippedProfilesDir), ...namesIn(userProfilesDir())])].sort();
+}
+
+function mdFilesIn(dir: string): string[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isFile() && isValidProfileFileName(e.name))
+      .map((e) => e.name);
+  } catch {
+    return [];
+  }
+}
+
+export function profileFileNames(name: string): string[] {
+  if (!isValidProfileName(name)) return [];
+  const present = new Set([
+    ...mdFilesIn(join(shippedProfilesDir, name)),
+    ...mdFilesIn(join(userProfilesDir(), name)),
+  ]);
+  const known = PROFILE_FILES.filter((f) => present.has(f));
+  const extra = [...present].filter((f) => !(PROFILE_FILES as readonly string[]).includes(f)).sort();
+  return [...known, ...extra];
 }
 
 const ORIGIN_FILE = ".hive-origin.json";
@@ -137,7 +163,7 @@ export const REWRITE_THRESHOLD = 0.5;
 export function profileStatus(name: string): { name: string; files: ProfileFileStatus[] } {
   const origins = readOrigins(name);
   const files: ProfileFileStatus[] = [];
-  for (const file of PROFILE_FILES) {
+  for (const file of profileFileNames(name)) {
     const resolved = resolveProfileFile(name, file);
     if (!resolved) continue;
     const shippedPath = candidate(shippedProfilesDir, name, file);

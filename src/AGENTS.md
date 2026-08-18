@@ -14,6 +14,7 @@ Claude Code gets these automatically: `.claude/rules/*.md` declare `paths:` glob
 | `.claude/rules/native-addon.md` | `src/abi.ts`, `src/abiProbe.ts`, `src/sessionProbe.ts`, `src/db.ts`, `src/dispatcher.ts`, `package.json` | `.claude/skills/hive-internals/references/native-addon.md` |
 | `.claude/rules/tool-contract.md` | `src/tools/*.ts`, `src/cli.ts`, `src/help.ts`, `src/context.ts`, `src/strictInput.ts` | `.claude/skills/hive-internals/references/tool-contract.md` |
 | `.claude/rules/project-scoping.md` | `src/context.ts`, `src/spawn.ts`, `src/tools/agents.ts` | `.claude/skills/hive-internals/references/project-scoping.md` |
+| `.claude/rules/profile-files.md` | `src/profiles.ts` | `.claude/skills/hive-internals/references/profile-files.md` |
 
 Every rule but `tool-contract.md` is enforced by code and pinned by a test. `tool-contract.md` is a naming convention and a matrix, not a guard; `docs.test.mjs` pins only that it exists, its globs still match, and it stays indexed, not that its content agrees with the code. Its unknown-key section is the one exception: `test/wire-surface.test.mjs` asserts `additionalProperties: false` over the generated surface, so that section documents a guard. A suggestion that contradicts one is not a finding unless it engages with the recorded reasoning and shows a concrete failure it misses. The project's own rule: do not remove a guard because its reasoning is not in the file you happen to be reading.
 

@@ -165,6 +165,7 @@ import {
   PROFILE_FILES,
   ProfileError,
   profileExists,
+  profileFileNames,
   profileNames,
   profileStatus,
   readProfileFile,
@@ -226,7 +227,7 @@ Usage:
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
-  hive profile [list|path|fork|create]  standing instructions shared across projects
+  hive profile [list|path|fork|create|read]  standing instructions shared across projects
   hive statusline            one-line store summary; silent outside hive projects
 
 hive lead reads hive.yml from the project root when present; hive init
@@ -990,8 +991,10 @@ function profileUsage(): never {
   hive profile path <name> [file]              where a profile's files resolve to
   hive profile fork <name> [file]              copy hive's default into ${userProfilesDir()} to edit
   hive profile create <name> [--from <other>]  start a new profile
+  hive profile read <file> [--profile <name>]  resolve, render vars, print any .md a profile has;
+                                                defaults to this project's profile and vars
 
-Files in a profile: ${PROFILE_FILES.join(", ")}`);
+Files in a profile: ${PROFILE_FILES.join(", ")}, plus anything else a fork carries (see hive profile list)`);
   process.exit(1);
 }
 
@@ -1033,12 +1036,14 @@ function cmdProfile(argv: string[]): void {
 
         const here = findProjectForCwd();
         const current = here ? activeProfile(loadProjectYml(here.path).config) : null;
-        for (const profile of names) {
-          const status = profileStatus(profile);
+        const statuses = names.map((profile) => profileStatus(profile));
+        const fileWidth = Math.max(11, ...statuses.flatMap((s) => s.files.map((f) => f.file.length)));
+        for (const [i, profile] of names.entries()) {
+          const status = statuses[i];
           console.log(`${profile === current ? "*" : " "} ${profile}`);
           for (const f of status.files) {
             const drift = profileDriftText(f);
-            console.log(`    ${f.file.padEnd(11)} ${f.source.padEnd(7)} ${f.path}${drift ? `   (${drift.text})` : ""}`);
+            console.log(`    ${f.file.padEnd(fileWidth)} ${f.source.padEnd(7)} ${f.path}${drift ? `   (${drift.text})` : ""}`);
           }
         }
         if (current) console.log(`\n* is this project's profile.`);
@@ -1072,6 +1077,45 @@ function cmdProfile(argv: string[]): void {
         const dir = createProfile(name, from);
         console.log(`Created ${dir}`);
         console.log(`Use it with "profile: ${name}" in a project's hive.yml.`);
+        return;
+      }
+      case "read": {
+        const profileFlagIndex = rest.indexOf("--profile");
+        const override = profileFlagIndex >= 0 ? rest[profileFlagIndex + 1] : undefined;
+        const filePositional = rest.filter(
+          (a, i) => !a.startsWith("--") && !(profileFlagIndex >= 0 && i === profileFlagIndex + 1),
+        );
+        const file = filePositional[0];
+        if (!file) profileUsage();
+
+        let profileName: string;
+        let vars: Record<string, string>;
+        if (override != null) {
+          profileName = override;
+          const here = findProjectForCwd();
+          vars = here ? loadProjectYml(here.path).config?.vars ?? {} : {};
+        } else {
+          const project = resolveProject();
+          const { config, warnings } = loadProjectYml(project.path);
+          for (const w of warnings) console.log(`! ${w}`);
+          const active = activeProfile(config);
+          if (!active) {
+            console.log(`This project has no profile. Add "profile: <name>" to hive.yml (hive profile list) or run hive init.`);
+            process.exit(1);
+          }
+          profileName = active;
+          vars = config?.vars ?? {};
+        }
+
+        const rendered = renderProfileFile(profileName, file, vars);
+        if (rendered == null) {
+          const present = profileFileNames(profileName);
+          console.log(
+            `No readable "${file}" for profile "${profileName}". Files present: ${present.length > 0 ? present.join(", ") : "none"}`,
+          );
+          process.exit(1);
+        }
+        process.stdout.write(withTrailingNewline(rendered));
         return;
       }
       default:
@@ -1706,7 +1750,7 @@ function cmdDoctor(argv: string[]): void {
       return;
     }
     const resolved = profileStatus(name).files;
-    const readable = (file: ProfileFile) => readProfileFile(name, file) != null;
+    const readable = (file: string) => readProfileFile(name, file) != null;
     if (!resolved.some((f) => readable(f.file))) {
       fail("profile", `"${name}" has a directory but none of its files (${PROFILE_FILES.join(", ")}) resolve to readable content, here or in hive's shipped defaults.`);
       return;
@@ -1724,22 +1768,26 @@ function cmdDoctor(argv: string[]): void {
     }
 
     const referenced = [...new Set(
-      ["runbook.md", "posture.md"].flatMap((file) => {
-        const text = readProfileFile(name, file as ProfileFile);
-        return text ? templateVars(text) : [];
-      }),
+      // worker.md's vars are per-spawn identity (agent_name, actor_id, ...), never hive.yml vars
+      profileFileNames(name)
+        .filter((file) => file !== "worker.md")
+        .flatMap((file) => {
+          const text = readProfileFile(name, file);
+          return text ? templateVars(text) : [];
+        }),
     )].sort();
     const defined = Object.keys(cfg?.vars ?? {});
     const missing = referenced.filter((v) => !defined.includes(v));
     const unused = defined.filter((v) => !referenced.includes(v));
     if (referenced.length > 0) {
-      info("profile vars", `runbook and posture reference ${referenced.join(", ")}`);
+      info("profile vars", `profile files reference ${referenced.join(", ")}`);
       if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);
       if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
     }
 
     const vars = cfg?.vars ?? {};
-    const renderedText = PROFILE_FILES.map((file) => renderProfileFile(name, file, vars))
+    const renderedText = profileFileNames(name)
+      .map((file) => renderProfileFile(name, file, vars))
       .filter((t): t is string => t != null)
       .join("\n");
     const pads = referencedPads(renderedText);

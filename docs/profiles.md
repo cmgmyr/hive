@@ -11,7 +11,7 @@ A profile is a named set of standing instructions shared across projects. It is 
 ~/.hive/profiles/<name>/        your overrides, copy-on-write
 ```
 
-Resolution is per file, not per profile, so a file you never forked keeps tracking hive's default while the ones you did are yours. Three files make up a profile:
+Resolution is per file, not per profile, so a file you never forked keeps tracking hive's default while the ones you did are yours. Three files are required and known to hive:
 
 | File | How it reaches the model | What hive ships |
 |---|---|---|
@@ -19,7 +19,9 @@ Resolution is per file, not per profile, so a file you never forked keeps tracki
 | `runbook.md` | On demand, `hive runbook` | A skeleton. Headers plus facts true of any hive project. Your process is yours to write |
 | `worker.md` | Appended to each worker's system prompt by `agent_spawn` | The worker brief: identity, project lock, tool contract, lane discipline |
 
-Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only).
+`hive doctor` fails a profile with no readable `runbook.md`, on the grounds that a lead using it then has no standing process; `posture.md` and `worker.md` have no such gate.
+
+Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only). Neither carries anything beyond the three.
 
 ```bash
 hive profile list                      # what exists, where each file resolves, what drifted
@@ -28,7 +30,18 @@ hive profile fork orchestration runbook.md   # or just one file
 hive profile create mine --from simple
 hive runbook                           # this project's process, vars resolved
 hive posture                           # what your lead is actually running with
+hive profile read <file> [--profile <name>]  # print any .md a profile has, vars rendered
 ```
+
+### Fork-local artifacts: any other `.md` you add
+
+A profile directory can hold more than the three named files. Add a `.md` file directly under `~/.hive/profiles/<name>/` - nothing ships it, nothing forks it, you just create it there - and hive resolves it, renders its `{{vars}}` on read the same way it renders the three, and reports it (source, path, and any unset var it references) from `hive profile list` and `hive doctor`. It is never required and never auto-injected; something in your runbook or posture has to point at it, the same way `hive runbook` pointing at `hive profile read review-prompt.md` is what makes a reader open it.
+
+Point at it with `hive profile read <file>`, never with the raw path. Reading the file directly (`cat`, an editor, a Read tool) returns the template with literal `{{braces}}` in it and no indication it was meant to render; `hive profile read` is what resolves it against the reading project's profile and substitutes that project's vars.
+
+Because these files exist only in your fork, a second machine or a freshly created profile will not have them until you sync `~/.hive/profiles` there yourself; `hive doctor`'s drift check has nothing to compare them against, since they have no shipped upstream by construction.
+
+A filename has to be a plain `<name>.md`: no path separator, no `..`, no leading dot, nothing that could resolve outside the profile directory.
 
 Pick one per project in `hive.yml`:
 
@@ -41,7 +54,7 @@ vars:
   install: pnpm install
 ```
 
-All three files take `{{repo}}` and friends from `vars`, and drop whole sections whose var is unset, so one profile serves a repo with a ticket tracker and one without. `posture.md` is delivered as a path, so `hive lead` renders it into a generated file under `~/.hive/postures/` (one per project, overwritten each run) and points the flag at that; `hive posture` prints the same text, which is the only way to see what your lead actually started with. An undefined var stays visible as `{{name}}` rather than silently emptying, and `hive doctor` reports which vars a runbook references and which the project defines.
+The three named files, and any fork-local extra, take `{{repo}}` and friends from `vars`, and drop whole sections whose var is unset, so one profile serves a repo with a ticket tracker and one without. `posture.md` is delivered as a path, so `hive lead` renders it into a generated file under `~/.hive/postures/` (one per project, overwritten each run) and points the flag at that; `hive posture` prints the same text, which is the only way to see what your lead actually started with. An undefined var stays visible as `{{name}}` rather than silently emptying, and `hive doctor` reports which vars any `.md` a profile has references and which the project defines (`worker.md` is excluded from this check; its vars are per-spawn identity, never `hive.yml`'s).
 
 `vars` are repo-controlled and land in system prompts, with no approval step. Commands in `hive.yml` do have one, because hive executes them; `vars` are only quoted into a prompt, and Claude Code's own workspace trust already governs the wider version of that channel by loading a repo's `CLAUDE.md`. The practical consequence: a `hive.yml` you did not write reaches your workers' system prompts as soon as you run hive in that checkout, so read one the way you would read that repo's `CLAUDE.md`. hive is not a defense against opening a checkout you do not trust and does not pretend to be.
 
