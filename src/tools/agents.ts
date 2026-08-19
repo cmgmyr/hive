@@ -28,7 +28,7 @@ import {
   renameAgent,
   resumeAgent,
 } from "../spawn.js";
-import { resolveTranscriptDir } from "../transcript.js";
+import { readContextTokens, resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
   capturePane,
@@ -365,6 +365,12 @@ function claudeOnlyFields(
 
 function lastLogEventField(row: AgentRow): { last_log_event: LastLogEvent | null } | Record<string, never> {
   return reportsAgentStateLog(row) ? { last_log_event: lastLogEvent(row.actor_id) } : {};
+}
+
+// Shares claudeOnlyFields' isClaudeCommand gate but stays a separate function: agent_status is the
+// only caller, and claudeOnlyFields also feeds agent_list's closed-row path, which this must not.
+function contextTokensField(row: AgentRow): { context_tokens: number | null } | Record<string, never> {
+  return isClaudeCommand(row.command) ? { context_tokens: readContextTokens(row.cwd, row.session_id) } : {};
 }
 
 function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<string, never> {
@@ -936,6 +942,7 @@ export function registerAgents(server: McpServer): void {
           ...(summary.alive ? inputBoxField(agent.tmux_target) : {}),
 
           ...claudeOnlyFields(agent),
+          ...contextTokensField(agent),
         };
       }),
   );
