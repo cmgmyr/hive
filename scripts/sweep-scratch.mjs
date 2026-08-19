@@ -74,10 +74,15 @@ function liveShellRows() {
   return parsePsRows(out);
 }
 
+export function hasLiveDescendant(pid, rows) {
+  return rows.some((r) => r.ppid === pid && r.pid !== pid);
+}
+
 export function findOrphanShells(rows, ageFloorMs, isOrphanLoginShell) {
   return rows
     .filter((r) => r.tty !== "??" && r.tty !== "?")
     .filter((r) => isOrphanLoginShell({ ppid: r.ppid, comm: r.comm }))
+    .filter((r) => !hasLiveDescendant(r.pid, rows))
     .map((r) => ({ ...r, ageMs: (parseEtimeSeconds(r.etime) ?? 0) * 1000 }))
     .filter((r) => r.ageMs >= ageFloorMs);
 }

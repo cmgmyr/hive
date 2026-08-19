@@ -15,6 +15,7 @@ import {
 } from "./helpers.mjs";
 import {
   findOrphanShells,
+  hasLiveDescendant,
   killPid,
   liveSuiteLockHolder,
   parseEtimeSeconds,
@@ -77,23 +78,44 @@ describe("parsing (fixture-testable, no process involved)", () => {
 });
 
 describe("findOrphanShells (selection, reusing isOrphanLoginShell)", () => {
-  it("selects only ppid=1, dash-prefixed, pty-holding rows past the age floor", () => {
+  it("selects only ppid=1, dash-prefixed, pty-holding rows with no live descendant, past the age floor", () => {
     const rows = [
-      { pid: 1, ppid: 1, etime: "20:00:00", tty: "ttys001", comm: "-zsh" },
-      { pid: 2, ppid: 500, etime: "20:00:00", tty: "ttys002", comm: "-zsh" },
-      { pid: 3, ppid: 1, etime: "00:05:00", tty: "ttys003", comm: "-zsh" },
-      { pid: 4, ppid: 1, etime: "20:00:00", tty: "ttys004", comm: "zsh" },
-      { pid: 5, ppid: 1, etime: "20:00:00", tty: "??", comm: "-zsh" },
+      { pid: 101, ppid: 1, etime: "20:00:00", tty: "ttys001", comm: "-zsh" },
+      { pid: 102, ppid: 500, etime: "20:00:00", tty: "ttys002", comm: "-zsh" },
+      { pid: 103, ppid: 1, etime: "00:05:00", tty: "ttys003", comm: "-zsh" },
+      { pid: 104, ppid: 1, etime: "20:00:00", tty: "ttys004", comm: "zsh" },
+      { pid: 105, ppid: 1, etime: "20:00:00", tty: "??", comm: "-zsh" },
+      { pid: 106, ppid: 1, etime: "20:00:00", tty: "ttys006", comm: "-zsh" },
+      { pid: 107, ppid: 106, etime: "00:01:00", tty: "ttys006", comm: "npm run watch" },
     ];
     const found = findOrphanShells(rows, 12 * 3_600_000, isOrphanLoginShell);
     assert.deepEqual(
       found.map((r) => r.pid),
-      [1],
+      [101],
     );
   });
 
   it("finds nothing in an empty table", () => {
     assert.deepEqual(findOrphanShells([], 0, isOrphanLoginShell), []);
+  });
+});
+
+describe("hasLiveDescendant", () => {
+  it("is true when another row's ppid points at this pid", () => {
+    const rows = [
+      { pid: 6, ppid: 1, etime: "20:00:00", tty: "ttys006", comm: "-zsh" },
+      { pid: 7, ppid: 6, etime: "00:01:00", tty: "ttys006", comm: "npm run watch" },
+    ];
+    assert.equal(hasLiveDescendant(6, rows), true);
+  });
+
+  it("is false when no row's ppid points at this pid", () => {
+    const rows = [{ pid: 1, ppid: 1, etime: "20:00:00", tty: "ttys001", comm: "-zsh" }];
+    assert.equal(hasLiveDescendant(1, rows), false);
+  });
+
+  it("is false against an empty table", () => {
+    assert.equal(hasLiveDescendant(1, []), false);
   });
 });
 
