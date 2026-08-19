@@ -254,6 +254,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       # The skip budget is an assertion here, not a comment on the tmux step.
+      # BLIND SPOT: a describe-level skip never appears in this count at all - test/CLAUDE.md has the measurement and the rule.
       # An EXACT match in both directions on purpose: a leg skipping MORE than
       # its budget is the failure this exists for (a fixture or a binary went
       # missing and the cases quietly vanished), and a leg skipping FEWER

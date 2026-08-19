@@ -230,6 +230,16 @@ describe("docs keep up with the CLI", () => {
     for (const path of cited) {
       assert.ok(existsSync(join(REPO, path)), `test/CLAUDE.md cites ${path}, which does not exist`);
     }
+
+    const referencePath = ".claude/skills/hive-internals/references/test-CLAUDE.md";
+    assert.ok(existsSync(join(REPO, referencePath)), `test/CLAUDE.md has no reference half at ${referencePath}`);
+    assert.match(claudeMd, /test-CLAUDE\.md/, "CLAUDE.md does not name test/CLAUDE.md's reference half");
+
+    const referenceMd = readRepo(referencePath);
+    const referenceCited = new Set([...referenceMd.matchAll(/`((?:src|test)\/[\w./-]+)`/g)].map((m) => m[1]));
+    for (const path of referenceCited) {
+      assert.ok(existsSync(join(REPO, path)), `${referencePath} cites ${path}, which does not exist`);
+    }
   });
 });
 
