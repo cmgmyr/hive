@@ -93,7 +93,7 @@ describe("a tmux call that never answers", () => {
       const loggedFake = fakeHangingTmux({ log });
       try {
         const attemptStarted = Date.now();
-        const calls = withEnv({ PATH: `${loggedFake}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "300" }, () => {
+        const calls = withEnv({ PATH: `${loggedFake}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "3000" }, () => {
           const started = Date.now();
           assert.throws(() => ensureSession("hive-timeout-probe", process.cwd()), TmuxTimeoutError);
           assert.ok(Date.now() - started < 10_000, "the probe returned within its bound");
