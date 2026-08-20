@@ -111,6 +111,8 @@ hive doctor --strict          # confirms the addon, the pin, and the registratio
 
 | Page | What's there |
 |---|---|
+| [Architecture](docs/architecture.md) | Seven diagrams: process topology, module layering, spawn sequence, wake lifecycle, worker state, project scoping, store and server identity |
+| [Patterns](docs/patterns.md) | Standing trades, refused approaches, evidence standards, and guard shapes distilled from the project's own decisions and dead-ends |
 | [Concepts](docs/concepts.md) | Vocabulary, identity, the workflow, project scope, the shared store |
 | [Daily driver](docs/daily-driver.md) | A day with hive, starting a session, watching workers, wake-ups |
 | [Profiles](docs/profiles.md) | Standing instructions across projects, the session-start plugin |

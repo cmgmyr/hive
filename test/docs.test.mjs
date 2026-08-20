@@ -326,3 +326,176 @@ describe("docs keep up with the MCP surface", () => {
     assert.match(readRepo("CLAUDE.md"), /Curated, not exhaustive/);
   });
 });
+
+describe("docs cite real code, not just real files", () => {
+
+  const CITATION_RE = /`([a-zA-Z0-9_./-]+\.(?:ts|mjs))?:([0-9][0-9,-]*)`/g;
+  const BACKTICK_RE = /`([^`]+)`/g;
+  const BEFORE_WINDOW = 150;
+  const AFTER_WINDOW = 100;
+
+  const stripFences = (text) => text.replace(/```[\s\S]*?```/g, (m) => m.replace(/[^\n]/g, " "));
+
+  function anchorLines(spec) {
+    return spec.split(",").map((part) => Number(part.split("-")[0]));
+  }
+
+  const isCitationSpan = (s) => /^:?[0-9][0-9,-]*$/.test(s) || /\.(ts|mjs):/.test(s);
+
+  function normalizeCandidate(candidate) {
+
+    const bareCall = /^([A-Za-z_$][\w$]*)\(\)$/.exec(candidate);
+    if (bareCall) return `${bareCall[1]}(`;
+    const ellipsis = candidate.indexOf("...");
+    return ellipsis === -1 ? candidate : candidate.slice(0, ellipsis);
+  }
+
+  function isStrong(candidate) {
+    if (candidate.length >= 6) return true;
+    if (/[_.()[\]/"-]/.test(candidate)) return true;
+    if (/^[A-Z][A-Z0-9_]+$/.test(candidate)) return true;
+    if (/[a-z][A-Z]/.test(candidate)) return true;
+    return false;
+  }
+
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  function containsAnchor(content, candidate) {
+
+    const bareCall = /^([A-Za-z_$][\w$]*)\($/.exec(candidate);
+    if (bareCall) return new RegExp(`(?<![\\w$])${escapeRe(bareCall[1])}\\(`).test(content);
+    if (/^[A-Za-z_$][\w$]*$/.test(candidate)) return new RegExp(`(?<![\\w$])${escapeRe(candidate)}(?![\\w$])`).test(content);
+    return content.includes(candidate);
+  }
+
+  function allSpans(text) {
+    return [...text.matchAll(BACKTICK_RE)]
+      .map((m) => ({ value: m[1], start: m.index, end: m.index + m[0].length }))
+      .filter((s) => !isCitationSpan(s.value));
+  }
+
+  function candidatesNear(spans, matchIndex, matchLen) {
+    const before = spans
+      .filter((s) => s.end <= matchIndex && matchIndex - s.end <= BEFORE_WINDOW)
+      .slice(-2)
+      .reverse();
+    const after = spans
+      .filter((s) => s.start >= matchIndex + matchLen && s.start - (matchIndex + matchLen) <= AFTER_WINDOW)
+      .slice(0, 2);
+
+    return [...new Set([...before, ...after].map((s) => s.value).map(normalizeCandidate))].filter(isStrong);
+  }
+
+  function extractCitations(rawText) {
+    const text = stripFences(rawText);
+    const spans = allSpans(text);
+    const citations = [];
+    let currentFile = null;
+    let m;
+    CITATION_RE.lastIndex = 0;
+    while ((m = CITATION_RE.exec(text))) {
+      if (m[1]) currentFile = m[1];
+      citations.push({
+        file: currentFile,
+        spec: m[2],
+        candidates: candidatesNear(spans, m.index, m[0].length),
+      });
+    }
+    return citations;
+  }
+
+  function checkCitations(text) {
+    return extractCitations(text)
+      .map((c) => {
+        if (!c.file) return { ...c, detail: "no file in scope for a bare :NNN citation" };
+        if (c.candidates.length === 0) return { ...c, detail: "no strong candidate symbol found near citation" };
+        if (!existsSync(join(REPO, c.file))) return { ...c, detail: `${c.file} does not exist` };
+        const srcLines = readRepo(c.file).split("\n");
+        const anchors = anchorLines(c.spec);
+        const content = anchors.map((n) => srcLines[n - 1] ?? "").join(" ");
+        const hit = c.candidates.find((cand) => containsAnchor(content, cand));
+        if (hit) return null;
+        return {
+          ...c,
+          detail:
+            `${c.file}:${c.spec} named ${JSON.stringify(c.candidates)} nearby, none of which appear on ` +
+            `anchor line(s) ${anchors.join(",")} (the first line of each cited part - a range does not get ` +
+            "credit for a symbol anywhere inside it)",
+        };
+      })
+      .filter(Boolean);
+  }
+
+  it("finds a non-trivial number of file:line citations across docs/*.md", () => {
+    const total = globSync("docs/*.md", { cwd: REPO })
+      .map((doc) => extractCitations(readRepo(doc)).length)
+      .reduce((a, b) => a + b, 0);
+    assert.ok(total >= 20, `expected at least 20 file:line citations across docs/*.md, found ${total} - did the citation regex break?`);
+  });
+
+  it("keeps every docs/*.md citation's anchor line naming the symbol its prose cites it for", () => {
+    const failures = globSync("docs/*.md", { cwd: REPO }).flatMap((doc) =>
+      checkCitations(readRepo(doc)).map((f) => `${doc} -> ${f.detail}`),
+    );
+    assert.deepEqual(failures, []);
+  });
+
+  it("would have failed against architecture.md's diagram-3 paragraph before 2e4bc34's citation fix (todo 461)", () => {
+
+    const preFixParagraph =
+      "`agent_spawn` resolves the target project and refuses a `cwd` that belongs to a different, already-registered " +
+      "one before it does anything else (`src/tools/agents.ts:451-467`). `launchAgent` (`src/spawn.ts:180-243`) then " +
+      "does something specific on purpose: it `INSERT`s the `agents` row and mints `agentId` (`:189-205`) *before* a " +
+      "pane exists. The row exists first because the worker's brief needs `agentId` and `actorId` to write itself " +
+      "(`buildCommand`'s closure, `src/tools/agents.ts:492-508`, calling `writeAgentBrief`/`workerBrief`), and that " +
+      "brief path has to be ready before the pane that will read it is created. The brief reaches the worker's " +
+      "system prompt through `--append-system-prompt-file` (`src/brief.ts:116`), not through anything typed into " +
+      "the pane. `placeAgentPane` creates the pane only after that (`src/spawn.ts:230`), and `recordPane` stores " +
+      "its target and socket (`:233`). Back in the tool handler, `waitForPaneInput` polls for the worker's prompt " +
+      "box before the receipt returns (`src/tools/agents.ts:535`; `src/tmux.ts:969-989`).";
+
+    const failures = checkCitations(preFixParagraph);
+    assert.ok(
+      failures.length > 0,
+      "precondition: this real pre-fix paragraph (commit aae3fd0) must disagree with today's rebased source",
+    );
+  });
+
+  it("catches most single-line drift when every cited line shifts by one (measured, not assumed)", () => {
+
+    const SENSITIVITY_FLOOR = 0.75;
+
+    const shiftSpec = (spec) =>
+      spec
+        .split(",")
+        .map((part) => part.split("-").map((n) => String(Number(n) + 1)).join("-"))
+        .join(",");
+
+    function checkShifted(text) {
+      return extractCitations(text)
+        .map((c) => {
+          if (!c.file || c.candidates.length === 0 || !existsSync(join(REPO, c.file))) return null;
+          const srcLines = readRepo(c.file).split("\n");
+          const anchors = anchorLines(shiftSpec(c.spec));
+          const content = anchors.map((n) => srcLines[n - 1] ?? "").join(" ");
+          return c.candidates.some((cand) => containsAnchor(content, cand)) ? null : c;
+        })
+        .filter(Boolean);
+    }
+
+    const totalCitations = globSync("docs/*.md", { cwd: REPO })
+      .map((doc) => extractCitations(readRepo(doc)).length)
+      .reduce((a, b) => a + b, 0);
+    const caught = globSync("docs/*.md", { cwd: REPO })
+      .map((doc) => checkShifted(readRepo(doc)).length)
+      .reduce((a, b) => a + b, 0);
+
+    const rate = caught / totalCitations;
+    assert.ok(
+      rate >= SENSITIVITY_FLOOR,
+      `shift-by-one sensitivity dropped to ${caught}/${totalCitations} (${Math.round(rate * 1000) / 10}%), ` +
+        `below the ${SENSITIVITY_FLOOR * 100}% floor CLAUDE.md's guard sentence promises - tighten the checker or ` +
+        "the citations, not the floor",
+    );
+  });
+});

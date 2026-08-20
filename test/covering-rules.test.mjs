@@ -515,10 +515,12 @@ describe("against the real repo", () => {
       docs.map((d) => d.name).sort(),
       [
         "CLAUDE.md",
+        "docs/architecture.md",
         "docs/concepts.md",
         "docs/daily-driver.md",
         "docs/development.md",
         "docs/install.md",
+        "docs/patterns.md",
         "docs/profiles.md",
         "docs/projects.md",
         "docs/tmux.md",

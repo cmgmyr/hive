@@ -72,8 +72,8 @@ The operating pattern:
   5. Spawn one worker per unblocked lane: agent_spawn(name="api-worker").
      For parallel file edits, give each worker its own git worktree via cwd.
      A claude worker briefs itself: hive loads the brief into its system
-     prompt and types a visible [hive] line into its pane. Send the lane's
-     objective, its pad/todo ids, and file ownership directly. Only a
+     prompt. Send the lane's objective, its pad/todo ids, and file ownership
+     directly. Only a
      non-claude worker needs the returned instructions prepended.
   6. Workers set status="in_progress", do the work, then todo_comment the
      handoff: changed files, tests run, remaining risk. Then todo_complete.
@@ -141,8 +141,8 @@ runbook (fork it first), not a pad write.`,
     arrangement survives crew changes. Projects can set a default placement
     and layout in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
     a git worktree path to isolate parallel file edits. A claude worker gets
-    its brief in the system prompt plus a visible [hive] line in its pane;
-    other commands return instructions to PREPEND to the first prompt.
+    its brief in the system prompt; other commands return instructions to
+    PREPEND to the first prompt.
     Workers run with HIVE_PROJECT_LOCK=1.
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key

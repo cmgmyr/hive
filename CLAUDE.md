@@ -43,6 +43,8 @@ Curated, not exhaustive: the modules that shape decisions, not every file under 
 
 Key mechanics: workers are CLI agents in tmux panes, driven by typing into their terminals and reading the rendered screen back. Wake-ups deliver the same way, and worker state comes from Claude Code hooks writing to the database. All three have sharp edges, prohibited in `.claude/rules/tmux-and-panes.md` and `.claude/rules/worker-state.md` and explained in the `hive-internals` skill.
 
+For how these modules and mechanics connect at runtime, not just what each one is for, see [docs/architecture.md](docs/architecture.md): process topology, spawn sequence, wake lifecycle, worker state, and the rest, each diagram cited to the code it describes.
+
 ## Invariants
 
 These hold everywhere and shape decisions before you have opened a file.
@@ -81,6 +83,10 @@ Every one of them is enforced by code and pinned by a test, except `tool-contrac
 A test is code and the rule applies to it: the test's NAME is where you say what it pins, not a paragraph above it (`test/CLAUDE.md`).
 
 So when you need to know why something is the way it is, **invoke the `hive-history` skill and search `docs/attic/`** before re-deriving a tmux, SQLite, Claude Code or scheduler fact. Having had to look something up is the signal that it earned a permanent home, so promote it rather than leaving it there. Anything nobody ever consults gets deleted with the attic.
+
+A standing judgment call already made, and still true, belongs in [docs/patterns.md](docs/patterns.md) before it gets re-derived from scratch: trades this project makes on purpose, approaches already refused, what counts as evidence here, how a guard is expected to be shaped. It stands apart from a rule (`.claude/rules/*.md` guards one mechanism) and from the `docs/attic/` search above (candid, untracked internal reasoning): it is the tracked, standalone distillation of that reasoning, not a lookup into it.
+
+A `file:line` citation anywhere in `docs/*.md` is checked against the symbol its prose names it for, not just against the file existing (`test/docs.test.mjs`, describe block "docs cite real code, not just real files"). Measured, not assumed: shifting every cited line by one is caught on 40 of 49 citations (82%, and the suite fails outright if that ever drops under 75%) - most single-line drift and a majority of range drift, not every edit above a citation.
 
 When you learn something new, route it by who needs it and when. A long code comment is the last resort, because it is the only destination every future reader pays for on every file open:
 
