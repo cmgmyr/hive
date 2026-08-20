@@ -45,6 +45,6 @@ A goal fires the Stop hook after every turn while immediately starting another, 
 
 Whatever you pass as a wake body is typed into the target pane exactly as written, and it becomes a fresh user turn only if that pane happens to be idle. So write it as plain English that stands on its own: the ids it refers to, the context needed to act, and the next action.
 
-**A delivery into a BUSY pane can never be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation.
+**A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
 
 See `.claude/skills/hive-internals` for the five incidents and the measurements behind these.
