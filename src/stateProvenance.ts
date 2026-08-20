@@ -142,3 +142,14 @@ export function describeLastLogEvent(log: LastLogEvent | null): string {
 export function reportsAgentStateLog(row: { kind: string; command: string }): boolean {
   return row.kind === "agent" && isClaudeCommand(row.command);
 }
+
+const PERMISSION_MODE_RE = /"permission_mode":"([a-zA-Z]+)"/;
+
+// Regex over raw payload, not the last row's JSON.parse: a Notification row never carries this key.
+export function lastPermissionMode(actorId: string): string | null {
+  const row = stmt(
+    "SELECT payload FROM agent_state_log WHERE actor_id = ? AND payload LIKE '%\"permission_mode\":%' ORDER BY id DESC LIMIT 1",
+  ).get(actorId) as { payload: string } | undefined;
+  const match = row ? PERMISSION_MODE_RE.exec(row.payload) : null;
+  return match ? match[1] : null;
+}

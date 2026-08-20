@@ -60,7 +60,13 @@ import {
   type Liveness,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
-import { deriveProvenance, lastLogEvent, reportsAgentStateLog, type LastLogEvent } from "../stateProvenance.js";
+import {
+  deriveProvenance,
+  lastLogEvent,
+  lastPermissionMode,
+  reportsAgentStateLog,
+  type LastLogEvent,
+} from "../stateProvenance.js";
 
 export interface AgentRow {
   id: number;
@@ -367,6 +373,10 @@ function lastLogEventField(row: AgentRow): { last_log_event: LastLogEvent | null
   return reportsAgentStateLog(row) ? { last_log_event: lastLogEvent(row.actor_id) } : {};
 }
 
+function permissionModeField(row: AgentRow): { permission_mode: string | null } | Record<string, never> {
+  return reportsAgentStateLog(row) ? { permission_mode: lastPermissionMode(row.actor_id) } : {};
+}
+
 // Shares claudeOnlyFields' isClaudeCommand gate but stays a separate function: agent_status is the
 // only caller, and claudeOnlyFields also feeds agent_list's closed-row path, which this must not.
 function contextTokensField(row: AgentRow): { context_tokens: number | null } | Record<string, never> {
@@ -395,6 +405,7 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     provenance,
 
     ...lastLogEventField(row),
+    ...permissionModeField(row),
 
     ...(row.parked_at ? { parked_at: row.parked_at, parked_branch: row.parked_branch || null } : {}),
     tmux_target: row.tmux_target,
@@ -512,7 +523,7 @@ export function registerAgents(server: McpServer): void {
           (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
-        const { agentId, actorId, target, landedInProjectId } = launchAgent({
+        const { agentId, actorId, target, landedInProjectId, layoutApplied } = launchAgent({
           projectId: project.id,
           projectName: project.name,
           projectPath: project.path,
@@ -550,6 +561,7 @@ export function registerAgents(server: McpServer): void {
           actor_id: actorId,
           name,
           tmux_target: target,
+          ...(layoutApplied ? { layout } : {}),
 
           ...(landedInProjectId != null
             ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }

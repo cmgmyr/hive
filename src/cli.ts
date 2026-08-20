@@ -154,6 +154,7 @@ import {
   describeLastLogEvent,
   humanizeAge,
   lastLogEvent,
+  lastPermissionMode,
   reportsAgentStateLog,
   type ProvenanceRow,
 } from "./stateProvenance.js";
@@ -1942,6 +1943,7 @@ function cmdDoctor(argv: string[]): void {
       info(
         `worker ${w.name}`,
         `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
+        `permission mode: ${lastPermissionMode(w.actor_id) ?? "unknown (no record)"}`,
         foreign
           ? `pane: recorded on a different tmux socket (${w.tmux_socket}); this process cannot read it`
           : `pane: ${describePaneChoice(awaitingChoice)}`,

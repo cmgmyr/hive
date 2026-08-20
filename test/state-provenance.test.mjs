@@ -10,8 +10,16 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 migrate();
-const { deriveProvenance, ageSecondsSince, humanizeAge, describeForHuman, lastLogEvent, describeLastLogEvent, reportsAgentStateLog } =
-  await import("../dist/stateProvenance.js");
+const {
+  deriveProvenance,
+  ageSecondsSince,
+  humanizeAge,
+  describeForHuman,
+  lastLogEvent,
+  describeLastLogEvent,
+  reportsAgentStateLog,
+  lastPermissionMode,
+} = await import("../dist/stateProvenance.js");
 
 const project = db
   .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
@@ -52,11 +60,15 @@ function makeAgent({ actorId, command = "claude", agentState = "unknown", stateC
     ).id;
 }
 
-function logRow(actorId, event, state, agoSeconds) {
+function logRow(actorId, event, state, agoSeconds, payload = "{}") {
 
   db.prepare(
-    "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, ?, ?, '{}', ?)",
-  ).run(actorId, event, state, `${secondsAgo(agoSeconds)}.000`);
+    "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+  ).run(actorId, event, state, payload, `${secondsAgo(agoSeconds)}.000`);
+}
+
+function hookPayload(mode) {
+  return `{"session_id":"x","permission_mode":"${mode}","hook_event_name":"UserPromptSubmit"}`;
 }
 
 describe("deriveProvenance", () => {
@@ -324,6 +336,50 @@ describe("lastLogEvent", () => {
     assert.equal(last.event, "notify");
     assert.equal(last.state, "unchanged");
     assert.equal(last.age_seconds, 20);
+  });
+});
+
+describe("lastPermissionMode", () => {
+  beforeEach(reset);
+
+  it("reads the mode off the latest row that carries it", () => {
+    const actorId = "agent:mode";
+    logRow(actorId, "prompt", "working", 300, hookPayload("auto"));
+
+    assert.equal(lastPermissionMode(actorId), "auto");
+  });
+
+  it("skips past a trailing notify row, which never carries the field - the real case that broke a naive last-row read", () => {
+    const actorId = "agent:notify-tail";
+    logRow(actorId, "stop", "idle", 200, hookPayload("bypassPermissions"));
+    logRow(actorId, "notify", "waiting", 40, '{"session_id":"x","hook_event_name":"Notification","notification_type":"idle_prompt"}');
+
+    assert.equal(lastPermissionMode(actorId), "bypassPermissions");
+  });
+
+  it("reports the newer mode when it changed between two rows, not the first one seen", () => {
+    const actorId = "agent:mode-changed";
+    logRow(actorId, "prompt", "working", 300, hookPayload("default"));
+    logRow(actorId, "stop", "idle", 100, hookPayload("bypassPermissions"));
+
+    assert.equal(lastPermissionMode(actorId), "bypassPermissions");
+  });
+
+  it("returns null when no row for this actor ever carried the field", () => {
+    const actorId = "agent:never-had-mode";
+    logRow(actorId, "notify", "waiting", 10);
+
+    assert.equal(lastPermissionMode(actorId), null);
+  });
+
+  it("returns null when the actor has no log rows at all", () => {
+    assert.equal(lastPermissionMode("agent:no-rows"), null);
+  });
+
+  it("scopes to the requested actor, not the whole table", () => {
+    logRow("agent:other-mode", "prompt", "working", 5, hookPayload("plan"));
+
+    assert.equal(lastPermissionMode("agent:target-mode"), null);
   });
 });
 

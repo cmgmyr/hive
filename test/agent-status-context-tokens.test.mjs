@@ -86,3 +86,19 @@ describe("context_tokens on agent_status", { skip: hasTmux ? false : "tmux is no
     await mcp.call("agent_close", { name: "plain-tokens" });
   });
 });
+
+describe("permission_mode's reportsAgentStateLog gate on agent_status", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  it("is present (even if still null) for a claude worker and absent entirely for a non-claude one", async () => {
+    await mcp.call("agent_spawn", { name: "claude-mode", command: fakeClaude(), cwd: seededCwd });
+    await liveAgentRow(mcp, "claude-mode");
+    const claudeOut = await mcp.call("agent_status", { name: "claude-mode" });
+    assert.ok("permission_mode" in claudeOut, "the key must be present even before any hook has fired");
+    await mcp.call("agent_close", { name: "claude-mode" });
+
+    await mcp.call("agent_spawn", { name: "plain-mode", command: "sleep", extra_args: ["600"] });
+    await liveAgentRow(mcp, "plain-mode");
+    const plainOut = await mcp.call("agent_status", { name: "plain-mode" });
+    assert.ok(!("permission_mode" in plainOut), `should have no permission_mode: ${JSON.stringify(plainOut)}`);
+    await mcp.call("agent_close", { name: "plain-mode" });
+  });
+});

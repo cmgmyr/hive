@@ -45,7 +45,7 @@ Workers spawn as panes inside the lead's window by default, tiled evenly. Two kn
 - **Placement**: `placement: split` (default, panes) or `placement: window` (a tab per worker). `HIVE_SPAWN_PLACEMENT=window` sets it machine-wide.
 - **Layout**: `layout: tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, or `even-vertical`. The `main-*` layouts give the lead a bigger pane and stack workers on the side.
 
-hive re-applies the layout whenever a worker spawns or closes, so it holds up as the crew changes size.
+hive re-applies the layout whenever a worker spawns or closes, so it holds up as the crew changes size. `agent_spawn`'s receipt names the layout it applied, so you can tell what hive chose without checking the panes by eye.
 
 ## Workers
 
@@ -55,11 +55,13 @@ Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pan
 
 hive does not set a permission mode. A worker inherits whatever mode Claude Code's own configuration gives it at the moment it spawns, fixed for that session: hive passes no `--permission-mode` flag and has no `hive.yml` key for one. These docs go no higher than `auto`; hive itself never raises the mode for you.
 
+hive does say what a worker inherited, once it can: `agent_status` and `agent_list` report a `permission_mode` field, and `hive doctor` prints the same value on each worker's line. All three read it off the worker's own hook payloads, so it is unset until the worker's first prompt or stop, and stays unset for a worker that never gets one.
+
 Whether a worker on `auto` ever stops depends on two things together, not the mode alone: the mode and your own permission allow list (the `permissions` block in `~/.claude/settings.json`, or a project's own settings). A broad allow list can mean `auto` never prompts at all; a narrow one stops sooner. A worker that stops on a prompt is a modal pane, not a crash: it stops until someone answers it.
 
 Answer it by hand: attach (see [Watching and taking over workers](#watching-and-taking-over-workers) above) and respond in the worker's own pane. From outside the pane, `agent_send`'s `text` refuses on a dialog rather than typing into it, returning the pane's tail so you can read the prompt; `agent_send`'s `keys` is the supported way to drive it from outside instead, deliberately left unguarded, because pressing a key is the only way to unstick a dialog from outside the pane.
 
-Arm a standing watch before you spawn workers, on any mode that can prompt: `wake_when_idle(scope: "project")`. It reports a worker stopped on a permission prompt to the watch's owner, always, overriding wherever else the watch delivers. A plain idle report goes to the watch's own delivery target instead, so the two land in the same place only if you never set one. With no watch armed, nothing is pushed to you: `agent_list` shows the worker in state `waiting`, and `hive doctor` prints its pane tail so you can read the prompt itself.
+Arm a standing watch before you spawn workers, on any mode that can prompt: `wake_when_idle(scope: "project")`. It reports a worker stopped on a permission prompt to the watch's owner, always, overriding wherever else the watch delivers. A plain idle report goes to the watch's own delivery target instead, so the two land in the same place only if you never set one. With no watch armed, nothing is pushed to you: `agent_list` shows the worker in state `waiting`, and `hive doctor` prints its pane tail (prompt text included) plus the permission mode itself, so you don't have to reconstruct it from the prompt text.
 
 ## Wake-ups, not polling
 

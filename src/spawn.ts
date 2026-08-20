@@ -149,8 +149,9 @@ function placeAgentPane(
   envFlags: string[],
   commandString: string,
   title: string,
-): { target: string; landedInProjectId: number | null } {
+): { target: string; landedInProjectId: number | null; layoutApplied: boolean } {
   let landedInProjectId: number | null = null;
+  let layoutApplied = false;
   const target = withWindowClaim((): string => {
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
@@ -167,6 +168,7 @@ function placeAgentPane(
           "-t", found, "-c", spec.cwd, ...envFlags, commandString,
         );
         applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
+        layoutApplied = true;
         const owner = windowOwner(found);
         if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
         return pane;
@@ -174,12 +176,12 @@ function placeAgentPane(
     }
     return createWindow(session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true).pane;
   });
-  return { target, landedInProjectId };
+  return { target, landedInProjectId, layoutApplied };
 }
 
 export function launchAgent(
   spec: LaunchSpec,
-): { agentId: number; actorId: string; target: string; landedInProjectId: number | null } {
+): { agentId: number; actorId: string; target: string; landedInProjectId: number | null; layoutApplied: boolean } {
 
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
 
@@ -227,14 +229,14 @@ export function launchAgent(
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, commandString, title);
+    const { target, landedInProjectId, layoutApplied } = placeAgentPane(session, spec, envFlags, commandString, title);
     paneUp = true;
 
     if (!recordPane(agentId, target, socket)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
-    return { agentId, actorId, target, landedInProjectId };
+    return { agentId, actorId, target, landedInProjectId, layoutApplied };
   } catch (e) {
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
