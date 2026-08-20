@@ -31,6 +31,28 @@ describe("claude-plugin manifest", () => {
   });
 });
 
+describe("claude-plugin skills", () => {
+  it("ships a cleanup skill with parseable frontmatter matching its directory name", () => {
+    const skillPath = join(pluginDir, "skills", "cleanup", "SKILL.md");
+    assert.equal(existsSync(skillPath), true);
+    const raw = readFileSync(skillPath, "utf8");
+    const match = raw.match(/^---\n([\s\S]*?)\n---/);
+    assert.notEqual(match, null, "SKILL.md must open with a --- frontmatter block");
+    const frontmatter = Object.fromEntries(
+      match[1]
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const idx = line.indexOf(":");
+          return [line.slice(0, idx).trim(), line.slice(idx + 1).trim()];
+        }),
+    );
+    assert.equal(frontmatter.name, "cleanup");
+    assert.equal(typeof frontmatter.description, "string");
+    assert.notEqual(frontmatter.description.length, 0);
+  });
+});
+
 describe("claude-plugin shim", () => {
   it("resolves hive's built kickoff from inside the checkout", async () => {
     const shim = readFileSync(join(pluginDir, "kickoff.mjs"), "utf8");

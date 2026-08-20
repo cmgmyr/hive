@@ -21,12 +21,16 @@ That is the whole install. A folder under a skills directory holding
 in place rather than copied, so `git pull && npm run build` upgrades the hook
 along with the rest of hive. `rm ~/.claude/skills/hive` uninstalls it.
 
-Only the hook lives here. hive's posture and worker briefs travel as
-command-line flags from `hive lead` and `agent_spawn`, because a plugin has no
-way to ship always-on instructions: plugin `CLAUDE.md` is not loaded as
-context, skills are model-invoked, and the one always-on mechanism a plugin
-has, a `force-for-plugin` output style, would override whatever output style
-you have selected. hive must never do that.
+The hook lives here, and so does a skill (`skills/cleanup`, `/hive:cleanup`).
+hive's posture and worker briefs still travel as command-line flags from
+`hive lead` and `agent_spawn`, because a plugin has no way to ship always-on
+instructions: plugin `CLAUDE.md` is not loaded as context, and the one
+always-on mechanism a plugin has, a `force-for-plugin` output style, would
+override whatever output style you have selected - hive must never do that. A
+skill is not always-on, which is exactly why it is fine here where an output
+style is not: it costs nothing on a session that never matches it, and it
+overrides nothing the user chose. It only acts when its own description
+matches the moment, the same as any other skill.
 
 ## Why kickoff.mjs exists
 
