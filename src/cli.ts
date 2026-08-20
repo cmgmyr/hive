@@ -16,6 +16,7 @@ import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
+import { versionInfo } from "./version.js";
 import { claudeConfigDir } from "./claudeDir.js";
 import {
   ATTACH_MODES,
@@ -199,6 +200,7 @@ function usage(): never {
   console.log(`hive — shared memory and coordination for Claude Code sessions
 
 Usage:
+  hive --version              version, short sha, and dirty marker for this build
   hive [path]                open the project's session with a lead window
   hive lead [path] [--no-dashboard]
                              same; lead is the default command. --no-dashboard
@@ -1711,6 +1713,10 @@ function cmdDoctor(argv: string[]): void {
     }
   };
   console.log("hive doctor\n");
+  check("version", () => {
+    const { line, drift } = versionInfo();
+    return drift ? [line, drift].join("\n        ") : line;
+  });
   check("node", () => describeInterpreter());
 
   check("better-sqlite3", () => {
@@ -2598,6 +2604,12 @@ const args = process.argv.slice(2);
 let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
+if (command === "--version" || command === "-v") {
+  const { line, drift } = versionInfo();
+  console.log(line);
+  if (drift) console.log(`! ${drift}`);
+  process.exit(0);
+}
 const COMMANDS = [
   "lead", "init", "attach", "start", "status", "setup", "doctor",
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
