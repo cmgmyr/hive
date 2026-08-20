@@ -235,7 +235,22 @@ jobs:
       # than one leg, and the thing enforcing it was a comment - so the day a
       # fixture stops being available and its cases start skipping, every leg
       # stayed green and said so. The gate is in the `npm test` step below.
-      - run: sudo apt-get update && sudo apt-get install -y tmux
+      # Bounded and retried (todo 460): a hung upstream apt mirror once held
+      # this exact step for 51 unattended minutes with nothing saying so.
+      # Normal cost across six sampled green legs was 6-42s. Reasoning and
+      # the numbers are in the commit message.
+      - name: install tmux (bounded, retried)
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            sudo timeout 2m bash -c 'apt-get update && apt-get install -y tmux' && exit 0
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::apt install attempt $attempt/3 failed, retrying in 10s"
+              sleep 10
+            fi
+          done
+          echo "::error::apt install failed after 3 attempts"
+          exit 1
       # Unconditional on purpose: it proves the install above actually ran,
       # so a broken branch fails here rather than as a silent wave of skips
       # inside `npm test`.
