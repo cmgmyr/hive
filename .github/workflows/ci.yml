@@ -189,11 +189,16 @@ jobs:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            skipped: 24
+            # 24 + 1: sweep-scratch's end-to-end ownership case is darwin-only,
+            # because linux reports tty `?` for a shell whose pty master has
+            # closed and the sweep cannot select that population there at all
+            # (todo 372, todo 472). The guard it proves is pinned on every
+            # platform by the handed-population case beside it.
+            skipped: 25
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 24
+            skipped: 25
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
@@ -322,8 +327,9 @@ jobs:
   # WHAT THIS COVERS THAT `test` NOW CANNOT: test/auto-attach-scope.test.mjs's
   # eleven darwin-only cases (ensureAttached is a no-op off darwin, so Linux
   # skips them by design - they are the largest contributor to the Linux legs'
-  # `skipped: 24`, which also counts dashboard-open, dashboard-open-lead and
-  # open-call-guard; `skipped: 0` here), and a
+  # `skipped: 25`, which also counts dashboard-open, dashboard-open-lead,
+  # open-call-guard and sweep-scratch's darwin-only ownership case;
+  # `skipped: 0` here), and a
   # clean-environment build of the native addon on the platform hive actually
   # ships on. Everything else - the addon's ABI logic, the CLI, the MCP tools
   # - is architecture-general and the Linux legs already cover it on every

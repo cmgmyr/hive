@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import {
   assertScratchStore,
   clearHiveEnv,
   isolateTmux,
+  recordScratchTmuxSocket,
   scratchDirs,
   scratchTmuxServer,
+  tmuxSocketUnder,
   withEnv,
 } from "./helpers.mjs";
 import {
@@ -34,14 +36,85 @@ const { sessionName, tmuxSocketPath } = await import("../dist/tmux.js");
 
 const SWEEP_SCRIPT = new URL("../scripts/sweep-scratch.mjs", import.meta.url).pathname;
 
+const WEDGED_SHELL_IS_SELECTABLE = platform() === "darwin";
+
 function runSweep(args, opts = {}) {
+  const { realPsRows = false, ...spawnOpts } = opts;
+  const env = { ...process.env, ...(spawnOpts.env ?? {}) };
+  if (realPsRows) {
+    if (args.includes("--kill")) {
+      throw new Error("realPsRows is dry-run only: a --kill sweep here must be handed its own shell population");
+    }
+    delete env.SWEEP_PS_ROWS_JSON;
+  } else if (!env.SWEEP_PS_ROWS_JSON) {
+    env.SWEEP_PS_ROWS_JSON = "[]";
+  }
   return execFileSync(process.execPath, [SWEEP_SCRIPT, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 30_000,
     killSignal: "SIGKILL",
-    ...opts,
+    ...spawnOpts,
+    env,
   });
+}
+
+const nap = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code !== "ESRCH";
+  }
+}
+
+function ppidOf(pid) {
+  try {
+    return Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+  } catch {
+    return null;
+  }
+}
+
+function foreignOrphanLoginShell(cleanups) {
+  const binDir = mkdtempSync(join(tmpdir(), "hive-sweep-victim-"));
+  const bin = join(binDir, "-hivesweepvictim");
+  symlinkSync("/bin/sleep", bin);
+
+  const socketDir = mkdtempSync(join(tmpdir(), "hive-tmux-victim-"));
+  const socket = tmuxSocketUnder(realpathSync(socketDir));
+  mkdirSync(dirname(socket), { recursive: true });
+  recordScratchTmuxSocket(socket);
+  cleanups.push({
+    reap: () => {
+      rmSync(binDir, { recursive: true, force: true });
+      rmSync(socketDir, { recursive: true, force: true });
+    },
+  });
+
+  execFileSync(
+    "tmux",
+    ["-S", socket, "new-session", "-d", "-s", "victim", `trap '' HUP; exec '${bin}' 600`],
+    { stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" },
+  );
+  const panes = execFileSync("tmux", ["-S", socket, "list-panes", "-s", "-t", "=victim", "-F", "#{pane_pid}"], {
+    encoding: "utf8",
+    timeout: 5000,
+    killSignal: "SIGKILL",
+  }).trim();
+  assert.notEqual(panes, "", "setup: tmux created no pane for the victim session");
+  const pid = Number(panes);
+  execFileSync("tmux", ["-S", socket, "kill-session", "-t", "=victim"], {
+    stdio: "ignore",
+    timeout: 5000,
+    killSignal: "SIGKILL",
+  });
+
+  for (let i = 0; i < 60 && ppidOf(pid) !== 1; i++) nap(50);
+  assert.equal(ppidOf(pid), 1, "setup: the victim must outlive its tmux server as a parentless pty holder");
+  return pid;
 }
 
 describe("parsing (fixture-testable, no process involved)", () => {
@@ -236,6 +309,40 @@ describe("liveSuiteLockHolder: the decision, against a throwaway lock file", () 
   });
 });
 
+describe("the sweep CLI reaps the shell population it is handed, never the machine's", () => {
+  const made = [];
+  after(() => {
+    for (const dir of made) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function psOffering(row) {
+    const dir = mkdtempSync(join(tmpdir(), "hive-sweep-fake-ps-"));
+    made.push(dir);
+    writeFileSync(join(dir, "ps"), `#!/bin/sh\necho "${row}"\n`, { mode: 0o755 });
+    return dir;
+  }
+
+  it("a --kill sweep started from this file reports no shell at all, though ps offers one that qualifies", () => {
+    const dead = spawnSync("/bin/sh", ["-c", "exit 0"]).pid;
+    const fakePs = psOffering(`  ${dead}       1       20:00:00 ttys999  -fakeorphanshell`);
+    const noServersHere = mkdtempSync(join(tmpdir(), "hive-sweep-no-servers-"));
+    made.push(noServersHere);
+    const env = { ...process.env, PATH: `${fakePs}:${process.env.PATH}`, TMPDIR: noServersHere };
+
+    const offered = runSweep(["--age-hours=1"], { realPsRows: true, env });
+    assert.match(
+      offered,
+      /-fakeorphanshell/,
+      "setup: the offered row must be selectable by the real predicate, or the assertion below proves nothing",
+    );
+
+    const out = runSweep(["--age-hours=1", "--kill"], { env });
+    assert.match(out, /orphaned login shells \(age >= 1h\): 0/);
+    assert.doesNotMatch(out, /-fakeorphanshell/);
+    assert.doesNotMatch(out, new RegExp(`pid ${dead}\\s`));
+  });
+});
+
 describe("the sweep CLI end to end, against a real scratch tmux server", { skip: hasTmux ? false : "tmux not installed" }, () => {
   const made = [];
   const orphanPids = [];
@@ -256,8 +363,9 @@ describe("the sweep CLI end to end, against a real scratch tmux server", { skip:
     made.push(server);
     const socket = server.socket;
 
-    const out = runSweep(["--age-hours=1"]);
+    const out = runSweep(["--age-hours=1"], { realPsRows: true });
     assert.match(out, new RegExp(socket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(out, /orphaned login shells \(age >= 1h\)/);
     assert.match(out, /DRY RUN: nothing was killed/);
 
     execFileSync("tmux", ["-S", socket, "list-sessions"], { stdio: "ignore", timeout: 5000, killSignal: "SIGKILL" });
@@ -297,6 +405,54 @@ describe("the sweep CLI end to end, against a real scratch tmux server", { skip:
     assert.equal(after_, before);
 
     execFileSync("tmux", ["-S", liveSocket, "kill-session", "-t", `=${session}`], { stdio: "ignore" });
+  });
+
+  it("--kill is handed its shell population, so an orphan login shell this file does not own survives a zero-hour floor", {
+    skip: WEDGED_SHELL_IS_SELECTABLE
+      ? false
+      : "linux reports tty '?' for a shell whose pty master has closed, so findOrphanShells drops this population "
+        + "before the name test and scripts/sweep-scratch.mjs cannot select it there at all (todo 372 comment 1411, "
+        + "todo 472). The guard itself is pinned on every platform by the handed-population test in this file.",
+  }, () => {
+    const lockPath = join(mkdtempSync(join(tmpdir(), "hive-sweep-lock-test-")), "hive-test-suite.lock");
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, branch: "this-file", worktree: "/this-file" }));
+
+    const protectedServer = scratchTmuxServer({ ageHours: 5 });
+    made.push(protectedServer);
+
+    const victim = foreignOrphanLoginShell(made);
+    orphanPids.push(victim);
+
+    const selectable = runSweep(["--age-hours=0"], { realPsRows: true });
+    assert.match(
+      selectable,
+      new RegExp(`pid ${victim}\\s`),
+      "setup: the real predicate must select this process, or the assertions below prove nothing",
+    );
+    assert.match(
+      selectable,
+      new RegExp(protectedServer.socket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "setup: a scratch server the kill run must not consider has to be visible to a sweep that can see it",
+    );
+
+    const noServersHere = mkdtempSync(join(tmpdir(), "hive-sweep-no-servers-"));
+    made.push({ reap: () => rmSync(noServersHere, { recursive: true, force: true }) });
+    const out = runSweep(["--age-hours=0", "--kill"], {
+      env: { ...process.env, SWEEP_SUITE_LOCK_PATH: lockPath, TMPDIR: noServersHere },
+    });
+    assert.doesNotMatch(out, new RegExp(`pid ${victim}\\s`));
+    assert.equal(isAlive(victim), true, "a --kill sweep from this file reaped a process the file does not own");
+
+    assert.match(
+      out,
+      /old scratch tmux servers \(age >= 0h\): 0/,
+      "the kill run must consider no scratch server at all, while one that qualifies exists outside its TMPDIR",
+    );
+    execFileSync("tmux", ["-S", protectedServer.socket, "list-sessions"], {
+      stdio: "ignore",
+      timeout: 5000,
+      killSignal: "SIGKILL",
+    });
   });
 
   it("the suite-lock guard: a live holder blocks the server reap but not the shell reap", () => {
