@@ -7,6 +7,7 @@ import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "
 import {
   ACTIVE_TIMER_WHERE,
   LOG_RETENTION,
+  OWNED_BY_WATCH,
   WATCH_SCOPE_PROJECT,
   seedGoneCursor,
   type TimerRow,
@@ -165,10 +166,10 @@ const openStandingWatch = db.transaction(
     if (existing !== undefined) {
       throw new Error(
         `You already have a standing watch on this project: wake #${existing.id}, which expires at ` +
-          `${existing.max_wait_at ?? "an unrecorded time"}. It is still watching the whole crew, including ` +
-          "workers spawned since you set it, so a second one would report every finish twice and leave two " +
-          `wake ids to cancel. Use it, or wake_cancel(wake_id: ${existing.id}) first if you want to change ` +
-          "its body, its lifetime or its deliver_to.",
+          `${existing.max_wait_at ?? "an unrecorded time"}. It is still watching the crew you spawned, ` +
+          "including workers spawned since you set it, so a second one would report every finish twice and " +
+          `leave two wake ids to cancel. Use it, or wake_cancel(wake_id: ${existing.id}) first if you want to ` +
+          "change its body, its lifetime or its deliver_to.",
       );
     }
     const row = db
@@ -203,11 +204,12 @@ function createStandingWatch(
 
   const crew = db
     .prepare(
-      `SELECT name FROM agents
-        WHERE project_id = ? AND kind = 'agent' AND status = 'running' AND actor_id != ?
-        ORDER BY id`,
+      `SELECT name FROM agents a
+        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
+          ${OWNED_BY_WATCH}
+        ORDER BY a.id`,
     )
-    .all(projectId, currentActor()) as { name: string }[];
+    .all(projectId, currentActor(), currentActor()) as { name: string }[];
   return {
     wake_id: row.id,
     scope: WATCH_SCOPE_PROJECT,
@@ -271,7 +273,7 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over this project's whole crew, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
       inputSchema: {
         agents: z
           .array(agentRefParam)
@@ -285,8 +287,8 @@ export function registerWakes(server: McpServer): void {
           .enum(["project"])
           .optional()
           .describe(
-            "Watch this project's whole crew as a STANDING watch that keeps watching after each finish, " +
-              "including workers spawned later. Mutually exclusive with agents.",
+            "Watch the crew you spawn in this project as a STANDING watch that keeps watching after each " +
+              "finish, including workers spawned later. Mutually exclusive with agents.",
           ),
         max_wait_seconds: z
           .number()

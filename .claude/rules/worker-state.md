@@ -47,4 +47,8 @@ Whatever you pass as a wake body is typed into the target pane exactly as writte
 
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
 
+## A standing watch reports its owner's crew only, and a lead-bound wake can hold for an active conversation
+
+`OWNED_BY_WATCH` excludes a grandchild an owner never dispatched itself, except on the blocked/stalled path, which stays unfiltered on purpose. A lead-bound wake held for a live human conversation (`HELD_REASON_CONVERSATION`) measures its own ceiling against `due_at`, never `first_held_at` - the latter is cleared by an ordinary `hive lead` reattach and would silently launder the ceiling. Rationale, the measured TTLs, and the reattach bug: `.claude/skills/hive-internals/references/worker-state.md`.
+
 See `.claude/skills/hive-internals` for the five incidents and the measurements behind these.

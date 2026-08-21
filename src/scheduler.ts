@@ -470,6 +470,39 @@ export function isUnsubmittedInputHold(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_UNSUBMITTED_INPUT_PREFIX);
 }
 
+export const HELD_REASON_CONVERSATION =
+  "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +
+  "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
+  "ceiling is reached, whichever comes first";
+
+// A human message keeps a lead-bound wake held for this long after it lands. Measured deferral rates
+// for this and CONVERSATION_HOLD_MAX are in hive-internals/references/worker-state.md.
+const CONVERSATION_HOLD_TTL = "-5 minutes";
+
+// Must stay well under NOTICE_MAX_AGE, which silently destroys a notice held past it - see
+// noticeStillDeliverable below. Measured against due_at, not first_held_at: cli.ts's hive-lead
+// re-point clears held_at (and so first_held_at) on every ordinary reattach, which would otherwise
+// launder this ceiling indefinitely.
+const CONVERSATION_HOLD_MAX = "-15 minutes";
+
+function conversationHoldsWake(timer: TimerRow): boolean {
+  if (timer.due_at !== null) {
+    const withinCeiling = stmt(`SELECT ? >= datetime('now', ?) AS within`).get(
+      timer.due_at,
+      CONVERSATION_HOLD_MAX,
+    ) as { within: number };
+    if (!withinCeiling.within) return false;
+  }
+  return (
+    stmt(
+      `SELECT 1 AS hit FROM agent_state_log
+        WHERE actor_id = ? AND event = 'prompt' AND payload NOT LIKE '%[hive wake #%'
+          AND created_at >= datetime('now', ?)
+        ORDER BY id DESC LIMIT 1`,
+    ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined
+  );
+}
+
 function heldTarget(timer: TimerRow): {
   name: string;
   isLead: boolean;
@@ -903,6 +936,11 @@ interface StandingCandidate {
   row: CrewRow;
 }
 
+// Scopes a standing watch to the OWNER's own crew (bound to owner, not deliver_actor - a watch can
+// deliver elsewhere). Keeps a NULL parent_actor_id in rather than filtering it. Does not apply to
+// stallCandidateRows below - see .claude/skills/hive-internals/references/worker-state.md.
+export const OWNED_BY_WATCH = "AND (a.parent_actor_id = ? OR a.parent_actor_id IS NULL)";
+
 function standingIdleRows(timer: TimerRow): CrewRow[] {
   return (
     stmt(
@@ -910,9 +948,10 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
           AND a.agent_state = 'idle' AND a.state_changed_at IS NOT NULL
+          ${OWNED_BY_WATCH}
           AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
         ORDER BY a.id`,
-    ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[]
+    ).all(timer.project_id, timer.deliver_actor, timer.owner, timer.id) as CrewRow[]
   ).filter((row) => !awaitingFirstPrompt(row));
 }
 
@@ -924,9 +963,10 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
         AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")})
         AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
+        ${OWNED_BY_WATCH}
         AND ${unreported(CONDITION_GONE, "a.closed_at")}
       ORDER BY a.id`,
-  ).all(timer.project_id, timer.deliver_actor, timer.id) as CrewRow[];
+  ).all(timer.project_id, timer.deliver_actor, timer.owner, timer.id) as CrewRow[];
 }
 
 export function markGoneReported(agentId: number, projectId: number): void {
@@ -973,6 +1013,64 @@ function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
   );
 }
 
+// A GONE report whose underlying row has moved since it was claimed as GONE is a warning about a
+// wrong fact already sitting in this same notice, not mere detail - it must stay visible even in the
+// short lead-facing render below, or a lead reading only the one-line summary would trust a stale
+// obituary with nothing telling it not to.
+const isStaleGoneReport = (c: StandingCandidate): boolean =>
+  c.condition === CONDITION_GONE && (c.row.status !== "closed" || c.row.closed_at !== c.row.episode);
+
+interface StillGoingRow {
+  name: string;
+  actor_id: string;
+  agent_state: string;
+  state_changed_at: string | null;
+  status: string;
+  command: string;
+  kind: string;
+  resumed_at: string;
+}
+
+// Shared by the short render (count only) and the full render's own roster, so both agree on who a
+// standing watch will ever report - OWNED_BY_WATCH excludes a grandchild the same way the finish
+// rosters above do, or "N still going" promises an update the watch will never deliver.
+function stillGoingRows(timer: TimerRow): StillGoingRow[] | null {
+  try {
+    return stmt(
+      `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
+         FROM agents a
+        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
+          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
+          ${OWNED_BY_WATCH}
+        ORDER BY a.id`,
+    ).all(timer.project_id, timer.deliver_actor, timer.owner) as StillGoingRow[];
+  } catch {
+    return null;
+  }
+}
+
+function stillGoingCount(timer: TimerRow): number | null {
+  const rows = stillGoingRows(timer);
+  return rows === null ? null : rows.length;
+}
+
+// Rendered at DELIVERY time only, from the notice row's own wake_idle_notices claim rows - never at
+// write time. The stored body (below) always carries the full text, so wake_get(noticeId) returns
+// real detail. A stale-GONE diagnostic (isStaleGoneReport) stays inline: it corrects a fact THIS SAME
+// line asserts, not detail deferrable to a lookup.
+function standingNoticeBodyShort(timer: TimerRow, finished: StandingCandidate[], totalFinished: number, noticeId: number): string {
+  const names = finished.map((c) =>
+    isStaleGoneReport(c)
+      ? `${c.row.name} (STALE - its GONE report has moved since; verify with agent_output before trusting it)`
+      : c.row.name,
+  );
+  const omitted = totalFinished - finished.length;
+  const finishedPart = `${totalFinished} finished: ${names.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`;
+  const going = stillGoingCount(timer);
+  const goingPart = going === null ? "" : ` ${going} still going.`;
+  return `${finishedPart}${goingPart} wake_get(${noticeId}) for detail.`;
+}
+
 function standingNoticeBody(
   timer: TimerRow,
   finished: StandingCandidate[],
@@ -989,7 +1087,7 @@ function standingNoticeBody(
       c.condition === CONDITION_GONE
         ?
 
-          c.row.status !== "closed" || c.row.closed_at !== c.row.episode
+          isStaleGoneReport(c)
             ? `  ${c.row.name}: was reported GONE earlier in this hold, but its row's state has moved since - ` +
               `it may have been resumed, or closed again at a different time. Read its CURRENT state with ` +
               `agent_output(name: "${c.row.name}") rather than trusting this line; do not treat it as gone ` +
@@ -1017,28 +1115,11 @@ function standingNoticeBody(
         `${span.lo} to ${span.hi}.`,
     );
   }
+  const rows = stillGoingRows(timer);
   let shown: string[] = [];
   let more = 0;
-  let asked = false;
-  try {
-
-    const rows = stmt(
-      `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
-         FROM agents a
-        WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
-          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
-        ORDER BY a.id`,
-    ).all(timer.project_id, timer.deliver_actor) as {
-      name: string;
-      actor_id: string;
-      agent_state: string;
-      state_changed_at: string | null;
-      status: string;
-      command: string;
-      kind: string;
-      resumed_at: string;
-    }[];
-
+  const asked = rows !== null;
+  if (rows !== null) {
     more = Math.max(0, rows.length - ROSTER_STILL_GOING);
 
     shown = rows
@@ -1048,10 +1129,6 @@ function standingNoticeBody(
           ? `${r.name} (awaiting first assignment)`
           : `${r.name} (${stateNowClause(r)})`,
       );
-
-    asked = true;
-  } catch {
-
   }
   if (shown.length > 0) {
     lines.push(`Still going: ${shown.join("; ")}${more > 0 ? `, and ${more} more` : ""}.`);
@@ -1154,7 +1231,9 @@ const claimStandingBatch = db.transaction(
               hi: spanValues.reduce((a, b) => (a > b ? a : b)),
             }
           : null;
-      if (updateNoticeInPlace(pending.id, standingNoticeBody(timer, finished, totalFinished, priorStats.n, span))) {
+      if (
+        updateNoticeInPlace(pending.id, standingNoticeBody(timer, finished, totalFinished, priorStats.n, span))
+      ) {
         for (const c of won) stampEpisodeNotice(pending.id, timer.id, c.row.id, c.condition, c.row.episode);
         return true;
       }
@@ -1386,6 +1465,17 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
 
   if (inputBoxHoldsWake(timer.deliver_pane, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);
+    return { ok: false };
+  }
+
+  // The three checks above are facts about whether delivery is POSSIBLE (a dead pane, a reissued
+  // pane, unsubmitted text sitting where the paste would land). This one is a fact about whether
+  // delivery is WELCOME, which only makes sense to ask once delivery is otherwise clear to proceed -
+  // so it sits after them. No notice-claim of its own: the human being held for is the human at the
+  // keyboard, and the statusline is what tells them (see the two dead-ends on notice-claim latching
+  // and on splitting a hold reason in two).
+  if (isLeadActorId(timer.deliver_actor) && conversationHoldsWake(timer)) {
+    holdTimer(timer, HELD_REASON_CONVERSATION);
     return { ok: false };
   }
 
@@ -1661,6 +1751,26 @@ function noticeStalenessNote(timer: TimerRow): string {
   }
 }
 
+// A lead-bound notice types short; wake_get(noticeId) then returns the FULL body this function never
+// touches. Reconstructed from the notice row's own wake_idle_notices claim rows (agent_id, condition,
+// episode) rather than parsed back out of stored text. Returns null for anything that is not a
+// standing-watch finish notice (a self-addressed wake, a block notice, the expiry notice) - deliver()
+// falls back to the full body for those, unchanged.
+function shortRenderForLeadDelivery(timer: TimerRow): string | null {
+  const rows = stmt(
+    `SELECT agent_id, condition, episode FROM wake_idle_notices
+      WHERE notice_timer_id = ? AND condition IN ('${CONDITION_IDLE}', '${CONDITION_GONE}')
+      ORDER BY notified_at, agent_id`,
+  ).all(timer.id) as { agent_id: number; condition: string; episode: string }[];
+  if (rows.length === 0) return null;
+  const candidates: StandingCandidate[] = [];
+  for (const r of rows) {
+    const row = crewRowForRender(r.agent_id, r.episode);
+    if (row !== null) candidates.push({ condition: r.condition, row });
+  }
+  return standingNoticeBodyShort(timer, candidates.slice(0, FINISHED_SHOWN_CAP), rows.length, timer.id);
+}
+
 async function deliver(
   timer: TimerRow,
   note: string,
@@ -1671,6 +1781,7 @@ async function deliver(
 ): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
+  const body = (isLeadActorId(timer.deliver_actor) ? shortRenderForLeadDelivery(timer) : null) ?? timer.body;
 
   let typedBusy: number | null;
   try {
@@ -1696,7 +1807,7 @@ async function deliver(
   try {
     await sendText(
       timer.deliver_pane,
-      prefix + timer.body + noticeStalenessNote(timer) + tail,
+      prefix + body + noticeStalenessNote(timer) + tail,
       true,
       strandedTextWouldHold ? recordTyped : undefined,
     );

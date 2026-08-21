@@ -66,6 +66,7 @@ import {
   ACTIVE_TIMER_WHERE,
   dashboardFileContained,
   describeStall,
+  HELD_REASON_CONVERSATION,
   HELD_REASON_LEAD_PANE_DEAD,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   isUnsubmittedInputHold,
@@ -2252,7 +2253,9 @@ function cmdStatusline(): void {
       ? "typing"
       : held.held_reason === HELD_REASON_LEAD_PANE_DEAD || wasHeldForPaneReissue(held.held_reason)
         ? "needs you"
-        : "blocked";
+        : held.held_reason === HELD_REASON_CONVERSATION
+          ? "talking"
+          : "blocked";
     parts.push(`${held.n} held (${age}, ${reason})`);
   }
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);

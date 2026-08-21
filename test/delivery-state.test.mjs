@@ -188,7 +188,9 @@ describe("issue #75: the scheduler records whether the target was busy at delive
       "unknown",
       "a lead's latch must still be at its untouched default for this test to mean anything",
     );
-    insertStateLogRow(db, actor, "prompt", "working", 5);
+    // 400s, not 5s: a fresh 'prompt' row against a lead actor also reads as a live human
+    // conversation to the conversation-hold check, which would hold this wake instead of typing it.
+    insertStateLogRow(db, actor, "prompt", "working", 400);
     const timerId = seedDueTimer(project, actor, livePane);
 
     await tick();

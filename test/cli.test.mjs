@@ -215,6 +215,23 @@ describe("hive CLI pads", () => {
     );
   });
 
+  it("gives todo 455's conversation hold its own reason word, not 'blocked'", async () => {
+    const HELD_REASON_CONVERSATION =
+      "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +
+      "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
+      "ceiling is reached, whichever comes first";
+    const { cwd, projectId } = await freshHeldProject("held-talking");
+    seedHeldTimer(projectId, { reason: HELD_REASON_CONVERSATION, firstHeldAtExpr: "datetime('now', '-120 seconds')" });
+
+    const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+    assert.equal(code, 0);
+    assert.match(
+      stdout,
+      /1 held \(2m, talking\)/,
+      "a hold on a human conversation must read 'talking', not the generic 'blocked'",
+    );
+  });
+
   it("statusline stays silent in a registered project with no live state", async () => {
 
     const emptyDir = dirs.tmp;

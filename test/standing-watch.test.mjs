@@ -32,6 +32,13 @@ const addWorker = (actor, name, pane, state, changedOffset) =>
       VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
   ).get(project, actor, name, pane, state, changedOffset).id;
+const addWorkerWithParent = (actor, name, pane, state, changedOffset, parentActorId) =>
+  db.prepare(
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+        agent_state, state_changed_at, created_at, parent_actor_id)
+      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+        datetime('now', ?), datetime('now', '-300 seconds'), ?) RETURNING id\`,
+  ).get(project, actor, name, pane, state, changedOffset, parentActorId).id;
 const addStandingWatch = (createdOffset = '-60 seconds', maxWait = '+4 hours', opts = {}) =>
   db.prepare(
     \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
@@ -74,6 +81,12 @@ describe("a standing watch keeps watching", () => {
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
       const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      // Delivered to the lead (the default), which must stay lead-targeted so the notice keeps
+      // HOLDING rather than really firing between ticks (a dead pane on a non-lead target gets
+      // cancelled or, worse, thrown-through mid-tick by a real send failure - only a lead-owned wake
+      // is exempt) - which is exactly what this test needs across three ticks to prove the
+      // coalescing itself. The STORED body is the full render regardless of target (todo 455 fix 1);
+      // only the DELIVERED text shortens for a lead, and this fixture never really delivers.
       const watchId = addStandingWatch();
 
       // Nothing has finished: the watch must be silent, and must not have
@@ -104,15 +117,17 @@ describe("a standing watch keeps watching", () => {
 
     assert.deepEqual(result.quiet, { notices: 0, cursor: 0 }, "a tick with nothing to report must write nothing at all");
     assert.equal(result.first.length, 1, "w1's finish should have filed exactly one notice");
-    assert.match(result.first[0], /w1/);
-    assert.doesNotMatch(result.first[0], /^ {2}w2:/m, "w2 had not finished and must not be in the finished block");
-    assert.match(result.first[0], /Still going: w2/, "the roster names what is still running");
+    assert.match(result.first[0], /^1 worker\(s\) in this project have finished or gone away/);
+    assert.match(result.first[0], /^ {2}w1: /m);
+    assert.doesNotMatch(result.first[0], /^ {2}w2:/m, "w2 had not finished and must not be named yet");
+    assert.match(result.first[0], /Still going: w2/, "and it still names what is still running");
 
     assert.deepEqual(result.noticeWatchLists, ["[]"], "a notice must watch nothing, or deliver() pastes worker screens");
 
     assert.equal(result.second.length, 1, "the pane is still held; a second finish must not queue a second notice");
-    assert.match(result.second[0], /w2/);
-    assert.match(result.second[0], /w1/, "and the earlier finish must still be named in the merged notice");
+    assert.match(result.second[0], /^2 worker\(s\) in this project have finished or gone away/);
+    assert.match(result.second[0], /^ {2}w1: /m);
+    assert.match(result.second[0], /^ {2}w2: /m);
 
     assert.equal(result.watch.fired_at, null, "the watch's own row must never fire while it is watching");
     assert.equal(result.watch.fire_count, 0);
@@ -181,12 +196,17 @@ describe("a standing watch keeps watching", () => {
       "body-on-every-notice",
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      // Delivered to a worker: the echoed body is deferred to wake_get for a lead target (todo 455
+      // commit 3), so this pins the FULL render, which still echoes it inline.
       const watchId = addStandingWatch('-60 seconds', '+4 hours', {
         body: 'read its diff, complete its todo, dispatch the one it unblocks',
+        deliverActor: 'agent:9',
+        deliverPane: '%9',
       });
       await tick(snapshot);
       ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
       `,
+      ["%1", "%2", "%9"],
     );
     assert.equal(result.bodies.length, 1);
     assert.match(result.bodies[0], /read its diff, complete its todo, dispatch the one it unblocks/);
@@ -371,13 +391,16 @@ describe("a watched worker that dies", () => {
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
       const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
-      const watchId = addStandingWatch();
+      // Delivered to a worker, to pin the FULL render's GONE prose.
+      const watchId = addStandingWatch('-60 seconds', '+4 hours', { deliverActor: 'agent:9', deliverPane: '%9' });
       await tick(snapshot);
       const before = notices(watchId).length;
 
       // w1's window dies. The janitor closes the row on the next tick, which
-      // is the real path: nothing else stamps closed_at.
-      const shrunk = { panes: new Set(['%2']), windows: new Set() };
+      // is the real path: nothing else stamps closed_at. '%9' (the notice's
+      // own delivery pane) must stay alive here too, or the janitor cancels
+      // the watch itself for a dead delivery pane before candidates are read.
+      const shrunk = { panes: new Set(['%2', '%9']), windows: new Set() };
       await tick(shrunk);
       const after = notices(watchId);
       const w1Row = db.prepare("SELECT status, closed_at FROM agents WHERE id = ?").get(w1);
@@ -392,6 +415,7 @@ describe("a watched worker that dies", () => {
         cursor: cursor(watchId),
       }`)}
       `,
+      ["%1", "%2", "%9"],
     );
     assert.equal(result.before, 0, "nothing had finished yet");
     assert.equal(result.closed, true, "the janitor is what stamps closed_at, and this test depends on it running");
@@ -410,6 +434,9 @@ describe("a watched worker that dies", () => {
       `
       const done = addWorker('agent:1', 'done', '%1', 'idle', '-30 seconds');
       const died = addWorker('agent:2', 'died', '%2', 'working', '-120 seconds');
+      // Delivered to the lead (the default), which must stay lead-targeted so the notice keeps
+      // HOLDING rather than really firing between the three ticks below - the coalescing this test
+      // depends on. The stored body is the full render (todo 455 fix 1).
       const watchId = addStandingWatch();
 
       // The finish is reported. The false alarm this guards against lives
@@ -436,7 +463,8 @@ describe("a watched worker that dies", () => {
       `,
     );
     assert.equal(result.afterFinish.length, 1, "the finish itself is still reported");
-    assert.match(result.afterFinish[0], /done/);
+    assert.match(result.afterFinish[0], /^1 worker\(s\) in this project have finished or gone away/);
+    assert.match(result.afterFinish[0], /^ {2}done: /m);
     assert.equal(result.frozen, "idle", "the premise: a close freezes the state, it does not clear it");
     assert.deepEqual(
       result.afterClose,
@@ -445,13 +473,13 @@ describe("a watched worker that dies", () => {
     );
 
     assert.equal(result.afterDeath.length, 1, "a row that closed while it still read working IS the death this reports");
-    assert.match(result.afterDeath[0], /died: GONE/);
+    assert.match(result.afterDeath[0], /^2 worker\(s\) in this project have finished or gone away/);
+    assert.match(result.afterDeath[0], /^ {2}done: /m);
     assert.match(
       result.afterDeath[0],
-      /last read it as working/,
-      "and it says what hive observed, rather than asserting what was lost",
+      /^ {2}died: GONE - /m,
+      "a fresh GONE (not a stale one) needs no annotation, plain and named",
     );
-    assert.doesNotMatch(result.afterDeath[0], /is lost/, "hive has not looked at the branch, the todo or the pad");
   });
 
   it("says nothing about a worker that died before the watch was set", () => {
@@ -480,7 +508,8 @@ describe("a watched worker that dies", () => {
       // Dead first, then the watch is set: the whole second they share is
       // exactly what the old bound could not see past.
       db.prepare("UPDATE agents SET status = 'closed', closed_at = ? WHERE id = ?").run(t, before);
-      const watchId = addStandingWatch();
+      // Delivered to a worker, to pin the FULL render's GONE prose.
+      const watchId = addStandingWatch('-60 seconds', '+4 hours', { deliverActor: 'agent:9', deliverPane: '%9' });
       db.prepare("UPDATE timers SET created_at = ? WHERE id = ?").run(t, watchId);
       seedGoneCursor(watchId, project);
 
@@ -685,6 +714,9 @@ describe("todo 390: coalescing while held", () => {
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
       const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      // Delivered to the lead (the default), which must stay lead-targeted so the notice keeps
+      // HOLDING rather than really firing between the two ticks below - the coalescing this test
+      // depends on. The stored body is the full render (todo 455 fix 1).
       const watchId = addStandingWatch();
 
       db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w1);
@@ -712,10 +744,12 @@ describe("todo 390: coalescing while held", () => {
         "thundering herd this lane exists to remove",
     );
     assert.deepEqual(result.idsAfterSecond, result.idsAfterFirst, "same row id, updated in place");
-    assert.match(result.bodyAfterSecond, /w1/, "the worker named before this update must still be named");
-    assert.match(result.bodyAfterSecond, /w2/, "and the worker that just finished must be named too");
-    assert.doesNotMatch(result.bodyAfterFirst, /updated in place/, "the FIRST write is not itself a coalesced one");
-    assert.match(result.bodyAfterSecond, /updated in place/, "the SECOND write is, and must say so");
+    assert.match(result.bodyAfterFirst, /^1 worker\(s\) in this project have finished or gone away/, "the FIRST write names only the worker finished so far");
+    assert.match(result.bodyAfterFirst, /^ {2}w1: /m);
+    assert.doesNotMatch(result.bodyAfterFirst, /^ {2}w2:/m, "w2 had not finished when the first write happened");
+    assert.match(result.bodyAfterSecond, /^2 worker\(s\) in this project have finished or gone away/, "the SECOND write names both, by an updated count");
+    assert.match(result.bodyAfterSecond, /^ {2}w1: /m);
+    assert.match(result.bodyAfterSecond, /^ {2}w2: /m);
     assert.equal(result.cursor.length, 2, "both episodes are recorded in the cursor");
     assert.deepEqual(
       result.cursor.map((c) => c.notice_timer_id),
@@ -796,6 +830,9 @@ describe("todo 390: coalescing while held", () => {
       `
       const died = addWorker('agent:1', 'died', '%1', 'working', '-120 seconds');
       const w2 = addWorker('agent:2', 'w2', '%2', 'working', '-120 seconds');
+      // Delivered to the lead (the default), which must stay lead-targeted so the notice keeps
+      // HOLDING rather than really firing between the two ticks below - the coalescing this test
+      // depends on. The stored body is the full render (todo 455 fix 1).
       const watchId = addStandingWatch();
 
       db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(died);
@@ -817,20 +854,13 @@ describe("todo 390: coalescing while held", () => {
       `,
     );
     assert.ok(result.sameRow, "the fixture must really be coalescing into one row, or this proves nothing");
-    assert.match(
-      result.firstBody,
-      /died: GONE - hive last read it as working, and its row was closed at/,
-      "the premise: died was genuinely reported GONE before the resume",
-    );
-    assert.doesNotMatch(
-      result.mergedBody,
-      /no terminal left to read/,
-      "must not assert a stale obituary about a worker that is now live",
-    );
+    assert.match(result.firstBody, /^ {2}died: GONE - /m, "the premise: died was genuinely reported GONE before the resume");
+    assert.doesNotMatch(result.firstBody, /was reported GONE earlier in this hold/, "not stale yet - the row had not moved when this was first reported");
     assert.match(
       result.mergedBody,
-      /died: was reported GONE earlier in this hold, but its row's state has moved since/,
-      "and must say so plainly instead of trusting either snapshot",
+      /^ {2}died: was reported GONE earlier in this hold, but its row's state has moved since/m,
+      "the full render must still flag a stale GONE report, not silently drop the correction (todo 455 fix 1: " +
+        "this is what must not collapse into the delivery-time short line either)",
     );
     assert.match(result.mergedBody, /w2/, "the finish that actually happened on this tick must still be named");
   });
@@ -941,11 +971,15 @@ describe("the guards nothing else reaches", () => {
       `
       const done = addWorker('agent:0', 'done', '%0', 'idle', '-30 seconds');
       for (let i = 1; i <= 10; i++) addWorker('agent:' + i, 'w' + i, '%' + i, 'working', '-120 seconds');
-      const watchId = addStandingWatch();
+      // Delivered to a worker outside the numbered crew above, to pin the FULL render's own
+      // per-name "Still going" roster cap (the delivery-time short render for a lead caps
+      // differently - it prints a bare count, not a capped name list, so this bound does not apply
+      // to it).
+      const watchId = addStandingWatch('-60 seconds', '+4 hours', { deliverActor: 'agent:99', deliverPane: '%99' });
       await tick(snapshot);
       ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
       `,
-      ["%0", "%1", "%2", "%3", "%4", "%5", "%6", "%7", "%8", "%9", "%10"],
+      ["%0", "%1", "%2", "%3", "%4", "%5", "%6", "%7", "%8", "%9", "%10", "%99"],
     );
     assert.equal(result.bodies.length, 1);
     const roster = result.bodies[0].split("\n").find((l) => l.startsWith("Still going:"));
@@ -953,6 +987,124 @@ describe("the guards nothing else reaches", () => {
     assert.equal(roster.split(";").length, 8, "eight named, not the whole crew pasted into a terminal");
     assert.match(roster, /, and 2 more\.$/, "and the rest counted, so the lead knows what it is not being shown");
     assert.doesNotMatch(roster, /w9|w10/, "the summarised tail really is left out, rather than the count being decoration");
+  });
+});
+
+describe("todo 455 commit 1: the parent filter", () => {
+  it("suppresses a grandchild spawned by a worker, not by the watch's own owner", () => {
+    const result = fixture(
+      "parent-filter-worker-grandchild",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const probe = addWorkerWithParent('agent:2', 'probe', '%2', 'idle', '-30 seconds', 'agent:1');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
+      `,
+    );
+    assert.equal(result.bodies.length, 1, "the tick must really have reported something, or this proves nothing");
+    assert.match(result.bodies[0], /w1/, "the real lane, spawned by the watch's owner, is still reported");
+    assert.doesNotMatch(
+      result.bodies[0],
+      /probe/,
+      "a worker's own throwaway probe is that worker's problem to notice, not the lead's",
+    );
+  });
+
+  it("still reports a lead's own throwaway, since the lead is its own watch's owner (known limitation)", () => {
+    const result = fixture(
+      "parent-filter-lead-throwaway",
+      `
+      const probe = addWorkerWithParent('agent:1', 'lead-probe', '%1', 'idle', '-30 seconds', 'lead:1');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
+      `,
+    );
+    assert.equal(result.bodies.length, 1);
+    assert.match(result.bodies[0], /lead-probe/, "the filter only suppresses a WORKER's own throwaway, not the owner's");
+  });
+
+  it("reports a worker with no recorded parent at all, rather than dropping it silently", () => {
+    const result = fixture(
+      "parent-filter-null-parent",
+      `
+      const orphan = addWorker('agent:1', 'orphan', '%1', 'idle', '-30 seconds');
+      const parentless = db.prepare("SELECT parent_actor_id FROM agents WHERE id = ?").get(orphan).parent_actor_id;
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out("{ parentless, bodies: notices(watchId).map((n) => n.body) }")}
+      `,
+    );
+    assert.equal(result.parentless, null, "the fixture must really be the NULL-parent case, or this proves nothing");
+    assert.equal(result.bodies.length, 1);
+    assert.match(result.bodies[0], /orphan/, "a NULL parent must never be silently filtered out as though it failed the match");
+  });
+
+  it("binds the filter to the watch's OWNER, not its delivery target", () => {
+    const result = fixture(
+      "parent-filter-owner-not-deliver-actor",
+      `
+      const grandchild = addWorkerWithParent('agent:2', 'grandchild', '%2', 'idle', '-30 seconds', 'agent:5');
+      const watchId = addStandingWatch('-60 seconds', '+4 hours', {
+        owner: 'agent:5',
+        deliverActor: 'lead:1',
+        deliverPane: '%lead',
+      });
+      await tick(snapshot);
+      ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
+      `,
+    );
+    assert.equal(result.bodies.length, 1, "the tick must really have reported something, or this proves nothing");
+    assert.match(
+      result.bodies[0],
+      /grandchild/,
+      "the watch's OWNER spawned this one, so it must be reported even though delivery goes to a different pane/actor",
+    );
+  });
+});
+
+describe("todo 455 fix 3: the still-going roster shares the parent filter", () => {
+  it("does not count a grandchild as still going - it will never be reported finished either", () => {
+    const result = fixture(
+      "still-going-owned-by-watch",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const realChild = addWorkerWithParent('agent:3', 'real-child', '%3', 'working', '-120 seconds', 'lead:1');
+      const grandchild = addWorkerWithParent('agent:4', 'grandchild', '%4', 'working', '-120 seconds', 'agent:1');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out("{ bodies: notices(watchId).map((n) => n.body) }")}
+      `,
+      ["%1", "%3", "%4"],
+    );
+    assert.equal(result.bodies.length, 1, "the tick must really have reported something, or this proves nothing");
+    assert.match(result.bodies[0], /Still going: [^\n]*real-child/, "the owner's own still-running worker is named");
+    assert.doesNotMatch(
+      result.bodies[0],
+      /Still going: [^\n]*grandchild/,
+      "a grandchild the watch will never report as finished must not be promised as still going either",
+    );
+  });
+});
+
+describe("todo 455 fix 1: the notice row always stores the full render", () => {
+  it("stores the full render for a lead target too, so wake_get(id) actually returns detail", () => {
+    const result = fixture(
+      "fix1-stores-full-for-lead",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const watchId = addStandingWatch('-60 seconds', '+4 hours', {
+        body: 'the parent watch body, reachable through wake_get for a lead target',
+      });
+      await tick(snapshot);
+      ${out("{ body: notices(watchId)[0].body }")}
+      `,
+    );
+    assert.match(result.body, /^1 worker\(s\) in this project have finished or gone away/);
+    assert.match(result.body, /the parent watch body/, "the echoed parent body is stored, not thrown away");
+    assert.match(result.body, /agent_output\(name:/, "the how-to-read paragraph is stored");
+    assert.match(result.body, /STILL WATCHING/, "the still-watching/expiry reminder is stored");
   });
 });
 
@@ -1194,6 +1346,182 @@ describe("the tool surface", () => {
       await clockMcp.close();
       cleanup(clockSession);
     }
+  });
+
+  it("todo 455 fix 1: types the short render to a lead pane while the stored body stays full, capped and citing its own id", NEEDS_TMUX, async () => {
+    const leadSession = `hive-standing-watch-shortrender-${process.pid}`;
+    const captureFile = join(dirs.tmp, "shortrender-capture.txt");
+    execFileSync("tmux", ["new-session", "-d", "-s", leadSession, "bash", "-c", `cat > ${captureFile}`], {
+      stdio: "ignore",
+    });
+    const leadPane = execFileSync("tmux", ["list-panes", "-t", `=${leadSession}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+
+    const leadMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: "lead:990002", TMUX_PANE: leadPane },
+    });
+    try {
+      await leadMcp.start();
+      const receipt = await leadMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
+      const { db } = await import("../dist/db.js");
+      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+
+      // Closed directly, the same shape the "clocks"/"staleness" tests above use: a genuinely running
+      // worker on a pane not in any snapshot would be reaped by the janitor as GONE before this test
+      // could observe it as idle, so this pins the finish directly rather than racing that sweep.
+      const addDead = (actor, name) =>
+        db
+          .prepare(
+            `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+                agent_state, state_changed_at, closed_at, created_at, parent_actor_id)
+              VALUES (?, ?, ?, '%doesnotexist', 'claude', '/tmp', 'agent', 'closed', 'working',
+                datetime('now'), datetime('now'), datetime('now', '-300 seconds'), 'lead:990002')`,
+          )
+          .run(projectId, actor, name);
+
+      for (let i = 1; i <= 10; i++) addDead(`agent:shortrender-${i}`, `w${i}`);
+
+      const noticeRow = () =>
+        db
+          .prepare("SELECT id, body FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .get(receipt.wake_id);
+      const SCHEDULER_TICK_MS = 3000;
+      const filed = await until(() => noticeRow() !== undefined, SCHEDULER_TICK_MS * 4);
+      assert.ok(filed, "the finish must be filed as a notice before this test can check it");
+      const stored = noticeRow();
+      assert.match(
+        stored.body,
+        /^10 worker\(s\) in this project have finished or gone away/,
+        "the STORED body is the full render even for a lead target (todo 455 fix 1)",
+      );
+
+      const clockCapture = () => (existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "");
+      const delivered = await until(() => clockCapture().includes("wake_get("), SCHEDULER_TICK_MS * 6);
+      assert.ok(delivered, "the short render must actually reach the lead's pane");
+      const text = clockCapture();
+      assert.match(
+        text,
+        new RegExp(`10 finished: [\\w, ]+\\(\\+2 more\\)\\. 0 still going\\. wake_get\\(${stored.id}\\) for detail\\.`),
+        "the DELIVERED text is the short line, capped the same as the full render, citing the notice's own id",
+      );
+      assert.doesNotMatch(
+        text,
+        /worker\(s\) in this project have finished/,
+        "the full-render prose must never leak into what is typed to a lead",
+      );
+      await leadMcp.call("wake_cancel", { wake_id: receipt.wake_id });
+    } finally {
+      await leadMcp.close();
+      cleanup(leadSession);
+    }
+  });
+
+  it("todo 455 fix 6: a stalled/blocked worker's notice is NEVER shortened for a lead - pins the TYPED text, not the stored body", NEEDS_TMUX, async () => {
+    const leadSession = `hive-standing-watch-stall-shortrender-${process.pid}`;
+    const captureFile = join(dirs.tmp, "stall-shortrender-capture.txt");
+    execFileSync("tmux", ["new-session", "-d", "-s", leadSession, "bash", "-c", `cat > ${captureFile}`], {
+      stdio: "ignore",
+    });
+    const leadPane = execFileSync("tmux", ["list-panes", "-t", `=${leadSession}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+
+    // A real pane, or the janitor reaps this row as GONE (a dead pane) before stallCandidateRows ever
+    // sees it as 'working' - the same trap the "shortrender" fix-1 test above hit with idle workers.
+    const stuckSession = `hive-standing-watch-stall-worker-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", stuckSession, "sleep 600"], { stdio: "ignore" });
+    const stuckPane = execFileSync("tmux", ["list-panes", "-t", `=${stuckSession}`, "-F", "#{pane_id}"], {
+      encoding: "utf8",
+    }).trim();
+
+    const leadMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: "lead:990003", TMUX_PANE: leadPane },
+    });
+    try {
+      await leadMcp.start();
+      const receipt = await leadMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
+      const { db } = await import("../dist/db.js");
+      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+
+      // agent_state 'working' needs no live-pane check at all in noteStalledCrew (only 'waiting' does),
+      // so a real pane here is only to survive the janitor sweep, not to satisfy the stall detector
+      // itself. No transcript file means transcriptStaleness() reads "never", which still qualifies.
+      db.prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, session_id, kind, status,
+            agent_state, state_changed_at, created_at)
+          VALUES (?, 'agent:stall-shortrender-1', 'stuck-worker', ?, 'claude', '/tmp/stuck',
+            'sid-stuck', 'agent', 'running', 'working', datetime('now', '-1200 seconds'),
+            datetime('now', '-1200 seconds'))`,
+      ).run(projectId, stuckPane);
+
+      const noticeRow = () =>
+        db
+          .prepare("SELECT id, body FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .get(receipt.wake_id);
+      const SCHEDULER_TICK_MS = 3000;
+      const filed = await until(() => noticeRow() !== undefined, SCHEDULER_TICK_MS * 4);
+      assert.ok(filed, "the stall must be filed as a notice before this test can check it");
+      const stored = noticeRow();
+      assert.match(
+        stored.body,
+        /worker\(s\) in this project have stopped writing to their transcript/,
+        "the fixture must really be a stall notice, or this proves nothing",
+      );
+
+      const capture = () => (existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "");
+      const delivered = await until(() => capture().includes("stuck-worker"), SCHEDULER_TICK_MS * 6);
+      assert.ok(delivered, "the stall notice must actually reach the lead's pane");
+      const text = capture();
+      assert.match(
+        text,
+        /worker\(s\) in this project have stopped writing to their transcript/,
+        "the DELIVERED text must be the full stall body - this class has no other surface that will ever report it",
+      );
+      assert.match(text, /stuck-worker: has claimed `working`/);
+      assert.doesNotMatch(
+        text,
+        /\d+ finished: /,
+        "a stalled worker must never be typed as a FINISH - it has not finished, it is stopped",
+      );
+      assert.doesNotMatch(text, /wake_get\(/, "the short-render's wake_get pointer must not appear on a stall notice");
+      await leadMcp.call("wake_cancel", { wake_id: receipt.wake_id });
+    } finally {
+      await leadMcp.close();
+      cleanup(leadSession);
+      cleanup(stuckSession);
+    }
+  });
+
+  it("todo 455 fix 4: watching_now names only the crew the delivery path will ever report, not a grandchild", NEEDS_TMUX, async () => {
+    const { db } = await import("../dist/db.js");
+
+    const probe = await mcp.call("wake_when_idle", { body: "probe", scope: "project" });
+    const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(probe.wake_id).project_id;
+    await mcp.call("wake_cancel", { wake_id: probe.wake_id });
+
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, parent_actor_id)
+        VALUES (?, 'agent:fix4-real', 'fix4-real', '%doesnotexist', 'claude', '/tmp', 'agent', 'running', ?)`,
+    ).run(projectId, OWNER);
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, parent_actor_id)
+        VALUES (?, 'agent:fix4-grand', 'fix4-grandchild', '%doesnotexist', 'claude', '/tmp', 'agent', 'running', 'agent:fix4-real')`,
+    ).run(projectId);
+
+    const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
+    await mcp.call("wake_cancel", { wake_id: receipt.wake_id });
+    db.prepare("DELETE FROM agents WHERE actor_id IN ('agent:fix4-real', 'agent:fix4-grand')").run();
+
+    assert.ok(receipt.watching_now.includes("fix4-real"), "the owner's own worker must be named as watched");
+    assert.ok(
+      !receipt.watching_now.includes("fix4-grandchild"),
+      "a grandchild the delivery path will never report as finished must not be promised as watched either",
+    );
   });
 
   it("writes the crew's existing dead into its cursor at creation, as history", NEEDS_TMUX, async () => {

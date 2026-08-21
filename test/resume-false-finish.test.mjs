@@ -37,7 +37,11 @@ let mcp;
 let projectId;
 
 before(async () => {
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "1" } });
+  mcp = new McpClient({
+    cwd: dirs.projectDir,
+    dataDir: dirs.dataDir,
+    env: { HIVE_AGENT_ID: OWNER, HIVE_SPAWN_READY_MS: "1" },
+  });
   await mcp.start();
   projectId = (await mcp.call("whoami")).project.id;
 
@@ -312,6 +316,60 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
       namedInReport(watchId, "ff-neighbour-resumed"),
       false,
       "the resumed worker must not appear in the finished block",
+    );
+  });
+
+  it("suppresses a real grandchild spawned by a worker, not by the watch's own owner", async () => {
+    // A dedicated owner, not OWNER: a watch under the shared OWNER also discovers every other
+    // still-idle worker this file has accumulated (nothing here ever cancels a prior watch), which
+    // can crowd FINISHED_SHOWN_CAP and fold this test's own finish into "N more not shown".
+    const GRANDCHILD_TEST_OWNER = "lead:false-finish-grandchild";
+    // Not seedDeadPaneLead: it hardcodes name='lead', which the OWNER lead already claims for this
+    // project under idx_agents_running_name.
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
+       VALUES (?, ?, 'lead-grandchild-test', '%deadlead', 'claude', ?, 'lead', 'running', datetime('now', '-300 seconds'))`,
+    ).run(projectId, GRANDCHILD_TEST_OWNER, dirs.projectDir);
+
+    const parentMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: GRANDCHILD_TEST_OWNER, HIVE_SPAWN_READY_MS: "1" },
+    });
+    await parentMcp.start();
+    await parentMcp.call("agent_spawn", { name: "ff-grand-parent", command: fakeClaude() });
+    const parent = await liveAgentRow(parentMcp, "ff-grand-parent");
+    const parentRow = db.prepare("SELECT actor_id, tmux_target FROM agents WHERE id = ?").get(parent.agent_id);
+
+    const watchId = seedStandingWatch(db, projectId, GRANDCHILD_TEST_OWNER);
+
+    const grandchildMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: parentRow.actor_id, HIVE_SPAWN_READY_MS: "1" },
+    });
+    await grandchildMcp.start();
+    await grandchildMcp.call("agent_spawn", { name: "ff-grandchild", command: fakeClaude() });
+    const grand = await liveAgentRow(grandchildMcp, "ff-grandchild");
+    const grandRow = db.prepare("SELECT actor_id, tmux_target FROM agents WHERE id = ?").get(grand.agent_id);
+    await grandchildMcp.close();
+    await parentMcp.close();
+
+    await firePromptHook(parentRow.actor_id);
+    await fireStopHook(parentRow.actor_id);
+    await firePromptHook(grandRow.actor_id);
+    await fireStopHook(grandRow.actor_id);
+    await tick({ panes: new Set([parentRow.tmux_target, grandRow.tmux_target]), windows: new Set() });
+
+    assert.equal(
+      wasReportedAsFinished(watchId, "ff-grand-parent"),
+      true,
+      "the watch owner's own worker is real news",
+    );
+    assert.equal(
+      namedInReport(watchId, "ff-grandchild"),
+      false,
+      "a grandchild spawned by a worker, not by the watch's own owner, must never appear in the report",
     );
   });
 });

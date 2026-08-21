@@ -42,7 +42,11 @@ let projectId;
 
 before(async () => {
 
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "1" } });
+  mcp = new McpClient({
+    cwd: dirs.projectDir,
+    dataDir: dirs.dataDir,
+    env: { HIVE_AGENT_ID: OWNER, HIVE_SPAWN_READY_MS: "1" },
+  });
   await mcp.start();
   projectId = (await mcp.call("whoami")).project.id;
 

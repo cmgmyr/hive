@@ -67,7 +67,7 @@ Arm a standing watch before you spawn workers, on any mode that can prompt: `wak
 
 Workers report their state (`working`, `idle`, `waiting`) the moment it changes, through Claude Code hooks. Set a wake-up and go quiet instead of checking in:
 
-- `wake_when_idle(scope: "project")` is a **standing watch** over the whole crew: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session.
+- `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session.
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
 - `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
 

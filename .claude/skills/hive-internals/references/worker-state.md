@@ -82,3 +82,30 @@ Whatever you pass as a wake body is typed into the target pane exactly as writte
 The failure this prevents is a body that only parses as a reply. "Yes, go ahead with option 2" is unreadable when it lands mid-turn hours later next to work that has moved on, and there is no thread for the reader to scroll back to. Assume the reader has none of the conversation that produced the wake, because usually it does not.
 
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism, including the drain-path race and its dated measurements, is in `.claude/skills/hive-internals/references/tmux-and-panes.md`. Separately, two paths exist where a wake genuinely never fires, in `.claude/rules/tmux-and-panes.md`: a pane sitting on a dialog, and a pane holding unsubmitted human text. Both hold past `max_wait_at`, and the second was added deliberately - delivery pastes and presses Enter, so a box with text already in it would submit the wake merged with whatever the human was typing.
+
+## A standing watch reports its owner's crew, not the whole project (todo 455)
+
+`OWNED_BY_WATCH` (`src/scheduler.ts`) scopes `standingIdleRows`, `standingGoneRows`, and the still-going roster to agents whose `parent_actor_id` is the watch's own owner, or NULL. Measured against the live store on 2026-08-20: 282 `kind='agent'` rows, 0 NULL, 204 parented by a `lead:`, 24 by an `agent:`, 54 by a `user:`. Every noise notice that night traced to the 24 `agent:`-parented rows - a worker's own throwaway probe, spawned and abandoned without telling anyone; every notice the lead actually needed traced to a `lead:`-parented row.
+
+A `disposable: true` flag on `agent_spawn` was considered and rejected: it would need an append-only migration for something the store already knows, and only works if every lane remembers to set it.
+
+Two tradeoffs accepted rather than closed, both decided in todo 455 comment 1369:
+
+- A worker that spawns a probe and abandons it now dies unreported to the lead. That is the parent worker's own problem to notice, not the watch owner's - "tell me about the workers I dispatched" is what a standing watch has always meant for its owner.
+- A lead's own throwaway (`parent_actor_id` = the lead) still notifies. Rarer than the worker case, and arguably correct, but not covered by this filter.
+
+`stallCandidateRows`/`stallNoticeBody` (the blocked/stalled path) deliberately do NOT get this filter: a blocked worker's wake is the only surface that will ever report the news, so a blocked grandchild stays loud on purpose (docs/daily-driver.md, docs/troubleshooting.md both promise this in print).
+
+This narrows the project-scope definition in `.claude/sessions/decisions/2026-08-08-watch-membership-is-a-parameter.md`, which is amended in place with a dated note; the cross-lead scoping question that decision left open is still open.
+
+## The conversation hold: signal, TTL, and its ceiling (todo 455)
+
+`conversationHoldsWake` (`src/scheduler.ts`) holds a lead-bound wake (`HELD_REASON_CONVERSATION`) when the lead's most recent `agent_state_log` prompt row is human-authored (its payload does not carry the `[hive wake #` prefix hive's own typed deliveries always add) and newer than `CONVERSATION_HOLD_TTL` (5 minutes). No new collection: the lead's own hook already appends every human turn to `agent_state_log` with the raw payload, unused until this fix. `inputBoxHoldsWake`/`holdsHumanInput` is deliberately NOT reused for this signal - that predicate answers "does the input box have non-faint characters right now", and an empty box is "done talking", "thinking", "reading a diff", and "went to lunch" all at once; it cannot tell hive's own stranded paste from a human mid-sentence, which held every later wake indefinitely on 2026-08-13.
+
+Measured against this project's own store: a 5-minute TTL defers 28% of lead-pane deliveries, 10 minutes defers 45%.
+
+**The ceiling is measured against `due_at`, not `first_held_at`, and this was a real bug in the first cut.** A notice held past `NOTICE_MAX_AGE` (currently one hour) is silently cancelled by `noticeStillDeliverable` rather than delivered, so the conversation hold carries its own `CONVERSATION_HOLD_MAX` (15 minutes, a 4x margin under the hour) past which it stops applying regardless of how recently the human spoke. The first cut measured that ceiling against `timer.first_held_at` - but `hive lead`'s pane re-point (`src/cli.ts`, on every ordinary reattach, not just crash recovery) clears `held_at`/`held_reason` unconditionally while leaving `first_held_at` untouched, and `holdTimer`'s own COALESCE resets `first_held_at` whenever it finds `held_at IS NULL`. So a routine `hive lead` reattach mid-conversation laundered the ceiling's clock, and repeated reattaches could extend the hold indefinitely - past `CONVERSATION_HOLD_MAX`, and eventually past `NOTICE_MAX_AGE` itself, silently destroying the very notice the ceiling exists to protect. `due_at` is stamped once at creation (`insertNotice`) and nothing resets it, so it shares a clock with `NOTICE_MAX_AGE` (both measured from the notice row's own creation) and cannot be laundered by a pane re-point.
+
+Under a `/goal` there is no human turn between Stop-hook firings (`.claude/sessions/decisions/2026-08-09-a-goal-defers-wakes-so-an-unattended-loop-polls.md`), so this hold's signal query never finds a recent human prompt row and the hold never engages - correct and intended, not a gap.
+
+`NOTICE_MAX_AGE`'s silent-destruction mechanism itself (any long hold, of any kind, can still age a notice past it and lose it with no record) is pre-existing and not fixed by this ceiling - only made unreachable through this one hold. Filed as its own follow-up: todo 465.

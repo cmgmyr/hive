@@ -80,7 +80,7 @@ The operating pattern:
      Completing returns newly_unblocked todo ids.
   7. Do not poll. Running MORE THAN ONE worker, set
      wake_when_idle(scope="project", body="...") ONCE and go quiet: it is a
-     STANDING watch over the whole crew, it reports each worker as it
+     STANDING watch over the crew you spawn, it reports each worker as it
      finishes, it covers workers you spawn later, and you never re-arm it.
      wake_when_idle(agents=[...], body="...") is the one-shot: it fires on
      the first finish and STOPS WATCHING the rest, so at three or more
@@ -194,7 +194,7 @@ its turn), waiting (needs permission or input). Non-claude commands show
     one-shot or repeating wake-up
   wake_when_idle(agents | scope, body, mode?, max_wait_seconds?,
     deliver_to?) — fire when workers go idle. Pass exactly one of:
-      scope="project" — a STANDING watch over this project's whole crew.
+      scope="project" — a STANDING watch over the crew you spawn in this project.
         It reports EACH worker as it finishes or its window dies, covers
         workers spawned after you set it, and keeps watching until
         max_wait_seconds (default 4 hours) or wake_cancel. Workers already
