@@ -119,11 +119,62 @@ export function safeProbe(probe: () => PtyHeadroom): PtyHeadroom | null {
 }
 
 export function ptyHeadroom(): PtyHeadroom | null {
-
   try {
+    if (process.env.HIVE_PTY_HEADROOM_JSON) return JSON.parse(process.env.HIVE_PTY_HEADROOM_JSON) as PtyHeadroom;
     const probe = probeForPlatform(platform());
     return probe ? safeProbe(probe) : null;
   } catch {
     return null;
   }
+}
+
+export interface PsRowWithAge extends PsRow {
+  pid: number;
+  ageMs: number;
+}
+
+const PS_AGE_LINE = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+?)\s*$/;
+
+export function parseEtimeSeconds(etime: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(etime) ?? /^(\d+)$/.exec(etime);
+  if (!m) return null;
+  if (m.length === 2) return Number(m[1]);
+  const [, days, hours, minutes, seconds] = m;
+  return (Number(days ?? 0) * 24 + Number(hours ?? 0)) * 3600 + Number(minutes) * 60 + Number(seconds);
+}
+
+export function parsePsSnapshotWithAge(output: string): PsRowWithAge[] {
+  const rows: PsRowWithAge[] = [];
+  for (const line of output.split("\n")) {
+    if (line.trim() === "") continue;
+    const m = PS_AGE_LINE.exec(line);
+    if (!m) continue;
+    const seconds = parseEtimeSeconds(m[3]);
+    if (seconds === null) continue;
+    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), ageMs: seconds * 1000, tty: m[4], comm: m[5] });
+  }
+  return rows;
+}
+
+export function filterOrphanLoginShellsWithAge(rows: PsRowWithAge[]): PsRowWithAge[] {
+  return rows.filter(isOrphanLoginShell);
+}
+
+function psSnapshotWithAge(): PsRowWithAge[] | null {
+  try {
+    if (process.env.HIVE_PTY_PS_ROWS_JSON) return JSON.parse(process.env.HIVE_PTY_PS_ROWS_JSON) as PsRowWithAge[];
+    return parsePsSnapshotWithAge(
+      execFileSync("ps", ["-eo", "pid=,ppid=,etime=,tty=,comm="], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }),
+    );
+  } catch {
+    return null;
+  }
+}
+
+export function orphanLoginShellDetails(): PsRowWithAge[] | null {
+  const rows = psSnapshotWithAge();
+  return rows === null ? null : filterOrphanLoginShellsWithAge(rows);
 }

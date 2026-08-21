@@ -93,6 +93,7 @@ Environment variables, mostly for advanced or automated setups. Everyday use nee
 | `HIVE_ALLOW_DEFAULT_STORE` | Set to `1` to let a non-hive process open the real store |
 | `HIVE_AUTO_ATTACH`, `HIVE_ATTACH_MODE` | Testing overrides; use `hive setup --auto-attach` / `--attach` instead |
 | `HIVE_TMUX_TIMEOUT_MS` | Raise (never lower) the bound on a tmux call before hive treats it as unknown. `hive doctor` reports it when set, since a knob that shortens a safety bound must not sit in an environment silently |
+| `HIVE_PTY_HEADROOM_JSON`, `HIVE_PTY_PS_ROWS_JSON` | Testing overrides for `hive doctor`'s pty escalation: inject a full headroom reading or `ps` rows instead of shelling out, to test the safety-margin crossing deterministically |
 | `HIVE_BACKUP_KEEP_LAST`, `HIVE_BACKUP_KEEP_DAILY_DAYS`, `HIVE_BACKUP_STALE_DAYS` | Snapshot retention and staleness tuning |
 
 ## Updating

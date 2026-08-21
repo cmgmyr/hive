@@ -49,7 +49,7 @@ import {
 } from "./mcpConfig.js";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate } from "./db.js";
-import { isLowHeadroom, ptyHeadroom } from "./ptys.js";
+import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   agentProjectPin,
   currentActor,
@@ -119,6 +119,7 @@ import {
   isViewSessionName,
   listOwnedWindows,
   ORPHAN_MIN_AGE_MS,
+  type OrphanScratchServers,
   orphanScratchServers,
   orphansWorthWarningAbout,
   paneChoiceCheck,
@@ -216,9 +217,13 @@ Usage:
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
   hive setup --attach <mode> auto|raw|control: whether tmux attaches carry -CC
-  hive doctor [--strict]     check the environment and clean up stale state;
+  hive doctor [--strict] [--verbose]
+                             check the environment and clean up stale state;
                              --strict also exits non-zero on warnings that mean
-                             this install is wrong (dispatcher, registration, ABI)
+                             this install is wrong (dispatcher, registration, ABI);
+                             --verbose adds per-worker pane detail (last log
+                             event, permission mode, pane tail), collapsed to
+                             one line by default
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
   hive pad <name> --edit     export to a temp file and open your markdown editor
@@ -1328,6 +1333,14 @@ const gatingWarn = (label: string, ...lines: string[]) => {
   warn(label, ...lines);
 };
 
+let doctorVerbose = false;
+
+type VerboseOnlyCheck = "worker live state";
+
+const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]) => {
+  if (doctorVerbose) report("info", label, lines);
+};
+
 const REVIEW_FINDING_TAGS = [
   "from-counselors",
   "from-gate",
@@ -1526,33 +1539,49 @@ function reportMcpRegistrations(project: Project | null): void {
   }
 }
 
-function reportPtyHeadroom(): void {
+const PTY_OVERRIDE_VARS = ["HIVE_PTY_HEADROOM_JSON", "HIVE_PTY_PS_ROWS_JSON"];
+
+function ptyOverrideNote(): string {
+  const active = PTY_OVERRIDE_VARS.filter((v) => process.env[v]);
+  return active.length === 0 ? "" : ` (${active.join(", ")} override${active.length > 1 ? "s" : ""}; testing only)`;
+}
+
+function reportPtyHeadroom(orphans: OrphanScratchServers | null): void {
   const headroom = ptyHeadroom();
   if (!headroom) {
 
     return;
   }
   const free = headroom.max - headroom.allocated;
+  const overrideNote = ptyOverrideNote();
 
   if (!isLowHeadroom(headroom)) {
-    info("ptys", `${headroom.allocated} of ${headroom.max} in use (${free} free)`);
+    info("ptys", `${headroom.allocated} of ${headroom.max} in use (${free} free)${overrideNote}`);
     return;
   }
 
+  const shells = orphanLoginShellDetails();
+  const shellsLine =
+    shells === null
+      ? "orphaned login shell count unavailable (ps did not respond)"
+      : `${shells.length} orphaned login shell(s) holding a pty (ppid 1, reparented to launchd)` +
+        (shells.length === 0 ? "" : `, oldest ${(Math.max(...shells.map((s) => s.ageMs)) / 3_600_000).toFixed(1)}h`);
+  const scratchHeld = orphans ? orphans.live + orphans.wedged : 0;
+  const livePanes = (db.prepare("SELECT COUNT(*) AS n FROM agents WHERE status = 'running'").get() as { n: number })
+    .n;
+
   warn(
     "ptys",
-    `${headroom.allocated} of ${headroom.max} in use (${free} free), below the safety margin`,
-    "worth looking at: orphaned tmux servers on scratch sockets; login shells reparented to " +
-      `launchd (ppid 1)${headroom.orphanLoginShells > 0 ? `, ${headroom.orphanLoginShells} resident right now` : ""}`,
-    "resolve the live socket with `tmux display-message -p '#{socket_path}'` and kill others BY " +
-      "SOCKET: `tmux -S <path> kill-server`. Never by pid -- a pid-to-socket mapping has been " +
-      "observed ambiguous on a real row, and getting one wrong kills the live server.",
+    `${headroom.allocated} of ${headroom.max} in use (${free} free), below the safety margin${overrideNote}`,
+    shellsLine,
+    `${scratchHeld} orphaned scratch tmux server(s) still holding a socket (detail in the scratch tmux servers check)`,
+    `${livePanes} pane(s) recorded 'running' in hive's own store (leads and workers, this machine)`,
+    "reap the orphaned shells and scratch servers with `node scripts/sweep-scratch.mjs` (dry run by default, " +
+      "`--kill` to act)",
   );
 }
 
-function reportOrphanTmuxServers(): void {
-  const orphans = orphanScratchServers();
-
+function reportOrphanTmuxServers(orphans: OrphanScratchServers | null): void {
   if (!orphans) return;
   const truncated = orphans.probed < orphans.aged ? `, ${orphans.aged - orphans.probed} not probed (time budget)` : "";
   const found = orphans.live + orphans.wedged;
@@ -1694,10 +1723,12 @@ function reportStalledWorkers(projectId: number): void {
 
 function cmdDoctor(argv: string[]): void {
   const strict = argv.includes("--strict");
-  const unknown = argv.find((a) => a !== "--strict");
+  doctorVerbose = argv.includes("--verbose");
+  const KNOWN_DOCTOR_FLAGS = new Set(["--strict", "--verbose"]);
+  const unknown = argv.find((a) => !KNOWN_DOCTOR_FLAGS.has(a));
   if (unknown !== undefined) {
 
-    console.error(`hive doctor: unknown argument "${unknown}". The only flag is --strict.`);
+    console.error(`hive doctor: unknown argument "${unknown}". Flags are --strict and --verbose.`);
     process.exit(1);
   }
   let failures = 0;
@@ -1732,8 +1763,9 @@ function cmdDoctor(argv: string[]): void {
     const override = tmuxTimeoutOverride();
     return override === null ? version : `${version} (HIVE_TMUX_TIMEOUT_MS=${override}ms override; testing only)`;
   });
-  reportPtyHeadroom();
-  reportOrphanTmuxServers();
+  const orphans = orphanScratchServers();
+  reportPtyHeadroom(orphans);
+  reportOrphanTmuxServers(orphans);
   check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
@@ -1939,15 +1971,21 @@ function cmdDoctor(argv: string[]): void {
         inputBoxClean += 1;
       }
     }
+    let workersReported = 0;
+    let dialogCount = 0;
+
     for (const w of workers) {
       if (!reportsAgentStateLog(w)) continue;
+      workersReported += 1;
 
       const foreign = foreignSocket(w.tmux_socket);
       const { awaitingChoice, tail } = foreign
         ? { awaitingChoice: null, tail: "" }
         : paneChoiceCheck(w.tmux_target);
+      if (awaitingChoice === true) dialogCount += 1;
 
-      info(
+      verboseInfo(
+        "worker live state",
         `worker ${w.name}`,
         `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
         `permission mode: ${lastPermissionMode(w.actor_id) ?? "unknown (no record)"}`,
@@ -1981,6 +2019,12 @@ function cmdDoctor(argv: string[]): void {
         }
       }
     }
+
+    info(
+      "worker detail",
+      `${workersReported} worker(s)${dialogCount > 0 ? `, ${dialogCount} awaiting a dialog` : ""}; ` +
+        "--verbose for last log event, permission mode and pane tail per worker, or `hive status` for live state",
+    );
 
     const inputBoxChecked = inputBoxClean + inputBoxDrifted + inputBoxUnclassified;
 

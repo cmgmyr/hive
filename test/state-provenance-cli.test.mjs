@@ -237,7 +237,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-1", state: "working", stateChangedAgo: 90, target: busyPane });
     logRow("agent:worker-1", "prompt", "working", 90);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /worker worker-1: last log event: prompt \(1m ago\)/);
     assert.match(stdout, /pane: no dialog/);
@@ -255,7 +255,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-hostile", state: "working", stateChangedAgo: 90, target: busyPane });
     logRow("agent:worker-hostile", "stop (0s ago)" + " ".repeat(200), "working", 3600);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(
       stdout,
@@ -270,7 +270,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-blank", state: "working", stateChangedAgo: 90, target: livePane });
     logRow("agent:worker-blank", "prompt", "working", 90);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /tail: \(pane rendered nothing\)/);
     assert.doesNotMatch(stdout, /worker worker-blank:[\s\S]*?tail:\n/, "must not print a bare 'tail:' header with no content");
@@ -282,7 +282,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-unreadable", state: "working", stateChangedAgo: 90, target: "%9999" });
     logRow("agent:worker-unreadable", "prompt", "working", 90);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /worker worker-unreadable:[\s\S]*?pane: could not be read/);
     assert.match(stdout, /worker worker-unreadable:[\s\S]*?tail: \(pane could not be read\)/);
@@ -298,7 +298,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-foreign", state: "working", stateChangedAgo: 90, target: busyPane, socket: FOREIGN_SOCKET });
     logRow("agent:worker-foreign", "prompt", "working", 90);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(
       stdout,
@@ -318,7 +318,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-matching", state: "working", stateChangedAgo: 90, target: busyPane, socket: ownSocket });
     logRow("agent:worker-matching", "prompt", "working", 90);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /worker worker-matching: last log event: prompt \(1m ago\)/);
     assert.match(stdout, /pane: no dialog/);
@@ -333,7 +333,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     reset();
     agentRow({ name: "worker-dialog", state: "waiting", stateChangedAgo: 5, target: dialogPane });
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /worker worker-dialog: last log event: no record/);
     assert.match(stdout, /pane: awaiting a choice \(dialog\)/);
@@ -344,7 +344,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     reset();
     agentRow({ name: "worker-permission-prompt", state: "waiting", stateChangedAgo: 5, target: permissionPromptPane });
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /pane: awaiting a choice \(dialog\)/);
     assert.match(stdout, /Do you want to insert this cell/, "the prompt's own question should be in the tail");
@@ -354,7 +354,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     reset();
     agentRow({ name: "worker-long", state: "working", stateChangedAgo: 5, target: longPane });
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     for (const n of [5, 6, 7, 8, 9, 10]) {
       assert.match(stdout, new RegExp(`LINE-0?${n}-`), `line ${n} of 10 should survive the 6-line cap`);
@@ -376,7 +376,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     agentRow({ name: "worker-dialog", state: "waiting", stateChangedAgo: 5, target: dialogPane });
     logRow("agent:worker-dialog", "notify", "waiting", 3600);
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.match(stdout, /last log event: notify \(1h ago\)/, "the old age must actually be in play, not just seeded");
     assert.doesNotMatch(stdout, /FAIL {2}worker/);
@@ -388,7 +388,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
     reset();
     agentRow({ name: "dev-server", command: "sleep 600", state: "unknown", target: livePane });
 
-    const { stdout } = await runCli(["doctor"], opts);
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
     assert.doesNotMatch(stdout, /worker dev-server:/);
   });
