@@ -820,10 +820,33 @@ export function standingNoticeBodies(db, watchId) {
     .map((r) => r.body);
 }
 
+function claimedUnderWatch(db, watchId, name, condition) {
+  return (
+    db
+      .prepare(
+        `SELECT 1 FROM wake_idle_notices n JOIN agents a ON a.id = n.agent_id
+          WHERE n.timer_id = ? AND a.name = ? AND n.notice_timer_id IS NOT NULL
+            ${condition === null ? "" : "AND n.condition = ?"}`,
+      )
+      .get(...(condition === null ? [watchId, name] : [watchId, name, condition])) !== undefined
+  );
+}
+
+// A folded finish (past FINISHED_SHOWN_CAP, "...and N more finish(es) not shown above.") carries no
+// name in the rendered text at all - src/scheduler.ts drops it to a bare count, so no regex over the
+// body can ever recover it. wake_idle_notices is the claim record every finish stamps regardless of
+// whether it made the visible slice (claimStandingBatch's stampEpisodeNotice), so reading THAT is the
+// only way to answer "was this name's finish reported at all" once the render has folded it away.
+// Do NOT also match the "Still going" roster here: that would re-open the 2026-08-11 defect the
+// two-space anchor was added to close (.claude/sessions/common-issues/a-bare-name-matcher-also-
+// matches-the-still-going-roster.md) - "was this worker reported" and "is this worker merely alive
+// and mentioned in passing" collapsing back into one question. A worker's roster mention carries no
+// claim row at all, so a still-going name folded past ROSTER_STILL_GOING is a real, undecidable gap,
+// same shape as the finish-overflow one but with no ground truth to fall back on.
 export function namedInStandingReport(db, watchId, name) {
-  return standingNoticeBodies(db, watchId).some((body) => new RegExp(`^ {2}${name}:`, "m").test(body));
+  return claimedUnderWatch(db, watchId, name, null);
 }
 
 export function reportedAsFinished(db, watchId, name) {
-  return standingNoticeBodies(db, watchId).some((body) => new RegExp(`^ {2}${name}: (?!GONE)`, "m").test(body));
+  return claimedUnderWatch(db, watchId, name, "idle");
 }
