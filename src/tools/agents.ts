@@ -14,6 +14,17 @@ import {
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
+import {
+  classifyMiss,
+  LEAD_MESSAGE_THRESHOLD,
+  leadPointerMarker,
+  missMessage,
+  readLeadMessage,
+  renderLeadPointer,
+  shortenedSendFailureClause,
+  shortenedSendNote,
+  storeLeadMessage,
+} from "../leadMessage.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
@@ -1011,7 +1022,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -1029,6 +1040,17 @@ export function registerAgents(server: McpServer): void {
         const agent = findAgent(project.id, args);
         requireLive(agent);
         const target = agent.tmux_target;
+        let outgoing = args.text ?? "";
+        let shortened: { message_id: number; note: string; marker: string } | null = null;
+        const withShortened = <T extends Record<string, unknown> & { note?: string }>(receipt: T) =>
+          shortened === null
+            ? receipt
+            : {
+                ...receipt,
+                shortened: true,
+                message_id: shortened.message_id,
+                note: receipt.note == null ? shortened.note : `${receipt.note} ${shortened.note}`,
+              };
 
         if (args.keys && args.keys.length > 0 && args.text != null) {
           throw new Error("Pass text or keys, not both.");
@@ -1083,17 +1105,37 @@ export function registerAgents(server: McpServer): void {
             }
           }
 
+          if (
+            agent.kind === LEAD_KIND &&
+            !isRunningLeadActor(currentActor()) &&
+            args.text.length > LEAD_MESSAGE_THRESHOLD
+          ) {
+            // Stored BEFORE the paste, deliberately: storing after a successful paste lets a pointer
+            // reach the pane naming a row that does not exist yet, which is worse than the orphan row a
+            // failed paste leaves behind.
+            const { id, fromName } = storeLeadMessage(project.id, currentActor(), agent.id, args.text);
+            const pointer = renderLeadPointer(id, fromName, args.text);
+            shortened = {
+              message_id: id,
+              note: shortenedSendNote(id, pointer.length),
+              marker: leadPointerMarker(id, fromName, args.text),
+            };
+            outgoing = pointer;
+          }
+
           let pasted = false;
           try {
-            await sendText(target, args.text, submitting, () => {
+            await sendText(target, outgoing, submitting, () => {
               pasted = true;
             });
           } catch (err) {
+            const shortenedClause =
+              shortened === null ? "" : shortenedSendFailureClause(shortened.marker, shortened.message_id);
             if (!pasted) {
 
               if (err instanceof TmuxTimeoutError) {
                 throw new Error(
-                  `[agent_send:paste-timeout-ambiguous] agent_send's paste call to ${agent.name}'s pane timed out. A timed-out tmux call does not prove nothing happened - the server can finish a command after the client gives up waiting on it - so the text MAY already be on that screen, unsubmitted. Do not resend blindly: read the pane first with agent_output(name: ${JSON.stringify(agent.name)}), and only send again if the text genuinely is not there.`,
+                  `[agent_send:paste-timeout-ambiguous] agent_send's paste call to ${agent.name}'s pane timed out. A timed-out tmux call does not prove nothing happened - the server can finish a command after the client gives up waiting on it - so the text MAY already be on that screen, unsubmitted. Do not resend blindly: read the pane first with agent_output(name: ${JSON.stringify(agent.name)}), and only send again if the text genuinely is not there.${shortenedClause}`,
                   { cause: err },
                 );
               }
@@ -1105,7 +1147,8 @@ export function registerAgents(server: McpServer): void {
               `[agent_send:paste-landed-enter-failed] agent_send's Enter failed after the paste to ${agent.name}'s pane already succeeded: that text was on the target's screen, unsubmitted, the moment the paste returned - it was pasted, not lost, though a concurrent send could have changed the screen since. Do NOT resend it: retrying pastes a second copy onto the end of the first, and the Enter that follows submits both as one message (on a non-claude pane, that merged line EXECUTES). ` +
                 (canFinishItself
                   ? `Finish this exact delivery instead: agent_send(name: ${JSON.stringify(agent.name)}, keys: ["Enter"]).`
-                  : `That target is a LEAD session, so agent_send's keys path is refused against it from a non-lead caller: you cannot finish this yourself. A human at that terminal, or another lead, has to press Enter there. Leave it and try again later.`),
+                  : `That target is a LEAD session, so agent_send's keys path is refused against it from a non-lead caller: you cannot finish this yourself. A human at that terminal, or another lead, has to press Enter there. Leave it and try again later.${shortened === null ? "" : " Pressing Enter there is the INTENDED finish, not a stray paste: that stranded line is hive's own pointer, and submitting it is exactly what this send was supposed to do."}`) +
+                shortenedClause,
               { cause: err },
             );
           }
@@ -1124,17 +1167,46 @@ export function registerAgents(server: McpServer): void {
               note: "Sent, but the terminal tail could not be read afterward (the pane may have died during the wait). Check agent_status or agent_output to confirm the worker is still there.",
             };
           }
-          return {
+          return withShortened({
             agent_id: agent.id,
             name: agent.name,
             sent: true,
             ...tailField,
 
             ...inputBoxField(target),
-          };
+          });
         }
 
-        return { agent_id: agent.id, name: agent.name, sent: true };
+        return withShortened({ agent_id: agent.id, name: agent.name, sent: true });
+      }),
+  );
+
+  server.registerTool(
+    "agent_message_get",
+    {
+      description:
+        "Read one agent-to-lead message in full, by the id in a \"[hive message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed verbatim and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
+      inputSchema: {
+        message_id: idParam,
+        project_id: projectIdParam,
+      },
+    },
+    (args) =>
+      run(() => {
+        const project = resolveProject(args.project_id);
+        const row = readLeadMessage(project.id, args.message_id);
+        if (row === undefined) {
+          throw new Error(missMessage(args.message_id, classifyMiss(args.message_id)));
+        }
+        return {
+          message_id: row.id,
+          from: row.from_name,
+          from_actor: row.from_actor,
+          to_agent_id: row.to_agent_id,
+          chars: row.text.length,
+          created_at: row.created_at,
+          text: row.text,
+        };
       }),
   );
 

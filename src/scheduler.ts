@@ -14,6 +14,7 @@ import {
   liveBackgroundTasks,
   type LiveBackgroundTask,
 } from "./backgroundTasks.js";
+import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -206,6 +207,19 @@ function pruneStateLog(): void {
     ).get(LOG_RETENTION);
     if (staleNotices) {
       stmt("DELETE FROM wake_block_notices WHERE notified_at < datetime('now', ?)").run(LOG_RETENTION);
+    }
+
+    const staleMessages = stmt(
+      "SELECT 1 AS hit FROM agent_messages WHERE created_at < datetime('now', ?) LIMIT 1",
+    ).get(MESSAGE_RETENTION);
+    if (staleMessages) {
+      stmt("DELETE FROM agent_messages WHERE created_at < datetime('now', ?)").run(MESSAGE_RETENTION);
+    }
+
+    const messageHi = (stmt("SELECT MAX(id) AS v FROM agent_messages").get() as { v: number | null }).v;
+    const messageLo = (stmt("SELECT MIN(id) AS v FROM agent_messages").get() as { v: number | null }).v;
+    if (messageHi != null && messageLo != null && messageHi - messageLo >= MESSAGE_MAX_ROWS) {
+      stmt("DELETE FROM agent_messages WHERE id <= ?").run(messageHi - MESSAGE_MAX_ROWS);
     }
 
     const staleIdleNotices = stmt(

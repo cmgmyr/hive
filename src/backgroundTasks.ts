@@ -1,4 +1,4 @@
-import { cutToUnitBudget } from "./slug.js";
+import { cutToUnitBudget, flatten } from "./slug.js";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "canceled", "killed", "error"]);
 
@@ -35,12 +35,6 @@ export function liveBackgroundTasks(tasks: unknown): LiveBackgroundTask[] {
 
 export const withholdsIdle = (task: LiveBackgroundTask): boolean =>
   BACKGROUND_TASK_DISPOSITION[task.type] === "latch";
-
-// Everything below is typed into a terminal as part of a wake body, and a raw control byte reaches
-// tmux as a keystroke rather than as text - a `\r` in any of it submits the prompt early and splits
-// the wake in half. So EVERY field that reaches the render goes through here, type as well as
-// description: a guard over half a string is worse than none, because the next reader stops looking.
-const flatten = (text: string): string => text.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim();
 
 const typeOf = (task: LiveBackgroundTask): string => flatten(task.type) || "unknown";
 

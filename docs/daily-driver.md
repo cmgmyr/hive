@@ -51,6 +51,26 @@ hive re-applies the layout whenever a worker spawns or closes, so it holds up as
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
 
+### A worker's long report reaches you as one line
+
+Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and types a single pointer line into that pane instead:
+
+```
+[hive message #7 from api, 885 chars] BLOCKED: the migration test wedges on a
+lock the sweep never releases, and I cannot get a clean red… agent_message_get(7)
+for the full text.
+```
+
+You get who sent it, how much you are not being shown, the first 140 characters, and the call that hands back the rest. Read the whole thing with `agent_message_get(7)`.
+
+Three things about it are deliberate:
+
+- **Only messages to a lead are shortened, and only from someone who is not that lead.** Text sent to a worker is typed exactly as written at any length, because there the message IS the assignment, and a truncated assignment is a broken one.
+- **A short message is never touched.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
+- **The sender is told.** `agent_send`'s receipt comes back with `shortened: true`, the message id, and a note saying to put whatever needs acting on in the first 140 characters or on the todo. A worker cannot keep writing 900-byte reports believing you read them.
+
+Messages are kept for 7 days. The pointer line stays in your scrollback longer than that, so a lookup for an expired id tells you it expired rather than reporting it missing, and points you at the todo or pad the sender wrote instead.
+
 ## Permission mode
 
 hive does not set a permission mode. A worker inherits whatever mode Claude Code's own configuration gives it at the moment it spawns, fixed for that session: hive passes no `--permission-mode` flag and has no `hive.yml` key for one. These docs go no higher than `auto`; hive itself never raises the mode for you.

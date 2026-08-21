@@ -12,6 +12,7 @@ const EXPECTED_TOOL_NAMES = [
   "actor_prune",
   "agent_close",
   "agent_list",
+  "agent_message_get",
   "agent_output",
   "agent_park",
   "agent_rename",

@@ -71,6 +71,10 @@ Whatever you pass as a wake body is typed into the target pane exactly as writte
 
 **The one exception is generated, and it is not yours to write:** a standing watch's own FINISH NOTICE, bound for a LEAD, is typed as a one-line summary instead of its stored body (`deliver()` -> `shortRenderForLeadDelivery`). That text has no author - the scheduler builds it from store rows - so nothing an author passes is ever shortened, and the full body stays on the row for `wake_get` to return. Your body still reaches a WORKER verbatim, and reaches a lead verbatim for every other kind of wake.
 
+**This rule is about WAKE BODIES and nothing else.** `agent_send`'s `text` is a separate channel with its own, differently-shaped shortening for lead-bound messages; do not read either rule as governing the other (`.claude/rules/tmux-and-panes.md`).
+
+**`[hive message #` is DELIBERATELY not excluded from `conversationHoldsWake`, and `[hive wake #` is.** Two hive-authored prefixes now reach a lead's pane and only one is excluded from the human-conversation discriminator; that is todo 467's recorded disposal (leave it and document it), not an oversight to close. The marker 467 said would be needed to reverse it now exists, and is unused. It would cover shortened sends only, so a sub-threshold worker message still reads as a human turn.
+
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
 
 ## A standing watch reports its owner's crew only, and a lead-bound wake can hold for an active conversation

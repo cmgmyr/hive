@@ -332,6 +332,22 @@ ALTER TABLE timers ADD COLUMN typed_seen TEXT;
   `
 ALTER TABLE timers ADD COLUMN first_held_at TEXT;
 `,
+
+  `
+CREATE TABLE agent_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL,
+  from_actor TEXT NOT NULL,
+  from_name TEXT NOT NULL,
+  to_agent_id INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+-- AUTOINCREMENT is load-bearing, not decoration: sqlite_sequence keeps the highest id ever
+-- issued even after the janitor deletes every row, and that is the only thing that lets
+-- agent_message_get tell a PRUNED id from one that never existed (src/leadMessage.ts).
+CREATE INDEX idx_agent_messages_project ON agent_messages(project_id, id);
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

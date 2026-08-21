@@ -1,4 +1,4 @@
-# Tools (44)
+# Tools (45)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -16,7 +16,8 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_spawn` | Starts a worker (default `claude`) in a tmux pane or window, locked to the project | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |
 | `agent_status` | One agent in detail, with a short terminal tail | To check on a specific worker |
-| `agent_send` | Types text or key presses into a worker's terminal | To give a worker its task, answer a prompt, or press Enter/Escape for it |
+| `agent_send` | Types text or key presses into a worker's terminal. Text over 300 characters bound for a LEAD is stored and delivered as a one-line pointer instead | To give a worker its task, answer a prompt, or press Enter/Escape for it |
+| `agent_message_get` | Reads the full text behind a `[hive message #N ...]` pointer line | When a worker's report to the lead was shortened and you want the rest |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
 | `agent_rename` | Changes a worker's display name; `actor_id` stays the same | When a worker's job becomes clear after you started it |
 | `agent_resume` | Resumes a closed claude worker from its recorded session id (`claude --resume`), reusing the same actor_id | To get a closed worker's full prior context back instead of briefing a fresh one |

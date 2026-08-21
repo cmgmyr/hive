@@ -161,6 +161,54 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
     });
   });
 
+  it("a SHORTENED send's enter-failed message names the pointer on screen, not the text the caller wrote (todo 475)", NEEDS_TMUX, async () => {
+
+    const name = "send475-lead-shortened";
+    const agentId = await spawnClaude(name);
+    const { db } = await import("../dist/db.js");
+    db.prepare("UPDATE agents SET kind = 'lead' WHERE id = ?").run(agentId);
+    // Past the pointer's head budget, so the pointer cannot legitimately quote it and the assertion below
+    // distinguishes shortened from verbatim rather than passing on where the marker happened to sit.
+    const text = `${"a".repeat(400)} MARKERONE ${"a".repeat(500)}`;
+
+    await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, text), (err) => {
+      assert.match(err.message, /^\[agent_send:paste-landed-enter-failed\]/, "the stable tag must not change");
+      assert.match(
+        err.message,
+        /\[hive message #\d+ from [^,]+, \d+ chars\]/,
+        "it must name the pointer that is actually on that screen - without it the caller hunts for its own words",
+      );
+      assert.match(err.message, /agent_message_get\(\d+\)/, "and say the full text is stored, with the id");
+      assert.match(err.message, /INTENDED finish/, "a human reading a line they did not write must be told Enter is right");
+      return true;
+    });
+
+    const { output } = await mcp.call("agent_output", { name });
+    assert.doesNotMatch(output, /MARKERONE/, "the caller's own text must NOT be on the lead's screen");
+  });
+
+  it("a SHORTENED send's paste-timeout message says the same, since neither error can describe the caller's text (todo 475)", NEEDS_TMUX, async () => {
+
+    const name = "send475-lead-timeout";
+    const agentId = await spawnClaude(name);
+    const { db } = await import("../dist/db.js");
+    db.prepare("UPDATE agents SET kind = 'lead' WHERE id = ?").run(agentId);
+
+    await assert.rejects(
+      callWithBrokenTmux({ HIVE_TEST_HANG: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, name, "b".repeat(900)),
+      (err) => {
+        assert.match(err.message, /^\[agent_send:paste-timeout-ambiguous\]/);
+        assert.match(
+          err.message,
+          /\[hive message #\d+ from [^,]+, 900 chars\]/,
+          "\"only send again if the text genuinely is not there\" is unusable without naming what to look for",
+        );
+        assert.match(err.message, /agent_message_get\(\d+\)/);
+        return true;
+      },
+    );
+  });
+
   it("a paste call that TIMES OUT is reported as ambiguous, not as a confirmed landing or a confirmed miss", NEEDS_TMUX, async () => {
 
     const name = "send414-claude-timeout";

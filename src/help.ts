@@ -23,7 +23,7 @@ PLAYBOOKS — invokable prompts (slash commands in MCP clients)
 
 AGENTS — spawn and drive worker sessions in tmux
   agent_spawn, agent_list, agent_status, agent_send, agent_output,
-  agent_rename, agent_park, agent_resume, agent_close
+  agent_message_get, agent_rename, agent_park, agent_resume, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
   wake_set, wake_when_idle, wake_get, wake_update, wake_cancel, wake_list
@@ -147,6 +147,11 @@ runbook (fork it first), not a pad write.`,
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
+    Text over 300 chars sent to a LEAD by anyone but that lead is stored and
+    delivered as a one-line pointer, so the human's own pane stays readable;
+    the receipt says shortened and names the message id.
+  agent_message_get(message_id) — the full text behind a pointer line. Kept
+    7 days; a lookup for a pruned id says it expired, not that it is missing.
   agent_output(name|agent_id, lines?) — read the rendered terminal.
   agent_status(name|agent_id, include_brief?) — liveness, current command,
     short tail, and the path to the brief this worker was given

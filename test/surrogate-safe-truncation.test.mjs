@@ -10,6 +10,7 @@ await assertScratchStore();
 const { truncateWithEllipsis } = await import("../dist/dashboard.js");
 const { truncate } = await import("../dist/kickoff.js");
 const { truncateBody } = await import("../dist/tools/wakes.js");
+const { renderLeadPointer } = await import("../dist/leadMessage.js");
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -46,6 +47,17 @@ describe("surrogate-safe truncation (todo 411)", () => {
 
   it("wakes.ts's truncateBody keeps an astral character whole when it fits inside the bound", () => {
     const out = truncateBody(reproducer(118));
+    assert.ok(!LONE_SURROGATE.test(out), `must not contain a lone surrogate half: ${JSON.stringify(out)}`);
+    assert.ok(out.includes("\u{1F600}"), `must keep a fitting emoji intact: ${JSON.stringify(out)}`);
+  });
+
+  it("leadMessage.ts's renderLeadPointer does not split an astral character at its 140-char head bound", () => {
+    const out = renderLeadPointer(7, "w", `${reproducer(139)}${"z".repeat(400)}`);
+    assert.ok(!LONE_SURROGATE.test(out), `must not contain a lone surrogate half: ${JSON.stringify(out)}`);
+  });
+
+  it("leadMessage.ts's renderLeadPointer keeps an astral character whole when it fits inside the head", () => {
+    const out = renderLeadPointer(7, "w", `${reproducer(138)}${"z".repeat(400)}`);
     assert.ok(!LONE_SURROGATE.test(out), `must not contain a lone surrogate half: ${JSON.stringify(out)}`);
     assert.ok(out.includes("\u{1F600}"), `must keep a fitting emoji intact: ${JSON.stringify(out)}`);
   });

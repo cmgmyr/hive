@@ -130,7 +130,7 @@ says what state it touches.
 
 ## Every tool rejects an unknown argument key, and you get that for free
 
-PR #125 found this. All 44 tools advertise
+PR #125 found this. All 45 tools advertise
 `additionalProperties: false` and refuse an undeclared key at runtime with a
 -32602 that names it. Both halves come from `src/strictInput.ts`, which wraps
 `registerTool` once on the single `McpServer` in `src/index.ts` and rebuilds

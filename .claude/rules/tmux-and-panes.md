@@ -5,6 +5,7 @@ paths:
   - "src/scheduler.ts"
   - "src/tools/agents.ts"
   - "src/cli.ts"
+  - "src/leadMessage.ts"
 ---
 
 # tmux, panes, and typing into them
@@ -64,6 +65,15 @@ A pane that is merely BUSY is fine.
 - `agent_send`'s `keys` path is **DELIBERATELY UNGUARDED against a dialog** and must stay so. `text` means "inject a user turn", which is what a dialog eats; `keys` means "drive this TUI on purpose", and pressing a key is the ONLY supported way to unstick a pane sitting on a dialog. Guarding it by symmetry would remove the one working escape hatch.
 - **This refusal is a guardrail against a confused model, not a security boundary.** Do not extend this into refusing slash commands on the `text` path to close that gap - that is scope creep on an already-deep lane.
 - **`captureRawPane`/`tailWindow` split one pane capture into two windows on purpose.** `paneAwaitingChoice` and `paneHasInputBox` read different ones; do not unify them "for consistency".
+
+## Only ONE channel into a pane is shortened, and widening it breaks an assignment
+
+`agent_send`'s `text` over 300 characters, inbound to a LEAD from anyone who is not that lead, is stored whole and typed as a one-line pointer (`src/leadMessage.ts`, todo 475). That is the entire exception.
+
+- **Do not widen it to worker-bound text at any length.** There the message IS the assignment, and a truncated assignment is a broken one. Pinned by `test/lead-message-shortening.test.mjs`.
+- **Do not shorten at write time.** The row must store the FULL text and the pointer must be rendered at delivery, or the lookup the pointer names reads something that was never written (`dead-ends/2026-08-20-shortening-a-notice-at-write-time.md`).
+- **Every field interpolated into the pointer goes through `flatten`** (`src/slug.ts`), the sender's name included. A raw control byte in any of it reaches tmux as a keystroke and submits the pointer early.
+- **A lookup that misses must say WHICH miss it is.** The pointer outlives its row, so `pruned`, `never-issued` and `other-project` are distinct answers. Do not collapse them into "not found".
 
 ## A pane with unsubmitted human text holds its wake too
 
