@@ -354,6 +354,7 @@ export function registerTodos(server: McpServer): void {
         blocked_by: z.array(idParam).optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, todo_id: idParam },
     },
     (args) =>
       run(() => {
@@ -448,6 +449,7 @@ export function registerTodos(server: McpServer): void {
         slug: slugParam,
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, todo_id: idParam },
     },
     (args) =>
       run(() => {
@@ -474,6 +476,7 @@ export function registerTodos(server: McpServer): void {
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, todo_id: idParam, archived: z.boolean() },
     },
     (args) =>
       run(() => {
@@ -492,6 +495,12 @@ export function registerTodos(server: McpServer): void {
         todo_id: idParam,
         completed: z.boolean().optional().describe("Defaults to true."),
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        project_id: idParam,
+        todo_id: idParam,
+        completed: z.boolean(),
+        newly_unblocked: z.array(idParam),
       },
     },
     (args) =>
@@ -512,6 +521,7 @@ export function registerTodos(server: McpServer): void {
         body: z.string(),
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, todo_id: idParam, comment_id: idParam },
     },
     (args) =>
       run(() => {
@@ -534,6 +544,7 @@ export function registerTodos(server: McpServer): void {
         blocker_id: idParam,
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, todo_id: idParam, blocker_id: idParam },
     },
     (args) =>
       run(() => {
@@ -552,6 +563,12 @@ export function registerTodos(server: McpServer): void {
         todo_id: idParam,
         blocker_id: idParam,
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        project_id: idParam,
+        todo_id: idParam,
+        blocker_id: idParam,
+        removed: z.boolean(),
       },
     },
     (args) =>

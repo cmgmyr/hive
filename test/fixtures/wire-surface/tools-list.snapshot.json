@@ -9,6 +9,95 @@
       "additionalProperties": false,
       "properties": {},
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "errors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "error"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "held_back": {
+          "additionalProperties": false,
+          "properties": {
+            "actor_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "actor_id",
+            "reason"
+          ],
+          "type": "object"
+        },
+        "held_back_live": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "deleted",
+        "held_back",
+        "held_back_live"
+      ],
+      "type": "object"
     }
   },
   "agent_close": {
@@ -40,6 +129,38 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "closed": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "park_released": {
+          "type": "boolean"
+        },
+        "parked": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "agent_id",
+        "name",
+        "closed"
+      ],
       "type": "object"
     }
   },
@@ -129,6 +250,61 @@
         }
       },
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "board_line": {
+          "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "parked": {
+          "type": "boolean"
+        },
+        "parked_at": {
+          "type": "string"
+        },
+        "parked_branch": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "todo_ids": {
+          "items": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "agent_id",
+        "name",
+        "parked",
+        "parked_at",
+        "parked_branch",
+        "cwd",
+        "session_id",
+        "todo_ids",
+        "board_line"
+      ],
+      "type": "object"
     }
   },
   "agent_rename": {
@@ -165,6 +341,43 @@
         "new_name"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "previous_name": {
+          "type": "string"
+        },
+        "retitled": {
+          "type": "boolean"
+        },
+        "tail": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "actor_id",
+        "name",
+        "previous_name",
+        "retitled"
+      ],
+      "type": "object"
     }
   },
   "agent_resume": {
@@ -193,6 +406,59 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "branch_drift": {
+          "additionalProperties": false,
+          "properties": {
+            "branch_now": {
+              "type": "string"
+            },
+            "parked_branch": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "parked_branch",
+            "branch_now"
+          ],
+          "type": "object"
+        },
+        "landed_in_project": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resumed_session_id": {
+          "type": "string"
+        },
+        "tmux_target": {
+          "type": "string"
+        },
+        "was_parked_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "actor_id",
+        "name",
+        "tmux_target",
+        "resumed_session_id"
+      ],
       "type": "object"
     }
   },
@@ -303,6 +569,70 @@
         }
       },
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "brief_path": {
+          "type": "string"
+        },
+        "config_warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "landed_in_project": {
+          "type": "string"
+        },
+        "layout": {
+          "enum": [
+            "tiled",
+            "main-vertical",
+            "main-horizontal",
+            "even-horizontal",
+            "even-vertical"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "tail": {
+          "type": "string"
+        },
+        "tmux_target": {
+          "type": "string"
+        },
+        "worktree_install": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "actor_id",
+        "name",
+        "tmux_target"
+      ],
+      "type": "object"
     }
   },
   "agent_status": {
@@ -375,6 +705,29 @@
       },
       "required": [
         "key"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        },
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "key",
+        "deleted"
       ],
       "type": "object"
     }
@@ -458,6 +811,25 @@
         "value"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "key"
+      ],
+      "type": "object"
     }
   },
   "lease_acquire": {
@@ -490,6 +862,38 @@
         "ttl_seconds"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "acquired": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "extended": {
+          "type": "boolean"
+        },
+        "held_by": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "key",
+        "acquired"
+      ],
+      "type": "object"
     }
   },
   "lease_release": {
@@ -513,6 +917,29 @@
       },
       "required": [
         "key"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "released": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "project_id",
+        "key",
+        "released"
       ],
       "type": "object"
     }
@@ -551,6 +978,27 @@
         "content"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "pad_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "revision"
+      ],
+      "type": "object"
     }
   },
   "pad_archive": {
@@ -580,6 +1028,31 @@
       },
       "required": [
         "pad_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "pad_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "archived",
+        "revision"
       ],
       "type": "object"
     }
@@ -612,6 +1085,25 @@
       },
       "required": [
         "pad_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "type": "boolean"
+        },
+        "pad_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "deleted"
       ],
       "type": "object"
     }
@@ -652,6 +1144,27 @@
         "pad_id",
         "old_text",
         "new_text"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "pad_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "revision"
       ],
       "type": "object"
     }
@@ -768,6 +1281,27 @@
         "content"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "pad_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "revision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pad_id",
+        "revision"
+      ],
+      "type": "object"
     }
   },
   "project_add": {
@@ -786,6 +1320,33 @@
           "type": "string"
         }
       },
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "path",
+        "created_at"
+      ],
       "type": "object"
     }
   },
@@ -810,6 +1371,81 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {},
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deleted": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "errors": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "error": {
+                "type": "string"
+              },
+              "id": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "error"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "held_back": {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "type": "integer"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "project_id",
+            "reason"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "deleted",
+        "held_back"
+      ],
       "type": "object"
     }
   },
@@ -863,6 +1499,31 @@
         "todo_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "archived"
+      ],
+      "type": "object"
     }
   },
   "todo_block": {
@@ -892,6 +1553,33 @@
         }
       },
       "required": [
+        "todo_id",
+        "blocker_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "blocker_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
         "todo_id",
         "blocker_id"
       ],
@@ -927,6 +1615,33 @@
         "body"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "comment_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "comment_id"
+      ],
+      "type": "object"
     }
   },
   "todo_complete": {
@@ -956,6 +1671,40 @@
       },
       "required": [
         "todo_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "completed": {
+          "type": "boolean"
+        },
+        "newly_unblocked": {
+          "items": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "completed",
+        "newly_unblocked"
       ],
       "type": "object"
     }
@@ -1012,6 +1761,27 @@
       },
       "required": [
         "title"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id"
       ],
       "type": "object"
     }
@@ -1138,6 +1908,37 @@
         "blocker_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "blocker_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "removed": {
+          "type": "boolean"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "blocker_id",
+        "removed"
+      ],
+      "type": "object"
     }
   },
   "todo_update": {
@@ -1199,6 +2000,27 @@
         "todo_id"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "todo_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id"
+      ],
+      "type": "object"
     }
   },
   "wake_cancel": {
@@ -1224,6 +2046,31 @@
       },
       "required": [
         "wake_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        },
+        "cancelled_notices": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wake_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id",
+        "cancelled",
+        "cancelled_notices"
       ],
       "type": "object"
     }
@@ -1321,6 +2168,33 @@
         "body"
       ],
       "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deliver_to": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string"
+        },
+        "repeating": {
+          "type": "boolean"
+        },
+        "wake_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id",
+        "due_at",
+        "deliver_to",
+        "repeating"
+      ],
+      "type": "object"
     }
   },
   "wake_update": {
@@ -1359,6 +2233,36 @@
       },
       "required": [
         "wake_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "due_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated": {
+          "type": "boolean"
+        },
+        "wake_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wake_id",
+        "updated",
+        "due_at"
       ],
       "type": "object"
     }
@@ -1437,6 +2341,87 @@
       "required": [
         "body"
       ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "deliver_to": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "string"
+        },
+        "max_wait_seconds": {
+          "type": "number"
+        },
+        "mode": {
+          "enum": [
+            "any",
+            "all"
+          ],
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "scope": {
+          "const": "project",
+          "type": "string"
+        },
+        "standing": {
+          "type": "boolean"
+        },
+        "status": {
+          "const": "already_satisfied",
+          "type": "string"
+        },
+        "wake_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "watching": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "agent_id": {
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "provenance": {
+                "additionalProperties": {},
+                "propertyNames": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "agent_id",
+              "name",
+              "state",
+              "provenance"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "watching_now": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
       "type": "object"
     }
   },

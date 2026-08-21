@@ -154,6 +154,7 @@ export function registerMeta(server: McpServer): void {
         path: z.string().optional(),
         name: z.string().optional(),
       },
+      outputSchema: { id: idParam, name: z.string(), path: z.string(), created_at: z.string() },
     },
     ({ path, name }) => run(() => addProject(path, name)),
   );
@@ -173,6 +174,11 @@ export function registerMeta(server: McpServer): void {
       description:
         "Delete every registered project that owns no rows anywhere in the store (scratchpads, todos, kv, locks, agents, timers, command_trust), verified individually before each delete. Never prunes the caller's own project. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
       inputSchema: {},
+      outputSchema: {
+        deleted: z.array(z.object({ id: idParam, name: z.string() })),
+        held_back: z.object({ project_id: idParam, reason: z.string() }),
+        errors: z.array(z.object({ id: idParam, name: z.string(), error: z.string() })).optional(),
+      },
     },
     () =>
       run(() => {
@@ -206,6 +212,12 @@ export function registerMeta(server: McpServer): void {
       description:
         "Delete every actor that owns no rows anywhere in the store and has not been active in the last minute: agents.actor_id, agents.parent_actor_id, todos.locked_by, todo_comments.author, kv.updated_by, locks.owner, scratchpads.updated_by, timers.owner, timers.deliver_actor, agent_state_log.actor_id. The scan is global across every project, never scoped to the caller's: actors carry no project_id, so an actor can own rows in a project the caller cannot see, and a project-scoped scan would misread that actor as inert and delete it. Never prunes the caller's own actor. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep. Run this after project_prune when sweeping the store: an empty project owns no agents rows either, so today the order cannot orphan an actor, but that stops being true the day project deletion ever covers a non-empty project, and this ordering is the one that stays safe if it does. Immediate, permanent: no dry-run mode.",
       inputSchema: {},
+      outputSchema: {
+        deleted: z.array(z.object({ id: z.string(), name: z.string() })),
+        held_back: z.object({ actor_id: z.string(), reason: z.string() }),
+        held_back_live: z.array(z.object({ id: z.string(), name: z.string() })),
+        errors: z.array(z.object({ id: z.string(), name: z.string(), error: z.string() })).optional(),
+      },
     },
     () =>
       run(() => {

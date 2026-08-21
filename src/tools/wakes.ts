@@ -239,6 +239,12 @@ export function registerWakes(server: McpServer): void {
         repeat_every_seconds: z.number().int().positive().optional(),
         project_id: projectIdParam,
       },
+      outputSchema: {
+        wake_id: idParam,
+        due_at: z.string(),
+        deliver_to: z.string(),
+        repeating: z.boolean(),
+      },
     },
     (args) =>
       run(() => {
@@ -303,6 +309,28 @@ export function registerWakes(server: McpServer): void {
           ),
         deliver_to: agentRefParam.optional().describe("Deliver to a spawned agent instead of this session."),
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        status: z.literal("already_satisfied").optional(),
+        wake_id: idParam.optional(),
+        scope: z.literal("project").optional(),
+        standing: z.boolean().optional(),
+        watching_now: z.array(z.string()).optional(),
+        mode: z.enum(["any", "all"]).optional(),
+        watching: z
+          .array(
+            z.object({
+              agent_id: idParam,
+              name: z.string(),
+              state: z.string(),
+              provenance: z.record(z.string(), z.unknown()),
+            }),
+          )
+          .optional(),
+        expires_at: z.string().optional(),
+        max_wait_seconds: z.number().optional(),
+        deliver_to: z.string().optional(),
+        note: z.string().optional(),
       },
     },
     (args) =>
@@ -447,6 +475,7 @@ export function registerWakes(server: McpServer): void {
         repeat_every_seconds: z.number().int().positive().optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { wake_id: idParam, updated: z.boolean(), due_at: z.string().nullable() },
     },
     (args) =>
       run(() => {
@@ -513,6 +542,11 @@ export function registerWakes(server: McpServer): void {
         "parent link, so one already filed still delivers, and it may still be true - the worker is probably " +
         "still on that dialog - but its sentence about the watch itself will not be.",
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
+      outputSchema: {
+        wake_id: idParam,
+        cancelled: z.boolean(),
+        cancelled_notices: z.number().int().nonnegative(),
+      },
     },
     (args) =>
       run(() => {

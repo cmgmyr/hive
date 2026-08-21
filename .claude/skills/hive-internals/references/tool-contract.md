@@ -54,6 +54,14 @@ landed: #97 as `project_prune` and `actor_prune`, #96 as `wake_get` and
 new gap got filed should update that cell, not distrust the rest of the
 table.
 
+Two more tools landed since #82 that the table doesn't fully account for.
+`agent_park` filled the agents row's Retire cell, above (issue #156, the
+worked example in the naming section below). `agent_resume` did not get a
+cell: it reverses a park rather than performing one of the six lifecycle
+verbs, so it sits outside this table on the same grounds as
+`todo_complete`/`todo_block`/`todo_unblock` do further down - a domain
+operation on state the table has no column for, not a gap to fill in.
+
 ## Naming a new tool
 
 Six lifecycle verbs recur across the resources above, and they already
@@ -122,13 +130,16 @@ says what state it touches.
 
 ## Every tool rejects an unknown argument key, and you get that for free
 
-PR #125 found this. All 42 tools advertise
+PR #125 found this. All 44 tools advertise
 `additionalProperties: false` and refuse an undeclared key at runtime with a
 -32602 that names it. Both halves come from `src/strictInput.ts`, which wraps
 `registerTool` once on the single `McpServer` in `src/index.ts` and rebuilds
 each raw shape as a `z.strictObject`. **No `src/tools/*.ts` call site
-participates, so a new tool registered the way the other 42 are is strict
-without its author doing anything.** `test/wire-surface.test.mjs` walks the
+participates, so a new tool registered the way the others are is strict
+without its author doing anything.** (Todo 462 gave this wrapper a third
+job, building `structuredContent` for the tools that declare `outputSchema`
+- see "A tool that declares outputSchema must always return a JSON object"
+below.) `test/wire-surface.test.mjs` walks the
 generated surface and requires `additionalProperties: false` on every object
 in it, so a tool that escaped the wrapper fails there rather than depending
 on anyone reading this paragraph.
@@ -188,6 +199,60 @@ was weighed and accepted: bounded by one restart, and
 loud rather than silent. A refusal is per call, not per session - the SDK
 turns it into an `isError` tool result carrying the -32602, so the caller
 reads which key was wrong and corrects it.
+
+## A tool that declares outputSchema must always return a JSON object
+
+Todo 462 added `outputSchema` to hive's 28 write tools. The MCP SDK requires
+`structuredContent` on the result whenever a tool's registered config carries
+`outputSchema` - confirmed by driving a minimal server built in complete
+isolation from hive's own `dist/` (a bare `McpServer` with one tool, no hive
+code at all): a handler that returns only text content, with `outputSchema`
+declared and no `structuredContent` set, comes back `MCP error -32602:
+Output validation error: Tool echo has an output schema but no structured
+content was provided`. The SDK does NOT build `structuredContent` from the
+handler's return value itself; it only validates whatever the handler
+already attached.
+
+The first attempt at this put the fix in `src/result.ts`'s `ok()`,
+attaching `structuredContent` for every tool whose data is a plain object -
+all 44, not just the 28 that declare `outputSchema`. That was found live,
+not in review: a 29,880-character pad (the board's own size) round-tripped
+through `pad_read` - which declares no `outputSchema` at all - at +100%
+wire bytes, because the same object was now serialized twice, once as text
+and once as `structuredContent`, with the second copy buying nothing for a
+tool the SDK never validates. `pad_read` is the most-read tool call in this
+project.
+
+The fix moved to `src/strictInput.ts`'s wrapper instead, following the
+reasoning already recorded for input strictness in
+`decisions/2026-08-07-strictness-at-registration-not-at-the-call-sites.md`:
+a rule enforced by sweeping the 28 declaring call sites is correct until
+the 29th one is added by someone who doesn't know to repeat it; a rule
+enforced at the one choke point every `registerTool` call already passes
+through is enforced automatically. When a tool's config carries
+`outputSchema`, its callback is
+wrapped to parse `structuredContent` out of the already-computed text
+content after the handler returns - every other tool's `ok()` output is
+untouched.
+
+**The wrapper fails loudly, not silently, when a declaring tool's result
+cannot be parsed as a JSON object** - a named, diagnosable `isError` result
+instead of falling through to the SDK's own opaque "no structured content
+was provided", which names no tool and no cause. Proven red-first:
+`test/output-schema-guard.test.mjs` was run against the wrapper reverted to
+its silent form first, confirmed to fail against the SDK's generic message,
+then run again against the fix, confirmed green. 15 of the 28 declaring
+tools were driven live and returned objects; the other 13 needed a live
+tmux pane to reach - all five agent tools (`agent_spawn`, `agent_resume`,
+`agent_park`, `agent_rename`, `agent_close`) and `wake_when_idle`'s
+standing-watch and one-shot branches were driven live too, using a private
+`TMUX_TMPDIR` + scratch `HIVE_DATA_DIR` and a `claude`-named shim binary
+that just execs `cat` (`isClaudeCommand` only checks the basename). The one
+branch not reached live is `wake_when_idle`'s `already_satisfied`
+short-circuit, which needs real Claude-Code-hook-driven idle state -
+accepted as a named gap rather than claimed away; it is a two-key object
+literal built directly in source with no computed or string-typed
+intermediate.
 
 ## The CLI and MCP split
 

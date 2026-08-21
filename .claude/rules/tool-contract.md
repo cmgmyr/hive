@@ -40,6 +40,12 @@ against a RUNNING server: it used to be ignored by a session on older
 `dist/`, and is now refused until that session restarts. See
 `.claude/sessions/common-issues/stale-mcp-server-runs-old-code.md`.
 
+## A tool that declares outputSchema must always return a JSON object
+
+Never a bare string or anything else - every call to that tool fails
+otherwise, not just an odd one. `src/strictInput.ts`'s wrapper fails loudly
+and by name when this happens, not silently.
+
 ## The CLI and MCP split
 
 - **MCP tools are how a Claude Code session (lead or worker) reads and

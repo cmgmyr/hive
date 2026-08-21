@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
-import { projectIdParam } from "./params.js";
+import { idParam, projectIdParam } from "./params.js";
 
 function purgeExpired(projectId: number): void {
   db.prepare(
@@ -24,6 +24,7 @@ export function registerKv(server: McpServer): void {
         ttl_seconds: z.number().int().positive().optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { project_id: idParam, key: z.string() },
     },
     (args) =>
       run(() => {
@@ -120,6 +121,7 @@ export function registerKv(server: McpServer): void {
     {
       description: "Delete a shared value by key.",
       inputSchema: { key: z.string(), project_id: projectIdParam },
+      outputSchema: { project_id: idParam, key: z.string(), deleted: z.boolean() },
     },
     (args) =>
       run(() => {

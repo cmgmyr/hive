@@ -60,7 +60,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 
 Conventions borrowed from tools that got this right:
 
-- Write tools return slim receipts (`{project_id, todo_id}`) to keep token cost down.
+- Write tools return slim receipts (`{project_id, todo_id}`) to keep token cost down. The 28 that declare an MCP `outputSchema` send that receipt twice on the wire (text plus `structuredContent`) - a deliberate, bounded duplication scoped to those tools only, not a regression to fix.
 - Pads use optimistic concurrency: reads return a `revision`, overwrites require `expected_revision`.
 - Leases and kv TTLs expire on their own, so a dead session never wedges the team.
 - Todo blockers form a dependency graph; cycles are rejected.

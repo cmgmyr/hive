@@ -150,6 +150,7 @@ export function registerPads(server: McpServer): void {
         expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { pad_id: idParam, revision: idParam },
     },
     (args) =>
       run(() => {
@@ -225,6 +226,7 @@ export function registerPads(server: McpServer): void {
         expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { pad_id: idParam, revision: idParam },
     },
     (args) =>
       run(() => {
@@ -250,6 +252,7 @@ export function registerPads(server: McpServer): void {
         expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { pad_id: idParam, revision: idParam },
     },
     (args) =>
       run(() => {
@@ -282,6 +285,7 @@ export function registerPads(server: McpServer): void {
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
         project_id: projectIdParam,
       },
+      outputSchema: { pad_id: idParam, archived: z.boolean(), revision: idParam },
     },
     (args) =>
       run(() => {
@@ -317,6 +321,7 @@ export function registerPads(server: McpServer): void {
         expected_revision: idParam.optional(),
         project_id: projectIdParam,
       },
+      outputSchema: { pad_id: idParam, deleted: z.boolean() },
     },
     (args) =>
       run(() => {

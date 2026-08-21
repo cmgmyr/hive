@@ -17,7 +17,7 @@ const server = enforceStrictInput(
   new McpServer(
     { name: "hive", version: "0.1.0" },
     {
-      instructions: `Hive: shared memory and coordination across Claude Code sessions.
+      instructions: `Hive gives Claude Code sessions shared, persistent state for coordinating work on a project: pads for plans and findings, todos for tracked work with blockers, kv for small shared values, leases for claiming shared work areas, agents for spawning and directing other sessions, and wake-ups for scheduled or idle-triggered check-ins. Search for these tools when a task needs to persist past this conversation, hand off to or watch another session, or track multi-step work with dependencies.
 Getting started:
 1. Call whoami to see your actor identity and effective project scope.
 2. Call help for an overview, or help(topic="workflow") for the lead/worker playbook.

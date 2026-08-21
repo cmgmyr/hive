@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
-import { projectIdParam } from "./params.js";
+import { idParam, projectIdParam } from "./params.js";
 
 interface LeaseRow {
   project_id: number;
@@ -45,6 +45,14 @@ export function registerLeases(server: McpServer): void {
         key: z.string().describe('Stable and specific, like "file:src/api/routes.ts".'),
         ttl_seconds: z.number().int().positive(),
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        project_id: idParam,
+        key: z.string(),
+        acquired: z.boolean(),
+        expires_at: z.string().optional(),
+        extended: z.boolean().optional(),
+        held_by: z.string().optional(),
       },
     },
     (args) =>
@@ -102,6 +110,7 @@ export function registerLeases(server: McpServer): void {
     {
       description: "Release a lease you own.",
       inputSchema: { key: z.string(), project_id: projectIdParam },
+      outputSchema: { project_id: idParam, key: z.string(), released: z.boolean() },
     },
     (args) =>
       run(() => {

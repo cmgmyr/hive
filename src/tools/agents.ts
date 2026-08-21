@@ -59,7 +59,7 @@ import {
   type InputBoxState,
   type Liveness,
 } from "../tmux.js";
-import { agentIdParam, agentNameParam, projectIdParam } from "./params.js";
+import { agentIdParam, agentNameParam, idParam, projectIdParam } from "./params.js";
 import {
   deriveProvenance,
   lastLogEvent,
@@ -456,6 +456,21 @@ export function registerAgents(server: McpServer): void {
           ),
         project_id: projectIdParam,
       },
+      outputSchema: {
+        agent_id: idParam,
+        actor_id: z.string(),
+        name: z.string(),
+        tmux_target: z.string(),
+        layout: z.enum(WINDOW_LAYOUTS).optional(),
+        landed_in_project: z.string().optional(),
+        config_warnings: z.array(z.string()).optional(),
+        worktree_install: z.string().optional(),
+        brief_path: z.string().optional(),
+        ready: z.boolean().optional(),
+        note: z.string().optional(),
+        tail: z.string().optional(),
+        instructions: z.string().optional(),
+      },
     },
     (args) =>
       run(async () => {
@@ -603,6 +618,18 @@ export function registerAgents(server: McpServer): void {
         agent_id: agentIdParam,
         project_id: projectIdParam,
       },
+      outputSchema: {
+        agent_id: idParam,
+        actor_id: z.string(),
+        name: z.string(),
+        tmux_target: z.string(),
+        resumed_session_id: z.string(),
+        was_parked_at: z.string().optional(),
+        branch_drift: z
+          .object({ parked_branch: z.string(), branch_now: z.string() })
+          .optional(),
+        landed_in_project: z.string().optional(),
+      },
     },
     (args) =>
       run(async () => {
@@ -711,6 +738,18 @@ export function registerAgents(server: McpServer): void {
         confirm_self: z.boolean().optional(),
         project_id: projectIdParam,
       },
+      outputSchema: {
+        agent_id: idParam,
+        name: z.string(),
+        parked: z.boolean(),
+        parked_at: z.string(),
+        parked_branch: z.string(),
+        cwd: z.string(),
+        session_id: z.string(),
+        todo_ids: z.array(idParam),
+        board_line: z.string(),
+        note: z.string().optional(),
+      },
     },
     (args) =>
       run(() => {
@@ -807,6 +846,15 @@ export function registerAgents(server: McpServer): void {
           .string()
           .describe("The new display name. No other running worker may have it, case aside."),
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        agent_id: idParam,
+        actor_id: z.string(),
+        name: z.string(),
+        previous_name: z.string(),
+        retitled: z.boolean(),
+        note: z.string().optional(),
+        tail: z.string().optional(),
       },
     },
     (args) =>
@@ -1137,6 +1185,14 @@ export function registerAgents(server: McpServer): void {
         agent_id: agentIdParam,
         confirm_self: z.boolean().optional(),
         project_id: projectIdParam,
+      },
+      outputSchema: {
+        agent_id: idParam,
+        name: z.string(),
+        closed: z.boolean(),
+        park_released: z.boolean().optional(),
+        parked: z.boolean().optional(),
+        note: z.string().optional(),
       },
     },
     (args) =>
