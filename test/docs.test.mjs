@@ -243,6 +243,49 @@ describe("docs keep up with the CLI", () => {
   });
 });
 
+describe("docs enumerate every statusline hold label the CLI can print", () => {
+  const cli = readFileSync(CLI, "utf8");
+
+  const DECLARED = (() => {
+    const decl = /HELD_REASON_LABELS = \[([\s\S]*?)\]/.exec(cli);
+    assert.ok(decl, "HELD_REASON_LABELS not found in dist/cli.js");
+    return [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  })();
+
+  const RETURNED = (() => {
+    const fn = /function heldReasonLabel\([\s\S]*?\n\}/.exec(cli);
+    assert.ok(fn, "heldReasonLabel not found in dist/cli.js");
+    return [...fn[0].matchAll(/return "([^"]+)"/g)].map((m) => m[1]);
+  })();
+
+  it("parsed a real label set, so a silent parse failure cannot pass this block", () => {
+    assert.ok(DECLARED.length >= 2, `parsed ${DECLARED.length} declared labels; the regex has drifted`);
+    assert.ok(RETURNED.length >= 2, `parsed ${RETURNED.length} returned labels; the regex has drifted`);
+  });
+
+  it("returns nothing the declared set does not carry, and declares nothing it cannot return", () => {
+    for (const label of RETURNED) {
+      assert.ok(DECLARED.includes(label), `heldReasonLabel returns "${label}", missing from HELD_REASON_LABELS`);
+    }
+    for (const label of DECLARED) {
+      assert.ok(RETURNED.includes(label), `HELD_REASON_LABELS carries "${label}", which heldReasonLabel never returns`);
+    }
+  });
+
+  for (const file of ["README.md", "docs/install.md"]) {
+    it(`names every label in ${file}, which states them as a closed list`, () => {
+      const doc = readRepo(file);
+      for (const label of DECLARED) {
+        assert.ok(
+          doc.includes(`\`${label}\``),
+          `${file} does not name the statusline label \`${label}\`; both docs enumerate this set with a count, ` +
+            "so adding a label without adding it here leaves a sentence that is wrong rather than merely short",
+        );
+      }
+    });
+  }
+});
+
 describe("docs keep up with the MCP surface", () => {
   const TOOL_REGISTRATIONS = toolRegistrationsByFile();
   const REGISTERED_TOOLS = registeredToolNames();

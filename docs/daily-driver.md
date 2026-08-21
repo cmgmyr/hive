@@ -67,8 +67,25 @@ Arm a standing watch before you spawn workers, on any mode that can prompt: `wak
 
 Workers report their state (`working`, `idle`, `waiting`) the moment it changes, through Claude Code hooks. Set a wake-up and go quiet instead of checking in:
 
-- `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session.
+- `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session. It reports the workers *you* spawned, not every agent in the project, so a throwaway probe one of your workers spawned for itself stays out of your pane.
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
 - `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
 
-A fired wake-up types its body into your terminal as a fresh turn, prefixed `[hive wake #N]`. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
+A fired wake-up types into your terminal as a fresh turn, prefixed `[hive wake #N]`. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
+
+What gets typed depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets a one-line summary** for a standing watch's finish notice, followed by the note hive appends to every standing-watch notice, held or not, saying how old its contents are:
+
+```text
+[hive wake #752] 2 finished: docs-lane, t455-render. 3 still going. wake_get(752) for detail.
+Held since 2026-08-20 16:13:27 UTC (2m ago). Its content reflects what hive knew as of 2026-08-20 16:11:04 UTC, 2m before this reached you.
+```
+
+The full roster, the still-going list and the watch's own body are still stored on that notice; `wake_get(752)` returns them unchanged. A blocked worker is the exception and keeps the long form, because that wake is the only thing that will ever tell you a worker is stopped on a permission prompt.
+
+### hive holds a wake while you are talking
+
+If a message was SENT to a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Usually that message is yours. It does not have to be: anything that submits a prompt into the lead's pane counts, including another agent reaching it with `agent_send`, and only hive's own wake deliveries are excluded. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
+
+So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking.
+
+Under a `/goal` the lead takes its own turns without anyone prompting it, so nothing refreshes the window and the hold stays out of the way. It is not unreachable there: a worker that reports in with `agent_send` refreshes the window exactly as you would, so an unattended run whose crew messages its lead holds each wake until the crew goes quiet, or until the fifteen-minute ceiling.

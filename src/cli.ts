@@ -2249,16 +2249,20 @@ function cmdStatusline(): void {
   if (wakes > 0) parts.push(`${wakes} wake${s(wakes)}`);
   if (held.n > 0) {
     const age = held.first_held_at ? humanizeAge(ageSecondsSince(held.first_held_at)) : "?";
-    const reason = isUnsubmittedInputHold(held.held_reason)
-      ? "typing"
-      : held.held_reason === HELD_REASON_LEAD_PANE_DEAD || wasHeldForPaneReissue(held.held_reason)
-        ? "needs you"
-        : held.held_reason === HELD_REASON_CONVERSATION
-          ? "talking"
-          : "blocked";
-    parts.push(`${held.n} held (${age}, ${reason})`);
+    parts.push(`${held.n} held (${age}, ${heldReasonLabel(held.held_reason)})`);
   }
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
+}
+
+// test/docs.test.mjs fails if a label here is missing from README.md or docs/install.md. It checks
+// presence only: docs/install.md also counts the set in prose, and nothing guards that number.
+export const HELD_REASON_LABELS = ["typing", "talking", "needs you", "blocked"] as const;
+
+export function heldReasonLabel(heldReason: string | null): (typeof HELD_REASON_LABELS)[number] {
+  if (isUnsubmittedInputHold(heldReason)) return "typing";
+  if (heldReason === HELD_REASON_LEAD_PANE_DEAD || wasHeldForPaneReissue(heldReason)) return "needs you";
+  if (heldReason === HELD_REASON_CONVERSATION) return "talking";
+  return "blocked";
 }
 
 function padSlug(name: string): string {

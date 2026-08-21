@@ -45,6 +45,8 @@ A goal fires the Stop hook after every turn while immediately starting another, 
 
 Whatever you pass as a wake body is typed into the target pane exactly as written, and it becomes a fresh user turn only if that pane happens to be idle. So write it as plain English that stands on its own: the ids it refers to, the context needed to act, and the next action.
 
+**The one exception is generated, and it is not yours to write:** a standing watch's own FINISH NOTICE, bound for a LEAD, is typed as a one-line summary instead of its stored body (`deliver()` -> `shortRenderForLeadDelivery`). That text has no author - the scheduler builds it from store rows - so nothing an author passes is ever shortened, and the full body stays on the row for `wake_get` to return. Your body still reaches a WORKER verbatim, and reaches a lead verbatim for every other kind of wake.
+
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
 
 ## A standing watch reports its owner's crew only, and a lead-bound wake can hold for an active conversation
