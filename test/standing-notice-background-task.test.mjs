@@ -109,11 +109,14 @@ describe("todo 468: a finish that left a background task running says so, in bot
     assert.equal(result.cleanState, "idle");
     assert.match(
       result.short,
-      /2 finished: w1 \(bg\), w2\./,
-      "the SHORT render is the one a lead reads; six lead turns were spent on it saying only '1 finished'. " +
-        "w2's Stop payload carried no live task, so it carries no marker - or the marker proves nothing",
+      /^w1: idle, 1 background shell running - may not be done\.$/m,
+      "the SHORT render is the one a lead reads; six lead turns were spent on it saying only '1 finished'",
     );
-    assert.match(result.short, /1 went idle with background tasks running and may not be done \(bg\)\./);
+    assert.match(
+      result.short,
+      /^w2: idle\.$/m,
+      "w2's Stop payload carried no live task, so its line carries no such clause - or the clause proves nothing",
+    );
     assert.match(
       result.full,
       /w1: [^\n]+\. It went idle with 1 background shell still running \(shell: "Full suite run, granted slot/,
@@ -135,7 +138,7 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /w1 \(bg\)/);
+    assert.match(result.short, /^w1: idle, 3 background monitors running - may not be done\.$/m);
     assert.match(
       result.full,
       /It went idle with 3 background monitors still running/,
@@ -160,7 +163,7 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /w1 \(bg\)/);
+    assert.match(result.short, /^w1: idle, 1 background parachute running - may not be done\.$/m);
     assert.match(
       result.full,
       /It went idle with 1 background parachute still running \(parachute: "something new"\)/,
@@ -206,12 +209,12 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.doesNotMatch(result.short, /\(bg\)/);
-    assert.match(result.short, /1 finished: w1\./, "and it is still reported as finished");
+    assert.match(result.short, /^w1: idle\.$/m, "and it is still reported, with nothing hanging off it");
+    assert.doesNotMatch(result.short, /background/);
   });
 });
 
-describe("todo 468: the short render stays short as the crew grows", () => {
+describe("todo 468/473: the crew render grows with the CREW, never with the episodes it coalesced", () => {
   const crew = (n) =>
     Array.from({ length: n }, (_, i) => `addWorker('agent:${i + 1}', 'w${i + 1}', '%${i + 1}', 'idle', '-5 seconds');`).join("\n      ");
   const stops = (n, body) =>
@@ -230,29 +233,23 @@ describe("todo 468: the short render stays short as the crew grows", () => {
       `,
     );
 
-  const clauseCount = (text) => (text.match(/went idle with/g) ?? []).length;
+  const clauseCount = (text) => (text.match(/background shell running/g) ?? []).length;
+  const workerLines = (text) => (text.match(/^w\d+: /gm) ?? []).length;
 
-  it("says it once for two workers, not once per worker", () => {
+  it("gives each worker one line and puts the background fact on the line it belongs to", () => {
     const result = render("short-n2", 2, 2);
-    assert.equal(
-      clauseCount(result.short),
-      1,
-      "the per-worker sentence is 62-66 characters and it repeats verbatim; at the ordinary crew size " +
-        "of two it makes the SHORT render three lines, which is the thing this render exists to prevent",
-    );
-    assert.match(result.short, /w1 \(bg\)/, "and every affected worker is still marked");
-    assert.match(result.short, /w2 \(bg\)/);
-    assert.match(result.short, /2 went idle with background tasks running and may not be done/);
+    assert.equal(workerLines(result.short), 2, "two workers, two lines");
+    assert.equal(clauseCount(result.short), 2, "and each one's own live shell is stated on its own line");
   });
 
-  it("stays the same size in the clause when the crew grows to three, and marks only the affected ones", () => {
+  it("marks only the affected workers when the crew grows to three", () => {
     const result = render("short-n3", 3, 2);
-    assert.equal(clauseCount(result.short), 1);
-    assert.match(result.short, /w1 \(bg\), w2 \(bg\), w3\./, "the third left nothing running, so it carries no marker");
-    assert.match(result.short, /2 went idle with background tasks running and may not be done/);
+    assert.equal(workerLines(result.short), 3);
+    assert.equal(clauseCount(result.short), 2);
+    assert.match(result.short, /^w3: idle\.$/m, "the third left nothing running, so its line says only that");
     assert.ok(
-      result.short.length < 200,
-      `three workers must not need more than a couple of lines; got ${result.short.length} chars: ${result.short}`,
+      result.short.length < 300,
+      `three workers must not need more than a few lines; got ${result.short.length} chars: ${result.short}`,
     );
   });
 
@@ -293,8 +290,8 @@ describe("todo 468: what reaches the pane is safe to type there", () => {
   });
 });
 
-describe("todo 468: the (bg) count past the roster cap", () => {
-  it("counts every finish that left something running, not only the ones it had room to name", () => {
+describe("todo 468/473: past the roster cap", () => {
+  it("tells the reader that names are hidden, and counts the hidden ones over the whole crew", () => {
     const result = fixture(
       "past-the-cap",
       `
@@ -308,12 +305,16 @@ describe("todo 468: the (bg) count past the roster cap", () => {
       `,
       ["%1", "%2", "%3", "%4", "%5", "%6", "%7", "%8", "%9"],
     );
-    assert.match(result.short, /\(\+1 more\)/, "the fixture must really exceed the 8-name cap, or this proves nothing");
+    assert.equal(
+      (result.short.match(/^w\d+: /gm) ?? []).length,
+      8,
+      "the fixture must really exceed the 8-name cap, or this proves nothing",
+    );
     assert.match(
       result.short,
-      /9 went idle with background tasks running/,
-      "the count is over the whole claim set; counting the shown slice would say 8 and be a false claim " +
-        "in a lead-bound wake, which is the defect class this whole round is about",
+      /And 1 more not shown\./,
+      "9 workers finished and 8 fit; a render that quietly showed 8 and said nothing about the ninth " +
+        "would be the same dishonest-claim defect this whole round is about",
     );
   });
 });
@@ -350,10 +351,10 @@ describe("todo 468: which log row the clause is read from", () => {
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /1 finished: w1\./, "the finish is still reported");
+    assert.match(result.short, /^w1: idle\.$/m, "the finish is still reported");
     assert.doesNotMatch(
       result.short,
-      /\(bg\)/,
+      /background/,
       "a stop row from a previous episode is not evidence about this one - the same payload one " +
         "episode later DOES produce the clause, which is what makes this assertion mean something",
     );
@@ -378,15 +379,14 @@ describe("todo 468: which log row the clause is read from", () => {
     );
     assert.match(
       result.short,
-      /2 finished: w1 \(bg\), w2\./,
-      "w2 finished clean and a LATER episode of its own is not evidence about the one being reported; " +
-        "w1 is the control that must keep its marker, so a query that stopped marking anything at all " +
-        "cannot pass this",
+      /^w2: idle\.$/m,
+      "w2 finished clean and a LATER episode of its own is not evidence about the one being reported",
     );
     assert.match(
       result.short,
-      /1 went idle with background tasks running/,
-      "one worker, not two - the roster count is the discriminator the short render can actually express",
+      /^w1: idle, 1 background shell running - may not be done\.$/m,
+      "w1 is the control that must keep its clause, so a query that stopped reporting anything at all " +
+        "cannot pass this",
     );
   });
 
@@ -404,7 +404,7 @@ describe("todo 468: which log row the clause is read from", () => {
     );
     assert.match(
       result.short,
-      /w1 \(bg\)/,
+      /^w1: idle, 1 background shell running - may not be done\.$/m,
       "this is the harmful direction: a later clean stop must not turn the reported episode into a clean " +
         "finish, which is the false negative this whole todo exists to prevent",
     );
@@ -442,7 +442,7 @@ describe("todo 468: which log row the clause is read from", () => {
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /1 finished: w1\./, "the notice must still be written");
-    assert.doesNotMatch(result.short, /\(bg\)/);
+    assert.match(result.short, /^w1: idle\.$/m, "the notice must still be written");
+    assert.doesNotMatch(result.short, /background/);
   });
 });

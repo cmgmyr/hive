@@ -1330,7 +1330,7 @@ describe("the tool surface", () => {
     );
   });
 
-  it("tells the reader when the notice was observed and how long it sat before this reached them", NEEDS_TMUX, async () => {
+  it("says nothing about staleness on a notice that reached its reader seconds after the finish", NEEDS_TMUX, async () => {
     const staleSession = `hive-standing-watch-staleness-${process.pid}`;
     execFileSync("tmux", ["new-session", "-d", "-s", staleSession, "sleep 600"], { stdio: "ignore" });
     const stalePane = execFileSync("tmux", ["list-panes", "-t", `=${staleSession}`, "-F", "#{pane_id}"], {
@@ -1357,10 +1357,12 @@ describe("the tool surface", () => {
       const SCHEDULER_TICK_MS = 3000;
       const delivered = await until(() => staleCapture().includes("finished or gone away"), SCHEDULER_TICK_MS * 6);
       assert.ok(delivered, "the finish notice must actually reach the pane");
-      assert.match(
+      assert.doesNotMatch(
         staleCapture(),
-        /Held since \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC \(\d+[sm] ago\)\. Its content reflects what hive knew/,
-        "the staleness trailer must be on the DELIVERED text, not just the stored body",
+        /Held/,
+        "measured on the DELIVERED text, which is where it was invisible: 138 characters of provenance on " +
+          "a hold of seconds, saying the same timestamp and the same age twice. The clocks test below is " +
+          "the control that a hold long enough to matter still gets it, in full",
       );
       await staleMcp.call("wake_cancel", { wake_id: receipt.wake_id });
     } finally {
@@ -1511,8 +1513,10 @@ describe("the tool surface", () => {
       const text = clockCapture();
       assert.match(
         text,
-        new RegExp(`10 finished: [\\w, ]+\\(\\+2 more\\)\\. 0 still going\\. wake_get\\(${stored.id}\\) for detail\\.`),
-        "the DELIVERED text is the short line, capped the same as the full render, citing the notice's own id",
+        new RegExp(
+          `(w\\d+: gone\\.\\n){8}And 2 more not shown\\. Nothing else is running\\. wake_get\\(${stored.id}\\) for detail\\.`,
+        ),
+        "the DELIVERED text is one line per worker, capped the same as the full render, citing the notice's own id",
       );
       assert.doesNotMatch(
         text,
@@ -1592,8 +1596,11 @@ describe("the tool surface", () => {
       assert.match(text, /stuck-worker: has claimed `working`/);
       assert.doesNotMatch(
         text,
-        /\d+ finished: /,
-        "a stalled worker must never be typed as a FINISH - it has not finished, it is stopped",
+        /\bstuck-worker: (idle|working|waiting|gone|unknown|resumed|STALE)/,
+        "a stalled worker must never be typed as a crew-render line - it has not finished, it is stopped, " +
+          "and only the full stall body says which. Unanchored on purpose: the delivered string is " +
+          "prefix + body, so the render's FIRST line never starts at column 0 and a line-anchored form " +
+          "cannot fire on a one-worker fixture",
       );
       assert.doesNotMatch(text, /wake_get\(/, "the short-render's wake_get pointer must not appear on a stall notice");
       await leadMcp.call("wake_cancel", { wake_id: receipt.wake_id });

@@ -93,26 +93,28 @@ Workers report their state (`working`, `idle`, `waiting`) the moment it changes,
 
 A fired wake-up types into your terminal as a fresh turn, prefixed `[hive wake #N]`. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
 
-What gets typed depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets a one-line summary** for a standing watch's finish notice, followed by the note hive appends to every standing-watch notice, held or not, saying how old its contents are:
+What gets typed depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is typed as one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
 
 ```text
-[hive wake #752] 2 finished: docs-lane, t455-render. 3 still going. wake_get(752) for detail.
-Held since 2026-08-20 16:13:27 UTC (2m ago). Its content reflects what hive knew as of 2026-08-20 16:11:04 UTC, 2m before this reached you.
+[hive wake #752] docs-lane: idle.
+t455-render: idle.
+3 others still going. wake_get(752) for detail.
 ```
 
-The full roster, the still-going list and the watch's own body are still stored on that notice; `wake_get(752)` returns them unchanged. A blocked worker is the exception and keeps the long form, because that wake is the only thing that will ever tell you a worker is stopped on a permission prompt.
+That is one line per WORKER, not one per finish. A worker that finished four turns while the notice sat held is named once, and a worker that has already picked up new work reads as working rather than being counted a second time in the tally. The per-episode roster, the still-going list and the watch's own body are all still stored on that notice; `wake_get(752)` returns them unchanged. A blocked worker is the exception and keeps the long form, because that wake is the only thing that will ever tell you a worker is stopped on a permission prompt.
 
-**A worker that backgrounded something and then ended its turn is reported as finished with what it left running,** because the two are not the same thing:
+**A worker that backgrounded something and then ended its turn is reported as idle with what it left running,** because the two are not the same thing:
 
 ```text
-[hive wake #863] 1 finished: t462-outputschema (went idle with 1 background shell running - may not be finished). 0 still going.
+[hive wake #863] t462-outputschema: idle, 1 background shell running - may not be done.
+Nothing else is running. wake_get(863) for detail.
 ```
 
 That worker really is idle, so the watch still speaks and you still get control back. It had also just started `npm run build && npm test` and stopped to wait for it. Read its pane before you act on the line. A background shell, a monitor, or anything else Claude Code runs in the background counts; a subagent does not appear here, because a worker waiting on one of those never reads idle in the first place.
 
 ### hive holds a wake while you are talking
 
-If a message was SENT to a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Usually that message is yours. It does not have to be: anything that submits a prompt into the lead's pane counts, including another agent reaching it with `agent_send`, and only hive's own wake deliveries are excluded. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
+If a message was SENT to a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. A notice that waited that long says so when it lands, in one line; below that, the hold is too short to have made anything stale and hive stays quiet about it. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Usually that message is yours. It does not have to be: anything that submits a prompt into the lead's pane counts, including another agent reaching it with `agent_send`, and only hive's own wake deliveries are excluded. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
 
 A hold of any kind that lasts more than an hour is the one case where a finish notice does not arrive as written. hive will not type an hour-old "your worker finished" as news, so it cancels that notice - and tells you it did, in a line naming the workers it covered and pointing at `wake_get` on the cancelled notice, which still holds the full text. You lose the timing, never the fact.
 
