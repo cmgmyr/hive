@@ -8,7 +8,18 @@ documentation is exactly what issue #32 warns produces an untrustworthy
 corpus. Captured from Claude Code 2.1.220 on 2026-07-29 and 2026-07-30. Source
 rows: `agent_state_log` ids 1, 2, 3, 4, 9, 33. One later capture, from Claude
 Code 2.1.228 on 2026-08-12: `prompt-spawn-announcement.json`, source row id
-4105, the announcement `agent_spawn` typed into todo 373's own worker.
+4105, the announcement `agent_spawn` typed into todo 373's own worker. Two
+more from Claude Code 2.1.240 on 2026-08-20: `stop-shell-running.json` and
+`stop-monitors-running.json`, source rows 7550 and 6809.
+
+Capture command, so a re-capture is not a reconstruction:
+
+```
+sqlite3 -readonly ~/.hive/hive.db "SELECT payload FROM agent_state_log WHERE id = <id>;"
+```
+
+Its output carries one trailing newline of its own, which is the only byte
+these files drop.
 
 If a payload needs to change (a local path, a session id), it must be
 RE-CAPTURED from a live run, never hand-edited. See the same rule in
@@ -33,6 +44,16 @@ throws that away.
   differs.
 - `stop-subagents-running.json` — `Stop` with four live `background_tasks`
   entries, all `type: "subagent"`, `status: "running"`. Decides `working`.
+- `stop-shell-running.json` — `Stop` with one live `type: "shell"` entry, the
+  granted full-suite run a worker backgrounded before ending its turn. Decides
+  `idle`, which is correct and is also the false finish todo 468 fixes in the
+  standing notice rather than in the latch. Source row: `agent_state_log` id
+  7550, 2026-08-20 20:06, the incident written up on todo 468 comment 1401.
+- `stop-monitors-running.json` — `Stop` with three live `type: "monitor"`
+  entries, all artifact live-update watchers auto-armed on publish. Decides
+  `idle`. Source row: id 6809, 2026-08-18. Captured because `monitor` is the
+  type that settles todo 468's design question: these never terminate on their
+  own, so a latch that waited for one would never read idle at all.
 - `stop-idle.json` — `Stop` with `background_tasks: []`. Decides `idle`.
 - `notify-idle-prompt.json` — `Notification`, `notification_type:
   "idle_prompt"`. Decides nothing (`stateFor` returns `null`); the row it
@@ -55,9 +76,15 @@ would be worse than no fixture: it would assert what someone guessed
 `permission_prompt`. `elicitation_complete`, named in issue #32 as a concern,
 has never been observed either and is not a fixture for the same reason.
 
-No `background_tasks` entry has ever been observed with `type: "shell"` or
-with a terminal `status` (`completed`, `failed`, etc.); entries seem to be
-removed from the array rather than marked terminal. Not fixtured, same reason.
+No `background_tasks` entry has ever been observed with a terminal `status`
+(`completed`, `failed`, etc.); entries seem to be removed from the array
+rather than marked terminal. Not fixtured, same reason.
+
+`type: "shell"` and `type: "monitor"` WERE in that sentence until 2026-08-20,
+and by then both had been observed 130 and 13 times respectively in
+`stop`/`idle` rows on the live store. The claim was stale rather than wrong
+when written, which is what the canary below exists to catch and what nobody
+ran it to find. Both are fixtured now.
 
 This corpus is a net under the canary (issue #32's half D, carried forward as
 issue #46), never a substitute for it: it proves `stateFor` handles the
@@ -76,10 +103,13 @@ only whether Claude Code is still sending what this corpus recorded.
 `notification_type`, `background_tasks[].type` and `background_tasks[].status`
 are the canary's discriminator paths. The moment a real `Notification` payload
 carries `notification_type: "elicitation_complete"`, or a real `Stop` payload
-carries a `background_tasks` entry with `type: "shell"` or a terminal
-`status`, the canary FAILS loudly with the exact value observed, and that
-finding is a fixture waiting to be captured. Neither question is answered yet;
-both now have a live tripwire instead of a doc comment.
+carries a `background_tasks` entry with a FOURTH type or a terminal `status`,
+the canary FAILS loudly with the exact value observed, and that finding is a
+fixture waiting to be captured. A fourth type is also guarded from the other
+side, in code rather than in a run somebody has to remember to make:
+`BACKGROUND_TASK_DISPOSITION` in `src/backgroundTasks.ts` is pinned as an
+exact set by `test/false-idle.test.mjs`, so adding one to hive means saying
+whether it withholds a worker's idle.
 
 `session_crons` sits outside the discriminator list, so a populated cron does
 not FAIL the canary. Its first non-empty entry will still surface as an INFO

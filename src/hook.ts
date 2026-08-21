@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { db } from "./db.js";
 import { awaitingFirstPromptSql } from "./firstPrompt.js";
+import { liveBackgroundTasks, withholdsIdle } from "./backgroundTasks.js";
 
 interface HookPayload {
   message?: unknown;
@@ -56,16 +57,11 @@ function record(actorId: string, event: string, state: string): void {
   }
 }
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "canceled", "killed", "error"]);
-
+// Only a subagent withholds the latch. A shell or a monitor need never terminate, so latching on one
+// would make a worker that leaves any long-running process never read idle - src/scheduler.ts names
+// them in the standing notice instead (todo 468).
 function waitingOnSubagents(payload: HookPayload): boolean {
-  const tasks = payload.background_tasks;
-  if (!Array.isArray(tasks)) return false;
-  return tasks.some((entry) => {
-    const task = entry as { type?: unknown; status?: unknown } | null;
-    if (task?.type !== "subagent") return false;
-    return !TERMINAL_STATUSES.has(String(task?.status ?? ""));
-  });
+  return liveBackgroundTasks(payload.background_tasks).some(withholdsIdle);
 }
 
 function stateForNotification(payload: HookPayload): string | null {

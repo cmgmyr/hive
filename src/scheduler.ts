@@ -8,6 +8,12 @@ import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import {
+  describeLiveTasks,
+  describeOneTask,
+  liveBackgroundTasks,
+  type LiveBackgroundTask,
+} from "./backgroundTasks.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -479,8 +485,8 @@ export const HELD_REASON_CONVERSATION =
 // for this and CONVERSATION_HOLD_MAX are in hive-internals/references/worker-state.md.
 const CONVERSATION_HOLD_TTL = "-5 minutes";
 
-// Must stay well under NOTICE_MAX_AGE, which silently destroys a notice held past it - see
-// noticeStillDeliverable below. Measured against due_at, not first_held_at: cli.ts's hive-lead
+// Must stay well under NOTICE_MAX_AGE, past which noticeDisposition cancels a held notice rather than
+// typing stale news (it says so in a replacement wake; it is not silent). Measured against due_at, not first_held_at: cli.ts's hive-lead
 // re-point clears held_at (and so first_held_at) on every ordinary reattach, which would otherwise
 // launder this ceiling indefinitely.
 const CONVERSATION_HOLD_MAX = "-15 minutes";
@@ -1054,21 +1060,76 @@ function stillGoingCount(timer: TimerRow): number | null {
   return rows === null ? null : rows.length;
 }
 
+// The Stop payload that latched THIS episode idle, and only that one: `stateFor("stop")` is the sole
+// branch that can write idle, so the event filter names the writer rather than assuming it, and the
+// floor AND ceiling together tie the row to the episode the notice is reporting (the notify branch's
+// `unchanged` rows are what fooled issue #38). The ceiling is not symmetry for its own sake: this
+// renders at DELIVERY time, so a held notice outlives the episode it claimed, and the newest stop row
+// is then a different episode's - naming ITS tasks, or blanking the clause on a finish that really did
+// leave a shell running. The 2s slack either side is clock granularity, the state write being seconds
+// and the log write milliseconds later, and bounds nothing.
+function liveTasksAtIdle(actorId: string, episode: string | null): LiveBackgroundTask[] {
+  if (episode === null) return [];
+  try {
+    const row = stmt(
+      `SELECT payload FROM agent_state_log
+        WHERE actor_id = ? AND event = 'stop'
+          AND created_at >= datetime(?, '-2 seconds') AND created_at <= datetime(?, '+2 seconds')
+        ORDER BY id DESC LIMIT 1`,
+    ).get(actorId, episode, episode) as { payload: string } | undefined;
+    if (row === undefined) return [];
+    return liveBackgroundTasks((JSON.parse(row.payload) as { background_tasks?: unknown }).background_tasks);
+  } catch {
+    return [];
+  }
+}
+
+// A worker that backgrounded a shell and ended its turn IS idle - the latch is right - and it is also
+// not finished. A GONE row gets no clause: its pane is gone, so what it was waiting on is not
+// actionable. Both renders carry the fact and neither carries it the same way: the short one marks
+// each name `(bg)` and says it ONCE for the whole roster, since a sentence per worker is the thing
+// that render exists to prevent; the full one is per-worker with each task's own description.
+function liveTasksForFinish(c: StandingCandidate): LiveBackgroundTask[] {
+  return c.condition === CONDITION_IDLE ? liveTasksAtIdle(c.row.actor_id, c.row.episode) : [];
+}
+
 // Rendered at DELIVERY time only, from the notice row's own wake_idle_notices claim rows - never at
 // write time. The stored body (below) always carries the full text, so wake_get(noticeId) returns
 // real detail. A stale-GONE diagnostic (isStaleGoneReport) stays inline: it corrects a fact THIS SAME
 // line asserts, not detail deferrable to a lookup.
+// `finished` is the WHOLE claim set and the slice happens here, because the `(bg)` count is over all
+// of it while only the first FINISHED_SHOWN_CAP are named. Past the cap the count and the visible
+// markers disagree on purpose: "(+K more)" already says there are names the reader cannot see, and a
+// count that quietly meant "of the ones you can see" would be the same dishonest-claim defect this
+// render exists to fix.
 function standingNoticeBodyShort(timer: TimerRow, finished: StandingCandidate[], totalFinished: number, noticeId: number): string {
-  const names = finished.map((c) =>
-    isStaleGoneReport(c)
-      ? `${c.row.name} (STALE - its GONE report has moved since; verify with agent_output before trusting it)`
-      : c.row.name,
-  );
-  const omitted = totalFinished - finished.length;
+  const withTasks = finished.filter((c) => !isStaleGoneReport(c) && liveTasksForFinish(c).length > 0).length;
+  const names = finished.slice(0, FINISHED_SHOWN_CAP).map((c) => {
+    if (isStaleGoneReport(c)) {
+      return `${c.row.name} (STALE - its GONE report has moved since; verify with agent_output before trusting it)`;
+    }
+    return liveTasksForFinish(c).length === 0 ? c.row.name : `${c.row.name} (bg)`;
+  });
+  const omitted = totalFinished - names.length;
   const finishedPart = `${totalFinished} finished: ${names.join(", ")}${omitted > 0 ? ` (+${omitted} more)` : ""}.`;
+
+  const bgPart =
+    withTasks === 0
+      ? ""
+      : ` ${withTasks} went idle with background tasks running and may not be done (bg).`;
   const going = stillGoingCount(timer);
   const goingPart = going === null ? "" : ` ${going} still going.`;
-  return `${finishedPart}${goingPart} wake_get(${noticeId}) for detail.`;
+  return `${finishedPart}${bgPart}${goingPart} wake_get(${noticeId}) for detail.`;
+}
+
+function backgroundTaskSentence(c: StandingCandidate): string {
+  const live = liveTasksForFinish(c);
+  if (live.length === 0) return "";
+  return (
+    `. It went idle with ${describeLiveTasks(live)} still running ` +
+    `(${live.map(describeOneTask).join("; ")}), so it may be WAITING on that rather than finished - ` +
+    "read its pane before you act on this line."
+  );
 }
 
 function standingNoticeBody(
@@ -1100,7 +1161,7 @@ function standingNoticeBody(
               : `  ${c.row.name}: GONE - hive last read it as ${c.row.agent_state}, and its row was closed at ` +
                 `${c.row.episode}, so there is no terminal left to read. Check its branch, its todo and any ` +
                 "pad it was writing for what landed before it stopped."
-        : `  ${c.row.name}: ${stateNowClause(c.row)}`,
+        : `  ${c.row.name}: ${stateNowClause(c.row)}${backgroundTaskSentence(c)}`,
     );
   }
 
@@ -1408,19 +1469,81 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
   }
 }
 
-function noticeStillDeliverable(timer: TimerRow): boolean {
-  if (timer.parent_timer_id === null) return true;
+// Two facts, kept apart because they earn opposite endings: a notice whose watch was cancelled is
+// one the lead asked for no more of, and a notice too old to type is a finish about to be destroyed
+// with nothing said (todo 465).
+type NoticeDisposition = "deliver" | "aged" | "orphaned";
+
+function noticeDisposition(timer: TimerRow): NoticeDisposition {
+  if (timer.parent_timer_id === null) return "deliver";
   try {
-    return (
-      stmt(
-        `SELECT 1 AS hit FROM timers p
-          WHERE p.id = ? AND p.cancelled_at IS NULL AND ? >= datetime('now', ?)`,
-      ).get(timer.parent_timer_id, timer.created_at, NOTICE_MAX_AGE) !== undefined
-    );
+    const parent = stmt(
+      `SELECT (p.cancelled_at IS NULL) AS live, (? >= datetime('now', ?)) AS fresh
+         FROM timers p WHERE p.id = ?`,
+    ).get(timer.created_at, NOTICE_MAX_AGE, timer.parent_timer_id) as
+      | { live: number; fresh: number }
+      | undefined;
+    if (parent === undefined || parent.live !== 1) return "orphaned";
+    return parent.fresh === 1 ? "deliver" : "aged";
   } catch {
-    return true;
+    return "deliver";
   }
 }
+
+const AGED_OUT_CONDITION: Readonly<Record<string, string>> = {
+  [CONDITION_IDLE]: "finished",
+  [CONDITION_GONE]: "gone",
+  [CONDITION_STALL]: "stalled",
+};
+
+function agedOutBody(timer: TimerRow): string {
+  const rows = stmt(
+    `SELECT a.name, n.condition FROM wake_idle_notices n JOIN agents a ON a.id = n.agent_id
+      WHERE n.notice_timer_id = ? ORDER BY n.episode`,
+  ).all(timer.id) as { name: string; condition: string }[];
+  const shown = rows
+    .slice(0, FINISHED_SHOWN_CAP)
+    .map((r) => `${r.name} (${AGED_OUT_CONDITION[r.condition] ?? r.condition})`);
+  const omitted = rows.length - shown.length;
+  const who =
+    shown.length > 0
+      ? `${rows.length} report(s) about your crew: ${shown.join(", ")}${omitted > 0 ? `, and ${omitted} more` : ""}`
+      : "a report about your crew";
+  return (
+    `hive could not deliver ${who}. The notice sat over an hour waiting for this pane, which is past ` +
+    "the age where hive will type one as news, so it was cancelled - and this line exists so that a " +
+    "finish is never destroyed silently. Read each one with agent_output(name: \"<name>\") for its " +
+    `CURRENT state rather than trusting the ages above; wake_get(wake_id: ${timer.id}) still holds the ` +
+    `full text hive was going to type. ${watchStillWatchingClause(timer)}`
+  );
+}
+
+// A watch that hit max_wait_at is FIRED, not cancelled, so it reaches here reading perfectly healthy.
+// Telling a lead it need not re-arm, in hive's own generated prose, when it must, is how a lane ends
+// up sitting finished and unnoticed - which this project has paid for twice.
+function watchStillWatchingClause(timer: TimerRow): string {
+  const parent = stmt(
+    `SELECT (cancelled_at IS NULL AND fired_at IS NULL
+             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching
+       FROM timers WHERE id = ?`,
+  ).get(timer.parent_timer_id) as { watching: number } | undefined;
+  return parent !== undefined && parent.watching === 1
+    ? `Standing watch #${timer.parent_timer_id} is unaffected and still watching.`
+    : `Standing watch #${timer.parent_timer_id} is NOT watching any more; set a new one if the crew is ` +
+      "still working.";
+}
+
+// Cancel and replacement are one transaction: if the replacement cannot be written the cancel rolls
+// back and the notice is retried, rather than the finish going missing after all. The replacement
+// carries NO parent, which is the branch above that exempts it - so the thing that reports an
+// age-out cannot itself age out, and nothing re-queues, so nothing loops.
+const ageOutNotice = db.transaction((timer: TimerRow): void => {
+  const cancelled =
+    stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ? AND cancelled_at IS NULL")
+      .run(timer.id, timer.created_at).changes === 1;
+  if (!cancelled) return;
+  insertNotice(timer, timer.deliver_actor, timer.deliver_pane, agedOutBody(timer), null);
+});
 
 type DeliverableResult = { ok: true; typedSeen: string; firstHeldAt: string | null } | { ok: false };
 
@@ -1506,8 +1629,16 @@ async function fireDelay(
   choices: ChoiceCache,
 ): Promise<void> {
 
-  if (!noticeStillDeliverable(timer)) {
+  const disposition = noticeDisposition(timer);
+  if (disposition === "aged") {
+    try {
+      ageOutNotice.immediate(timer);
+    } catch {
 
+    }
+    return;
+  }
+  if (disposition === "orphaned") {
     bestEffortRun(
       "UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ?",
       timer.id,
@@ -1756,7 +1887,7 @@ function noticeStalenessNote(timer: TimerRow): string {
 // episode) rather than parsed back out of stored text. Returns null for anything that is not a
 // standing-watch finish notice (a self-addressed wake, a block notice, the expiry notice) - deliver()
 // falls back to the full body for those, unchanged.
-function shortRenderForLeadDelivery(timer: TimerRow): string | null {
+export function shortRenderForLeadDelivery(timer: TimerRow): string | null {
   const rows = stmt(
     `SELECT agent_id, condition, episode FROM wake_idle_notices
       WHERE notice_timer_id = ? AND condition IN ('${CONDITION_IDLE}', '${CONDITION_GONE}')
@@ -1768,7 +1899,7 @@ function shortRenderForLeadDelivery(timer: TimerRow): string | null {
     const row = crewRowForRender(r.agent_id, r.episode);
     if (row !== null) candidates.push({ condition: r.condition, row });
   }
-  return standingNoticeBodyShort(timer, candidates.slice(0, FINISHED_SHOWN_CAP), rows.length, timer.id);
+  return standingNoticeBodyShort(timer, candidates, rows.length, timer.id);
 }
 
 async function deliver(

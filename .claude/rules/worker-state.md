@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/hook.ts"
+  - "src/backgroundTasks.ts"
   - "src/hooks.ts"
   - "src/scheduler.ts"
   - "src/tools/wakes.ts"
@@ -22,7 +23,7 @@ Assert over the SEQUENCE in this table, never over a sample of `agent_state`, or
 
 Any time you have "the system recorded X", the first question is which writer wrote it, not why the writer you have in mind would have.
 
-## Rules left behind by five incidents where worker state read wrong
+## Rules left behind by six incidents where worker state read wrong
 
 A `working` older than the lane's rhythm is suspicious; `working` is not self-evidently healthy.
 
@@ -36,6 +37,29 @@ A `working` older than the lane's rhythm is suspicious; `working` is not self-ev
 ## A debounce is not an inference
 
 A dwell that waits for a state to stop changing and reports what it observed asserts nothing, is self-verifying, and can only make a wake late rather than early. If you write one, say in the code which kind it is, because the next reader cannot tell from the shape.
+
+## The latch owns ONE background-task type; the notice names the rest
+
+A Stop payload's `background_tasks` carries `subagent`, `shell` and `monitor`, and only `subagent`
+withholds a worker's idle (`BACKGROUND_TASK_DISPOSITION`, `src/backgroundTasks.ts`). Do not widen
+that set: a shell or a monitor need never terminate, so a latch that waited for one would leave a
+worker that backgrounds anything reading `working` forever, and the standing watch that exists to
+return control would never fire. That is silent in the worse direction, and `agent_state` is the one
+column six surfaces read.
+
+The standing notice names every live task instead, whatever its type, INCLUDING one hive has never
+seen. Only the latch's set is closed, and it is pinned as an exact table by a test so a fourth type
+cannot be added without deciding which side it falls on. Sixth incident and the observed data:
+`.claude/skills/hive-internals/references/worker-state.md`.
+
+## A notice that ages out says so
+
+`NOTICE_MAX_AGE` cancels a standing-watch notice held past an hour rather than typing stale news.
+The episode claim in `wake_idle_notices` stays claimed, so that finish can never be reported again -
+which means the cancel must file its own short replacement naming who was dropped, and does
+(`ageOutNotice`). Do not make the age-out silent again, do not release the episode claim so the
+notice re-queues (it loops and ages out again), and keep the replacement parentless, which is what
+exempts it from the same bound.
 
 ## Never set a /goal on a worker
 
@@ -53,4 +77,4 @@ Whatever you pass as a wake body is typed into the target pane exactly as writte
 
 `OWNED_BY_WATCH` excludes a grandchild an owner never dispatched itself, except on the blocked/stalled path, which stays unfiltered on purpose. A lead-bound wake held for a live human conversation (`HELD_REASON_CONVERSATION`) measures its own ceiling against `due_at`, never `first_held_at` - the latter is cleared by an ordinary `hive lead` reattach and would silently launder the ceiling. Rationale, the measured TTLs, and the reattach bug: `.claude/skills/hive-internals/references/worker-state.md`.
 
-See `.claude/skills/hive-internals` for the five incidents and the measurements behind these.
+See `.claude/skills/hive-internals` for the six incidents and the measurements behind these.

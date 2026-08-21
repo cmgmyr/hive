@@ -231,7 +231,11 @@ export function registerWakes(server: McpServer): void {
     "wake_set",
     {
       description:
-        "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use instead of polling. Write the body self-contained: ids, context, next action.",
+        "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal " +
+        "as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use " +
+        "instead of polling. Write the body self-contained: ids, context, next action - it may arrive in " +
+        "a session that has none of this conversation. Delivering to your OWN lead pane, where the " +
+        "context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
       inputSchema: {
         delay_seconds: z.number().int().positive(),
         body: z.string(),

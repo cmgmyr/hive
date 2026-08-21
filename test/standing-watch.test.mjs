@@ -637,6 +637,104 @@ describe("the parent link", () => {
     assert.equal(result.after.typed_at, null);
   });
 
+  it("says so rather than destroying the finish, and the replacement cannot age out in its turn", () => {
+    const result = fixture(
+      "stale-notice-is-loud",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      const notice = notices(watchId)[0];
+      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      await tick(snapshot);
+      const replacement = db.prepare(
+        "SELECT id, body, parent_timer_id, cancelled_at, deliver_actor, deliver_pane FROM timers " +
+        "WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
+      ).get(notice.id);
+
+      // Backdated the same way the notice was, then ticked again: whatever exempts the replacement
+      // has to survive the bound that killed the thing it is reporting.
+      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(replacement.id);
+      await tick(snapshot);
+      const afterSecondTick = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(replacement.id);
+      const refiled = notices(watchId).filter((n) => n.cancelled_at === null).length;
+      const claims = cursor(watchId);
+      ${out("{ replacement, afterSecondTick, refiled, claims, noticeId: notice.id }")}
+      `,
+    );
+    assert.ok(result.replacement !== undefined, "an aged-out notice must leave something behind that a lead can read");
+    assert.match(result.replacement.body, /hive could not deliver 1 report\(s\) about your crew: w1 \(finished\)/);
+    assert.match(
+      result.replacement.body,
+      new RegExp(`wake_get\\(wake_id: ${result.noticeId}\\)`),
+      "the pointer must name the cancelled notice, whose row still holds the full text - a lookup has to " +
+        "read something that was written",
+    );
+    assert.equal(result.replacement.deliver_actor, "lead:1", "it goes to the target that missed the notice");
+    assert.equal(result.replacement.deliver_pane, "%lead");
+    assert.equal(result.afterSecondTick.cancelled_at, null, "the report of an age-out must not age out itself");
+    assert.match(result.afterSecondTick.held_reason ?? "", /lead's pane is not live/, "it reached delivery and held");
+    assert.equal(result.refiled, 0, "the episode claim stays claimed: nothing re-queues, so nothing can loop");
+    assert.equal(result.claims.length, 1, "and the claim row is still there, still pointing at the dead notice");
+  });
+
+  it("does not tell the lead an EXPIRED watch is still watching, which would stop them re-arming", () => {
+    const result = fixture(
+      "aged-out-under-an-expired-watch",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      const notice = notices(watchId)[0];
+      // Expiry FIRES the watch row (maybeFireIdle -> claimOneShot); it does not cancel it. A test
+      // using a cancelled watch would pass while proving nothing, since that is the other branch.
+      db.prepare("UPDATE timers SET fired_at = datetime('now'), max_wait_at = datetime('now', '-1 minutes') WHERE id = ?").run(watchId);
+      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      await tick(snapshot);
+      const replacement = db.prepare(
+        "SELECT body FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
+      ).get(notice.id);
+      const watch = db.prepare("SELECT fired_at, cancelled_at FROM timers WHERE id = ?").get(watchId);
+      ${out("{ replacement, watch }")}
+      `,
+    );
+    assert.ok(result.watch.fired_at !== null, "the fixture must expire the watch by FIRING it");
+    assert.equal(result.watch.cancelled_at, null, "and not by cancelling it, which is the whole distinction");
+    assert.ok(result.replacement !== undefined, "the age-out must still be reported");
+    assert.match(
+      result.replacement.body,
+      /is NOT watching any more; set a new one if the crew is still working/,
+      "hive telling a lead it need not re-arm, when it must, is how a lane sits finished and unnoticed",
+    );
+    assert.doesNotMatch(result.replacement.body, /unaffected and still watching/);
+  });
+
+  it("stays silent when the watch itself was cancelled, which is a lead asking for no more of them", () => {
+    const result = fixture(
+      "cancelled-watch-is-quiet",
+      `
+      const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      const notice = notices(watchId)[0];
+      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(watchId);
+      await tick(snapshot);
+      const after = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice.id);
+      const extras = db.prepare(
+        "SELECT COUNT(*) AS n FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ?",
+      ).get(notice.id).n;
+      ${out("{ after, extras }")}
+      `,
+    );
+    assert.ok(result.after.cancelled_at !== null, "the notice is still cancelled");
+    assert.equal(
+      result.extras,
+      0,
+      "an aged-out notice is loud because a finish would be lost; a cancelled watch is the lead having " +
+        "said stop, and telling them about it is the wake noise this whole wave is reducing",
+    );
+  });
+
   it("keeps working through the rest of the tick when cancelling a stale notice throws", () => {
     const result = fixture(
       "stale-notice-cancel-throws",
@@ -668,7 +766,10 @@ describe("the parent link", () => {
       await tick(snapshot);
       const held = db.prepare("SELECT id, held_reason FROM timers WHERE id IN (?, ?) ORDER BY id").all(earlier, later);
       const noticeRow = db.prepare("SELECT cancelled_at, fired_at, typed_at FROM timers WHERE id = ?").get(notice.id);
-      ${out("{ ids: { earlier, notice: notice.id, later }, held, noticeRow }")}
+      const strays = db.prepare(
+        "SELECT COUNT(*) AS n FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ?",
+      ).get(later).n;
+      ${out("{ ids: { earlier, notice: notice.id, later }, held, noticeRow, strays }")}
       `,
     );
     assert.ok(
@@ -685,6 +786,12 @@ describe("the parent link", () => {
       result.held.map((t) => t.held_reason !== null),
       [true, true],
       "every candidate after the failed cancel must still be reached; a throw here starves the whole store",
+    );
+    assert.equal(
+      result.strays,
+      0,
+      "and the age-out replacement must roll back with the cancel it accompanies, or a notice that is " +
+        "still pending gets reported as lost as well as delivered",
     );
   });
 

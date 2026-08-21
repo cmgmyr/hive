@@ -55,6 +55,8 @@ const CASES = [
   ["prompt-spawn-announcement.json", "prompt", "idle", "working"],
   ["prompt-task-notification.json", "prompt", "idle", "working"],
   ["stop-subagents-running.json", "stop", "idle", "working"],
+  ["stop-shell-running.json", "stop", "working", "idle"],
+  ["stop-monitors-running.json", "stop", "working", "idle"],
   ["stop-idle.json", "stop", "idle", "idle"],
   ["notify-idle-prompt.json", "notify", "working", "unchanged"],
   ["notify-permission-prompt.json", "notify", "idle", "waiting"],

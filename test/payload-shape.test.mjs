@@ -39,7 +39,7 @@ describe("payload-shape: manifest derivation", () => {
 
   it("collects enums only for DISCRIMINATOR_PATHS, from observed values", () => {
     assert.deepEqual(manifest.Notification.enums.notification_type, ["idle_prompt", "permission_prompt"]);
-    assert.deepEqual(manifest.Stop.enums["background_tasks[].type"], ["subagent"]);
+    assert.deepEqual(manifest.Stop.enums["background_tasks[].type"], ["monitor", "shell", "subagent"]);
     assert.deepEqual(manifest.Stop.enums["background_tasks[].status"], ["running"]);
 
     assert.deepEqual(manifest.UserPromptSubmit.enums, {});
@@ -118,11 +118,11 @@ describe("payload-shape: FAILURE -- unseen enum value", () => {
 
   it("fires for a background_tasks[].type the corpus never saw", () => {
     const { event, payload } = mutate("stop-subagents-running.json", (copy) => {
-      copy.background_tasks[0].type = "shell";
+      copy.background_tasks[0].type = "parachute";
     });
     const findings = checkPayload(manifest, event, payload);
     assert.ok(
-      findings.some((f) => f.severity === "FAILURE" && f.kind === "unseen_enum" && f.path === "background_tasks[].type" && f.value === "shell"),
+      findings.some((f) => f.severity === "FAILURE" && f.kind === "unseen_enum" && f.path === "background_tasks[].type" && f.value === "parachute"),
       JSON.stringify(findings),
     );
   });

@@ -222,6 +222,8 @@ Delivery contract:
   as a fresh user turn, prefixed with [hive wake #N]. The receiving agent
   gets it cold, so write bodies self-contained: agent ids, pad/todo ids,
   and the next action. Plain English, no markup.
+  Waking your OWN lead pane is the exception: it is not cold, so carry the
+  action and the ids and point at where the detail lives.
 
 Receiving wake-ups:
   Spawned workers can always receive (deliver_to their name or id).

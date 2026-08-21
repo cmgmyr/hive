@@ -23,7 +23,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_park` | Parks a claude worker for the night: closes the pane, marks the row parked rather than plain closed, records the branch, and hands back a board line | End of day, when the lane is paused rather than finished and you want it back tomorrow |
 | `agent_close` | Kills the worker's window and marks it closed. Called on a PARKED row (by `agent_id`) it releases the park instead | After capturing handoffs; terminal output is not retained. Also how you abandon a parked lane you have decided not to resume |
 | **wake-ups** | | |
-| `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action) |
+| `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action), or, waking your own lead pane, carry the action and a pointer |
 | `wake_when_idle` | Fires when workers go idle, using exact hook state. `scope="project"` is a standing watch over the crew you spawn in this project that keeps watching and covers workers spawned later; `agents=[...]` is a one-shot over a named list | The lead's main loop: dispatch, set the standing watch once, go quiet; never poll |
 | `wake_list` | Lists pending wake-ups, plus recently delivered ones with their typed/held/confirmed state | To see what is scheduled, and whether a fired wake actually landed |
 | `wake_get` | Reads one wake-up by id, with its untruncated body | To see exactly what a wake will say, past `wake_list`'s 120-char cap |

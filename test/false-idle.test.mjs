@@ -130,6 +130,40 @@ describe("the Stop hook tells a finished turn from finished work", () => {
     assert.equal(stateOf(agent), "idle", "a background shell is not a reason to withhold idle");
   });
 
+  it("does not count a background monitor as work in flight either", async () => {
+    const agent = agentRow("artifact-monitor", "%9530", "working");
+
+    await runHook(
+      "stop",
+      stopPayload([{ id: "sm8v3oab7", type: "monitor", status: "running", description: "live updates for artifact" }]),
+      "agent:artifact-monitor",
+    );
+
+    assert.equal(
+      stateOf(agent),
+      "idle",
+      "every monitor ever observed is auto-armed on publishing an artifact and never terminates; " +
+        "latching on one would mean that session could never read idle at all",
+    );
+  });
+
+  it("does not withhold idle for a task type this codebase has never seen", async () => {
+    const agent = agentRow("unseen-type", "%9531", "working");
+
+    await runHook(
+      "stop",
+      stopPayload([{ id: "z1", type: "parachute", status: "running", description: "something new" }]),
+      "agent:unseen-type",
+    );
+
+    assert.equal(
+      stateOf(agent),
+      "idle",
+      "a fourth type must not silently start withholding idle - the standing notice NAMES it instead, " +
+        "which is the half that can be wrong without stranding a lead forever",
+    );
+  });
+
   it("counts the subagent even when a shell is alongside it", async () => {
     const agent = agentRow("both", "%9503", "idle");
 
@@ -1021,5 +1055,26 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
     assert.notEqual(done.typed_at, null, "typed_at follows a successful sendText");
     assert.equal(done.held_at, null, "a resolved hold must stop being reported as current");
     assert.equal(done.held_reason, null);
+  });
+});
+
+describe("the background-task disposition table is the closed set the code owns", () => {
+  it("names every type hive has observed, and only one of them withholds idle", async () => {
+    const { BACKGROUND_TASK_DISPOSITION } = await import("../dist/backgroundTasks.js");
+
+    assert.deepEqual(
+      BACKGROUND_TASK_DISPOSITION,
+      { subagent: "latch", shell: "name", monitor: "name" },
+      "Claude Code's Stop payload has carried exactly these three types. Adding a fourth here means " +
+        "deciding whether it withholds a worker's idle or is only named in the standing notice - this " +
+        "test exists so that decision cannot be made by leaving it out (todo 468)",
+    );
+    assert.deepEqual(
+      Object.entries(BACKGROUND_TASK_DISPOSITION)
+        .filter(([, d]) => d === "latch")
+        .map(([type]) => type),
+      ["subagent"],
+      "a second latching type means a worker leaving a long-running process never reads idle",
+    );
   });
 });

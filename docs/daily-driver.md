@@ -82,9 +82,19 @@ Held since 2026-08-20 16:13:27 UTC (2m ago). Its content reflects what hive knew
 
 The full roster, the still-going list and the watch's own body are still stored on that notice; `wake_get(752)` returns them unchanged. A blocked worker is the exception and keeps the long form, because that wake is the only thing that will ever tell you a worker is stopped on a permission prompt.
 
+**A worker that backgrounded something and then ended its turn is reported as finished with what it left running,** because the two are not the same thing:
+
+```text
+[hive wake #863] 1 finished: t462-outputschema (went idle with 1 background shell running - may not be finished). 0 still going.
+```
+
+That worker really is idle, so the watch still speaks and you still get control back. It had also just started `npm run build && npm test` and stopped to wait for it. Read its pane before you act on the line. A background shell, a monitor, or anything else Claude Code runs in the background counts; a subagent does not appear here, because a worker waiting on one of those never reads idle in the first place.
+
 ### hive holds a wake while you are talking
 
 If a message was SENT to a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Usually that message is yours. It does not have to be: anything that submits a prompt into the lead's pane counts, including another agent reaching it with `agent_send`, and only hive's own wake deliveries are excluded. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
+
+A hold of any kind that lasts more than an hour is the one case where a finish notice does not arrive as written. hive will not type an hour-old "your worker finished" as news, so it cancels that notice - and tells you it did, in a line naming the workers it covered and pointing at `wake_get` on the cancelled notice, which still holds the full text. You lose the timing, never the fact.
 
 So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking.
 
