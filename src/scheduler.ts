@@ -15,6 +15,7 @@ import {
   type LiveBackgroundTask,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
+import { screenClassifiable } from "./harnesses.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -82,6 +83,8 @@ export interface TimerRow {
   deliver_socket: string;
 
   deliver_pane_pid: string;
+
+  deliver_command: string;
 
   watch_scope: string | null;
 
@@ -494,7 +497,8 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     const candidates = stmt(
       `SELECT timers.*, COALESCE(agents.tmux_socket, '') AS deliver_socket,
-              COALESCE(agents.pane_pid, '') AS deliver_pane_pid
+              COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
+              COALESCE(agents.command, '') AS deliver_command
          FROM timers ${DELIVER_SOCKET_JOIN}
         WHERE timers.cancelled_at IS NULL AND (
          (timers.kind = 'delay' AND timers.due_at <= datetime('now')
@@ -601,6 +605,20 @@ const HELD_REASON_PANE_REISSUED_THEN_DEAD =
   "this even though the wake is not theirs) if it is no longer needed";
 export function wasHeldForPaneReissue(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
+}
+
+export const HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX =
+  "the pane's harness is not one hive can classify; ";
+export const HELD_REASON_UNCLASSIFIABLE_PANE =
+  `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}neither the dialog guard nor the unsubmitted-text ` +
+  "guard can read this screen and delivery would type blind. wake_set and wake_when_idle refuse such a " +
+  "target outright now, so this wake predates that or its pane's command changed underneath it. Nothing " +
+  "hive does on its own clears this: it lifts only when that pane is replaced by one hive starts itself " +
+  "(`hive lead` after the pane exits). Cancel it with wake_cancel (any running lead may, even though the " +
+  "wake is not theirs) and drive that pane with agent_send(keys: [...])";
+
+export function isUnclassifiablePaneHold(heldReason: string | null): boolean {
+  return heldReason != null && heldReason.startsWith(HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX);
 }
 
 export const HELD_REASON_UNSUBMITTED_INPUT_PREFIX = "the pane's input box has unsubmitted human text; ";
@@ -757,6 +775,16 @@ function ownerPaneToTell(timer: TimerRow, snapshot: AliveSnapshot | null): strin
   const pane = ownerPaneIfLive(timer, snapshot);
   if (pane === null || pane === timer.deliver_pane) return null;
   return pane;
+}
+
+// The command recorded for whoever this notice is aimed at, resolved the way DELIVER_SOCKET_JOIN
+// resolves it. '' means no row, which is "no fact recorded" and not "unclassifiable".
+function commandForActor(actorId: string): string {
+  const row = stmt(
+    `SELECT command FROM agents WHERE actor_id = ?
+      ORDER BY (status = 'running') DESC, id DESC LIMIT 1`,
+  ).get(actorId) as { command: string } | undefined;
+  return row?.command ?? "";
 }
 
 function insertNotice(
@@ -1705,6 +1733,9 @@ const ageOutNotice = db.transaction((timer: TimerRow): void => {
     stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ? AND cancelled_at IS NULL")
       .run(timer.id, timer.created_at).changes === 1;
   if (!cancelled) return;
+  // Parentless, so noticeDisposition can never age it out, and deliverable() holds it forever when
+  // the target is unclassifiable: one immortal row per age-out, an hour apart, unbounded.
+  if (!screenClassifiable(commandForActor(timer.deliver_actor))) return;
   insertNotice(timer, timer.deliver_actor, timer.deliver_pane, agedOutBody(timer), null);
 });
 
@@ -1743,7 +1774,15 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
-  if (awaitingChoice(timer.deliver_pane, choices) === true) {
+  // Above both pane reads: this population must not be captured at all, and the verdicts would be
+  // wrong in opposite directions if they were.
+  if (!screenClassifiable(timer.deliver_command)) {
+    holdTimer(timer, HELD_REASON_UNCLASSIFIABLE_PANE);
+    return { ok: false };
+  }
+
+  const dialog = awaitingChoice(timer.deliver_pane, choices);
+  if (dialog === true) {
 
     noteModalHold(timer, snapshot);
     return { ok: false };
@@ -1772,15 +1811,14 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
         ? "ok"
         : "reissued";
 
-  const dialogVerdict = awaitingChoice(timer.deliver_pane, choices);
-  const dialog = dialogVerdict === true ? "yes" : dialogVerdict === false ? "no" : "unknown";
+  const dialogSeen = dialog === false ? "no" : "unknown";
 
   const boxState = cacheEntry(timer.deliver_pane, choices).box;
 
   const box = boxState === undefined ? "unknown" : boxState === null ? "absent" : boxState.state;
   return {
     ok: true,
-    typedSeen: `live=yes pid=${pid} dialog=${dialog} box=${box}`,
+    typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}`,
 
     firstHeldAt: timer.held_at != null ? timer.first_held_at : null,
   };

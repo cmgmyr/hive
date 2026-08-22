@@ -8,7 +8,7 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-harness-registry-"));
 process.env.HIVE_DATA_DIR = scratch;
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const { harnessFor, registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
+const { harnessFor, registerHarness, unregisterHarness, screenClassifiable } = await import("../dist/harnesses.js");
 const { workerCommandString } = await import("../dist/brief.js");
 const { reportsAgentStateLog } = await import("../dist/stateProvenance.js");
 const { claudeOnlyFields, contextTokensField } = await import("../dist/tools/agents.js");
@@ -27,12 +27,29 @@ const WIDGET = {
   contextTokens: true,
   supportsResume: false,
   supportsRename: true,
-  supportsInputBoxProbe: false,
+  classifiesPaneScreen: true,
   hasScopes: false,
 };
 
-before(() => registerHarness(WIDGET));
-after(() => unregisterHarness("widget"));
+// The witness WIDGET can no longer carry: briefDelivery ON while hive cannot read the screen.
+// WIDGET had to set classifiesPaneScreen true once registerHarness started refusing that pair with
+// supportsRename, so without this entry nothing pins the two fields as separate at all.
+const UNREADABLE_BRIEFED = {
+  ...WIDGET,
+  name: "unreadable-briefed",
+  matches: (command) => command.trim().split(/\s+/)[0]?.split("/").pop() === "unreadable-briefed",
+  supportsRename: false,
+  classifiesPaneScreen: false,
+};
+
+before(() => {
+  registerHarness(WIDGET);
+  registerHarness(UNREADABLE_BRIEFED);
+});
+after(() => {
+  unregisterHarness("widget");
+  unregisterHarness("unreadable-briefed");
+});
 
 describe("registering a hypothetical second harness", () => {
   it("mixes true and false capabilities on one command, unlike claude where every capability is true today, so a call site reading the wrong field cannot hide behind an all-true fixture", () => {
@@ -89,14 +106,63 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(harnessFor("widget").supportsRename, true);
   });
 
-  it("keeps supportsInputBoxProbe off the widget while its brief channel stays on", () => {
-    assert.equal(harnessFor("widget").supportsInputBoxProbe, false);
-    assert.ok(harnessFor("widget").briefDelivery, "briefDelivery must not collapse onto supportsInputBoxProbe");
+  it("keeps classifiesPaneScreen and briefDelivery independently settable, witnessed by an entry that sets them OPPOSITE ways", () => {
+    const unreadable = harnessFor("unreadable-briefed");
+    assert.equal(unreadable.classifiesPaneScreen, false);
+    assert.ok(
+      unreadable.briefDelivery,
+      "a harness hive cannot read the screen of may still take brief flags - merge the two fields and this dies",
+    );
+
+    const widget = harnessFor("widget");
+    assert.equal(widget.classifiesPaneScreen, true);
+    assert.ok(widget.briefDelivery);
+  });
+
+  it("answers screenClassifiable from the entry rather than from the caller's guess, both ways", () => {
+    assert.equal(screenClassifiable("unreadable-briefed"), false, "a briefed harness is not automatically readable");
+    assert.equal(screenClassifiable("widget"), true);
+  });
+
+  it("refuses to register a harness that types /rename into a pane it cannot classify, the one pair that is NOT independently settable", () => {
+    assert.throws(
+      () => registerHarness({ ...WIDGET, name: "unsafe-rename", supportsRename: true, classifiesPaneScreen: false }),
+      /supportsRename without classifiesPaneScreen/,
+    );
+    assert.equal(harnessFor("widget").name, "widget", "the refusal must not have registered anything");
+  });
+
+  it("still allows the safe three corners of that pair, so the check forbids one combination rather than coupling the two fields", () => {
+    for (const [rename, classify] of [
+      [false, false],
+      [false, true],
+      [true, true],
+    ]) {
+      const name = `corner-${rename}-${classify}`;
+      registerHarness({
+        ...WIDGET,
+        name,
+        matches: (command) => command.trim().split(/\s+/)[0] === name,
+        supportsRename: rename,
+        classifiesPaneScreen: classify,
+      });
+      assert.equal(harnessFor(name).supportsRename, rename);
+      assert.equal(harnessFor(name).classifiesPaneScreen, classify);
+      unregisterHarness(name);
+    }
   });
 
   it("keeps hasScopes off the widget while stateSource stays on, so a scoped-registration report can't be inferred from an unrelated capability (todo 512's mistake, generalised)", () => {
     assert.equal(harnessFor("widget").hasScopes, false);
     assert.equal(harnessFor("widget").stateSource, true);
+  });
+
+  it("reads an EMPTY command as no-fact-recorded and classifiable, never as an unclassifiable harness", () => {
+    assert.equal(screenClassifiable(""), true, "a wake can name a pane with no agents row behind it");
+    assert.equal(screenClassifiable("   "), true);
+    assert.equal(screenClassifiable("claude"), true);
+    assert.equal(screenClassifiable("bash"), false, "an unknown harness is the case this predicate exists for");
+    assert.equal(screenClassifiable("sleep 600"), false);
   });
 
   it("leaves the claude entry's own capabilities untouched by registering a neighbour", () => {
@@ -106,7 +172,7 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(claude.contextTokens, true);
     assert.equal(claude.supportsResume, true);
     assert.equal(claude.supportsRename, true);
-    assert.equal(claude.supportsInputBoxProbe, true);
+    assert.equal(claude.classifiesPaneScreen, true);
     assert.equal(claude.hasScopes, true);
   });
 });

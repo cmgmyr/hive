@@ -25,7 +25,7 @@ export interface HarnessCapabilities {
   readonly supportsResume: boolean;
   readonly supportsRename: boolean;
 
-  readonly supportsInputBoxProbe: boolean;
+  readonly classifiesPaneScreen: boolean;
 
   // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
   readonly hasScopes: boolean;
@@ -60,7 +60,7 @@ const claudeHarness: HarnessCapabilities = {
   supportsResume: true,
   supportsRename: true,
 
-  supportsInputBoxProbe: true,
+  classifiesPaneScreen: true,
 
   hasScopes: true,
 };
@@ -82,7 +82,7 @@ const unknownHarness: HarnessCapabilities = {
   supportsResume: false,
   supportsRename: false,
 
-  supportsInputBoxProbe: false,
+  classifiesPaneScreen: false,
 
   hasScopes: false,
 };
@@ -99,6 +99,14 @@ export function registerHarness(harness: HarnessCapabilities): void {
   if (HARNESSES.some((h) => h.name === harness.name)) {
     throw new Error(`a harness named "${harness.name}" is already registered`);
   }
+  if (harness.supportsRename && !harness.classifiesPaneScreen) {
+    throw new Error(
+      `harness "${harness.name}" sets supportsRename without classifiesPaneScreen. agent_rename PASTES ` +
+        "AND SUBMITS /rename into a live pane, and the guards that decide whether that is safe (a dialog " +
+        "on screen, unsubmitted human text in the box) can only read a screen this table says hive can " +
+        "classify. Set classifiesPaneScreen, or leave supportsRename off.",
+    );
+  }
   HARNESSES.push(harness);
 }
 
@@ -109,4 +117,12 @@ export function unregisterHarness(name: string): void {
 
 export function isClaudeCommand(command: string): boolean {
   return harnessFor(command).name === "claude";
+}
+
+// An empty command is "no fact recorded", never "unclassifiable": a wake can name a pane that has no
+// agents row at all (resolveDelivery's TMUX_PANE fallback), and reading that as unclassifiable stops
+// every wake a plain session ever set for itself.
+export function screenClassifiable(command: string): boolean {
+  if (command.trim() === "") return true;
+  return harnessFor(command).classifiesPaneScreen;
 }

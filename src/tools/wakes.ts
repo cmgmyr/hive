@@ -18,6 +18,7 @@ import { awaitingFirstPrompt } from "../firstPrompt.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import { findUnsafeControlChar, liveTargets, TEXT_ALLOWED_CONTROL_CHARS } from "../tmux.js";
 import { isRunningLeadActor, LEAD_KIND } from "../spawn.js";
+import { commandHead, screenClassifiable } from "../harnesses.js";
 
 const agentRefParam = z
   .union([idParam, z.string()])
@@ -29,12 +30,30 @@ function resolveAgentRef(projectId: number, ref: number | string): AgentRow {
     : findAgent(projectId, { name: ref });
 }
 
+function refuseUnclassifiableTarget(agent: AgentRow): void {
+  if (screenClassifiable(agent.command)) return;
+  throw new Error(
+    `Agent ${agent.id} ("${agent.name}") runs ${JSON.stringify(commandHead(agent.command))}, and hive can only ` +
+      "classify a claude screen. A wake is delivered by pasting its body and pressing Enter, and the two guards " +
+      "that decide whether that is safe - a dialog on screen, unsubmitted human text in the box - both read " +
+      "claude's own chrome, so on this pane neither can answer. Delivery would type blind: into a dialog it " +
+      "answers the highlighted option, and on a shell it executes whatever the paste merged with. " +
+      "Refused here rather than at delivery, where it could only ever be held forever - a pane's harness never " +
+      "becomes classifiable, so that hold would never clear, and a timer that cannot fire is worse than an " +
+      "error you can read now. Drive this pane with agent_send(keys: [...]) instead, which is unguarded for " +
+      "exactly this reason.",
+  );
+}
+
 function resolveDelivery(
   projectId: number,
   deliverTo?: number | string,
 ): { actor: string; pane: string } {
   if (deliverTo != null) {
     const agent = resolveAgentRef(projectId, deliverTo);
+    // Before the liveness probe: the harness is a durable fact about the row, while liveness is a
+    // question about right now, so a dead bash worker should say what is actually wrong with it.
+    refuseUnclassifiableTarget(agent);
     const live = isLive(agent);
     if (live === null) throw probeFailed(agent);
     if (!live) {
@@ -47,7 +66,13 @@ function resolveDelivery(
   const own = db
     .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actor) as AgentRow | undefined;
-  if (own && isLive(own) === true) return { actor, pane: own.tmux_target };
+  // Checked on the ROW, not behind the liveness probe: isLive is three-state, and letting a null
+  // fall through to the TMUX_PANE branch below accepts a wake the scheduler will then hold forever
+  // against that same row's command - the never-firing timer this refusal exists to prevent.
+  if (own) refuseUnclassifiableTarget(own);
+  if (own && isLive(own) === true) {
+    return { actor, pane: own.tmux_target };
+  }
   const pane = process.env.TMUX_PANE;
   if (pane) return { actor, pane };
   throw new Error(

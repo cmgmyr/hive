@@ -11,7 +11,7 @@ import {
   writeAgentBrief,
 } from "../brief.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
-import { commandHead, harnessFor } from "../harnesses.js";
+import { commandHead, harnessFor, screenClassifiable } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
@@ -367,6 +367,14 @@ export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null):
   return rowAlive(row.tmux_socket, row.tmux_target, snapshot);
 }
 
+function capturePaneQuietly(target: string): string {
+  try {
+    return capturePane(target, 15);
+  } catch {
+    return "";
+  }
+}
+
 function inputBoxField(target: string): { input_box: InputBoxState } | Record<string, never> {
   const box = inputBoxState(target);
   return box ? { input_box: box } : {};
@@ -442,7 +450,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+        "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command hive cannot classify the screen of (anything but claude today) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       inputSchema: {
         name: z
           .string()
@@ -570,7 +578,7 @@ export function registerAgents(server: McpServer): void {
 
         let ready = false;
         let dialogTail: string | undefined;
-        if (harness.supportsInputBoxProbe) {
+        if (harness.classifiesPaneScreen) {
           try {
             const paneReady = await waitForPaneInput(target, PANE_READY_MS);
             const { awaitingChoice, tail } = paneChoiceCheck(target);
@@ -615,9 +623,20 @@ export function registerAgents(server: McpServer): void {
                         note: "The pane never became ready. The system-prompt brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
                       }),
               }
-            : {
-                instructions: workerBrief(briefFor(actorId)),
-              }),
+            : harness.classifiesPaneScreen
+              ? {
+                  instructions: workerBrief(briefFor(actorId)),
+                }
+              : {
+                  brief_path: writeAgentBrief(agentId, workerBrief(briefFor(actorId))),
+                  note:
+                    `This worker runs ${JSON.stringify(commandHead(baseCommand))}, which hive cannot brief and ` +
+                    "cannot type into: the guards that make typing safe read claude's chrome, so agent_send's " +
+                    "text path refuses this pane. There are no instructions to prepend, because there is no " +
+                    "supported way to send them. The brief is written to brief_path - open that pane " +
+                    "(tmux attach) and paste it in yourself, or drive the worker with agent_send(keys: [...]). " +
+                    "Wakes aimed at this worker are refused for the same reason.",
+                }),
         };
       }),
   );
@@ -899,10 +918,20 @@ export function registerAgents(server: McpServer): void {
         if (live && harnessFor(agent.command).supportsRename) {
           const { awaitingChoice, tail } = paneChoiceCheck(agent.tmux_target);
 
-          const box = awaitingChoice === true ? null : inputBoxState(agent.tmux_target);
+          const box = awaitingChoice === false ? inputBoxState(agent.tmux_target) : null;
           if (awaitingChoice === true) {
             heldNote =
               "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
+            heldTail = tail;
+          } else if (awaitingChoice === null) {
+            // A read that did not answer is a THIRD outcome, never "no dialog". /rename is a paste
+            // followed by Enter, so this path types blind exactly as agent_send's did.
+            heldNote =
+              "Not retitled: the pane could not be read, so hive cannot tell whether a dialog is on screen, and " +
+              "typing /rename into one answers it instead of setting the title. The row IS renamed - it is " +
+              `"${newName}" now - and only the pane's own title was left alone. This is usually a tmux call that ` +
+              "timed out rather than anything about the target; check it with agent_output, then call " +
+              `agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
             heldTail = tail;
           } else if (holdsHumanInput(box)) {
 
@@ -1025,7 +1054,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -1077,18 +1106,45 @@ export function registerAgents(server: McpServer): void {
                 'allowed. To send an actual keystroke on purpose, use keys instead (e.g. keys: ["C-c"]).',
             );
           }
-          const { awaitingChoice, tail } = paneChoiceCheck(target);
-          if (awaitingChoice === true) {
+          if (!screenClassifiable(agent.command)) {
             return {
               agent_id: agent.id,
               name: agent.name,
               sent: false,
-              note: "The pane is waiting on a choice (e.g. a permission or trust prompt), so text was NOT sent: typing here would answer the prompt instead of reaching the worker. Use keys to answer or dismiss it deliberately (e.g. [\"Escape\"], or the option's number plus Enter), then retry.",
-              tail,
+              note:
+                `Text was NOT sent: this pane runs ${JSON.stringify(commandHead(agent.command))}, and hive can ` +
+                "only classify a claude screen. Both guards that make typing safe read that chrome, so on this " +
+                "pane neither can answer: a dialog would not be seen (the Enter after the paste would answer " +
+                "it), and unsubmitted text in the box would not be seen (the paste would land on the end of it " +
+                "and Enter would submit both - on a shell, execute both). A predicate that cannot answer is not " +
+                "a predicate that answered \"safe\". " +
+                'Drive this pane deliberately instead: agent_send(name: ' +
+                `${JSON.stringify(agent.name)}, keys: [...]) is unguarded for exactly this reason, and reaches ` +
+                "an arbitrary TUI a text turn cannot. Read it first with agent_output.",
+              tail: capturePaneQuietly(agent.tmux_target),
             };
           }
 
           const submitting = args.submit !== false;
+          const { awaitingChoice, tail } = paneChoiceCheck(target);
+          // Unreadable refuses only when an Enter follows: with submit=false there is no keypress
+          // for a dialog to eat, the same reasoning that exempts submit=false from the box check.
+          if (awaitingChoice === true || (submitting && awaitingChoice === null)) {
+            return {
+              agent_id: agent.id,
+              name: agent.name,
+              sent: false,
+              note:
+                awaitingChoice === true
+                  ? "The pane is waiting on a choice (e.g. a permission or trust prompt), so text was NOT sent: typing here would answer the prompt instead of reaching the worker. Use keys to answer or dismiss it deliberately (e.g. [\"Escape\"], or the option's number plus Enter), then retry."
+                  : "The pane could not be read, so text was NOT sent: hive cannot tell whether a dialog is on " +
+                    "screen, and typing into one answers it instead of reaching the worker. This is usually a " +
+                    "tmux call that timed out (the server may be wedged or heavily loaded) rather than anything " +
+                    "about the target. Retry; if it persists, check the pane with agent_output and run hive doctor.",
+              tail,
+            };
+          }
+
           if (submitting) {
             const box = inputBoxState(target);
             if (holdsHumanInput(box)) {

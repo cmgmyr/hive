@@ -490,7 +490,7 @@
     }
   },
   "agent_send": {
-    "description": "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn; only a non-claude worker needs the returned instructions prepended to your first prompt.",
+    "description": "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -538,7 +538,7 @@
     }
   },
   "agent_spawn": {
-    "description": "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. Other commands return `instructions` to PREPEND to your first agent_send. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+    "description": "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command hive cannot classify the screen of (anything but claude today) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
     "execution": {
       "taskSupport": "forbidden"
     },

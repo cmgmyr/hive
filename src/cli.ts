@@ -68,6 +68,8 @@ import {
   describeStall,
   HELD_REASON_CONVERSATION,
   HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  isUnclassifiablePaneHold,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   isUnsubmittedInputHold,
   janitor,
@@ -425,15 +427,23 @@ function ensureLeadRow(
   previousTarget: string;
   previousSocket: string;
   previousPanePid: string;
+  previousCommand: string;
   casExpected: string;
 } {
 
   const existing = db
     .prepare(
-      "SELECT id, actor_id, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      "SELECT id, actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
     )
     .get(project.id, LEAD_KIND) as
-    | { id: number; actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string }
+    | {
+        id: number;
+        actor_id: string;
+        tmux_target: string;
+        tmux_socket: string;
+        pane_pid: string;
+        command: string;
+      }
     | undefined;
 
   if (existing) {
@@ -441,8 +451,7 @@ function ensureLeadRow(
 
     try {
       db.transaction(() => {
-        db.prepare("UPDATE agents SET command = ?, actor_id = ?, name = ? WHERE id = ?").run(
-          command,
+        db.prepare("UPDATE agents SET actor_id = ?, name = ? WHERE id = ?").run(
           actorId,
           LEAD_NAME,
           existing.id,
@@ -459,16 +468,17 @@ function ensureLeadRow(
       previousTarget: existing.tmux_target,
       previousSocket: existing.tmux_socket,
       previousPanePid: existing.pane_pid,
+      previousCommand: existing.command,
       casExpected: existing.tmux_target,
     };
   }
 
   const priorClosed = db
     .prepare(
-      "SELECT actor_id, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
+      "SELECT actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
     )
     .get(project.id, LEAD_KIND) as
-    | { actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string }
+    | { actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string; command: string }
     | undefined;
 
   let result;
@@ -507,6 +517,7 @@ function ensureLeadRow(
     previousTarget: priorClosed?.tmux_target ?? "",
     previousSocket: priorClosed?.tmux_socket ?? "",
     previousPanePid: priorClosed?.pane_pid ?? "",
+    previousCommand: priorClosed?.command ?? "",
     casExpected: "",
   };
 }
@@ -575,6 +586,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       previousTarget,
       previousSocket,
       previousPanePid,
+      previousCommand,
       casExpected,
     } = ensureLeadRow(project, leadCommand);
 
@@ -638,24 +650,38 @@ async function cmdLead(argv: string[]): Promise<void> {
       return { leadPane, leadWindow, createdPane };
     });
 
+    // The row may only claim a command hive just launched into a pane it made. On an adopt the
+    // occupant is unknown, so the previous row's command stands (todo 507).
+    const recordedCommand = createdPane ? leadCommand : previousCommand || leadCommand;
+    if (!createdPane && previousCommand && previousCommand !== leadCommand) {
+      console.log(
+        `! adopted the existing lead pane, which is still running: ${previousCommand}\n` +
+          `  the configured lead command is now: ${leadCommand}\n` +
+          "  hive did not start that pane and cannot change what it runs, so the new command takes " +
+          "effect only once the pane is restarted (close it, or agent_close the lead, then hive lead).",
+      );
+    }
+
     const wonRace = db.transaction(() => {
 
       const updated = db
         .prepare(
-          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
         )
         .run(
           leadPane,
           tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
           panePid(leadPane),
+          recordedCommand,
           leadAgentId,
           casExpected,
         ).changes;
       if (updated === 0) return false;
       db.prepare(
         `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-         WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?`,
-      ).run(leadPane, leadActorId);
+         WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
+           AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
+      ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
       return true;
     })();
     if (!wonRace) {
@@ -2054,7 +2080,7 @@ function cmdDoctor(argv: string[]): void {
       tmux_socket: string;
     }[];
     for (const leadBox of leadRows) {
-      if (!harnessFor(leadBox.command).supportsInputBoxProbe || foreignSocket(leadBox.tmux_socket)) continue;
+      if (!harnessFor(leadBox.command).classifiesPaneScreen || foreignSocket(leadBox.tmux_socket)) continue;
       leadsProbed += 1;
       const box = inputBoxState(leadBox.tmux_target);
       if (box === null) {
@@ -2368,7 +2394,8 @@ function cmdStatusline(): void {
       `WITH chosen AS (
          SELECT held_reason, first_held_at FROM timers
           WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL
-          ORDER BY (held_reason LIKE ?) DESC, first_held_at IS NULL ASC, first_held_at ASC
+          ORDER BY (held_reason LIKE ?) DESC, (held_reason LIKE ?) ASC,
+                   first_held_at IS NULL ASC, first_held_at ASC
           LIMIT 1
        )
        SELECT
@@ -2376,7 +2403,12 @@ function cmdStatusline(): void {
          (SELECT held_reason FROM chosen) AS held_reason,
          (SELECT first_held_at FROM chosen) AS first_held_at`,
     )
-    .get(project.id, `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}%`, project.id) as {
+    .get(
+      project.id,
+      `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}%`,
+      `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`,
+      project.id,
+    ) as {
     n: number;
     held_reason: string | null;
     first_held_at: string | null;
@@ -2405,7 +2437,13 @@ export const HELD_REASON_LABELS = ["typing", "talking", "needs you", "blocked"] 
 
 export function heldReasonLabel(heldReason: string | null): (typeof HELD_REASON_LABELS)[number] {
   if (isUnsubmittedInputHold(heldReason)) return "typing";
-  if (heldReason === HELD_REASON_LEAD_PANE_DEAD || wasHeldForPaneReissue(heldReason)) return "needs you";
+  if (
+    heldReason === HELD_REASON_LEAD_PANE_DEAD ||
+    wasHeldForPaneReissue(heldReason) ||
+    isUnclassifiablePaneHold(heldReason)
+  ) {
+    return "needs you";
+  }
   if (heldReason === HELD_REASON_CONVERSATION) return "talking";
   return "blocked";
 }

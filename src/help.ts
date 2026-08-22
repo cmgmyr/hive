@@ -73,8 +73,8 @@ The operating pattern:
      For parallel file edits, give each worker its own git worktree via cwd.
      A claude worker briefs itself: hive loads the brief into its system
      prompt. Send the lane's objective, its pad/todo ids, and file ownership
-     directly. Only a
-     non-claude worker needs the returned instructions prepended.
+     directly. A worker whose screen hive cannot classify is refused on the
+     text path; its brief is written to the receipt's brief_path instead.
   6. Workers set status="in_progress", do the work, then todo_comment the
      handoff: changed files, tests run, remaining risk. Then todo_complete.
      Completing returns newly_unblocked todo ids.

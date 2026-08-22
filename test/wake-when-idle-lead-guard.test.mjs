@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 
-import { isolateTmux, McpClient, scratchDirs, seedLeadRow } from "./helpers.mjs";
+import { isolateTmux, makeFakeClaude, McpClient, scratchDirs, seedLeadRow } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the wake_when_idle lead guard tests");
 
@@ -10,12 +10,14 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 
+const fakeClaude = makeFakeClaude(dirs.tmp);
+
 describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   let mcp;
   let projectId;
 
   before(async () => {
-    mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "1000" } });
     await mcp.start();
     projectId = (await mcp.call("whoami")).project.id;
   });
@@ -67,7 +69,11 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
   });
 
   it("still schedules for an ordinary worker, the accept case for this guard", async () => {
-    const worker = await mcp.call("agent_spawn", { name: "worker-b", command: "sleep", extra_args: ["600"] });
+    const worker = await mcp.call("agent_spawn", {
+      name: "worker-b",
+      command: fakeClaude("sleep 600"),
+      extra_args: [],
+    });
 
     const scheduled = await mcp.call("wake_when_idle", {
       agents: [worker.agent_id],

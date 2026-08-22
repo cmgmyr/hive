@@ -80,6 +80,19 @@ async function spawnClaude(name) {
   return receipt.agent_id;
 }
 
+// A pane hive classifies as claude (the script is named `claude`) that really runs an interactive
+// shell, so a test can watch the Enter actually EXECUTE something.
+async function spawnExecutingClaude(name) {
+  const receipt = await mcp.call("agent_spawn", {
+    name,
+    command: fakeClaude("exec bash -i"),
+    extra_args: [],
+    placement: "window",
+  });
+  await until(async () => (await mcp.call("agent_output", { name })).output.trim() !== "");
+  return receipt.agent_id;
+}
+
 async function spawnShell(name) {
   const receipt = await mcp.call("agent_spawn", { name, command: "bash", extra_args: [], placement: "window" });
   await until(async () => (await mcp.call("agent_output", { name })).output.trim() !== "");
@@ -125,7 +138,7 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
   it("the named finishing call actually EXECUTES the stranded text, not just returns sent:true", NEEDS_TMUX, async () => {
 
     const name = "send414-shell-finish";
-    await spawnShell(name);
+    await spawnExecutingClaude(name);
     await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, "MARKERONE"));
 
     const finished = await mcp.call("agent_send", { name, keys: ["Enter"] });
@@ -229,42 +242,49 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
     );
   });
 
-  it("on a plain shell pane: the same three facts, on the pane the existing guard cannot see at all", NEEDS_TMUX, async () => {
+  it("a shell pane never reaches the paste at all now, so the partial-send sentence has nothing to report there (todo 507)", NEEDS_TMUX, async () => {
     const name = "send414-shell-truth";
     await spawnShell(name);
 
-    await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, "MARKERONE"), (err) => {
-      assert.match(err.message, /^\[agent_send:paste-landed-enter-failed\]/);
-      assert.match(err.message, /on the target's screen/i);
-      assert.match(err.message, /unsubmitted/i);
-      assert.match(err.message, new RegExp(`agent_send\\(name: "${name}", keys: \\["Enter"\\]\\)`));
-      return true;
-    });
+    const receipt = await callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, "MARKERONE");
+    assert.equal(receipt.sent, false, "the harness guard refuses above the paste, so the broken Enter is never reached");
+    assert.match(receipt.note, /only classify a claude screen/);
 
     const { output } = await mcp.call("agent_output", { name });
-    assert.match(output, /MARKERONE/, "the paste landed on the shell pane too - same failure, no chrome to show it");
+    assert.doesNotMatch(output, /MARKERONE/, "nothing may reach a pane hive cannot classify - assert the PANE, not the receipt");
   });
 
-  it("a blind text retry on the shell pane merges and EXECUTES - the case this message exists to stop", NEEDS_TMUX, async () => {
+  it("a blind text retry on the shell pane is REFUSED, where it used to merge and EXECUTE (todo 507)", NEEDS_TMUX, async () => {
     const name = "send414-shell-retry";
     await spawnShell(name);
-    await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, "MARKERONE"));
+
+    const first = await mcp.call("agent_send", { name, text: "MARKERONE" });
+    assert.equal(first.sent, false, "the first send is refused too - the guard is on the harness, not on a retry");
 
     const retry = await mcp.call("agent_send", { name, text: "MARKERONE" });
-    assert.equal(retry.sent, true, "no guard exists for this pane - that absence is the defect the message covers");
+    assert.equal(retry.sent, false);
+    assert.match(retry.note, /keys: \[\.\.\.\]/, "the refusal must name the remedy the caller can actually reach");
 
-    await until(async () => /not found/.test((await mcp.call("agent_output", { name })).output));
     const { output } = await mcp.call("agent_output", { name });
-    assert.match(
+    assert.doesNotMatch(output, /MARKERONE/, "neither attempt reached the pane");
+    assert.doesNotMatch(
       output,
       /MARKERONEMARKERONE/,
-      "bash ran ONE line carrying both attempts concatenated, not two separate MARKERONE commands",
+      "the merged-and-executed line this test used to assert is exactly what the guard now prevents",
     );
-    assert.equal(
-      (output.match(/not found/g) ?? []).length,
-      1,
-      "one shell execution, not two - the two agent_send calls became a single merged command",
-    );
+    assert.equal((output.match(/not found/g) ?? []).length, 0, "bash executed nothing");
+  });
+
+  it("keys still reaches a shell pane, so refusing text did not make an unclassifiable pane undriveable (todo 507)", NEEDS_TMUX, async () => {
+    const name = "send414-shell-keys";
+    await spawnShell(name);
+
+    const sent = await mcp.call("agent_send", { name, keys: ["echo MARKERKEYS", "Enter"] });
+    assert.notEqual(sent.sent, false, "the keys path is deliberately unguarded and must stay so");
+
+    await until(async () => /MARKERKEYS/.test((await mcp.call("agent_output", { name })).output));
+    const { output } = await mcp.call("agent_output", { name });
+    assert.match(output, /MARKERKEYS/, "assert the PANE - the escape hatch has to actually work, not just return sent");
   });
 
   it("the paste itself failing (nothing on screen) is untouched - the honest 'nothing was sent' case", NEEDS_TMUX, async () => {
@@ -286,7 +306,7 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
   it("a name carrying a double quote still produces a call the caller can copy-paste and run", NEEDS_TMUX, async () => {
 
     const name = 'send414-shell-quote"mark';
-    await spawnShell(name);
+    await spawnExecutingClaude(name);
 
     await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_ENTER: "1" }, name, "MARKERONE"), (err) => {
 

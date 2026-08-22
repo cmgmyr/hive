@@ -262,6 +262,82 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
   );
 
   it(
+    "BEHAVIOUR 7 (todo 507): adopting a pane does NOT relabel its command, and does not clear a hold that depends on that command",
+    async () => {
+      const fakeClaude = makeFakeClaude(dirs.tmp);
+      const claudePath = fakeClaude("exec sleep 600");
+      const projectDir = newProjectDir();
+      const cliOpts = {
+        cwd: projectDir,
+        dataDir: dirs.dataDir,
+        tmp: dirs.tmp,
+        env: { PATH: `${dirname(claudePath)}:${process.env.PATH}` },
+      };
+      const project = db
+        .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+        .get("lead-adopt-command-test", projectDir);
+      const session = sessionName();
+      const UNCLASSIFIABLE = "the pane's harness is not one hive can classify; ";
+      try {
+        assert.equal((await runCli(["lead"], cliOpts)).code, 0);
+        const before = leadRow(db, project.id);
+
+        // The pane is now running something hive cannot classify, exactly as `lead: codex` leaves it.
+        db.prepare("UPDATE agents SET command = ? WHERE id = ?").run("codex --sandbox read-only", before.id);
+        const timerId = db
+          .prepare(
+            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+               due_at, held_at, held_reason)
+             VALUES (?, ?, 'body', 'delay', '[]', ?, ?, datetime('now', '-1 seconds'), datetime('now'), ?)
+             RETURNING id`,
+          )
+          .get(project.id, before.actor_id, before.actor_id, before.tmux_target, `${UNCLASSIFIABLE}, and more`).id;
+
+        const second = await runCli(["lead"], cliOpts);
+        assert.equal(second.code, 0, second.stderr);
+
+        const after = leadRow(db, project.id);
+        assert.equal(after.tmux_target, before.tmux_target, "sanity: this must be the ADOPT path, not a fresh pane");
+        assert.equal(
+          after.command,
+          "codex --sandbox read-only",
+          "hive did not start this pane and must not claim it runs the configured command",
+        );
+
+        const held = db.prepare("SELECT held_at, held_reason FROM timers WHERE id = ?").get(timerId);
+        assert.ok(held.held_at, "an unclassifiable hold must survive an adopt - nothing about the pane changed");
+        assert.match(held.held_reason ?? "", /not one hive can classify/);
+
+        assert.match(
+          second.stdout,
+          /adopted the existing lead pane/,
+          "a silent no-op is not good enough: the mismatch has to be stated",
+        );
+        assert.match(second.stdout, /codex --sandbox read-only/, "the notice must name what the pane actually runs");
+
+        // Control: when hive DOES create the pane, it owns the command and the hold really clears.
+        execFileSync("tmux", ["kill-pane", "-t", after.tmux_target]);
+        await until(() => !paneAlive(after.tmux_target), 10000);
+        const third = await runCli(["lead"], cliOpts);
+        assert.equal(third.code, 0, third.stderr);
+
+        const fresh = leadRow(db, project.id);
+        assert.notEqual(
+          fresh.pane_pid,
+          before.pane_pid,
+          "sanity: this must be a FRESH pane - its id can repeat, since killing the last pane takes the session with it",
+        );
+        assert.match(fresh.command, /claude/, "a pane hive created carries the command hive launched into it");
+        const clearedTimer = db.prepare("SELECT held_at, held_reason FROM timers WHERE id = ?").get(timerId);
+        assert.equal(clearedTimer.held_at, null, "a re-created pane clears the hold, or the gate is just 'never clear'");
+        assert.equal(clearedTimer.held_reason, null);
+      } finally {
+        cleanup(session);
+      }
+    },
+  );
+
+  it(
     "BEHAVIOUR 4: unknown liveness (a foreign tmux_socket on the row) is treated as not-still-there, so hive lead proceeds with a fresh pane",
     async () => {
       const { cliOpts, project, session, before, pane: originalPane, windowTarget } =

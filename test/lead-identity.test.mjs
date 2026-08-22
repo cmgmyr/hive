@@ -333,7 +333,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         const livePane = before.tmux_target;
 
         db.exec(
-          `CREATE TRIGGER hijack_${before.id} AFTER UPDATE OF command ON agents
+          `CREATE TRIGGER hijack_${before.id} AFTER UPDATE OF actor_id ON agents
            WHEN NEW.id = ${before.id}
            BEGIN UPDATE agents SET tmux_target = '%stolen-by-racer' WHERE id = ${before.id}; END;`,
         );
@@ -379,7 +379,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         const before = leadRow(db, project.id);
 
         db.exec(
-          `CREATE TRIGGER close_${before.id} AFTER UPDATE OF command ON agents
+          `CREATE TRIGGER close_${before.id} AFTER UPDATE OF actor_id ON agents
            WHEN NEW.id = ${before.id}
            BEGIN UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ${before.id}; END;`,
         );
@@ -422,7 +422,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         execFileSync("tmux", ["kill-session", "-t", `=${session}`], { stdio: "ignore" });
 
         db.exec(
-          `CREATE TRIGGER hijack2_${before.id} AFTER UPDATE OF command ON agents
+          `CREATE TRIGGER hijack2_${before.id} AFTER UPDATE OF actor_id ON agents
            WHEN NEW.id = ${before.id}
            BEGIN UPDATE agents SET tmux_target = '%stolen-by-a-different-racer' WHERE id = ${before.id}; END;`,
         );
