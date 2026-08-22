@@ -38,6 +38,14 @@ One session per STORE, one window per project inside it: `sessionName()` takes n
 
 `display-message -t` silently falls back to a default target when the given one is dead.
 
+## A pane hive is about to claim is created WITH its command, never as a login shell it then replaces
+
+`ensureSession`, `createWindow` and `split-window` all pass the command to the call that makes the pane. Do not go back to creating the pane bare and running `respawn-pane -k` into it, and do not add a new path that does: tmux forks a pane's child before that child has its own process group or controlling terminal, so a pane destroyed in that window kills nothing, and the login shell left behind holds a pty forever. It is a leak of a fixed machine-wide resource (`kern.tty.ptmx_max`), not an untidy process.
+
+**`hive attach`'s project window is the one deliberate exception** (`src/cli.ts`, `cmdAttach`): its bare pane is a human's own shell and nothing destroys it seconds later.
+
+**Two consequences the next editor here inherits.** A command that exits immediately now destroys the session `new-session` just made, so the claim throws rather than recording a dead pane - that is the reported behaviour, not a bug to smooth over. And hive's window options land one call AFTER the process is live; panes resolve inherited options at lookup time, so that is safe, and a test asserting the old ordering is asserting something that is no longer true.
+
 ## Hive-owned windows carry hive's required tmux options
 
 A split may target a window the user created, so an unmarked window is the user's and hive must not write these options to it. The settings are best-effort: losing cosmetic configuration must never fail a spawn whose process is already live.

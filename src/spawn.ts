@@ -156,9 +156,9 @@ function placeAgentPane(
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
     const windowOwnerId = spec.placement === "split" ? spec.projectId : null;
-    const started = ensureSession(session, spec.projectPath);
+    const started = ensureSession(session, spec.cwd, { envFlags, command: commandString });
     if (started.created) {
-      return claimInitialWindow(started, windowName, spec.cwd, envFlags, commandString, windowOwnerId).pane;
+      return claimInitialWindow(started, windowName, windowOwnerId).pane;
     }
     if (spec.placement === "split") {
       const found = splitTargetWindow(session, spec.projectId, spec.parentActor);

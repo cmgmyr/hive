@@ -192,13 +192,36 @@ export function crossServerRefusal(action: string): Error {
 
 export type SessionStart = { created: true; pane: string; window: string } | { created: false };
 
-export function ensureSession(name: string, cwd: string): SessionStart {
+export type InitialPane = { envFlags: string[]; command: string };
+
+export function envFlagKeys(envFlags: string[]): string[] {
+  return envFlags.filter((_, i) => i % 2 === 1).map((pair) => pair.split("=")[0]);
+}
+
+// `new-session -e` sets the SESSION's environment, not the new pane's, and this session is shared by
+// every project on the machine: see .claude/rules/tmux-and-panes.md.
+function unsetAtSessionScope(name: string, envFlags: string[]): void {
+  const keys = envFlagKeys(envFlags);
+  if (keys.length === 0) return;
+  const argv = keys.flatMap((key, i) => (i === 0 ? [] : [";"]).concat(["set-environment", "-t", `=${name}`, "-u", key]));
+  try {
+    tmux(...argv);
+  } catch {
+    // Swallowed because the session and its pane are already live: throwing here strands a running
+    // worker to tidy an environment. The cost is real - a failure leaves HIVE_PROJECT_LOCK and
+    // HIVE_PROJECT_PATH at session scope, silently, for that session's whole life.
+  }
+}
+
+export function ensureSession(name: string, cwd: string, initial?: InitialPane): SessionStart {
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
     const [pane, window] = tmux(
       "new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}", "-s", name, "-c", cwd,
+      ...(initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
+    if (initial) unsetAtSessionScope(name, initial.envFlags);
     return { created: true, pane, window };
   } catch (e) {
     if (!isDuplicateSession(e)) throw e;
@@ -213,14 +236,10 @@ export function isDuplicateSession(e: unknown): boolean {
 export function claimInitialWindow(
   start: { pane: string; window: string },
   windowName: string,
-  cwd: string,
-  envFlags: string[],
-  command: string,
   projectId: number | null,
 ): { pane: string; window: string } {
   const { pane, window } = start;
   configureHiveWindow(window, true, projectId);
-  tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...envFlags, command);
   tmux("rename-window", "-t", window, windowName);
   return { pane, window };
 }
@@ -566,11 +585,10 @@ export function createWindow(
 ): { pane: string; window: string } {
   const created = tmux(
     "new-window", ...(detach ? ["-d"] : []), "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
-    "-t", `=${session}`, "-n", windowName, "-c", cwd,
+    "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
   );
   const [pane, window] = created.split("\t");
   configureHiveWindow(window, true, projectId);
-  tmux("respawn-pane", "-k", "-t", pane, "-c", cwd, ...envFlags, command);
   return { pane, window };
 }
 

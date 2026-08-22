@@ -115,11 +115,73 @@ Naming goes through the same guard as opening: `dataDirTag()` is `tagFor(storeDi
 
 `display-message -t` silently falls back to a default target when the given one is dead.
 
+## A pane hive is about to claim is created WITH its command, never as a login shell it then replaces
+
+Todo 472. hive used to create every pane twice - `new-session -d` or
+`new-window` with no command, which forks a login shell, then `respawn-pane -k`
+to put the real process in its place. That throwaway shell is what leaked ptys
+on the developer's machine for weeks: 40 wedged shells holding 40 of the 61
+ptys in use against `kern.tty.ptmx_max = 511`, oldest 29 hours, +1 to +5 per
+full suite run (three gross samples: +1, +5, +2).
+
+THE WINDOW IS BEFORE `setsid()`, NOT INSIDE zsh. Between tmux forking a pane's
+child and that child reaching `login_tty()`, the child is still in the SERVER's
+process group with no controlling terminal. Destroy the pane there and nothing
+reaches it: tmux's own kill has no process group to signal, and the kernel has
+no session to hang up. The master closes anyway; the child then execs zsh, and
+zsh's `init_io` opens its tty BY NAME, which on macOS blocks forever once the
+master is gone. Every one of the twelve real instances stack-sampled in this
+investigation sat in `zsh_main + 932 -> init_io + 228 -> open -> __open`, which
+is the symptom - the missed signal one step earlier is the cause. A SIGHUP or
+SIGTERM still kills one instantly; they simply never receive one.
+
+MEASURED WITH THE CHILD HELD STILL. A `DYLD_INSERT_LIBRARIES` interposer that
+sleeps inside `setsid()` supplies the starvation that load otherwise supplies,
+which turns a race into an experiment. Ten attempts per arm, tmux 3.7b:
+
+| arm | wedged |
+|---|---|
+| `new-session` (no command) then `respawn-pane -k` | 10/10 |
+| the same with `configureHiveWindow`'s real round trip | 10/10 |
+| `new-window` (no command) then `respawn-pane -k` | 10/10 |
+| `new-session` (no command) then `kill-session` | 10/10 |
+| `new-session` WITH its command | 0/10 |
+| `split-window` WITH its command | 0/10 |
+| `new-session` (no command), server SIGKILLed | 0/10 |
+
+Two things in that table are worth carrying. A GRACEFUL `kill-session` wedges a
+starved child while a SIGKILLed server does not, so "how the server dies is not
+the variable" is true for an established pane shell and false for this
+population - the tidy path is the dangerous one, and the asymmetry is measured
+rather than explained. And `split-window` has always passed its command inline,
+which is why the split placement never contributed to this leak.
+
+WHY 1,700 EARLIER ATTEMPTS SAW NOTHING. hive's real sequence needs the forked
+child held off the CPU for 10-15ms - one tmux client round trip plus
+`configureHiveWindow`'s. On a quiet box, fork to first instruction is a median
+of 531us and a maximum of 3.1ms over 300 forks (4.6ms under node-startup
+churn), so the child always wins. The 510 and 400 attempt runs in todo 372
+measured an idle box's scheduling, not the sequence. That the real 16-way suite
+supplies 10-15ms is still INFERRED, not measured: both instrumented full runs
+in that lane recorded 83-88% CPU idle. Apple Silicon QoS confining a background
+child to E-cores is a plausible explanation and was not tested.
+
+THE PRODUCT PATHS ARE NOT THE WHOLE POPULATION. 57 test files issue pane
+creation verbs directly and several create command-less sessions, which wedge
+by the same mechanism whenever their teardown lands inside the window. Judge a
+fix here on the GROSS count across runs, never on reaching zero.
+
 ## Hive-owned windows carry hive's required tmux options
 
 Every window hive creates is marked with the window option `@hive-owned=1`
 and receives `allow-passthrough all`, `pane-border-status top`, hive's pane
-border format, and `monitor-bell on` before its real process starts. A split
+border format, and `monitor-bell on`. That write lands one tmux call AFTER the
+pane and its process are live, which it did not used to: until todo 472 hive
+created a window as a bare login shell, configured it, and only then replaced
+the shell with the real command. The pane still ends up with every setting,
+because `allow-passthrough` and the rest are window options a pane inherits at
+LOOKUP time rather than at creation - measured on tmux 3.7b, a pane created
+before the write reads `off` and reads `all` immediately after it. A split
 may target a window the user created, so an unmarked window is the user's and
 hive must not write these options to it. The settings are best-effort: losing
 cosmetic configuration must never fail a spawn whose process is already live.

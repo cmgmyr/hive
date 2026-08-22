@@ -34,7 +34,7 @@ describe(
     let intruder;
 
     before(() => {
-      start = ensureSession(session, dirA);
+      start = ensureSession(session, dirA, { envFlags: [], command: "sleep 600" });
       assert.equal(start.created, true, "this session must be created by this call, not found");
 
       intruder = createWindow(session, "other", dirB, [], "sleep 611", OTHER_PROJECT);
@@ -55,8 +55,8 @@ describe(
       );
     });
 
-    it("respawns into its own pane and window, not the current one", () => {
-      const claimed = claimInitialWindow(start, "mine", dirA, [], "sleep 600", 1);
+    it("claims its own pane and window, not the current one", () => {
+      const claimed = claimInitialWindow(start, "mine", 1);
       assert.equal(claimed.pane, start.pane, "the claimed pane is the one ensureSession created");
       assert.equal(claimed.window.split(":")[1], start.window.split(":")[1], "and so is its window");
       assert.match(startCommand(claimed.pane), /sleep 600/, "the claim's own command is running in that pane");
@@ -66,13 +66,17 @@ describe(
       assert.match(
         startCommand(intruder.pane),
         /sleep 611/,
-        "the other project's pane must still be running ITS command - respawn-pane -k in that pane is the lead " +
-          "this finding kills, and the pane id survives a respawn, so the command is the only witness",
+        "the other project's pane must still be running ITS command - that pane is the lead this finding kills",
       );
       assert.equal(
         windowOwner(intruder.window),
         OTHER_PROJECT,
         "the other project's window must still carry its own @hive-project-id",
+      );
+      assert.equal(
+        tmux("display-message", "-p", "-t", intruder.window, "#{window_name}"),
+        "other",
+        "and must still carry its own name - the rename is the live witness now that the claim respawns nothing",
       );
     });
   },

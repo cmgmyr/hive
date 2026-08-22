@@ -588,9 +588,9 @@ async function cmdLead(argv: string[]): Promise<void> {
       let leadPane: string;
       let leadWindow: string;
       let createdPane: boolean;
-      const started = ensureSession(session, project.path);
+      const started = ensureSession(session, project.path, { envFlags, command: leadCommand });
       if (started.created) {
-        const claimed = claimInitialWindow(started, windowName, project.path, envFlags, leadCommand, project.id);
+        const claimed = claimInitialWindow(started, windowName, project.id);
         leadPane = claimed.pane;
         leadWindow = claimed.window;
         createdPane = true;

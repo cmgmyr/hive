@@ -61,7 +61,7 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
         return { id, width: +width, height: +height, left: +left, top: +top };
       });
 
-  it("configures created windows before respawn while leaving user windows alone", () => {
+  it("configures the window it created while leaving user windows alone", () => {
     tmux("new-session", "-d", "-s", ownedSession, "sleep 600");
 
     tmux("set-option", "-g", "allow-passthrough", "off");
@@ -76,8 +76,8 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", userWindow, "pane-border-status"), "off");
     assert.equal(tmux("display-message", "-p", "-t", userWindow, "#{@hive-owned}"), "");
 
-    const started = ensureSession(claimedSession, dirs.projectDir);
-    const { pane, window } = claimInitialWindow(started, "claimed", dirs.projectDir, [], "sleep 600");
+    const started = ensureSession(claimedSession, dirs.projectDir, { envFlags: [], command: "sleep 600" });
+    const { pane, window } = claimInitialWindow(started, "claimed", null);
     assert.equal(tmux("show-options", "-w", "-v", "-t", window, "@hive-owned"), "1");
     assert.equal(tmux("show-options", "-p", "-A", "-v", "-t", pane, "allow-passthrough"), "all");
     assert.equal(tmux("show-options", "-w", "-A", "-v", "-t", window, "pane-border-status"), "top");

@@ -333,6 +333,26 @@ export function fakeHangingTmux({ hangOn, log } = {}) {
   return dir;
 }
 
+// A pass-through tmux that records the argv of every call before running the real one, so a test can
+// assert on the SEQUENCE hive issues rather than only on the state it leaves behind. Argv is recorded
+// one call per line, fields separated by \x1f, because the arguments carry spaces and tabs of their own.
+export function recordingTmux({ log }) {
+  const dir = mkdtempSync(join(tmpdir(), "hive-recordingtmux-"));
+  const real = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+  const body =
+    `#!/bin/sh\n{ printf '%s\\037' "$@"; printf '\\n'; } >> ${JSON.stringify(log)}\n` + `exec ${real} "$@"\n`;
+  writeFileSync(join(dir, "tmux"), body, { mode: 0o755 });
+  writeFileSync(log, "");
+  return dir;
+}
+
+export function tmuxCallsIn(log) {
+  return readFileSync(log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => line.split("\x1f").filter((field) => field !== ""));
+}
+
 export function fakeFailingTmux({ failOn, stderr = "tmux: operation not permitted" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "hive-failingtmux-"));
   const fail = `printf '%s\\n' ${JSON.stringify(stderr)} >&2; exit 1`;
