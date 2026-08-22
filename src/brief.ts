@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storeDir } from "./dataDir.js";
+import { harnessFor } from "./harnesses.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
@@ -94,26 +95,23 @@ export interface WorkerCommandSpec {
   displayName?: string;
 }
 
-export function isClaudeCommand(command: string): boolean {
-  const first = command.trim().split(/\s+/)[0] ?? "";
-  return first.split("/").pop() === "claude";
-}
+export { isClaudeCommand } from "./harnesses.js";
 
 export function workerCommandString(spec: WorkerCommandSpec): string {
-  const isClaude = isClaudeCommand(spec.command);
+  const harness = harnessFor(spec.command);
 
   const namedByCaller = (spec.extraArgs ?? []).some(
     (arg) =>
       arg === "--name" || arg.startsWith("--name=") || (arg.startsWith("-n") && !arg.startsWith("--")),
   );
-  const name = isClaude && !namedByCaller ? spec.displayName : undefined;
+
   return [
     spec.command,
     ...(spec.model ? ["--model", spec.model] : []),
-    ...(name ? ["--name", name] : []),
+    ...harness.argsFor({ displayName: spec.displayName, namedByCaller }),
 
-    ...(isClaude && spec.settingsPath ? ["--settings", spec.settingsPath] : []),
-    ...(isClaude && spec.briefPath ? ["--append-system-prompt-file", spec.briefPath] : []),
+    ...(harness.briefDelivery && spec.settingsPath ? harness.briefDelivery.settingsArgs(spec.settingsPath) : []),
+    ...(harness.briefDelivery && spec.briefPath ? harness.briefDelivery.systemPromptArgs(spec.briefPath) : []),
     ...(spec.extraArgs ?? []),
   ]
     .map(shellQuote)

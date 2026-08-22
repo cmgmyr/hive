@@ -156,7 +156,8 @@ import {
   resolveCommandDir,
   type YmlProcess,
 } from "./projectYml.js";
-import { isClaudeCommand, writeProjectPosture } from "./brief.js";
+import { writeProjectPosture } from "./brief.js";
+import { harnessFor } from "./harnesses.js";
 import {
   ageSecondsSince,
   deriveProvenance,
@@ -543,10 +544,12 @@ async function cmdLead(argv: string[]): Promise<void> {
       }
     }
 
-    if (!isClaudeCommand(leadCommand)) {
+    const leadHarness = harnessFor(leadCommand);
+
+    if (!leadHarness.briefDelivery) {
       console.log("! lead command is not claude; skipping hooks.");
     } else {
-      leadCommand += ` --settings ${shellQuote(hooksPath)}`;
+      leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
     }
 
     const profile = activeProfile(config);
@@ -554,13 +557,13 @@ async function cmdLead(argv: string[]): Promise<void> {
       const posture = resolveProfileFile(profile, "posture.md");
       if (!posture) {
         console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
-      } else if (!isClaudeCommand(leadCommand)) {
+      } else if (!leadHarness.briefDelivery) {
         console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
       } else {
 
         const rendered = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
         const path = writeProjectPosture(project.id, rendered);
-        leadCommand += ` --append-system-prompt-file ${shellQuote(path)}`;
+        leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(path).map(shellQuote).join(" ")}`;
         console.log(`- profile: ${profile} (${posture.source} posture; see it with: hive posture)`);
       }
     }
@@ -2051,7 +2054,7 @@ function cmdDoctor(argv: string[]): void {
       tmux_socket: string;
     }[];
     for (const leadBox of leadRows) {
-      if (!isClaudeCommand(leadBox.command) || foreignSocket(leadBox.tmux_socket)) continue;
+      if (!harnessFor(leadBox.command).supportsInputBoxProbe || foreignSocket(leadBox.tmux_socket)) continue;
       leadsProbed += 1;
       const box = inputBoxState(leadBox.tmux_target);
       if (box === null) {

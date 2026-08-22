@@ -1,7 +1,7 @@
 import type { Statement } from "better-sqlite3";
 import { db } from "./db.js";
-import { isClaudeCommand } from "./brief.js";
 import { awaitingFirstPrompt } from "./firstPrompt.js";
+import { harnessFor } from "./harnesses.js";
 import { sanitizeEventForDisplay, type Liveness } from "./tmux.js";
 
 const prepared = new Map<string, Statement>();
@@ -140,7 +140,7 @@ export function describeLastLogEvent(log: LastLogEvent | null): string {
 }
 
 export function reportsAgentStateLog(row: { kind: string; command: string }): boolean {
-  return row.kind === "agent" && isClaudeCommand(row.command);
+  return row.kind === "agent" && harnessFor(row.command).stateSource;
 }
 
 const PERMISSION_MODE_RE = /"permission_mode":"([a-zA-Z]+)"/;

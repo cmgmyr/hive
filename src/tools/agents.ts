@@ -5,13 +5,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import {
   agentBriefPath,
-  isClaudeCommand,
   readAgentBrief,
   workerBrief,
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
+import { commandHead, harnessFor } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
@@ -372,10 +372,10 @@ function inputBoxField(target: string): { input_box: InputBoxState } | Record<st
   return box ? { input_box: box } : {};
 }
 
-function claudeOnlyFields(
+export function claudeOnlyFields(
   row: AgentRow,
 ): { transcript_dir: string | null; session_id: string | null } | Record<string, never> {
-  return isClaudeCommand(row.command)
+  return harnessFor(row.command).transcriptDir
     ? { transcript_dir: resolveTranscriptDir(row.cwd), session_id: row.session_id || null }
     : {};
 }
@@ -388,10 +388,12 @@ function permissionModeField(row: AgentRow): { permission_mode: string | null } 
   return reportsAgentStateLog(row) ? { permission_mode: lastPermissionMode(row.actor_id) } : {};
 }
 
-// Shares claudeOnlyFields' isClaudeCommand gate but stays a separate function: agent_status is the
-// only caller, and claudeOnlyFields also feeds agent_list's closed-row path, which this must not.
-function contextTokensField(row: AgentRow): { context_tokens: number | null } | Record<string, never> {
-  return isClaudeCommand(row.command) ? { context_tokens: readContextTokens(row.cwd, row.session_id) } : {};
+// Reads its own contextTokens capability, distinct from claudeOnlyFields' transcriptDir: agent_status
+// is the only caller, and claudeOnlyFields also feeds agent_list's closed-row path, which this must not.
+export function contextTokensField(row: AgentRow): { context_tokens: number | null } | Record<string, never> {
+  return harnessFor(row.command).contextTokens
+    ? { context_tokens: readContextTokens(row.cwd, row.session_id) }
+    : {};
 }
 
 function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<string, never> {
@@ -511,9 +513,10 @@ export function registerAgents(server: McpServer): void {
         requireNameFree(project.id, name);
 
         const baseCommand = args.command ?? "claude";
-        const isClaude = isClaudeCommand(baseCommand);
+        const harness = harnessFor(baseCommand);
+        const mintsSession = harness.transcriptDir || harness.supportsResume;
 
-        const sessionId = isClaude && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
+        const sessionId = mintsSession && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
 
         const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
         const worktreeInstall = worktreeInstallNotice(cwd, project.path, projectConfig);
@@ -528,7 +531,7 @@ export function registerAgents(server: McpServer): void {
           vars: projectConfig?.vars ?? {},
         });
         const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
-          const briefPath = isClaude
+          const briefPath = harness.briefDelivery
             ? writeAgentBrief(agentId, workerBrief(briefFor(actorId)))
             : undefined;
           return workerCommandString({
@@ -536,10 +539,10 @@ export function registerAgents(server: McpServer): void {
             displayName: name,
             model: args.model,
 
-            extraArgs: isClaude
+            extraArgs: mintsSession
               ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
               : args.extra_args,
-            settingsPath: isClaude ? ensureHooksFile() : undefined,
+            settingsPath: harness.briefDelivery ? ensureHooksFile() : undefined,
             briefPath,
           });
         };
@@ -567,7 +570,7 @@ export function registerAgents(server: McpServer): void {
 
         let ready = false;
         let dialogTail: string | undefined;
-        if (isClaude) {
+        if (harness.supportsInputBoxProbe) {
           try {
             const paneReady = await waitForPaneInput(target, PANE_READY_MS);
             const { awaitingChoice, tail } = paneChoiceCheck(target);
@@ -596,7 +599,7 @@ export function registerAgents(server: McpServer): void {
           ...(configWarnings.length > 0 ? { config_warnings: configWarnings } : {}),
 
           ...(worktreeInstall ? { worktree_install: worktreeInstall } : {}),
-          ...(isClaude
+          ...(harness.briefDelivery
             ? {
                 brief_path: agentBriefPath(agentId),
 
@@ -653,7 +656,7 @@ export function registerAgents(server: McpServer): void {
               "start a lead session with `hive lead`.",
           );
         }
-        if (!isClaudeCommand(agent.command)) {
+        if (!harnessFor(agent.command).supportsResume) {
           throw new Error(
             `Agent ${agent.id} ("${agent.name}") was not a claude worker (command: "${agent.command}"), so it ` +
               "has no session id to resume from.",
@@ -699,7 +702,7 @@ export function registerAgents(server: McpServer): void {
           projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
 
-        const claudeBinary = agent.command.trim().split(/\s+/)[0] || "claude";
+        const claudeBinary = commandHead(agent.command) || "claude";
         const commandString = workerCommandString({
           command: claudeBinary,
           displayName: agent.name,
@@ -774,7 +777,7 @@ export function registerAgents(server: McpServer): void {
           );
         }
 
-        if (!isClaudeCommand(agent.command)) {
+        if (!harnessFor(agent.command).supportsResume) {
           throw new Error(
             `Agent ${agent.id} ("${agent.name}") is not a claude worker (command: "${agent.command}"), so it has ` +
               "no session to resume and nothing to park. Close it with agent_close.",
@@ -893,7 +896,7 @@ export function registerAgents(server: McpServer): void {
         let retitled = false;
         let heldNote: string | undefined;
         let heldTail: string | undefined;
-        if (live && isClaudeCommand(agent.command)) {
+        if (live && harnessFor(agent.command).supportsRename) {
           const { awaitingChoice, tail } = paneChoiceCheck(agent.tmux_target);
 
           const box = awaitingChoice === true ? null : inputBoxState(agent.tmux_target);
