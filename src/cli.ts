@@ -93,6 +93,13 @@ import {
   totalSizeBytes,
 } from "./backup.js";
 import {
+  describeTeardownWindow,
+  readTeardowns,
+  teardownLogPath,
+  type TeardownMember,
+  type TeardownRecord,
+} from "./teardown.js";
+import {
   asNameClash,
   buildEnvFlags,
   closeAgentRow,
@@ -1663,6 +1670,95 @@ function describeProbed(workers: number, leads: number): string {
   return "nothing was probeable";
 }
 
+// Quiet by default and self-clearing without a threshold: a record is reported only while nobody
+// has started a replacement crew in THIS project since it, and only while it still names a worker
+// that is still closed. Both are exact facts about the store, so this can never become furniture.
+//
+// Reports EVERY still-current record, not just the newest: the janitor's 15-second settle window
+// means one death can be detected across two ticks, and a crew silently absent from the report is
+// the session ids this artifact exists to carry never reaching the human.
+function currentTeardowns(projectId: number): TeardownRecord[] {
+  const movedOn = (record: TeardownRecord): boolean =>
+    (
+      db
+        .prepare(
+          // agents.created_at is second-precision and detected_at is millisecond, so this compares
+          // against the truncated second, and it excludes the record's own crew.
+          `SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND created_at >= ?` +
+            ` AND id NOT IN (${record.crew.map(() => "?").join(",") || "-1"})`,
+        )
+        .get(projectId, record.detected_at.slice(0, 19), ...record.crew.map((m) => m.agent_id)) as { n: number }
+    ).n > 0;
+
+  const current: TeardownRecord[] = [];
+  for (const record of readTeardowns(dataDir).reverse()) {
+    if (movedOn(record)) break;
+    current.push(record);
+  }
+  return current.reverse();
+}
+
+// Identity is the actor_id, not the row id. teardowns.jsonl is not in a backup snapshot and a
+// restore does not touch it, so the store can roll back under a record that outlived it and a later
+// spawn can take an id this record already names. Naming a live worker as a casualty is the
+// wrong-owner failure this whole artifact is built to avoid.
+const stillClosedNow = (m: TeardownMember): boolean => {
+  const row = db.prepare("SELECT status, actor_id FROM agents WHERE id = ?").get(m.agent_id) as
+    | { status: string; actor_id: string }
+    | undefined;
+  return row?.status === "closed" && row.actor_id === m.actor_id;
+};
+
+// The cross-project reach IS the incident - every recorded death took a second project's lead - so
+// other projects' casualties are reported as a BARE COUNT. The fact that the death was machine-wide
+// survives; no name, cwd, id or resume command for a row this project does not own crosses over.
+function reportOneTeardown(record: TeardownRecord, projectId: number): void {
+  const mine = record.crew.filter((m) => m.project_id === projectId);
+  const theirs = record.crew.length - mine.length;
+  const stillClosed = mine.filter((m) => m.swept && stillClosedNow(m));
+  if (stillClosed.length === 0) return;
+
+  const resumable = stillClosed.filter((m) => m.session_id !== "");
+  warn(
+    "crew teardown",
+    `${mine.length} of this project's pane(s) went with the tmux server at ${record.socket}; ` +
+      `${record.attribution}.`,
+    `hive detected it at ${record.detected_at}. The teardown happened ${describeTeardownWindow(record.window)}.`,
+    ...(theirs > 0
+      ? [
+          `${theirs} further pane(s) on that socket died with it, belonging to other projects or to no ` +
+            "project hive can name. They are counted and not listed: the death crossing projects is the " +
+            "fact worth having, and this project may not read another's state.",
+        ]
+      : []),
+    "hive records who WAS there, never who killed it. To attribute it, dump EVERY tool call in that " +
+      `window from these working directories - the gaps matter as much as the hits: ${[
+        ...new Set(mine.map((m) => m.cwd)),
+      ].join(", ")}`,
+    resumable.length > 0
+      ? `still closed and resumable: ${resumable
+          .map((m) => `${m.name} (agent_resume(agent_id: ${m.agent_id}))`)
+          .join(", ")}. The recorded session id does not expire; its transcript and its cwd can.`
+      : `still closed: ${stillClosed.map((m) => m.name).join(", ")}. None recorded a session id, so none can be resumed.`,
+    `full record: ${teardownLogPath(dataDir)}`,
+  );
+}
+
+// This is the one reporter in doctor that reads a file a human is invited to open, so it is wrapped:
+// a throw here is not inside a check() and would abort every remaining check, and doctor is what
+// people run once things are already broken.
+function reportCrewTeardown(projectId: number): void {
+  try {
+    for (const record of currentTeardowns(projectId)) reportOneTeardown(record, projectId);
+  } catch (e) {
+    warn(
+      "crew teardown",
+      `a teardown record could not be read: ${errorMessage(e)}`,
+      `hive is saying so rather than staying quiet, because this file is the only trace of a dead crew: ${teardownLogPath(dataDir)}`,
+    );
+  }
+}
+
 function reportStalledWorkers(projectId: number): void {
   const latched = (
     db
@@ -1919,6 +2015,8 @@ function cmdDoctor(argv: string[]): void {
     reportUnbriefedWorkers(here.id);
 
     reportStalledWorkers(here.id);
+
+    reportCrewTeardown(here.id);
   }
 
   if (here) {

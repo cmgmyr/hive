@@ -153,6 +153,12 @@ function tmuxWithin(timeoutMs: number, ...args: string[]): string {
 
 const NOTHING_THERE = /no server running|error connecting to|no current target|can't find (pane|window|session)/;
 
+// "no server running" is tmux ANSWERING that the socket is empty. A missing binary is nobody
+// answering at all, and the two must never read the same to anything that reports a death.
+export function tmuxNotInstalled(e: unknown): boolean {
+  return e instanceof TmuxError && e.notInstalled;
+}
+
 export function tmuxSaysNothingThere(e: unknown): boolean {
 
   if (e instanceof TmuxTimeoutError) return false;
@@ -422,12 +428,14 @@ export interface AliveSnapshot {
   windows: Set<string>;
 
   pids: Map<string, string>;
+
+  serverAnswered?: boolean;
 }
 
 export function liveTargets(): AliveSnapshot | null {
 
   if (untrustedTmuxServer()) return null;
-  const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set(), pids: new Map() };
+  const snapshot: AliveSnapshot = { panes: new Set(), windows: new Set(), pids: new Map(), serverAnswered: true };
   try {
     for (const line of tmux(
       "list-panes", "-a", "-F", "#{pane_id} #{pane_pid} #{session_name}:#{window_id}",
@@ -438,7 +446,9 @@ export function liveTargets(): AliveSnapshot | null {
       if (window) snapshot.windows.add(window);
     }
   } catch (e) {
-    return tmuxSaysNothingThere(e) ? snapshot : null;
+    if (!tmuxSaysNothingThere(e)) return null;
+    snapshot.serverAnswered = !tmuxNotInstalled(e);
+    return snapshot;
   }
   return snapshot;
 }

@@ -3,6 +3,7 @@ paths:
   - "src/dataDir.ts"
   - "src/db.ts"
   - "src/backup.ts"
+  - "src/teardown.ts"
   - "src/result.ts"
   - "src/scheduler.ts"
   - "src/config.ts"
@@ -43,6 +44,53 @@ This is a fourth guard, in a different layer from the three above: those three h
 ## hive's own tmux calls are refused when a scratch store would fall through to the shared socket
 
 This is a fifth guard, a different question again from the four above: the first three hold up test isolation and the fourth is about project scoping, this one is about which tmux SERVER a scratch-store process ends up talking to. `tmux()`'s `scratchStoreOnSharedSocket()` check (`src/tmux.ts`) refuses hive's own tmux calls when a scratch `HIVE_DATA_DIR` is paired with a resolved socket that is the shared one - the shape `tmuxSocketPath()` produces once `TMUX_TMPDIR` has gone unreachable, was never set, resolves to `/tmp` anyway, or an inherited `TMUX` names the shared socket directly. **It is not unconditional, and the exemption is the load-bearing half: a real product entry point outside a test runner is let through** (`!underTestRunner() && isProductEntryPoint()`), because a non-default `HIVE_DATA_DIR` is a documented setting and session names are namespaced by data-dir tag precisely so a custom store can share the real server. So this guard covers test runners and hand-rolled drivers; it does NOT cover a real `hive lead`, `hive attach` or MCP server with a custom store, and never claimed to. A different question from `untrustedTmuxServer()` (`.claude/rules/tmux-and-panes.md`): that refuses a private socket plus the DEFAULT store; this refuses the shared socket plus a SCRATCH store, and stays silent whenever the resolved socket is already private - the pairing the whole suite depends on. It sits on `tmux()` only, not on the lower-level `tmuxWithin()` that `orphanScratchServers()` calls directly with its own explicit `-S` - that call is pinned by construction and does not need this guard.
+
+## The teardown record says what it cannot see
+
+`<dataDir>/teardowns.jsonl` (`src/teardown.ts`) is the only durable trace of a tmux teardown, because
+the thing that dies takes every hive process on that socket with it. Five prohibitions, all of them
+about honesty rather than mechanism:
+
+- **Never add a field naming who tore the server down.** No path in hive carries that signal. The
+  verdict is the literal string `NOT_ATTRIBUTED`, and the reader's job is to point a human at the
+  window and the working directories so they run the check that settles it.
+- **Never present an inferred window as an observed one.** `basis` is not decoration: `observed`
+  means a tick of that process saw panes on the socket AFTER the newest evidence in the store, so
+  the bound is about one tick wide; `inferred` means no hive process survived to watch and the start
+  is only the newest thing already written down, which can be arbitrarily old.
+- **Never widen the trigger past an empty snapshot, and never record one nobody answered.** One pane
+  closing is not a teardown. A record that fires on ordinary worker exits is noise, and a forensic
+  file nobody trusts is worse than none. A `null` snapshot is a failed probe and must stay a no-op -
+  a wedged server is not a dead one. **An empty snapshot is not automatically an answer either**:
+  `tmuxSaysNothingThere` is true when the tmux BINARY is missing, so with no tmux on `PATH`
+  `liveTargets()` returns an empty snapshot and an unset PATH would otherwise become an incident
+  report. The record is gated on `serverAnswered`; the sweep is not.
+- **A sighting only bounds the death it was taken next to.** A socket path outlives the server on it,
+  so `observed` requires the sighting to be recent as well as newer than the store's evidence.
+  Falling back to `inferred` is always available and always honest; do not build anything cleverer.
+  **`HIVE_TEARDOWN_SIGHTING_MAX_AGE_MS` is clamped to the default and must stay clamped**, so the
+  knob can only ever SHORTEN the bound. Unclamped it lengthens it, and a lengthened bound buys an
+  `observed` the process did not earn.
+- **doctor is a PROJECT-SCOPED reader of a MACHINE-SCOPED artifact, and both halves of that are
+  load-bearing.** Report this project's casualties in full and other projects' as a BARE COUNT - no
+  name, cwd, id or resume command for a row this project does not own. Do not "fix" the scoping by
+  filtering the record down to this project: every recorded death took a second project's lead, so
+  the death being machine-wide is the most important fact about it and dropping it hides the
+  incident. Scope the moved-on gate too, or a neighbouring project's next spawn silences this
+  project's notice forever.
+- **Report every still-current record, not just the newest.** The janitor's settle window can split
+  one death across two ticks and two records. A crew silently absent from the report is the session
+  ids this whole artifact exists to carry never reaching the human.
+- **Read lead rows for the roster; never start sweeping them.** `janitor()` excludes leads on
+  purpose and that stays true. A lead's pane is the casualty every recorded crew death took, so the
+  roster reads those rows separately and marks them `swept: false`.
+- **The write is best-effort and must never throw into the scheduler.** A breadcrumb that cannot be
+  written costs the diagnosis, never the sweep that produced it.
+
+**A worker's recorded resume id does not expire.** `agents.session_id` is written by the hook, is not
+in `RESUME_FLIP_COLUMNS`, and `pruneStateLog` does not touch the `agents` table. Do not write, in
+doctor or anywhere else, that it expires with `LOG_RETENTION`. What can perish is the transcript file
+and the worker's cwd.
 
 ## Migrations are append-only
 

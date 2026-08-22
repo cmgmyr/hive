@@ -39,9 +39,19 @@ import {
   sanitizeTail,
   sendText,
   tailCaptureLines,
+  tmuxSocketPath,
   type AliveSnapshot,
   type InputBoxState,
 } from "./tmux.js";
+import {
+  appendTeardown,
+  NOT_ATTRIBUTED,
+  sqlNow,
+  teardownWindow,
+  TEARDOWN_TRIGGER,
+  type TeardownMember,
+  type TeardownRecord,
+} from "./teardown.js";
 
 export interface TimerRow {
   id: number;
@@ -126,33 +136,146 @@ export function startScheduler(intervalMs = 3000): void {
   }, intervalMs).unref();
 }
 
+const CREW_ROW_COLUMNS =
+  "id, project_id, name, actor_id, kind, cwd, tmux_target, tmux_socket, pane_pid, session_id, agent_state, " +
+  "state_changed_at, created_at";
+
+interface CrewRowForRecord {
+  id: number;
+  project_id: number;
+  name: string;
+  actor_id: string;
+  kind: string;
+  cwd: string;
+  tmux_target: string;
+  tmux_socket: string;
+  pane_pid: string;
+  session_id: string;
+  agent_state: string | null;
+  state_changed_at: string | null;
+  created_at: string;
+}
+
+// Set only from a tick that SAW panes, so it separates "hive watched this socket die" from "hive
+// arrived after the fact" - the two bounds the record has to tell apart.
+let socketLastSeenAlive: string | null = null;
+let socketLastSeenAliveMs = 0;
+
+// A socket path outlives the server on it, so a sighting older than a few ticks may belong to a
+// DIFFERENT server and cannot bound this one's death. Falling back to "inferred" is always honest.
+export const SIGHTING_MAX_AGE_MS = 15_000;
+
+// The override is testing only (a 15s bound cannot expire inside a test) and is read at call time.
+// CLAMPED, so it can only ever SHORTEN the bound: an unclamped knob lengthens it, and a lengthened
+// bound manufactures an "observed" this process did not earn - the one claim `basis` exists to
+// prevent. The clamp makes that true by construction rather than by promise.
+export const sightingMaxAgeMs = (): number => {
+  const set = process.env.HIVE_TEARDOWN_SIGHTING_MAX_AGE_MS;
+  const raw = Number(set);
+  return set && Number.isFinite(raw) ? Math.min(raw, SIGHTING_MAX_AGE_MS) : SIGHTING_MAX_AGE_MS;
+};
+
+function lastEvidenceOfLife(row: CrewRowForRecord): string {
+  const logged = (
+    stmt("SELECT MAX(created_at) AS at FROM agent_state_log WHERE actor_id = ?").get(row.actor_id) as {
+      at: string | null;
+    }
+  ).at;
+  return [row.created_at, row.state_changed_at, logged].filter((t): t is string => t !== null).sort().at(-1)!;
+}
+
+const teardownMember = (row: CrewRowForRecord, swept: boolean): TeardownMember => ({
+  agent_id: row.id,
+  project_id: row.project_id,
+  name: row.name,
+  actor_id: row.actor_id,
+  kind: row.kind,
+  cwd: row.cwd,
+  tmux_target: row.tmux_target,
+  pane_pid: row.pane_pid,
+  session_id: row.session_id,
+  agent_state: row.agent_state ?? "",
+  last_evidence_at: lastEvidenceOfLife(row),
+  swept,
+});
+
+// Leads are READ for the roster and never swept: janitor's own query excludes them deliberately, and
+// a crew death that took a lead's pane is exactly the casualty the roster would otherwise omit.
+function goneLeadRows(snapshot: AliveSnapshot): CrewRowForRecord[] {
+  return (
+    stmt(
+      `SELECT ${CREW_ROW_COLUMNS} FROM agents WHERE status = 'running' AND kind = ? AND tmux_target != ''`,
+    ).all(LEAD_KIND) as CrewRowForRecord[]
+  ).filter((row) => rowAliveProbe(row.tmux_socket, row.tmux_target, snapshot).live === false);
+}
+
+function recordTeardown(snapshot: AliveSnapshot, swept: CrewRowForRecord[]): TeardownRecord | undefined {
+  try {
+    const crew = [...swept.map((r) => teardownMember(r, true)), ...goneLeadRows(snapshot).map((r) => teardownMember(r, false))];
+    const detectedAt = sqlNow();
+    const newestEvidence = crew.map((m) => m.last_evidence_at).sort().at(-1)!;
+    const sightingIsFresh = socketLastSeenAlive !== null && Date.now() - socketLastSeenAliveMs < sightingMaxAgeMs();
+    const observed = sightingIsFresh && socketLastSeenAlive! > newestEvidence;
+    const record: TeardownRecord = {
+      detected_at: detectedAt,
+      socket: tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+      trigger: TEARDOWN_TRIGGER,
+      attribution: NOT_ATTRIBUTED,
+      window: teardownWindow(
+        observed ? socketLastSeenAlive! : newestEvidence,
+        detectedAt,
+        observed ? "observed" : "inferred",
+      ),
+      crew,
+    };
+    appendTeardown(dataDir, record);
+    return record;
+  } catch {
+    // The scheduler must never throw, and a breadcrumb that cannot be written must cost the
+    // diagnosis rather than the sweep that produced it.
+    return undefined;
+  }
+}
+
 export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   closed_agents: number;
   cancelled_timers: number;
   probed: boolean;
+  teardown?: TeardownRecord;
 } {
 
   if (snapshot === null) return { closed_agents: 0, cancelled_timers: 0, probed: false };
+  if (snapshot.panes.size > 0) {
+    socketLastSeenAlive = sqlNow();
+    socketLastSeenAliveMs = Date.now();
+  }
   let closedAgents = 0;
   let cancelledTimers = 0;
+  const swept: CrewRowForRecord[] = [];
 
   const agents = stmt(
-    `SELECT id, tmux_target, tmux_socket, pane_pid FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
+    `SELECT ${CREW_ROW_COLUMNS} FROM agents WHERE status = 'running' AND kind != ? AND tmux_target != ''
      AND created_at < datetime('now', ?)`,
-  ).all(LEAD_KIND, SETTLE_WINDOW) as {
-    id: number;
-    tmux_target: string;
-    tmux_socket: string;
-    pane_pid: string;
-  }[];
+  ).all(LEAD_KIND, SETTLE_WINDOW) as CrewRowForRecord[];
   for (const agent of agents) {
 
     const probe = rowAliveProbe(agent.tmux_socket, agent.tmux_target, snapshot);
     if (probe.live === false || paneReissued(agent.pane_pid, probe)) {
-      closeAgentRow(agent.id);
-      closedAgents += 1;
+
+      // The conditional UPDATE is the claim: two instances probing the same dead socket both reach
+      // this branch, and only the one that actually closed the row may put it in a record.
+      if (closeAgentRow(agent.id)) {
+        closedAgents += 1;
+        swept.push(agent);
+      }
     }
   }
+  // A sweep is not evidence of a death when the thing that would report the death was never
+  // reachable: with no tmux binary on PATH, liveTargets() answers with an EMPTY snapshot, and
+  // recording that as a teardown manufactures an incident out of an unset PATH.
+  const sawARealServer = snapshot.serverAnswered !== false;
+  const teardown =
+    sawARealServer && snapshot.panes.size === 0 && swept.length > 0 ? recordTeardown(snapshot, swept) : undefined;
 
   const timers = stmt(
     `SELECT timers.id, timers.due_at, timers.held_reason, timers.deliver_pane,
@@ -177,7 +300,12 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
       }
     }
   }
-  return { closed_agents: closedAgents, cancelled_timers: cancelledTimers, probed: true };
+  return {
+    closed_agents: closedAgents,
+    cancelled_timers: cancelledTimers,
+    probed: true,
+    ...(teardown ? { teardown } : {}),
+  };
 }
 
 function cancelTimer(timerId: number): void {

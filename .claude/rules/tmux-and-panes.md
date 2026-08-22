@@ -97,6 +97,8 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 **`HIVE_TMUX_TIMEOUT_MS` is testing only** (a 10s bound can only expire in real time), read at call time, and `hive doctor` reports it when set, because a knob that shortens a safety bound must not sit in an environment silently.
 
+**AND A FOURTH OUTCOME HIDES INSIDE THE SECOND: `tmuxSaysNothingThere()` IS TRUE WHEN THE BINARY IS MISSING.** It tests `notInstalled` before it ever tests `NOTHING_THERE`, so with no tmux on `PATH` `liveTargets()` answers with an EMPTY SNAPSHOT - indistinguishable, to any caller reading only `panes.size`, from a server that really has no panes. Sweeping on that is old behaviour and stays; REPORTING on it is not. Anything that tells a human something HAPPENED must gate on `AliveSnapshot.serverAnswered`, or an unset PATH becomes an incident report (`.claude/rules/store-and-datadir.md`, the teardown record). Keep the two questions apart: "what did the server say" and "was there anything to ask".
+
 **IT BOUNDS THE DAMAGE AND LEAVES THE CAUSE OPEN.** `execFileSync`'s timeout kills the CHILD, not the tmux SERVER it was talking to, so a wedge now costs ten seconds per call instead of an hour of a core, and the wedged server keeps running. It REPORTS and never reaps.
 
 ## Three shell traps
