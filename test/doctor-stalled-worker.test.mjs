@@ -200,6 +200,20 @@ describe(
       assert.match(stdout, /info {2}stalled workers: 0 worker\(s\) latched working\/waiting/);
     });
 
+    it("says nothing about a codex worker (stateSource but not transcriptDir), with no transcript() call at all - proving the row is excluded before transcriptStaleness ever runs, not merely that its wrong claude-shaped path happens to miss", async () => {
+      reset();
+      worker("codex-worker", 47 * 60, { command: "codex" });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(
+        stdout,
+        /worker codex-worker: has claimed/,
+        `todo 525 earned stateSource for codex, not transcriptDir - this row must stay excluded from stall reporting until transcriptDir is separately proven; got: ${stdout}`,
+      );
+      assert.match(stdout, /info {2}stalled workers: 0 worker\(s\) latched working\/waiting/);
+    });
+
     it("reports a `working` worker on a socket this process cannot see into", async () => {
 
       reset();

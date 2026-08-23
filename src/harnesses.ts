@@ -109,7 +109,11 @@ export const codexHarness: HarnessCapabilities = {
 
   briefDelivery: null,
 
-  stateSource: false,
+  // Earned by todo 525 (C3): busy/idle/session-boundary now come from codex's own hooks (prompt,
+  // stop, the rekeyed subagent latch) - the same mechanism, and the same measured exactness, as
+  // claude's. transcriptDir/contextTokens/supportsResume stay false below; nothing in this lane
+  // proves codex's transcript format, token accounting, or --resume support.
+  stateSource: true,
 
   transcriptDir: false,
   contextTokens: false,
@@ -209,4 +213,10 @@ export function screenClassifiable(command: string): boolean {
 export function paneClassifierFor(command: string): PaneClassifier | null {
   if (command.trim() === "") return claudeHarness.paneClassifier;
   return harnessFor(command).paneClassifier;
+}
+
+// One named predicate for stall detection's transcript-corroboration gate (src/cli.ts, src/scheduler.ts),
+// rather than each call site reading harnessFor(...).transcriptDir inline.
+export function transcriptDirFor(command: string): boolean {
+  return harnessFor(command).transcriptDir;
 }

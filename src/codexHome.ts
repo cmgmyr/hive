@@ -114,11 +114,24 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
   rmSync(authLink, { force: true });
   symlinkSync(authSource, authLink);
 
-  // Only the two events R4 proved exact (prompt/stop) - the notify redesign and subagent latch are
-  // todo 525's (C3's) to prove, not generated speculatively here.
+  // prompt/stop: R4 proved exact. SubagentStart/SubagentStop: todo 525 (C3) rekeys the subagent
+  // latch to these instead of the Stop payload's background_tasks, which codex never sends. No
+  // Notification, no PermissionRequest - the notify branch is proven unreachable for codex on
+  // purpose (test/codex-notify-unreachable.test.mjs); blocked-on-human comes from the pane title.
   writeFileSync(
     join(home, "hooks.json"),
-    JSON.stringify({ hooks: { Stop: [hookEntry("stop")], UserPromptSubmit: [hookEntry("prompt")] } }, null, 2) + "\n",
+    JSON.stringify(
+      {
+        hooks: {
+          Stop: [hookEntry("stop")],
+          UserPromptSubmit: [hookEntry("prompt")],
+          SubagentStart: [hookEntry("subagent_start")],
+          SubagentStop: [hookEntry("subagent_stop")],
+        },
+      },
+      null,
+      2,
+    ) + "\n",
   );
 
   if (!existsSync(process.execPath)) {

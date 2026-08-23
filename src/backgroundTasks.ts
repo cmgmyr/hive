@@ -11,6 +11,13 @@ export const BACKGROUND_TASK_DISPOSITION: Readonly<Record<string, "latch" | "nam
   monitor: "name",
 };
 
+// How long codex's own subagent latch (src/hook.ts) may withhold idle for an unmatched
+// subagent_start before releasing on its own. Reuses STALL_BOUND_SECONDS's own reasoning
+// (src/scheduler.ts) rather than a new number: past this age hive already treats an ordinary
+// latched working/waiting worker as worth a stall report, so the same bound is the right ceiling
+// for how long a live subagent can explain one. See .claude/skills/hive-internals/references/worker-state.md.
+export const SUBAGENT_LATCH_MAX_AGE_SECONDS = 15 * 60;
+
 export interface LiveBackgroundTask {
   type: string;
   status: string;

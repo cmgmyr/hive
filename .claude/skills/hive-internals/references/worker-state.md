@@ -85,6 +85,70 @@ Both appeared in one lane and only one was legitimate. The notify branch asserte
 
 A goal fires the Stop hook after every turn while immediately starting another, so hive records idle for a worker that never stopped. Nine consecutive false idles were measured on agent:53 in 50 seconds with no `prompt|working` between them. `agent_state_log` does not save you here: the rows are not corrupt, they are each briefly true and instantly stale. The lead has an agents row now (issue #27) and writes hook rows like any other actor, but stays safe because its hook writes no STATE row: `src/hook.ts`'s `agents.agent_state` UPDATE is scoped to `WHERE ... AND kind = 'agent'`, an allowlist rather than a lead-specific skip (so a future third kind defaults to the same silence, not to getting state written by accident), so this exact churn lands in `agent_state_log` only, where it is harmless and best-effort forensics rather than a false idle something else acts on.
 
+## The codex subagent latch is bounded and keyed per agent_id, not a single newest-row toggle (todo 525)
+
+R4 (research pad 229, todo 508) proved codex's own hook payloads are Claude Code's field names,
+string for string, with one exception: codex's Stop payload never carries `background_tasks` at all
+(structurally absent across every trial, not omitted by chance), so `waitingOnSubagents` could never
+withhold idle for a codex worker's live subagent the way it does for claude's. Codex reports the same
+fact through two dedicated events instead - `SubagentStart`/`SubagentStop`, both fired cleanly in
+every trial R4 ran - and `src/hook.ts`'s `stateFor` records them log-only (like `idle_prompt`'s
+`null`), leaving the actual decision to a `Stop` handler that reads the log back.
+
+The first version of that reader (`hasOpenSubagent`) took the single newest of the two event types
+per actor and asked whether it was a `subagent_start` - a stack of one, not a set. Code review on
+todo 525 found three ways that model is wrong, all the same root cause seen from a different side:
+
+- **A crashed or killed subagent never fires `SubagentStop`.** An unmatched `subagent_start` was
+  therefore the permanent newest row, and the latch withheld idle forever - worse, silently: codex
+  only earns `stateSource`, not `transcriptDir` (transcript tailing is a separate, unproven
+  mechanism), so this stuck worker was also excluded from both stall-report paths
+  (`reportStalledWorkers` in `src/cli.ts`, `noteStalledCrew` in `src/scheduler.ts`), which corroborate
+  a latch against transcript mtime and cannot safely do that for a harness with no proven transcript
+  path. Silent and undetectable together is the worst combination this project has.
+- **Two concurrent subagents collapse to one toggle.** `start(A) -> start(B) -> stop(A) -> stop` reads
+  the newest row as `subagent_stop`, so the latch releases while B is still running. Not hypothetical:
+  claude's own captured corpus (`test/fixtures/hook-payloads/stop-subagents-running.json`) shows four
+  concurrent subagents in one real `Stop` payload.
+- **Retention can evict the only evidence.** `pruneStateLog` (`src/scheduler.ts`) caps
+  `agent_state_log` at `LOG_MAX_ROWS` (20,000) globally, not per actor. If a `subagent_start` row is
+  pruned before its `subagent_stop` arrives, the query finds neither row and reads `false` - the
+  opposite failure direction from the two above (there the latch sticks too long; here it releases
+  too early).
+
+**The fix is a model change, not three patches.** `hasOpenSubagent` now reduces every
+`subagent_start`/`subagent_stop` row for the actor **within `SUBAGENT_LATCH_MAX_AGE_SECONDS`**
+(`src/backgroundTasks.ts`, 15 minutes - reused from `STALL_BOUND_SECONDS`'s own reasoning rather than
+a new number, since past that age hive already treats an ordinary latched worker as worth a stall
+report) into a **set of open `agent_id`s**, in order: a `subagent_start` adds its id, a
+`subagent_stop` removes it, and the latch withholds idle exactly when that set is non-empty.
+
+Checked against the new model, none of the three can recur as a DISTINCT failure:
+
+- **Crash**: an unmatched `subagent_start` ages out of the window on its own. The latch cannot stick
+  forever - past 15 minutes it releases regardless of whether a `SubagentStop` ever arrives, so stall
+  reporting never has to catch it (it structurally cannot get stuck in the first place).
+- **Concurrency**: each subagent is tracked by its own `agent_id`, so one subagent's stop can never
+  close a different one's still-open start.
+- **Retention eviction**: this is the one residual worth naming precisely rather than claiming closed.
+  Deleting a row produces the identical output the age bound already produces once a row ages past
+  it - "no evidence found" reads as "not open" either way, because the log-derived model has no way to
+  distinguish "this subagent finished" from "hive can no longer see whether it finished." What changed
+  is not the mechanical output for this input (it was already `false` in the old model too, checked
+  directly), but the ARGUMENT for why that is acceptable: the old model's unstated intent was to hold
+  the latch until a real `SubagentStop` arrived, so an early eviction silently violated a promise
+  nothing else in the design admitted making. The new model's stated intent is "at most 15 minutes,"
+  so an eviction that releases the latch early merely delivers a possibly-sooner instance of an
+  already-accepted bound, not a new kind of wrong answer. `LOG_MAX_ROWS` at 20,000 rows makes an
+  in-window eviction (more than 20,000 other log rows landing globally within the same 15 minutes)
+  implausible at any usage this project has observed, but it is not proven impossible, and retention's
+  own logic (the janitor, not the latch) was out of scope to change here.
+
+`test/hook-subagent-latch.test.mjs` proves the crash and concurrency cases red against the old
+newest-row-only code before the fix, then green after; the retention test passes unchanged in both
+versions, by construction, since (as above) neither model's output for that input actually differs -
+it pins the residual rather than a transition.
+
 ## Wake-up bodies are delivered verbatim into a terminal
 
 Whatever you pass as a wake body is typed into the target pane exactly as written, and it becomes a fresh user turn only if that pane happens to be idle. So write it as plain English that stands on its own: the ids it refers to, the context needed to act, and the next action.

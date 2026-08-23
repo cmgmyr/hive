@@ -131,7 +131,6 @@ import {
   type OrphanScratchServers,
   orphanScratchServers,
   orphansWorthWarningAbout,
-  paneChoiceCheck,
   panePid,
   RAW_ATTACH_TMUX_CONFIG,
   renderAttachCommand,
@@ -159,7 +158,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
-import { harnessFor } from "./harnesses.js";
+import { harnessFor, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import {
   ageSecondsSince,
   deriveProvenance,
@@ -1899,7 +1898,11 @@ function reportStalledWorkers(projectId: number): void {
     }[]
   )
 
-    .filter((row) => reportsAgentStateLog(row) && row.session_id !== "");
+    // transcriptDir, not just reportsAgentStateLog: this whole report corroborates a latch against
+    // transcript mtime (worker-state.md - "the sampler is the worker's transcript mtime, never this
+    // latch"), and a harness without a proven transcript path would statSync the wrong file and read
+    // back "never wrote a transcript at all" for every worker, unconditionally and wrongly.
+    .filter((row) => reportsAgentStateLog(row) && transcriptDirFor(row.command) && row.session_id !== "");
   const stalled: { name: string; sentence: string }[] = [];
   for (const row of latched) {
 
@@ -1910,7 +1913,8 @@ function reportStalledWorkers(projectId: number): void {
 
     if (row.agent_state === "waiting") {
       if (foreignSocket(row.tmux_socket)) continue;
-      if (paneChoiceCheck(row.tmux_target).awaitingChoice !== false) continue;
+      const choiceCheck = paneClassifierFor(row.command)?.choiceCheck;
+      if (!choiceCheck || choiceCheck(row.tmux_target).awaitingChoice !== false) continue;
     }
     stalled.push({ name: row.name, sentence: describeStall(row.agent_state, latchedFor, stale) });
   }
@@ -2195,10 +2199,12 @@ function cmdDoctor(argv: string[]): void {
       if (reportsAgentStateLog(w)) {
         workersReported += 1;
 
+        // Dispatched through w's OWN harness, never the claude-only import - reading a codex pane
+        // with claude's dialog regexes fails silently in either direction (.claude/rules/tmux-and-panes.md).
         const foreign = foreignSocket(w.tmux_socket);
-        const { awaitingChoice, tail } = foreign
-          ? { awaitingChoice: null, tail: "" }
-          : paneChoiceCheck(w.tmux_target);
+        const workerChoiceCheck = paneClassifierFor(w.command)?.choiceCheck;
+        const { awaitingChoice, tail } =
+          foreign || !workerChoiceCheck ? { awaitingChoice: null, tail: "" } : workerChoiceCheck(w.tmux_target);
         if (awaitingChoice === true) dialogCount += 1;
 
         verboseInfo(
@@ -2219,10 +2225,11 @@ function cmdDoctor(argv: string[]): void {
         );
       }
 
-      // Gated on classifiesPaneScreen, not reportsAgentStateLog: a codex worker has no agent_state_log
-      // yet (todo 525's to earn) but its pane is readable today, and the drift check below only needs
-      // the pane. Dispatched through the worker's own harness, never the claude-only import above, or
-      // a codex worker's screen gets read with claude's regexes (see hive-internals).
+      // Gated on classifiesPaneScreen, not reportsAgentStateLog: this drift check only needs the pane,
+      // and a codex worker's pane has been readable since todo 524, independent of whether its
+      // agent_state_log is trusted (stateSource, earned by todo 525). Dispatched through the worker's
+      // own harness, never the claude-only import above, or a codex worker's screen gets read with
+      // claude's regexes (see hive-internals).
       const harness = harnessFor(w.command);
       if (!harness.classifiesPaneScreen || foreignSocket(w.tmux_socket)) continue;
 

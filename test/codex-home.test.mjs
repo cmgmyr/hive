@@ -88,7 +88,15 @@ describe("the generated hooks.json matches claude's exact nesting (the H1 schema
     assert.deepEqual(written.hooks.UserPromptSubmit, [hookEntry("prompt")]);
   });
 
-  it("does not wire Notification - codex has no such event, and PermissionRequest's redesign is todo 525's, not generated speculatively here", () => {
+  it("wires SubagentStart and SubagentStop, the events todo 525 rekeys the subagent latch to since codex's Stop payload carries no background_tasks array", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+    assert.deepEqual(written.hooks.SubagentStart, [hookEntry("subagent_start")]);
+    assert.deepEqual(written.hooks.SubagentStop, [hookEntry("subagent_stop")]);
+  });
+
+  it("does not wire Notification - codex has no such event, and the notify branch is proven unreachable for codex on purpose (test/codex-notify-unreachable.test.mjs)", () => {
     const key = `worker-${counter}`;
     build({ key });
     const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));

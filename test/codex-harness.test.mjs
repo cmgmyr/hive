@@ -42,13 +42,16 @@ describe("codex is registered by default (todo 524)", () => {
     assert.equal(h.needsHome, true);
   });
 
-  it("does not set supportsRename, and does not claim a state/transcript/resume correctness this lane did not prove - todo 525 (C3) owns the notify redesign and subagent latch that would earn stateSource/transcriptDir/contextTokens/supportsResume, not this one", () => {
+  it("does not set supportsRename, and does not claim a transcript/resume correctness this lane did not prove - transcriptDir/contextTokens/supportsResume are separate mechanisms (transcript tailing, token counting, --resume) that nothing here tests", () => {
     const h = harnessFor("codex");
     assert.equal(h.supportsRename, false);
-    assert.equal(h.stateSource, false);
     assert.equal(h.transcriptDir, false);
     assert.equal(h.contextTokens, false);
     assert.equal(h.supportsResume, false);
+  });
+
+  it("earns stateSource: busy/idle/session-boundary come from codex's own hooks (prompt, stop, the subagent-latch rekeyed to SubagentStart/SubagentStop), the same mechanism and measured exactness as claude's (todo 525, research pad 229)", () => {
+    assert.equal(harnessFor("codex").stateSource, true);
   });
 
   it("reverts to unknown once unregistered, and resolves again once re-registered - proving registration (not some other path) is what makes it resolve", () => {

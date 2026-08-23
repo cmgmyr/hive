@@ -15,7 +15,7 @@ import {
   type LiveBackgroundTask,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { paneClassifierFor, screenClassifiable } from "./harnesses.js";
+import { paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -1678,6 +1678,9 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
       if (row.tmux_target === tell.pane) continue;
       if (!reportsAgentStateLog(row)) continue;
       if (row.session_id === "") continue;
+      // Same reason as reportStalledWorkers (src/cli.ts): this report corroborates a latch against
+      // transcript mtime, and a harness without a proven transcript path would read the wrong file.
+      if (!transcriptDirFor(row.command)) continue;
 
       const stale = transcriptStaleness(row, now);
       if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
