@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -10,7 +19,7 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-codex-home-"));
 process.env.HIVE_DATA_DIR = join(scratch, "data");
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const { codexHomeDir, ensureCodexHome } = await import("../dist/codexHome.js");
+const { codexHomeDir, ensureCodexHome, reapCodexHome } = await import("../dist/codexHome.js");
 const { hookEntry } = await import("../dist/hooks.js");
 
 const fakeAuth = join(scratch, "fake-auth.json");
@@ -133,5 +142,25 @@ describe("the generated config.toml is real, parseable TOML (the H7 ordering tra
     assert.equal(parsed.mcp_servers.hive.args.length, 1);
     assert.ok(parsed.mcp_servers.hive.args[0].endsWith("index.js"));
     assert.equal(parsed.mcp_servers.hive.env.HIVE_AGENT_ID, "agent:777");
+  });
+});
+
+describe("reapCodexHome removes the home directory without ever following the auth.json symlink", () => {
+  it("the real credential file behind the symlink survives the reap, unmodified", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    assert.ok(existsSync(codexHomeDir(key)), "the home must exist before it can prove anything by disappearing");
+    assert.ok(existsSync(fakeAuth));
+    const before = readFileSync(fakeAuth, "utf8");
+
+    reapCodexHome(key);
+
+    assert.equal(existsSync(codexHomeDir(key)), false, "the home directory itself must be gone");
+    assert.equal(existsSync(fakeAuth), true, "the symlink's real target must survive - it lives outside the home");
+    assert.equal(readFileSync(fakeAuth, "utf8"), before, "the target's content must be untouched, not just present");
+  });
+
+  it("is a safe no-op against a home that was already removed", () => {
+    assert.doesNotThrow(() => reapCodexHome("never-existed-key"));
   });
 });

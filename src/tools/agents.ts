@@ -36,6 +36,7 @@ import {
   launchAgent,
   LEAD_KIND,
   parkAgentRow,
+  reapCodexHomeForClosedAgent,
   releaseParkRow,
   renameAgent,
   resumeAgent,
@@ -98,6 +99,7 @@ export interface AgentRow {
   parked_at: string;
   parked_branch: string;
   resumed_at: string;
+  codex_home: string;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -583,6 +585,7 @@ export function registerAgents(server: McpServer): void {
             layout,
             parentActor: parent,
             sessionId,
+            codexHome: codexHomeKey,
           });
         } catch (e) {
           // buildCommand already wrote CODEX_HOME to disk (auth.json symlink included) before
@@ -1378,6 +1381,16 @@ export function registerAgents(server: McpServer): void {
             );
           }
 
+          // Best-effort: a failed reap must not fail the close it rides on. The janitor's own
+          // backstop sweep retries it (codex_home stays set until reapCodexHome actually succeeds).
+          if (agent.codex_home) {
+            try {
+              reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+            } catch {
+
+            }
+          }
+
           return { agent_id: agent.id, name: agent.name, closed: true, park_released: true };
         }
 
@@ -1432,6 +1445,16 @@ export function registerAgents(server: McpServer): void {
             "Nothing further was closed. Re-read it with agent_status and decide what you want.",
           );
         }
+        // Best-effort, same as the park-release branch above: a failed reap must not fail the close,
+        // and the janitor's backstop sweep retries it.
+        if (agent.codex_home) {
+          try {
+            reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+          } catch {
+
+          }
+        }
+
         return { agent_id: agent.id, name: agent.name, closed: true };
       }),
   );

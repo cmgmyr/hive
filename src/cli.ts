@@ -4,6 +4,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -1648,6 +1649,94 @@ function reportOrphanTmuxServers(orphans: OrphanScratchServers | null): void {
   (orphansWorthWarningAbout(orphans) ? warn : info)("scratch tmux servers", ...detail);
 }
 
+interface CodexHomesSummary {
+  count: number;
+  totalSizeBytes: number;
+  pendingReap: number;
+  unaccounted: number;
+  thisProjectInUse: number;
+  otherProjectsInUse: number;
+}
+
+// Walks with lstat, never stat: a home directory holds an auth.json SYMLINK to Chris's real
+// ~/.codex/auth.json, and this report must never read through it - the link's own (tiny) size is
+// what counts against the home, not the real credential file's.
+function codexHomeSizeBytes(path: string): number {
+  let total = 0;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const full = join(path, entry.name);
+    total += entry.isDirectory() && !entry.isSymbolicLink() ? codexHomeSizeBytes(full) : lstatSync(full).size;
+  }
+  return total;
+}
+
+function summarizeCodexHomes(projectId: number | null): CodexHomesSummary | null {
+  const homesDir = join(dataDir, "codex-homes");
+  if (!existsSync(homesDir)) return null;
+  const keys = readdirSync(homesDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+
+  const rows = db
+    .prepare("SELECT codex_home, project_id, status, parked_at FROM agents WHERE codex_home != ''")
+    .all() as { codex_home: string; project_id: number; status: string; parked_at: string }[];
+  const byKey = new Map(rows.map((r) => [r.codex_home, r]));
+
+  let totalSizeBytes = 0;
+  let pendingReap = 0;
+  let unaccounted = 0;
+  let thisProjectInUse = 0;
+  let otherProjectsInUse = 0;
+  for (const key of keys) {
+    try {
+      totalSizeBytes += codexHomeSizeBytes(join(homesDir, key));
+    } catch {
+
+    }
+    const row = byKey.get(key);
+    if (!row) {
+      unaccounted += 1;
+    } else if (row.status === "closed" && !row.parked_at) {
+      pendingReap += 1;
+    } else if (row.project_id === projectId) {
+      thisProjectInUse += 1;
+    } else {
+      otherProjectsInUse += 1;
+    }
+  }
+  return { count: keys.length, totalSizeBytes, pendingReap, unaccounted, thisProjectInUse, otherProjectsInUse };
+}
+
+// Project-scoped reader of a machine-scoped artifact, same convention as the teardown report
+// (.claude/rules/store-and-datadir.md): codex-homes/ is one directory shared by every project on
+// this store, so an in-use home belonging to another project is a bare count, never a name or path.
+function reportCodexHomes(projectId: number | null): void {
+  const summary = summarizeCodexHomes(projectId);
+  if (!summary || summary.count === 0) {
+    info("codex homes", "none on disk");
+    return;
+  }
+  const mb = (summary.totalSizeBytes / 1_000_000).toFixed(1);
+  const detail = [
+    `${summary.count} per-worker home(s) on disk, ${mb} MB total`,
+    `${summary.thisProjectInUse} in use by this project's running or parked worker(s)` +
+      (summary.otherProjectsInUse > 0 ? `, ${summary.otherProjectsInUse} in use by other project(s)` : ""),
+  ];
+  if (summary.pendingReap > 0) {
+    detail.push(
+      `${summary.pendingReap} closed and not yet reaped - the scheduler janitor sweeps these on its next tick; ` +
+        "staying nonzero across repeated doctor runs means no hive process is ticking",
+    );
+  }
+  if (summary.unaccounted > 0) {
+    detail.push(
+      `${summary.unaccounted} on disk with no matching agents row at all - not touched here, worth a manual ` +
+        `look (\`ls ${join(dataDir, "codex-homes")}\`)`,
+    );
+  }
+  (summary.pendingReap > 0 || summary.unaccounted > 0 ? warn : info)("codex homes", ...detail);
+}
+
 const UNBRIEFED_WORKER_BOUND_SECONDS = 30 * 60;
 
 function reportUnbriefedWorkers(projectId: number): void {
@@ -1901,6 +1990,7 @@ function cmdDoctor(argv: string[]): void {
   reportDispatcher();
   reportMcpRegistrations(here);
   reportSessionInterpreters();
+  reportCodexHomes(here?.id ?? null);
 
   const loaded = loadProjectYml(here?.path ?? process.cwd());
 

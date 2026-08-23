@@ -129,3 +129,54 @@ describe("agent_spawn: a failed codex launch does not orphan its CODEX_HOME", ()
     }
   });
 });
+
+describe("launchAgent: the agents row is queryable before a function commandString ever runs", () => {
+  // codexHome reaping (agent_close, the janitor backstop) trusts that a codex-homes/<key>
+  // directory never exists without an agents row naming it first, because that ordering is what
+  // rules out a sweep racing a spawn that made the directory but has not yet written its row
+  // (todo 532's design checkpoint). ensureCodexHome's mkdirSync runs inside buildCommand, which is
+  // exactly launchAgent's `commandString` callback - so this pins the general invariant that
+  // callback depends on, not codex specifically. If a future edit ever moves the INSERT below the
+  // commandString call, this goes red.
+  it(
+    "a raw SELECT for the row succeeds from inside the commandString callback itself",
+    { skip: hasTmux ? false : "tmux is not installed" },
+    async () => {
+      const { launchAgent, closeAgentRow } = await import("../dist/spawn.js");
+      const { addProject } = await import("../dist/context.js");
+      const projectDir = join(dirs.tmp, "row-before-home-proj");
+      mkdirSync(projectDir, { recursive: true });
+      const project = addProject(projectDir, "row-before-home-proj");
+
+      let rowExistedWhenCallbackRan;
+      let agentId;
+      try {
+        ({ agentId } = launchAgent({
+          projectId: project.id,
+          projectName: project.name,
+          projectPath: project.path,
+          name: "row-before-home-check",
+          kind: "agent",
+          commandString: ({ agentId: id }) => {
+            rowExistedWhenCallbackRan = db.prepare("SELECT 1 FROM agents WHERE id = ?").get(id) !== undefined;
+            return "sleep 30";
+          },
+          cwd: project.path,
+          env: {},
+          placement: "window",
+          parentActor: "test:row-before-home",
+        }));
+        assert.equal(
+          rowExistedWhenCallbackRan,
+          true,
+          "the agents row must exist before commandString's callback runs, or a codex-home directory " +
+            "that callback creates could exist with no row yet naming it - exactly the race the janitor's " +
+            "reap sweep depends on not being possible",
+        );
+      } finally {
+        if (agentId != null) closeAgentRow(agentId);
+        cleanup(sessionName());
+      }
+    },
+  );
+});

@@ -234,7 +234,7 @@ describe("janitor acts on an empty snapshot and refuses to act on a failed probe
 
     const result = janitor(null);
 
-    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false });
+    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false, reaped_codex_homes: 0 });
     assert.equal(agentStatus(agent), "running", "a failed probe must not close a running agent");
     assert.equal(timerOf(timer).cancelled_at, null, "a failed probe must not cancel a timer");
   });
@@ -257,7 +257,7 @@ describe("janitor acts on an empty snapshot and refuses to act on a failed probe
 
     const result = withBrokenTmux(() => janitor());
 
-    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false });
+    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false, reaped_codex_homes: 0 });
     assert.equal(agentStatus(agent), "running");
     assert.equal(timerOf(timer).cancelled_at, null);
   });

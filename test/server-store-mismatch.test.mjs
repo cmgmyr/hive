@@ -366,7 +366,7 @@ describe("the janitor sweeps nothing when it cannot trust the server it probed",
 
     const result = asDefaultStore(() => janitor());
 
-    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false });
+    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false, reaped_codex_homes: 0 });
     assert.equal(agentStatus(first), "running", "a correct answer from the wrong server closes nothing");
     assert.equal(agentStatus(second), "running");
   });
@@ -380,7 +380,7 @@ describe("the janitor sweeps nothing when it cannot trust the server it probed",
       asDefaultStore(() => janitor()),
     );
 
-    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false });
+    assert.deepEqual(result, { closed_agents: 0, cancelled_timers: 0, probed: false, reaped_codex_homes: 0 });
     assert.equal(agentStatus(first), "running");
     assert.equal(agentStatus(second), "running");
   });

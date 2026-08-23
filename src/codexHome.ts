@@ -21,6 +21,30 @@ export function codexHomeDir(key: string): string {
   return join(storeDir(), "codex-homes", key);
 }
 
+// Removes a per-worker home OUTRIGHT, never its resolved contents: `rmSync` unlinks the directory
+// entries it finds - including the auth.json SYMLINK - without ever following one to its target, so
+// Chris's real ~/.codex/auth.json is untouched regardless of what points at it from here. Prove any
+// change to this function against a real file behind a real symlink, not just against an empty dir.
+export function reapCodexHome(key: string): void {
+  rmSync(codexHomeDir(key), { recursive: true, force: true });
+}
+
+// todo 532's design checkpoint, so the next reader finds the reason rather than re-running it:
+// codex 0.149.0 (checked live via `codex exec --strict-config`, not `doctor` - doctor silently
+// ignores unrecognized top-level config.toml fields even under --strict-config) has exactly three
+// redirectable paths: `sqlite_home`, `log_dir`, `model_catalog_json` (plus CODEX_SQLITE_HOME). None
+// are wired here, on purpose:
+//   - plugins/ and cache/ are the dominant cost (26 MB+ of a fresh, work-free home) and have NO
+//     redirect at all - every plausible key (plugins_dir, cache_dir, cache_path, plugins_enabled,
+//     ...) and every CODEX_* env var in the binary was checked; none exist in this version.
+//   - sqlite_home is the one big redirect that DOES exist, but it backs codex's own session/
+//     goals/memories tables. Pointing every worker's CODEX_HOME at ONE shared sqlite_home would
+//     merge their session history into a single store - a worker-isolation regression, not a disk
+//     optimization, for a few MB of WAL that isn't the actual cost.
+//   - model_catalog_json (192-309k, OpenAI's public model list, no per-worker content) is the only
+//     genuinely safe share, and it is under 1% of a home's footprint - not worth the extra moving
+//     part. Reaping the whole home on close is the fix; see reapCodexHomeForClosedAgent (spawn.ts).
+
 // Built from character codes, not a literal \u escape range in source - see the reference on why.
 const CONTROL_CHAR = new RegExp(
   `[${String.fromCharCode(0)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,

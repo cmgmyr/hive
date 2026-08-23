@@ -6,7 +6,7 @@ import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
 import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
-import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND } from "./spawn.js";
+import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
 import {
   describeLiveTasks,
@@ -238,14 +238,49 @@ function recordTeardown(snapshot: AliveSnapshot, swept: CrewRowForRecord[]): Tea
   }
 }
 
+// The backstop for CODEX_HOME reaping, not the primary path: agent_close already reaps
+// synchronously (src/tools/agents.ts). This catches a row that became closed WITHOUT agent_close
+// ever running the reap - the dead-pane sweep below closing a crashed worker's row, or a prior
+// reap attempt that threw. No settle window needed and none is added: `codex_home` is written into
+// the SAME INSERT that creates the row (src/spawn.ts's launchAgent), strictly before
+// ensureCodexHome's mkdirSync ever runs, so a row naming a given codex_home always exists before
+// that directory does - there is no window where this query's `status = 'closed'` could be racing
+// a spawn that has made the directory but not yet written its row. `parked_at = ''` is named
+// explicitly, not left to fall out of "closed" incidentally: a PARKED row is `status = 'closed'`
+// too (src/spawn.ts's parkAgentRow), and reaping a parked worker's home is the one way this sweep
+// could destroy a lane someone expects to resume.
+function reapClosedCodexHomes(): number {
+  let reaped = 0;
+  try {
+    const rows = stmt(
+      "SELECT id, codex_home FROM agents WHERE codex_home != '' AND status = 'closed' AND parked_at = ''",
+    ).all() as { id: number; codex_home: string }[];
+    for (const row of rows) {
+      try {
+        reapCodexHomeForClosedAgent(row.id, row.codex_home);
+        reaped += 1;
+      } catch {
+
+      }
+    }
+  } catch {
+
+  }
+  return reaped;
+}
+
 export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   closed_agents: number;
   cancelled_timers: number;
   probed: boolean;
+  reaped_codex_homes: number;
   teardown?: TeardownRecord;
 } {
 
-  if (snapshot === null) return { closed_agents: 0, cancelled_timers: 0, probed: false };
+  const reapedCodexHomes = reapClosedCodexHomes();
+
+  if (snapshot === null)
+    return { closed_agents: 0, cancelled_timers: 0, probed: false, reaped_codex_homes: reapedCodexHomes };
   if (snapshot.panes.size > 0) {
     socketLastSeenAlive = sqlNow();
     socketLastSeenAliveMs = Date.now();
@@ -305,6 +340,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
     closed_agents: closedAgents,
     cancelled_timers: cancelledTimers,
     probed: true,
+    reaped_codex_homes: reapedCodexHomes,
     ...(teardown ? { teardown } : {}),
   };
 }

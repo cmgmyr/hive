@@ -348,6 +348,10 @@ CREATE TABLE agent_messages (
 -- agent_message_get tell a PRUNED id from one that never existed (src/leadMessage.ts).
 CREATE INDEX idx_agent_messages_project ON agent_messages(project_id, id);
 `,
+
+  `
+ALTER TABLE agents ADD COLUMN codex_home TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

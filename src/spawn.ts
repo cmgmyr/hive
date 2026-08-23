@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { reapCodexHome } from "./codexHome.js";
 import { dataDir, db } from "./db.js";
 import {
   applyLayout,
@@ -50,6 +51,11 @@ export interface LaunchSpec {
   parentActor: string;
 
   sessionId?: string;
+
+  // The codexHome.ts key, if this worker needs a per-worker CODEX_HOME (harness.needsHome). Written
+  // into the SAME INSERT that creates the row, before ensureCodexHome's mkdirSync ever runs - see
+  // reapCodexHomeForClosedAgent below for why that ordering is load-bearing for reaping.
+  codexHome?: string;
 }
 
 export function splitTargetWindow(session: string, projectId: number, parentActor: string): string | null {
@@ -191,8 +197,8 @@ export function launchAgent(
     info = db
       .prepare(
 
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, codex_home) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         spec.projectId,
@@ -204,6 +210,7 @@ export function launchAgent(
         spec.parentActor,
         socket,
         spec.sessionId ?? "",
+        spec.codexHome ?? "",
       );
   } catch (e) {
 
@@ -430,6 +437,29 @@ export function releaseParkRow(agentId: number): boolean {
       .prepare(`UPDATE agents SET ${PARK_STAMP_CLEARED} WHERE id = ? AND status = 'closed' AND parked_at != ''`)
       .run(agentId).changes > 0
   );
+}
+
+// Row status alone is not the orphan test: a PARKED row is `status = 'closed'` too
+// (parkAgentRow above), and agent_park expects to resume it, cold-cache and all. `parked_at = ''`
+// is named explicitly rather than left to fall out of "closed" incidentally, because codex cannot
+// be parked TODAY (harnessFor("codex").supportsResume is false) only as an accident of harnesses.ts,
+// not as a guarantee this predicate can lean on.
+//
+// No conditional-UPDATE claim guards this, unlike closeAgentRow's "the conditional UPDATE is the
+// claim" - a deliberate difference, not a gap. That pattern earns its keep against an OBSERVABLE
+// side effect: a wake fired twice types into a pane twice. A reap has none - two instances racing
+// the same directory produce one deleted directory (rmSync's force:true swallows ENOENT even mid
+// recursive delete, not just on the top-level path), and the loser's `codex_home` update just
+// matches zero rows. Deleted twice is deleted once, so there is nothing here for a claim to arbitrate.
+//
+// rmSync runs before the clear, not after: if it throws (permissions, a mid-delete race), codex_home
+// stays set and this row is picked up again - by the next agent_close call, or by the janitor's own
+// backstop sweep - rather than the failure being silently swallowed by a claim that already fired.
+// The column IS the retry token; that is the guard here, it is just not shaped like a CAS.
+// Both callers wrap this, so a failure here costs a retry, never the close or the sweep it runs inside.
+export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): void {
+  reapCodexHome(codexHome);
+  db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
 }
 
 export function closeAgentRow(agentId: number, expectedTmuxTarget?: string): boolean {
