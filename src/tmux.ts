@@ -924,7 +924,15 @@ export function paneChoiceCheck(target: string): { awaitingChoice: boolean | nul
 }
 
 // codex's chrome, mirroring the claude section above but never sharing its regexes (see hive-internals).
-const CODEX_FOOTER = /^Context \d+% used/;
+// codex has no box border to anchor on, so the box's bottom edge used to be inferred from the literal
+// text of its footer status line - but that text is not stable (todo 524: two different compositions
+// seen on one codex version, one with no shared substring at all). The anchor below reads structure
+// instead of content: the pane's own last non-blank row IS the bottom edge, whatever it says.
+
+// codex's own choice-menu shape (see hive-internals), not claude's CHOICE_DIALOG wording. Declared
+// above findCodexPromptBox because the box search itself now needs it to reject a choice row rather
+// than mistake it for a live prompt.
+const CODEX_CHOICE_LINE = /^›\s*\d+\.\s/m;
 
 // codex wraps the arrow in its own SGR reset, so its content's real styling doesn't start at offset 0;
 // the arrow and its one trailing space have to be walked off before leadingRunIsFaint can read it.
@@ -938,23 +946,14 @@ function codexPromptContentStart(promptRow: string): number {
   return i;
 }
 
-function findCodexPromptBox(rows: string[]): { footer: number; prompt: number | null } | null {
+function findCodexPromptBox(rows: string[]): { footer: number; prompt: number } | null {
   const text = rows.map((row) => stripControlBytes(stripSgr(row)).trim());
 
-  let end = text.length - 1;
-  while (end >= 0 && text[end] === "") end -= 1;
-  if (end < 0) return null;
-
-  let footer = -1;
-  for (let i = end; i >= 0 && end - i <= BOX_TAIL_ROWS; i--) {
-    if (CODEX_FOOTER.test(text[i])) {
-      footer = i;
-      break;
-    }
-  }
+  let footer = text.length - 1;
+  while (footer >= 0 && text[footer] === "") footer -= 1;
   if (footer < 0) return null;
 
-  let prompt: number | null = null;
+  let prompt = -1;
   for (let i = footer - 1; i >= 0 && footer - i <= BOX_MAX_ROWS; i--) {
     // The arrow ALONE, against the trimmed row: capture-pane strips a trailing space, and a box with
     // nothing typed is exactly "› " with nothing after it - "› " (with the space) would never match
@@ -964,10 +963,27 @@ function findCodexPromptBox(rows: string[]): { footer: number; prompt: number | 
       break;
     }
   }
+  if (prompt < 0) return null;
+
+  // A choice row also starts with "›" - stop here rather than skip past it and keep climbing, or an
+  // older, already-submitted prompt sitting further up scrollback gets mistaken for the live box
+  // (measured against codex-sandbox-approval-dialog.txt: its own choice row sits 21 lines below a
+  // stale submitted prompt that also starts with "›").
+  if (CODEX_CHOICE_LINE.test(text[prompt])) return null;
+
+  // Nothing but the prompt's own continuation, then one blank gap, may sit between the prompt row and
+  // the footer. Real content in that gap means the "›" found above is stale scrollback, not the live
+  // box - a busy/mid-turn screen can have an old prompt sitting within BOX_MAX_ROWS of whatever text
+  // is currently at the bottom, and only this check tells the two apart (see hive-internals).
+  let i = prompt + 1;
+  while (i <= footer && text[i] !== "") i += 1;
+  while (i <= footer && text[i] === "") i += 1;
+  if (i !== footer) return null;
+
   return { footer, prompt };
 }
 
-const codexInputBoxOnScreen = (screen: string): boolean => findCodexPromptBox(screen.split("\n"))?.prompt != null;
+const codexInputBoxOnScreen = (screen: string): boolean => findCodexPromptBox(screen.split("\n")) !== null;
 
 function classifyCodexInputBox(rows: string[], promptRowIndex: number, footerRowIndex: number): InputBoxState {
   const promptRow = rows[promptRowIndex];
@@ -992,8 +1008,7 @@ export function codexInputBoxState(target: string): InputBoxState | null {
     const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
     const rows = raw.split("\n");
     const box = findCodexPromptBox(rows);
-    if (box === null) return null;
-    return box.prompt === null ? { state: "unknown", text: "" } : classifyCodexInputBox(rows, box.prompt, box.footer);
+    return box === null ? null : classifyCodexInputBox(rows, box.prompt, box.footer);
   } catch {
     return null;
   }
@@ -1007,9 +1022,9 @@ export const codexPaneHasInputBox = (target: string): boolean | null => {
   }
 };
 
-// codex's own choice-menu shape (see hive-internals), not claude's CHOICE_DIALOG wording.
-const CODEX_CHOICE_LINE = /^›\s*\d+\.\s/m;
-
+// codexInputBoxOnScreen used to be broken (todo 524); this line still read correctly, but only because
+// CODEX_CHOICE_LINE was independently false on the pane that exposed the bug - correct by coincidence,
+// not by construction. See hive-internals for why that distinction matters to a later refactor.
 const codexScreenAwaitingChoice = (screen: string): boolean =>
   CODEX_CHOICE_LINE.test(screen) && !codexInputBoxOnScreen(screen);
 

@@ -525,3 +525,36 @@ screen once and the cursor sits below it, so nothing can be pending in it
 (`.claude/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md`).
 Both are covered live instead, against a synthetic pane rather than real
 codex, in `test/codex-live-pane.test.mjs`.
+
+## codex production-launch fixtures (todo 524)
+
+Every fixture above was captured from `codex --sandbox read-only` in a plain
+scratch directory - no `CODEX_HOME`, no bypass flags, no pre-seeded project
+trust. Hive's real launch (`src/codexHome.ts`) is none of those things:
+`--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox`,
+a per-worker `CODEX_HOME`, run inside the real repo. The corpus above never
+represented that configuration, which is how `findCodexPromptBox`'s old
+`Context N% used` footer anchor shipped broken: under production flags
+codex's footer reads `"<model> default · <cwd>"` instead, with no shared
+substring, and the anchor never matched.
+
+- `codex-production-idle-ghost.txt` / `-idle-ghost-e.txt`: a REAL capture,
+  2026-08-22, off a pane hive itself spawned in this repo's own worktree
+  under the real launch flags - `--dangerously-bypass-hook-trust` banner and
+  the `"gpt-5.6-sol default · ~/Code/cmgmyr/hive"` footer are both visible
+  and both absent from every fixture above.
+- `codex-unpredictable-footer.txt`: CONSTRUCTED, not captured - a third
+  footer composition matching neither the old `Context N% used` shape nor
+  the production `"<model> default · <cwd>"` shape. This is the fixture that
+  proves the fix reads structure, not content: `findCodexPromptBox` no
+  longer looks at what the footer says, so a footer nobody has seen yet must
+  still classify correctly, or the fix is "matches two shapes" wearing a
+  structural name.
+- `codex-stale-prompt-scrollback.txt`: `codex-sandbox-approval-dialog.txt`'s
+  own real capture, truncated (not hand-edited otherwise) to the screen one
+  turn before its dialog appears. An already-submitted `›` prompt sits 21
+  rows above whatever is now at the bottom of a busy, box-less screen - the
+  exact shape that would false-positive under "last non-blank row, then
+  nearest › above it" without the "nothing but blank/continuation between
+  them" guard. Pins that a stale prompt in scrollback is never mistaken for
+  a live box.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 
 const scratch = mkdtempSync(join(tmpdir(), "hive-codex-harness-"));
 process.env.HIVE_DATA_DIR = scratch;
@@ -12,54 +12,53 @@ const { codexHarness, harnessFor, registerHarness, screenClassifiable, unregiste
   "../dist/harnesses.js"
 );
 
-// codexHarness is exported but never pushed into the default HARNESSES table (todo 523): this lane
-// makes codex CLASSIFIABLE, not spawnable - the hive.yml agents: key that decides whether a project
-// may spawn one is its own lane (todo 526). So harnessFor("codex") must resolve to "unknown" until
-// something explicitly registers it, the same way todo 526 will.
-describe("codex is exported and registerable, but not registered by default (todo 523)", () => {
-  it("resolves to unknown before anything registers it", () => {
-    assert.equal(harnessFor("codex").name, "unknown");
-    assert.equal(screenClassifiable("codex"), false);
+// todo 523 proved codex could be CLASSIFIED; todo 524 proved hive could actually DRIVE a codex pane
+// end to end (hook-trust bypass and brief delivery, both verified live) and registered it by
+// default. codexHarness is exported too, for the unregister/re-register proof below and for any
+// later lane that wants to build a synthetic variant against the same shape.
+describe("codex is registered by default (todo 524)", () => {
+  it("resolves from a bare command and one carrying flags", () => {
+    assert.equal(harnessFor("codex").name, "codex");
+    assert.equal(harnessFor("codex --sandbox read-only").name, "codex");
+    assert.equal(harnessFor("/opt/homebrew/bin/codex --sandbox read-only").name, "codex");
   });
 
-  describe("once registered", () => {
-    before(() => registerHarness(codexHarness));
-    after(() => unregisterHarness("codex"));
+  it("is screen-classifiable, so agent_send's text path and wakes do not refuse it at the door", () => {
+    assert.equal(screenClassifiable("codex"), true);
+  });
 
-    it("accepts the entry - a boolean flip alone would have violated 507's guard, since codex sets classifiesPaneScreen without a real paneClassifier would throw", () => {
-      assert.equal(harnessFor("codex").name, "codex");
-    });
+  it("carries a real paneClassifier, not just the boolean - classifiesPaneScreen without one is exactly what registerHarness refuses", () => {
+    const h = harnessFor("codex");
+    assert.equal(h.classifiesPaneScreen, true);
+    assert.notEqual(h.paneClassifier, null);
+    assert.equal(typeof h.paneClassifier.choiceCheck, "function");
+    assert.equal(typeof h.paneClassifier.inputBoxState, "function");
+    assert.equal(typeof h.paneClassifier.hasInputBox, "function");
+  });
 
-    it("resolves both a bare command and one carrying flags to the same entry", () => {
-      assert.equal(harnessFor("codex").name, "codex");
-      assert.equal(harnessFor("codex --sandbox read-only").name, "codex");
-      assert.equal(harnessFor("/opt/homebrew/bin/codex --sandbox read-only").name, "codex");
-    });
+  it("needs a prepared home (CODEX_HOME) rather than briefDelivery's CLI-arg shape - developer_instructions and the MCP registration live in config.toml, not on the command line", () => {
+    const h = harnessFor("codex");
+    assert.equal(h.briefDelivery, null);
+    assert.equal(h.needsHome, true);
+  });
 
-    it("is now screen-classifiable, so agent_send's text path and wakes no longer refuse it at the door", () => {
-      assert.equal(screenClassifiable("codex"), true);
-    });
+  it("does not set supportsRename, and does not claim a state/transcript/resume correctness this lane did not prove - todo 525 (C3) owns the notify redesign and subagent latch that would earn stateSource/transcriptDir/contextTokens/supportsResume, not this one", () => {
+    const h = harnessFor("codex");
+    assert.equal(h.supportsRename, false);
+    assert.equal(h.stateSource, false);
+    assert.equal(h.transcriptDir, false);
+    assert.equal(h.contextTokens, false);
+    assert.equal(h.supportsResume, false);
+  });
 
-    it("carries a real paneClassifier, not just the boolean - classifiesPaneScreen without one is exactly what registerHarness refuses", () => {
-      const h = harnessFor("codex");
-      assert.equal(h.classifiesPaneScreen, true);
-      assert.notEqual(h.paneClassifier, null);
-      assert.equal(typeof h.paneClassifier.choiceCheck, "function");
-      assert.equal(typeof h.paneClassifier.inputBoxState, "function");
-      assert.equal(typeof h.paneClassifier.hasInputBox, "function");
-    });
-
-    it("does not set supportsRename or briefDelivery - those are later, separate lanes (todo 524/525/527), not this one", () => {
-      const h = harnessFor("codex");
-      assert.equal(h.supportsRename, false);
-      assert.equal(h.briefDelivery, null);
-      assert.equal(h.stateSource, false);
-    });
-
-    it("reverts to unknown once unregistered, proving the registration (not some other path) was what made it resolve", () => {
-      unregisterHarness("codex");
+  it("reverts to unknown once unregistered, and resolves again once re-registered - proving registration (not some other path) is what makes it resolve", () => {
+    unregisterHarness("codex");
+    try {
       assert.equal(harnessFor("codex").name, "unknown");
+      assert.equal(screenClassifiable("codex"), false);
+    } finally {
       registerHarness(codexHarness);
-    });
+    }
+    assert.equal(harnessFor("codex").name, "codex");
   });
 });

@@ -23,6 +23,8 @@ after(() => cleanupTmux(session));
 let driftedPane;
 let healthyPane;
 let dialogPane;
+let codexHealthyPane;
+let codexUnclassifiedPane;
 before(async () => {
   if (!hasTmux) return;
   ({ dialogPane } = createLiveAndDialogPanes(session, "folder-trust-dialog.txt"));
@@ -52,12 +54,43 @@ before(async () => {
     ],
     { encoding: "utf8" },
   ).trim();
+  codexHealthyPane = execFileSync(
+    "tmux",
+    [
+      "new-window",
+      "-t",
+      `=${session}`,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      `cat '${join(REPO, "test", "fixtures", "panes", "codex-idle-ghost.txt")}'; sleep 600`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
+  // codexInputBoxState never returns "unknown" - findCodexPromptBox is binary, either a full box or
+  // null (todo 524) - so a codex worker on a dialog counts as NOT CLASSIFIED, never as drifted. This
+  // pane exercises exactly that: it must land in inputBoxUnclassified, not inputBoxDrifted.
+  codexUnclassifiedPane = execFileSync(
+    "tmux",
+    [
+      "new-window",
+      "-t",
+      `=${session}`,
+      "-P",
+      "-F",
+      "#{pane_id}",
+      `cat '${join(REPO, "test", "fixtures", "panes", "codex-directory-trust-dialog.txt")}'; sleep 600`,
+    ],
+    { encoding: "utf8" },
+  ).trim();
   const rendered = (target, marker) =>
     until(() => execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString().includes(marker));
   await Promise.all([
     rendered(dialogPane, "trust this folder"),
     rendered(driftedPane, "for agents"),
     rendered(healthyPane, "for agents"),
+    rendered(codexHealthyPane, "Summarize recent commits"),
+    rendered(codexUnclassifiedPane, "Press enter to continue"),
   ]);
 });
 
@@ -80,11 +113,11 @@ assert.equal(init.code, 0, init.stderr);
 
 const project = db.prepare("SELECT id FROM projects WHERE path = ?").get(projectDir).id;
 
-function agentRow({ name, target, socket = ownSocket }) {
+function agentRow({ name, target, socket = ownSocket, command = "claude" }) {
   db.prepare(
     `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state)
-     VALUES (?, ?, ?, ?, ?, 'claude', '/tmp/worker', 'running', 'agent', 'working')`,
-  ).run(project, `agent:${name}`, name, target, socket);
+     VALUES (?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', 'working')`,
+  ).run(project, `agent:${name}`, name, target, socket, command);
 }
 
 function leadRow({ name = "lead", target, socket = ownSocket, command = "claude" }) {
@@ -157,7 +190,7 @@ describe(
       assert.doesNotMatch(stdout, /worker-healthy:[\s\S]*?input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        /info {2}input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
         `a clean run must still say something, not just stay silent; got:\n${stdout}`,
       );
     });
@@ -182,7 +215,7 @@ describe(
       );
       assert.match(
         stdout,
-        /input box classifier: 2 running claude box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        /input box classifier: 2 running box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
         `the lead must be inside the ratio, not reported beside it; got:\n${stdout}`,
       );
     });
@@ -195,7 +228,7 @@ describe(
 
       assert.match(
         stdout,
-        /input box classifier: 1 running claude box\(es\) probed \(the lead's own pane only - no worker pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        /input box classifier: 1 running box\(es\) probed \(the lead's own pane only - no worker pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
         `a lead-only project must not claim a worker probe it never made; got:\n${stdout}`,
       );
       assert.doesNotMatch(
@@ -214,7 +247,7 @@ describe(
 
       assert.match(
         stdout,
-        /input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly/,
+        /input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly/,
         `a foreign-socket lead is not a probed lead; got:\n${stdout}`,
       );
     });
@@ -234,7 +267,7 @@ describe(
       );
       assert.match(
         stdout,
-        /input box classifier: 2 running claude box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        /input box classifier: 2 running box\(es\) probed \(workers plus the lead's own pane\): 1 classified cleanly, 1 classified 'unknown', 0 not classified/,
         `the foreign-socket lead must be skipped, not counted; got:\n${stdout}`,
       );
     });
@@ -249,7 +282,7 @@ describe(
       assert.doesNotMatch(stdout, /lead lead: input box classifies/);
       assert.match(
         stdout,
-        /input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        /input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
         `a non-claude lead must not enter the count in any of the three states; got:\n${stdout}`,
       );
     });
@@ -263,7 +296,7 @@ describe(
       assert.doesNotMatch(stdout, /worker-nobox:[\s\S]*?input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 0 classified 'unknown', 1 not classified/,
+        /info {2}input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 0 classified 'unknown', 1 not classified/,
         `a null read must be its own counted state, not folded into clean or unknown; got:\n${stdout}`,
       );
     });
@@ -296,7 +329,7 @@ describe(
       assert.match(stdout, /warn {2}worker worker-drifted-2: input box classifies 'unknown'/);
       assert.match(
         stdout,
-        /info {2}input box classifier: 1 running claude box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 1 classified 'unknown', 0 not classified/,
+        /info {2}input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 1 classified 'unknown', 0 not classified/,
         `the foreign row must not inflate the denominator; got:\n${stdout}`,
       );
     });
@@ -323,6 +356,56 @@ describe(
         failureCount(strict.stdout),
         failureCount(baseline.stdout),
         `a drifted-box warn must not become a --strict problem\nstrict:\n${strict.stdout}\nbaseline:\n${baseline.stdout}`,
+      );
+    });
+  },
+);
+
+describe(
+  "hive doctor probes a codex worker's own box, not just a claude one (todo 524)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    it("counts a healthy codex worker as classified cleanly, read through codex's own detector", async () => {
+      reset();
+      agentRow({ name: "codex-worker-healthy", target: codexHealthyPane, command: "codex" });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /info {2}input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 1 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        `a codex worker was never probed before this fix; got:\n${stdout}`,
+      );
+    });
+
+    it("counts a codex worker on a dialog as NOT CLASSIFIED, never as drifted - codex has no partial box state", async () => {
+      reset();
+      agentRow({ name: "codex-worker-dialog", target: codexUnclassifiedPane, command: "codex" });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(
+        stdout,
+        /codex-worker-dialog:[\s\S]*?input box classifies 'unknown'/,
+        "findCodexPromptBox is binary (a full box, or null) - it can never emit the 'unknown' state a claude box can",
+      );
+      assert.match(
+        stdout,
+        /info {2}input box classifier: 1 running box\(es\) probed \(workers only - no lead pane was probeable\): 0 classified cleanly, 0 classified 'unknown', 1 not classified/,
+      );
+    });
+
+    it("counts a mixed claude-and-codex project over both workers' own detectors", async () => {
+      reset();
+      agentRow({ name: "worker-claude-healthy", target: healthyPane });
+      agentRow({ name: "worker-codex-healthy", target: codexHealthyPane, command: "codex" });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /info {2}input box classifier: 2 running box\(es\) probed \(workers only - no lead pane was probeable\): 2 classified cleanly, 0 classified 'unknown', 0 not classified/,
+        `both harnesses' workers must land in the same count, each read by its own detector; got:\n${stdout}`,
       );
     });
   },

@@ -52,6 +52,27 @@ const CHOICE_CASES = [
     awaitingChoice: false,
     hasInputBox: true,
   },
+  {
+    file: "codex-production-idle-ghost.txt",
+    name: "production-idle",
+    marker: "Write tests for @filename",
+    awaitingChoice: false,
+    hasInputBox: true,
+  },
+  {
+    file: "codex-unpredictable-footer.txt",
+    name: "unpredictable-footer",
+    marker: "Summarize recent commits",
+    awaitingChoice: false,
+    hasInputBox: true,
+  },
+  {
+    file: "codex-stale-prompt-scrollback.txt",
+    name: "stale-prompt",
+    marker: "creating the requested file now",
+    awaitingChoice: false,
+    hasInputBox: false,
+  },
 ];
 
 describe(
@@ -107,6 +128,12 @@ const STATE_CASES = [
     name: "multiline",
     marker: "line three",
     expect: { state: "pending", text: "check the current git statusline one line two line three" },
+  },
+  {
+    file: "codex-production-idle-ghost-e.txt",
+    name: "production-idle",
+    marker: "Write tests for @filename",
+    expect: { state: "ghost", text: "Write tests for @filename" },
   },
 ];
 

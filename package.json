@@ -26,6 +26,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.1.2",
+    "smol-toml": "^1.8.0",
     "typescript": "^7.0.2"
   },
   "allowScripts": {

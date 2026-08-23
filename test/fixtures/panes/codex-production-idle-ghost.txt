@@ -1,0 +1,29 @@
+
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.146.0 -> 0.149.0                       │
+│ See https://github.com/openai/codex for installation options. │
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+
+⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.
+
+╭─────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                  │
+│                                             │
+│ model:       gpt-5.6-sol   /model to change │
+│ directory:   ~/Code/cmgmyr/hive             │
+│ permissions: YOLO mode                      │
+╰─────────────────────────────────────────────╯
+
+  Tip: Use /compact when the conversation gets long to summarize history and free up context.
+
+⚠ `--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.
+
+• You have 1 usage limit reset available. Run /usage to use one.
+
+
+› Write tests for @filename
+
+  gpt-5.6-sol default · ~/Code/cmgmyr/hive

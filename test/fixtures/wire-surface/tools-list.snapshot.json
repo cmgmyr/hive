@@ -612,6 +612,9 @@
         "brief_path": {
           "type": "string"
         },
+        "codex_home": {
+          "type": "string"
+        },
         "config_warnings": {
           "items": {
             "type": "string"

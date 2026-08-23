@@ -53,6 +53,12 @@ export interface HarnessCapabilities {
 
   // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
   readonly hasScopes: boolean;
+
+  // Whether agent_spawn must call ensureCodexHome (src/codexHome.ts) before launch: a per-worker
+  // home directory carrying its own hooks.json, MCP registration and brief, set as an env var
+  // rather than reached through briefDelivery's CLI-arg shape. Only codex needs this today; kept
+  // as a capability flag rather than a name check for the same reason every other branch here is.
+  readonly needsHome: boolean;
 }
 
 export function commandHead(command: string): string {
@@ -88,10 +94,12 @@ const claudeHarness: HarnessCapabilities = {
   paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox },
 
   hasScopes: true,
+
+  needsHome: false,
 };
 
-// Exported, not pushed into HARNESSES below: no lane has yet proven hive can drive a codex pane end
-// to end, and todo 524 is where that gets proven and where registration lands, not here.
+// Registered below (todo 524): proven end to end that hive can drive a codex pane - hook-trust
+// bypass and brief delivery both verified live, see the tmux-and-panes reference.
 export const codexHarness: HarnessCapabilities = {
   name: "codex",
 
@@ -117,6 +125,8 @@ export const codexHarness: HarnessCapabilities = {
   },
 
   hasScopes: false,
+
+  needsHome: true,
 };
 
 const unknownHarness: HarnessCapabilities = {
@@ -140,9 +150,11 @@ const unknownHarness: HarnessCapabilities = {
   paneClassifier: null,
 
   hasScopes: false,
+
+  needsHome: false,
 };
 
-const HARNESSES: HarnessCapabilities[] = [claudeHarness];
+const HARNESSES: HarnessCapabilities[] = [claudeHarness, codexHarness];
 
 export function harnessFor(command: string): HarnessCapabilities {
   return HARNESSES.find((harness) => harness.matches(command)) ?? unknownHarness;

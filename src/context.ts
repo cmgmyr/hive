@@ -104,7 +104,7 @@ function bestPrefixMatch(projects: Project[], dir: string): Project | null {
   return best;
 }
 
-function gitPrimaryRoot(dir: string): string | null {
+export function gitPrimaryRoot(dir: string): string | null {
   try {
     const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
       cwd: dir,

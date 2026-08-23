@@ -123,7 +123,6 @@ import {
   ensureSession,
   findProjectWindow,
   foreignSocket,
-  inputBoxState,
   isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
@@ -2103,48 +2102,54 @@ function cmdDoctor(argv: string[]): void {
     let dialogCount = 0;
 
     for (const w of workers) {
-      if (!reportsAgentStateLog(w)) continue;
-      workersReported += 1;
+      if (reportsAgentStateLog(w)) {
+        workersReported += 1;
 
-      const foreign = foreignSocket(w.tmux_socket);
-      const { awaitingChoice, tail } = foreign
-        ? { awaitingChoice: null, tail: "" }
-        : paneChoiceCheck(w.tmux_target);
-      if (awaitingChoice === true) dialogCount += 1;
+        const foreign = foreignSocket(w.tmux_socket);
+        const { awaitingChoice, tail } = foreign
+          ? { awaitingChoice: null, tail: "" }
+          : paneChoiceCheck(w.tmux_target);
+        if (awaitingChoice === true) dialogCount += 1;
 
-      verboseInfo(
-        "worker live state",
-        `worker ${w.name}`,
-        `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
-        `permission mode: ${lastPermissionMode(w.actor_id) ?? "unknown (no record)"}`,
-        foreign
-          ? `pane: recorded on a different tmux socket (${w.tmux_socket}); this process cannot read it`
-          : `pane: ${describePaneChoice(awaitingChoice)}`,
-        ...(foreign
-          ? ["tail: (not read - foreign socket)"]
-          : awaitingChoice === null
-            ? ["tail: (pane could not be read)"]
-            : tail === ""
-              ? ["tail: (pane rendered nothing)"]
-              : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
-      );
+        verboseInfo(
+          "worker live state",
+          `worker ${w.name}`,
+          `last log event: ${describeLastLogEvent(lastLogEvent(w.actor_id))}`,
+          `permission mode: ${lastPermissionMode(w.actor_id) ?? "unknown (no record)"}`,
+          foreign
+            ? `pane: recorded on a different tmux socket (${w.tmux_socket}); this process cannot read it`
+            : `pane: ${describePaneChoice(awaitingChoice)}`,
+          ...(foreign
+            ? ["tail: (not read - foreign socket)"]
+            : awaitingChoice === null
+              ? ["tail: (pane could not be read)"]
+              : tail === ""
+                ? ["tail: (pane rendered nothing)"]
+                : ["tail:", ...tail.split("\n").map((line) => `| ${line}`)]),
+        );
+      }
 
-      if (!foreign) {
-        workersProbed += 1;
-        const box = inputBoxState(w.tmux_target);
+      // Gated on classifiesPaneScreen, not reportsAgentStateLog: a codex worker has no agent_state_log
+      // yet (todo 525's to earn) but its pane is readable today, and the drift check below only needs
+      // the pane. Dispatched through the worker's own harness, never the claude-only import above, or
+      // a codex worker's screen gets read with claude's regexes (see hive-internals).
+      const harness = harnessFor(w.command);
+      if (!harness.classifiesPaneScreen || foreignSocket(w.tmux_socket)) continue;
 
-        if (box === null) {
-          inputBoxUnclassified += 1;
-        } else if (box.state === "unknown") {
-          inputBoxDrifted += 1;
-          warn(
-            `worker ${w.name}`,
-            "input box classifies 'unknown': an input box is on screen (its own borders were found) but its prompt " +
-              "row could not be found inside it (.claude/rules/tmux-and-panes.md, the 'unknown exemption' section).",
-          );
-        } else {
-          inputBoxClean += 1;
-        }
+      workersProbed += 1;
+      const box = harness.paneClassifier!.inputBoxState(w.tmux_target);
+
+      if (box === null) {
+        inputBoxUnclassified += 1;
+      } else if (box.state === "unknown") {
+        inputBoxDrifted += 1;
+        warn(
+          `worker ${w.name}`,
+          "input box classifies 'unknown': an input box is on screen (its own borders were found) but its prompt " +
+            "row could not be found inside it (.claude/rules/tmux-and-panes.md, the 'unknown exemption' section).",
+        );
+      } else {
+        inputBoxClean += 1;
       }
     }
 
@@ -2159,7 +2164,7 @@ function cmdDoctor(argv: string[]): void {
     if (inputBoxChecked > 0) {
       info(
         "input box classifier",
-        `${inputBoxChecked} running claude box(es) probed (${describeProbed(workersProbed, leadsProbed)}): ` +
+        `${inputBoxChecked} running box(es) probed (${describeProbed(workersProbed, leadsProbed)}): ` +
           `${inputBoxClean} classified cleanly, ` +
           `${inputBoxDrifted} classified 'unknown', ${inputBoxUnclassified} not classified (no box currently on ` +
           "screen to classify - a dialog, mid-turn, or an unreadable pane)",

@@ -282,8 +282,9 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
         assert.equal((await runCli(["lead"], cliOpts)).code, 0);
         const before = leadRow(db, project.id);
 
-        // The pane is now running something hive cannot classify, exactly as `lead: codex` leaves it.
-        db.prepare("UPDATE agents SET command = ? WHERE id = ?").run("codex --sandbox read-only", before.id);
+        // The pane is now running something hive cannot classify - codex itself no longer qualifies
+        // as of todo 524, so this uses a harness name nothing registers.
+        db.prepare("UPDATE agents SET command = ? WHERE id = ?").run("some-other-harness --flag", before.id);
         const timerId = db
           .prepare(
             `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
@@ -300,7 +301,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
         assert.equal(after.tmux_target, before.tmux_target, "sanity: this must be the ADOPT path, not a fresh pane");
         assert.equal(
           after.command,
-          "codex --sandbox read-only",
+          "some-other-harness --flag",
           "hive did not start this pane and must not claim it runs the configured command",
         );
 
@@ -313,7 +314,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
           /adopted the existing lead pane/,
           "a silent no-op is not good enough: the mismatch has to be stated",
         );
-        assert.match(second.stdout, /codex --sandbox read-only/, "the notice must name what the pane actually runs");
+        assert.match(second.stdout, /some-other-harness --flag/, "the notice must name what the pane actually runs");
 
         // Control: when hive DOES create the pane, it owns the command and the hold really clears.
         execFileSync("tmux", ["kill-pane", "-t", after.tmux_target]);

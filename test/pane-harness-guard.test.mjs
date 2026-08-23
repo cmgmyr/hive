@@ -280,7 +280,7 @@ describe("a lead whose own harness hive cannot classify cannot receive wakes at 
     const leadId = db
       .prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status)
-         VALUES (?, 'lead:998', 'codex-lead', ?, '', 'codex --sandbox read-only', ?, 'lead', 'running')
+         VALUES (?, 'lead:998', 'unclassifiable-lead', ?, '', 'some-other-harness --flag', ?, 'lead', 'running')
          RETURNING id`,
       )
       .get(projectId, pane, dirs.projectDir).id;
@@ -290,7 +290,11 @@ describe("a lead whose own harness hive cannot classify cannot receive wakes at 
         mcp.call("wake_set", { delay_seconds: 5, body: "MARKERLEAD", deliver_to: leadId }),
         (err) => {
           assert.match(err.message, /only classify a claude screen/);
-          assert.match(err.message, /codex/, "the refusal must name the harness the caller actually configured");
+          assert.match(
+            err.message,
+            /some-other-harness/,
+            "the refusal must name the harness the caller actually configured",
+          );
           return true;
         },
       );

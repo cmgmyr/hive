@@ -1,4 +1,4 @@
-import { existsSync, statSync, realpathSync } from "node:fs";
+import { existsSync, rmSync, statSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -10,6 +10,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
+import { codexHomeDir, ensureCodexHome } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import { commandHead, harnessFor, paneClassifierFor, screenClassifiable } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
@@ -485,6 +486,7 @@ export function registerAgents(server: McpServer): void {
         config_warnings: z.array(z.string()).optional(),
         worktree_install: z.string().optional(),
         brief_path: z.string().optional(),
+        codex_home: z.string().optional(),
         ready: z.boolean().optional(),
         note: z.string().optional(),
         tail: z.string().optional(),
@@ -536,18 +538,26 @@ export function registerAgents(server: McpServer): void {
 
           vars: projectConfig?.vars ?? {},
         });
+        // Minted before the agent row exists (unlike agentId/actorId), so CODEX_HOME's own path can
+        // go straight into launchAgent's static env below rather than needing agentId to name it.
+        const codexHomeKey = harness.needsHome ? randomUUID() : undefined;
         const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
-          const briefPath = harness.briefDelivery
-            ? writeAgentBrief(agentId, workerBrief(briefFor(actorId)))
-            : undefined;
+          const brief = harness.briefDelivery || codexHomeKey ? workerBrief(briefFor(actorId)) : undefined;
+          const briefPath = harness.briefDelivery ? writeAgentBrief(agentId, brief!) : undefined;
+          const homeArgs = codexHomeKey
+            ? ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief! }).extraArgs
+            : [];
           return workerCommandString({
             command: baseCommand,
             displayName: name,
             model: args.model,
 
-            extraArgs: mintsSession
-              ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
-              : args.extra_args,
+            extraArgs: [
+              ...homeArgs,
+              ...(mintsSession
+                ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
+                : (args.extra_args ?? [])),
+            ],
             settingsPath: harness.briefDelivery ? ensureHooksFile() : undefined,
             briefPath,
           });
@@ -558,20 +568,31 @@ export function registerAgents(server: McpServer): void {
           (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
-        const { agentId, actorId, target, landedInProjectId, layoutApplied } = launchAgent({
-          projectId: project.id,
-          projectName: project.name,
-          projectPath: project.path,
-          name,
-          kind: "agent",
-          commandString: buildCommand,
-          cwd,
-          env: {},
-          placement,
-          layout,
-          parentActor: parent,
-          sessionId,
-        });
+        let spawned;
+        try {
+          spawned = launchAgent({
+            projectId: project.id,
+            projectName: project.name,
+            projectPath: project.path,
+            name,
+            kind: "agent",
+            commandString: buildCommand,
+            cwd,
+            env: codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {},
+            placement,
+            layout,
+            parentActor: parent,
+            sessionId,
+          });
+        } catch (e) {
+          // buildCommand already wrote CODEX_HOME to disk (auth.json symlink included) before
+          // launchAgent's own failure paths run; a codex worker that never got a pane must not
+          // leave that home orphaned. Narrow on purpose - the wider "nothing ever reaps
+          // codex-homes/briefs/postures" question is a separate, filed concern, not this fix.
+          if (codexHomeKey) rmSync(codexHomeDir(codexHomeKey), { recursive: true, force: true });
+          throw e;
+        }
+        const { agentId, actorId, target, landedInProjectId, layoutApplied } = spawned;
         ensureAttached(sessionName());
 
         let ready = false;
@@ -606,9 +627,10 @@ export function registerAgents(server: McpServer): void {
           ...(configWarnings.length > 0 ? { config_warnings: configWarnings } : {}),
 
           ...(worktreeInstall ? { worktree_install: worktreeInstall } : {}),
-          ...(harness.briefDelivery
+          ...(harness.briefDelivery || codexHomeKey
             ? {
-                brief_path: agentBriefPath(agentId),
+                ...(harness.briefDelivery ? { brief_path: agentBriefPath(agentId) } : {}),
+                ...(codexHomeKey ? { codex_home: codexHomeDir(codexHomeKey) } : {}),
 
                 ready,
                 ...(ready
@@ -619,7 +641,7 @@ export function registerAgents(server: McpServer): void {
                         tail: dialogTail,
                       }
                     : {
-                        note: "The pane never became ready. The system-prompt brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
+                        note: "The pane never became ready. The brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
                       }),
               }
             : harness.classifiesPaneScreen
