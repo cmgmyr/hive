@@ -11,7 +11,7 @@ import {
   writeAgentBrief,
 } from "../brief.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
-import { commandHead, harnessFor, screenClassifiable } from "../harnesses.js";
+import { commandHead, harnessFor, paneClassifierFor, screenClassifiable } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
@@ -48,10 +48,8 @@ import {
   ensureAttached,
   findUnsafeControlChar,
   holdsHumanInput,
-  inputBoxState,
   isPaneTarget,
   liveTargets,
-  paneChoiceCheck,
   paneCurrentCommand,
   paneWindow,
   rowAlive,
@@ -375,8 +373,8 @@ function capturePaneQuietly(target: string): string {
   }
 }
 
-function inputBoxField(target: string): { input_box: InputBoxState } | Record<string, never> {
-  const box = inputBoxState(target);
+function inputBoxField(command: string, target: string): { input_box: InputBoxState } | Record<string, never> {
+  const box = paneClassifierFor(command)?.inputBoxState(target) ?? null;
   return box ? { input_box: box } : {};
 }
 
@@ -406,7 +404,7 @@ export function contextTokensField(row: AgentRow): { context_tokens: number | nu
 
 function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<string, never> {
   if (!reportsAgentStateLog(row) || alive !== true) return {};
-  const { awaitingChoice } = paneChoiceCheck(row.tmux_target);
+  const awaitingChoice = paneClassifierFor(row.command)?.choiceCheck(row.tmux_target).awaitingChoice ?? null;
   return { pane: describePaneChoice(awaitingChoice) };
 }
 
@@ -579,9 +577,10 @@ export function registerAgents(server: McpServer): void {
         let ready = false;
         let dialogTail: string | undefined;
         if (harness.classifiesPaneScreen) {
+          const classifier = harness.paneClassifier!;
           try {
-            const paneReady = await waitForPaneInput(target, PANE_READY_MS);
-            const { awaitingChoice, tail } = paneChoiceCheck(target);
+            const paneReady = await waitForPaneInput(target, PANE_READY_MS, classifier.hasInputBox);
+            const { awaitingChoice, tail } = classifier.choiceCheck(target);
             if (awaitingChoice === true) {
               dialogTail = tail;
             } else if (paneReady) {
@@ -915,10 +914,12 @@ export function registerAgents(server: McpServer): void {
         let retitled = false;
         let heldNote: string | undefined;
         let heldTail: string | undefined;
-        if (live && harnessFor(agent.command).supportsRename) {
-          const { awaitingChoice, tail } = paneChoiceCheck(agent.tmux_target);
+        const renameHarness = harnessFor(agent.command);
+        if (live && renameHarness.supportsRename) {
+          const classifier = renameHarness.paneClassifier!;
+          const { awaitingChoice, tail } = classifier.choiceCheck(agent.tmux_target);
 
-          const box = awaitingChoice === false ? inputBoxState(agent.tmux_target) : null;
+          const box = awaitingChoice === false ? classifier.inputBoxState(agent.tmux_target) : null;
           if (awaitingChoice === true) {
             heldNote =
               "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
@@ -1042,7 +1043,7 @@ export function registerAgents(server: McpServer): void {
           brief_path: existsSync(briefPath) ? briefPath : null,
           ...(args.include_brief ? { brief: readAgentBrief(agent.id) } : {}),
           tail: summary.alive ? capturePane(agent.tmux_target, 15) : "",
-          ...(summary.alive ? inputBoxField(agent.tmux_target) : {}),
+          ...(summary.alive ? inputBoxField(agent.command, agent.tmux_target) : {}),
 
           ...claudeOnlyFields(agent),
           ...contextTokensField(agent),
@@ -1125,8 +1126,9 @@ export function registerAgents(server: McpServer): void {
             };
           }
 
+          const sendClassifier = harnessFor(agent.command).paneClassifier!;
           const submitting = args.submit !== false;
-          const { awaitingChoice, tail } = paneChoiceCheck(target);
+          const { awaitingChoice, tail } = sendClassifier.choiceCheck(target);
           // Unreadable refuses only when an Enter follows: with submit=false there is no keypress
           // for a dialog to eat, the same reasoning that exempts submit=false from the box check.
           if (awaitingChoice === true || (submitting && awaitingChoice === null)) {
@@ -1146,7 +1148,7 @@ export function registerAgents(server: McpServer): void {
           }
 
           if (submitting) {
-            const box = inputBoxState(target);
+            const box = sendClassifier.inputBoxState(target);
             if (holdsHumanInput(box)) {
               return {
                 agent_id: agent.id,
@@ -1232,7 +1234,7 @@ export function registerAgents(server: McpServer): void {
             sent: true,
             ...tailField,
 
-            ...inputBoxField(target),
+            ...inputBoxField(agent.command, target),
           });
         }
 
@@ -1293,7 +1295,7 @@ export function registerAgents(server: McpServer): void {
           name: agent.name,
           alive,
           output: alive ? capturePane(agent.tmux_target, lines) : "",
-          ...(alive ? inputBoxField(agent.tmux_target) : {}),
+          ...(alive ? inputBoxField(agent.command, agent.tmux_target) : {}),
           ...(alive === true
             ? {}
             : {

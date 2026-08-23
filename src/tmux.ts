@@ -729,6 +729,14 @@ export function paneCurrentCommand(target: string): string | null {
   }
 }
 
+export function paneTitle(target: string): string | null {
+  try {
+    return tmux("display-message", "-p", "-t", target, "#{pane_title}");
+  } catch {
+    return null;
+  }
+}
+
 export function captureRawPane(target: string, lines: number): string {
   return tmux("capture-pane", "-p", "-t", target, "-S", `-${lines}`);
 }
@@ -915,6 +923,125 @@ export function paneChoiceCheck(target: string): { awaitingChoice: boolean | nul
   }
 }
 
+// codex's chrome, mirroring the claude section above but never sharing its regexes (see hive-internals).
+const CODEX_FOOTER = /^Context \d+% used/;
+
+// codex wraps the arrow in its own SGR reset, so its content's real styling doesn't start at offset 0;
+// the arrow and its one trailing space have to be walked off before leadingRunIsFaint can read it.
+function codexPromptContentStart(promptRow: string): number {
+  const arrow = promptRow.indexOf("›");
+  if (arrow < 0) return promptRow.length;
+  let i = arrow + 1;
+  let escape: RegExpExecArray | null;
+  while ((escape = /^\x1b\[[0-9;]*m/.exec(promptRow.slice(i))) !== null) i += escape[0].length;
+  if (promptRow[i] === " ") i += 1;
+  return i;
+}
+
+function findCodexPromptBox(rows: string[]): { footer: number; prompt: number | null } | null {
+  const text = rows.map((row) => stripControlBytes(stripSgr(row)).trim());
+
+  let end = text.length - 1;
+  while (end >= 0 && text[end] === "") end -= 1;
+  if (end < 0) return null;
+
+  let footer = -1;
+  for (let i = end; i >= 0 && end - i <= BOX_TAIL_ROWS; i--) {
+    if (CODEX_FOOTER.test(text[i])) {
+      footer = i;
+      break;
+    }
+  }
+  if (footer < 0) return null;
+
+  let prompt: number | null = null;
+  for (let i = footer - 1; i >= 0 && footer - i <= BOX_MAX_ROWS; i--) {
+    // The arrow ALONE, against the trimmed row: capture-pane strips a trailing space, and a box with
+    // nothing typed is exactly "› " with nothing after it - "› " (with the space) would never match
+    // its own genuinely-empty case, only the ones with real content following the arrow.
+    if (text[i].startsWith("›")) {
+      prompt = i;
+      break;
+    }
+  }
+  return { footer, prompt };
+}
+
+const codexInputBoxOnScreen = (screen: string): boolean => findCodexPromptBox(screen.split("\n"))?.prompt != null;
+
+function classifyCodexInputBox(rows: string[], promptRowIndex: number, footerRowIndex: number): InputBoxState {
+  const promptRow = rows[promptRowIndex];
+  const after = promptRow.slice(codexPromptContentStart(promptRow));
+  const dim = leadingRunIsFaint(after);
+  const firstLine = stripControlBytes(stripSgr(after)).trim();
+
+  const continuation: string[] = [];
+  for (let i = promptRowIndex + 1; i < footerRowIndex; i++) {
+    continuation.push(stripControlBytes(stripSgr(rows[i])).trim());
+  }
+
+  const text = [firstLine, ...continuation]
+    .filter((line) => line !== "")
+    .join(" ")
+    .slice(0, TAIL_LINE_CHARS);
+  return { state: text === "" ? "empty" : dim ? "ghost" : "pending", text };
+}
+
+export function codexInputBoxState(target: string): InputBoxState | null {
+  try {
+    const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
+    const rows = raw.split("\n");
+    const box = findCodexPromptBox(rows);
+    if (box === null) return null;
+    return box.prompt === null ? { state: "unknown", text: "" } : classifyCodexInputBox(rows, box.prompt, box.footer);
+  } catch {
+    return null;
+  }
+}
+
+export const codexPaneHasInputBox = (target: string): boolean | null => {
+  try {
+    return codexInputBoxOnScreen(capturePane(target, tailCaptureLines()));
+  } catch {
+    return null;
+  }
+};
+
+// codex's own choice-menu shape (see hive-internals), not claude's CHOICE_DIALOG wording.
+const CODEX_CHOICE_LINE = /^›\s*\d+\.\s/m;
+
+const codexScreenAwaitingChoice = (screen: string): boolean =>
+  CODEX_CHOICE_LINE.test(screen) && !codexInputBoxOnScreen(screen);
+
+const CODEX_SPINNER = /^[⠀-⣿]/;
+
+// The bracket marker is measured-unstable (see hive-internals) - match the substring alone.
+const CODEX_ACTION_REQUIRED = "Action Required";
+
+// A silent title (codex hasn't written one yet, e.g. a startup dialog) is not "idle" - see hive-internals.
+function codexAwaitingChoiceFromTitleAndScreen(title: string | null, screenTail: string): boolean {
+  if (title !== null) {
+    // Untested combination, so pick the cheap-to-be-wrong direction: a false "blocked" costs a
+    // delay, a false "busy, safe to type" is the thing this whole predicate exists to prevent.
+    if (title.includes(CODEX_ACTION_REQUIRED)) return true;
+    if (CODEX_SPINNER.test(title)) return false;
+  }
+  return codexScreenAwaitingChoice(screenTail);
+}
+
+export function codexPaneChoiceCheck(target: string): { awaitingChoice: boolean | null; tail: string } {
+  try {
+    const raw = captureRawPane(target, tailCaptureLines());
+    const tail = tailWindow(raw, tailCaptureLines());
+    return {
+      awaitingChoice: codexAwaitingChoiceFromTitleAndScreen(paneTitle(target), tail),
+      tail: sanitizeTail(tail),
+    };
+  } catch {
+    return { awaitingChoice: null, tail: "" };
+  }
+}
+
 export function describePaneChoice(awaitingChoice: boolean | null): string {
   if (awaitingChoice === true) return "awaiting a choice (dialog)";
   if (awaitingChoice === false) return "no dialog";
@@ -994,21 +1121,27 @@ export function ensureAttached(session: string): void {
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export async function waitForPaneInput(target: string, timeoutMs: number): Promise<boolean> {
+function defaultHasInputBox(target: string): boolean | null {
+  try {
+    return inputBoxOnScreen(capturePane(target, 30));
+  } catch {
+    return null;
+  }
+}
+
+export async function waitForPaneInput(
+  target: string,
+  timeoutMs: number,
+  hasInputBox: (target: string) => boolean | null = defaultHasInputBox,
+): Promise<boolean> {
   const start = Date.now();
   const deadline = start + timeoutMs;
 
   const interval = () => (Date.now() - start < 1000 ? 200 : 500);
   while (Date.now() < deadline) {
-    let screen: string;
-    try {
-
-      screen = capturePane(target, 30);
-    } catch {
-      return false;
-    }
-
-    if (inputBoxOnScreen(screen)) {
+    const ready = hasInputBox(target);
+    if (ready === null) return false;
+    if (ready === true) {
       await sleep(250);
       return true;
     }

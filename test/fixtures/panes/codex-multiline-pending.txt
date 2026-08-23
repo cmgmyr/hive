@@ -1,0 +1,50 @@
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.146.0 -> 0.149.0                                                             │
+│ Run sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh' to update. │
+│                                                                                                     │
+│ See full release notes:                                                                             │
+│ https://github.com/openai/codex/releases/latest                                                     │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.146.0)                   │
+│                                              │
+│ model:     gpt-5.6-sol   /model to change    │
+│ directory: /private/tmp/hive-c1-fixtures-cwd │
+╰──────────────────────────────────────────────╯
+
+  Tip: New Use /fast to enable our fastest inference with increased plan usage.
+
+• You have 1 usage limit reset available. Run /usage to use one.
+
+
+› check the current git statusline one
+  line two
+  line three
+
+  Context 0% used · weekly 100% left · 0 in · 0 out · gpt-5.6-sol default
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

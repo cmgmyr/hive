@@ -1,3 +1,13 @@
+import {
+  codexInputBoxState,
+  codexPaneChoiceCheck,
+  codexPaneHasInputBox,
+  inputBoxState,
+  paneChoiceCheck,
+  paneHasInputBox,
+  type InputBoxState,
+} from "./tmux.js";
+
 export interface WorkerArgsInput {
   displayName?: string;
   namedByCaller: boolean;
@@ -6,6 +16,19 @@ export interface WorkerArgsInput {
 export interface BriefDeliveryCapability {
   settingsArgs(path: string): string[];
   systemPromptArgs(path: string): string[];
+}
+
+export interface PaneChoiceCheck {
+  awaitingChoice: boolean | null;
+  tail: string;
+}
+
+// The pane-level predicates each harness's chrome needs, resolved once at the call site (harnessFor)
+// rather than threaded as a command string into src/tmux.ts's capture primitives - see todo 523.
+export interface PaneClassifier {
+  choiceCheck(target: string): PaneChoiceCheck;
+  inputBoxState(target: string): InputBoxState | null;
+  hasInputBox(target: string): boolean | null;
 }
 
 export interface HarnessCapabilities {
@@ -26,6 +49,7 @@ export interface HarnessCapabilities {
   readonly supportsRename: boolean;
 
   readonly classifiesPaneScreen: boolean;
+  readonly paneClassifier: PaneClassifier | null;
 
   // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
   readonly hasScopes: boolean;
@@ -61,8 +85,38 @@ const claudeHarness: HarnessCapabilities = {
   supportsRename: true,
 
   classifiesPaneScreen: true,
+  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox },
 
   hasScopes: true,
+};
+
+// Exported, not pushed into HARNESSES below: no lane has yet proven hive can drive a codex pane end
+// to end, and todo 524 is where that gets proven and where registration lands, not here.
+export const codexHarness: HarnessCapabilities = {
+  name: "codex",
+
+  matches: (command) => commandBasename(command) === "codex",
+
+  argsFor: () => [],
+
+  briefDelivery: null,
+
+  stateSource: false,
+
+  transcriptDir: false,
+  contextTokens: false,
+
+  supportsResume: false,
+  supportsRename: false,
+
+  classifiesPaneScreen: true,
+  paneClassifier: {
+    choiceCheck: codexPaneChoiceCheck,
+    inputBoxState: codexInputBoxState,
+    hasInputBox: codexPaneHasInputBox,
+  },
+
+  hasScopes: false,
 };
 
 const unknownHarness: HarnessCapabilities = {
@@ -83,6 +137,7 @@ const unknownHarness: HarnessCapabilities = {
   supportsRename: false,
 
   classifiesPaneScreen: false,
+  paneClassifier: null,
 
   hasScopes: false,
 };
@@ -98,6 +153,14 @@ export function harnessFor(command: string): HarnessCapabilities {
 export function registerHarness(harness: HarnessCapabilities): void {
   if (HARNESSES.some((h) => h.name === harness.name)) {
     throw new Error(`a harness named "${harness.name}" is already registered`);
+  }
+  if ((harness.paneClassifier != null) !== harness.classifiesPaneScreen) {
+    throw new Error(
+      `harness "${harness.name}" sets classifiesPaneScreen to ${harness.classifiesPaneScreen} but ` +
+        `paneClassifier is ${harness.paneClassifier == null ? "missing" : "set"}. Every call site that reads ` +
+        "classifiesPaneScreen assumes paneClassifier is present whenever it is true, and never consulted " +
+        "when it is false; the two must agree.",
+    );
   }
   if (harness.supportsRename && !harness.classifiesPaneScreen) {
     throw new Error(
@@ -125,4 +188,13 @@ export function isClaudeCommand(command: string): boolean {
 export function screenClassifiable(command: string): boolean {
   if (command.trim() === "") return true;
   return harnessFor(command).classifiesPaneScreen;
+}
+
+// The predicate-level twin of screenClassifiable's empty-command case above: a pane with no agents
+// row has, historically, always been a plain claude session, so its predicates default to claude's
+// rather than to unknownHarness's null - which would make screenClassifiable's "true" a lie the first
+// time anything actually reads the pane it was supposed to gate.
+export function paneClassifierFor(command: string): PaneClassifier | null {
+  if (command.trim() === "") return claudeHarness.paneClassifier;
+  return harnessFor(command).paneClassifier;
 }

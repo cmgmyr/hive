@@ -2080,9 +2080,10 @@ function cmdDoctor(argv: string[]): void {
       tmux_socket: string;
     }[];
     for (const leadBox of leadRows) {
-      if (!harnessFor(leadBox.command).classifiesPaneScreen || foreignSocket(leadBox.tmux_socket)) continue;
+      const leadHarness = harnessFor(leadBox.command);
+      if (!leadHarness.classifiesPaneScreen || foreignSocket(leadBox.tmux_socket)) continue;
       leadsProbed += 1;
-      const box = inputBoxState(leadBox.tmux_target);
+      const box = leadHarness.paneClassifier!.inputBoxState(leadBox.tmux_target);
       if (box === null) {
         inputBoxUnclassified += 1;
       } else if (box.state === "unknown") {

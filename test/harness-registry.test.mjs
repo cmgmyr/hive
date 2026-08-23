@@ -8,10 +8,20 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-harness-registry-"));
 process.env.HIVE_DATA_DIR = scratch;
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const { harnessFor, registerHarness, unregisterHarness, screenClassifiable } = await import("../dist/harnesses.js");
+const { harnessFor, paneClassifierFor, registerHarness, unregisterHarness, screenClassifiable } = await import(
+  "../dist/harnesses.js"
+);
 const { workerCommandString } = await import("../dist/brief.js");
 const { reportsAgentStateLog } = await import("../dist/stateProvenance.js");
 const { claudeOnlyFields, contextTokensField } = await import("../dist/tools/agents.js");
+
+// No test here calls into this - it only has to satisfy registerHarness's own
+// "classifiesPaneScreen and paneClassifier must agree" check.
+const STUB_CLASSIFIER = {
+  choiceCheck: () => ({ awaitingChoice: null, tail: "" }),
+  inputBoxState: () => null,
+  hasInputBox: () => null,
+};
 
 const WIDGET = {
   name: "widget",
@@ -28,6 +38,7 @@ const WIDGET = {
   supportsResume: false,
   supportsRename: true,
   classifiesPaneScreen: true,
+  paneClassifier: STUB_CLASSIFIER,
   hasScopes: false,
 };
 
@@ -40,6 +51,7 @@ const UNREADABLE_BRIEFED = {
   matches: (command) => command.trim().split(/\s+/)[0]?.split("/").pop() === "unreadable-briefed",
   supportsRename: false,
   classifiesPaneScreen: false,
+  paneClassifier: null,
 };
 
 before(() => {
@@ -126,7 +138,14 @@ describe("registering a hypothetical second harness", () => {
 
   it("refuses to register a harness that types /rename into a pane it cannot classify, the one pair that is NOT independently settable", () => {
     assert.throws(
-      () => registerHarness({ ...WIDGET, name: "unsafe-rename", supportsRename: true, classifiesPaneScreen: false }),
+      () =>
+        registerHarness({
+          ...WIDGET,
+          name: "unsafe-rename",
+          supportsRename: true,
+          classifiesPaneScreen: false,
+          paneClassifier: null,
+        }),
       /supportsRename without classifiesPaneScreen/,
     );
     assert.equal(harnessFor("widget").name, "widget", "the refusal must not have registered anything");
@@ -145,6 +164,7 @@ describe("registering a hypothetical second harness", () => {
         matches: (command) => command.trim().split(/\s+/)[0] === name,
         supportsRename: rename,
         classifiesPaneScreen: classify,
+        paneClassifier: classify ? STUB_CLASSIFIER : null,
       });
       assert.equal(harnessFor(name).supportsRename, rename);
       assert.equal(harnessFor(name).classifiesPaneScreen, classify);
@@ -163,6 +183,12 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(screenClassifiable("claude"), true);
     assert.equal(screenClassifiable("bash"), false, "an unknown harness is the case this predicate exists for");
     assert.equal(screenClassifiable("sleep 600"), false);
+  });
+
+  it("gives an EMPTY command claude's own predicates, not unknownHarness's null - screenClassifiable's true would otherwise be a lie the moment anything reads the pane", () => {
+    assert.equal(paneClassifierFor(""), harnessFor("claude").paneClassifier);
+    assert.equal(paneClassifierFor("   "), harnessFor("claude").paneClassifier);
+    assert.equal(paneClassifierFor("bash"), null, "a real, unrecognised command still resolves to no classifier");
   });
 
   it("leaves the claude entry's own capabilities untouched by registering a neighbour", () => {

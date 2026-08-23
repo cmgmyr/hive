@@ -493,3 +493,35 @@ One residual this fixture deliberately does not test: a box TALLER THAN THE
 PANE ITSELF has its top border scrolled off the screen and into scrollback, so
 it can read absent whatever window hive asks for. That is claude's own
 rendering rather than hive's window, and it fails closed.
+
+## codex fixtures (todo 523)
+
+Captured `tmux capture-pane -p` (`-e` variants add `-e` for the SGR bytes)
+from a real `codex-cli 0.146.0` process, 2026-08-22, private tmux socket,
+scratch cwd, torn down after with `tmux -S <path> kill-server`. Every file
+here is a live capture, none hand-edited. Two of these fixtures are dialogs
+codex itself raised; neither was answered.
+
+- `codex-directory-trust-dialog.txt`: the directory-trust prompt shown on
+  first launch in an unrecognised directory. No `Context N% used` footer,
+  so `codexPaneHasInputBox` reads false; the highlighted `› 1. Yes, continue`
+  option is codex's own choice-menu shape.
+- `codex-sandbox-approval-dialog.txt`: a real sandbox-escalation approval,
+  elicited by asking codex to write a file under `--sandbox read-only`.
+  Escaped with Escape, never answered; the file it would have written does
+  not exist. Also has no footer, and its own highlighted numbered option.
+- `codex-idle-ghost.txt` / `-ghost-e.txt`: idle, showing codex's own dim
+  placeholder hint ("Summarize recent commits"), plain and SGR-preserving
+  captures of the same screen.
+- `codex-idle-pending.txt` / `-pending-e.txt`: idle, with real unsubmitted
+  text typed via `send-keys -l` and never sent.
+- `codex-multiline-pending.txt` / `-pending-e.txt`: a multi-line paste sent
+  the same way, still sitting in the box, Enter never sent.
+
+What these fixtures do NOT and cannot cover: codex's pane TITLE (idle,
+busy-spinner, "Action Required") and a genuinely LIVE cursor accepting
+keystrokes one at a time - a fixture replay (`cat file; sleep`) prints a
+screen once and the cursor sits below it, so nothing can be pending in it
+(`.claude/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md`).
+Both are covered live instead, against a synthetic pane rather than real
+codex, in `test/codex-live-pane.test.mjs`.

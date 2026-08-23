@@ -1,0 +1,50 @@
+[2m╭─────────────────────────────────────────────────────────────────────────────────────────────────────╮[0m
+[2m│ [0;1m[38;5;6m✨ Update available![0m [1m0.146.0 -> 0.149.0[0;2m                                                             │[0m
+[2m│ [0mRun [38;5;6msh -c 'curl -fsSL ]8;;https://chatgpt.com/codex/install.sh\https://chatgpt.com/codex/install.sh]8;;\ | CODEX_NON_INTERACTIVE=1 sh'[39m to update.[2m │[0m
+[2m│                                                                                                     │[0m
+[2m│ [0mSee full release notes:[2m                                                                             │[0m
+[2m│ [0;4m[38;5;6m]8;;https://github.com/openai/codex/releases/latest\https://github.com/openai/codex/releases/latest[0;2m]8;;\                                                     │[0m
+[2m╰─────────────────────────────────────────────────────────────────────────────────────────────────────╯[0m
+
+[2m╭──────────────────────────────────────────────╮[0m
+[2m│ >_ [0;1mOpenAI Codex[0;2m (v0.146.0)                   │[0m
+[2m│                                              │[0m
+[2m│ model:     [0mgpt-5.6-sol[2m   [0m[38;5;6m/model[2m[39m to change    │[0m
+[2m│ directory: [0m/private/tmp/hive-c1-fixtures-cwd[2m │[0m
+[2m╰──────────────────────────────────────────────╯[0m
+
+  [1mTip:[0m [3mNew[0m Use [1m/fast[0m to enable our fastest inference with increased plan usage.
+
+[2m• [0mYou have 1 usage limit reset available. Run /usage to use one.
+
+
+[1m›[0m check the current git statusline one
+  line two
+  line three
+
+  [38;2;242;181;144mContext 0% used[2m[39m · [0m[38;2;233;144;169mweekly 100% left[2m[39m · [0m[38;2;242;181;144m0 in[2m[39m · [0m[38;2;242;181;144m0 out[2m[39m · [0m[38;2;246;226;183mgpt-5.6-sol default[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

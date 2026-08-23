@@ -15,7 +15,7 @@ import {
   type LiveBackgroundTask,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { screenClassifiable } from "./harnesses.js";
+import { paneClassifierFor, screenClassifiable } from "./harnesses.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -28,10 +28,8 @@ import {
   capturePane,
   foreignSocket,
   holdsHumanInput,
-  inputBoxState,
   liveTargets,
   maskChoiceMarker,
-  paneAwaitingChoice,
   paneReissued,
   rowAlive,
   rowAliveProbe,
@@ -530,15 +528,17 @@ function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null
   return entry;
 }
 
-function awaitingChoice(pane: string, cache: ChoiceCache): boolean | null {
+function awaitingChoice(pane: string, command: string, cache: ChoiceCache): boolean | null {
   const entry = cacheEntry(pane, cache);
-  if (entry.choice === undefined) entry.choice = paneAwaitingChoice(pane);
+  if (entry.choice === undefined) {
+    entry.choice = paneClassifierFor(command)?.choiceCheck(pane).awaitingChoice ?? null;
+  }
   return entry.choice;
 }
 
-function inputBoxHoldsWake(pane: string, cache: ChoiceCache): boolean {
+function inputBoxHoldsWake(pane: string, command: string, cache: ChoiceCache): boolean {
   const entry = cacheEntry(pane, cache);
-  if (entry.box === undefined) entry.box = inputBoxState(pane);
+  if (entry.box === undefined) entry.box = paneClassifierFor(command)?.inputBoxState(pane) ?? null;
   return holdsHumanInput(entry.box);
 }
 
@@ -964,7 +964,7 @@ function blockedWatchedAgents(
   timer: TimerRow,
   snapshot: AliveSnapshot,
   tellActor: string,
-): { id: number; name: string; pane: string; socket: string; blockedSince: string }[] {
+): { id: number; name: string; pane: string; socket: string; command: string; blockedSince: string }[] {
   const rows = isStandingWatch(timer) ? standingBlockedRows(timer, tellActor) : oneShotBlockedRows(timer);
   return rows
 
@@ -974,6 +974,7 @@ function blockedWatchedAgents(
       name: r.name,
       pane: r.tmux_target,
       socket: r.tmux_socket,
+      command: r.command,
       blockedSince: r.episode,
     }));
 }
@@ -1034,7 +1035,7 @@ function noteBlockedWatched(timer: TimerRow, snapshot: AliveSnapshot, choices: C
       if (alreadyToldAbout(timer.id, agent.id, agent.blockedSince)) continue;
 
       if (recentlyHadNoDialog(agent.socket, agent.pane)) continue;
-      const choice = awaitingChoice(agent.pane, choices);
+      const choice = awaitingChoice(agent.pane, agent.command, choices);
       if (choice !== true) {
 
         if (choice === false) rememberNoDialog(agent.socket, agent.pane);
@@ -1648,7 +1649,7 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
 
         if (snapshot === null) continue;
         if (rowAlive(row.tmux_socket, row.tmux_target, snapshot) !== true) continue;
-        if (awaitingChoice(row.tmux_target, choices) !== false) continue;
+        if (awaitingChoice(row.tmux_target, row.command, choices) !== false) continue;
       }
       candidates.push({ row, stale });
     }
@@ -1781,14 +1782,14 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
-  const dialog = awaitingChoice(timer.deliver_pane, choices);
+  const dialog = awaitingChoice(timer.deliver_pane, timer.deliver_command, choices);
   if (dialog === true) {
 
     noteModalHold(timer, snapshot);
     return { ok: false };
   }
 
-  if (inputBoxHoldsWake(timer.deliver_pane, choices)) {
+  if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);
     return { ok: false };
   }

@@ -342,6 +342,11 @@ describe("agent_spawn does not hand back instructions it has no way to deliver (
       supportsResume: false,
       supportsRename: false,
       classifiesPaneScreen: true,
+      paneClassifier: {
+        choiceCheck: () => ({ awaitingChoice: null, tail: "" }),
+        inputBoxState: () => null,
+        hasInputBox: () => null,
+      },
       hasScopes: false,
     });
     try {
