@@ -8,7 +8,9 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-brief-"));
 process.env.HIVE_DATA_DIR = scratch;
 const {
   agentBriefPath,
+  harnessBriefVars,
   isClaudeCommand,
+  mergedBriefVars,
   readAgentBrief,
   workerBrief,
   workerCommandString,
@@ -177,6 +179,101 @@ describe("a profile's own worker.md still gets the wait-for-assignment instructi
     const rendered = workerBrief({ ...ctx, profile: "posture-only-profile" });
     assert.match(rendered, /\[HIVE CONTEXT\]/);
     assert.match(rendered, /Run whoami to confirm scope, then wait for your assignment\./);
+  });
+});
+
+describe("harnessBriefVars", () => {
+  it("sets harness_codex, not harness_claude, for a codex command", () => {
+    assert.deepEqual(harnessBriefVars("codex"), { harness_codex: "1" });
+  });
+
+  it("sets harness_claude for a claude command", () => {
+    assert.deepEqual(harnessBriefVars("claude"), { harness_claude: "1" });
+  });
+
+  it("sets harness_claude for an unrecognised harness, since a presence-conditional has no else", () => {
+    assert.deepEqual(harnessBriefVars("unknown"), { harness_claude: "1" });
+    assert.deepEqual(harnessBriefVars(""), { harness_claude: "1" });
+  });
+});
+
+describe("worker.md renders the right harness-conditional block", () => {
+  const fixtureBrief = [
+    "before",
+    "<!--if:harness_claude-->",
+    "claude-text",
+    "<!--end-->",
+    "<!--if:harness_codex-->",
+    "codex-text",
+    "<!--end-->",
+    "after",
+  ].join("\n");
+
+  function renderFor(harnessName, extraVars = {}) {
+    const profileName = `harness-fixture-${harnessName}-${Object.keys(extraVars).join(",")}`;
+    const profileDir = join(scratch, "profiles", profileName);
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(join(profileDir, "worker.md"), fixtureBrief);
+    return workerBrief({
+      ...ctx,
+      profile: profileName,
+      vars: mergedBriefVars(extraVars, harnessName),
+    });
+  }
+
+  it("a codex worker sees codex-text and not claude-text", () => {
+    const rendered = renderFor("codex");
+    assert.match(rendered, /codex-text/);
+    assert.doesNotMatch(rendered, /claude-text/);
+  });
+
+  it("a claude worker sees claude-text and not codex-text", () => {
+    const rendered = renderFor("claude");
+    assert.match(rendered, /claude-text/);
+    assert.doesNotMatch(rendered, /codex-text/);
+  });
+
+  it("an unrecognised harness command still renders claude-text, not neither block", () => {
+    const rendered = renderFor("unknown");
+    assert.match(rendered, /claude-text/);
+    assert.doesNotMatch(rendered, /codex-text/);
+  });
+
+  it("a project var literally named codex does not change which block a claude worker sees", () => {
+
+    const rendered = renderFor("claude", { codex: "1" });
+    assert.match(rendered, /claude-text/);
+    assert.doesNotMatch(rendered, /codex-text/);
+  });
+
+  it("a project var named harness_claude does not survive a codex spawn", () => {
+    const rendered = renderFor("codex", { harness_claude: "1" });
+    assert.match(rendered, /codex-text/);
+    assert.doesNotMatch(rendered, /claude-text/);
+  });
+
+  it("a project var named harness_codex does not survive a claude spawn", () => {
+    const rendered = renderFor("claude", { harness_codex: "1" });
+    assert.match(rendered, /claude-text/);
+    assert.doesNotMatch(rendered, /codex-text/);
+  });
+});
+
+describe("mergedBriefVars", () => {
+  it("strips a project's own harness_claude before a codex spawn, rather than leaving both set", () => {
+    assert.deepEqual(mergedBriefVars({ harness_claude: "1" }, "codex"), { harness_codex: "1" });
+  });
+
+  it("strips a project's own harness_codex before a claude spawn, rather than leaving both set", () => {
+    assert.deepEqual(mergedBriefVars({ harness_codex: "1" }, "claude"), { harness_claude: "1" });
+  });
+
+  it("passes an unrelated project var through untouched", () => {
+    assert.deepEqual(mergedBriefVars({ foo: "bar" }, "claude"), { foo: "bar", harness_claude: "1" });
+  });
+
+  it("handles no project vars at all", () => {
+    assert.deepEqual(mergedBriefVars(undefined, "codex"), { harness_codex: "1" });
   });
 });
 

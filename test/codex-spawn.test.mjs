@@ -15,6 +15,9 @@ const { sessionName } = await import("../dist/tmux.js");
 scratchGit(dirs.projectDir, "init", "-q");
 scratchGit(dirs.projectDir, "commit", "-q", "--allow-empty", "-m", "root");
 
+// Absent means claude only (todo 526's gate), and this file's whole point is spawning codex.
+writeFileSync(join(dirs.projectDir, "hive.yml"), "agents: [claude, codex]\n");
+
 // A fake HOME so the spawned hive process's own homedir()-based auth.json lookup resolves to a
 // fake credential rather than the real ~/.codex - the same reason ensureCodexHome takes an
 // authSource override for its own unit tests, applied here at the process boundary instead, since
@@ -109,6 +112,9 @@ describe("agent_spawn: a failed codex launch does not orphan its CODEX_HOME", ()
     const failDirs = scratchDirs();
     scratchGit(failDirs.projectDir, "init", "-q");
     scratchGit(failDirs.projectDir, "commit", "-q", "--allow-empty", "-m", "root");
+    // Otherwise the gate refuses this before CODEX_HOME is ever written, and the "no orphan"
+    // assertion below would pass for the wrong reason - it needs the real tmux failure to fire.
+    writeFileSync(join(failDirs.projectDir, "hive.yml"), "agents: [claude, codex]\n");
     const fakeTmuxDir = fakeFailingTmux({ failOn: "new-session" });
 
     const failMcp = new McpClient({

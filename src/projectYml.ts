@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
@@ -20,6 +21,8 @@ export interface ProjectYml {
 
   profile: string | null;
 
+  agents: string[] | null;
+
   lead_branches: string[] | null;
 
   dashboard: boolean;
@@ -33,6 +36,12 @@ export const NO_PROFILE = "none";
 export function activeProfile(config: ProjectYml | null): string | null {
   const name = config?.profile;
   return name == null || name === NO_PROFILE ? null : name;
+}
+
+// First entry is the default; absent or empty means claude only (todo 526).
+export function allowedAgents(config: ProjectYml | null): string[] {
+  const list = config?.agents;
+  return list && list.length > 0 ? list : ["claude"];
 }
 
 export function loadProjectYml(projectPath: string): {
@@ -86,6 +95,27 @@ export function loadProjectYml(projectPath: string): {
       );
     } else {
       profile = value;
+    }
+  }
+
+  let agents: string[] | null = null;
+  if (root.agents != null) {
+    if (!Array.isArray(root.agents)) {
+      warnings.push("agents must be a list of harness names; ignoring it.");
+    } else {
+      const known = harnessNames();
+      const valid: string[] = [];
+      for (const entry of root.agents) {
+        const value = typeof entry === "string" ? entry.trim() : "";
+        if (value === "") {
+          warnings.push("agents entry must be a non-empty harness name; skipped.");
+        } else if (!known.includes(value)) {
+          warnings.push(`agents: "${value}" is not a known harness (${known.join(", ")}); ignoring it.`);
+        } else {
+          valid.push(value);
+        }
+      }
+      agents = valid.length > 0 ? valid : null;
     }
   }
 
@@ -164,7 +194,10 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
-  return { config: { lead, placement, layout, profile, lead_branches, dashboard, vars, processes }, warnings };
+  return {
+    config: { lead, placement, layout, profile, agents, lead_branches, dashboard, vars, processes },
+    warnings,
+  };
 }
 
 export function configHash(name: string, command: string, dir: string | null, env: Record<string, string>): string {

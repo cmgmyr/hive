@@ -2,7 +2,7 @@
 
 Shared memory and coordination for Claude Code sessions.
 
-Hive gives multiple Claude Code sessions, and the humans running them, one shared, project-scoped state store. A lead session plans work, worker sessions pick it up, and everything they need to share survives across windows and restarts. Workers are real terminal sessions in tmux panes, so you can watch any of them think, interrupt them, or take over. Coordination is event-driven, not polled: workers report their exact state through Claude Code hooks, so a lead can say "wake me when a worker goes idle" and go quiet until then.
+Hive gives multiple Claude Code sessions, and the humans running them, one shared, project-scoped state store. A lead session plans work, worker sessions pick it up, and everything they need to share survives across windows and restarts. Workers are real terminal sessions in tmux panes, Claude Code by default or codex where a project opts in, so you can watch any of them think, interrupt them, or take over. Coordination is event-driven, not polled: workers report their exact state through their own CLI's hooks, so a lead can say "wake me when a worker goes idle" and go quiet until then.
 
 ## Why not just subagents?
 
@@ -19,7 +19,7 @@ Each Claude Code session runs its own `hive` MCP server over stdio, and every in
 
 ## Install and quick start
 
-Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools.
+Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. codex is optional, only needed if a project opts a worker into it; see [docs/install.md](docs/install.md#codex-workers).
 
 ```bash
 git clone <repo-url> hive && cd hive
@@ -120,7 +120,7 @@ hive doctor --strict          # confirms the addon, the pin, and the registratio
 | [Daily driver](docs/daily-driver.md) | A day with hive, starting a session, watching workers, wake-ups |
 | [Profiles](docs/profiles.md) | Standing instructions across projects, the session-start plugin |
 | [Projects](docs/projects.md) | `hive init`, `hive.yml`, automatic backups, pads and todos from the shell |
-| [Install details](docs/install.md) | iTerm settings, the status line, MCP scope, updating, uninstalling |
+| [Install details](docs/install.md) | iTerm settings, the status line, MCP scope, codex workers, updating, uninstalling |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
 | [Tools](docs/tools.md) | The 44 MCP tools: what each does and when to use it |
 | [tmux settings](docs/tmux.md) | Attach modes, pane options, and what to put in `~/.tmux.conf` |

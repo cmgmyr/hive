@@ -18,6 +18,7 @@ after(() => cleanup());
 
 const dirs = scratchDirs();
 const configDir = join(dirs.tmp, "claude-config");
+const codexHome = join(dirs.tmp, "codex-home");
 mkdirSync(configDir, { recursive: true });
 
 const isolated = {
@@ -26,12 +27,21 @@ const isolated = {
   tmp: dirs.tmp,
   env: {
     CLAUDE_CONFIG_DIR: configDir,
+    CODEX_HOME: codexHome,
     HIVE_BIN_DIR: join(dirs.tmp, "no-dispatcher-here"),
     PATH: `${join(process.execPath, "..")}:/usr/bin:/bin`,
   },
 };
 const writeRegistration = (config) =>
   writeFileSync(join(configDir, ".claude.json"), JSON.stringify(config, null, 1));
+const writeCodexRegistration = (config) => {
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, "config.toml"), config);
+};
+const runCodexDoctor = async (config) => {
+  writeCodexRegistration(config);
+  return runCli(["doctor"], isolated);
+};
 
 describe("hive doctor --strict promotes only the warns that mean this install is wrong", () => {
   let plain;
@@ -70,6 +80,55 @@ describe("hive doctor --strict promotes only the warns that mean this install is
       failureCount(plain.stdout),
       `a non-gating warn must not change the problem count\nstrict:\n${strict.stdout}`,
     );
+  });
+
+  it("reports a missing codex config as information without adding a warning", () => {
+    assert.match(
+      plain.stdout,
+      new RegExp(
+        `info {2}mcp registration \\(codex\\): none found for hive under codex \\(checked ${codexHome}/config\\.toml\\)`,
+      ),
+    );
+    assert.doesNotMatch(plain.stdout, /mcp registration \(codex\): none found.*scope/);
+  });
+
+  it("reports a codex hive registration without inventing a scope", async () => {
+    const registered = await runCodexDoctor(
+      `[mcp_servers.hive]\ncommand = ${JSON.stringify(process.execPath)}\n` +
+        `args = [${JSON.stringify(SERVER)}]\n`,
+    );
+    assert.match(
+      registered.stdout,
+      new RegExp(`info {2}mcp registration \\(codex\\): ${process.execPath} ${SERVER}`),
+    );
+    assert.doesNotMatch(registered.stdout, /mcp registration \(codex scope\)/);
+    assert.doesNotMatch(registered.stdout, /none found for hive under codex/);
+  });
+
+  it("reads a Codex literal-string command", async () => {
+    const registered = await runCodexDoctor(
+      `[mcp_servers.hive]\ncommand = 'node'\nargs = [${JSON.stringify(SERVER)}]\n`,
+    );
+    assert.match(registered.stdout, /info {2}mcp registration \(codex\): node/);
+    assert.match(registered.stdout, new RegExp(SERVER));
+    assert.doesNotMatch(registered.stdout, /none found for hive under codex/);
+  });
+
+  it("reads a Codex command followed by a TOML comment", async () => {
+    const registered = await runCodexDoctor(
+      `[mcp_servers.hive]\ncommand = "node" # the server interpreter\nargs = [${JSON.stringify(SERVER)}]\n`,
+    );
+    assert.match(registered.stdout, /info {2}mcp registration \(codex\): node/);
+    assert.match(registered.stdout, new RegExp(SERVER));
+    assert.doesNotMatch(registered.stdout, /none found for hive under codex/);
+  });
+
+  it("reads a Codex multiline args array without dropping its server path", async () => {
+    const registered = await runCodexDoctor(
+      `[mcp_servers.hive]\ncommand = "node"\nargs = [\n  ${JSON.stringify(SERVER)},\n]\n`,
+    );
+    assert.match(registered.stdout, new RegExp(`info {2}mcp registration \\(codex\\): node ${SERVER}`));
+    assert.doesNotMatch(registered.stdout, /none found for hive under codex/);
   });
 
   it("exits 0 under --strict when the only findings are non-gating warns", () => {

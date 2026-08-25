@@ -85,3 +85,42 @@ handed.
   `hive runbook` and `hive posture` already default.
 
 Both are cheap to reverse if that turns out wrong.
+
+## A profile commit and its var-setting code deploy on different schedules, and todo 527 hit it live
+
+`~/.hive/profiles/<name>/worker.md` is a plain file, read and rendered fresh
+on every spawn - no build, no gate, live the instant it's committed. The code
+that computes a NEW template var (`mergedBriefVars`, `src/brief.ts`) lives in
+`dist/`, which only ships to a running MCP server on merge and restart. Todo
+527 wrapped worker.md's review/CI steps in `<!--if:harness_claude-->` /
+`<!--if:harness_codex-->` pairs and committed that to the profiles repo
+before its matching `src/tools/agents.ts`/`src/brief.ts` change had merged.
+
+MEASURED, not theorized: the lead spawned a real codex worker (agent 381)
+against the still-unmerged branch and read its generated
+`CODEX_HOME/config.toml` directly. `developer_instructions` carried worker.md
+with BOTH review blocks stripped - `grep "codex review"` and `grep "WAITING
+ON CHECKS"` both returned nothing. The running server's `dist/brief.js` had
+no `mergedBriefVars` (`grep -c mergedBriefVars dist/brief.js` on `main` was
+`0`), so no `harness_claude`/`harness_codex` var was ever set on that spawn,
+and `renderConditionals`'s presence check (`src/profiles.ts`) has no else:
+every `<!--if:...-->` block with an unset var is silently omitted. Same
+symptom class `harnessBriefVars`'s claude-default was built to prevent (an
+unrecognised harness getting neither block), arriving through a route
+neither the design nor the review pass had considered - a deploy-order gap,
+not a harness-identity gap - and it degrades a CLAUDE worker's brief too,
+since the OLD server also fails to set harness_claude for a claude spawn.
+
+REJECTED FIX, so it isn't re-proposed: leave the claude side of a new pair
+unwrapped and wrap only the new (codex) branch. That protects an old
+server's CLAUDE workers (unwrapped text always renders) but breaks CODEX
+under an old server the same way - the unwrapped claude text renders for
+codex too, since there is no "unless" conditional, only presence. Both sides
+of a new pair must stay wrapped together; the fix is sequencing the deploy,
+not asymmetric wrapping.
+
+THE OPEN WINDOW IS OPERATIONAL, NOT STRUCTURAL: it lasts from the profile
+commit until the matching code is merged and the server restarts, and it is
+whoever holds that merge's job to close, not a runtime guard's. See
+`.claude/rules/profile-files.md`'s "A new conditional var needs its code
+deployed first" for the prohibition this earns.

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { db } from "./db.js";
 import { awaitingFirstPromptSql } from "./firstPrompt.js";
-import { liveBackgroundTasks, SUBAGENT_LATCH_MAX_AGE_SECONDS, withholdsIdle } from "./backgroundTasks.js";
+import { liveBackgroundTasks, SUBAGENT_LATCH_SQL, withholdsIdle } from "./backgroundTasks.js";
 
 interface HookPayload {
   message?: unknown;
@@ -87,7 +87,7 @@ function hasOpenSubagent(actorId: string): boolean {
           AND created_at >= datetime('now', ?)
         ORDER BY id ASC`,
     )
-    .all(actorId, `-${SUBAGENT_LATCH_MAX_AGE_SECONDS} seconds`) as { event: string; payload: string }[];
+    .all(actorId, SUBAGENT_LATCH_SQL) as { event: string; payload: string }[];
 
   const open = new Set<string>();
   for (const row of rows) {

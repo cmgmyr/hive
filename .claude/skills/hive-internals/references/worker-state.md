@@ -118,9 +118,9 @@ todo 525 found three ways that model is wrong, all the same root cause seen from
 
 **The fix is a model change, not three patches.** `hasOpenSubagent` now reduces every
 `subagent_start`/`subagent_stop` row for the actor **within `SUBAGENT_LATCH_MAX_AGE_SECONDS`**
-(`src/backgroundTasks.ts`, 15 minutes - reused from `STALL_BOUND_SECONDS`'s own reasoning rather than
-a new number, since past that age hive already treats an ordinary latched worker as worth a stall
-report) into a **set of open `agent_id`s**, in order: a `subagent_start` adds its id, a
+(`src/backgroundTasks.ts`, 15 minutes - DERIVED from `STALL_BOUND_SECONDS` in that same file,
+not a second literal, since past that age hive already treats an ordinary latched worker as worth a
+stall report. Keep it a reference: two equal literals drifted apart silently once already) into a **set of open `agent_id`s**, in order: a `subagent_start` adds its id, a
 `subagent_stop` removes it, and the latch withholds idle exactly when that set is non-empty.
 
 Checked against the new model, none of the three can recur as a DISTINCT failure:

@@ -23,6 +23,14 @@ One forked profile directory is resolved by multiple projects with different
 project's values. Substitution only happens inside `renderProfileFile`,
 called by whatever is reading the file for a specific project.
 
+## A new conditional var needs its code deployed first
+
+A profile file is live the moment it is committed; the code that sets a new
+template var ships only on merge and server restart. In the window between,
+the var is never set - and a presence-conditional has no else, so every
+worker silently gets the block stripped, not an error. Merge and restart
+before relying on a new conditional var in a profile file.
+
 ## `.md` only, no dotfiles
 
 `.hive-origin.json` is hive's own metadata, not a profile artifact. Never

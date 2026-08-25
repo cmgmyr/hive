@@ -119,7 +119,7 @@
           "type": "boolean"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {
@@ -234,7 +234,7 @@
           "type": "integer"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {
@@ -266,7 +266,7 @@
           "type": "boolean"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {
@@ -350,7 +350,7 @@
           "type": "integer"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "new_name": {
@@ -423,7 +423,7 @@
           "type": "integer"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {
@@ -512,7 +512,7 @@
           "type": "array"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {
@@ -538,7 +538,7 @@
     }
   },
   "agent_spawn": {
-    "description": "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command hive cannot classify the screen of (anything but claude today) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+    "description": "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -547,7 +547,7 @@
       "additionalProperties": false,
       "properties": {
         "command": {
-          "description": "Agent command to run. Defaults to claude.",
+          "description": "Raw agent command to run. Overrides harness when both are given. Defaults to the project's hive.yml agents: default, or claude. Refused if it resolves to a known harness the project's agents: list does not allow.",
           "type": "string"
         },
         "cwd": {
@@ -560,6 +560,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "harness": {
+          "description": "Spawn a known harness by name (e.g. \"codex\") instead of a raw command. Ignored when command is also given. Must be in the project's hive.yml agents: list (default: claude only).",
+          "type": "string"
         },
         "layout": {
           "description": "How to arrange the lead's window when placement is split. main-vertical gives the lead the left half with workers stacked on the right; tiled (default) splits evenly. Projects can set a default in hive.yml.",
@@ -685,7 +689,7 @@
           "type": "boolean"
         },
         "name": {
-          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+          "description": "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
           "type": "string"
         },
         "project_id": {

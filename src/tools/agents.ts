@@ -5,6 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import {
   agentBriefPath,
+  mergedBriefVars,
   readAgentBrief,
   workerBrief,
   workerCommandString,
@@ -12,9 +13,9 @@ import {
 } from "../brief.js";
 import { codexHomeDir, ensureCodexHome } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
-import { commandHead, harnessFor, paneClassifierFor, screenClassifiable } from "../harnesses.js";
+import { commandHead, harnessFor, harnessNames, paneClassifierFor, screenClassifiable } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
-import { activeProfile, loadProjectYml, type ProjectYml } from "../projectYml.js";
+import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
   classifyMiss,
   LEAD_MESSAGE_THRESHOLD,
@@ -451,14 +452,25 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent (default command: claude). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command hive cannot classify the screen of (anything but claude today) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       inputSchema: {
         name: z
           .string()
           .optional()
           .describe("Display name; defaults to worker-N. This is how you address the worker later."),
         model: z.string().optional().describe("Passed as --model to the agent command."),
-        command: z.string().optional().describe("Agent command to run. Defaults to claude."),
+        command: z
+          .string()
+          .optional()
+          .describe(
+            "Raw agent command to run. Overrides harness when both are given. Defaults to the project's hive.yml agents: default, or claude. Refused if it resolves to a known harness the project's agents: list does not allow.",
+          ),
+        harness: z
+          .string()
+          .optional()
+          .describe(
+            "Spawn a known harness by name (e.g. \"codex\") instead of a raw command. Ignored when command is also given. Must be in the project's hive.yml agents: list (default: claude only).",
+          ),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
         cwd: z
           .string()
@@ -522,13 +534,37 @@ export function registerAgents(server: McpServer): void {
           : nextWorkerName(project.id);
         requireNameFree(project.id, name);
 
-        const baseCommand = args.command ?? "claude";
+        const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
+
+        let baseCommand: string;
+        if (args.command) {
+          baseCommand = args.command;
+        } else if (args.harness) {
+          if (!harnessNames().includes(args.harness)) {
+            throw new Error(`Unknown harness "${args.harness}". Known harnesses: ${harnessNames().join(", ")}.`);
+          }
+          baseCommand = args.harness;
+        } else {
+          baseCommand = allowedAgents(projectConfig)[0];
+        }
+
+        // Gates only a command hive actually recognizes as one of its own harnesses (matched by
+        // basename, todo 521's known blind spot: a command whose basename merely LOOKS like "claude"
+        // or "codex" is gated exactly as strongly as it is classified elsewhere, no more). A command
+        // hive cannot classify at all (harnessFor -> "unknown", not in harnessNames()) was never part
+        // of the crew-harness pool this key governs and stays ungated, same as before this lane.
         const harness = harnessFor(baseCommand);
+        const allowed = allowedAgents(projectConfig);
+        if (harnessNames().includes(harness.name) && !allowed.includes(harness.name)) {
+          throw new Error(
+            `[agent_spawn:harness-not-allowed] "${harness.name}" is not in this project's hive.yml ` +
+              `agents: list (${allowed.join(", ")}). Add it to agents: to allow spawning it.`,
+          );
+        }
         const mintsSession = harness.transcriptDir || harness.supportsResume;
 
         const sessionId = mintsSession && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
 
-        const { config: projectConfig, warnings: configWarnings } = loadProjectYml(project.path);
         const worktreeInstall = worktreeInstallNotice(cwd, project.path, projectConfig);
         const briefFor = (actorId: string) => ({
           name,
@@ -537,8 +573,7 @@ export function registerAgents(server: McpServer): void {
           projectPath: project.path,
           cwd,
           profile: activeProfile(projectConfig),
-
-          vars: projectConfig?.vars ?? {},
+          vars: mergedBriefVars(projectConfig?.vars, harness.name),
         });
         // Minted before the agent row exists (unlike agentId/actorId), so CODEX_HOME's own path can
         // go straight into launchAgent's static env below rather than needing agentId to name it.

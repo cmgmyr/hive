@@ -164,6 +164,12 @@ export function harnessFor(command: string): HarnessCapabilities {
   return HARNESSES.find((harness) => harness.matches(command)) ?? unknownHarness;
 }
 
+// The one source of known harness names - hive.yml's `agents:` key and agent_spawn's `harness`
+// parameter both validate against this rather than each keeping their own copy of the list.
+export function harnessNames(): string[] {
+  return HARNESSES.map((harness) => harness.name);
+}
+
 // Registration is the extension point a later harness (or a test proving this table's
 // independence property) adds an entry through, rather than editing every call site.
 export function registerHarness(harness: HarnessCapabilities): void {

@@ -13,7 +13,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `project_select` | Points this session at another project | Cross-project work you asked for by name; workers with `HIVE_PROJECT_LOCK=1` can't |
 | `project_prune` | Deletes every registered project that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray projects a scratch spawn or a cwd change registered on its own |
 | **agents** | | |
-| `agent_spawn` | Starts a worker (default `claude`) in a tmux pane or window, locked to the project | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
+| `agent_spawn` | Starts a worker in a tmux pane or window, locked to the project; `harness` picks the CLI, default the project's `agents:` first entry | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |
 | `agent_status` | One agent in detail, with a short terminal tail | To check on a specific worker |
 | `agent_send` | Types text or key presses into a worker's terminal. Text over 300 characters bound for a LEAD is stored and delivered as a one-line pointer instead; the text path refuses a pane whose harness hive cannot classify, where `keys` still works | To give a worker its task, answer a prompt, or press Enter/Escape for it |

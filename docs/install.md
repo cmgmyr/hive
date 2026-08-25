@@ -12,6 +12,22 @@ The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive
 
 Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
 
+## Codex workers
+
+A worker can run `codex` instead of Claude Code. Two things beyond a plain `claude` worker's requirements:
+
+- The `codex` CLI installed and logged in (`codex login`). A codex worker's per-worker home symlinks its credentials from `~/.codex/auth.json`, so hive needs that file to already exist.
+- The project's `hive.yml` opting in: `agents: [claude, codex]` (see [docs/projects.md](projects.md#project-commands-hiveyml)). With no `agents:` key, a project allows `claude` only, and spawning codex, whether through `agent_spawn`'s `harness` parameter or a `command` that resolves to it, refuses with `[agent_spawn:harness-not-allowed]`. Add `codex` to `agents:` and spawn again.
+
+A codex worker is not at parity with a claude one, and hive does not pretend otherwise:
+
+- It cannot be parked or resumed (`agent_park`, `agent_resume`); closing one ends that session for good.
+- Stall reporting skips it entirely. A stall report corroborates a worker's state against its transcript's mtime, and codex writes no transcript hive can read, so hive excludes the row rather than guessing at it, both in `hive doctor` and in the stall notice a standing watch sends a lead. Context-percentage reporting is unavailable for the same reason.
+- `.claude/rules/*.md` are not injected automatically the way Claude Code injects them for a claude worker; a codex worker only reads one if its brief tells it to.
+- `codex review` is not the same rigor as `/code-review`: no adversarial second pass, no separate findings artifact.
+
+`agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
+
 ## Session-start plugin
 
 Symlink the plugin once per machine, not per project:

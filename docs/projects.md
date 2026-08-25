@@ -21,6 +21,10 @@ lead: claude --model opus     # optional command for the lead window
 placement: split              # optional worker placement: split (panes, default) or window (tabs)
 layout: main-vertical         # optional pane arrangement for split: tiled (default),
                               # main-vertical, main-horizontal, even-horizontal, even-vertical
+agents: [claude, codex]       # optional allowed harness set for spawned crew; first entry is
+                              # the default. Absent or empty means claude only, and agent_spawn
+                              # REFUSES a harness or command outside this list. lead: above is a
+                              # separate key and stays reachable regardless of this list.
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .claude/dashboard/index.html on every tick:
                               # the board pad, open todos, running agents, pending wakes, and
@@ -38,6 +42,8 @@ processes:
 ```
 
 Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output`. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
+
+`agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
 
 ## Automatic backups
 

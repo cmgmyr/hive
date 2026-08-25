@@ -51,6 +51,8 @@ hive re-applies the layout whenever a worker spawns or closes, so it holds up as
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
 
+Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works, and a codex worker gives up some things a claude one has: no park or resume, no stall reporting, no context-percentage reporting. See [docs/install.md#codex-workers](install.md#codex-workers) for the full list and what opting in takes.
+
 ### A worker's long report reaches you as one line
 
 Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and types a single pointer line into that pane instead:
@@ -85,7 +87,7 @@ Arm a standing watch before you spawn workers, on any mode that can prompt: `wak
 
 ## Wake-ups, not polling
 
-Workers report their state (`working`, `idle`, `waiting`) the moment it changes, through Claude Code hooks. Set a wake-up and go quiet instead of checking in:
+Workers report their state (`working`, `idle`, `waiting`) the moment it changes, through their own CLI's hooks. Set a wake-up and go quiet instead of checking in:
 
 - `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session. It reports the workers *you* spawned, not every agent in the project, so a throwaway probe one of your workers spawned for itself stays out of your pane.
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.

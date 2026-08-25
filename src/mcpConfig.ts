@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseToml } from "smol-toml";
 
 export type McpRegistration = {
   name: string;
@@ -10,6 +11,8 @@ export type McpRegistration = {
   command: string;
   args: string[];
 };
+
+export type CodexMcpRegistration = Omit<McpRegistration, "scope">;
 
 const serverPath = (): string => fileURLToPath(new URL("./index.js", import.meta.url));
 
@@ -50,6 +53,9 @@ function readJson(file: string): Record<string, any> | null {
 const userConfigPath = (): string =>
   join(resolve(process.env.CLAUDE_CONFIG_DIR || homedir()), ".claude.json");
 
+export const codexConfigPath = (): string =>
+  join(resolve(process.env.CODEX_HOME || join(homedir(), ".codex")), "config.toml");
+
 const isHive = (name: string, raw: any): boolean =>
   name === "hive" ||
   (Array.isArray(raw?.args) &&
@@ -77,6 +83,39 @@ export function hiveRegistrations(projectPath: string | null): McpRegistration[]
     collect(user?.projects?.[projectPath]?.mcpServers, "local", claudeJson);
     const projectFile = join(projectPath, ".mcp.json");
     collect(readJson(projectFile)?.mcpServers, "project", projectFile);
+  }
+  return found;
+}
+
+export function codexHiveRegistrations(): CodexMcpRegistration[] {
+  const source = codexConfigPath();
+  let text: string;
+  try {
+    text = readFileSync(source, "utf8");
+  } catch {
+    return [];
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseToml(text) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+
+  const servers = parsed.mcp_servers;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return [];
+
+  const found: CodexMcpRegistration[] = [];
+  for (const [name, raw] of Object.entries(servers as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const command = (raw as { command?: unknown }).command;
+    if (typeof command !== "string") continue;
+    const argsValue = (raw as { args?: unknown }).args;
+    const args: string[] = Array.isArray(argsValue)
+      ? argsValue.filter((arg): arg is string => typeof arg === "string")
+      : [];
+    if (isHive(name, { command, args })) found.push({ name, source, command, args });
   }
   return found;
 }

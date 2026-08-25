@@ -32,7 +32,7 @@ Curated, not exhaustive: the modules that shape decisions, not every file under 
 | `src/db.ts` | SQLite open + append-only `MIGRATIONS` array |
 | `src/abi.ts` | Loads the native addon before the store opens; names an interpreter mismatch |
 | `src/dispatcher.ts` | Writes and reads the pinned `hive` shim; PATH resolution |
-| `src/mcpConfig.ts` | Reads Claude Code's MCP registrations (`~/.claude.json`, `.mcp.json`) |
+| `src/mcpConfig.ts` | Reads Claude Code's MCP registrations (`~/.claude.json`, `.mcp.json`) and Codex's (`config.toml`) |
 | `src/context.ts` | Actor identity and project scope resolution |
 | `src/tools/*.ts` | MCP tools by group: meta, pads, todos, kv, leases, agents, wakes |
 | `src/scheduler.ts` | Wake-up firer + janitor; runs unref'd inside every instance |
@@ -60,6 +60,10 @@ What stays above is what has no single file to fire on, stated as the prohibitio
 ## The deeper invariants live next to the code they constrain
 
 Each rule below is injected automatically when you open a file it covers, so you do not carry it the rest of the time. **Read one deliberately when you are planning work in its area**, because a rule fires on file access and planning happens before that.
+
+**That injection is Claude Code's, and no other harness has it. If you are not Claude Code, the table below is your only route to these rules: before editing any file, find its row and read that rule yourself.** Nothing will hand it to you and nothing will warn you that it did not - a codex worker reaches this file as `AGENTS.md`, which is a symlink to it, and then stops unless it goes looking. The rules are ordinary markdown at the paths named below; read them the way you would read any other file.
+
+**The same applies to `hive-internals` below, and it matters more.** Invoking a skill is Claude Code's mechanism too - a codex worker answers "no" when asked whether it has that skill - and the rule files hold only the PROHIBITIONS since todo 437, so a harness that cannot invoke it gets the "do not" and none of the "why". Read the reference directly instead: every rule has a same-named file at `.claude/skills/hive-internals/references/<rule-name>.md`. That is exactly when you need it, because the reference is what tells you whether your case is the exception the prohibition already covers.
 
 **Each of the seven `.claude/rules/` files is half of a pair, and the Covers column describes the pair.** `test/CLAUDE.md`, the eighth row, is split the same way as of todo 440: its reference lives at `.claude/skills/hive-internals/references/test-CLAUDE.md`. The rule file holds the PROHIBITIONS only. The evidence behind each one - the incident, the measurement, the mechanism - is in the `hive-internals` skill, one reference per rule, and it loads only when something invokes the skill. That split is todo 437: the rules were 34,188 words firing eagerly on file access, so opening `src/scheduler.ts` for a wake-ordering bug pulled 20,236 words of tmux lore. **Invoke `hive-internals` before changing anything the rules govern.** A prohibition tells you not to; the reference tells you why, and you need the why to know whether your case is the exception.
 

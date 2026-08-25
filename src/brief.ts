@@ -30,6 +30,25 @@ function briefVars(ctx: BriefContext): Record<string, string> {
 
 const WAIT_FOR_ASSIGNMENT = "Run whoami to confirm scope, then wait for your assignment.";
 
+// harness_claude is the default for anything that is not codex, not an equality check against
+// "claude" - a presence-conditional has no else, so an unrecognised harness still needs one.
+export function harnessBriefVars(harnessName: string): Record<string, string> {
+  return harnessName === "codex" ? { harness_codex: "1" } : { harness_claude: "1" };
+}
+
+const HARNESS_VAR_KEYS = ["harness_claude", "harness_codex"] as const;
+
+// Strips both reserved keys before spreading harnessBriefVars, so a project's own hive.yml
+// cannot set the sibling key and make both worker.md blocks render at once.
+export function mergedBriefVars(
+  projectVars: Record<string, string> | undefined,
+  harnessName: string,
+): Record<string, string> {
+  const safe = { ...(projectVars ?? {}) };
+  for (const key of HARNESS_VAR_KEYS) delete safe[key];
+  return { ...safe, ...harnessBriefVars(harnessName) };
+}
+
 export function workerBrief(ctx: BriefContext): string {
   if (ctx.profile) {
     const template = readProfileFile(ctx.profile, "worker.md");

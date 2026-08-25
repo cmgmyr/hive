@@ -43,6 +43,8 @@ import {
   readDispatcher,
 } from "./dispatcher.js";
 import {
+  codexConfigPath,
+  codexHiveRegistrations,
   hiveRegistrations,
   registrationOffer,
   registrationProblem,
@@ -75,10 +77,10 @@ import {
   isUnsubmittedInputHold,
   janitor,
   resolveDashboardDir,
-  STALL_BOUND_SECONDS,
   transcriptStaleness,
   wasHeldForPaneReissue,
 } from "./scheduler.js";
+import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
   probeSessionInterpreter,
   reexecTarget,
@@ -1564,13 +1566,25 @@ function reportMcpRegistrations(project: Project | null): void {
 
       ...(registrationOffer(process.execPath, registrations) ?? []),
     );
+  } else {
+    for (const r of registrations) {
+      const where = `mcp registration (${r.scope} scope)`;
+      info(where, [r.command, ...r.args].join(" "));
+      const problem = registrationProblem(r, process.execPath);
+      if (problem) gatingWarn(where, ...problem);
+    }
+  }
+
+  const codexRegistrations = codexHiveRegistrations();
+  if (codexRegistrations.length === 0) {
+    info(
+      "mcp registration (codex)",
+      `none found for hive under codex (checked ${codexConfigPath()})`,
+    );
     return;
   }
-  for (const r of registrations) {
-    const where = `mcp registration (${r.scope} scope)`;
-    info(where, [r.command, ...r.args].join(" "));
-    const problem = registrationProblem(r, process.execPath);
-    if (problem) gatingWarn(where, ...problem);
+  for (const r of codexRegistrations) {
+    info("mcp registration (codex)", [r.command, ...r.args].join(" "));
   }
 }
 

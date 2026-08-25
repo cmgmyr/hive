@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { rmSync } from "node:fs";
-import { dirname } from "node:path";
+import { rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { isolateTmux, McpClient, scratchDirs, scratchGit } from "./helpers.mjs";
 
@@ -36,6 +36,8 @@ describe(`agent_spawn against a real codex binary (env-gated: ${REAL_CODEX_ENV})
     process.env.HIVE_DATA_DIR = dirs.dataDir;
     scratchGit(dirs.projectDir, "init", "-q");
     scratchGit(dirs.projectDir, "commit", "-q", "--allow-empty", "-m", "root");
+    // Absent means claude only (todo 526's gate), and this file's whole point is spawning codex.
+    writeFileSync(join(dirs.projectDir, "hive.yml"), "agents: [claude, codex]\n");
 
     const { migrate } = await import("../dist/db.js");
     migrate();

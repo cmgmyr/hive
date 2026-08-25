@@ -12,7 +12,7 @@ export const agentNameParam = z
   .string()
   .optional()
   .describe(
-    "The worker's name, e.g. \"impl\" or \"DEVX-123\". Preferred over agent_id. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
+    "The worker's name, e.g. \"impl\" or \"DEVX-123\". Prefer passing this rather than agent_id, but pass only one: if both arrive, agent_id wins and this is ignored. A partial name works when it matches exactly one running worker, so \"123\" finds DEVX-123.",
   );
 
 export const agentIdParam = idParam

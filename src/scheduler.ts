@@ -13,6 +13,7 @@ import {
   describeOneTask,
   liveBackgroundTasks,
   type LiveBackgroundTask,
+  STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
@@ -1567,7 +1568,6 @@ function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null
 
 const CONDITION_STALL = "stall";
 
-export const STALL_BOUND_SECONDS = 15 * 60;
 const STALL_BOUND_SQL = `-${STALL_BOUND_SECONDS} seconds`;
 
 interface StallRow extends CrewRow {
