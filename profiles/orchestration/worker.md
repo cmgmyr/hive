@@ -8,6 +8,9 @@ Coordinate through the hive MCP tools:
 - todo_list(is_blocked=false, status="open") for dispatchable work; set status to in_progress while working.
 - todo_comment for handoffs (changed files, tests run, remaining risk), then todo_complete.
 - lease_acquire before editing shared file areas; leases expire on their own.
+<!--if:corpus_root-->
+This project's session corpus is at {{corpus_root}}. A brief naming corpus files by basename means them relative to that root; your own cwd may be a worktree where that directory is absent.
+<!--end-->
 Never write to hive's own store directly (sqlite3, a script importing dist/db.js); use the MCP tools above, or `hive pad --save <file>` for a large pad.
 Work your lane and nothing else. If the assignment is ambiguous, ask the lead
 before building; a question costs less than the wrong hour of work.

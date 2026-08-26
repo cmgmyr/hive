@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { scratchGit } from "./helpers.mjs";
 
 const scratch = mkdtempSync(join(tmpdir(), "hive-brief-"));
 process.env.HIVE_DATA_DIR = scratch;
 const {
   agentBriefPath,
+  corpusRoot,
   harnessBriefVars,
   isClaudeCommand,
   mergedBriefVars,
@@ -16,6 +18,11 @@ const {
   workerCommandString,
   writeAgentBrief,
 } = await import("../dist/brief.js");
+
+function gitInit(dir) {
+  scratchGit(dir, "init", "-q");
+  scratchGit(dir, "commit", "-q", "--allow-empty", "-m", "init");
+}
 
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
@@ -179,6 +186,71 @@ describe("a profile's own worker.md still gets the wait-for-assignment instructi
     const rendered = workerBrief({ ...ctx, profile: "posture-only-profile" });
     assert.match(rendered, /\[HIVE CONTEXT\]/);
     assert.match(rendered, /Run whoami to confirm scope, then wait for your assignment\./);
+  });
+});
+
+describe("corpusRoot: resolving the session corpus without a lead retyping it", () => {
+  const primary = realpathSync(mkdtempSync(join(scratch, "corpus-primary-")));
+  gitInit(primary);
+  mkdirSync(join(primary, ".claude", "sessions"), { recursive: true });
+
+  const nestedWorktree = join(primary, ".claude", "worktrees", "corpus-nested");
+  mkdirSync(join(primary, ".claude", "worktrees"), { recursive: true });
+  scratchGit(primary, "worktree", "add", "-q", nestedWorktree, "-b", "corpus-nested");
+
+  const noCorpusRepo = mkdtempSync(join(scratch, "corpus-none-"));
+  gitInit(noCorpusRepo);
+
+  const nonGit = mkdtempSync(join(scratch, "corpus-nongit-"));
+
+  it("resolves the primary checkout's own corpus for the primary checkout itself", () => {
+    assert.equal(corpusRoot(primary), join(primary, ".claude", "sessions") + "/");
+  });
+
+  it("resolves the PRIMARY checkout's corpus for a worker running inside a linked worktree - the bug this fixes", () => {
+
+    assert.equal(corpusRoot(nestedWorktree), join(primary, ".claude", "sessions") + "/");
+  });
+
+  it("returns null for a git repo with no session corpus yet, rather than asserting a path that is not there", () => {
+    assert.equal(corpusRoot(noCorpusRepo), null);
+  });
+
+  it("returns null for a directory with no git repo at all", () => {
+    assert.equal(corpusRoot(nonGit), null);
+  });
+});
+
+describe("workerBrief injects the corpus root it resolved", () => {
+  const primary = realpathSync(mkdtempSync(join(scratch, "corpus-brief-primary-")));
+  gitInit(primary);
+  mkdirSync(join(primary, ".claude", "sessions"), { recursive: true });
+
+  const nestedWorktree = join(primary, ".claude", "worktrees", "corpus-brief-nested");
+  mkdirSync(join(primary, ".claude", "worktrees"), { recursive: true });
+  scratchGit(primary, "worktree", "add", "-q", nestedWorktree, "-b", "corpus-brief-nested");
+
+  const noCorpusRepo = mkdtempSync(join(scratch, "corpus-brief-none-"));
+  gitInit(noCorpusRepo);
+
+  it("names the primary checkout's absolute corpus path in the default brief for a worktree cwd", () => {
+    const rendered = workerBrief({ ...ctx, cwd: nestedWorktree });
+    assert.match(rendered, /This project's session corpus is at/);
+    assert.ok(rendered.includes(join(primary, ".claude", "sessions") + "/"), rendered);
+  });
+
+  it("says nothing about the corpus when the project has none yet", () => {
+    const rendered = workerBrief({ ...ctx, cwd: noCorpusRepo });
+    assert.doesNotMatch(rendered, /session corpus/);
+  });
+
+  it("makes corpus_root available to a profile's own worker.md template", () => {
+    const profileDir = join(scratch, "profiles", "corpus-template-profile");
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(join(profileDir, "worker.md"), "Corpus: {{corpus_root}}");
+
+    const rendered = workerBrief({ ...ctx, cwd: nestedWorktree, profile: "corpus-template-profile" });
+    assert.equal(rendered.split("\n")[0], `Corpus: ${join(primary, ".claude", "sessions")}/`);
   });
 });
 
