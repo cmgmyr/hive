@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
 import { hookEntry } from "./hooks.js";
+import { shellQuote } from "./tmux.js";
 
 export interface CodexHomeInput {
   key: string;
@@ -15,6 +16,13 @@ export interface CodexHomeInput {
   // Overridable only for tests - production spawns never set this, so it always resolves to
   // Chris's real ~/.codex/auth.json.
   authSource?: string;
+
+  // Set only for a codex LEAD's home (src/cli.ts cmdLead), never a worker's: wires SessionStart to
+  // `hive kickoff --codex` the same way ensureHooksFile wires it for a claude lead's shared hooks
+  // file. A worker never gets this - kickoff.ts's evaluate() already no-ops for a worker session
+  // (HIVE_AGENT_ID set, HIVE_LEAD unset), so wiring it there would fire and do nothing on every
+  // worker turn for no reason.
+  lead?: boolean;
 }
 
 export function codexHomeDir(key: string): string {
@@ -63,6 +71,16 @@ function tomlEscape(s: string, { allowLiteralNewline }: { allowLiteralNewline: b
   });
 }
 
+// Not built via hooks.ts's hookEntry(), which this lane does not own: points at kickoff.js
+// directly (matching hookEntry's own direct-node-plus-script shape, not the `hive` PATH shim) so a
+// codex lead's SessionStart hook survives the same minimal-PATH environments hookEntry's own
+// comment warns about, rather than gaining a new dependency on `hive` resolving on PATH.
+function kickoffHookEntry(): { hooks: { type: string; command: string }[] } {
+  const kickoffScript = join(dirname(fileURLToPath(import.meta.url)), "kickoff.js");
+  const node = shellQuote(process.execPath);
+  return { hooks: [{ type: "command", command: `${node} ${shellQuote(kickoffScript)} --codex` }] };
+}
+
 function tomlString(s: string): string {
   return `"${tomlEscape(s, { allowLiteralNewline: false })}"`;
 }
@@ -101,6 +119,17 @@ function configToml(input: {
 // Generates a codex worker's per-worker home: auth.json symlinked (never copied) to the real
 // ~/.codex/auth.json, hooks.json, and config.toml. Returns the launch flags this harness requires.
 export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } {
+  // Every guard that can refuse this call runs BEFORE the first byte touches disk - two reviewers
+  // independently found the previous ordering (this check sat after hooks.json/config.toml, so a
+  // vanished interpreter still left auth.json and skills/cleanup written) leaves a partial home
+  // that cmdLead's own try/catch (see the caller) cannot distinguish from a real one to reap by
+  // key alone. The try/catch is defence in depth, not a reason to leave the ordering as-is.
+  if (!existsSync(process.execPath)) {
+    throw new Error(
+      `hive: this process's own interpreter (${process.execPath}) no longer exists on disk; refusing to register a codex worker's MCP server under a path that would start nothing.`,
+    );
+  }
+
   const home = codexHomeDir(input.key);
   mkdirSync(home, { recursive: true });
 
@@ -114,6 +143,25 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
   rmSync(authLink, { force: true });
   symlinkSync(authSource, authLink);
 
+  // Lead-only, matching SessionStart above: a codex lead needs the same cleanup skill a claude
+  // lead reaches through the installed plugin (claude-plugin/skills/cleanup). Only the "cleanup"
+  // entry is touched - never the skills/ directory itself - so codex's own .system subdirectory
+  // there survives untouched, the same reapCodexHome/auth.json symlink discipline as above.
+  if (input.lead) {
+    const cleanupSource = join(dirname(fileURLToPath(import.meta.url)), "..", "claude-plugin", "skills", "cleanup");
+    // Codex derives the skill's namespace (`hive:cleanup`) from the plugin root this symlink
+    // points into, so a dangling link does not just lose the skill quietly - it loses the
+    // namespaced name a user would type. Fail fast, the same shape authSource gets above.
+    if (!existsSync(cleanupSource)) {
+      throw new Error(`hive: cleanup skill not found at ${cleanupSource}; this checkout's claude-plugin/ is missing or incomplete.`);
+    }
+    const skillsDir = join(home, "skills");
+    mkdirSync(skillsDir, { recursive: true });
+    const cleanupLink = join(skillsDir, "cleanup");
+    rmSync(cleanupLink, { force: true });
+    symlinkSync(cleanupSource, cleanupLink);
+  }
+
   // prompt/stop: R4 proved exact. SubagentStart/SubagentStop: todo 525 (C3) rekeys the subagent
   // latch to these instead of the Stop payload's background_tasks, which codex never sends. No
   // Notification, no PermissionRequest - the notify branch is proven unreachable for codex on
@@ -123,6 +171,7 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
     JSON.stringify(
       {
         hooks: {
+          ...(input.lead ? { SessionStart: [kickoffHookEntry()] } : {}),
           Stop: [hookEntry("stop")],
           UserPromptSubmit: [hookEntry("prompt")],
           SubagentStart: [hookEntry("subagent_start")],
@@ -134,11 +183,6 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
     ) + "\n",
   );
 
-  if (!existsSync(process.execPath)) {
-    throw new Error(
-      `hive: this process's own interpreter (${process.execPath}) no longer exists on disk; refusing to register a codex worker's MCP server under a path that would start nothing.`,
-    );
-  }
   const indexJs = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
   // Reuses context.ts's own worktree-aware root resolution rather than a second implementation.

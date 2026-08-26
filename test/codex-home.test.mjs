@@ -15,6 +15,7 @@ import { after, describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { scratchGit } from "./helpers.mjs";
 
+const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const scratch = mkdtempSync(join(tmpdir(), "hive-codex-home-"));
 process.env.HIVE_DATA_DIR = join(scratch, "data");
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -101,6 +102,53 @@ describe("the generated hooks.json matches claude's exact nesting (the H1 schema
     build({ key });
     const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
     assert.equal("Notification" in written.hooks, false);
+  });
+
+  it("omits SessionStart for an ordinary worker home - only a lead home should ever poll `hive kickoff`", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+    assert.equal("SessionStart" in written.hooks, false);
+  });
+
+  it("wires SessionStart to kickoff.js --codex, and only when `lead: true` is passed (todo 575)", () => {
+    const key = `lead-${counter}`;
+    build({ key, lead: true });
+    const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+    const command = written.hooks.SessionStart[0].hooks[0].command;
+    assert.match(command, /kickoff\.js/, "must point at kickoff.js directly, not rely on `hive` resolving on PATH");
+    assert.match(command, /--codex\b/, "must pass --codex, or kickoff would emit the claude-only initialUserMessage key");
+    // Same worker-state events as an ordinary home, unaffected by the extra SessionStart entry.
+    assert.deepEqual(written.hooks.Stop, [hookEntry("stop")]);
+    assert.deepEqual(written.hooks.UserPromptSubmit, [hookEntry("prompt")]);
+  });
+});
+
+describe("the cleanup skill ships with a lead home (todo 575 requirement 3)", () => {
+  it("symlinks claude-plugin/skills/cleanup into skills/cleanup, only for a lead home", () => {
+    const key = `lead-${counter}`;
+    build({ key, lead: true });
+    const link = join(codexHomeDir(key), "skills", "cleanup");
+    assert.equal(realpathSync(link), realpathSync(join(REPO_ROOT, "claude-plugin", "skills", "cleanup")));
+  });
+
+  it("an ordinary worker home gets no skills/ directory at all", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    assert.equal(existsSync(join(codexHomeDir(key), "skills")), false);
+  });
+
+  it("regenerating a home (same key) replaces the cleanup symlink without disturbing a pre-existing skills/.system entry", () => {
+    const key = `lead-${counter}`;
+    build({ key, lead: true });
+    const systemDir = join(codexHomeDir(key), "skills", ".system");
+    mkdirSync(systemDir, { recursive: true });
+    writeFileSync(join(systemDir, "marker"), "codex-owned");
+
+    build({ key, lead: true });
+
+    assert.equal(readFileSync(join(systemDir, "marker"), "utf8"), "codex-owned");
+    assert.equal(realpathSync(join(codexHomeDir(key), "skills", "cleanup")), realpathSync(join(REPO_ROOT, "claude-plugin", "skills", "cleanup")));
   });
 });
 

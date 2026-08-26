@@ -59,6 +59,15 @@ export interface HarnessCapabilities {
   // rather than reached through briefDelivery's CLI-arg shape. Only codex needs this today; kept
   // as a capability flag rather than a name check for the same reason every other branch here is.
   readonly needsHome: boolean;
+
+  // The CLI's own [PROMPT] positional, submitted as the first user turn with no keystroke needed -
+  // live-verified on codex v0.149.0 (a bare `codex "..."` responded with no Enter pressed). null
+  // for claude on purpose: a claude lead's SessionStart hook already synthesizes initialUserMessage
+  // itself (src/kickoff.ts), so appending a second, redundant initial turn here would fire twice.
+  // Codex's SessionStart hook schema rejects that same field outright (additionalProperties:false;
+  // see kickoff.ts's `forCodex` branch), so this positional is the only channel left for a codex
+  // lead to open on triage rather than sit idle holding a board nobody told it to act on.
+  readonly initialPromptArgs: ((message: string) => string[]) | null;
 }
 
 export function commandHead(command: string): string {
@@ -96,6 +105,8 @@ const claudeHarness: HarnessCapabilities = {
   hasScopes: true,
 
   needsHome: false,
+
+  initialPromptArgs: null,
 };
 
 // Registered below (todo 524): proven end to end that hive can drive a codex pane - hook-trust
@@ -131,6 +142,9 @@ export const codexHarness: HarnessCapabilities = {
   hasScopes: false,
 
   needsHome: true,
+
+  // codex [PROMPT] auto-submits with no Enter needed - live-verified 2026-08-25 on v0.149.0.
+  initialPromptArgs: (message) => [message],
 };
 
 const unknownHarness: HarnessCapabilities = {
@@ -156,6 +170,8 @@ const unknownHarness: HarnessCapabilities = {
   hasScopes: false,
 
   needsHome: false,
+
+  initialPromptArgs: null,
 };
 
 const HARNESSES: HarnessCapabilities[] = [claudeHarness, codexHarness];

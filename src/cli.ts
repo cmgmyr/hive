@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -161,6 +162,8 @@ import {
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
 import { harnessFor, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { codexHomeDir, ensureCodexHome, reapCodexHome } from "./codexHome.js";
+import { TRIAGE_MESSAGE } from "./kickoff.js";
 import {
   ageSecondsSince,
   deriveProvenance,
@@ -429,12 +432,13 @@ function ensureLeadRow(
   previousSocket: string;
   previousPanePid: string;
   previousCommand: string;
+  previousCodexHome: string;
   casExpected: string;
 } {
 
   const existing = db
     .prepare(
-      "SELECT id, actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+      "SELECT id, actor_id, tmux_target, tmux_socket, pane_pid, command, codex_home FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
     )
     .get(project.id, LEAD_KIND) as
     | {
@@ -444,6 +448,7 @@ function ensureLeadRow(
         tmux_socket: string;
         pane_pid: string;
         command: string;
+        codex_home: string;
       }
     | undefined;
 
@@ -470,16 +475,24 @@ function ensureLeadRow(
       previousSocket: existing.tmux_socket,
       previousPanePid: existing.pane_pid,
       previousCommand: existing.command,
+      previousCodexHome: existing.codex_home,
       casExpected: existing.tmux_target,
     };
   }
 
   const priorClosed = db
     .prepare(
-      "SELECT actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
+      "SELECT actor_id, tmux_target, tmux_socket, pane_pid, command, codex_home FROM agents WHERE project_id = ? AND kind = ? AND status = 'closed' AND actor_id != '' ORDER BY id DESC LIMIT 1",
     )
     .get(project.id, LEAD_KIND) as
-    | { actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string; command: string }
+    | {
+        actor_id: string;
+        tmux_target: string;
+        tmux_socket: string;
+        pane_pid: string;
+        command: string;
+        codex_home: string;
+      }
     | undefined;
 
   let result;
@@ -519,6 +532,7 @@ function ensureLeadRow(
     previousSocket: priorClosed?.tmux_socket ?? "",
     previousPanePid: priorClosed?.pane_pid ?? "",
     previousCommand: priorClosed?.command ?? "",
+    previousCodexHome: priorClosed?.codex_home ?? "",
     casExpected: "",
   };
 }
@@ -558,25 +572,37 @@ async function cmdLead(argv: string[]): Promise<void> {
 
     const leadHarness = harnessFor(leadCommand);
 
-    if (!leadHarness.briefDelivery) {
-      console.log("! lead command is not claude; skipping hooks.");
-    } else {
-      leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
-    }
-
+    // Posture is rendered once, then delivered through whichever channel this harness has: a
+    // claude lead gets it as --append-system-prompt-file below; a codex lead gets the identical
+    // text as config.toml's developer_instructions, built after ensureLeadRow (it needs leadActorId).
     const profile = activeProfile(config);
+    let renderedPosture: string | null = null;
+    let postureSource: string | undefined;
     if (profile) {
       const posture = resolveProfileFile(profile, "posture.md");
       if (!posture) {
         console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
-      } else if (!leadHarness.briefDelivery) {
-        console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
       } else {
+        renderedPosture = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
+        postureSource = posture.source;
+      }
+    }
 
-        const rendered = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
-        const path = writeProjectPosture(project.id, rendered);
-        leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(path).map(shellQuote).join(" ")}`;
-        console.log(`- profile: ${profile} (${posture.source} posture; see it with: hive posture)`);
+    if (leadHarness.needsHome) {
+      // Wired below, once leadActorId is known - a codex lead's hooks/posture/triage all live in
+      // its generated CODEX_HOME rather than as CLI flags on leadCommand (todo 575: briefDelivery
+      // is CLI-flag shaped and codex has no such flags; its route is the home workers already use).
+    } else if (!leadHarness.briefDelivery) {
+      console.log("! lead command is not claude; skipping hooks.");
+      if (renderedPosture !== null) {
+        console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
+      }
+    } else {
+      leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
+      if (renderedPosture !== null) {
+        const posturePath = writeProjectPosture(project.id, renderedPosture);
+        leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(posturePath).map(shellQuote).join(" ")}`;
+        console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
       }
     }
 
@@ -588,8 +614,44 @@ async function cmdLead(argv: string[]): Promise<void> {
       previousSocket,
       previousPanePid,
       previousCommand,
+      previousCodexHome,
       casExpected,
     } = ensureLeadRow(project, leadCommand);
+
+    // A fresh CODEX_HOME is built on every invocation, same as claude's hooks/posture files above -
+    // cheap (a few KB; the codex-side plugins/cache bootstrap only materializes once a process
+    // actually starts under it) and correct regardless of whether this invocation ends up creating
+    // a pane or adopting one. Which home ends up orphaned - this one, or the previous invocation's -
+    // is decided after createdPane is known, below.
+    let newCodexHomeKey: string | undefined;
+    if (leadHarness.needsHome) {
+      newCodexHomeKey = randomUUID();
+      // Mirrors the worker path's own failure handling (src/tools/agents.ts:625-631): a home half
+      // written (auth.json symlinked, then a missing interpreter or missing claude-plugin/ throws)
+      // must not survive the throw, because nothing records newCodexHomeKey anywhere until the CAS
+      // UPDATE below succeeds - an unrecorded key is unreapable by every other path in this file.
+      let homeArgs: string[];
+      try {
+        homeArgs = ensureCodexHome({
+          key: newCodexHomeKey,
+          actorId: leadActorId,
+          cwd: project.path,
+          brief: renderedPosture ?? "",
+          lead: true,
+        }).extraArgs;
+      } catch (e) {
+        reapCodexHome(newCodexHomeKey);
+        throw e;
+      }
+      leadCommand += ` ${homeArgs.map(shellQuote).join(" ")}`;
+      if (leadHarness.initialPromptArgs) {
+        leadCommand += ` ${leadHarness.initialPromptArgs(TRIAGE_MESSAGE).map(shellQuote).join(" ")}`;
+      }
+      if (renderedPosture !== null) {
+        console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
+      }
+      console.log(`- codex home: ${codexHomeDir(newCodexHomeKey)} (SessionStart/Stop/UserPromptSubmit hooks wired)`);
+    }
 
     const envFlags = buildEnvFlags({
       HIVE_AGENT_ID: leadActorId,
@@ -598,6 +660,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       HIVE_DATA_DIR: dataDir,
       HIVE_PROJECT_LOCK: "",
       HIVE_PROJECT_PATH: "",
+      ...(newCodexHomeKey ? { CODEX_HOME: codexHomeDir(newCodexHomeKey) } : {}),
     });
 
     const { leadPane, leadWindow, createdPane } = withWindowClaim(() => {
@@ -663,17 +726,25 @@ async function cmdLead(argv: string[]): Promise<void> {
       );
     }
 
+    // Whichever home this invocation did NOT end up running the pane under is now orphaned: a
+    // fresh pane runs under newCodexHomeKey and leaves the previous invocation's home behind; an
+    // adopted pane keeps running under previousCodexHome and leaves the one just built unused. This
+    // also reaps a stale codex home left over from a lead config that has since switched away from
+    // codex, since createdPane's branch does not require leadHarness.needsHome to fire.
+    const recordedCodexHome = createdPane ? (newCodexHomeKey ?? "") : previousCodexHome;
+
     const wonRace = db.transaction(() => {
 
       const updated = db
         .prepare(
-          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
         )
         .run(
           leadPane,
           tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
           panePid(leadPane),
           recordedCommand,
+          recordedCodexHome,
           leadAgentId,
           casExpected,
         ).changes;
@@ -694,11 +765,19 @@ async function cmdLead(argv: string[]): Promise<void> {
 
         }
       }
+      if (newCodexHomeKey) reapCodexHome(newCodexHomeKey);
       throw new Error(
         "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
           "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +
           "Re-run `hive lead`; it will attach to the pane that invocation recorded.",
       );
+    }
+
+    if (createdPane && previousCodexHome && previousCodexHome !== recordedCodexHome) {
+      reapCodexHome(previousCodexHome);
+    }
+    if (!createdPane && newCodexHomeKey && newCodexHomeKey !== previousCodexHome) {
+      reapCodexHome(newCodexHomeKey);
     }
 
     if (config) {

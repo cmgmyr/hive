@@ -136,13 +136,17 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   return truncate(lines.join("\n"), CONTEXT_BUDGET);
 }
 
-const TRIAGE_MESSAGE =
+// Exported so src/cli.ts can hand the identical text to a codex lead as its initial CLI prompt -
+// codex's SessionStart hook rejects the whole payload if this rides inside hookSpecificOutput
+// (see the `forCodex` branch below), so a codex lead gets it a different way, not a different
+// message. Keep the two in sync by construction rather than by two literals staying equal.
+export const TRIAGE_MESSAGE =
   "Start with morning triage. Run `hive runbook` for this project's standing process, then " +
   "reconcile the state hive just injected against what is really there (agent_list, todo_list, " +
   "wake_list) and report it in a few lines. Propose today's lanes and confirm them with me before " +
   "dispatching anything.";
 
-export async function evaluate(cwd: string): Promise<KickoffResult> {
+export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): Promise<KickoffResult> {
 
   if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") {
     return { fired: false, reason: "worker session (HIVE_AGENT_ID is set)" };
@@ -176,12 +180,15 @@ export async function evaluate(cwd: string): Promise<KickoffResult> {
   const context = await digest(dir, profile, warnings);
   if (context == null) return silent("not a registered hive project root");
 
+  // Codex's SessionStartHookSpecificOutputWire is additionalProperties:false and permits only
+  // hookEventName/additionalContext - initialUserMessage inside it fails the whole payload
+  // ("SessionStart Failed"), silently dropping the board too. Measured, todo 567 comment 1864.
   const build = (text: string) =>
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: text,
-        initialUserMessage: TRIAGE_MESSAGE,
+        ...(opts.forCodex ? {} : { initialUserMessage: TRIAGE_MESSAGE }),
       },
     });
   let payload = build(context);
@@ -195,9 +202,10 @@ export async function evaluate(cwd: string): Promise<KickoffResult> {
 
 export async function runKickoff(argv: string[] = []): Promise<void> {
   const explain = argv.includes("--explain");
+  const forCodex = argv.includes("--codex");
   let result: KickoffResult;
   try {
-    result = await evaluate(process.cwd());
+    result = await evaluate(process.cwd(), { forCodex });
   } catch (e) {
 
     if (explain) console.log(`hive kickoff: silent (${e instanceof Error ? e.message : String(e)}).`);

@@ -105,6 +105,28 @@ describe("hive kickoff gates", () => {
     assert.match(out.initialUserMessage, /triage/i);
   });
 
+  it("omits initialUserMessage for --codex, unlike the claude payload, because codex's SessionStart schema rejects the whole hook payload when that key is present (todo 567 comment 1864)", async () => {
+    yml("profile: orchestration\n");
+
+    const claudePayload = fired((await kickoff()).stdout);
+    assert.ok(
+      Object.hasOwn(claudePayload, "initialUserMessage"),
+      "the claude payload must still carry initialUserMessage",
+    );
+    assert.match(claudePayload.initialUserMessage, /triage/i);
+
+    const { code, stdout } = await kickoff(["--codex"]);
+    assert.equal(code, 0);
+    const codexPayload = fired(stdout);
+    assert.match(codexPayload.additionalContext, /\[hive\] Project/, "the board must still reach a codex lead");
+    assert.equal(
+      Object.hasOwn(codexPayload, "initialUserMessage"),
+      false,
+      "initialUserMessage must be ABSENT, not just falsy - present-but-empty would still trip codex's " +
+        "additionalProperties:false schema and silently drop the whole payload",
+    );
+  });
+
   it("still fires on a lead checkout once the lead carries HIVE_AGENT_ID too", async () => {
 
     yml("profile: orchestration\n");
