@@ -73,12 +73,12 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-running" });
   });
 
-  it("refuses a closed non-claude worker -- no session id to resume from (D4)", async () => {
+  it("refuses a closed worker on an unresumable harness -- no session id to resume from (D4)", async () => {
     await mcp.call("agent_spawn", { name: "resume-plain", command: "sleep", extra_args: ["600"] });
     await liveAgentRow(mcp, "resume-plain");
     await mcp.call("agent_close", { name: "resume-plain" });
 
-    await assert.rejects(mcp.call("agent_resume", { name: "resume-plain" }), /was not a claude worker/);
+    await assert.rejects(mcp.call("agent_resume", { name: "resume-plain" }), /does not support resume/);
   });
 
   it("refuses a closed claude row with no recorded session id (a legacy or never-hooked row)", async () => {

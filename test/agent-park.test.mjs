@@ -104,11 +104,11 @@ describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () =
     );
   });
 
-  it("refuses a non-claude worker rather than promising a resume that cannot happen", async () => {
+  it("refuses a worker on an unresumable harness rather than promising a resume that cannot happen", async () => {
     await mcp.call("agent_spawn", { name: "park-plain", command: "sleep", extra_args: ["600"] });
     const live = await liveAgentRow(mcp, "park-plain");
 
-    await assert.rejects(mcp.call("agent_park", { name: "park-plain" }), /not a claude worker/);
+    await assert.rejects(mcp.call("agent_park", { name: "park-plain" }), /does not support resume/);
 
     assert.equal(rowOf(live.agent_id).status, "running");
     assert.equal(targetLive(live.tmux_target), true, "a refused park must leave the pane alone");

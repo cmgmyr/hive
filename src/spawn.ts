@@ -278,6 +278,11 @@ export interface ResumeSpec {
   placement: "split" | "window";
   layout?: WindowLayout;
   parentActor: string;
+
+  // Merged under agentIdentityEnv the same way launchAgent merges spec.env (:245-248) - claude's
+  // resume never needed this, so it defaulted to none; a codex resume needs CODEX_HOME pointed at
+  // the worker's surviving per-worker home (todo 563).
+  env?: Record<string, string>;
 }
 
 export const RESUME_FLIP_COLUMNS = [
@@ -352,7 +357,10 @@ export function resumeAgent(
 
     upsertActor(spec.actorId, spec.name, "agent");
 
-    const envFlags = buildEnvFlags(agentIdentityEnv(spec.actorId, spec.name, spec.projectPath));
+    const envFlags = buildEnvFlags({
+      ...spec.env,
+      ...agentIdentityEnv(spec.actorId, spec.name, spec.projectPath),
+    });
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
     const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
@@ -455,9 +463,10 @@ export function releaseParkRow(agentId: number): boolean {
 
 // Row status alone is not the orphan test: a PARKED row is `status = 'closed'` too
 // (parkAgentRow above), and agent_park expects to resume it, cold-cache and all. `parked_at = ''`
-// is named explicitly rather than left to fall out of "closed" incidentally, because codex cannot
-// be parked TODAY (harnessFor("codex").supportsResume is false) only as an accident of harnesses.ts,
-// not as a guarantee this predicate can lean on.
+// is named explicitly rather than left to fall out of "closed" incidentally: codex can now be
+// parked too (harnessFor("codex").supportsResume, todo 563), exactly as this predicate already
+// assumed some non-claude harness eventually would - deriving the exclusion from harness capability
+// instead would have made this reap query's correctness depend on a table this file does not own.
 //
 // No conditional-UPDATE claim guards this, unlike closeAgentRow's "the conditional UPDATE is the
 // claim" - a deliberate difference, not a gap. That pattern earns its keep against an OBSERVABLE

@@ -248,7 +248,7 @@
     }
   },
   "agent_park": {
-    "description": "Park a claude worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+    "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -408,7 +408,7 @@
     }
   },
   "agent_resume": {
-    "description": "Resume a CLOSED claude worker from its recorded Claude Code session id (claude --resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+    "description": "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
     "execution": {
       "taskSupport": "forbidden"
     },

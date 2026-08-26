@@ -167,10 +167,10 @@ runbook (fork it first), not a pad write.`,
     agent_close whenever the lane is PAUSED rather than finished: "closed"
     alone means both, and a next-morning lead cannot tell them apart.
   agent_resume(name|agent_id) — NEXT MORNING. Reopen a closed or parked
-    claude worker on a fresh pane from its recorded session id, with the same
-    actor_id and its full prior context. It does not send the assignment;
-    agent_send it afterwards. Read the pane before believing any wake about
-    a worker you just resumed.
+    claude or codex worker on a fresh pane from its recorded session id,
+    with the same actor_id and its full prior context. It does not send
+    the assignment; agent_send it afterwards. Read the pane before
+    believing any wake about a worker you just resumed.
   agent_close(name|agent_id) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how

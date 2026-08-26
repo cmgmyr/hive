@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, ensureCodexHome } from "../codexHome.js";
+import { codexHomeDir, codexLaunchArgs, ensureCodexHome } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import { commandHead, harnessFor, harnessNames, paneClassifierFor, screenClassifiable } from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
@@ -332,6 +332,17 @@ function requireNameFree(projectId: number, name: string, exceptAgentId?: number
   }
 }
 
+// Recovers a flag's value from a row's own recorded command string - the only place agent_resume
+// can read it back from, since ResumeSpec is built fresh and does not carry agent_spawn's original
+// args. Model ids are shell-safe by construction (gpt-5.6-luna, sonnet), so shellQuote never quotes
+// this token and a plain whitespace split is enough - no quote-stripping to get wrong.
+function extractCommandFlag(command: string, flag: string): string | undefined {
+  const tokens = command.split(/\s+/);
+  const i = tokens.indexOf(flag);
+  if (i === -1 || i + 1 >= tokens.length) return undefined;
+  return tokens[i + 1];
+}
+
 function requestsExistingSession(extraArgs: string[] | undefined): boolean {
   return (extraArgs ?? []).some(
     (arg) =>
@@ -566,7 +577,7 @@ export function registerAgents(server: McpServer): void {
               `agents: list (${allowed.join(", ")}). Add it to agents: to allow spawning it.`,
           );
         }
-        const mintsSession = harness.transcriptDir || harness.supportsResume;
+        const mintsSession = harness.mintsSessionId;
 
         const sessionId = mintsSession && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
 
@@ -737,7 +748,7 @@ export function registerAgents(server: McpServer): void {
     "agent_resume",
     {
       description:
-        "Resume a CLOSED claude worker from its recorded Claude Code session id (claude --resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+        "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -767,10 +778,11 @@ export function registerAgents(server: McpServer): void {
               "start a lead session with `hive lead`.",
           );
         }
-        if (!harnessFor(agent.command).supportsResume) {
+        const resumeHarness = harnessFor(agent.command);
+        if (!resumeHarness.supportsResume) {
           throw new Error(
-            `Agent ${agent.id} ("${agent.name}") was not a claude worker (command: "${agent.command}"), so it ` +
-              "has no session id to resume from.",
+            `Agent ${agent.id} ("${agent.name}")'s harness ("${resumeHarness.name}", command: "${agent.command}") ` +
+              "does not support resume, so it has no session id to resume from.",
           );
         }
         if (!agent.session_id) {
@@ -780,14 +792,29 @@ export function registerAgents(server: McpServer): void {
               "worker instead.",
           );
         }
+        if (resumeHarness.name === "codex" && !agent.codex_home) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") has no recorded CODEX_HOME, so its session cannot be resumed. ` +
+              (agent.parked_at
+                ? "This should not happen for a parked codex worker - its home is only reaped on agent_close. " +
+                  "Check agent_status for how it actually got here."
+                : "It was closed with agent_close, which reaps a codex worker's home (rollout files included) " +
+                  "immediately - only a PARKED codex worker keeps its home. Nothing here to resume; spawn a new " +
+                  "worker instead."),
+          );
+        }
 
         if (!existsSync(agent.cwd)) {
           const recreate = agent.parked_branch
             ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
             : `recreate a checkout at ${agent.cwd} (no branch was recorded for it - agent_park records one)`;
+          const reason =
+            resumeHarness.name === "codex"
+              ? "It resumes into that directory as its working directory"
+              : "Its transcript is resolved from that path";
           throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd}. Its transcript is ` +
-              `resolved from that path, so recreate it and the resume works unchanged: ${recreate}`,
+            `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd}. ${reason}, so ` +
+              `recreate it and the resume works unchanged: ${recreate}`,
           );
         }
 
@@ -813,13 +840,31 @@ export function registerAgents(server: McpServer): void {
           projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
 
-        const claudeBinary = commandHead(agent.command) || "claude";
-        const commandString = workerCommandString({
-          command: claudeBinary,
-          displayName: agent.name,
-          extraArgs: ["--resume", agent.session_id],
-          settingsPath: ensureHooksFile(),
-        });
+        let commandString: string;
+        let resumeEnv: Record<string, string> = {};
+        if (resumeHarness.name === "codex") {
+          commandString = workerCommandString({
+            command: commandHead(agent.command) || "codex",
+            // Recovered from the row's own recorded command: every codex worker hive spawns
+            // carries a pinned model (codex has no bare alias), so dropping this would silently
+            // resume on codex's default model instead of the one the lane actually chose.
+            model: extractCommandFlag(agent.command, "--model"),
+            displayName: agent.name,
+            // Subcommand positional, not a flag - live-verified on v0.149.0 (`codex resume --help`:
+            // "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]"). No --settings/hooks file: a
+            // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
+            extraArgs: [...codexLaunchArgs(agent.cwd), "resume", agent.session_id],
+          });
+          resumeEnv = { CODEX_HOME: codexHomeDir(agent.codex_home) };
+        } else {
+          const claudeBinary = commandHead(agent.command) || "claude";
+          commandString = workerCommandString({
+            command: claudeBinary,
+            displayName: agent.name,
+            extraArgs: ["--resume", agent.session_id],
+            settingsPath: ensureHooksFile(),
+          });
+        }
 
         const { target, landedInProjectId } = resumeAgent({
           agentId: agent.id,
@@ -830,6 +875,7 @@ export function registerAgents(server: McpServer): void {
           projectPath: project.path,
           cwd: agent.cwd,
           commandString,
+          env: resumeEnv,
           placement,
           layout,
           parentActor: currentActor(),
@@ -856,7 +902,7 @@ export function registerAgents(server: McpServer): void {
     "agent_park",
     {
       description:
-        "Park a claude worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+        "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -888,10 +934,11 @@ export function registerAgents(server: McpServer): void {
           );
         }
 
-        if (!harnessFor(agent.command).supportsResume) {
+        const parkHarness = harnessFor(agent.command);
+        if (!parkHarness.supportsResume) {
           throw new Error(
-            `Agent ${agent.id} ("${agent.name}") is not a claude worker (command: "${agent.command}"), so it has ` +
-              "no session to resume and nothing to park. Close it with agent_close.",
+            `Agent ${agent.id} ("${agent.name}")'s harness ("${parkHarness.name}", command: "${agent.command}") ` +
+              "does not support resume, so it has no session to resume and nothing to park. Close it with agent_close.",
           );
         }
         if (!agent.session_id) {

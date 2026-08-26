@@ -20,8 +20,8 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_message_get` | Reads the full text behind a `[hive message #N ...]` pointer line | When a worker's report to the lead was shortened and you want the rest |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
 | `agent_rename` | Changes a worker's display name; `actor_id` stays the same | When a worker's job becomes clear after you started it |
-| `agent_resume` | Resumes a closed claude worker from its recorded session id (`claude --resume`), reusing the same actor_id | To get a closed worker's full prior context back instead of briefing a fresh one |
-| `agent_park` | Parks a claude worker for the night: closes the pane, marks the row parked rather than plain closed, records the branch, and hands back a board line | End of day, when the lane is paused rather than finished and you want it back tomorrow |
+| `agent_resume` | Resumes a closed claude or codex worker from its recorded session id (`claude --resume` / `codex resume`), reusing the same actor_id | To get a closed worker's full prior context back instead of briefing a fresh one |
+| `agent_park` | Parks a claude or codex worker for the night: closes the pane, marks the row parked rather than plain closed, records the branch, and hands back a board line | End of day, when the lane is paused rather than finished and you want it back tomorrow |
 | `agent_close` | Kills the worker's window and marks it closed. Called on a PARKED row (by `agent_id`) it releases the park instead | After capturing handoffs; terminal output is not retained. Also how you abandon a parked lane you have decided not to resume |
 | **wake-ups** | | |
 | `wake_set` | Types its body into a terminal after a delay, as a fresh user turn | Delayed or repeating check-ins; write the body self-contained (ids, context, next action), or, waking your own lead pane, carry the action and a pointer |

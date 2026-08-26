@@ -45,6 +45,15 @@ export interface HarnessCapabilities {
   readonly transcriptDir: boolean;
   readonly contextTokens: boolean;
 
+  // Whether hive itself must pre-mint a UUID and pass it at spawn (claude's --session-id), as
+  // opposed to the harness minting its own and reporting it back through its first hook payload
+  // (codex). Independent of supportsResume: codex proves the two properties can disagree (todo
+  // 563) - it resumes, but does not take an externally supplied id, so agent_spawn must not mint
+  // one for it. transcriptDir is not part of this: nothing today needs a transcript-dir-only
+  // harness to trigger minting, so folding that case into a dedicated field (rather than the old
+  // `transcriptDir || supportsResume` at agents.ts) is a rename for claude, not a behavior change.
+  readonly mintsSessionId: boolean;
+
   readonly supportsResume: boolean;
   readonly supportsRename: boolean;
 
@@ -96,6 +105,7 @@ const claudeHarness: HarnessCapabilities = {
   transcriptDir: true,
   contextTokens: true,
 
+  mintsSessionId: true,
   supportsResume: true,
   supportsRename: true,
 
@@ -122,14 +132,19 @@ export const codexHarness: HarnessCapabilities = {
 
   // Earned by todo 525 (C3): busy/idle/session-boundary now come from codex's own hooks (prompt,
   // stop, the rekeyed subagent latch) - the same mechanism, and the same measured exactness, as
-  // claude's. transcriptDir/contextTokens/supportsResume stay false below; nothing in this lane
-  // proves codex's transcript format, token accounting, or --resume support.
+  // claude's. transcriptDir/contextTokens stay false below; nothing in this lane proves codex's
+  // transcript format or token accounting - that is a separate lane (staleness), not this one.
   stateSource: true,
 
   transcriptDir: false,
   contextTokens: false,
 
-  supportsResume: false,
+  // codex resumes via `codex resume <SESSION_ID>` (a subcommand positional, live-verified on
+  // v0.149.0 - no --session-id flag exists anywhere in `codex --help`), so it mints its OWN id
+  // rather than taking one from hive: mintsSessionId stays false while supportsResume flips true
+  // (todo 563). The two disagreeing is exactly why they are separate fields.
+  mintsSessionId: false,
+  supportsResume: true,
   supportsRename: false,
 
   classifiesPaneScreen: true,
@@ -161,6 +176,7 @@ const unknownHarness: HarnessCapabilities = {
   transcriptDir: false,
   contextTokens: false,
 
+  mintsSessionId: false,
   supportsResume: false,
   supportsRename: false,
 

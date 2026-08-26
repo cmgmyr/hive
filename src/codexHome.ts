@@ -164,6 +164,26 @@ function configToml(input: {
   );
 }
 
+// The launch flags a codex invocation needs whenever it is about to read a per-worker home this
+// module generated: hook-trust bypass, sandbox bypass, and the directory that seeds config.toml's
+// own [projects.<root>] trust. Pure - computes and writes nothing - so agent_resume (src/tools/
+// agents.ts, todo 563) can reuse it against an EXISTING home without re-running ensureCodexHome's
+// file-writing half.
+export function codexLaunchArgs(cwd: string): string[] {
+  const root = gitPrimaryRoot(cwd);
+  const commonDir = root ? join(root, ".git") : null;
+  return [
+    // Declining review of hive's OWN generated hooks.json, not a stranger's - see the reference.
+    "--dangerously-bypass-hook-trust",
+    // Not parity with claude's posture, and --add-dir below is NOT containment - see the
+    // reference: both claims were wrong in an earlier version of this comment.
+    "--dangerously-bypass-approvals-and-sandbox",
+    // Inert alongside the flag above (see the reference) but kept: free, correct if a sandbox is
+    // ever on, and its value also seeds config.toml's [projects.<root>] trust above.
+    ...(commonDir ? ["--add-dir", commonDir] : []),
+  ];
+}
+
 // Generates a codex worker's per-worker home: auth.json symlinked (never copied) to the real
 // ~/.codex/auth.json, hooks.json, and config.toml. Returns the launch flags this harness requires.
 export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } {
@@ -234,9 +254,7 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
   const indexJs = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
   // Reuses context.ts's own worktree-aware root resolution rather than a second implementation.
-  const root = gitPrimaryRoot(input.cwd);
-  const commonDir = root ? join(root, ".git") : null;
-  const projectRoot = root ?? input.cwd;
+  const projectRoot = gitPrimaryRoot(input.cwd) ?? input.cwd;
 
   const realConfigPath = input.realConfigSource ?? join(homedir(), ".codex", "config.toml");
   const statusLine = realStatusLine(realConfigPath) ?? HIVE_DEFAULT_STATUS_LINE;
@@ -253,16 +271,5 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
     }),
   );
 
-  return {
-    extraArgs: [
-      // Declining review of hive's OWN generated hooks.json, not a stranger's - see the reference.
-      "--dangerously-bypass-hook-trust",
-      // Not parity with claude's posture, and --add-dir below is NOT containment - see the
-      // reference: both claims were wrong in an earlier version of this comment.
-      "--dangerously-bypass-approvals-and-sandbox",
-      // Inert alongside the flag above (see the reference) but kept: free, correct if a sandbox is
-      // ever on, and its value also seeds config.toml's [projects.<root>] trust above.
-      ...(commonDir ? ["--add-dir", commonDir] : []),
-    ],
-  };
+  return { extraArgs: codexLaunchArgs(input.cwd) };
 }

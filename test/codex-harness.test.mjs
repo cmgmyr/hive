@@ -42,12 +42,17 @@ describe("codex is registered by default (todo 524)", () => {
     assert.equal(h.needsHome, true);
   });
 
-  it("does not set supportsRename, and does not claim a transcript/resume correctness this lane did not prove - transcriptDir/contextTokens/supportsResume are separate mechanisms (transcript tailing, token counting, --resume) that nothing here tests", () => {
+  it("does not set supportsRename, transcriptDir or contextTokens - those are separate mechanisms (rename-in-pane, transcript tailing, token counting) that nothing here tests", () => {
     const h = harnessFor("codex");
     assert.equal(h.supportsRename, false);
     assert.equal(h.transcriptDir, false);
     assert.equal(h.contextTokens, false);
-    assert.equal(h.supportsResume, false);
+  });
+
+  it("supports resume via its own `codex resume <id>` but does not mint the id itself (todo 563) - mintsSessionId stays false while supportsResume is true, the one place a harness disagrees with claude's fused true/true", () => {
+    const h = harnessFor("codex");
+    assert.equal(h.supportsResume, true);
+    assert.equal(h.mintsSessionId, false);
   });
 
   it("earns stateSource: busy/idle/session-boundary come from codex's own hooks (prompt, stop, the subagent-latch rekeyed to SubagentStart/SubagentStop), the same mechanism and measured exactness as claude's (todo 525, research pad 229)", () => {
