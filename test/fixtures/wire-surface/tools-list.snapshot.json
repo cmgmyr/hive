@@ -625,6 +625,9 @@
           },
           "type": "array"
         },
+        "exited": {
+          "type": "boolean"
+        },
         "instructions": {
           "type": "string"
         },

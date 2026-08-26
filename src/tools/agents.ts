@@ -32,6 +32,7 @@ import { markGoneReported } from "../scheduler.js";
 import {
   branchAt,
   closeAgentRow,
+  discardOrphanedPane,
   isReservedAgentName,
   isRunningLeadActor,
   launchAgent,
@@ -46,6 +47,7 @@ import { readContextTokens, resolveTranscriptDir } from "../transcript.js";
 import {
   applyLayout,
   capturePane,
+  captureFinalScreen,
   DEFAULT_LAYOUT,
   describePaneChoice,
   ensureAttached,
@@ -55,15 +57,16 @@ import {
   liveTargets,
   paneCurrentCommand,
   paneWindow,
+  pollPaneReadiness,
   rowAlive,
   rowLive,
   sendText,
   sessionName,
+  setRemainOnExit,
   sleep,
   TEXT_ALLOWED_CONTROL_CHARS,
   tmux,
   TmuxTimeoutError,
-  waitForPaneInput,
   WINDOW_LAYOUTS,
   windowLayout,
   windowOwner,
@@ -101,6 +104,7 @@ export interface AgentRow {
   parked_branch: string;
   resumed_at: string;
   codex_home: string;
+  exit_tail: string;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -502,6 +506,7 @@ export function registerAgents(server: McpServer): void {
         brief_path: z.string().optional(),
         codex_home: z.string().optional(),
         ready: z.boolean().optional(),
+        exited: z.boolean().optional(),
         note: z.string().optional(),
         tail: z.string().optional(),
         instructions: z.string().optional(),
@@ -621,6 +626,7 @@ export function registerAgents(server: McpServer): void {
             parentActor: parent,
             sessionId,
             codexHome: codexHomeKey,
+            retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {
           // buildCommand already wrote CODEX_HOME to disk (auth.json symlink included) before
@@ -635,19 +641,40 @@ export function registerAgents(server: McpServer): void {
 
         let ready = false;
         let dialogTail: string | undefined;
+        let exited = false;
+        let exitTail: string | undefined;
         if (harness.classifiesPaneScreen) {
           const classifier = harness.paneClassifier!;
+          // Captured before anything below can kill the pane: remain-on-exit is a WINDOW option,
+          // and the pane id itself stops being addressable once discardOrphanedPane has run.
+          const windowTarget = paneWindow(target) ?? target;
           try {
-            const paneReady = await waitForPaneInput(target, PANE_READY_MS, classifier.hasInputBox);
-            const { awaitingChoice, tail } = classifier.choiceCheck(target);
-            if (awaitingChoice === true) {
-              dialogTail = tail;
-            } else if (paneReady) {
-              ready = true;
+            const outcome = await pollPaneReadiness(target, PANE_READY_MS, classifier.hasInputBox);
+            if (outcome === "gone") {
+              // remain-on-exit held the pane so its final screen is still readable; capture it,
+              // persist it onto the row (the pane below is about to be killed), then release it.
+              // Never run choiceCheck against a retained-but-dead pane: it is frozen content, not
+              // a live dialog, and choiceCheck's own capture is tuned to read a live screen.
+              exited = true;
+              exitTail = captureFinalScreen(target, 30);
+              db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(exitTail, agentId);
+              discardOrphanedPane(target);
+            } else {
+              const { awaitingChoice, tail } = classifier.choiceCheck(target);
+              if (awaitingChoice === true) {
+                dialogTail = tail;
+              } else if (outcome === "ready") {
+                ready = true;
+              }
             }
           } catch {
 
             ready = false;
+          } finally {
+            // Unconditional: every early return, throw, or timeout between arming remain-on-exit
+            // and here must still clear it, or the shared window (the default split placement's)
+            // is left silently retaining every later exit in it, not just this one.
+            setRemainOnExit(windowTarget, false);
           }
         }
 
@@ -678,9 +705,15 @@ export function registerAgents(server: McpServer): void {
                         note: "The pane is waiting on a choice (e.g. a folder-trust or permission prompt). Clear it with agent_send keys, then send the worker its assignment.",
                         tail: dialogTail,
                       }
-                    : {
-                        note: "The pane never became ready. The brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
-                      }),
+                    : exited
+                      ? {
+                          exited: true,
+                          note: "The pane's process exited before it became ready. Its final screen (likely the reason) is in tail.",
+                          tail: exitTail,
+                        }
+                      : {
+                          note: "The pane never became ready. The brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
+                        }),
               }
             : harness.classifiesPaneScreen
               ? {
@@ -1104,6 +1137,7 @@ export function registerAgents(server: McpServer): void {
           ...(args.include_brief ? { brief: readAgentBrief(agent.id) } : {}),
           tail: summary.alive ? capturePane(agent.tmux_target, 15) : "",
           ...(summary.alive ? inputBoxField(agent.command, agent.tmux_target) : {}),
+          ...(agent.exit_tail ? { exit_tail: agent.exit_tail } : {}),
 
           ...claudeOnlyFields(agent),
           ...contextTokensField(agent),
@@ -1364,6 +1398,7 @@ export function registerAgents(server: McpServer): void {
                     ? PROBE_FAILED_NOTE
                     : "No live tmux window; output is not retained after exit.",
               }),
+          ...(alive !== true && agent.exit_tail ? { exit_tail: agent.exit_tail } : {}),
         };
       }),
   );

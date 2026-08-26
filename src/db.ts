@@ -352,6 +352,10 @@ CREATE INDEX idx_agent_messages_project ON agent_messages(project_id, id);
   `
 ALTER TABLE agents ADD COLUMN codex_home TEXT NOT NULL DEFAULT '';
 `,
+
+  `
+ALTER TABLE agents ADD COLUMN exit_tail TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

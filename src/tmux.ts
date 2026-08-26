@@ -442,6 +442,26 @@ export function targetLiveProbe(target: string): PaneProbe {
   }
 }
 
+// Distinct from targetLiveProbe: a remain-on-exit pane the caller is deliberately holding open
+// still LISTS (targetLiveProbe would call it live), but its process has exited and #{pane_dead}
+// says so. Same classify-rather-than-guess shape as targetLiveProbe: a genuinely unreadable probe
+// (a timeout, an untrusted server) answers null, never a guessed true or false.
+//
+// `list-panes -t <pane-id>` lists every pane in that pane's WINDOW, not just the one named - the
+// same reason targetLiveProbe below filters rows by id instead of reading the first line.
+export function paneProcessExited(target: string): boolean | null {
+  if (untrustedTmuxServer()) return null;
+  try {
+    const rows = tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_dead}")
+      .split("\n")
+      .map((line) => line.split(" "));
+    const match = rows.find(([id]) => id === target);
+    return match ? match[1] === "1" : true;
+  } catch (e) {
+    return tmuxSaysNothingThere(e) ? true : null;
+  }
+}
+
 export interface AliveSnapshot {
   panes: Set<string>;
   windows: Set<string>;
@@ -573,6 +593,38 @@ export function adoptableWindow(session: string, projectId: number, pane: string
   return `${session}:${windowId}`;
 }
 
+// Chained into the SAME tmux invocation that creates the pane, never issued as a follow-up call:
+// a command that errors and exits can be gone before a second, separate call would run, and the
+// only fact this option needs to reach is the first tick of the process's own life. See
+// .claude/skills/hive-internals/references/tmux-and-panes.md for the measurement.
+export function retainOnExitArgs(target: string): string[] {
+  return [";", "set-window-option", "-t", target, "remain-on-exit", "on"];
+}
+
+export function setRemainOnExit(target: string, on: boolean): void {
+  try {
+    tmux("set-window-option", "-t", target, "remain-on-exit", on ? "on" : "off");
+  } catch {
+    // The pane may already be gone; nothing left to toggle.
+  }
+}
+
+// Captures a dead (remain-on-exit) pane's final content. capturePane's trailing-blank trim is the
+// wrong shape here: a short-lived command's output sits near the top of a full-height pane, with
+// tmux's own "Pane is dead" trailer as the last, non-blank line - so a plain tail-of-N reads as
+// blank padding plus the trailer. Filtering ALL blank lines first, not just trailing ones, recovers
+// the real content.
+export function captureFinalScreen(target: string, lines: number): string {
+  try {
+    const rows = captureRawPane(target, Math.max(lines * 10, 200))
+      .split("\n")
+      .filter((row) => row.trim() !== "");
+    return rows.slice(-lines).join("\n");
+  } catch {
+    return "";
+  }
+}
+
 export function createWindow(
   session: string,
   windowName: string,
@@ -582,10 +634,12 @@ export function createWindow(
   projectId: number | null,
 
   detach = false,
+  retainOnExit = false,
 ): { pane: string; window: string } {
   const created = tmux(
     "new-window", ...(detach ? ["-d"] : []), "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
     "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
+    ...(retainOnExit ? retainOnExitArgs(`=${session}:${windowName}`) : []),
   );
   const [pane, window] = created.split("\t");
   configureHiveWindow(window, true, projectId);
@@ -1144,25 +1198,46 @@ function defaultHasInputBox(target: string): boolean | null {
   }
 }
 
-export async function waitForPaneInput(
+// Classifies WHY a pane never showed its input box, rather than collapsing every non-ready outcome
+// into one boolean - the same shape as classifying tmux stderr instead of treating every probe
+// failure as unknown (.claude/skills/hive-internals/references/tmux-and-panes.md). "gone" is a
+// FACT (the pane's process has already exited); "timeout" means the pane is still alive and simply
+// never became ready in time. Collapsing them reads a bad flag and a slow cold start identically.
+export type PaneReadinessOutcome = "ready" | "timeout" | "gone";
+
+export async function pollPaneReadiness(
   target: string,
   timeoutMs: number,
   hasInputBox: (target: string) => boolean | null = defaultHasInputBox,
-): Promise<boolean> {
+): Promise<PaneReadinessOutcome> {
   const start = Date.now();
   const deadline = start + timeoutMs;
 
   const interval = () => (Date.now() - start < 1000 ? 200 : 500);
   while (Date.now() < deadline) {
-    const ready = hasInputBox(target);
-    if (ready === null) return false;
-    if (ready === true) {
+    // paneProcessExited is the SOLE source of truth for "gone". hasInputBox's own null (its
+    // contract: a genuinely unreadable probe - a timeout, an untrusted server - never a guessed
+    // true or false) must never be read as "exited" on its own: a caller retaining the pane on
+    // exit (remain-on-exit) keeps it LISTED, so a pane that is merely hard to read right now
+    // still answers false here, not true, and falls through to another poll like any other
+    // not-ready tick. A pane genuinely destroyed with no remain-on-exit in play is already caught
+    // above, on this same iteration, before hasInputBox is even consulted.
+    if (paneProcessExited(target) === true) return "gone";
+    if (hasInputBox(target) === true) {
       await sleep(250);
-      return true;
+      return "ready";
     }
     await sleep(interval());
   }
-  return false;
+  return "timeout";
+}
+
+export async function waitForPaneInput(
+  target: string,
+  timeoutMs: number,
+  hasInputBox: (target: string) => boolean | null = defaultHasInputBox,
+): Promise<boolean> {
+  return (await pollPaneReadiness(target, timeoutMs, hasInputBox)) === "ready";
 }
 
 let bufferSeq = 0;

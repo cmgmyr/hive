@@ -11,6 +11,7 @@ import {
   findProjectWindow,
   panePid,
   paneWindow,
+  retainOnExitArgs,
   rowLive,
   sessionName,
   tmux,
@@ -56,6 +57,12 @@ export interface LaunchSpec {
   // into the SAME INSERT that creates the row, before ensureCodexHome's mkdirSync ever runs - see
   // reapCodexHomeForClosedAgent below for why that ordering is load-bearing for reaping.
   codexHome?: string;
+
+  // Chained atomically into the pane's own creation call (never a follow-up), so a command that
+  // exits during the caller's own readiness wait leaves its final screen readable instead of being
+  // torn down with the rest of the window. The caller owns turning it back off (or capturing and
+  // killing) once that wait resolves; see agents.ts's agent_spawn handler.
+  retainOnExit?: boolean;
 }
 
 export function splitTargetWindow(session: string, projectId: number, parentActor: string): string | null {
@@ -97,7 +104,7 @@ function recordPane(agentId: number, target: string, socket: string): boolean {
   );
 }
 
-function discardOrphanedPane(target: string): void {
+export function discardOrphanedPane(target: string): void {
   try {
     tmux("kill-pane", "-t", target);
   } catch {
@@ -151,7 +158,10 @@ export function upsertActor(actorId: string, name: string, kind: string): void {
 
 function placeAgentPane(
   session: string,
-  spec: Pick<LaunchSpec, "projectId" | "projectName" | "projectPath" | "cwd" | "placement" | "layout" | "parentActor">,
+  spec: Pick<
+    LaunchSpec,
+    "projectId" | "projectName" | "projectPath" | "cwd" | "placement" | "layout" | "parentActor" | "retainOnExit"
+  >,
   envFlags: string[],
   commandString: string,
   title: string,
@@ -172,6 +182,7 @@ function placeAgentPane(
         const pane = tmux(
           "split-window", "-d", "-P", "-F", "#{pane_id}",
           "-t", found, "-c", spec.cwd, ...envFlags, commandString,
+          ...(spec.retainOnExit ? retainOnExitArgs(found) : []),
         );
         applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
         layoutApplied = true;
@@ -180,7 +191,10 @@ function placeAgentPane(
         return pane;
       }
     }
-    return createWindow(session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true).pane;
+    return createWindow(
+      session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true,
+      spec.retainOnExit ?? false,
+    ).pane;
   });
   return { target, landedInProjectId, layoutApplied };
 }
