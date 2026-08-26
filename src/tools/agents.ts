@@ -392,9 +392,17 @@ function capturePaneQuietly(target: string): string {
   }
 }
 
-function inputBoxField(command: string, target: string): { input_box: InputBoxState } | Record<string, never> {
+function inputBoxField(
+  command: string,
+  target: string,
+): { input_box: Omit<InputBoxState, "text"> & { text?: string } } | Record<string, never> {
   const box = paneClassifierFor(command)?.inputBoxState(target) ?? null;
-  return box ? { input_box: box } : {};
+  if (!box) return {};
+  if (box.state === "ghost") {
+    const { state } = box;
+    return { input_box: { state } };
+  }
+  return { input_box: box };
 }
 
 export function claudeOnlyFields(

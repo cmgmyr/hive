@@ -415,3 +415,54 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
     });
   });
 });
+
+describe(
+  "input_box omits text for a ghost suggestion on the three writers that can ever emit one (todo 554)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    // A fourth writer builds input_box directly (agent_send's held-text refusal, above): it can never
+    // carry a ghost, since it only fires when holdsHumanInput is true (state "pending"), pinned by
+    // test/input-box.test.mjs:181.
+    const spawned = [];
+    after(async () => {
+      for (const agent_id of spawned) await mcp.call("agent_close", { agent_id }).catch(() => {});
+    });
+
+    async function showingGhost(name) {
+      const spawn = await spawnShowing(name, replayFixture("ghost-suggestion.txt"));
+      spawned.push(spawn.agent_id);
+      return name;
+    }
+
+    it("agent_output reports ghost state with no text, and still reports text for real unsubmitted input", async () => {
+      const ghostName = await showingGhost("output-ghost");
+      const ghostReceipt = await mcp.call("agent_output", { name: ghostName });
+      assert.equal(ghostReceipt.input_box.state, "ghost");
+      assert.ok(
+        !("text" in ghostReceipt.input_box),
+        "a model's own suggestion must not be reported as text a lead could mistake for a human's",
+      );
+
+      const pendingSpawn = await spawnShowing("output-pending", replayFixture("real-input.txt"));
+      spawned.push(pendingSpawn.agent_id);
+      const pendingReceipt = await mcp.call("agent_output", { name: "output-pending" });
+      assert.equal(pendingReceipt.input_box.state, "pending");
+      assert.equal(pendingReceipt.input_box.text, "REAL UNSUBMITTED INPUT");
+    });
+
+    it("agent_status reports ghost state with no text", async () => {
+      const name = await showingGhost("status-ghost");
+      const receipt = await mcp.call("agent_status", { name });
+      assert.equal(receipt.input_box.state, "ghost");
+      assert.ok(!("text" in receipt.input_box));
+    });
+
+    it("agent_send's wait_ms tail reports ghost state with no text", async () => {
+      const name = await showingGhost("send-wait-ghost");
+      const receipt = await mcp.call("agent_send", { name, keys: ["Escape"], wait_ms: 250 });
+      assert.equal(receipt.sent, true);
+      assert.equal(receipt.input_box.state, "ghost");
+      assert.ok(!("text" in receipt.input_box));
+    });
+  },
+);
