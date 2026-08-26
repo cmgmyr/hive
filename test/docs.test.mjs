@@ -212,6 +212,17 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
+  it("keeps .claude/skills a symlink to .agents/skills, not a copy", () => {
+
+    const full = join(REPO, ".claude/skills");
+    assert.ok(existsSync(full), ".claude/skills is missing; codex and Claude Code would both lose the repo's skills");
+    assert.equal(
+      readlinkSync(full),
+      "../.agents/skills",
+      ".claude/skills should be a symlink to ../.agents/skills, not a copy",
+    );
+  });
+
   it("keeps the suite's own rules reachable from the root CLAUDE.md, and their citations real", () => {
 
     const claudeMd = readRepo("CLAUDE.md");
