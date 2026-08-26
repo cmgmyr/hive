@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseToml } from "smol-toml";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
 import { hookEntry } from "./hooks.js";
@@ -16,6 +17,14 @@ export interface CodexHomeInput {
   // Overridable only for tests - production spawns never set this, so it always resolves to
   // Chris's real ~/.codex/auth.json.
   authSource?: string;
+
+  // Overridable only for tests - production spawns never set this, so it always resolves to
+  // Chris's real ~/.codex/config.toml. Read-only, and only one named key is ever pulled out of it
+  // (status_line under [tui] - see realStatusLine below): todo 560's decision record
+  // (.claude/sessions/decisions/2026-08-24-copy-named-keys-into-a-codex-worker-config-never-merge.md)
+  // is the reason this must never become "parse and merge the whole file" - that reintroduces the
+  // hook-merge hazard per-worker homes exist to avoid.
+  realConfigSource?: string;
 
   // Set only for a codex LEAD's home (src/cli.ts cmdLead), never a worker's: wires SessionStart to
   // `hive kickoff --codex` the same way ensureHooksFile wires it for a claude lead's shared hooks
@@ -85,6 +94,32 @@ function tomlString(s: string): string {
   return `"${tomlEscape(s, { allowLiteralNewline: false })}"`;
 }
 
+function tomlStringArray(items: string[]): string {
+  return `[${items.map(tomlString).join(", ")}]`;
+}
+
+// Verified against codex 0.149.0 (todo 560 comment 1948, `codex exec --strict-config`): included in
+// Chris's own real status_line, so known to be a value codex accepts here.
+const HIVE_DEFAULT_STATUS_LINE = ["context-used"];
+
+// Pulls ONLY [tui].status_line out of the real config - never the rest of that table (it also
+// carries [tui.model_availability_nux], which is not a display key) and never any other top-level
+// table. Missing file, unreadable TOML, or a status_line that is not a string array are all the
+// ordinary case (no config yet, or a shape codex itself would reject): fall back to hive's default
+// rather than throwing, since a worker still has to spawn either way.
+function realStatusLine(realConfigPath: string): string[] | null {
+  if (!existsSync(realConfigPath)) return null;
+  let parsed: unknown;
+  try {
+    parsed = parseToml(readFileSync(realConfigPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const statusLine = (parsed as { tui?: { status_line?: unknown } } | undefined)?.tui?.status_line;
+  if (!Array.isArray(statusLine) || !statusLine.every((v) => typeof v === "string")) return null;
+  return statusLine as string[];
+}
+
 function tomlMultilineString(s: string): string {
   // No trailing \n before the closing """, unlike the leading one - round-trips to the exact input.
   return `"""\n${tomlEscape(s, { allowLiteralNewline: true })}"""`;
@@ -98,10 +133,16 @@ function configToml(input: {
   nodeBin: string;
   indexJs: string;
   actorId: string;
+  statusLine: string[];
 }): string {
   return (
     [
       `developer_instructions = ${tomlMultilineString(input.developerInstructions)}`,
+      // Verified real (todo 560 comment 1948): makes codex fall back to CLAUDE.md as the project doc
+      // when a project has no AGENTS.md, rather than a worker silently knowing nothing about the
+      // project. Always set - unlike status_line, this is hive's own default, not copied from
+      // anywhere.
+      `project_doc_fallback_filenames = ${tomlStringArray(["CLAUDE.md"])}`,
       "",
       `[projects.${tomlString(input.projectRoot)}]`,
       `trust_level = "trusted"`,
@@ -112,6 +153,13 @@ function configToml(input: {
       "",
       `[mcp_servers.hive.env]`,
       `HIVE_AGENT_ID = ${tomlString(input.actorId)}`,
+      "",
+      // Verified real (todo 560 comment 1948): status_line is only accepted here, under [tui] - a
+      // top-level status_line is an unknown field under --strict-config. Value comes from
+      // realStatusLine() above: the real config's own [tui].status_line when set, else
+      // HIVE_DEFAULT_STATUS_LINE.
+      `[tui]`,
+      `status_line = ${tomlStringArray(input.statusLine)}`,
     ].join("\n") + "\n"
   );
 }
@@ -190,6 +238,9 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
   const commonDir = root ? join(root, ".git") : null;
   const projectRoot = root ?? input.cwd;
 
+  const realConfigPath = input.realConfigSource ?? join(homedir(), ".codex", "config.toml");
+  const statusLine = realStatusLine(realConfigPath) ?? HIVE_DEFAULT_STATUS_LINE;
+
   writeFileSync(
     join(home, "config.toml"),
     configToml({
@@ -198,6 +249,7 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
       nodeBin: process.execPath,
       indexJs,
       actorId: input.actorId,
+      statusLine,
     }),
   );
 

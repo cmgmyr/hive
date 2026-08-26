@@ -196,6 +196,12 @@ jobs:
         # disappearing the way an unregistered test would. CI CONFIRMED THE
         # COUNT: "this leg skipped 26 tests, budget is 25" on both Linux legs
         # the run after the test was added.
+        #
+        # 26 -> 28 (todo 560). test/codex-home.test.mjs's two --strict-config
+        # cases against the real binary are gated behind the same
+        # HIVE_TEST_REAL_CODEX env var as the real-spawn case above, for the
+        # same reason: CI has no real codex binary. Registered rather than
+        # made to not exist, matching the precedent two entries up.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
@@ -205,11 +211,11 @@ jobs:
             # closed and the sweep cannot select that population there at all
             # (todo 372, todo 472). The guard it proves is pinned on every
             # platform by the handed-population case beside it.
-            skipped: 26
+            skipped: 28
           - os: ubuntu-latest
             node: 24
             alt: 22
-            skipped: 26
+            skipped: 28
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
@@ -338,14 +344,15 @@ jobs:
   # WHAT THIS COVERS THAT `test` NOW CANNOT: test/auto-attach-scope.test.mjs's
   # eleven darwin-only cases (ensureAttached is a no-op off darwin, so Linux
   # skips them by design - they are the largest contributor to the Linux legs'
-  # `skipped: 26`, which also counts dashboard-open, dashboard-open-lead,
-  # open-call-guard, sweep-scratch's darwin-only ownership case, and the one
-  # HIVE_TEST_REAL_CODEX-gated case that skips on every platform (todo 524);
-  # `skipped: 1` here, that same platform-independent case), and a
-  # clean-environment build of the native addon on the platform hive actually
-  # ships on. Everything else - the addon's ABI logic, the CLI, the MCP tools
-  # - is architecture-general and the Linux legs already cover it on every
-  # push and PR.
+  # `skipped: 28`, which also counts dashboard-open, dashboard-open-lead,
+  # open-call-guard, sweep-scratch's darwin-only ownership case, and the three
+  # HIVE_TEST_REAL_CODEX-gated cases that skip on every platform (todo 524's
+  # test/codex-live-spawn.test.mjs case, plus todo 560's two
+  # test/codex-home.test.mjs --strict-config cases); `skipped: 3` here, those
+  # same three platform-independent cases), and a clean-environment build of
+  # the native addon on the platform hive actually ships on. Everything else -
+  # the addon's ABI logic, the CLI, the MCP tools - is architecture-general and
+  # the Linux legs already cover it on every push and PR.
   #
   # WHEN THIS RUNS: the weekly `schedule:` above, or by hand via
   # `workflow_dispatch:` before a release or before anything touching
@@ -366,7 +373,15 @@ jobs:
             # gate is platform-independent, not darwin-only construction like the
             # Linux legs' budget above - it skips here too, since the canary runner
             # has no real codex binary or credentials either.
-            skipped: 1
+            #
+            # 1 -> 3 (todo 560). test/codex-home.test.mjs's two --strict-config
+            # cases sit behind the identical HIVE_TEST_REAL_CODEX gate as the
+            # case above - platform-independent for the same reason, so both
+            # skip here too. Missed on the first pass of this lane: the Linux
+            # legs' budget was bumped 26 -> 28 for these same two tests, but
+            # this leg was left at 1, which would have reported "skipped 3,
+            # budget 1" and failed on the next scheduled or dispatched run.
+            skipped: 3
     name: test (macos-latest, node ${{ matrix.node }}) [canary]
     steps:
       - uses: actions/checkout@v5

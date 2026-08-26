@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -44,6 +45,13 @@ const build = (overrides = {}) =>
     authSource: fakeAuth,
     ...overrides,
   });
+
+let hasCodex = true;
+try {
+  execFileSync("codex", ["--version"], { stdio: "ignore" });
+} catch {
+  hasCodex = false;
+}
 
 describe("ensureCodexHome writes a real, self-contained per-worker home", () => {
   it("symlinks auth.json to the given source, never copies it", () => {
@@ -199,6 +207,145 @@ describe("the generated config.toml is real, parseable TOML (the H7 ordering tra
     assert.ok(parsed.mcp_servers.hive.args[0].endsWith("index.js"));
     assert.equal(parsed.mcp_servers.hive.env.HIVE_AGENT_ID, "agent:777");
   });
+});
+
+describe("todo 560: status_line and project_doc_fallback_filenames reach the generated config", () => {
+  it("always emits project_doc_fallback_filenames = [\"CLAUDE.md\"] at the top level, regardless of the real config", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.deepEqual(parsed.project_doc_fallback_filenames, ["CLAUDE.md"]);
+  });
+
+  it("copies [tui].status_line from the real config when the real config has one", () => {
+    const realConfig = join(scratch, "real-config-with-status-line.toml");
+    writeFileSync(realConfig, ['[tui]', 'status_line = ["project-name", "context-used"]', ""].join("\n"));
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.deepEqual(parsed.tui.status_line, ["project-name", "context-used"]);
+  });
+
+  it("falls back to hive's own default status_line, including context-used, when the real config has no [tui] table", () => {
+    const realConfig = join(scratch, "real-config-no-tui.toml");
+    writeFileSync(realConfig, 'model = "gpt-5.6-sol"\n');
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.ok(parsed.tui.status_line.includes("context-used"), "hive's default must include context-used - the operational point of the lane");
+  });
+
+  it("falls back to hive's own default status_line when the real config file does not exist at all", () => {
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: join(scratch, "does-not-exist-config.toml") });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.ok(parsed.tui.status_line.includes("context-used"));
+  });
+
+  it("copies only status_line out of the real config's [tui] table - never [hooks], never any other top-level key (the never-merge guard)", () => {
+    const realConfig = join(scratch, "real-config-guard.toml");
+    writeFileSync(
+      realConfig,
+      [
+        "[tui]",
+        'status_line = ["context-used", "model-with-reasoning"]',
+        "",
+        "[hooks.state]",
+        'command = "/bin/whoami-hook"',
+        "",
+        'unrelated_top_level_key = "should never appear"',
+        "",
+      ].join("\n"),
+    );
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.deepEqual(
+      parsed.tui.status_line,
+      ["context-used", "model-with-reasoning"],
+      "status_line itself must still be copied - this is not just a negative assertion",
+    );
+    assert.equal(
+      "hooks" in parsed,
+      false,
+      "the real config's [hooks] table must never cross into a worker's config - that is the whole reason per-worker homes exist (decisions/2026-08-23-per-worker-codex-home-stays.md)",
+    );
+    assert.equal("unrelated_top_level_key" in parsed, false, "no unrelated top-level key from the real config may cross over");
+  });
+});
+
+// Same env gate as test/codex-live-spawn.test.mjs's real-spawn case, for the same reason: this
+// shells out to the real codex binary, which no CI runner has or should be given. The network-cost
+// half of that file's rationale does not apply here (see noNetworkEnv below), but "runs the real
+// binary at all" is kept opt-in on principle rather than firing on every dev machine that happens to
+// have codex on PATH.
+const REAL_CODEX_ENV = "HIVE_TEST_REAL_CODEX";
+const strictConfigSkip = !hasCodex
+  ? "codex is not installed on PATH"
+  : process.env[REAL_CODEX_ENV] !== "1"
+    ? `set ${REAL_CODEX_ENV}=1 to run this - it shells out to the real codex binary`
+    : false;
+
+describe(`the generated config.toml passes codex's own --strict-config check against the real binary (env-gated: ${REAL_CODEX_ENV})`, () => {
+    // `codex exec` is the only subcommand --strict-config works on (mcp/debug/features all refuse
+    // it), and a config that parses proceeds straight into real network calls (a websocket to
+    // OpenAI, plus a plugin-marketplace git clone) before this process ever gets a chance to kill
+    // it. Routing http(s)_proxy at an address nothing listens on makes every one of those calls fail
+    // in milliseconds with ECONNREFUSED, well before config parsing would ever be in question - a
+    // config codex rejects fails during load, before any network attempt exists to redirect. Proven
+    // live: with the proxy set, a good config reaches its "session id:" banner and a config carrying
+    // top-level status_line still fails instantly with "unknown configuration field".
+    const noNetworkEnv = {
+      ...process.env,
+      http_proxy: "http://127.0.0.1:1",
+      https_proxy: "http://127.0.0.1:1",
+      HTTP_PROXY: "http://127.0.0.1:1",
+      HTTPS_PROXY: "http://127.0.0.1:1",
+    };
+
+    function runStrictConfig(home) {
+      const result = spawnSync("codex", ["exec", "--strict-config", "hello"], {
+        cwd: repo,
+        env: { ...noNetworkEnv, CODEX_HOME: home },
+        input: "",
+        timeout: 2000,
+        killSignal: "SIGKILL",
+        detached: true,
+        encoding: "utf8",
+      });
+      // detached:true makes codex the leader of a new process group, so -pid reaches any child it
+      // spawned (the hive MCP server, a plugin-sync git clone) that spawnSync's own timeout kill
+      // would otherwise leave orphaned - the exact leaked-process shape test/CLAUDE.md warns about.
+      if (result.pid) {
+        try {
+          process.kill(-result.pid, "SIGKILL");
+        } catch {
+          // Group already gone - nothing survived to reap.
+        }
+      }
+      return result;
+    }
+
+    it("accepts every field in a real generated worker config - no \"unknown configuration field\" error", { skip: strictConfigSkip }, () => {
+      const key = `worker-${counter}`;
+      build({ key });
+      const result = runStrictConfig(codexHomeDir(key));
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      assert.equal(/unknown configuration field/.test(output), false, `codex rejected the generated config:\n${output}`);
+      assert.match(output, /session id:/, "must reach session startup - proves config load actually completed rather than the run failing before it got there");
+    });
+
+    it("rejects a top-level status_line the way the todo body's original (wrong) claim would have shipped it - the regression this lane exists to prevent", { skip: strictConfigSkip }, () => {
+      const key = `worker-${counter}`;
+      build({ key });
+      const home = codexHomeDir(key);
+      // Overwrite with the exact shape the todo body's uncorrected claim would have produced:
+      // status_line at the top level instead of under [tui].
+      writeFileSync(join(home, "config.toml"), 'status_line = ["context-used"]\n');
+      const result = runStrictConfig(home);
+      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+      assert.match(output, /unknown configuration field `status_line`/, `expected a top-level status_line to be rejected; got:\n${output}`);
+    });
 });
 
 describe("reapCodexHome removes the home directory without ever following the auth.json symlink", () => {
