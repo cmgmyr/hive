@@ -9,7 +9,7 @@ layout: main-vertical           # pane arrangement for placement: split.
                                 # | even-horizontal | even-vertical.
                                 # main-* gives the lead half the window.
 
-lead: claude --model opus       # custom command for the lead window (default: claude)
+lead: claude --model fable      # custom command for the lead window (default: claude)
 
 agents: [claude, codex]         # crew harness pool agent_spawn may pick from; claude is first so
                                 # it stays the default. lead: above is separate and unaffected.
