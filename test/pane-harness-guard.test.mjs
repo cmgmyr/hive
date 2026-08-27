@@ -154,6 +154,8 @@ describe("the delivery-side backstop, for wakes the door could not have caught (
   });
 });
 
+const findWake = (wakes, wakeId) => wakes.find((w) => w.wake_id === wakeId);
+
 describe("a plain session's wake to its own pane still delivers, end to end (todo 507)", () => {
   it("delivers into a pane reached through the TMUX_PANE fallback, where no agents row records a command at all", NEEDS_TMUX, async () => {
     const pane = execFileSync(
@@ -172,12 +174,43 @@ describe("a plain session's wake to its own pane still delivers, end to end (tod
       const wake = await plain.call("wake_set", { delay_seconds: 1, body: "MARKERORPHAN" });
       assert.ok(wake.wake_id, "creation must not refuse a target with no agents row behind it");
 
-      await until(async () => {
+      // Assert the STORE first, independent of any screen read - wait for a TERMINAL delivery
+      // state (typed_at or held_at), not mere row presence, or the claim/type gap reads as "never typed".
+      // Own bound: typed_at lands ~ENTER_DELAY_MS after render and the scheduler ticks every 3000ms,
+      // so the render-poll's bound would race healthy delivery; condition-wait, not a widened bound (todo 422).
+      let record;
+      const resolved = await until(async () => {
+        record = findWake((await plain.call("wake_list")).recently_delivered, wake.wake_id);
+        return record !== undefined && (record.typed_at != null || record.held_at != null);
+      }, 6000);
+      assert.ok(
+        resolved,
+        record
+          ? `hive never typed it: wake #${wake.wake_id} is still stuck with no typed_at and no ` +
+            `held_at - ${JSON.stringify(record)}`
+          : `wake #${wake.wake_id} never showed up in recently_delivered at all - the scheduler ` +
+            "never reached it (still pending, or fell out of the last-10 window)",
+      );
+      assert.ok(
+        record.typed_at,
+        `hive never typed it: held_at=${record.held_at}, held_reason=${record.held_reason} for ` +
+          `wake #${wake.wake_id} - ${JSON.stringify(record)}`,
+      );
+
+      // Condition-wait under the SAME pre-existing bound, unchanged - fails fast, not a widened
+      // timeout (todo 422).
+      const rendered = await until(async () => {
         const seen = execFileSync("tmux", ["capture-pane", "-p", "-t", pane], { encoding: "utf8" });
         return /MARKERORPHAN/.test(seen);
       });
 
       const seen = execFileSync("tmux", ["capture-pane", "-p", "-t", pane], { encoding: "utf8" });
+      assert.ok(
+        rendered,
+        `hive typed it and the screen never rendered it: typed_at=${record.typed_at}, ` +
+          `typed_seen=${record.typed_seen}, confirmation=${record.confirmation}, ` +
+          `screen=${JSON.stringify(seen)}`,
+      );
       assert.match(seen, /MARKERORPHAN/, "assert the PANE - the wake has to actually arrive, not merely be accepted");
     } finally {
       await plain.close();
