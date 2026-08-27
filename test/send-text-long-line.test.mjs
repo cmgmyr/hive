@@ -11,7 +11,7 @@ const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
-const { sendText, sessionName } = await import("../dist/tmux.js");
+const { sendText, sessionName, shellQuote } = await import("../dist/tmux.js");
 
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
@@ -55,7 +55,7 @@ before(async () => {
     "60",
     "-c",
     dirs.projectDir,
-    `${process.execPath} ${readerScript}`,
+    `${shellQuote(process.execPath)} ${shellQuote(readerScript)}`,
   ]);
   pane = execFileSync("tmux", ["list-panes", "-t", session, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
   await until(() => existsSync(readerReady), 10000);
