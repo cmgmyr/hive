@@ -19,29 +19,32 @@ const shimDir = mkdtempSync(join(tmpdir(), "hive-sendpartial-"));
 writeFileSync(
   join(shimDir, "tmux"),
   `#!/bin/sh
-# HIVE_TEST_FAIL_ENTER: the submit only - \`send-keys -t <pane> Enter\`. A
-# single-line text's paste (\`send-keys -l\`) and a multi-line paste
-# (set-buffer + paste-buffer) are both untouched.
+# HIVE_TEST_FAIL_ENTER: the submit only - \`send-keys -t <pane> Enter\`. The
+# paste (set-buffer + paste-buffer, for text of any shape since todo 599) is
+# untouched.
 if [ "$HIVE_TEST_FAIL_ENTER" = "1" ] && [ "$1" = "send-keys" ]; then
   for a in "$@"; do
     if [ "$a" = "Enter" ]; then echo "tmux: send-keys failed" >&2; exit 1; fi
   done
 fi
-# HIVE_TEST_FAIL_PASTE: the control. Fails a single-line paste (\`send-keys
-# -l\`) before anything reaches the pane, so the honest "nothing was sent"
-# case must stay untouched by this lane's rewritten message.
-if [ "$HIVE_TEST_FAIL_PASTE" = "1" ] && [ "$1" = "send-keys" ]; then
-  for a in "$@"; do
-    if [ "$a" = "-l" ]; then echo "tmux: send-keys failed" >&2; exit 1; fi
-  done
+# HIVE_TEST_FAIL_PASTE: the control. Fails the paste before anything reaches
+# the pane, so the honest "nothing was sent" case must stay untouched by this
+# lane's rewritten message.
+if [ "$HIVE_TEST_FAIL_PASTE" = "1" ] && [ "$1" = "paste-buffer" ]; then
+  echo "tmux: paste-buffer failed" >&2; exit 1
 fi
-# HIVE_TEST_HANG: never answers the next send-keys call at all (paste or
-# Enter, whichever comes first - for a single-line text that is always the
-# paste). Combined with a short HIVE_TMUX_TIMEOUT_MS, this is what a
-# TmuxTimeoutError on the PASTE call looks like from agent_send's side:
-# adversarial-round finding 2, "pasted === false does not prove nothing
-# reached the pane" - a timed-out client, not a failed one.
-if [ "$HIVE_TEST_HANG" = "1" ] && [ "$1" = "send-keys" ]; then
+# HIVE_TEST_HANG: never answers the paste-buffer call at all. Combined with a
+# short HIVE_TMUX_TIMEOUT_MS, this is what a TmuxTimeoutError on the PASTE call
+# looks like from agent_send's side: adversarial-round finding 2, "pasted ===
+# false does not prove nothing reached the pane" - a timed-out client, not a
+# failed one.
+if [ "$HIVE_TEST_HANG" = "1" ] && [ "$1" = "paste-buffer" ]; then
+  exec sleep 30
+fi
+# HIVE_TEST_HANG_BUFFER: hangs the FIRST of the two paste calls instead.
+# set-buffer names no pane and cannot put anything on a screen, so this is the
+# case the ambiguous "MAY already be on that screen" sentence must NOT claim.
+if [ "$HIVE_TEST_HANG_BUFFER" = "1" ] && [ "$1" = "set-buffer" ]; then
   exec sleep 30
 fi
 exec ${realTmux} "$@"
@@ -242,6 +245,28 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
     );
   });
 
+  it("a set-buffer that times out is NOT reported as text that may be on the screen - set-buffer names no pane", NEEDS_TMUX, async () => {
+    const name = "send599-setbuffer-timeout";
+    await spawnClaude(name);
+
+    await assert.rejects(
+      callWithBrokenTmux({ HIVE_TEST_HANG_BUFFER: "1", HIVE_TMUX_TIMEOUT_MS: "300" }, name, "MARKERONE"),
+      (err) => {
+        assert.doesNotMatch(
+          err.message,
+          /\[agent_send:paste-timeout-ambiguous\]/,
+          "the ambiguous tag claims the text may be on the pane; a timed-out set-buffer proves it is not",
+        );
+        assert.doesNotMatch(err.message, /on that screen/i, "nothing reached any screen - this sentence must not fire");
+        assert.match(err.message, /set-buffer/, "the caller still has to be told which call died");
+        return true;
+      },
+    );
+
+    const { output } = await mcp.call("agent_output", { name });
+    assert.doesNotMatch(output, /MARKERONE/, "assert the PANE - the text really never reached it");
+  });
+
   it("a shell pane never reaches the paste at all now, so the partial-send sentence has nothing to report there (todo 507)", NEEDS_TMUX, async () => {
     const name = "send414-shell-truth";
     await spawnShell(name);
@@ -295,7 +320,7 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
     await assert.rejects(callWithBrokenTmux({ HIVE_TEST_FAIL_PASTE: "1" }, name, "MARKERONE"), (err) => {
       assert.doesNotMatch(err.message, /\[agent_send:/, "neither new tag may appear - nothing reached the pane");
       assert.doesNotMatch(err.message, /on the target's screen/i, "nothing reached the pane - this sentence must not fire");
-      assert.match(err.message, /send-keys failed/, "the original tmux failure must propagate unchanged");
+      assert.match(err.message, /paste-buffer failed/, "the original tmux failure must propagate unchanged");
       return true;
     });
 

@@ -63,6 +63,7 @@ import {
   isPaneTarget,
   liveTargets,
   paneCurrentCommand,
+  paneInCopyMode,
   paneWindow,
   pollPaneReadiness,
   rowAlive,
@@ -1211,7 +1212,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text is typed literally (multi-line uses bracketed paste) and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode and send again.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -1282,6 +1283,23 @@ export function registerAgents(server: McpServer): void {
             };
           }
 
+          if (paneInCopyMode(target) === true) {
+            return {
+              agent_id: agent.id,
+              name: agent.name,
+              sent: false,
+              note:
+                "The pane is in tmux copy mode, so text was NOT sent: tmux clears a pane's bracketed-paste " +
+                "flag there, so the paste would arrive with no markers - anything past one 1022-byte write " +
+                "loses its head - and the Enter after it is eaten by the mode rather than submitting. Both " +
+                "failures are silent: tmux reports success for each call. Someone is reading or scrolling " +
+                "this pane. Leave copy mode (press q or Escape there, or " +
+                `agent_send(name: ${JSON.stringify(agent.name)}, keys: ["-X", "cancel"]) to cancel it ` +
+                "deliberately), then retry - this refusal is retriable and nothing was lost.",
+              tail: capturePaneQuietly(agent.tmux_target),
+            };
+          }
+
           const sendClassifier = harnessFor(agent.command).paneClassifier!;
           const submitting = args.submit !== false;
           const { awaitingChoice, tail } = sendClassifier.choiceCheck(target);
@@ -1341,16 +1359,25 @@ export function registerAgents(server: McpServer): void {
           }
 
           let pasted = false;
+          let buffered = false;
           try {
-            await sendText(target, outgoing, submitting, () => {
-              pasted = true;
-            });
+            await sendText(
+              target,
+              outgoing,
+              submitting,
+              () => {
+                pasted = true;
+              },
+              () => {
+                buffered = true;
+              },
+            );
           } catch (err) {
             const shortenedClause =
               shortened === null ? "" : shortenedSendFailureClause(shortened.marker, shortened.message_id);
             if (!pasted) {
 
-              if (err instanceof TmuxTimeoutError) {
+              if (buffered && err instanceof TmuxTimeoutError) {
                 throw new Error(
                   `[agent_send:paste-timeout-ambiguous] agent_send's paste call to ${agent.name}'s pane timed out. A timed-out tmux call does not prove nothing happened - the server can finish a command after the client gives up waiting on it - so the text MAY already be on that screen, unsubmitted. Do not resend blindly: read the pane first with agent_output(name: ${JSON.stringify(agent.name)}), and only send again if the text genuinely is not there.${shortenedClause}`,
                   { cause: err },

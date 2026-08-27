@@ -934,6 +934,16 @@ export const paneHasInputBox = (target: string): boolean | null => {
 
 export const screenAwaitingChoice = (screen: string): boolean => isAwaitingChoiceScreen(screen, screen);
 
+// tmux clears the pane's bracketed-paste flag in copy mode, so paste-buffer -p
+// sends no markers there and the Enter after it never reaches the application.
+export function paneInCopyMode(target: string): boolean | null {
+  try {
+    return tmux("display-message", "-p", "-t", target, "#{pane_in_mode}").trim() === "1";
+  } catch {
+    return null;
+  }
+}
+
 export function paneAwaitingChoice(target: string): boolean | null {
   try {
     const raw = captureRawPane(target, tailCaptureLines());
@@ -1306,13 +1316,30 @@ export async function sendText(
   text: string,
   submit = true,
   onPasted?: () => void,
+  onBuffered?: () => void,
 ): Promise<void> {
-  if (text.includes("\n")) {
+  // tmux hands a pane its input in 1022-byte writes, and only paste-buffer -p
+  // brackets them, so send-keys -l loses everything before the last write.
+  // An empty text skips the pair: set-buffer creates no buffer for it, so
+  // paste-buffer would then fail and the Enter would never be sent.
+  if (text !== "") {
     const buffer = nextBufferName();
+    // set-buffer names no pane, so its failure cannot have put anything on a
+    // screen. Callers tell that from a failed paste by whether onBuffered ran.
     tmux("set-buffer", "-b", buffer, "--", text);
-    tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
-  } else {
-    tmux("send-keys", "-t", target, "-l", "--", text);
+    onBuffered?.();
+    try {
+      tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
+    } catch (err) {
+      // paste-buffer's -d never ran, and nothing ever reclaims a NAMED buffer:
+      // buffer-limit trims only automatic ones.
+      try {
+        tmux("delete-buffer", "-b", buffer);
+      } catch {
+
+      }
+      throw err;
+    }
   }
   try {
     onPasted?.();

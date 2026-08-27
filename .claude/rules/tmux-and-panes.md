@@ -76,6 +76,51 @@ A pane that is merely BUSY is fine.
 - **This refusal is a guardrail against a confused model, not a security boundary.** Do not extend this into refusing slash commands on the `text` path to close that gap - that is scope creep on an already-deep lane.
 - **`captureRawPane`/`tailWindow` split one pane capture into two windows on purpose.** `paneAwaitingChoice` and `paneHasInputBox` read different ones; do not unify them "for consistency".
 
+## Free text is typed as a BRACKETED PASTE, never as `send-keys -l`, at any length
+
+tmux hands a pane its input in 1022-byte writes. `paste-buffer -d -p` wraps the
+whole text in bracketed-paste markers, so the receiving TUI rejoins those writes;
+`send-keys -l` does not, so each write lands as an independent burst of
+keystrokes and claude's input box keeps only the last one. A message past 1022
+bytes arrives with its head missing, cut mid-word, and `agent_send` still
+returns `sent: true`.
+
+**`-p` emits those markers only for a pane whose application asked for them**
+(DECSET 2004). Measured: claude and codex both set it, a plain shell pane does
+not, and a pane in COPY MODE has it cleared out from under it. So the guarantee
+is conditional and the next two prohibitions are what make it safe to rely on.
+
+- **`sendText` (`src/tmux.ts`) must stay unconditional.** It used to branch on
+  `text.includes("\n")` and type newline-free text with `send-keys -l`; that
+  dropped three of the lead's real assignments in one evening (todo 599).
+- **Do not reintroduce a length threshold to get the single call back.** 1022 is
+  a pty constant measured on one kernel, so a threshold is wrong elsewhere in
+  exactly the same silent way.
+- **`agent_send`'s `keys` path still reaches `send-keys` directly and must.**
+  Driving a TUI on purpose is what it is for.
+- A test simulating a HUMAN typing still uses `send-keys -l`; that is what a
+  human's keystrokes are, and it is how the `real-input.txt` fixture was made.
+
+## A pane in tmux COPY MODE is never typed into
+
+tmux clears a pane's bracketed-paste flag in copy mode, so `paste-buffer -p`
+sends no markers there and the following Enter is eaten by the mode instead of
+submitting. Both tmux calls exit 0. That restores the head loss above AND
+strands what survives, unsubmitted, with every receipt reporting success.
+
+- **Both typing sites check it, and both must keep checking it.** `agent_send`'s
+  text path REFUSES with a retriable note; `deliverable()` HOLDS, exactly like
+  the dialog and unsubmitted-text checks, and delivers once the pane leaves copy
+  mode. One predicate, `paneInCopyMode` (`src/tmux.ts`).
+- **The predicate is `#{pane_in_mode}`, never `#{bracket_paste_flag}`.** The flag
+  answers the question more directly, but reads 0 for a legitimate shell pane,
+  so refusing on it refuses panes that are fine.
+- **Do not cancel copy mode and paste anyway.** It works, and it takes a human's
+  scrollback position away while they are reading it. Waiting is what the other
+  holds already do.
+- **`keys` is unaffected and is the deliberate escape hatch**, as everywhere else
+  in this file.
+
 ## Only ONE channel into a pane is shortened, and widening it breaks an assignment
 
 `agent_send`'s `text` over 300 characters, inbound to a LEAD from anyone who is not that lead, is stored whole and typed as a one-line pointer (`src/leadMessage.ts`, todo 475). That is the entire exception.

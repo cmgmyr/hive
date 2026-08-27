@@ -20,7 +20,7 @@ writeFileSync(
   join(shimDir, "tmux"),
   `#!/bin/sh
 # HIVE_TEST_FAIL_ENTER: the submit only - \`send-keys -t <pane> Enter\`. The
-# single-line paste (\`send-keys -l\`, /rename never carries a newline) is
+# paste (set-buffer + paste-buffer, for text of any shape since todo 599) is
 # untouched.
 if [ "$HIVE_TEST_FAIL_ENTER" = "1" ] && [ "$1" = "send-keys" ]; then
   for a in "$@"; do
@@ -30,10 +30,8 @@ fi
 # HIVE_TEST_FAIL_PASTE: the control. Fails the paste itself, before anything
 # reaches the pane, so the pre-existing "nothing was sent" behaviour must
 # stay untouched by this lane.
-if [ "$HIVE_TEST_FAIL_PASTE" = "1" ] && [ "$1" = "send-keys" ]; then
-  for a in "$@"; do
-    if [ "$a" = "-l" ]; then echo "tmux: send-keys failed" >&2; exit 1; fi
-  done
+if [ "$HIVE_TEST_FAIL_PASTE" = "1" ] && [ "$1" = "paste-buffer" ]; then
+  echo "tmux: paste-buffer failed" >&2; exit 1
 fi
 exec ${realTmux} "$@"
 `,

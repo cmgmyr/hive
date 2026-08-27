@@ -31,6 +31,7 @@ import {
   holdsHumanInput,
   liveTargets,
   maskChoiceMarker,
+  paneInCopyMode,
   paneReissued,
   rowAlive,
   rowAliveProbe,
@@ -657,6 +658,12 @@ export const HELD_REASON_UNCLASSIFIABLE_PANE =
 export function isUnclassifiablePaneHold(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX);
 }
+
+export const HELD_REASON_COPY_MODE =
+  "the pane is in tmux copy mode; tmux clears its bracketed-paste flag there, so the body would arrive " +
+  "with no paste markers (losing everything before the last 1022-byte write) and the Enter would be " +
+  "eaten by the mode instead of submitting - both silently, with tmux reporting success. It delivers " +
+  "once whoever is reading that pane leaves copy mode";
 
 export const HELD_REASON_UNSUBMITTED_INPUT_PREFIX = "the pane's input box has unsubmitted human text; ";
 export const HELD_REASON_UNSUBMITTED_INPUT =
@@ -1844,6 +1851,14 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
 
   if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);
+    return { ok: false };
+  }
+
+  // Same family as the two above: a fact about whether delivery is POSSIBLE. A
+  // copy-mode pane accepts both tmux calls and reports success while stripping
+  // the paste markers and eating the Enter.
+  if (paneInCopyMode(timer.deliver_pane) === true) {
+    holdTimer(timer, HELD_REASON_COPY_MODE);
     return { ok: false };
   }
 

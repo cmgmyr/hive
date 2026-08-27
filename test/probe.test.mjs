@@ -587,7 +587,7 @@ describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is no
       { PATH: captureFailPath },
     );
 
-    assert.equal(receipt.sent, true, "the send itself succeeded through send-keys, not capture-pane");
+    assert.equal(receipt.sent, true, "the send itself succeeded through the paste path, not capture-pane");
     assert.equal(receipt.tail, undefined, "the tail could not be read, so it must be omitted, not blank");
     assert.match(receipt.note, /tail could not be read/);
 
