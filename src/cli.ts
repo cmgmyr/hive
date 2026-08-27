@@ -2833,12 +2833,23 @@ function cmdTodos(argv: string[]): void {
     return;
   }
 
+  const slugById = new Map(
+    (
+      db
+        .prepare(
+          `SELECT id, slug FROM todos WHERE project_id = ? AND id IN (${todos.map(() => "?").join(",")})`,
+        )
+        .all(project.id, ...todos.map((t) => t.todo_id)) as { id: number; slug: string }[]
+    ).map((r) => [r.id, r.slug]),
+  );
+
   const width = Math.max(...todos.map((t) => String(t.todo_id).length));
   for (const t of todos) {
 
     const blocked = t.is_blocked ? "blocked" : "";
+    const slug = slugById.get(t.todo_id);
     console.log(
-      `#${String(t.todo_id).padEnd(width)}  ${t.status.padEnd(11)} ${blocked.padEnd(8)} ${t.title}`,
+      `#${String(t.todo_id).padEnd(width)}  ${t.status.padEnd(11)} ${blocked.padEnd(8)} ${slug ? `[${slug}] ` : ""}${t.title}`,
     );
   }
 
@@ -2864,7 +2875,10 @@ function cmdTodo(argv: string[]): void {
     process.exit(1);
   }
 
-  console.log(`#${d.todo_id} ${d.title}`);
+  const rawSlug = (
+    db.prepare("SELECT slug FROM todos WHERE id = ?").get(d.todo_id) as { slug: string } | undefined
+  )?.slug;
+  console.log(`#${d.todo_id} ${rawSlug ? `[${rawSlug}] ` : ""}${d.title}`);
   console.log(
     `status ${d.status}   priority ${d.priority}${d.is_blocked ? "   blocked" : ""}${d.archived ? "   archived" : ""}`,
   );

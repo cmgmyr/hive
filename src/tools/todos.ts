@@ -36,7 +36,7 @@ const slugParam = z
     message: "slug cannot contain control characters, including tabs or newlines",
   })
   .describe(
-    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to the automatic fallback.`,
+    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max). When set, it renders beside the id: bracketed in \`hive todos\`, \`hive todo <id>\`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in \`hive todos\`/\`hive todo <id>\`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to unset.`,
   )
   .optional();
 
@@ -344,7 +344,7 @@ export function registerTodos(server: McpServer): void {
     "todo_create",
     {
       description:
-        "Create a project-scoped todo. Pass a short slug so it reads the same way everywhere it's referenced by id. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+        "Create a project-scoped todo. Pass a short slug to have it render beside the id wherever this todo is listed; left unset, those surfaces fall back to the title instead (truncated in the dashboard). Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
       inputSchema: {
         title: z.string(),
         body: z.string().optional().describe("Objective, owned files, acceptance criteria."),

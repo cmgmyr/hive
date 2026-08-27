@@ -4,7 +4,7 @@ import { getProject } from "./context.js";
 
 import { awaitingFirstPrompt } from "./firstPrompt.js";
 
-import { cutToUnitBudget, fallbackSlug } from "./slug.js";
+import { SLUG_MAX_LEN, cutToUnitBudget } from "./slug.js";
 
 export const TODO_CAP = 100;
 export const AGENT_CAP = 50;
@@ -271,7 +271,7 @@ function renderTodosSection(projectId: number): string {
       const blockers = blocked
         ? (blockersByTodo.get(t.id) ?? []).map((b) => `#${b.id} ${prose(b.title)}`).join(", ")
         : "";
-      const slug = t.slug || fallbackSlug(t.title) || `todo ${t.id}`;
+      const label = t.slug || truncateWithEllipsis(t.title, SLUG_MAX_LEN);
       const body =
         `<div class="todo-body">${prose(t.title)}</div>` +
         (t.body ? `<div class="todo-body">${prose(t.body)}</div>` : "");
@@ -281,7 +281,7 @@ function renderTodosSection(projectId: number): string {
         `<summary class="pane-border pane-border-sub"><span class="pb-label">` +
         `${statusBadge(todoBadgeLevel(t.status, blocked), t.status)} ` +
         `<span class="priority priority-${escapeHtml(t.priority)}">${escapeHtml(t.priority)}</span> ` +
-        `#${t.id} ${prose(slug)}` +
+        `#${t.id} ${prose(label)}` +
         `</span></summary>` +
         `<div class="section-body">${body}</div>` +
         `</details>` +

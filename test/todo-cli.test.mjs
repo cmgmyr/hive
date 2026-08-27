@@ -139,6 +139,24 @@ describe("hive todos", () => {
     }
   });
 
+  it("renders a stored slug bracketed beside the id, and no bracket at all when unset (todo 586)", async () => {
+    const dirs = scratchDirs();
+    const { open } = await seed(dirs);
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      await mcp.call("todo_update", { todo_id: open.todo_id, slug: "the open lane" });
+    } finally {
+      await mcp.close();
+    }
+
+    const { stdout } = await runCli(["todos"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.match(stdout, new RegExp(`#${open.todo_id}\\s+open\\s+\\S*\\s*\\[the open lane\\] Open dispatchable todo`));
+
+    const blockerLine = stdout.split("\n").find((l) => l.includes("Blocker todo"));
+    assert.doesNotMatch(blockerLine, /\[/, "a todo with no stored slug must not print a bracketed label");
+  });
+
   it("prints nothing and exits clean in a directory with no hive project (D5)", async () => {
     const dirs = scratchDirs();
 
@@ -267,6 +285,35 @@ describe("hive todo <id>", () => {
     });
     assert.match(blockingLine.stdout, /blocks:/);
     assert.match(blockingLine.stdout, new RegExp(`#${blocked.todo_id}\\b`));
+  });
+
+  it("renders a stored slug bracketed beside the id, and no bracket at all when unset (todo 586)", async () => {
+    const dirs = scratchDirs();
+    const { open, blocker } = await seed(dirs);
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      await mcp.call("todo_update", { todo_id: open.todo_id, slug: "the open lane" });
+    } finally {
+      await mcp.close();
+    }
+
+    const labeled = await runCli(["todo", String(open.todo_id)], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+    assert.match(labeled.stdout, new RegExp(`^#${open.todo_id} \\[the open lane\\] Open dispatchable todo`, "m"));
+
+    const bare = await runCli(["todo", String(blocker.todo_id)], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+    assert.match(bare.stdout, new RegExp(`^#${blocker.todo_id} Blocker todo`, "m"));
+    assert.doesNotMatch(
+      bare.stdout.split("\n")[0],
+      /\[/,
+      "a todo with no stored slug must not print a bracketed label on its header line",
+    );
   });
 
   it("still reaches an archived todo by id, hidden from hive todos as it is, and says so", async () => {

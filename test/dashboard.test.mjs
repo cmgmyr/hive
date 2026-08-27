@@ -269,7 +269,7 @@ describe("renderDashboard: open todos", () => {
     assert.ok(!/<details class="todo-item"[^>]*\bopen\b/.test(html), "the expander must default closed");
   });
 
-  it("falls back to a computed slug when a todo has no stored one (todo 329/333) - most of the backlog has none", () => {
+  it("falls back to a bounded, truncated title when a todo has no stored slug (todo 586) - bounded like before, but an honest truncated title rather than a fake slug", () => {
     const project = seedProject("todos-slug-fallback-test");
     const long = "a".repeat(80);
     seedTodo(project, { title: "irrelevant title", slug: "stored slug" });
@@ -279,7 +279,7 @@ describe("renderDashboard: open todos", () => {
 
     const li = html.slice(html.lastIndexOf("<li", html.indexOf(`#${withoutStored}`)));
     const summary = li.slice(0, li.indexOf("</summary>"));
-    assert.ok(summary.includes("…"), "the row's summary must carry the truncated fallback, not the bare title");
+    assert.ok(summary.includes("…"), "an unstored slug must still be bounded, same as the old fallback");
     assert.ok(
       !summary.includes(long),
       "the row's summary must not carry the full 80-char title unbounded",

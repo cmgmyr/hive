@@ -62,18 +62,18 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   const inFlight = db
     .prepare(
-      "SELECT id, title, status FROM todos WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 10",
+      "SELECT id, title, status, slug FROM todos WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 10",
     )
-    .all(project.id) as { id: number; title: string; status: string }[];
+    .all(project.id) as { id: number; title: string; status: string; slug: string }[];
   const ready = db
     .prepare(
-      `SELECT id, title FROM todos t
+      `SELECT id, title, slug FROM todos t
        WHERE t.project_id = ? AND t.status = 'open' AND t.archived_at IS NULL
          AND NOT EXISTS (${OPEN_BLOCKERS_SQL})
        ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, id
        LIMIT 10`,
     )
-    .all(project.id) as { id: number; title: string }[];
+    .all(project.id) as { id: number; title: string; slug: string }[];
   const blocked = (
     db
       .prepare(
@@ -86,11 +86,11 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 
   if (inFlight.length > 0) {
     lines.push("", "IN FLIGHT");
-    for (const t of inFlight) lines.push(`  #${t.id} ${t.title}`);
+    for (const t of inFlight) lines.push(`  #${t.id} ${t.slug ? `[${t.slug}] ` : ""}${t.title}`);
   }
   if (ready.length > 0) {
     lines.push("", "READY (unblocked, highest priority first)");
-    for (const t of ready) lines.push(`  #${t.id} ${t.title}`);
+    for (const t of ready) lines.push(`  #${t.id} ${t.slug ? `[${t.slug}] ` : ""}${t.title}`);
   }
   if (blocked > 0) lines.push("", `BLOCKED: ${blocked} todo(s) waiting on a blocker.`);
 

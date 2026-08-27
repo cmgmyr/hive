@@ -172,6 +172,31 @@ describe("hive kickoff gates", () => {
     assert.doesNotMatch(additionalContext, /depends on schema/, "a blocked todo is not dispatchable work");
   });
 
+  it("renders a stored slug beside the id in IN FLIGHT and READY, and shows only the title when unset (todo 586)", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    let labeled;
+    let bare;
+    try {
+      labeled = await mcp.call("todo_create", { title: "wire the schema parser end to end" });
+      await mcp.call("todo_update", { todo_id: labeled.todo_id, status: "in_progress", slug: "wire the parser" });
+      bare = await mcp.call("todo_create", { title: "an unlabeled ready todo" });
+    } finally {
+      await mcp.close();
+    }
+
+    const { additionalContext } = fired((await kickoff()).stdout);
+    assert.match(
+      additionalContext,
+      new RegExp(`#${labeled.todo_id} \\[wire the parser\\] wire the schema parser end to end`),
+    );
+    assert.match(additionalContext, new RegExp(`#${bare.todo_id} an unlabeled ready todo`));
+    assert.doesNotMatch(
+      additionalContext,
+      new RegExp(`#${bare.todo_id} \\[`),
+      "a todo with no stored slug must not get a bracketed label at all",
+    );
+  });
+
   it("keeps an archived todo out of IN FLIGHT and READY, and drops it from the BLOCKED count", async () => {
     const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
     await mcp.start();

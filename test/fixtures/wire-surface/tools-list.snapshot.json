@@ -1747,7 +1747,7 @@
     }
   },
   "todo_create": {
-    "description": "Create a project-scoped todo. Pass a short slug so it reads the same way everywhere it's referenced by id. Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+    "description": "Create a project-scoped todo. Pass a short slug to have it render beside the id wherever this todo is listed; left unset, those surfaces fall back to the title instead (truncated in the dashboard). Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1782,7 +1782,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to the automatic fallback.",
+          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "maxLength": 40,
           "type": "string"
         },
@@ -2005,7 +2005,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max), so this todo reads the same way everywhere it is referenced by id. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to the automatic fallback.",
+          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "maxLength": 40,
           "type": "string"
         },
