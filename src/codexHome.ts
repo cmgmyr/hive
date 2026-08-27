@@ -21,7 +21,7 @@ export interface CodexHomeInput {
   // Overridable only for tests - production spawns never set this, so it always resolves to
   // Chris's real ~/.codex/config.toml. Read-only, and only one named key is ever pulled out of it
   // (status_line under [tui] - see realStatusLine below): todo 560's decision record
-  // (.claude/sessions/decisions/2026-08-24-copy-named-keys-into-a-codex-worker-config-never-merge.md)
+  // (.agents/sessions/decisions/2026-08-24-copy-named-keys-into-a-codex-worker-config-never-merge.md)
   // is the reason this must never become "parse and merge the whole file" - that reintroduces the
   // hook-merge hazard per-worker homes exist to avoid.
   realConfigSource?: string;

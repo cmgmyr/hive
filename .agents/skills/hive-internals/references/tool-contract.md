@@ -194,7 +194,7 @@ caller may pass**, because anything you leave out is now refused rather than
 ignored. And adding an optional parameter is no longer backward compatible
 against a RUNNING server: it used to be ignored by a session on older
 `dist/`, and is now refused until that session restarts. See
-`.claude/sessions/common-issues/stale-mcp-server-runs-old-code.md`. That cost
+`.agents/sessions/common-issues/stale-mcp-server-runs-old-code.md`. That cost
 was weighed and accepted: bounded by one restart, and
 loud rather than silent. A refusal is per call, not per session - the SDK
 turns it into an `isError` tool result carrying the -32602, so the caller
@@ -273,7 +273,7 @@ The reason the split holds is mechanical, not stylistic: an MCP tool runs
 inside the MCP server process, which Claude Code starts from its own
 registration, and a value set in a shell the human is typing into does not
 reach that process by any path except accident of how the session was
-launched. `.claude/sessions/dead-ends/2026-08-02-env-var-for-mcp-server-
+launched. `.agents/sessions/dead-ends/2026-08-02-env-var-for-mcp-server-
 config.md` measured exactly this trying to make `HIVE_ATTACH_MODE` an env
 var an MCP tool could read: the CLI half honored it, the MCP half silently
 did not, and it looked like it worked right up until it did not. Anything

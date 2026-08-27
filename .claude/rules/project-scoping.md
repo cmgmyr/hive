@@ -19,7 +19,7 @@ All three are real and deliberately unfixed. Do not rediscover any of them as a 
 
 What would change the answer: the first worktree of something other than hive.
 
-**A caller that needs the FILES question must not reach for containment resolution.** Two functions answer it without containment - `gitPrimaryRoot` and `linkedWorktreePrimaryRoot` (`src/context.ts`) - and which one to use depends on the primary checkout. `linkedWorktreePrimaryRoot` returns `null` when `dir` already IS the primary checkout, deliberately: its callers are asking "am I in a linked worktree, and if so where is the primary" (`worktreeInstallNotice`, `src/tools/agents.ts`). `gitPrimaryRoot` self-resolves for the primary and ascends from a linked worktree, so use it when the answer must be a real path in both cases (`corpusRoot`, `src/brief.ts`; `ensureCodexHome` and `codexLaunchArgs`, `src/codexHome.ts`).
+**A caller that needs the FILES question must not reach for containment resolution.** Two functions answer it without containment - `gitPrimaryRoot` and `linkedWorktreePrimaryRoot` (`src/context.ts`) - and which one to use depends on the primary checkout. `linkedWorktreePrimaryRoot` returns `null` when `dir` already IS the primary checkout, deliberately: its callers are asking "am I in a linked worktree, and if so where is the primary" (`worktreeInstallNotice`, `src/tools/agents.ts`). `gitPrimaryRoot` self-resolves for the primary and ascends from a linked worktree, so use it when the answer must be a real path in both cases (`primaryRoot`, `src/brief.ts`; `ensureCodexHome` and `codexLaunchArgs`, `src/codexHome.ts`).
 
 `HIVE_PROJECT_LOCK=1` disables cross-project access entirely, and every spawned worker gets it.
 

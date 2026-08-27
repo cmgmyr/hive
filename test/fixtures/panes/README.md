@@ -522,7 +522,7 @@ What these fixtures do NOT and cannot cover: codex's pane TITLE (idle,
 busy-spinner, "Action Required") and a genuinely LIVE cursor accepting
 keystrokes one at a time - a fixture replay (`cat file; sleep`) prints a
 screen once and the cursor sits below it, so nothing can be pending in it
-(`.claude/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md`).
+(`.agents/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md`).
 Both are covered live instead, against a synthetic pane rather than real
 codex, in `test/codex-live-pane.test.mjs`.
 

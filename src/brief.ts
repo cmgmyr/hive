@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
@@ -8,14 +8,13 @@ import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
 
-// Files come from cwd, never from the store's project row (a cross-project spawn's corpus is its
-// OWN repo's, not the spawning project's) - gitPrimaryRoot asks git directly with no containment,
-// and resolves the same primary checkout whether cwd is that checkout or a linked worktree of it.
-export function corpusRoot(cwd: string): string | null {
+// A pure git fact, not a convention hive owns: gitPrimaryRoot asks git directly with no
+// containment, and resolves the same primary checkout whether cwd is that checkout or a linked
+// worktree of it. What a project keeps there (a session corpus, local notes, nothing at all) is a
+// profile's business, never core's - see docs/patterns.md.
+export function primaryRoot(cwd: string): string | null {
   const root = gitPrimaryRoot(cwd);
-  if (!root) return null;
-  const corpus = join(root, ".claude", "sessions");
-  return existsSync(corpus) ? `${corpus}/` : null;
+  return root ? `${root}/` : null;
 }
 
 export interface BriefContext {
@@ -30,7 +29,7 @@ export interface BriefContext {
 }
 
 function briefVars(ctx: BriefContext): Record<string, string> {
-  const corpus = corpusRoot(ctx.cwd);
+  const root = primaryRoot(ctx.cwd);
   return {
     ...(ctx.vars ?? {}),
     agent_name: ctx.name,
@@ -38,7 +37,7 @@ function briefVars(ctx: BriefContext): Record<string, string> {
     project_name: ctx.projectName,
     project_path: ctx.projectPath,
     cwd: ctx.cwd,
-    ...(corpus ? { corpus_root: corpus } : {}),
+    ...(root ? { primary_root: root } : {}),
   };
 }
 
@@ -76,7 +75,6 @@ export function workerBrief(ctx: BriefContext): string {
 }
 
 function defaultWorkerBrief(ctx: BriefContext): string {
-  const corpus = corpusRoot(ctx.cwd);
   return `[HIVE CONTEXT]
 You are agent "${ctx.name}" (actor id: ${ctx.actorId}) in project "${ctx.projectName}" (${ctx.projectPath}).
 This session is locked to this project (HIVE_PROJECT_LOCK=1); do not try to access other projects.
@@ -86,7 +84,7 @@ Coordinate through the hive MCP tools:
 - todo_list(is_blocked=false, status="open") for dispatchable work; set status to in_progress while working.
 - todo_comment for handoffs (changed files, tests run, remaining risk), then todo_complete.
 - lease_acquire before editing shared file areas; leases expire on their own.
-${corpus ? `This project's session corpus is at ${corpus}\n` : ""}If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
+If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
 ${WAIT_FOR_ASSIGNMENT}
 [END HIVE CONTEXT]`;
 }

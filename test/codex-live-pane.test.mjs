@@ -8,7 +8,7 @@ import { isolateTmux, scratchDirs, until } from "./helpers.mjs";
 
 // codex's title and its live input box are dynamic facts a static fixture cannot carry: a fixture
 // PRINTS a screen, so its cursor sits below whatever it drew and a captured file has no pane_title at
-// all (.claude/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md). These
+// all (.agents/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md). These
 // panes are driven live instead - a real tmux title (set the way any program sets one, via
 // select-pane -T) and a script that redraws its box on every keystroke, so typing more into it changes
 // what the next read sees. Neither pane runs the real codex binary: the screen shape codex renders is

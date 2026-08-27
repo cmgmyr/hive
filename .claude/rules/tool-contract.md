@@ -38,7 +38,7 @@ caller may pass**, because anything you leave out is now refused rather than
 ignored. And adding an optional parameter is no longer backward compatible
 against a RUNNING server: it used to be ignored by a session on older
 `dist/`, and is now refused until that session restarts. See
-`.claude/sessions/common-issues/stale-mcp-server-runs-old-code.md`.
+`.agents/sessions/common-issues/stale-mcp-server-runs-old-code.md`.
 
 ## A tool that declares outputSchema must always return a JSON object
 
