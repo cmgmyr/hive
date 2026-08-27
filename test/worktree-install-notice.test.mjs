@@ -30,8 +30,8 @@ describe("isLinkedWorktree: the predicate the backstop keys on", () => {
   const siblingWorktree = join(unitRoot, "sibling-worktree");
   scratchGit(primary, "worktree", "add", "-q", siblingWorktree, "-b", "feature406-sibling");
 
-  const nestedWorktree = join(primary, ".claude", "worktrees", "feature406-nested");
-  mkdirSync(join(primary, ".claude", "worktrees"), { recursive: true });
+  const nestedWorktree = join(primary, ".agents", "worktrees", "feature406-nested");
+  mkdirSync(join(primary, ".agents", "worktrees"), { recursive: true });
   scratchGit(primary, "worktree", "add", "-q", nestedWorktree, "-b", "feature406-nested");
   const nonGit = mkdtempSync(join(unitRoot, "non-git-"));
 
@@ -185,9 +185,9 @@ describe(
       assert.equal(receipt.worktree_install, "npm install && npm run build");
     });
 
-    it("names the declared command when cwd is a NESTED worktree - this project's own .claude/worktrees/<slug> layout", async () => {
-      const nestedDir = join(dirs.projectDir, ".claude", "worktrees", "wt-nested-406");
-      mkdirSync(join(dirs.projectDir, ".claude", "worktrees"), { recursive: true });
+    it("names the declared command when cwd is a NESTED worktree - this project's own .agents/worktrees/<slug> layout", async () => {
+      const nestedDir = join(dirs.projectDir, ".agents", "worktrees", "wt-nested-406");
+      mkdirSync(join(dirs.projectDir, ".agents", "worktrees"), { recursive: true });
       scratchGit(dirs.projectDir, "worktree", "add", "-q", nestedDir, "-b", "wt-nested-406");
       const receipt = await mcp.call("agent_spawn", {
         name: "wt-nested-worker",

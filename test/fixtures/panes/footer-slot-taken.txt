@@ -51,7 +51,7 @@
   [48;5;255m  [38;5;16m--- what you asked to be told when this happened ---[39m                                               [49m
   [48;5;255m  [38;5;16mStanding watch, wave 2 (2026-08-13 night). Lanes: design-a (opus, episode-key design pass, pad [39m    [49m
   [48;5;255m  [38;5;16m141, todo 398 - no code, no worktree) and docs-385 (sonnet, permission-mode docs, worktree [39m        [49m
-  [48;5;255m  [38;5;16m.claude/worktrees/todo-385-permission-docs, todo 385). On a finish: read agent_output and the real[39m [49m
+  [48;5;255m  [38;5;16m.agents/worktrees/todo-385-permission-docs, todo 385). On a finish: read agent_output and the real[39m [49m
   [48;5;255m  [38;5;16martifact (pad 141's appended DESIGN section for A, the actual diff for B), never the worker's [39m     [49m
   [48;5;255m  [38;5;16msummary. design-a's design then goes to counselors for an adversarial read BEFORE any implementing[39m [49m
   [48;5;255m  [38;5;16mlane. docs-385 needs review triage, smoke test and merge by the lead. Next in the queue after [39m     [49m

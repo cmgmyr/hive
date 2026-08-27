@@ -1,7 +1,7 @@
 
  ▐▛███▜▌   Claude Code v2.1.220
 ▝▜█████▛▘  Opus 5 (1M context) with high effort · Claude Max
-  ▘▘ ▝▝    ~/Code/cmgmyr/hive/.claude/worktrees/issue-27-guard-typing-paths
+  ▘▘ ▝▝    ~/Code/cmgmyr/hive/.agents/worktrees/issue-27-guard-typing-paths
 
 
 

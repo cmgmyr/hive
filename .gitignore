@@ -11,3 +11,6 @@ dist/
 !/.claude/rules/
 !/.claude/skills
 !/.claude/settings.json
+!/.agents/
+/.agents/*
+!/.agents/skills/
