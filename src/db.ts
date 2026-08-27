@@ -356,6 +356,10 @@ ALTER TABLE agents ADD COLUMN codex_home TEXT NOT NULL DEFAULT '';
   `
 ALTER TABLE agents ADD COLUMN exit_tail TEXT NOT NULL DEFAULT '';
 `,
+
+  `
+ALTER TABLE agents ADD COLUMN transcript_path TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 function readAppliedVersions(): Set<number> {

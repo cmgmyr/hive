@@ -29,15 +29,16 @@ db.prepare(
 const addWorker = (actor, name, pane, state, changedOffset, opts = {}) =>
   db.prepare(
     \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
-        agent_state, state_changed_at, session_id, created_at)
+        agent_state, state_changed_at, session_id, transcript_path, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'agent', 'running', ?,
-        datetime('now', ?), ?, datetime('now', '-300 seconds')) RETURNING id\`,
+        datetime('now', ?), ?, ?, datetime('now', '-300 seconds')) RETURNING id\`,
   ).get(
     project, actor, name, pane,
     opts.command ?? 'claude',
     opts.cwd ?? '/tmp/wk',
     state, changedOffset,
     opts.sessionId ?? ('sid-' + name),
+    opts.transcriptPath ?? '',
   ).id;
 
 const addStandingWatch = (opts = {}) =>
@@ -63,6 +64,15 @@ const writeTranscript = (cwd, sessionId, ageSeconds) => {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, sessionId + ".jsonl");
   writeFileSync(path, '{"type":"assistant"}\\n');
+  const when = (Date.now() - ageSeconds * 1000) / 1000;
+  utimesSync(path, when, when);
+};
+
+// Codex hands hive the exact rollout file through its own hook payload (agents.transcript_path),
+// never a cwd-resolved directory - written anywhere, deliberately NOT under CLAUDE_CONFIG_DIR.
+const writeCodexTranscript = (path, ageSeconds) => {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, '{"type":"response_item"}\\n');
   const when = (Date.now() - ageSeconds * 1000) / 1000;
   utimesSync(path, when, when);
 };
@@ -96,6 +106,9 @@ const fixture = (name, body, panes = ["%1", "%2"]) => {
   return runFixture(tmp, name, IMPORTS + SEED + SNAPSHOT(panes) + body, {
     HIVE_DATA_DIR: dataDir,
     CLAUDE_CONFIG_DIR: configDir,
+    // This fixture's own scratch dir, for writeCodexTranscript - never a literal /tmp path, or two
+    // concurrent runs of this file race on the same rollout file (todo 591, /code-review finding).
+    CODEX_HOME_ROOT: tmp,
     TMUX_TMPDIR: process.env.TMUX_TMPDIR,
   });
 };
@@ -343,6 +356,85 @@ describe("the stall detector reports a worker whose transcript has gone quiet", 
     assert.equal(result.watch.fire_count, 0);
     assert.equal(result.after.status, "running", "the worker's row is not closed");
     assert.deepEqual(result.after, result.before, "and nothing about its state was rewritten");
+  });
+});
+
+describe("the stall detector corroborates a codex worker against its stored transcript_path", () => {
+  it("reports a codex worker whose stored transcript file has gone quiet", () => {
+    const result = fixture(
+      "codex-stale",
+      `
+      const path = join(process.env.CODEX_HOME_ROOT, 'codex-home', 'sessions', 'rollout-stale.jsonl');
+      addWorker('agent:1', 'codex-stale', '%1', 'working', '-3600 seconds', {
+        command: 'codex', transcriptPath: path,
+      });
+      writeCodexTranscript(path, ${STALE});
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out(`{ notices: notices(watchId).map((n) => n.body), cursor: stallCursor(watchId).length }`)}
+      `,
+    );
+
+    assert.equal(result.notices.length, 1);
+    assert.match(result.notices[0], /codex-stale: has claimed `working`/);
+    assert.equal(result.cursor, 1);
+  });
+
+  it("stays silent about a codex worker whose stored transcript file is fresh", () => {
+    const result = fixture(
+      "codex-fresh",
+      `
+      const path = join(process.env.CODEX_HOME_ROOT, 'codex-home', 'sessions', 'rollout-fresh.jsonl');
+      addWorker('agent:1', 'codex-fresh', '%1', 'working', '-3600 seconds', {
+        command: 'codex', transcriptPath: path,
+      });
+      writeCodexTranscript(path, ${FRESH});
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out(`{ notices: notices(watchId).length, cursor: stallCursor(watchId).length }`)}
+      `,
+    );
+
+    assert.equal(result.notices, 0, "a live codex transcript is not a stall, exactly like claude's");
+    assert.equal(result.cursor, 0);
+  });
+
+  it("skips a codex worker with no transcript_path recorded yet, same as before this lane", () => {
+    const result = fixture(
+      "codex-no-path",
+      `
+      addWorker('agent:1', 'codex-quiet', '%1', 'working', '-3600 seconds', { command: 'codex' });
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out(`{ notices: notices(watchId).length, cursor: stallCursor(watchId).length }`)}
+      `,
+    );
+
+    assert.equal(result.notices, 0, "no hook payload has ever carried a path for this row to corroborate against");
+    assert.equal(result.cursor, 0);
+  });
+
+  it("never reports a codex worker whose stored transcript_path file is gone -- a missing file is never a stall", () => {
+    const result = fixture(
+      "codex-reaped",
+      `
+      addWorker('agent:1', 'codex-reaped', '%1', 'working', '-3600 seconds', {
+        command: 'codex',
+        transcriptPath: join(process.env.CODEX_HOME_ROOT, 'codex-home', 'sessions', 'reaped-away.jsonl'),
+      });
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      ${out(`{ notices: notices(watchId).length, cursor: stallCursor(watchId).length }`)}
+      `,
+    );
+
+    assert.equal(
+      result.notices,
+      0,
+      "unlike claude's 'never wrote a transcript at all', a codex row's recorded path pointing " +
+        "nowhere must not be read as evidence of a stall (agent_close reaps CODEX_HOME)",
+    );
+    assert.equal(result.cursor, 0);
   });
 });
 

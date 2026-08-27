@@ -16,7 +16,7 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
+import { hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir } from "./transcript.js";
 import {
   ageSecondsSince,
@@ -1573,11 +1573,12 @@ const STALL_BOUND_SQL = `-${STALL_BOUND_SECONDS} seconds`;
 interface StallRow extends CrewRow {
   cwd: string;
   session_id: string;
+  transcript_path: string;
 }
 
 function stallCandidateRows(timer: TimerRow, tellActor: string): StallRow[] {
   return stmt(
-    `SELECT ${CREW_COLUMNS}, a.cwd, a.session_id, a.state_changed_at AS episode
+    `SELECT ${CREW_COLUMNS}, a.cwd, a.session_id, a.transcript_path, a.state_changed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running' AND a.actor_id != ?
         AND a.agent_state IN ('working', 'waiting')
@@ -1591,10 +1592,16 @@ function stallCandidateRows(timer: TimerRow, tellActor: string): StallRow[] {
 export type TranscriptStaleness = { seconds: number } | "never";
 
 export function transcriptStaleness(
-  row: { cwd: string; session_id: string },
+  row: { command: string; cwd: string; session_id: string; transcript_path: string },
   now: number = Date.now(),
 ): TranscriptStaleness {
-  const path = join(transcriptDir(row.cwd), `${row.session_id}.jsonl`);
+  // Claude's transcript is a directory resolved from cwd; codex hands hive the exact file
+  // through its own hook payload instead, stored on the row rather than resolved (todo 591) -
+  // transcriptDirFor decides which source this row's harness actually has.
+  const path = transcriptDirFor(row.command)
+    ? join(transcriptDir(row.cwd), `${row.session_id}.jsonl`)
+    : row.transcript_path;
+  if (!path) return "never";
   try {
     return { seconds: Math.max(0, Math.round((now - statSync(path).mtimeMs) / 1000)) };
   } catch {
@@ -1679,10 +1686,17 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
       if (!reportsAgentStateLog(row)) continue;
       if (row.session_id === "") continue;
       // Same reason as reportStalledWorkers (src/cli.ts): this report corroborates a latch against
-      // transcript mtime, and a harness without a proven transcript path would read the wrong file.
-      if (!transcriptDirFor(row.command)) continue;
+      // transcript mtime, and a harness with no transcript signal at all would have nothing to read.
+      if (!hasTranscriptSignal(row)) continue;
 
       const stale = transcriptStaleness(row, now);
+      // A stored-path harness (codex) with no readable file has nothing to report from - a missing
+      // file is never treated as a stall for it, unlike claude's directory-resolved "never wrote"
+      // (todo 591). LOAD-BEARING, do not remove: this SELECT's status='running' snapshot and the
+      // statSync above can straddle a concurrent agent_close/agent_park in another process reaping
+      // CODEX_HOME mid-tick, and an external deletion of the rollout file is not guarded against at
+      // all - either way the file can be gone under a row this tick still sees as running.
+      if (stale === "never" && !transcriptDirFor(row.command)) continue;
       if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
       if (row.agent_state === "waiting") {
 

@@ -58,13 +58,17 @@ if (hasTmux) {
 
 after(() => cleanup(SESSION));
 
-function worker(name, latchedAgo, { state = "working", socket = "", command = "claude", sessionId, pane } = {}) {
+function worker(
+  name,
+  latchedAgo,
+  { state = "working", socket = "", command = "claude", sessionId, transcriptPath = "", pane } = {},
+) {
   const changedAt =
     latchedAgo === null ? null : new Date(Date.now() - latchedAgo * 1000).toISOString().slice(0, 19).replace("T", " ");
   db.prepare(
     `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind,
-        agent_state, state_changed_at, session_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 'agent', ?, ?, ?)`,
+        agent_state, state_changed_at, session_id, transcript_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 'agent', ?, ?, ?, ?)`,
   ).run(
     project,
     `agent:${name}`,
@@ -76,6 +80,7 @@ function worker(name, latchedAgo, { state = "working", socket = "", command = "c
     state,
     changedAt,
     sessionId === undefined ? `sid-${name}` : sessionId,
+    transcriptPath,
   );
 }
 
@@ -84,6 +89,15 @@ function transcript(sessionId, ageSeconds) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${sessionId}.jsonl`);
   writeFileSync(path, '{"type":"assistant"}\n');
+  const when = (Date.now() - ageSeconds * 1000) / 1000;
+  utimesSync(path, when, when);
+}
+
+// Codex hands hive the exact rollout file through its own hook payload (agents.transcript_path),
+// never a cwd-resolved directory - written anywhere, deliberately outside configDir.
+function codexTranscript(path, ageSeconds) {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, '{"type":"response_item"}\n');
   const when = (Date.now() - ageSeconds * 1000) / 1000;
   utimesSync(path, when, when);
 }
@@ -200,7 +214,7 @@ describe(
       assert.match(stdout, /info {2}stalled workers: 0 worker\(s\) latched working\/waiting/);
     });
 
-    it("says nothing about a codex worker (stateSource but not transcriptDir), with no transcript() call at all - proving the row is excluded before transcriptStaleness ever runs, not merely that its wrong claude-shaped path happens to miss", async () => {
+    it("says nothing about a codex worker with no transcript_path recorded yet, with no transcript() call at all - proving the row is excluded before transcriptStaleness ever runs, not merely that its wrong claude-shaped path happens to miss", async () => {
       reset();
       worker("codex-worker", 47 * 60, { command: "codex" });
 
@@ -209,9 +223,54 @@ describe(
       assert.doesNotMatch(
         stdout,
         /worker codex-worker: has claimed/,
-        `todo 525 earned stateSource for codex, not transcriptDir - this row must stay excluded from stall reporting until transcriptDir is separately proven; got: ${stdout}`,
+        `no hook payload has ever carried a transcript_path for this row to corroborate against; got: ${stdout}`,
       );
       assert.match(stdout, /info {2}stalled workers: 0 worker\(s\) latched working\/waiting/);
+    });
+
+    it("reports a codex worker whose stored transcript_path file has gone quiet (todo 591)", async () => {
+      reset();
+      const path = join(tmp, "codex-home", "sessions", "rollout-stale.jsonl");
+      worker("codex-stale", 47 * 60, { command: "codex", transcriptPath: path });
+      codexTranscript(path, STALE);
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.match(
+        stdout,
+        /warn {2}worker codex-stale: has claimed `working` for 47m and its transcript has not been written for 30m/,
+        `codex's stored path corroborates a stall exactly like claude's resolved one; got: ${stdout}`,
+      );
+    });
+
+    it("says nothing about a codex worker whose stored transcript_path file is fresh", async () => {
+      reset();
+      const path = join(tmp, "codex-home", "sessions", "rollout-fresh.jsonl");
+      worker("codex-fresh", 47 * 60, { command: "codex", transcriptPath: path });
+      codexTranscript(path, FRESH);
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(stdout, /worker codex-fresh: has claimed/, `got: ${stdout}`);
+      assert.match(stdout, /info {2}stalled workers: 1 worker\(s\) latched working\/waiting, none stalled/);
+    });
+
+    it("never reports a codex worker whose stored transcript_path file is gone -- a missing file is never a stall", async () => {
+      reset();
+      worker("codex-reaped", 47 * 60, {
+        command: "codex",
+        transcriptPath: join(tmp, "codex-home", "sessions", "reaped-away.jsonl"),
+      });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(
+        stdout,
+        /worker codex-reaped: has claimed/,
+        `unlike claude's 'never wrote a transcript at all', a stale recorded path pointing nowhere ` +
+          `must not read as a stall - agent_close reaps CODEX_HOME; got: ${stdout}`,
+      );
+      assert.match(stdout, /info {2}stalled workers: 1 worker\(s\) latched working\/waiting, none stalled/);
     });
 
     it("reports a `working` worker on a socket this process cannot see into", async () => {

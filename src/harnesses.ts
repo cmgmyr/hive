@@ -293,3 +293,11 @@ export function paneClassifierFor(command: string): PaneClassifier | null {
 export function transcriptDirFor(command: string): boolean {
   return harnessFor(command).transcriptDir;
 }
+
+// Whether a row has ANY transcript to corroborate a stall against: claude's cwd-resolved
+// directory, or a path the harness reported through its own hook payload and hive stored
+// (codex - transcriptDir is false for it, there is no directory to resolve, todo 591). One
+// predicate so both stall-report call sites admit the same rows rather than drifting apart.
+export function hasTranscriptSignal(row: { command: string; transcript_path: string }): boolean {
+  return transcriptDirFor(row.command) || row.transcript_path !== "";
+}

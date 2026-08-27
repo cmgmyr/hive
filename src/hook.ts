@@ -10,6 +10,7 @@ interface HookPayload {
   notification_type?: unknown;
   background_tasks?: unknown;
   session_id?: unknown;
+  transcript_path?: unknown;
 }
 
 let raw: string | null | undefined;
@@ -126,6 +127,17 @@ function reconcileSessionId(actorId: string, payload: HookPayload): void {
   ).run(sessionId, actorId, sessionId);
 }
 
+// Claude's own payload carries transcript_path too (a directory-resolvable case hive already
+// covers via cwd), so this stores it for whichever harness sends it rather than special-casing
+// codex - the staleness reader is what decides which source to trust per harness (todo 591).
+function reconcileTranscriptPath(actorId: string, payload: HookPayload): void {
+  const path = typeof payload.transcript_path === "string" ? payload.transcript_path : "";
+  if (!path) return;
+  db.prepare(
+    "UPDATE agents SET transcript_path = ? WHERE actor_id = ? AND kind = 'agent' AND transcript_path IS NOT ?",
+  ).run(path, actorId, path);
+}
+
 function stateFor(event: string, actorId: string): string | null {
   switch (event) {
     case "prompt":
@@ -171,6 +183,7 @@ try {
     }
 
     reconcileSessionId(actorId, readPayload());
+    reconcileTranscriptPath(actorId, readPayload());
 
     db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
 

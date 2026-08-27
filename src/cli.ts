@@ -163,7 +163,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
-import { harnessFor, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { TRIAGE_MESSAGE } from "./kickoff.js";
 import {
@@ -1974,7 +1974,7 @@ function reportStalledWorkers(projectId: number): void {
   const latched = (
     db
       .prepare(
-        `SELECT name, command, kind, cwd, session_id, agent_state, state_changed_at, tmux_target, tmux_socket
+        `SELECT name, command, kind, cwd, session_id, transcript_path, agent_state, state_changed_at, tmux_target, tmux_socket
            FROM agents
           WHERE project_id = ? AND status = 'running' AND kind = 'agent'
             AND agent_state IN ('working', 'waiting') AND state_changed_at IS NOT NULL
@@ -1986,6 +1986,7 @@ function reportStalledWorkers(projectId: number): void {
       kind: string;
       cwd: string;
       session_id: string;
+      transcript_path: string;
       agent_state: string;
       state_changed_at: string;
       tmux_target: string;
@@ -1993,17 +1994,23 @@ function reportStalledWorkers(projectId: number): void {
     }[]
   )
 
-    // transcriptDir, not just reportsAgentStateLog: this whole report corroborates a latch against
-    // transcript mtime (worker-state.md - "the sampler is the worker's transcript mtime, never this
-    // latch"), and a harness without a proven transcript path would statSync the wrong file and read
-    // back "never wrote a transcript at all" for every worker, unconditionally and wrongly.
-    .filter((row) => reportsAgentStateLog(row) && transcriptDirFor(row.command) && row.session_id !== "");
+    // A transcript signal, not just reportsAgentStateLog: this whole report corroborates a latch
+    // against transcript mtime (worker-state.md - "the sampler is the worker's transcript mtime,
+    // never this latch"), and a harness with no transcript to check would have nothing to read.
+    .filter((row) => reportsAgentStateLog(row) && hasTranscriptSignal(row) && row.session_id !== "");
   const stalled: { name: string; sentence: string }[] = [];
   for (const row of latched) {
 
     const latchedFor = ageSecondsSince(row.state_changed_at);
     if (latchedFor < STALL_BOUND_SECONDS) continue;
     const stale = transcriptStaleness(row);
+    // A stored-path harness (codex) with no readable file has nothing to report from - a missing
+    // file is never treated as a stall for it, unlike claude's directory-resolved "never wrote"
+    // (todo 591). LOAD-BEARING, do not remove: this SELECT's status='running' snapshot and the
+    // statSync above can straddle a concurrent agent_close/agent_park in another process reaping
+    // CODEX_HOME mid-tick, and an external deletion of the rollout file is not guarded against at
+    // all - either way the file can be gone under a row this run still sees as running.
+    if (stale === "never" && !transcriptDirFor(row.command)) continue;
     if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
 
     if (row.agent_state === "waiting") {
