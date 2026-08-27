@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
-import { harnessFor } from "./harnesses.js";
+import { harnessFor, harnessNames } from "./harnesses.js";
+import { agentVarKeys } from "./projectYml.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
 import { shellQuote } from "./tmux.js";
@@ -49,16 +50,20 @@ export function harnessBriefVars(harnessName: string): Record<string, string> {
   return harnessName === "codex" ? { harness_codex: "1" } : { harness_claude: "1" };
 }
 
-const HARNESS_VAR_KEYS = ["harness_claude", "harness_codex"] as const;
+// Derived from harnessNames() rather than a hand-kept literal, so a newly registered harness
+// extends the strip set with no edit here (todo 597 review finding).
+function harnessVarKeys(): string[] {
+  return harnessNames().map((name) => `harness_${name}`);
+}
 
-// Strips both reserved keys before spreading harnessBriefVars, so a project's own hive.yml
-// cannot set the sibling key and make both worker.md blocks render at once.
+// Strips harness_* and agents_* reserved keys before spreading harnessBriefVars - strip only,
+// worker.md never gets an agents_* value, since nothing needs one there yet.
 export function mergedBriefVars(
   projectVars: Record<string, string> | undefined,
   harnessName: string,
 ): Record<string, string> {
   const safe = { ...(projectVars ?? {}) };
-  for (const key of HARNESS_VAR_KEYS) delete safe[key];
+  for (const key of [...harnessVarKeys(), ...agentVarKeys()]) delete safe[key];
   return { ...safe, ...harnessBriefVars(harnessName) };
 }
 

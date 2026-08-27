@@ -154,8 +154,10 @@ import {
 } from "./tmux.js";
 import {
   activeProfile,
+  agentVarKeys,
   configHash,
   loadProjectYml,
+  mergedProjectVars,
   NO_PROFILE,
   resolveCommandDir,
   type YmlProcess,
@@ -583,7 +585,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       if (!posture) {
         console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
       } else {
-        renderedPosture = renderProfileFile(profile, "posture.md", config?.vars ?? {}) ?? "";
+        renderedPosture = renderProfileFile(profile, "posture.md", mergedProjectVars(config)) ?? "";
         postureSource = posture.source;
       }
     }
@@ -1081,7 +1083,7 @@ function cmdRunbook(path?: string): void {
     process.exit(1);
   }
 
-  const vars = config?.vars ?? {};
+  const vars = mergedProjectVars(config);
   const rendered = renderProfileFile(profile, "runbook.md", vars);
   if (rendered == null) {
     console.log(`Profile "${profile}" has no runbook.md on this machine. Profiles hive can see: ${profileNames().join(", ") || "none"}`);
@@ -1101,7 +1103,7 @@ function cmdPosture(path?: string): void {
     );
     process.exit(1);
   }
-  const vars = config?.vars ?? {};
+  const vars = mergedProjectVars(config);
   const rendered = renderProfileFile(profile, "posture.md", vars);
   if (rendered == null) {
     console.log(`Profile "${profile}" has no posture.md on this machine, so the lead starts without one.`);
@@ -1218,7 +1220,7 @@ function cmdProfile(argv: string[]): void {
         if (override != null) {
           profileName = override;
           const here = findProjectForCwd();
-          vars = here ? loadProjectYml(here.path).config?.vars ?? {} : {};
+          vars = mergedProjectVars(here ? loadProjectYml(here.path).config : null);
         } else {
           const project = resolveProject();
           const { config, warnings } = loadProjectYml(project.path);
@@ -1229,7 +1231,7 @@ function cmdProfile(argv: string[]): void {
             process.exit(1);
           }
           profileName = active;
-          vars = config?.vars ?? {};
+          vars = mergedProjectVars(config);
         }
 
         const rendered = renderProfileFile(profileName, file, vars);
@@ -2118,16 +2120,19 @@ function cmdDoctor(argv: string[]): void {
       if (drift) (drift.rewrite ? info : warn)("profile", drift.text);
     }
 
+    const agentKeys = agentVarKeys();
     const referenced = [...new Set(
-      // worker.md's vars are per-spawn identity (agent_name, actor_id, ...), never hive.yml vars
+      // worker.md's vars are per-spawn identity (agent_name, actor_id, ...), never hive.yml vars.
+      // agents_* vars are derived from hive.yml agents:, never missing or unused by definition (todo 597).
       profileFileNames(name)
         .filter((file) => file !== "worker.md")
         .flatMap((file) => {
           const text = readProfileFile(name, file);
           return text ? templateVars(text) : [];
         }),
-    )].sort();
-    const defined = Object.keys(cfg?.vars ?? {});
+    )].filter((v) => !agentKeys.includes(v)).sort();
+    const configuredKeys = Object.keys(cfg?.vars ?? {});
+    const defined = configuredKeys.filter((v) => !agentKeys.includes(v));
     const missing = referenced.filter((v) => !defined.includes(v));
     const unused = defined.filter((v) => !referenced.includes(v));
     if (referenced.length > 0) {
@@ -2136,7 +2141,14 @@ function cmdDoctor(argv: string[]): void {
       if (unused.length > 0) info("profile vars", `defined but unreferenced: ${unused.join(", ")}`);
     }
 
-    const vars = cfg?.vars ?? {};
+    // A hive.yml vars: entry sharing a name with a derived agents_* var never wins (mergedProjectVars
+    // strips it); warn rather than let it silently lie about which harnesses this project allows.
+    const collisions = configuredKeys.filter((v) => agentKeys.includes(v));
+    if (collisions.length > 0) {
+      warn("profile vars", `hive.yml vars ${collisions.join(", ")} are derived from agents: and are ignored.`);
+    }
+
+    const vars = mergedProjectVars(cfg);
     const renderedText = profileFileNames(name)
       .map((file) => renderProfileFile(name, file, vars))
       .filter((t): t is string => t != null)

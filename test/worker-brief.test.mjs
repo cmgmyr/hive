@@ -18,6 +18,7 @@ const {
   workerCommandString,
   writeAgentBrief,
 } = await import("../dist/brief.js");
+const { registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
 
 function gitInit(dir) {
   scratchGit(dir, "init", "-q");
@@ -369,6 +370,58 @@ describe("mergedBriefVars", () => {
 
   it("handles no project vars at all", () => {
     assert.deepEqual(mergedBriefVars(undefined, "codex"), { harness_codex: "1" });
+  });
+
+  it("todo 597: strips a project's own agents_codex, so it can never leak into a worker.md render", () => {
+    assert.deepEqual(mergedBriefVars({ agents_codex: "1" }, "claude"), { harness_claude: "1" });
+  });
+
+  it("todo 597: strips a project's own agents_claude too, symmetrically", () => {
+    assert.deepEqual(mergedBriefVars({ agents_claude: "1" }, "codex"), { harness_codex: "1" });
+  });
+
+  it("todo 597: extends the harness_* strip set to a newly registered third harness automatically", () => {
+    const stub = {
+      name: "widget",
+      matches: () => false,
+      argsFor: () => [],
+      briefDelivery: null,
+      stateSource: false,
+      transcriptDir: false,
+      contextTokens: false,
+      mintsSessionId: false,
+      supportsResume: false,
+      supportsRename: false,
+      classifiesPaneScreen: false,
+      paneClassifier: null,
+      hasScopes: false,
+      needsHome: false,
+      initialPromptArgs: null,
+    };
+    registerHarness(stub);
+    try {
+      assert.deepEqual(mergedBriefVars({ harness_widget: "1" }, "claude"), { harness_claude: "1" });
+    } finally {
+      unregisterHarness("widget");
+    }
+  });
+});
+
+describe("todo 597: worker.md never leaks a project's own agents_* var", () => {
+  it("a hive.yml var named agents_codex does not make a claude worker see a codex-only block", () => {
+    const profileName = "agents-leak-repro";
+    const profileDir = join(scratch, "profiles", profileName);
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(
+      join(profileDir, "worker.md"),
+      "before\n<!--if:agents_codex-->\ncodex-only-leak\n<!--end-->\nafter\n",
+    );
+    const rendered = workerBrief({
+      ...ctx,
+      profile: profileName,
+      vars: mergedBriefVars({ agents_codex: "1" }, "claude"),
+    });
+    assert.doesNotMatch(rendered, /codex-only-leak/);
   });
 });
 

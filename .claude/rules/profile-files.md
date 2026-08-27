@@ -47,12 +47,15 @@ something hive believes it must have.
 
 ## `worker.md` is excluded from doctor's unset-`{{var}}` scan, on purpose
 
-Its vars are per-spawn identity (`agent_name`, `actor_id`, `project_name`,
-`cwd`, ...), supplied by `src/brief.ts` at spawn time, never by `hive.yml`
-`vars`. Folding it into the scan that checks `hive.yml`'s `vars` against a
-profile's referenced vars would report every one of them as missing on every
-project. `profileFileNames(name).filter((f) => f !== "worker.md")` is the
-shape to keep.
+Its identity vars (`agent_name`, `actor_id`, `project_name`, `cwd`, ...) are
+per-spawn, supplied by `src/brief.ts` at spawn time. A project's `hive.yml`
+`vars` merge into the same render too, with the reserved `harness_*` and
+`agents_*` families stripped first (`mergedBriefVars`) so neither can flip
+which conditional block a worker sees. Folding worker.md into the scan that
+checks `hive.yml`'s `vars` against a profile's referenced vars would still
+report every identity var as missing on every project.
+`profileFileNames(name).filter((f) => f !== "worker.md")` is the shape to
+keep.
 
 ## Do not build drift/divergence reporting for a file with no upstream
 

@@ -44,6 +44,29 @@ export function allowedAgents(config: ProjectYml | null): string[] {
   return list && list.length > 0 ? list : ["claude"];
 }
 
+function agentVarKey(harness: string): string {
+  return `agents_${harness}`;
+}
+
+// One var per allowed harness, "1" - distinct from brief.ts's per-spawn harness_claude/harness_codex.
+export function agentVars(config: ProjectYml | null): Record<string, string> {
+  return Object.fromEntries(allowedAgents(config).map((name) => [agentVarKey(name), "1"]));
+}
+
+// Every known harness's key, not just currently-allowed ones - a strip for a disallowed harness
+// is correct, not missing, so doctor's scan must exclude the whole family.
+export function agentVarKeys(): string[] {
+  return harnessNames().map(agentVarKey);
+}
+
+// Mirrors mergedBriefVars (src/brief.ts): strip any project-defined agents_* var first so a lying
+// one can never silently win, then spread the derived vars on top.
+export function mergedProjectVars(config: ProjectYml | null): Record<string, string> {
+  const safe = { ...(config?.vars ?? {}) };
+  for (const key of agentVarKeys()) delete safe[key];
+  return { ...safe, ...agentVars(config) };
+}
+
 export function loadProjectYml(projectPath: string): {
   config: ProjectYml | null;
   warnings: string[];
