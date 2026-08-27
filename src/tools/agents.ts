@@ -13,7 +13,14 @@ import {
 } from "../brief.js";
 import { codexHomeDir, codexLaunchArgs, ensureCodexHome } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
-import { commandHead, harnessFor, harnessNames, paneClassifierFor, screenClassifiable } from "../harnesses.js";
+import {
+  commandHead,
+  harnessFor,
+  harnessNames,
+  paneClassifierFor,
+  resolvedCommandPrefix,
+  screenClassifiable,
+} from "../harnesses.js";
 import { ensureHooksFile } from "../hooks.js";
 import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
@@ -852,7 +859,7 @@ export function registerAgents(server: McpServer): void {
         let resumeEnv: Record<string, string> = {};
         if (resumeHarness.name === "codex") {
           commandString = workerCommandString({
-            command: commandHead(agent.command) || "codex",
+            command: resolvedCommandPrefix(agent.command) || "codex",
             // Recovered from the row's own recorded command: every codex worker hive spawns
             // carries a pinned model (codex has no bare alias), so dropping this would silently
             // resume on codex's default model instead of the one the lane actually chose.
@@ -865,7 +872,7 @@ export function registerAgents(server: McpServer): void {
           });
           resumeEnv = { CODEX_HOME: codexHomeDir(agent.codex_home) };
         } else {
-          const claudeBinary = commandHead(agent.command) || "claude";
+          const claudeBinary = resolvedCommandPrefix(agent.command) || "claude";
           commandString = workerCommandString({
             command: claudeBinary,
             displayName: agent.name,

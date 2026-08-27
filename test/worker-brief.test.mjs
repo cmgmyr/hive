@@ -37,10 +37,16 @@ const ctx = {
 describe("recognising claude", () => {
   it("sees through an absolute path and trailing arguments", () => {
 
-    for (const command of ["claude", "claude --model opus", "/opt/homebrew/bin/claude", "  claude  "]) {
+    for (const command of [
+      "claude",
+      "claude --model opus",
+      "/opt/homebrew/bin/claude",
+      "  claude  ",
+      "/usr/bin/env claude",
+    ]) {
       assert.equal(isClaudeCommand(command), true, command);
     }
-    for (const command of ["codex", "claude-code", "/usr/bin/env claude", ""]) {
+    for (const command of ["codex", "claude-code", ""]) {
       assert.equal(isClaudeCommand(command), false, command);
     }
   });
@@ -145,6 +151,23 @@ describe("worker command string", () => {
       briefPath: "/data/my briefs/agent-7.md",
     });
     assert.match(cmd, /--append-system-prompt-file '\/data\/my briefs\/agent-7.md'/);
+  });
+
+  it("leaves every single-token command byte-identical to before todo 521's wrapper split (negative control)", () => {
+    for (const command of ["claude", "/opt/homebrew/bin/claude", "codex", "sleep"]) {
+      assert.equal(workerCommandString({ command }), command, command);
+    }
+  });
+
+  it("splits a wrapped command's own tokens into separate shell words, so the pane execs the real binary rather than a literal file named e.g. \"nice claude\" (todo 521)", () => {
+    assert.equal(
+      workerCommandString({ command: "nice claude", extraArgs: ["--resume", "sess-1"] }),
+      "nice claude --resume sess-1",
+    );
+    assert.equal(
+      workerCommandString({ command: "FOO=1 claude", extraArgs: ["--resume", "sess-1"] }),
+      "FOO=1 claude --resume sess-1",
+    );
   });
 });
 

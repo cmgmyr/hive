@@ -242,6 +242,26 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-binary" });
   });
 
+  it("resumes a wrapped command with its FULL PREFIX intact, not just the wrapper's own name (todo 521)", async () => {
+    const absoluteClaude = fakeClaude();
+    const wrapped = `nice ${absoluteClaude}`;
+    await mcp.call("agent_spawn", { name: "resume-wrapped", command: wrapped });
+    const beforeRow = await liveAgentRow(mcp, "resume-wrapped");
+    await mcp.call("agent_close", { name: "resume-wrapped" });
+
+    await mcp.call("agent_resume", { agent_id: beforeRow.agent_id });
+    await liveAgentRow(mcp, "resume-wrapped");
+
+    const row = db.prepare("SELECT command FROM agents WHERE id = ?").get(beforeRow.agent_id);
+    assert.ok(
+      row.command.startsWith(wrapped),
+      `resumed command must keep the wrapper AND the original binary path, not just one token of it: ${row.command}`,
+    );
+    assert.ok(row.command.includes("--resume"), `resumed command should carry --resume: ${row.command}`);
+
+    await mcp.call("agent_close", { name: "resume-wrapped" });
+  });
+
   it("resets agent_state/state_changed_at on resume, so a wake cannot read a pre-close latch as the fresh worker's current state (counselors, opus)", async () => {
     await mcp.call("agent_spawn", { name: "resume-stale-state", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-stale-state");

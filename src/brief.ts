@@ -139,7 +139,11 @@ export function workerCommandString(spec: WorkerCommandSpec): string {
   );
 
   return [
-    spec.command,
+    // Split, not passed whole: spec.command can itself be multiple tokens (a wrapped command,
+    // e.g. "nice claude", todo 521) and shellQuote would otherwise glue the lot into one token a
+    // shell can't exec. Byte-identical for every single-token command - see
+    // test/worker-brief.test.mjs's negative control.
+    ...spec.command.trim().split(/\s+/),
     ...(spec.model ? ["--model", spec.model] : []),
     ...harness.argsFor({ displayName: spec.displayName, namedByCaller }),
 

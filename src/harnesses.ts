@@ -83,14 +83,49 @@ export function commandHead(command: string): string {
   return command.trim().split(/\s+/)[0] ?? "";
 }
 
-function commandBasename(command: string): string {
-  return commandHead(command).split("/").pop() ?? "";
+// matches() strips a fixed set of prefixes before comparing basenames (todo 521), never a
+// wrapper's own flags - see the negative-control table in test/harness-wrapper-matching.test.mjs
+// and the todo for why.
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const KNOWN_WRAPPERS = new Set(["env", "nice", "arch", "time"]);
+
+function basenameOf(token: string): string {
+  return token.split("/").pop() ?? "";
+}
+
+function resolvedCommand(command: string): { prefix: string; basename: string } {
+  const tokens = command.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length) {
+    if (ENV_ASSIGNMENT.test(tokens[i])) {
+      i++;
+      continue;
+    }
+    if (KNOWN_WRAPPERS.has(basenameOf(tokens[i])) && i + 1 < tokens.length) {
+      i++;
+      continue;
+    }
+    break;
+  }
+  return { prefix: tokens.slice(0, i + 1).join(" "), basename: basenameOf(tokens[i] ?? "") };
+}
+
+function resolvedCommandBasename(command: string): string {
+  return resolvedCommand(command).basename;
+}
+
+// The prefix matches() itself resolved through - env assignments, wrappers, and the command token
+// they lead to, with everything after it dropped - for a caller rebuilding a fresh invocation on
+// top of a recorded command that may carry old flags (agent_resume, src/tools/agents.ts). Reuses
+// matches()'s own walk rather than a second parser (todo 521 follow-up).
+export function resolvedCommandPrefix(command: string): string {
+  return resolvedCommand(command).prefix;
 }
 
 const claudeHarness: HarnessCapabilities = {
   name: "claude",
 
-  matches: (command) => commandBasename(command) === "claude",
+  matches: (command) => resolvedCommandBasename(command) === "claude",
 
   argsFor: ({ displayName, namedByCaller }) =>
     displayName && !namedByCaller ? ["--name", displayName] : [],
@@ -124,7 +159,7 @@ const claudeHarness: HarnessCapabilities = {
 export const codexHarness: HarnessCapabilities = {
   name: "codex",
 
-  matches: (command) => commandBasename(command) === "codex",
+  matches: (command) => resolvedCommandBasename(command) === "codex",
 
   argsFor: () => [],
 
