@@ -17,6 +17,7 @@ import {
   tmux,
   tmuxSocketPath,
   untrustedTmuxServer,
+  waitForPaneEstablished,
   windowOwner,
   windowTitle,
   type WindowLayout,
@@ -106,6 +107,7 @@ function recordPane(agentId: number, target: string, socket: string): boolean {
 
 export function discardOrphanedPane(target: string): void {
   try {
+    waitForPaneEstablished(target);
     tmux("kill-pane", "-t", target);
   } catch {
 

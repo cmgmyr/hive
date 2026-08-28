@@ -504,6 +504,45 @@ export function panePid(target: string): string {
   return targetLiveProbe(target).pid ?? "";
 }
 
+const DESTROY_READINESS_BOUND_MS = 200;
+
+function paneHasEstablishedProcess(pid: string): boolean {
+  try {
+    const status = execFileSync("ps", ["-o", "pgid=", "-o", "tty=", "-p", pid], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 50,
+      killSignal: "SIGKILL",
+    }).trim();
+    const [pgid, tty] = status.split(/\s+/, 2);
+    return pgid === pid && !!tty && tty !== "?";
+  } catch {
+    return false;
+  }
+}
+
+export function waitForPaneEstablished(
+  target: string,
+  timeoutMs = DESTROY_READINESS_BOUND_MS,
+  probe: (pid: string) => boolean = paneHasEstablishedProcess,
+  pidLookup: (target: string) => string = panePid,
+): void {
+  let pid: string;
+  try {
+    pid = pidLookup(target).trim();
+  } catch {
+    return;
+  }
+  if (!/^\d+$/.test(pid)) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (probe(pid)) return;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(10, remaining));
+  }
+}
+
 export function foreignSocket(recorded: string): boolean {
   return recorded !== "" && recorded !== tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
 }

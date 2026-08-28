@@ -151,6 +151,7 @@ import {
   tmuxTimeoutOverride,
   tmuxSocketPath,
   untrustedTmuxServer,
+  waitForPaneEstablished,
 } from "./tmux.js";
 import {
   activeProfile,
@@ -762,6 +763,7 @@ async function cmdLead(argv: string[]): Promise<void> {
 
       if (createdPane) {
         try {
+          waitForPaneEstablished(leadPane);
           tmux("kill-pane", "-t", leadPane);
         } catch {
 
