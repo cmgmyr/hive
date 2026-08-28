@@ -49,7 +49,7 @@ describe(
     const session = sessionName();
 
     before(() => {
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
     });
 
     after(() => cleanup(session));
@@ -240,7 +240,7 @@ describe(
     after(() => cleanup(session));
 
     it("stamps a freshly created window with window-size smallest", () => {
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
       const { window } = createWindow(session, "sized", dirs.projectDir, [], "sleep 600", 7);
       const value = execFileSync("tmux", ["show-window-options", "-t", window], { encoding: "utf8" });
       assert.match(value, /window-size smallest/, value);

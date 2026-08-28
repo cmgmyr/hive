@@ -148,7 +148,7 @@ describe(
       process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
       const session = sessionName();
       const firstView = viewSessionName();
-      ensureSession(session, process.cwd());
+      ensureSession(session, process.cwd(), { bare: true });
 
       tmux("new-session", "-d", "-t", `=${session}`, "-s", firstView);
       try {
@@ -178,7 +178,7 @@ describe(
     it("puts a real client on its own view, grouped with base, with destroy-unattached in effect", async () => {
       process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
       const session = `${sessionName()}-live`;
-      ensureSession(session, process.cwd());
+      ensureSession(session, process.cwd(), { bare: true });
       createWindow(session, "live", process.cwd(), [], "sleep 600", null);
       const tmuxPath = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
       const [, terminalScript] = attachScripts(tmuxPath, session);
@@ -313,7 +313,7 @@ describe(
       const { db } = await import("../dist/db.js");
       const project = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs.projectDir);
       const session = sessionName();
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
       const { window } = createWindow(session, "attach-hint-test", dirs.projectDir, [], "sleep 600", project.id);
       try {
         const result = await runCli(["attach"], { ...opts, env: { TERM_PROGRAM: "" } });
@@ -335,7 +335,7 @@ describe(
       assert.equal(init.code, 0, init.stderr);
       process.env.HIVE_DATA_DIR = dirs.dataDir;
       const session = sessionName();
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
 
       const client = spawn("tmux", ["-C", "attach", "-t", `=${session}`], { stdio: ["pipe", "pipe", "pipe"] });
       try {

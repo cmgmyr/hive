@@ -116,7 +116,7 @@ describe(
       const script = `
 import { ensureSession } from ${JSON.stringify(join(DIST, "tmux.js"))};
 const [session, cwd] = process.argv.slice(2);
-const started = ensureSession(session, cwd);
+const started = ensureSession(session, cwd, { bare: true });
 console.log(JSON.stringify({ created: started.created }));
 `;
       const results = await raceProcesses(

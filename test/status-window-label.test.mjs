@@ -32,7 +32,7 @@ describe(
     const session = sessionName();
 
     it("prints the real window id this project's window is stamped with", async () => {
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
       const { window } = createWindow(session, "status-label-test", dirs.projectDir, [], "sleep 600", project.id);
 
       const { code, stdout } = await runCli(["status"], opts);
@@ -67,7 +67,7 @@ describe(
       migrate();
 
       const session = sessionName();
-      ensureSession(session, dirs.projectDir);
+      ensureSession(session, dirs.projectDir, { bare: true });
 
       const secondDir = mkdtempSync(join(dirs.tmp, "status-fork-second-"));
       writeFileSync(join(secondDir, "hive.yml"), "profile: orchestration\n");

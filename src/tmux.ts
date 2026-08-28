@@ -192,7 +192,7 @@ export function crossServerRefusal(action: string): Error {
 
 export type SessionStart = { created: true; pane: string; window: string } | { created: false };
 
-export type InitialPane = { envFlags: string[]; command: string };
+export type InitialPane = { envFlags: string[]; command: string } | { bare: true };
 
 export function envFlagKeys(envFlags: string[]): string[] {
   return envFlags.filter((_, i) => i % 2 === 1).map((pair) => pair.split("=")[0]);
@@ -213,15 +213,15 @@ function unsetAtSessionScope(name: string, envFlags: string[]): void {
   }
 }
 
-export function ensureSession(name: string, cwd: string, initial?: InitialPane): SessionStart {
+export function ensureSession(name: string, cwd: string, initial: InitialPane): SessionStart {
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
     const [pane, window] = tmux(
       "new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}", "-s", name, "-c", cwd,
-      ...(initial ? [...initial.envFlags, initial.command] : []),
+      ...(initial && "command" in initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
-    if (initial) unsetAtSessionScope(name, initial.envFlags);
+    if (initial && "command" in initial) unsetAtSessionScope(name, initial.envFlags);
     return { created: true, pane, window };
   } catch (e) {
     if (!isDuplicateSession(e)) throw e;

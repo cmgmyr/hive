@@ -42,7 +42,7 @@ describe(
     before(async () => {
       const init = await runCli(["init"], opts);
       assert.equal(init.code, 0, init.stderr);
-      ensureSession(base, dirs.projectDir);
+      ensureSession(base, dirs.projectDir, { bare: true });
 
       execFileSync("tmux", ["new-session", "-d", "-t", `=${base}`, "-s", view]);
     });
@@ -81,7 +81,7 @@ describe(
     before(async () => {
       const init = await runCli(["init"], opts);
       assert.equal(init.code, 0, init.stderr);
-      ensureSession(base, dirs.projectDir);
+      ensureSession(base, dirs.projectDir, { bare: true });
       execFileSync("tmux", ["new-session", "-d", "-t", `=${base}`, "-s", view]);
       client = attachClient(`=${view}`);
       await sleep(300);
@@ -119,7 +119,7 @@ describe(
     before(async () => {
       const init = await runCli(["init"], opts);
       assert.equal(init.code, 0, init.stderr);
-      ensureSession(base, dirs.projectDir);
+      ensureSession(base, dirs.projectDir, { bare: true });
       execFileSync("tmux", ["new-session", "-d", "-t", `=${base}`, "-s", view]);
     });
 

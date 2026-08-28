@@ -32,7 +32,7 @@ describe(
     let otherWindow;
 
     before(async () => {
-      ensureSession(session, projectDir);
+      ensureSession(session, projectDir, { bare: true });
       createWindow(session, "attach", projectDir, [], "sleep 600", project.id);
 
       otherWindow = createWindow(session, "other", projectDir, [], "sleep 600", null).window.split(":")[1];

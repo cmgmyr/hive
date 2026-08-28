@@ -34,7 +34,7 @@ describe(
     let paneEnv;
 
     before(() => {
-      ensureSession(session, projectDir);
+      ensureSession(session, projectDir, { bare: true });
       projectWindow = createWindow(session, "caller", projectDir, [], "sleep 600", project.id).window.split(":")[1];
       elsewhere = createWindow(session, "elsewhere", projectDir, [], "sleep 600", null).window.split(":")[1];
 

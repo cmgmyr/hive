@@ -1308,7 +1308,7 @@ function cmdAttach(argv: string[]): void {
   const session = sessionName();
 
   const window = withWindowClaim(() => {
-    const started = ensureSession(session, project.path);
+    const started = ensureSession(session, project.path, { bare: true });
     if (started.created) {
       configureHiveWindow(started.window, true, project.id);
       tmux("rename-window", "-t", started.window, project.name);

@@ -453,7 +453,7 @@ describe("spawning refuses under the same pairing, not just reading", { skip: ha
   it("refuses hive lead and hive attach too, at the session they both create", () => {
 
     assert.throws(
-      () => asDefaultStore(() => ensureSession("hive-should-never-exist", projectDir)),
+      () => asDefaultStore(() => ensureSession("hive-should-never-exist", projectDir, { bare: true })),
       /Refusing to create a tmux session/,
     );
   });
@@ -462,8 +462,8 @@ describe("spawning refuses under the same pairing, not just reading", { skip: ha
 
     const name = `hive-ensure-ok-${process.pid}`;
     try {
-      assert.equal(ensureSession(name, projectDir).created, true, "a legitimate pairing still creates one");
-      assert.equal(ensureSession(name, projectDir).created, false, "and is idempotent on the second call");
+      assert.equal(ensureSession(name, projectDir, { bare: true }).created, true, "a legitimate pairing still creates one");
+      assert.equal(ensureSession(name, projectDir, { bare: true }).created, false, "and is idempotent on the second call");
     } finally {
       try {
         execFileSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
