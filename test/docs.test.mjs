@@ -191,11 +191,11 @@ describe("docs keep up with the CLI", () => {
     assert.notDeepEqual(tableGlobs, [...preFixFrontmatterGlobs].sort(), "precondition: the pre-fix row and frontmatter must disagree");
   });
 
-  it("keeps AGENTS.md pointing at the same instructions Claude reads", () => {
+  it("keeps CLAUDE.md pointing at the same instructions codex reads", () => {
 
-    for (const [link, target] of [["AGENTS.md", "CLAUDE.md"], ["test/AGENTS.md", "CLAUDE.md"]]) {
+    for (const [link, target] of [["CLAUDE.md", "AGENTS.md"], ["test/CLAUDE.md", "AGENTS.md"]]) {
       const full = join(REPO, link);
-      assert.ok(existsSync(full), `${link} is missing; codex would lose the project instructions`);
+      assert.ok(existsSync(full), `${link} is missing; Claude Code would lose the project instructions`);
       assert.equal(readlinkSync(full), target, `${link} should be a symlink to ${target}, not a copy`);
     }
 
