@@ -1,0 +1,16 @@
+1787923697.589016 cmdq_fire_command <client-54079>: (2936) new-session -d -s kp "sleep 300"
+1787923697.589098 spawn_pane: [new-session/0x102cca300], flags=0x10
+1787923697.589120 window_add_pane: @0 at start
+1787923697.589149 spawn_pane: shell=/bin/zsh
+1787923697.589153 spawn_pane: cmd="sleep 300"
+1787923697.589155 spawn_pane: cwd=/scratch/project-c
+1787923698.008052 cmdq_fire_command <client-54186>: (4255) split-window -t kp
+1787923698.008133 spawn_pane: [split-window/0x102cca400], flags=0
+1787923698.008157 window_add_pane: @0 after %1
+1787923698.008232 spawn_pane: shell=/bin/zsh
+1787923698.008236 spawn_pane: cwd=/scratch/project-c
+1787923698.429851 cmdq_fire_command <client-54386>: (4263) kill-pane -t "%1"
+1787923698.868905 cmdq_fire_command <client-54396>: (4267) kill-session -t =kp
+1787923698.869028 session kp destroyed (cmd_kill_session_exec)
+1787923698.869384 window @0 destroyed (0 references)
+1787923699.212699 cmdq_fire_command <client-54398>: (4271) kill-server

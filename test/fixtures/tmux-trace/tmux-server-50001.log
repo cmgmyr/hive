@@ -1,0 +1,7 @@
+1787922386.121208 spawn_pane: [new-session/0x10152e200], flags=0x10
+1787922386.121229 window_add_pane: @0 at start
+1787922386.121258 spawn_pane: shell=/bin/zsh
+1787922386.121262 spawn_pane: cmd="sleep 20"
+1787922386.121264 spawn_pane: cwd=/scratch/project-b
+1787922386.436405 session c1 destroyed (cmd_kill_session_exec)
+1787922386.436552 window @0 destroyed (0 references)

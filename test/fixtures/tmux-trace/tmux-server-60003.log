@@ -1,0 +1,22 @@
+1787923727.214874 cmdq_fire_command <client-55697>: (2936) new-session -d -s base "sleep 300"
+1787923727.214947 spawn_pane: [new-session/0x10964e300], flags=0x10
+1787923727.214967 window_add_pane: @0 at start
+1787923727.214993 spawn_pane: shell=/bin/zsh
+1787923727.214997 spawn_pane: cmd="sleep 300"
+1787923727.214998 spawn_pane: cwd=/scratch/project-d
+1787923727.531580 cmdq_fire_command <client-55804>: (4255) new-window -t base
+1787923727.531661 spawn_pane: [new-window/0x10964e400], flags=0x10
+1787923727.531675 window_add_pane: @1 at start
+1787923727.531706 spawn_pane: shell=/bin/zsh
+1787923727.531709 spawn_pane: cwd=/scratch/project-d
+1787923727.851681 cmdq_fire_command <client-55974>: (4263) split-window -t base:1
+1787923727.851729 spawn_pane: [split-window/0x10964e100], flags=0
+1787923727.851738 window_add_pane: @1 after %2
+1787923727.851796 spawn_pane: shell=/bin/zsh
+1787923727.851799 spawn_pane: cwd=/scratch/project-d
+1787923728.166379 cmdq_fire_command <client-56291>: (4267) kill-pane -t "%1"
+1787923728.579851 cmdq_fire_command <client-56522>: (4271) kill-session -t =base
+1787923728.579914 session base destroyed (cmd_kill_session_exec)
+1787923728.580131 window @0 destroyed (0 references)
+1787923728.580173 window @1 destroyed (0 references)
+1787923728.910293 cmdq_fire_command <client-56530>: (4275) kill-server

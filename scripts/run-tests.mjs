@@ -14,6 +14,14 @@ import {
   SuiteLockTimeoutError,
 } from "./suite-lock.mjs";
 import { checkTmuxLeaks, describeLeaks, leakCheckFailed } from "./tmux-leaks.mjs";
+import {
+  describeWedgedReap,
+  newlyWedged,
+  noReapRequested,
+  orphanShellRows,
+  reapWedged,
+  stillOrphanLoginShells,
+} from "./wedged-shells.mjs";
 
 const testDir = fileURLToPath(new URL("../test", import.meta.url));
 const passthrough = process.argv.slice(2);
@@ -66,6 +74,18 @@ if (!lockBlocked) {
 
   const fakeOpen = installFakeOpen();
 
+  // Reaping requires the suite lock, and that is the whole guard: a nested runner, a
+  // single-file lane and a HIVE_TEST_NO_LOCK harness run all skip the lock, so none of
+  // them can reap a population it does not own.
+  const reapSkipped = noReapRequested()
+    ? "HIVE_TEST_NO_REAP=1"
+    : suiteLock === null
+      ? "this run does not hold the suite lock, so it cannot tell its own shells from another run's"
+      : null;
+  const startedAt = Date.now();
+  const before = reapSkipped ? { rows: [], unavailable: null } : await orphanShellRows();
+  const bracketed = new Set(before.rows.map((row) => row.pid));
+
   const child = spawn(process.execPath, ["--test", ...passthrough, ...files], {
     stdio: "inherit",
     env: {
@@ -92,7 +112,7 @@ if (!lockBlocked) {
     });
   }
 
-  child.on("exit", (code, signal) => {
+  child.on("exit", async (code, signal) => {
 
     const suiteFailed = signal !== null || code !== 0;
     const result = checkTmuxLeaks(manifest);
@@ -111,8 +131,44 @@ if (!lockBlocked) {
     rmSync(manifestDir, { recursive: true, force: true });
     fakeOpen.reap();
 
+    // Freeze the kill set while the suite lock is still held: a sibling lane that
+    // starts the moment we release it cannot have a pid in a set taken before that.
+    let doomed = [];
+    let reap = {
+      skipped: reapSkipped,
+      unavailable: before.unavailable,
+      bracketed: bracketed.size,
+      droppedByRecheck: 0,
+      reaped: [],
+      survived: [],
+      alreadyGone: [],
+    };
+    if (!reapSkipped && !before.unavailable) {
+      try {
+        const after = await orphanShellRows();
+        reap.unavailable = after.unavailable;
+        doomed = newlyWedged(bracketed, after.rows, { maxAgeMs: Date.now() - startedAt });
+      } catch (e) {
+        reap.unavailable = e?.message ?? String(e);
+      }
+    }
+
     suiteLock?.release();
 
     process.exitCode = suiteFailed ? (code ?? 1) : leaked ? 1 : openEscaped ? 1 : 0;
+
+    if (doomed.length > 0) {
+      try {
+        const stillThere = await stillOrphanLoginShells(doomed);
+        reap.unavailable = stillThere.unavailable ?? reap.unavailable;
+        reap.droppedByRecheck = doomed.length - stillThere.rows.length;
+        reap = { ...reap, ...(await reapWedged(stillThere.rows)) };
+      } catch (e) {
+        reap.unavailable = e?.message ?? String(e);
+      }
+    }
+    const reapLines = describeWedgedReap(reap);
+    console.log(`\nwedged-shell reaper: ${reapLines[0]}`);
+    for (const line of reapLines.slice(1)) console.log(line);
   });
 }

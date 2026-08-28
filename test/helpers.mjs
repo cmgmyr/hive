@@ -175,6 +175,42 @@ export function recordScratchTmuxSocket(socket) {
   }
 }
 
+const TRACE_HOLD_SESSION = "hive-trace-hold";
+
+export function sessionsWorthReporting(names) {
+  return names.filter((name) => name !== "" && name !== TRACE_HOLD_SESSION);
+}
+
+function traceTmuxServer(suite, socket) {
+  const traceDir = process.env.HIVE_TMUX_TRACE;
+  if (!traceDir) return;
+  // tmux writes tmux-server-<pid>.log into the server's own cwd, and that log carries
+  // the full environment of everything it spawns: 0700, and never inside the repo.
+  const dir = join(traceDir, `${basename(suite, ".test.mjs").replace(/[^a-zA-Z0-9._-]/g, "_")}-${process.pid}`);
+  try {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+    // A server with no sessions exits before its own start-server client is done, taking
+    // the trace with it and letting the next tmux call start a fresh, untraced server
+    // (measured: 0 panes logged). The throwaway commanded session holds it up long enough
+    // to turn exit-empty off, and carries a command so it is never a bare pane itself.
+    const hold = ["new-session", "-d", "-s", TRACE_HOLD_SESSION, "sleep", "3600"];
+    const args = [
+      "-S", socket, "-vv", ...hold,
+      ";", "set", "-s", "exit-empty", "off",
+      ";", "kill-session", "-t", `=${TRACE_HOLD_SESSION}`,
+    ];
+    execFileSync("tmux", args, {
+      cwd: dir,
+      stdio: "ignore",
+      timeout: 10_000,
+      killSignal: "SIGKILL",
+    });
+  } catch (e) {
+    console.error(`${suite}: HIVE_TMUX_TRACE is set but its traced server would not start (${e?.message ?? e})`);
+  }
+}
+
 export function isolateTmux(suite) {
   const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
   process.env.TMUX_TMPDIR = tmuxTmp;
@@ -196,6 +232,8 @@ export function isolateTmux(suite) {
     throw new Error(`tmux is missing on CI; ${suite} cannot run. Restore the install step in ci.yml.`);
   }
 
+  if (hasTmux) traceTmuxServer(suite, socket);
+
   process.on("exit", () => {
 
     try {
@@ -205,8 +243,11 @@ export function isolateTmux(suite) {
         timeout: 5000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
-      if (left) {
-        console.error(`${suite}: left tmux session(s) behind on its own private socket: ${left.split("\n").join(", ")}`);
+      // The tracer's hold session is this helper's own, and it survives when the tracing
+      // client is killed on its timeout: reporting it blames the test file for the tracer.
+      const reportable = sessionsWorthReporting(left.split("\n"));
+      if (reportable.length > 0) {
+        console.error(`${suite}: left tmux session(s) behind on its own private socket: ${reportable.join(", ")}`);
         process.exitCode = 1;
       }
     } catch {

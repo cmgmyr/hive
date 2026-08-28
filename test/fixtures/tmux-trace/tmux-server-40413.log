@@ -1,0 +1,22 @@
+1787921751.377696 cmdq_fire_command <global>: (11) bind-key -N "Send the prefix key" C-b { send-prefix }
+1787921751.377729 cmdq_fire_command <global>: (19) bind-key -N "Rotate through the panes" C-o { rotate-window }
+1787921751.377757 cmdq_fire_command <global>: (27) bind-key -N "Suspend the current client" C-z { suspend-client }
+1787921751.377842 cmdq_fire_command <global>: (51) bind-key -N "Split window vertically" \\" { split-window }
+1787921751.377931 cmdq_fire_command <global>: (79) bind-key -N "Split window horizontally" \\% { split-window -h }
+1787921751.377976 cmdq_fire_command <global>: (87) bind-key -N "Kill current window" & { confirm-before -p "kill-window #W? (y/n)" kill-window }
+1787921751.378646 cmdq_fire_command <global>: (335) bind-key -N "Create a new window" c { new-window }
+1787921751.378961 cmdq_fire_command <global>: (459) bind-key -N "Kill the active pane" x { confirm-before -p "kill-pane #P? (y/n)" kill-pane }
+1787921751.461798 cmdq_fire_command <client-40411>: (2936) new-session -d -s probe1
+1787921751.461870 spawn_pane: [new-session/0x105e4e200], flags=0x10
+1787921751.461889 window_add_pane: @0 at start
+1787921751.461919 spawn_pane: shell=/bin/zsh
+1787921751.461922 spawn_pane: cwd=/scratch/project-a
+1787921752.477431 cmdq_fire_command <client-41441>: (4255) new-window -t probe1
+1787921752.477499 spawn_pane: [new-window/0x105e4f600], flags=0x10
+1787921752.477508 window_add_pane: @1 at start
+1787921752.477540 spawn_pane: shell=/bin/zsh
+1787921752.477543 spawn_pane: cwd=/scratch/project-a
+1787921752.484428 cmdq_fire_command <client-41447>: (4259) kill-session -t probe1
+1787921752.484499 session probe1 destroyed (cmd_kill_session_exec)
+1787921752.484747 window @0 destroyed (0 references)
+1787921752.484798 window @1 destroyed (0 references)
