@@ -467,14 +467,19 @@ function ageOutAgainst(command) {
       `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
       `migrate();\n` +
       `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('ageout', '/tmp/ageout') RETURNING id").get().id;\n` +
-      `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
-         VALUES (?, 'agent:1', 'target', 'agent', '%pane', ?, '/tmp', 'running', 'idle', datetime('now', '-3 hours'))\`)
-        .run(project, ${JSON.stringify(command)});\n` +
+      `const agentId = db.prepare(\`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
+         VALUES (?, 'agent:1', 'target', 'agent', '%pane', ?, '/tmp', 'running', 'idle', datetime('now', '-3 hours')) RETURNING id\`)
+        .get(project, ${JSON.stringify(command)}).id;\n` +
       // A parent older than NOTICE_MAX_AGE (1h), so its child notice ages out on this tick.
       `const parent = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
          VALUES (?, 'agent:1', 'watch', 'delay', '[]', 'agent:1', '%pane', datetime('now', '+1 hours'), datetime('now', '-3 hours')) RETURNING id\`).get(project).id;\n` +
       `const notice = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at, parent_timer_id)
          VALUES (?, 'agent:1', 'notice body', 'delay', '[]', 'agent:1', '%pane', datetime('now', '-1 seconds'), datetime('now', '-3 hours'), ?) RETURNING id\`).get(project, parent).id;\n` +
+      // Finish-shaped, per todo 322: noticeDisposition now only ages a notice holding a
+      // wake_idle_notices claim. This fixture is about the immortal-replacement guard, not about
+      // finish-vs-hold semantics, so it seeds the minimum claim needed to still reach "aged".
+      `db.prepare(\`INSERT INTO wake_idle_notices (timer_id, agent_id, condition, episode, notice_timer_id)
+         VALUES (?, ?, 'idle', 'ep1', ?)\`).run(parent, agentId, notice);\n` +
       `try { await tick({ panes: new Set(['%pane']), windows: new Set() }); } catch {}\n` +
       `const orig = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice);\n` +
       `const replacements = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id > ? AND parent_timer_id IS NULL").get(notice).n;\n` +

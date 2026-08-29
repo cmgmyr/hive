@@ -119,6 +119,11 @@ describe(
       const notice = notices[0];
       assert.equal(notice.owner, agentRow("hold-notify-owner").actor_id, "owned by the actor that set the wake");
       assert.equal(notice.deliver_pane, owner.tmux_target, "delivered to that owner's own pane");
+      assert.equal(
+        notice.parent_timer_id,
+        wakeId,
+        "parent-linked to the wake it reports on, so cancelling that wake cascades to this notice (todo 322)",
+      );
 
       assert.equal(
         notice.deliver_actor,
@@ -272,6 +277,11 @@ describe(
       assert.equal(notices[0].deliver_pane, owner.tmux_target, "delivered to the owner's pane");
       assert.match(notices[0].body, /block-notify-stuck/, "naming the blocked worker");
       assert.match(notices[0].body, /cannot go idle/, "and saying why the wake is not firing");
+      assert.equal(
+        notices[0].parent_timer_id,
+        wakeId,
+        "parent-linked to the wake it reports on, so cancelling that wake cascades to this notice (todo 322)",
+      );
 
       const original = timerRow(wakeId);
       assert.equal(original.fired_at, null, "the watched wake must not have fired");
@@ -315,6 +325,38 @@ describe(
       markWaiting("block-notify-stuck", "2026-08-08 10:06:00");
       await until(async () => noticeCount(wakeId) > 1, 15000);
       assert.equal(noticeCount(wakeId), 2, "a second block is a second condition and must be reported again");
+    });
+
+    it("cancels an already-filed block notice once its wake is cancelled (todo 322)", async () => {
+      const owner = await spawnShowing("block-cancel-owner", replayFixture("ready-idle.txt"));
+      const stuck = await spawnShowing("block-cancel-stuck", replayFixture("folder-trust-dialog.txt"));
+      markWaiting("block-cancel-stuck", "2026-08-10 10:00:00");
+      const wake = await mcp.call("wake_when_idle", {
+        agents: ["block-cancel-stuck"],
+        body: "INTEGRATION block-cancel original body",
+        deliver_to: owner.agent_id,
+        max_wait_seconds: 900,
+      });
+      const wakeId = wake.wake_id;
+      const setBy = timerRow(wakeId).owner;
+      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow("block-cancel-owner").actor_id, wakeId);
+
+      await until(async () => noticeCount(wakeId) > 0, 15000);
+      const notice = noticesAbout(wakeId)[0];
+      assert.equal(notice.parent_timer_id, wakeId, "filed with the parent link this lane adds");
+
+      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(setBy, wakeId);
+      const cancelResult = await mcp.call("wake_cancel", { wake_id: wakeId });
+      assert.equal(cancelResult.cancelled_notices, 1, "wake_cancel's existing cascade covers it once parented");
+      assert.ok(timerRow(notice.id).cancelled_at, "the block notice about a wake that no longer exists is cancelled");
+      assert.equal(timerRow(notice.id).typed_at, null, "and must never have been typed");
+
+      // Clear the dialog and the 'waiting' latch: the standing-watch describe block below scans every
+      // 'waiting' agent project-wide, and a leftover dialogged pane here batches into ITS notices too.
+      repaintPaneAsSameWorker(db, stuck.tmux_target, replayFixture("ready-idle.txt"));
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE name = ?").run(
+        "block-cancel-stuck",
+      );
     });
 
     it("notifies the owner when the blocked worker is on an ordinary tool-permission prompt (todo 392)", async () => {
@@ -506,6 +548,24 @@ describe(
         /will not fire until the dialog is answered/,
         "and specifically it must not claim a standing watch fires",
       );
+      assert.doesNotMatch(
+        filed[0].body,
+        /still watching, still pending/,
+        "must not assert the watch's own liveness, which it cannot know at delivery time (todo 322)",
+      );
+      const observedMatch = filed[0].body.match(
+        /hive last confirmed the dialogs above at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC/,
+      );
+      assert.ok(observedMatch, "reports what hive saw and when instead, letting the reader judge staleness");
+      const asMs = (t) => new Date(`${t.replace(" ", "T")}Z`).getTime();
+      assert.ok(
+        Math.abs(asMs(observedMatch[1]) - asMs(filed[0].created_at)) <= 2000,
+        // storeNow() (when the batch observed the dialogs) and the notice row's own created_at default
+        // are two separate datetime('now') evaluations a moment apart; SQLite's one-second resolution
+        // means an exact-string match can flake across a second boundary - a small tolerance instead.
+        `observed-at (${observedMatch[1]}) must be within 2s of the notice's created_at (${filed[0].created_at})`,
+      );
+      assert.equal(filed[0].parent_timer_id, null, "left unparented on purpose: it may still be true after a cancel");
 
       assert.ok(timerRow(watchId).max_wait_at, "a standing watch does have a max_wait_at - it is the lifetime");
       assert.match(filed[0].body, /keys/, "the way out is agent_send with keys, as on the one-shot half");

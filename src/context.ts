@@ -106,12 +106,13 @@ function bestPrefixMatch(projects: Project[], dir: string): Project | null {
 
 export function gitPrimaryRoot(dir: string): string | null {
   try {
+    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
     const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
       cwd: dir,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
-
       timeout: 2000,
+      env,
     }).trim();
     const resolvedCommonDir = resolve(dir, commonDir);
 

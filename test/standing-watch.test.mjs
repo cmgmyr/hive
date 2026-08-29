@@ -703,10 +703,158 @@ describe("the parent link", () => {
     assert.ok(result.replacement !== undefined, "the age-out must still be reported");
     assert.match(
       result.replacement.body,
-      /is NOT watching any more; set a new one if the crew is still working/,
+      /Standing watch #\d+ is no longer active; set a new one if you still need it/,
       "hive telling a lead it need not re-arm, when it must, is how a lane sits finished and unnoticed",
     );
-    assert.doesNotMatch(result.replacement.body, /unaffected and still watching/);
+    assert.doesNotMatch(result.replacement.body, /unaffected and still active/);
+  });
+
+  it("never ages a notice ABOUT a wake (modal-hold, unsubmitted-input, one-shot block): only a FINISH-shaped notice (one holding a wake_idle_notices claim) can go stale in the direction NOTICE_MAX_AGE guards against (todo 322 decouples the cascade from the age-out - comment 702's own body warns that a one-hour bound would cancel exactly the notice about the worker stuck longest)", () => {
+    const result = fixture(
+      "no-age-out-for-a-notice-about-a-wake",
+      `
+      const parentWake = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
+            held_reason, created_at)
+          VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
+            datetime('now'), 'pane is awaiting a modal choice (folder-trust or /model picker)', datetime('now', '-90 seconds'))
+          RETURNING id\`,
+      ).get(project).id;
+      const holdNotice = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+          VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-6 hours'))
+          RETURNING id\`,
+      ).get(project, parentWake).id;
+      await tick(snapshot);
+      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(holdNotice);
+      const strays = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id > ?").get(holdNotice).n;
+      ${out("{ noticeAfter, strays }")}
+      `,
+    );
+    assert.equal(result.noticeAfter.cancelled_at, null, "a notice with no wake_idle_notices claim must never age out, however old it sits");
+    assert.match(result.noticeAfter.held_reason ?? "", /lead's pane is not live/, "it reached delivery and held, exactly as before todo 322");
+    assert.equal(result.strays, 0, "and no age-out replacement is filed for it - there is nothing to report that the notice itself did not already say");
+  });
+
+  it("still orphans a notice about a wake once that wake is cancelled, even though it never ages (the cascade and the age-out are independent, todo 322)", () => {
+    const result = fixture(
+      "orphan-without-age-out",
+      `
+      const parentWake = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
+            held_reason, created_at)
+          VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
+            datetime('now'), 'pane is awaiting a modal choice (folder-trust or /model picker)', datetime('now', '-90 seconds'))
+          RETURNING id\`,
+      ).get(project).id;
+      const holdNotice = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+          VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
+          RETURNING id\`,
+      ).get(project, parentWake).id;
+      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(parentWake);
+      await tick(snapshot);
+      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM timers WHERE id = ?").get(holdNotice);
+      ${out("{ noticeAfter }")}
+      `,
+    );
+    assert.ok(result.noticeAfter.cancelled_at !== null, "a fresh notice about a wake that no longer exists is still cancelled");
+    assert.equal(result.noticeAfter.typed_at, null);
+  });
+
+  it("also orphans a notice about a wake once that ONE-SHOT wake fired for good, not only once it is cancelled - a fired wake falsifies a hold notice exactly as a cancel does", () => {
+    const result = fixture(
+      "orphan-on-fired-one-shot-parent",
+      `
+      const parentWake = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, created_at)
+          VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '-1 seconds'),
+            datetime('now'), datetime('now', '-90 seconds')) RETURNING id\`,
+      ).get(project).id;
+      const holdNotice = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+          VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
+          RETURNING id\`,
+      ).get(project, parentWake).id;
+      await tick(snapshot);
+      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM timers WHERE id = ?").get(holdNotice);
+      ${out("{ noticeAfter }")}
+      `,
+    );
+    assert.ok(
+      result.noticeAfter.cancelled_at !== null,
+      "a fresh notice about a one-shot wake that already fired has nothing left to report - it must be orphaned even though the parent was never cancelled",
+    );
+    assert.equal(result.noticeAfter.typed_at, null);
+  });
+
+  it("does NOT orphan a notice about a REPEATING wake just because it has fired before - fired_at is not terminal for a repeat, it only means 'fired at least once'", () => {
+    const result = fixture(
+      "no-orphan-on-fired-repeating-parent",
+      `
+      const parentWake = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, repeat_every_ms, created_at)
+          VALUES (?, 'lead:1', 'INTEGRATION repeating reminder', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
+            datetime('now', '-30 seconds'), 60000, datetime('now', '-90 seconds')) RETURNING id\`,
+      ).get(project).id;
+      const holdNotice = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+          VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
+          RETURNING id\`,
+      ).get(project, parentWake).id;
+      await tick(snapshot);
+      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(holdNotice);
+      ${out("{ noticeAfter }")}
+      `,
+    );
+    assert.equal(
+      result.noticeAfter.cancelled_at,
+      null,
+      "a repeating parent's earlier fire must not orphan a fresh notice about its CURRENT cycle - only cancelling the repeat ends it",
+    );
+    assert.match(result.noticeAfter.held_reason ?? "", /lead's pane is not live/, "it reached delivery and held, exactly like any other still-pending parent");
+  });
+
+  it("watchStillWatchingClause says WAKE, not STANDING WATCH, for a non-standing parent (unreachable via any current caller now that only finish-shaped notices reach it, but the function's own logic is still worth pinning directly)", () => {
+    const result = fixture(
+      "watch-still-watching-clause-unit",
+      `
+      const { watchStillWatchingClause } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});
+      const ordinaryWake = db.prepare(
+        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+          VALUES (?, 'lead:1', 'ordinary wake', 'delay', 'lead:1', '%lead', datetime('now', '+1 hours'), datetime('now'))
+          RETURNING id\`,
+      ).get(project).id;
+      const standingWatchId = addStandingWatch();
+      const stillWatching = watchStillWatchingClause({ parent_timer_id: ordinaryWake });
+      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(standingWatchId);
+      const noLongerWatching = watchStillWatchingClause({ parent_timer_id: standingWatchId });
+      ${out("{ stillWatching, noLongerWatching }")}
+      `,
+    );
+    assert.match(result.stillWatching, /^Wake #\d+ is unaffected and still active\.$/, "an ordinary wake is a Wake, not a Standing watch");
+    assert.match(result.noLongerWatching, /^Standing watch #\d+ is no longer active; set a new one if you still need it\.$/);
+  });
+
+  it("carries the staleness trailer on a late-delivered hold notice too, not only a standing watch's finish notice - todo 322 widened WHO carries a parent, and noticeStalenessNote's gate (parent_timer_id !== null) widened with it", () => {
+    const result = fixture(
+      "staleness-trailer-on-hold-notice",
+      `
+      const { noticeStalenessNote } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});
+      const staleHoldNotice = {
+        id: 999999,
+        parent_timer_id: 1,
+        created_at: db.prepare("SELECT datetime('now', '-6 minutes') AS t").get().t,
+      };
+      const trailer = noticeStalenessNote(staleHoldNotice);
+      ${out("{ trailer }")}
+      `,
+    );
+    assert.match(
+      result.trailer,
+      /reflects what hive knew at/,
+      "a hold notice (no wake_idle_notices claim of its own) held past the conversation-hold TTL must still print the trailer, exactly as a standing watch's finish notice does",
+    );
   });
 
   it("stays silent when the watch itself was cancelled, which is a lead asking for no more of them", () => {
@@ -795,13 +943,13 @@ describe("the parent link", () => {
     );
   });
 
-  it("leaves a notice with no parent alone, so todo 314's own notices are untouched", () => {
+  it("leaves a notice with no parent alone, so a standing watch's own block notice is untouched (todo 322 left it unparented on purpose)", () => {
     const result = fixture(
       "parentless-notice",
       `
       const parentless = db.prepare(
         \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
-          VALUES (?, 'lead:1', 'a todo 314 notice', 'delay', 'lead:1', '%lead', datetime('now'), datetime('now', '-6 hours'))
+          VALUES (?, 'lead:1', 'a standing watch block notice', 'delay', 'lead:1', '%lead', datetime('now'), datetime('now', '-6 hours'))
           RETURNING id\`,
       ).get(project).id;
       await tick(snapshot);

@@ -11,7 +11,7 @@ clearHiveEnv();
 
 const unitRoot = realpathSync(mkdtempSync(join(tmpdir(), "hive-worktree-notice-unit-")));
 process.env.HIVE_DATA_DIR = join(unitRoot, "data");
-const { isLinkedWorktree, linkedWorktreePrimaryRoot } = await import("../dist/context.js");
+const { isLinkedWorktree, linkedWorktreePrimaryRoot, gitPrimaryRoot } = await import("../dist/context.js");
 const { worktreeInstallNotice } = await import("../dist/tools/agents.js");
 const { migrate } = await import("../dist/db.js");
 migrate();
@@ -86,6 +86,53 @@ describe("isLinkedWorktree: the predicate the backstop keys on", () => {
       delete process.env.GIT_WORK_TREE;
       assert.equal(isLinkedWorktree(siblingWorktree), true);
     });
+  });
+});
+
+describe("gitPrimaryRoot: is unaffected by ambient GIT_DIR / GIT_COMMON_DIR / GIT_WORK_TREE (todo 410)", () => {
+  const primary = mkdtempSync(join(unitRoot, "root-primary-"));
+  gitInit(primary);
+  const otherRepo = mkdtempSync(join(unitRoot, "root-other-repo-"));
+  gitInit(otherRepo);
+
+  const savedEnv = {
+    GIT_DIR: process.env.GIT_DIR,
+    GIT_COMMON_DIR: process.env.GIT_COMMON_DIR,
+    GIT_WORK_TREE: process.env.GIT_WORK_TREE,
+  };
+  after(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it("resolves its own root with no ambient git-selection variables set, as a control", () => {
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_COMMON_DIR;
+    delete process.env.GIT_WORK_TREE;
+    assert.equal(gitPrimaryRoot(primary), realpathSync(primary));
+  });
+
+  it("does not misreport a DIFFERENT repo's root when GIT_DIR names that other repo's .git (the defect: gitPrimaryRoot passed ambient env straight through)", () => {
+    process.env.GIT_DIR = join(otherRepo, ".git");
+    delete process.env.GIT_COMMON_DIR;
+    delete process.env.GIT_WORK_TREE;
+    assert.equal(gitPrimaryRoot(primary), realpathSync(primary));
+  });
+
+  it("does not misreport a DIFFERENT repo's root when GIT_COMMON_DIR names that other repo's .git", () => {
+    process.env.GIT_COMMON_DIR = join(otherRepo, ".git");
+    delete process.env.GIT_DIR;
+    delete process.env.GIT_WORK_TREE;
+    assert.equal(gitPrimaryRoot(primary), realpathSync(primary));
+  });
+
+  it("does not misreport a DIFFERENT repo's root when GIT_DIR and GIT_WORK_TREE both name that other repo (GIT_WORK_TREE only has an effect when GIT_DIR is also set, so this is the shape where it is not a no-op)", () => {
+    process.env.GIT_DIR = join(otherRepo, ".git");
+    process.env.GIT_WORK_TREE = otherRepo;
+    delete process.env.GIT_COMMON_DIR;
+    assert.equal(gitPrimaryRoot(primary), realpathSync(primary));
   });
 });
 

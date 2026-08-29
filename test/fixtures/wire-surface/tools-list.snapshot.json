@@ -2061,7 +2061,7 @@
     }
   },
   "wake_cancel": {
-    "description": "Cancel a pending wake-up you own, or - if you are a running lead - any pending wake-up in this project. Cancelling a standing watch also cancels the FINISH notices it has already filed but not yet delivered. It does NOT cancel a block notice (a worker stopped on a dialog): those carry no parent link, so one already filed still delivers, and it may still be true - the worker is probably still on that dialog - but its sentence about the watch itself will not be.",
+    "description": "Cancel a pending wake-up you own, or - if you are a running lead - any pending wake-up in this project. Cancelling any wake also cancels the hold notices already filed about IT (modal-hold, unsubmitted-input, and one-shot block), since a notice about a wake that no longer exists has nothing left to say; unlike a finish notice these never expire on their own, since the thing they report may well still be true an hour later. Cancelling a standing watch also cancels the FINISH notices it has already filed but not yet delivered. It does NOT cancel a standing watch's own per-worker block notice (a crew member stopped on a dialog): that carries no parent link, so one already filed still delivers, and it may still be true - the worker is probably still on that dialog - but it no longer claims anything about the watch's own liveness, deliberately.",
     "execution": {
       "taskSupport": "forbidden"
     },

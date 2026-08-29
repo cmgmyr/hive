@@ -84,6 +84,12 @@ describe(
         );
         assert.match(notice.body, /unsub-notify-stuck/, "it must name the pane holding the wake");
         assert.match(notice.body, /unsubmitted/, "and say what is holding it");
+        assert.equal(
+          notice.parent_timer_id,
+          wakeId,
+          "parent-linked to the wake it reports on (todo 322's deliberate widening): cancelling that " +
+            "wake cascades to this notice, but it never ages out on its own - it is not finish-shaped",
+        );
 
         const heldAtFirst = timerRow(wakeId).held_at;
         assert.ok(heldAtFirst, "the original must be recorded as held");

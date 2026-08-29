@@ -775,7 +775,7 @@ function blockNoticeBody(timer: TimerRow, name: string): string {
   );
 }
 
-function standingBlockNoticeBody(timer: TimerRow, names: string[]): string {
+function standingBlockNoticeBody(timer: TimerRow, names: string[], observedAt: string): string {
   const lines = [
     `${names.length} crew member(s) in this project are stopped on a dialog in their pane, waiting for a ` +
       "human to answer it, so they cannot finish:",
@@ -793,8 +793,9 @@ function standingBlockNoticeBody(timer: TimerRow, names: string[]): string {
   lines.push(
     `Standing watch #${timer.id} is watching this project's crew and reports each finish as it happens, so ` +
       "it will report nothing about the workers above until their dialogs are answered (or a worker goes " +
-      "away, which it reports as such). The watch is " +
-      "unaffected - still watching, still pending - and nothing has been typed into any dialog.",
+      `away, which it reports as such). hive last confirmed the dialogs above at ${observedAt} UTC; ` +
+      "nothing has been typed into any dialog, and this notice does not say whether the watch itself is " +
+      "still running by the time you read it.",
   );
   return lines.join("\n");
 }
@@ -905,7 +906,7 @@ const claimModalHoldWithNotice = db.transaction(
     ) {
       return false;
     }
-    insertNotice(timer, timer.owner, pane, body, null);
+    insertNotice(timer, timer.owner, pane, body, timer.id);
     return true;
   },
 );
@@ -948,7 +949,10 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
       ).changes === 1;
     if (!claimed) return false;
 
-    insertNotice(timer, timer.owner, pane, body, null);
+    // Deliberate widening beyond todo 314's two call sites (todo 322): a notice about a cancelled
+    // wake has nothing left to say, and with noticeDisposition's finish-shaped exemption above this
+    // link is pure cascade - it can never be aged out for sitting undelivered.
+    insertNotice(timer, timer.owner, pane, body, timer.id);
     return true;
   },
 );
@@ -1038,7 +1042,7 @@ const claimBlockNoticeWithNotice = db.transaction(
   ): boolean => {
     if (!stillPending(timer.id)) return false;
     if (!claimBlockNotice(timer.id, agentId, blockedSince)) return false;
-    insertNotice(timer, tell.actor, tell.pane, body, null);
+    insertNotice(timer, tell.actor, tell.pane, body, timer.id);
     return true;
   },
 );
@@ -1048,6 +1052,7 @@ const claimBlockBatch = db.transaction(
     timer: TimerRow,
     tell: { actor: string; pane: string },
     blocked: { id: number; name: string; blockedSince: string }[],
+    observedAt: string,
   ): boolean => {
     if (!stillPending(timer.id)) return false;
 
@@ -1060,6 +1065,7 @@ const claimBlockBatch = db.transaction(
       standingBlockNoticeBody(
         timer,
         won.map((a) => a.name),
+        observedAt,
       ),
       null,
     );
@@ -1098,7 +1104,7 @@ function noteBlockedWatched(timer: TimerRow, snapshot: AliveSnapshot, choices: C
         blockNoticeBody(timer, agent.name),
       );
     }
-    if (batched.length > 0) claimBlockBatch.immediate(timer, tell, batched);
+    if (batched.length > 0) claimBlockBatch.immediate(timer, tell, batched, storeNow());
   } catch {
 
   }
@@ -1729,14 +1735,28 @@ type NoticeDisposition = "deliver" | "aged" | "orphaned";
 function noticeDisposition(timer: TimerRow): NoticeDisposition {
   if (timer.parent_timer_id === null) return "deliver";
   try {
-    const parent = stmt(
-      `SELECT (p.cancelled_at IS NULL) AS live, (? >= datetime('now', ?)) AS fresh
+    const check = stmt(
+      `SELECT (p.cancelled_at IS NULL) AS live,
+              (p.fired_at IS NOT NULL AND p.repeat_every_ms IS NULL) AS parent_finished,
+              (? >= datetime('now', ?)) AS fresh,
+              EXISTS (SELECT 1 FROM wake_idle_notices n WHERE n.notice_timer_id = ?) AS finish_shaped
          FROM timers p WHERE p.id = ?`,
-    ).get(timer.created_at, NOTICE_MAX_AGE, timer.parent_timer_id) as
-      | { live: number; fresh: number }
+    ).get(timer.created_at, NOTICE_MAX_AGE, timer.id, timer.parent_timer_id) as
+      | { live: number; parent_finished: number; fresh: number; finish_shaped: number }
       | undefined;
-    if (parent === undefined || parent.live !== 1) return "orphaned";
-    return parent.fresh === 1 ? "deliver" : "aged";
+    if (check === undefined || check.live !== 1) return "orphaned";
+    if (check.finish_shaped !== 1) {
+      // A notice ABOUT a wake (modal-hold, unsubmitted input, a one-shot block) dies with that wake
+      // in EVERY terminal state, not only cancellation: a one-shot parent that FIRED has nothing left
+      // for the notice to report on either. A REPEATING parent's fired_at is not terminal - it only
+      // means "fired at least once" - so only cancellation (above) ends one of those. Otherwise the
+      // notice never ages on its own, however long the wake genuinely stays pending (todo 322).
+      return check.parent_finished === 1 ? "orphaned" : "deliver";
+    }
+    // Finish-shaped (holds a wake_idle_notices claim): unchanged from before todo 322's fix round. A
+    // standing watch that expired via max_wait_at is FIRED, not cancelled, and its finish notice must
+    // still age out here with the correct wording, not be silently orphaned.
+    return check.fresh === 1 ? "deliver" : "aged";
   } catch {
     return "deliver";
   }
@@ -1773,16 +1793,20 @@ function agedOutBody(timer: TimerRow): string {
 // A watch that hit max_wait_at is FIRED, not cancelled, so it reaches here reading perfectly healthy.
 // Telling a lead it need not re-arm, in hive's own generated prose, when it must, is how a lane ends
 // up sitting finished and unnoticed - which this project has paid for twice.
-function watchStillWatchingClause(timer: TimerRow): string {
+export function watchStillWatchingClause(timer: TimerRow): string {
   const parent = stmt(
     `SELECT (cancelled_at IS NULL AND fired_at IS NULL
-             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching
+             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching,
+            (watch_scope IS NOT NULL) AS standing
        FROM timers WHERE id = ?`,
-  ).get(timer.parent_timer_id) as { watching: number } | undefined;
+  ).get(timer.parent_timer_id) as { watching: number; standing: number } | undefined;
+  // The parent is not always a standing watch: a modal-hold or one-shot block notice's parent is
+  // the ORDINARY wake it is about (todo 322), which has no crew to re-arm a watch for.
+  const label =
+    parent?.standing === 1 ? `Standing watch #${timer.parent_timer_id}` : `Wake #${timer.parent_timer_id}`;
   return parent !== undefined && parent.watching === 1
-    ? `Standing watch #${timer.parent_timer_id} is unaffected and still watching.`
-    : `Standing watch #${timer.parent_timer_id} is NOT watching any more; set a new one if the crew is ` +
-      "still working.";
+    ? `${label} is unaffected and still active.`
+    : `${label} is no longer active; set a new one if you still need it.`;
 }
 
 // Cancel and replacement are one transaction: if the replacement cannot be written the cancel rolls
@@ -2141,7 +2165,7 @@ function firstEpisodeFiledAt(noticeId: number): string | null {
 // these delays: below it a notice cannot have gone stale, so the note is silent; and a content refresh
 // less than that after the hold began is not a fact a reader can act on separately, so the two clauses
 // collapse to one. At a one-second hold the pair printed the same timestamp and the same age twice.
-function noticeStalenessNote(timer: TimerRow): string {
+export function noticeStalenessNote(timer: TimerRow): string {
   if (timer.parent_timer_id === null) return "";
   try {
     const heldSince = firstEpisodeFiledAt(timer.id) ?? timer.created_at;
