@@ -969,15 +969,15 @@ function writeProfileKey(ymlPath: string, profile: string): void {
 }
 
 async function cmdInit(argv: string[]): Promise<void> {
-  const noProfile = argv.includes("--no-profile");
-  const profileFlagIndex = argv.indexOf("--profile");
+  const parsed = parseArgs(argv, { flags: ["--no-profile"], valued: ["--profile"] });
+  rejectUnknownFlags("init", parsed, "--profile <name> and --no-profile");
+  requireFlagValues("init", parsed);
 
-  const path = argv.find(
-    (a, i) => !a.startsWith("--") && !(profileFlagIndex >= 0 && i === profileFlagIndex + 1),
-  );
+  const noProfile = parsed.flags.has("--no-profile");
+  const path = parsed.positional[0];
   let chosen: string | null = noProfile ? NO_PROFILE : null;
-  if (profileFlagIndex >= 0) {
-    const value = argv[profileFlagIndex + 1];
+  if (parsed.values.has("--profile")) {
+    const value = parsed.values.get("--profile");
     if (!value || value.startsWith("--")) {
       console.log("Usage: hive init [path] [--profile <name> | --no-profile]");
       process.exit(1);
@@ -1150,13 +1150,13 @@ function profileDriftText(f: ProfileFileStatus): { rewrite: boolean; text: strin
 
 function cmdProfile(argv: string[]): void {
   const [sub, ...rest] = argv;
-  const positional = rest.filter((a) => !a.startsWith("--"));
-  const name = positional[0];
 
   try {
     switch (sub) {
       case undefined:
       case "list": {
+        const parsed = parseArgs(rest, {});
+        rejectUnknownFlags("profile list", parsed, "none");
         const names = profileNames();
         if (names.length === 0) {
           console.log("No profiles found. hive ships orchestration and simple; check your install.");
@@ -1179,12 +1179,15 @@ function cmdProfile(argv: string[]): void {
         return;
       }
       case "path": {
+        const parsed = parseArgs(rest, {});
+        rejectUnknownFlags("profile path", parsed, "none");
+        const name = parsed.positional[0];
         if (!name) profileUsage();
         if (!profileExists(name)) {
           console.log(`No profile named "${name}". List them with: hive profile list`);
           process.exit(1);
         }
-        const only = asProfileFile(positional[1]);
+        const only = asProfileFile(parsed.positional[1]);
         for (const file of only ? [only] : PROFILE_FILES) {
           const resolved = resolveProfileFile(name, file);
           if (resolved) console.log(resolved.path);
@@ -1192,29 +1195,34 @@ function cmdProfile(argv: string[]): void {
         return;
       }
       case "fork": {
+        const parsed = parseArgs(rest, {});
+        rejectUnknownFlags("profile fork", parsed, "none");
+        const name = parsed.positional[0];
         if (!name) profileUsage();
-        const { copied, skipped } = forkProfile(name, asProfileFile(positional[1]));
+        const { copied, skipped } = forkProfile(name, asProfileFile(parsed.positional[1]));
         for (const file of copied) console.log(`forked ${file} -> ${join(userProfilesDir(), name, file)}`);
         for (const file of skipped) console.log(`kept your ${file} (already forked)`);
         if (copied.length === 0 && skipped.length === 0) console.log(`Profile "${name}" ships no files to fork.`);
         return;
       }
       case "create": {
+        const parsed = parseArgs(rest, { valued: ["--from"] });
+        rejectUnknownFlags("profile create", parsed, "--from <other>");
+        requireFlagValues("profile create", parsed);
+        const name = parsed.positional[0];
         if (!name) profileUsage();
-        const fromIndex = rest.indexOf("--from");
-        const from = fromIndex >= 0 ? rest[fromIndex + 1] : undefined;
+        const from = parsed.values.get("--from");
         const dir = createProfile(name, from);
         console.log(`Created ${dir}`);
         console.log(`Use it with "profile: ${name}" in a project's hive.yml.`);
         return;
       }
       case "read": {
-        const profileFlagIndex = rest.indexOf("--profile");
-        const override = profileFlagIndex >= 0 ? rest[profileFlagIndex + 1] : undefined;
-        const filePositional = rest.filter(
-          (a, i) => !a.startsWith("--") && !(profileFlagIndex >= 0 && i === profileFlagIndex + 1),
-        );
-        const file = filePositional[0];
+        const parsed = parseArgs(rest, { valued: ["--profile"] });
+        rejectUnknownFlags("profile read", parsed, "--profile <name>");
+        requireFlagValues("profile read", parsed);
+        const override = parsed.values.get("--profile");
+        const file = parsed.positional[0];
         if (!file) profileUsage();
 
         let profileName: string;
@@ -1329,7 +1337,12 @@ function cmdAttach(argv: string[]): void {
   attach(session, project, window);
 }
 
-async function cmdStart(name?: string, path?: string): Promise<void> {
+async function cmdStart(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("start", parsed, "none");
+
+  const name = parsed.positional[0];
+  const path = parsed.positional[1];
   if (!name) {
     console.log("Usage: hive start <process> [path]");
     process.exit(1);
@@ -1474,16 +1487,18 @@ const isReviewFindingTag = (tag: string): boolean =>
   REVIEW_FINDING_TAGS.some((base) => tag === base || tag.startsWith(`${base}-`));
 
 function cmdSetup(argv: string[]): void {
-  const dirFlag = argv.indexOf("--dir");
-  const dir = dirFlag >= 0 ? resolve(argv[dirFlag + 1] ?? "") : dispatcherDir();
+  const parsed = parseArgs(argv, { flags: ["--force"], valued: ["--dir", "--attach", "--auto-attach"] });
+  rejectUnknownFlags("setup", parsed, "--dir, --attach, --auto-attach, --force");
+  requireFlagValues("setup", parsed);
+
+  const dir = parsed.values.has("--dir") ? resolve(parsed.values.get("--dir") ?? "") : dispatcherDir();
   const file = join(dir, "hive");
   const node = process.execPath;
   const cli = cliPath();
 
-  const attachRequested = argv.includes("--attach");
-  const attachValue = flagValue(argv, "--attach");
+  const attachValue = parsed.values.get("--attach");
   let attachArg: AttachMode | undefined;
-  if (attachRequested) {
+  if (parsed.values.has("--attach")) {
     if (!isAttachMode(attachValue)) {
       console.log(`--attach must be one of: ${ATTACH_MODES.join(", ")} (got ${attachValue ?? "nothing"})`);
       process.exit(1);
@@ -1491,10 +1506,9 @@ function cmdSetup(argv: string[]): void {
     attachArg = attachValue;
   }
 
-  const autoAttachRequested = argv.includes("--auto-attach");
-  const autoAttachValue = flagValue(argv, "--auto-attach");
+  const autoAttachValue = parsed.values.get("--auto-attach");
   let autoAttachArg: AutoAttach | undefined;
-  if (autoAttachRequested) {
+  if (parsed.values.has("--auto-attach")) {
     if (!isAutoAttach(autoAttachValue)) {
       console.log(
         `--auto-attach must be one of: ${AUTO_ATTACH_MODES.join(", ")} (got ${autoAttachValue ?? "nothing"})`,
@@ -1505,7 +1519,7 @@ function cmdSetup(argv: string[]): void {
   }
 
   const existing = readDispatcher(file);
-  if (existing && !existing.mine && !argv.includes("--force")) {
+  if (existing && !existing.mine && !parsed.flags.has("--force")) {
 
     console.log(`${file} exists and was not written by hive setup; refusing to overwrite it.`);
     console.log("Move it aside, pick another directory with --dir, or overwrite it with --force.");
@@ -2744,9 +2758,12 @@ function activeHiveUsage(): string[] {
 }
 
 async function cmdRestore(argv: string[]): Promise<void> {
-  const yes = argv.includes("--yes") || argv.includes("-y");
-  const force = argv.includes("--force");
-  const name = argv.find((a) => !a.startsWith("-"));
+  const parsed = parseArgs(argv, { flags: ["--yes", "-y", "--force"] });
+  rejectUnknownFlags("restore", parsed, "--yes/-y and --force");
+
+  const yes = parsed.flags.has("--yes") || parsed.flags.has("-y");
+  const force = parsed.flags.has("--force");
+  const name = parsed.positional[0];
   if (!name) {
     console.log("Usage: hive restore <name> [--yes] [--force]");
     console.log("List available snapshots with: hive backups");
@@ -2813,6 +2830,66 @@ async function cmdRestore(argv: string[]): Promise<void> {
 function flagValue(argv: string[], flag: string): string | undefined {
   const i = argv.indexOf(flag);
   return i !== -1 ? argv[i + 1] : undefined;
+}
+
+interface ParsedArgs {
+  positional: string[];
+  flags: Set<string>;
+  values: Map<string, string | undefined>;
+  unknown: string[];
+  missingValue: { flag: string; got: string }[];
+}
+
+function parseArgs(argv: string[], spec: { flags?: string[]; valued?: string[] }): ParsedArgs {
+  const knownFlags = new Set(spec.flags ?? []);
+  const knownValued = new Set(spec.valued ?? []);
+  const flags = new Set<string>();
+  const values = new Map<string, string | undefined>();
+  const positional: string[] = [];
+  const unknown: string[] = [];
+  const missingValue: { flag: string; got: string }[] = [];
+  const consumedAsValue = new Set<number>();
+  let endOfFlags = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    if (consumedAsValue.has(i)) continue;
+    const a = argv[i];
+    if (endOfFlags) {
+      positional.push(a);
+    } else if (a === "--") {
+      endOfFlags = true;
+    } else if (knownValued.has(a)) {
+      const next = argv[i + 1];
+      const nextIsFlagOrSeparator = next === "--" || knownFlags.has(next as string) || knownValued.has(next as string);
+      if (nextIsFlagOrSeparator) {
+        if (!values.has(a)) missingValue.push({ flag: a, got: next as string });
+      } else {
+        if (!values.has(a)) values.set(a, next);
+        consumedAsValue.add(i + 1);
+      }
+    } else if (knownFlags.has(a)) {
+      flags.add(a);
+    } else if (a.startsWith("-")) {
+      unknown.push(a);
+    } else {
+      positional.push(a);
+    }
+  }
+
+  return { positional, flags, values, unknown, missingValue };
+}
+
+function rejectUnknownFlags(command: string, parsed: ParsedArgs, flagsText: string): void {
+  if (parsed.unknown.length === 0) return;
+  console.error(`hive ${command}: unknown argument "${parsed.unknown[0]}". Flags are ${flagsText}.`);
+  process.exit(1);
+}
+
+function requireFlagValues(command: string, parsed: ParsedArgs): void {
+  if (parsed.missingValue.length === 0) return;
+  const { flag, got } = parsed.missingValue[0];
+  console.error(`hive ${command}: ${flag} requires a value (got ${got})`);
+  process.exit(1);
 }
 
 function cmdTodos(argv: string[]): void {
@@ -2941,8 +3018,10 @@ function cmdPads(): void {
 }
 
 function cmdPad(argv: string[]): void {
-  const positional = argv.filter((a) => !a.startsWith("--"));
-  const name = positional[0];
+  const parsed = parseArgs(argv, { flags: ["--edit", "--save"] });
+  rejectUnknownFlags("pad", parsed, "--edit and --save");
+
+  const name = parsed.positional[0];
   if (!name) {
     console.log("Usage: hive pad <name> [--edit | --save [file]]  (run inside the project)");
     process.exit(1);
@@ -2954,7 +3033,7 @@ function cmdPad(argv: string[]): void {
     process.exit(1);
   }
 
-  if (argv.includes("--edit")) {
+  if (parsed.flags.has("--edit")) {
     const existing = findPadExports(project.id, name);
     if (existing.length > 0) {
       console.log(`An unsaved export already exists:\n  ${existing.join("\n  ")}`);
@@ -2982,8 +3061,8 @@ function cmdPad(argv: string[]): void {
     return;
   }
 
-  if (argv.includes("--save")) {
-    let file = positional[1];
+  if (parsed.flags.has("--save")) {
+    let file = parsed.positional[1];
     if (!file) {
       const matches = findPadExports(project.id, name);
       if (matches.length === 0) {
@@ -3061,7 +3140,7 @@ try {
       cmdAttach(rest);
       break;
     case "start":
-      await cmdStart(rest[0], rest[1]);
+      await cmdStart(rest);
       break;
     case "status":
       cmdStatus();
