@@ -33,7 +33,7 @@ ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start k
 hive doctor          # verify: node, ABI, tmux, claude, database, hooks all green
 ```
 
-`hive setup` writes a dispatcher to `~/.local/bin/hive`. Put that ahead of any version manager's shims in your shell profile:
+`hive setup` writes a dispatcher to `~/.local/bin/hive`, and refuses to point it at a build inside a linked git worktree, since worktrees are disposable and the shim breaks the moment its target is torn down (`--force` overrides). Put that ahead of any version manager's shims in your shell profile:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"     # below the version manager's block in the file

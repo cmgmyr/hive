@@ -13,7 +13,7 @@ describe("hive setup --attach", () => {
   it("leaves the stored value alone and echoes the default when the flag is absent", async () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
-    const result = await runCli(["setup", "--dir", join(dirs.tmp, "bin")], opts);
+    const result = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--force"], opts);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /attach mode {2}auto/);
     assert.throws(() => readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
@@ -22,7 +22,7 @@ describe("hive setup --attach", () => {
   it("writes and echoes the requested mode", async () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
-    const result = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw"], opts);
+    const result = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw", "--force"], opts);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /attach mode {2}raw/);
     const block = [
@@ -48,8 +48,8 @@ describe("hive setup --attach", () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const bin = join(dirs.tmp, "bin");
-    await runCli(["setup", "--dir", bin, "--attach", "control"], opts);
-    const bare = await runCli(["setup", "--dir", bin], opts);
+    await runCli(["setup", "--dir", bin, "--attach", "control", "--force"], opts);
+    const bare = await runCli(["setup", "--dir", bin, "--force"], opts);
     assert.equal(bare.code, 0, bare.stderr);
     assert.match(bare.stdout, /attach mode {2}control/);
     const config = JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
@@ -62,10 +62,10 @@ describe("hive setup --auto-attach", () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const bin = join(dirs.tmp, "bin");
-    const setup = await runCli(["setup", "--dir", bin, "--auto-attach", "off"], opts);
+    const setup = await runCli(["setup", "--dir", bin, "--auto-attach", "off", "--force"], opts);
     assert.equal(setup.code, 0, setup.stderr);
     assert.match(setup.stdout, /auto-attach {2}off/);
-    const bare = await runCli(["setup", "--dir", bin], opts);
+    const bare = await runCli(["setup", "--dir", bin, "--force"], opts);
     assert.match(bare.stdout, /auto-attach {2}off/);
     assert.equal(JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8")).autoAttach, "off");
   });
@@ -89,7 +89,7 @@ describe("hive doctor's attach mode line", () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     await runCli(["init"], opts);
-    await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach", "on"], opts);
+    await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach", "on", "--force"], opts);
 
     const configured = await runCli(["doctor"], { ...opts, env: { HIVE_AUTO_ATTACH: "not-a-mode" } });
     assert.match(configured.stdout, /auto-attach: on \(set with `hive setup --auto-attach`\)/);
@@ -113,7 +113,7 @@ describe("hive doctor's attach mode line", () => {
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
-    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "control"], opts);
+    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "control", "--force"], opts);
     assert.equal(setup.code, 0, setup.stderr);
     const doctor = await runCli(["doctor"], opts);
     assert.match(doctor.stdout, /attach mode: control \(set with `hive setup --attach`\)/);
@@ -126,7 +126,7 @@ describe("hive doctor's attach mode line", () => {
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
-    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw"], opts);
+    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw", "--force"], opts);
     assert.equal(setup.code, 0, setup.stderr);
     execFileSync("tmux", ["new-session", "-d", "-s", "hive-doctor-raw-options", "sleep 600"], { stdio: "ignore" });
     execFileSync("tmux", ["set-option", "-g", "allow-passthrough", "off"]);
@@ -149,7 +149,7 @@ describe("hive doctor's attach mode line", () => {
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
-    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw"], opts);
+    const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "raw", "--force"], opts);
     assert.equal(setup.code, 0, setup.stderr);
 
     const doctor = await runCli(["doctor"], opts);

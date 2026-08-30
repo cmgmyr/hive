@@ -40,6 +40,7 @@ import {
   dispatcherScript,
   durabilityLines,
   firstHiveOnPath,
+  linkedWorktreePin,
   pathAdvice,
   readDispatcher,
 } from "./dispatcher.js";
@@ -1526,6 +1527,20 @@ function cmdSetup(argv: string[]): void {
     process.exit(1);
   }
 
+  const worktreePin = linkedWorktreePin(cli);
+  if (worktreePin.linked && !parsed.flags.has("--force")) {
+    const repairCli = worktreePin.durableRoot
+      ? join(worktreePin.durableRoot, "dist", "cli.js")
+      : "<durable checkout>/dist/cli.js";
+    console.log(`${cli} is inside a linked git worktree; refusing to pin \`hive\` to it without --force.`);
+    console.log("Worktrees in this repo are disposable, so a pin into one becomes a broken shim - failing");
+    console.log("with MODULE_NOT_FOUND - the moment it is torn down, and the ordinary repair (`hive setup`");
+    console.log("run through that same shim) just re-pins the same worktree instead of fixing it.");
+    console.log(`Repair from the durable checkout instead: "${process.execPath}" "${repairCli}" setup`);
+    console.log("Or pin this worktree anyway: hive setup --force");
+    process.exit(1);
+  }
+
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, dispatcherScript(node, cli));
   chmodSync(file, 0o755);
@@ -1617,6 +1632,27 @@ function reportDispatcher(): void {
       "Re-pin by naming a Node that exists (setup pins whatever Node runs it, and the `hive`",
       "on PATH is this dispatcher):",
       `  <a Node matching ${range}> "${cliPath()}" setup`,
+    );
+  } else if (!existsSync(dispatcher.cli)) {
+    gatingWarn(
+      "dispatcher",
+      `the checkout it pins is gone: ${dispatcher.cli}`,
+      "That checkout was removed - typically a torn-down git worktree - so `hive` now fails with",
+      "MODULE_NOT_FOUND instead of running, and the shim cannot repair itself: `hive setup` run",
+      "through it just tries to re-read the same missing file.",
+      `Re-pin from a durable checkout that still exists: "${dispatcher.node}" <durable checkout>/dist/cli.js setup`,
+    );
+  } else if (linkedWorktreePin(dispatcher.cli).linked) {
+    const worktreePin = linkedWorktreePin(dispatcher.cli);
+    const repairCli = worktreePin.durableRoot
+      ? join(worktreePin.durableRoot, "dist", "cli.js")
+      : "<durable checkout>/dist/cli.js";
+    gatingWarn(
+      "dispatcher",
+      `pinned to a linked git worktree, which this repo tears down: ${dispatcher.cli}`,
+      "A worktree teardown leaves `hive` failing with MODULE_NOT_FOUND, and running `hive setup`",
+      "to repair it just re-pins the same worktree, since that shim is what runs the command.",
+      `Re-pin from the durable checkout instead: "${dispatcher.node}" "${repairCli}" setup`,
     );
   } else if (dispatcher.node !== process.execPath || dispatcher.cli !== cliPath()) {
     gatingWarn(

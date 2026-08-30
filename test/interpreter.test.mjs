@@ -351,7 +351,7 @@ describe("hive setup writes a dispatcher", () => {
   };
 
   it("pins the interpreter that built this checkout", async () => {
-    const { code, stdout } = await runCli(["setup"], setupOpts);
+    const { code, stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.equal(code, 0, stdout);
     const script = readFileSync(dispatcher, "utf8");
     assert.match(script, /^#!\/bin\/sh$/m);
@@ -375,7 +375,7 @@ describe("hive setup writes a dispatcher", () => {
 
   it("survives a directory with a space in it", async () => {
     const spaced = join(dirs.tmp, "bin dir");
-    const { code, stdout } = await runCli(["setup", "--dir", spaced], setupOpts);
+    const { code, stdout } = await runCli(["setup", "--dir", spaced, "--force"], setupOpts);
     assert.equal(code, 0, stdout);
     const out = execFileSync(join(spaced, "hive"), ["status"], {
       encoding: "utf8",
@@ -435,7 +435,7 @@ describe("hive setup writes a dispatcher", () => {
 
   it("prints the branch belonging to the interpreter it actually pinned", async () => {
     const { durabilityLines } = await import("../dist/dispatcher.js");
-    const { stdout } = await runCli(["setup"], setupOpts);
+    const { stdout } = await runCli(["setup", "--force"], setupOpts);
 
     for (const line of durabilityLines(process.execPath)) {
       assert.ok(stdout.includes(line), `setup should print:\n${line}\ngot:\n${stdout}`);
@@ -450,7 +450,7 @@ describe("hive setup writes a dispatcher", () => {
       `#!/bin/sh\n# hive dispatcher\nexec '/gone/node' '/gone/cli.js' "$@"\n`,
       { mode: 0o755 },
     );
-    const { code, stdout } = await runCli(["setup"], setupOpts);
+    const { code, stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.equal(code, 0, stdout);
     assert.match(stdout, /^Re-pinned /m);
     assert.match(stdout, /was {10}\/gone\/node \/gone\/cli\.js/);
@@ -474,7 +474,7 @@ describe("hive setup writes a dispatcher", () => {
   });
 
   it("doctor warns when the dispatcher is shadowed, and stays quiet when it wins", async () => {
-    await runCli(["setup"], setupOpts);
+    await runCli(["setup", "--force"], setupOpts);
     const shadowDir = join(dirs.tmp, "shadow");
     mkdirSync(shadowDir, { recursive: true });
     writeFileSync(join(shadowDir, "hive"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -491,13 +491,18 @@ describe("hive setup writes a dispatcher", () => {
       env: { ...setupOpts.env, PATH: `${binDir}:${dirname(process.execPath)}:/usr/bin:/bin` },
     });
     assert.match(winning.stdout, /info {2}dispatcher: /);
-    assert.doesNotMatch(winning.stdout, /warn {2}dispatcher/);
+
+    assert.doesNotMatch(winning.stdout, /warn {2}dispatcher: .*comes first on PATH/);
   });
 
   it("doctor warns when the dispatcher points at a build this is not", async () => {
+    const otherCli = join(dirs.tmp, "other-checkout", "dist", "cli.js");
+    mkdirSync(dirname(otherCli), { recursive: true });
+
+    writeFileSync(otherCli, "// a different, still-existing build\n");
     writeFileSync(
       dispatcher,
-      `#!/bin/sh\n# hive dispatcher\nexec '${process.execPath}' '/some/other/checkout/dist/cli.js' "$@"\n`,
+      `#!/bin/sh\n# hive dispatcher\nexec '${process.execPath}' '${otherCli}' "$@"\n`,
       { mode: 0o755 },
     );
     const { stdout } = await runCli(["doctor"], setupOpts);
@@ -605,7 +610,7 @@ describe("hive setup names the registration it cannot fix", () => {
 
   it("prints the re-register line when the registration is bare", async () => {
     writeUserConfig({ mcpServers: { hive: { type: "stdio", command: "node", args: [SERVER] } } });
-    const { code, stdout } = await runCli(["setup"], setupOpts);
+    const { code, stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.equal(code, 0, stdout);
     assert.match(stdout, /hive setup pins the `hive` command, not the MCP server/);
 
@@ -620,7 +625,7 @@ describe("hive setup names the registration it cannot fix", () => {
     writeUserConfig({
       mcpServers: { hive: { type: "stdio", command: process.execPath, args: [SERVER] } },
     });
-    const { code, stdout } = await runCli(["setup"], setupOpts);
+    const { code, stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.equal(code, 0, stdout);
 
     assert.doesNotMatch(stdout, /mcp registration/);
@@ -631,7 +636,7 @@ describe("hive setup names the registration it cannot fix", () => {
     writeUserConfig({
       mcpServers: { hive: { type: "stdio", command: OTHER_NODE, args: [SERVER] } },
     });
-    const { stdout } = await runCli(["setup"], setupOpts);
+    const { stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.match(stdout, /mcp registration \(user scope\): pins a different interpreter/);
     assert.match(stdout, /claude mcp add --scope user hive --/);
   });
@@ -639,7 +644,7 @@ describe("hive setup names the registration it cannot fix", () => {
   it("stays silent when it finds no registration at all", async () => {
 
     writeUserConfig({ numStartups: 3 });
-    const { stdout } = await runCli(["setup"], setupOpts);
+    const { stdout } = await runCli(["setup", "--force"], setupOpts);
     assert.doesNotMatch(stdout, /mcp registration/);
     assert.doesNotMatch(stdout, /claude mcp add/);
   });
@@ -663,12 +668,12 @@ describe("hive setup offers the registration a fresh install has not made", () =
 
   it("offers the add line when the config has the block and hive is not in it", async () => {
     write({ mcpServers: { other: { command: "node", args: ["/somewhere/else.js"] } } });
-    const { code, stdout } = await runCli(["setup"], opts);
+    const { code, stdout } = await runCli(["setup", "--force"], opts);
     assert.equal(code, 0, stdout);
     assert.match(stdout, OFFER);
 
     write({ mcpServers: {} });
-    const empty = await runCli(["setup"], opts);
+    const empty = await runCli(["setup", "--force"], opts);
     assert.match(empty.stdout, OFFER);
     assert.ok(stdout.includes(ADD_LINE), `offer should be pasteable:\n${stdout}`);
 
@@ -685,21 +690,21 @@ describe("hive setup offers the registration a fresh install has not made", () =
 
   it("stays silent when the config file is not there", async () => {
     rmSync(configFile, { force: true });
-    const { stdout } = await runCli(["setup"], opts);
+    const { stdout } = await runCli(["setup", "--force"], opts);
     assert.doesNotMatch(stdout, OFFER);
     assert.doesNotMatch(stdout, /claude mcp add/);
   });
 
   it("stays silent when the config has no mcpServers block", async () => {
     write({ numStartups: 3 });
-    const { stdout } = await runCli(["setup"], opts);
+    const { stdout } = await runCli(["setup", "--force"], opts);
     assert.doesNotMatch(stdout, OFFER);
     assert.doesNotMatch(stdout, /claude mcp add/);
   });
 
   it("stays silent when the config does not parse", async () => {
     writeFileSync(configFile, "{ not json");
-    const { stdout } = await runCli(["setup"], opts);
+    const { stdout } = await runCli(["setup", "--force"], opts);
     assert.doesNotMatch(stdout, OFFER);
     assert.doesNotMatch(stdout, /claude mcp add/);
   });
@@ -713,7 +718,7 @@ describe("hive setup offers the registration a fresh install has not made", () =
       JSON.stringify({ mcpServers: { hive: { command: process.execPath, args: [SERVER] } } }),
     );
     try {
-      const { stdout } = await runCli(["setup"], opts);
+      const { stdout } = await runCli(["setup", "--force"], opts);
       assert.doesNotMatch(stdout, OFFER);
       assert.doesNotMatch(stdout, /claude mcp add/);
     } finally {
@@ -724,13 +729,13 @@ describe("hive setup offers the registration a fresh install has not made", () =
   it("leaves round 2 alone when hive is registered", async () => {
 
     write({ mcpServers: { hive: { command: "node", args: [SERVER] } } });
-    const bare = await runCli(["setup"], opts);
+    const bare = await runCli(["setup", "--force"], opts);
     assert.match(bare.stdout, /^! hive setup pins the `hive` command/m);
     assert.match(bare.stdout, /mcp registration \(user scope\): runs "node"/);
     assert.doesNotMatch(bare.stdout, OFFER);
 
     write({ mcpServers: { hive: { command: process.execPath, args: [SERVER] } } });
-    const matching = await runCli(["setup"], opts);
+    const matching = await runCli(["setup", "--force"], opts);
     assert.doesNotMatch(matching.stdout, OFFER);
     assert.doesNotMatch(matching.stdout, /mcp registration/);
     assert.doesNotMatch(matching.stdout, /claude mcp add/);
