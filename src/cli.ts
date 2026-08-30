@@ -3106,6 +3106,9 @@ try {
     case "statusline":
       cmdStatusline();
       break;
+    default:
+      console.log(`hive: no handler registered for command "${command}"`);
+      process.exit(1);
   }
 } catch (e) {
   console.log(errorMessage(e));

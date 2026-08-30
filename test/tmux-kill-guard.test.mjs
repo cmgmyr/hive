@@ -194,6 +194,27 @@ describe("wrapper: allows via exit 0 and no output", () => {
   });
 });
 
+function runGuardRaw(rawInput) {
+  try {
+    const stdout = execFileSync("node", [GUARD_SCRIPT], { input: rawInput, encoding: "utf8" });
+    return { status: 0, stdout, stderr: "" };
+  } catch (err) {
+    return { status: err.status, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
+  }
+}
+
+describe("wrapper: fails open on malformed stdin rather than crashing", () => {
+  it("exits 0 on stdin that is not valid JSON", () => {
+    const result = runGuardRaw("not json at all");
+    assert.equal(result.status, 0);
+  });
+
+  it("exits 0 on empty stdin", () => {
+    const result = runGuardRaw("");
+    assert.equal(result.status, 0);
+  });
+});
+
 function runGuardViaSymlink(command) {
   const dir = mkdtempSync(join(tmpdir(), "hive-tmux-guard-symlink-"));
   const link = join(dir, "tmux-kill-guard.mjs");

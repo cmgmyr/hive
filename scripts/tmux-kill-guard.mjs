@@ -62,7 +62,12 @@ function denialMessage(reason) {
 }
 
 function main() {
-  const input = JSON.parse(readFileSync(0, "utf8"));
+  let input;
+  try {
+    input = JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    process.exit(0);
+  }
   const command = input?.tool_input?.command ?? "";
 
   const result = classify(command);

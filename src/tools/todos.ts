@@ -45,8 +45,10 @@ export { SLUG_MAX_LEN, fallbackSlug };
 export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
 const statusParam = z.enum(TODO_STATUSES);
 
-export const OPEN_BLOCKERS_SQL = `SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
+const OPEN_BLOCKERS_FROM_WHERE = `FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
    WHERE b.todo_id = t.id AND bt.status != 'completed'`;
+
+export const OPEN_BLOCKERS_SQL = `SELECT 1 ${OPEN_BLOCKERS_FROM_WHERE}`;
 
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
    WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
@@ -55,8 +57,7 @@ export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.
 
 const SUMMARY_SQL = `
   SELECT t.*,
-    (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-      WHERE b.todo_id = t.id AND bt.status != 'completed') AS open_blockers,
+    (SELECT COUNT(*) ${OPEN_BLOCKERS_FROM_WHERE}) AS open_blockers,
     ${COMMENT_COUNT_SQL} AS comment_count
   FROM todos t`;
 
