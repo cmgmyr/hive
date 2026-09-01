@@ -274,6 +274,78 @@ describe("todo 560: status_line and project_doc_fallback_filenames reach the gen
   });
 });
 
+describe("todo 690: model_context_window and model_auto_compact_token_limit reach the generated config", () => {
+  it("copies both keys verbatim when the real config sets them", () => {
+    const realConfig = join(scratch, "real-config-with-window-keys.toml");
+    writeFileSync(realConfig, ["model_context_window = 1050000", "model_auto_compact_token_limit = 900000", ""].join("\n"));
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal(parsed.model_context_window, 1050000);
+    assert.equal(parsed.model_auto_compact_token_limit, 900000);
+  });
+
+  it("omits both keys when the real config does not set them", () => {
+    const realConfig = join(scratch, "real-config-no-window-keys.toml");
+    writeFileSync(realConfig, 'model = "gpt-5.6-sol"\n');
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal("model_context_window" in parsed, false);
+    assert.equal("model_auto_compact_token_limit" in parsed, false);
+  });
+
+  it("omits both keys when the real config file does not exist at all", () => {
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: join(scratch, "does-not-exist-window-keys.toml") });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal("model_context_window" in parsed, false);
+    assert.equal("model_auto_compact_token_limit" in parsed, false);
+  });
+
+  it("omits both keys when the real config is unparseable TOML", () => {
+    const realConfig = join(scratch, "real-config-malformed-window-keys.toml");
+    writeFileSync(realConfig, "model_context_window = [this is not valid toml\n");
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal("model_context_window" in parsed, false);
+    assert.equal("model_auto_compact_token_limit" in parsed, false);
+  });
+
+  it("treats a non-integer value as absent rather than copying it through", () => {
+    const realConfig = join(scratch, "real-config-non-integer-window-keys.toml");
+    writeFileSync(
+      realConfig,
+      ['model_context_window = "a lot"', "model_auto_compact_token_limit = 900000.5", ""].join("\n"),
+    );
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal("model_context_window" in parsed, false, "a string value must not be copied through");
+    assert.equal("model_auto_compact_token_limit" in parsed, false, "a non-integer number must not be copied through");
+  });
+
+  it("copies each key independently - one set and the other absent does not suppress the one that is set", () => {
+    const realConfig = join(scratch, "real-config-partial-window-keys.toml");
+    writeFileSync(realConfig, "model_context_window = 400000\n");
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal(parsed.model_context_window, 400000);
+    assert.equal("model_auto_compact_token_limit" in parsed, false);
+  });
+
+  it("does not read the window keys from under [tui] - they belong at the top level, unlike status_line", () => {
+    const realConfig = join(scratch, "real-config-window-keys-wrong-table.toml");
+    writeFileSync(realConfig, ["[tui]", "model_context_window = 1050000", ""].join("\n"));
+    const key = `worker-${counter}`;
+    build({ key, realConfigSource: realConfig });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.equal("model_context_window" in parsed, false);
+  });
+});
+
 // Same env gate as test/codex-live-spawn.test.mjs's real-spawn case, for the same reason: this
 // shells out to the real codex binary, which no CI runner has or should be given. The network-cost
 // half of that file's rationale does not apply here (see noNetworkEnv below), but "runs the real

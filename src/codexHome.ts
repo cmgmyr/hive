@@ -19,8 +19,9 @@ export interface CodexHomeInput {
   authSource?: string;
 
   // Overridable only for tests - production spawns never set this, so it always resolves to
-  // Chris's real ~/.codex/config.toml. Read-only, and only one named key is ever pulled out of it
-  // (status_line under [tui] - see realStatusLine below): todo 560's decision record
+  // Chris's real ~/.codex/config.toml. Read-only, and only individually named keys are ever pulled
+  // out of it (status_line under [tui]; model_context_window and model_auto_compact_token_limit at
+  // the top level - see readRealConfig below): the decision record
   // (.agents/sessions/decisions/2026-08-24-copy-named-keys-into-a-codex-worker-config-never-merge.md)
   // is the reason this must never become "parse and merge the whole file" - that reintroduces the
   // hook-merge hazard per-worker homes exist to avoid.
@@ -102,22 +103,37 @@ function tomlStringArray(items: string[]): string {
 // Chris's own real status_line, so known to be a value codex accepts here.
 const HIVE_DEFAULT_STATUS_LINE = ["context-used"];
 
-// Pulls ONLY [tui].status_line out of the real config - never the rest of that table (it also
-// carries [tui.model_availability_nux], which is not a display key) and never any other top-level
-// table. Missing file, unreadable TOML, or a status_line that is not a string array are all the
-// ordinary case (no config yet, or a shape codex itself would reject): fall back to hive's default
-// rather than throwing, since a worker still has to spawn either way.
-function realStatusLine(realConfigPath: string): string[] | null {
+// Parses the real config exactly once so every named-key reader below shares one read. Missing
+// file or unparseable TOML are the ordinary case (no config yet, or a shape codex itself would
+// reject) - callers treat a null return exactly like "the key was absent", never a throw.
+function readRealConfig(realConfigPath: string): Record<string, unknown> | null {
   if (!existsSync(realConfigPath)) return null;
-  let parsed: unknown;
   try {
-    parsed = parseToml(readFileSync(realConfigPath, "utf8"));
+    return parseToml(readFileSync(realConfigPath, "utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
-  const statusLine = (parsed as { tui?: { status_line?: unknown } } | undefined)?.tui?.status_line;
+}
+
+// Pulls ONLY [tui].status_line out of the real config - never the rest of that table (it also
+// carries [tui.model_availability_nux], which is not a display key) and never any other top-level
+// table. A status_line that is not a string array is the same ordinary case as it being absent.
+function realStatusLine(realConfig: Record<string, unknown> | null): string[] | null {
+  const statusLine = (realConfig as { tui?: { status_line?: unknown } } | null)?.tui?.status_line;
   if (!Array.isArray(statusLine) || !statusLine.every((v) => typeof v === "string")) return null;
   return statusLine as string[];
+}
+
+// Pulls a single top-level integer key out of the real config - model_context_window and
+// model_auto_compact_token_limit both live there (verified live against Chris's own
+// ~/.codex/config.toml), never under [tui]. Both are display/behavior keys, not hooks, so the
+// 2026-08-24 decision's distinction (executable keys are the hook-merge hazard; display/behavior
+// keys are safe to copy individually) covers copying them the same way it covers status_line. A
+// missing key or a non-integer value is the ordinary "not set" case: return null so the caller
+// omits the key and codex applies its own built-in default, never a throw or a partial write.
+function realTopLevelInteger(realConfig: Record<string, unknown> | null, key: string): number | null {
+  const value = realConfig?.[key];
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }
 
 function tomlMultilineString(s: string): string {
@@ -134,6 +150,8 @@ function configToml(input: {
   indexJs: string;
   actorId: string;
   statusLine: string[];
+  modelContextWindow: number | null;
+  modelAutoCompactTokenLimit: number | null;
 }): string {
   return (
     [
@@ -143,6 +161,14 @@ function configToml(input: {
       // project. Always set - unlike status_line, this is hive's own default, not copied from
       // anywhere.
       `project_doc_fallback_filenames = ${tomlStringArray(["CLAUDE.md"])}`,
+      // Copied from the real config's own top-level keys when set (realTopLevelInteger above) -
+      // never a hive default, unlike status_line: there is no context window size hive could sanely
+      // choose on the user's behalf. Omitted entirely when absent or malformed, so codex applies its
+      // own built-in default rather than this module ever emitting a partial or invalid value.
+      ...(input.modelContextWindow !== null ? [`model_context_window = ${input.modelContextWindow}`] : []),
+      ...(input.modelAutoCompactTokenLimit !== null
+        ? [`model_auto_compact_token_limit = ${input.modelAutoCompactTokenLimit}`]
+        : []),
       "",
       `[projects.${tomlString(input.projectRoot)}]`,
       `trust_level = "trusted"`,
@@ -257,7 +283,10 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
   const projectRoot = gitPrimaryRoot(input.cwd) ?? input.cwd;
 
   const realConfigPath = input.realConfigSource ?? join(homedir(), ".codex", "config.toml");
-  const statusLine = realStatusLine(realConfigPath) ?? HIVE_DEFAULT_STATUS_LINE;
+  const realConfig = readRealConfig(realConfigPath);
+  const statusLine = realStatusLine(realConfig) ?? HIVE_DEFAULT_STATUS_LINE;
+  const modelContextWindow = realTopLevelInteger(realConfig, "model_context_window");
+  const modelAutoCompactTokenLimit = realTopLevelInteger(realConfig, "model_auto_compact_token_limit");
 
   writeFileSync(
     join(home, "config.toml"),
@@ -268,6 +297,8 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
       indexJs,
       actorId: input.actorId,
       statusLine,
+      modelContextWindow,
+      modelAutoCompactTokenLimit,
     }),
   );
 
