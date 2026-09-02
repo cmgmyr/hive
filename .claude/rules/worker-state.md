@@ -32,7 +32,7 @@ A `working` older than the lane's rhythm is suspicious; `working` is not self-ev
 - An exclusion is only as durable as the column it reads, so when you add one, ask who else writes that column and what their failure paths put back.
 - If `agents.resumed_at` SUPPRESSES, the `idle` gate covers you; if it REPORTS, ask whether the row has a state channel at all before you say anything about it.
 
-**The reader list lives in `src/firstPrompt.ts` and is authoritative there, not here.** Count the badge sites, not the files.
+**The reader set is `src/firstPrompt.ts`'s own importers, found with `grep -rln 'firstPrompt.js' src/`, and no prose list here is authoritative.** Count call sites, not files - one file can hold more than one.
 
 ## A debounce is not an inference
 
