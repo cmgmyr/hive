@@ -21,6 +21,8 @@ const {
   ACTIVITY_SOURCE_LIMIT,
   ACTIVITY_DISPLAY_CAP,
   fetchDayStats,
+  fetchPulse,
+  PULSE_SQL,
   CHART_DAYS,
 } = await import("../dist/dashboard.js");
 const { tick } = await import("../dist/scheduler.js");
@@ -180,10 +182,23 @@ describe("renderDashboard: board section", () => {
     assert.ok(/<pre class="board">/.test(html), "board content must render inside a <pre>");
   });
 
-  it("says plainly when the project has no board pad, instead of crashing or silently omitting the section", () => {
+  it("scrolls a long pad inside its own box instead of pushing the sections under it off the page", () => {
+    const project = seedProject("board-scrolls-test");
+    seedPad(project, "board", Array.from({ length: 400 }, (_, i) => `line ${i}`).join("\n"));
+    const html = renderDashboard(project);
+    assert.ok(html.includes("line 399"), "every line must still be in the page - the cap is visual, not a truncation");
+    assert.ok(
+      /pre\.board\s*{[^}]*max-height:[^}]*overflow:\s*auto/s.test(html) ||
+        /pre\.board\s*{[^}]*overflow:\s*auto[^}]*max-height:/s.test(html),
+      "pre.board must cap its height AND scroll, or Board opening by default buries every section below it",
+    );
+  });
+
+  it("renders a designed empty state, naming the missing pad and how one gets written, when the project has no board pad", () => {
     const project = seedProject("no-board-test");
     const html = renderDashboard(project);
-    assert.ok(html.includes('No pad named "board"'), "a missing board pad must be a stated fact on the page");
+    assert.ok(html.includes("This project has no board pad."), "a missing board pad must be a stated fact on the page");
+    assert.ok(html.includes("pad_write"), "the empty state must name the tool that fills it, not just state the absence");
   });
 
   it("escapes HTML-significant characters in pad content so injected markup cannot render", () => {
@@ -214,8 +229,12 @@ describe("renderDashboard: open todos", () => {
 
     const blockedLi = html.slice(html.lastIndexOf("<li", idxBlocked), html.indexOf("</li>", idxBlocked) + 6);
     assert.ok(
-      blockedLi.includes('<span class="status status-warn">warn</span> open'),
-      "a blocked todo's badge must carry the warn color and the lifecycle status word",
+      blockedLi.includes('<span class="status status-warn">open</span>'),
+      "a blocked todo's pill must carry the warn colour and the store's own lifecycle token as its label",
+    );
+    assert.ok(
+      blockedLi.includes('class="chip chip-blocked"'),
+      "blockedness must also carry a labelled chip, so it is never encoded by colour alone",
     );
     assert.ok(blockedLi.includes("blocked by"), "a blocked todo must say so on its own line");
     assert.ok(blockedLi.includes(`#${blockerId}`), "the blocker's id must be named");
@@ -223,9 +242,10 @@ describe("renderDashboard: open todos", () => {
 
     const highLi = html.slice(html.lastIndexOf("<li", idxHigh), html.indexOf("</li>", idxHigh) + 6);
     assert.ok(
-      highLi.includes('<span class="status status-ok">ok</span> open'),
-      "a dispatchable todo must carry the ok status word, not warn",
+      highLi.includes('<span class="status status-ok">open</span>'),
+      "a dispatchable todo's pill must carry the ok colour, not warn",
     );
+    assert.ok(!highLi.includes("chip-blocked"), "a dispatchable todo must carry no blocked chip");
     assert.ok(!highLi.includes("status-warn"), "a dispatchable todo must not carry the warn status");
     assert.ok(!highLi.includes("blocked by"), "a dispatchable todo must not claim to be blocked");
   });
@@ -286,15 +306,19 @@ describe("renderDashboard: open todos", () => {
     );
   });
 
-  it("puts the lifecycle status in the badge, not a second 'blocked'/'open' word (todo 333)", () => {
+  it("the pill's label is the store's own lifecycle token, and it is the only token (todo 333, restated for v2's pill)", () => {
     const project = seedProject("todos-lifecycle-badge-test");
     seedTodo(project, { title: "in flight", status: "in_progress" });
     const html = renderDashboard(project);
     assert.ok(
-      html.includes('<span class="status status-live">live</span> in_progress'),
+      html.includes('<span class="status status-live">in_progress</span>'),
       "an in_progress todo must show its real lifecycle status, not a stale 'open'",
     );
     assert.ok(!html.includes(">(in_progress)<"), "the old trailing (status) span must be gone - one token, not two");
+    assert.ok(
+      !html.includes(">live</span> in_progress"),
+      "the v1 level word must be gone too - the pill's colour carries the level, its text carries the status",
+    );
   });
 
   it("keeps both facts readable for a todo that is in_progress AND blocked (333's own stated check)", () => {
@@ -306,9 +330,10 @@ describe("renderDashboard: open todos", () => {
     const li = html.slice(html.lastIndexOf("<li", html.indexOf("working but stuck")));
     const row = li.slice(0, li.indexOf("</li>") + 5);
     assert.ok(
-      row.includes('<span class="status status-warn">warn</span> in_progress'),
-      "blockedness (warn) and the lifecycle status (in_progress) must both survive on the same row",
+      row.includes('<span class="status status-warn">in_progress</span>'),
+      "blockedness (the warn colour) and the lifecycle status (the label) must both survive on the same pill",
     );
+    assert.ok(row.includes("chip-blocked"), "and blockedness must carry its own labelled chip beside the pill");
     assert.ok(row.includes("blocked by"), "the blocked-by line must still name the blocker");
   });
 });
@@ -374,16 +399,32 @@ describe("renderDashboard: 7-day throughput chart (Chris's follow-up request)", 
     assert.ok(html.includes("Today (*) is still in progress"), "the chart must say in words that today is partial");
   });
 
-  it("sizes the y-axis to the real computed data, not a fixed scale", () => {
+  it("gives completed and backlog a panel each, so the smaller measure is not flattened by the larger one's scale", () => {
     const project = seedProject("chart-axis-scale");
     for (let i = 0; i < 12; i++) {
       const id = seedTodo(project, { title: `done ${i}` });
       db.prepare("UPDATE todos SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(id);
     }
+    for (let i = 0; i < 40; i++) seedTodo(project, { title: `still open ${i}` });
     const html = renderDashboard(project);
     const stats = fetchDayStats(project);
-    const maxValue = Math.max(1, ...stats.map((s) => s.completed), ...stats.map((s) => s.backlog));
-    assert.ok(html.includes(`>${maxValue}</text>`), "the axis max label must reflect the real computed maximum");
+    const completedMax = Math.max(1, ...stats.map((s) => s.completed));
+    const backlogMax = Math.max(1, ...stats.map((s) => s.backlog));
+    assert.ok(completedMax !== backlogMax, "the fixture must put the two measures on different scales, or this proves nothing");
+    assert.ok(html.includes(`>${completedMax}</text>`), "the completed panel must label its own computed maximum");
+    assert.ok(html.includes(`>${backlogMax}</text>`), "the backlog panel must label its own computed maximum");
+    assert.ok(html.includes(">completed that day<"), "each panel must name the measure it scales to");
+    assert.ok(html.includes(">open backlog at end of day<"));
+  });
+
+  it("carries the same seven days as a real table, so the numbers are readable without reading the plot", () => {
+    const project = seedProject("chart-table-test");
+    const id = seedTodo(project, { title: "done today" });
+    db.prepare("UPDATE todos SET status = 'completed', completed_at = datetime('now') WHERE id = ?").run(id);
+    const html = renderDashboard(project);
+    const table = html.slice(html.indexOf('<table class="chart-table"'), html.indexOf("</table>"));
+    assert.equal((table.match(/<th scope="col">/g) || []).length, CHART_DAYS + 1, "a header cell per day, plus the row-label column");
+    assert.ok(table.includes("completed") && table.includes("backlog"), "both series must be named as row headers");
   });
 
   it("renders as a hand-drawn inline <svg>, not an externally-sourced image", () => {
@@ -394,7 +435,9 @@ describe("renderDashboard: 7-day throughput chart (Chris's follow-up request)", 
   });
 });
 
-describe("renderDashboard: in flight agents", () => {
+describe("renderDashboard: the workers card is the whole worker list (the In Flight section it duplicated is gone)", () => {
+  const workersCard = (html) => html.slice(html.indexOf('id="stat-workers"'), html.indexOf('id="stat-wake"'));
+
   it("shows a running agent's live state", () => {
     const project = seedProject("agents-test");
     seedAgent(project, { name: "impl-worker", actorId: "agent:1001", agentState: "working" });
@@ -402,8 +445,8 @@ describe("renderDashboard: in flight agents", () => {
     assert.ok(html.includes("impl-worker"));
 
     assert.ok(
-      html.includes('<span class="status status-live">live</span> working'),
-      "the agent's current state must be shown, carrying the live status word",
+      html.includes('<span class="status status-live">working</span>'),
+      "the agent's current state must be its pill's label, carried in the live colour",
     );
   });
 
@@ -415,12 +458,77 @@ describe("renderDashboard: in flight agents", () => {
       "INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES ('lead:88', 'prompt', 'unknown', strftime('%Y-%m-%d %H:%M:%f', 'now'))",
     ).run();
     const html = renderDashboard(project);
-    const agentsSection = html.slice(html.indexOf('id="section-agents"'), html.indexOf('id="section-wakes"'));
-    assert.ok(agentsSection.includes("lead-88"));
-    assert.ok(!/class="status status-\w+"/.test(agentsSection), "a lead row must carry no status badge at all");
+    const card = workersCard(html);
+    assert.ok(card.includes("lead-88"));
+    assert.ok(!/class="status status-\w+"/.test(card), "a lead row must carry no status badge at all");
     assert.ok(
-      agentsSection.includes("last event: prompt,"),
+      card.includes("last event: prompt ·"),
       "a lead row must show its real last log event instead of a fabricated status",
+    );
+  });
+
+  it("carries the since-timestamp and the kind that only the deleted section used to show", () => {
+    const project = seedProject("worker-since-and-kind-test");
+    seedAgent(project, { name: "timed-worker", actorId: "agent:since-1", agentState: "working" });
+    const changedAt = localDayOffsetUtc(0, "04:05:06");
+    db.prepare("UPDATE agents SET state_changed_at = ? WHERE actor_id = 'agent:since-1'").run(changedAt);
+    const card = workersCard(renderDashboard(project));
+    assert.ok(card.includes("since "), "a state with no age cannot be judged stale - worker-state.md turns on exactly this");
+    assert.ok(card.includes(expectedLocal(changedAt).slice(11)), "and it must be the row's own state_changed_at");
+    assert.ok(/class="kind">agent</.test(card), "the kind decides whether the state badge means anything, so it stays visible");
+  });
+
+  it("a state that changed on an earlier day carries its DATE, so it cannot be misread as today", () => {
+    const project = seedProject("worker-since-yesterday-test");
+    seedAgent(project, { name: "stale-worker", actorId: "agent:stale-1", agentState: "working" });
+    const yesterday = localDayOffsetUtc(1, "14:36:31");
+    db.prepare("UPDATE agents SET state_changed_at = ? WHERE actor_id = 'agent:stale-1'").run(yesterday);
+    const card = workersCard(renderDashboard(project));
+    const local = expectedLocal(yesterday);
+    assert.ok(
+      card.includes(`>${local.slice(5)}<`),
+      `a worker whose state changed yesterday must render "${local.slice(5)}", not the clock alone`,
+    );
+    assert.ok(
+      !card.includes(`>${local.slice(11)}<`),
+      "and it must not ALSO be reachable as a bare clock, which is the misreading this closes",
+    );
+    assert.ok(card.includes(`title="${yesterday} UTC"`), "the full stored timestamp stays available on hover");
+  });
+
+  it("a state that changed today keeps the clock alone - the date is only added when it carries information", () => {
+    const project = seedProject("worker-since-today-test");
+    seedAgent(project, { name: "fresh-worker", actorId: "agent:fresh-1", agentState: "working" });
+    const today = localDayOffsetUtc(0, "09:08:07");
+    db.prepare("UPDATE agents SET state_changed_at = ? WHERE actor_id = 'agent:fresh-1'").run(today);
+    const card = workersCard(renderDashboard(project));
+    const local = expectedLocal(today);
+    assert.ok(card.includes(`>${local.slice(11)}<`), "today renders as the clock alone");
+    assert.ok(!card.includes(`>${local.slice(5)}<`), "and must not be padded with a date that says nothing");
+  });
+
+  it("a lead's last-event line is dated the same way - it is that row's only state", () => {
+    const project = seedProject("lead-last-event-dated-test");
+    seedAgent(project, { name: "old-lead", actorId: "lead:old", agentState: "unknown", kind: "lead" });
+    const yesterday = localDayOffsetUtc(1, "22:15:00");
+    db.prepare(
+      "INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES ('lead:old', 'notify', 'unknown', ?)",
+    ).run(yesterday);
+    const card = workersCard(renderDashboard(project));
+    assert.ok(card.includes(`>${expectedLocal(yesterday).slice(5)}<`));
+  });
+
+  it("no In Flight section is rendered, and the workers card names a worker once - one list, not two", () => {
+    const project = seedProject("no-in-flight-section-test");
+    seedAgent(project, { name: "solo", actorId: "agent:solo-1", agentState: "idle" });
+    const html = renderDashboard(project);
+    assert.ok(!html.includes('id="section-agents"'), "the section must be gone, not merely emptied");
+    assert.ok(!html.includes("In Flight"));
+    const card = workersCard(html);
+    assert.equal(
+      (card.match(/solo/g) || []).length,
+      1,
+      "one worker LIST, not two - the page still repeats a name in Activity and Wakes, and should",
     );
   });
 
@@ -431,11 +539,11 @@ describe("renderDashboard: in flight agents", () => {
     assert.ok(html.includes("no log event recorded"));
   });
 
-  it("still shows the ok/warn/live status badge for an ordinary kind='agent' row - the state channel is real for it", () => {
+  it("still shows the ok/warn/live status pill for an ordinary kind='agent' row - the state channel is real for it", () => {
     const project = seedProject("agent-still-has-channel-test");
     seedAgent(project, { name: "impl-worker", actorId: "agent:channel-1", agentState: "idle", kind: "agent" });
     const html = renderDashboard(project);
-    assert.ok(html.includes('<span class="status status-ok">ok</span> idle'));
+    assert.ok(html.includes('<span class="status status-ok">idle</span>'));
   });
 
   it("a worker that has been given nothing yet is not a green idle - and BOTH badges say so (todos 366, 373)", () => {
@@ -450,11 +558,11 @@ describe("renderDashboard: in flight agents", () => {
     const html = renderDashboard(project);
     assert.equal(
       html.split("idle (no assignment yet)").length - 1,
-      2,
-      "the NOW strip and the In Flight list must both say it",
+      1,
+      "the workers card is the only place it is said now that In Flight is gone",
     );
     assert.ok(
-      !html.includes('<span class="status status-ok">ok</span> idle'),
+      !html.includes('<span class="status status-ok">idle</span>'),
       "nothing on the page may still render this worker as a plain pass",
     );
   });
@@ -469,7 +577,7 @@ describe("renderDashboard: in flight agents", () => {
       awaitingFirstPrompt: true,
     });
     const html = renderDashboard(project);
-    assert.ok(html.includes('<span class="status status-live">live</span> working'));
+    assert.ok(html.includes('<span class="status status-live">working</span>'));
     assert.ok(!html.includes("no assignment yet"));
   });
 
@@ -481,16 +589,17 @@ describe("renderDashboard: in flight agents", () => {
     assert.ok(!html.includes("closed-worker"), "a closed agent must not appear as in-flight");
   });
 
-  it("caps the in-flight list and says so", () => {
+  it("caps the workers card and says so - the cap moved with the list, it was not dropped", () => {
     const project = seedProject("agents-cap-test");
     const total = AGENT_CAP + 3;
     for (let i = 0; i < total; i++) {
       seedAgent(project, { name: `cap-worker-${i}`, actorId: `agent:cap-${i}` });
     }
     const html = renderDashboard(project);
-    const rendered = (html.match(/class="agent">/g) || []).length;
-    assert.equal(rendered, AGENT_CAP);
+    const rendered = (html.match(/<li class="worker">/g) || []).length;
+    assert.equal(rendered, AGENT_CAP, "exactly AGENT_CAP rows, not the full set");
     assert.ok(html.includes(`Showing ${AGENT_CAP} of ${total} running agents (capped)`));
+    assert.ok(workersCard(html).includes(`<p class="stat-figure">${total}</p>`), "the figure still counts them all");
   });
 });
 
@@ -552,7 +661,10 @@ describe("renderDashboard: recent activity", () => {
     const html = renderDashboard(project);
     assert.ok(html.includes("older comment"));
     assert.ok(html.includes("activity-worker"));
-    assert.ok(html.includes("activity-worker → idle"));
+    assert.ok(
+      html.includes('<span class="mono">activity-worker</span> → <span class="mono">idle</span>'),
+      "the transition must read as one arrow between the worker and the state it moved to",
+    );
     const idxState = html.indexOf("activity-worker");
     const idxComment = html.indexOf("older comment");
     assert.ok(idxState < idxComment, "the newer state-log row must render before the older comment");
@@ -681,23 +793,60 @@ describe("renderDashboard: project scoping", () => {
   });
 });
 
-describe("renderDashboard: the NOW strip is the only thing expanded by default (visual redesign)", () => {
+describe("renderDashboard: what a fresh load shows before anyone touches it", () => {
 
-  it("every <details class=\"section\"> carries no open attribute - board included, but no longer board alone", () => {
-    const project = seedProject("all-sections-collapsed-test");
+  it("throughput, board and todos carry `open` in the markup; the other three do not", () => {
+    const project = seedProject("default-open-sections-test");
     seedPad(project, "board", "board content");
     seedTodo(project, { title: "an open todo" });
     const html = renderDashboard(project);
-    for (const id of ["board", "todos", "throughput", "agents", "wakes", "activity", "pads"]) {
+    for (const id of ["throughput", "board", "todos"]) {
+      assert.ok(
+        html.includes(`<details class="section" id="section-${id}" open>`),
+        `section-${id} must default open - a fresh load lands on the state of play, not closed bars`,
+      );
+    }
+    for (const id of ["pads", "wakes", "activity"]) {
       assert.ok(
         html.includes(`<details class="section" id="section-${id}">`),
-        `section-${id} must default collapsed - no open attribute in the markup a fresh session first sees`,
+        `section-${id} must default collapsed`,
       );
       assert.ok(
         !html.includes(`<details class="section" id="section-${id}" open>`),
         `section-${id} must not default open`,
       );
     }
+  });
+
+  it("a stored preference beats the markup default in BOTH directions, per section", () => {
+    const project = seedProject("stored-beats-default-test");
+    seedPad(project, "board", "board content");
+    const html = renderDashboard(project);
+
+    // the markup default each element starts the script with
+    const els = ["throughput", "board", "todos", "pads", "wakes", "activity"].map((id) => ({
+      id: `section-${id}`,
+      open: id === "throughput" || id === "board" || id === "todos",
+      addEventListener() {},
+    }));
+    const stored = { sections: { "section-board": false, "section-wakes": true } };
+    const env = {
+      fakeDocument: {
+        querySelectorAll: (sel) => (sel === "details[id]" ? els : []),
+        getElementById: () => null,
+      },
+      fakeWindow: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+      fakeSessionStorage: { getItem: () => JSON.stringify(stored), setItem() {} },
+      fakeLocation: { reload() {} },
+      fakeSetTimeout: () => 1,
+      fakeClearTimeout: () => {},
+    };
+    runToggleScript(extractScript(html), env);
+    const byId = Object.fromEntries(els.map((e) => [e.id, e.open]));
+    assert.equal(byId["section-board"], false, "a stored false must close a section the markup opened");
+    assert.equal(byId["section-wakes"], true, "a stored true must open a section the markup left closed");
+    assert.equal(byId["section-todos"], true, "an untouched default-open section stays open");
+    assert.equal(byId["section-pads"], false, "an untouched default-closed section stays closed");
   });
 
   it("the NOW strip itself is not a <details> and carries no collapse state - it is always visible", () => {
@@ -710,7 +859,7 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
     assert.ok(!nowBlock.includes("<details"), "the NOW strip must contain no nested <details> of its own");
   });
 
-  it("the NOW strip answers workers/next wake/todos/trend in under four lines, before any section is expanded", () => {
+  it("the status cards answer workers, next wake, todos and pulse before any section is expanded", () => {
     const project = seedProject("now-strip-content-test");
     seedAgent(project, { name: "now-worker", actorId: "agent:now-1", agentState: "working" });
     seedWake(project, { body: "check the deploy", dueInSeconds: 3600 });
@@ -719,7 +868,13 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
     const nowBlock = html.slice(html.indexOf('<section class="now"'), html.indexOf("</section>") + "</section>".length);
     assert.ok(nowBlock.includes("now-worker"), "workers running must be visible in the strip");
     assert.ok(!nowBlock.includes("check the deploy"), "the strip states counts and times, not full wake bodies");
-    assert.ok(/workers/.test(nowBlock) && /next wake/.test(nowBlock) && /todos/.test(nowBlock) && /trend/.test(nowBlock));
+    assert.ok(/workers/.test(nowBlock) && /next wake/.test(nowBlock) && /todos/.test(nowBlock) && /pulse/.test(nowBlock));
+    assert.ok(!/>trend</.test(nowBlock), "a completed-per-day card would repeat the chart one screen below it");
+    assert.ok(!html.includes('class="spark"'), "and the sparkline it carried must be gone, not merely unreferenced");
+    assert.ok(
+      html.indexOf('id="section-throughput" open') < html.indexOf('id="section-board"'),
+      "throughput must be the first section under the cards, and open, or the trend is answered nowhere",
+    );
   });
 
   it("says plainly when nothing is running or scheduled, rather than an empty line", () => {
@@ -730,7 +885,7 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
     assert.ok(nowBlock.includes("nothing scheduled"));
   });
 
-  it("the NOW strip's compact worker line shows a lead by name only, no status badge and no last-event sentence", () => {
+  it("a lead in the workers card carries no status badge - it has no state channel - but does carry its last-event sentence", () => {
 
     const project = seedProject("now-strip-lead-test");
     seedAgent(project, { name: "lead-88", actorId: "lead:88", agentState: "unknown", kind: "lead" });
@@ -738,6 +893,10 @@ describe("renderDashboard: the NOW strip is the only thing expanded by default (
     const nowBlock = html.slice(html.indexOf('<section class="now"'), html.indexOf("</section>") + "</section>".length);
     assert.ok(nowBlock.includes("lead-88"));
     assert.ok(!/class="status status-\w+"/.test(nowBlock), "the NOW strip must show no status badge for a lead");
+    assert.ok(
+      /class="worker-meta">(last event: |no log event recorded)/.test(nowBlock),
+      "8424c34 merged In Flight into this card, so the row now carries the last-event sentence the old name denied",
+    );
   });
 
   it("the persistence script covers every details[id], not just top-level sections, so a stored preference - board included - always wins over this default", () => {
@@ -834,28 +993,38 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
     assert.ok(!html.includes(wrongOrder), "escape-then-truncate would have sliced &amp; in half");
   });
 
-  it("escapes the project's own name, in both the <title> and the <h1>", () => {
+  it("escapes the project's own name at both sinks - the <title> and the <h1>", () => {
     const project = seedProject(XSS);
     const html = renderDashboard(project);
     assert.ok(!html.includes(XSS), "a raw <script> in the project name must never appear unescaped");
-    assert.equal((html.match(/hive dashboard - &lt;script&gt;alert\(1\)&lt;\/script&gt;/g) || []).length, 2);
+    assert.ok(
+      html.includes(`<title>hive dashboard - ${XSS_ESCAPED}</title>`),
+      "the browser tab keeps the full label, escaped",
+    );
+    assert.ok(html.includes(`<h1>${XSS_ESCAPED}</h1>`), "the heading is the project alone, escaped");
   });
 });
 
 describe("renderDashboard: self-contained and read-only", () => {
-  it("has no external CDN, font, or script references, no form, and no data-entry input", () => {
+  it("has no external CDN, font, or script references, no form, and no input that could enter data into the store", () => {
     const project = seedProject("selfcontained-test");
     seedPad(project, "board", "board content");
+    seedTodo(project, { title: "a todo, so the client-side filter input actually renders" });
     const html = renderDashboard(project);
     assert.ok(!/https?:\/\//.test(html), "no external URL of any kind may appear");
     assert.ok(!/<link\b/.test(html), "no external stylesheet or font link");
     assert.ok(!/<script[^>]+src=/.test(html), "no externally-sourced script");
     assert.ok(!/<form\b/i.test(html), "the dashboard is read-only: no forms");
 
-    const inputs = [...html.matchAll(/<input\b[^>]*>/gi)];
-    assert.equal(inputs.length, 1, "exactly one <input> may appear: the Live toggle");
-    assert.match(inputs[0][0], /type="checkbox"/, "the one permitted input must be a checkbox, not data-entry");
-    assert.match(inputs[0][0], /id="live-toggle"/);
+    const inputs = [...html.matchAll(/<input\b[^>]*>/gi)].map((m) => m[0]);
+    assert.equal(inputs.length, 2, "exactly two <input>s may appear: the Live toggle and the todo filter");
+    const toggle = inputs.find((i) => i.includes('id="live-toggle"'));
+    const filter = inputs.find((i) => i.includes('id="todo-filter"'));
+    assert.ok(toggle && /type="checkbox"/.test(toggle), "the Live toggle must be a checkbox");
+    assert.ok(filter && /type="search"/.test(filter), "the filter must be a search box");
+    for (const input of inputs) {
+      assert.ok(!/\bname=/.test(input), "no input may carry a name - nothing on this page submits anywhere");
+    }
   });
 
   it("carries no <meta http-equiv=\"refresh\"> tag - superseded by SCRIPT's own clearable timer", () => {
@@ -955,6 +1124,634 @@ describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
   });
 });
 
+describe("renderDashboard: a worker's kind is dropped when it only repeats the name (Chris, 2026-09-01)", () => {
+  const workersCard = (html) => html.slice(html.indexOf('id="stat-workers"'), html.indexOf('id="stat-wake"'));
+
+  it("a lead literally named 'lead' shows the name once, with no kind beside it", () => {
+    const project = seedProject("kind-equals-name-test");
+    seedAgent(project, { name: "lead", actorId: "lead:same", agentState: "unknown", kind: "lead" });
+    const card = workersCard(renderDashboard(project));
+    assert.ok(card.includes('<span class="mono">lead</span>'), "the name must still render");
+    assert.ok(!card.includes('class="kind"'), "and the kind must not repeat it");
+  });
+
+  it("a kind that differs from the name is still shown - this suppresses a repeat, not the field", () => {
+    const project = seedProject("kind-differs-test");
+    seedAgent(project, { name: "lead-88", actorId: "lead:88", agentState: "unknown", kind: "lead" });
+    seedAgent(project, { name: "impl", actorId: "agent:kind-1", agentState: "idle", kind: "agent" });
+    const card = workersCard(renderDashboard(project));
+    assert.ok(card.includes('<span class="kind">lead</span>'), "a lead named lead-88 keeps its kind");
+    assert.ok(card.includes('<span class="kind">agent</span>'), "and so does an ordinary worker");
+  });
+});
+
+describe("renderDashboard: the pulse card - the project's last 24 hours (Chris's 4th box)", () => {
+  const pulseCard = (html) => html.slice(html.indexOf('id="stat-pulse"'), html.indexOf("</section>"));
+
+  function seedComment(projectId, todoId, sqlAgo) {
+    db.prepare(
+      `INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, 'user:test', 'c', datetime('now', '${sqlAgo}'))`,
+    ).run(todoId);
+  }
+  function seedLog(actorId, sqlAgo) {
+    db.prepare(
+      `INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES (?, 'stop', 'idle', strftime('%Y-%m-%d %H:%M:%f', 'now', '${sqlAgo}'))`,
+    ).run(actorId);
+  }
+  const bucketFor = (sqlAgo) =>
+    db.prepare(`SELECT strftime('%Y-%m-%d %H', 'now', 'localtime', '${sqlAgo}') AS b`).get().b;
+
+  it("draws one mark per bucket the query returned, so a quiet hour is a real zero and never a gap", () => {
+    const project = seedProject("pulse-window-test");
+    const todo = seedTodo(project, { title: "t" });
+    seedComment(project, todo, "-2 hours");
+    const buckets = fetchPulse(project);
+    assert.ok(buckets.length === 24 || buckets.length === 23, "24 hours, or 23 labels on a fall-back day");
+    const card = pulseCard(renderDashboard(project));
+    assert.equal(
+      (card.match(/<rect /g) || []).length,
+      buckets.length,
+      "every returned bucket draws a mark - a zero hour draws the baseline stub",
+    );
+    assert.ok(card.includes('class="pulse-none"'), "and a zero hour is visibly a zero, not an absence");
+  });
+
+  it("spans 24 REAL hours: the buckets are subtracted in UTC, so no local hour is invented or lost", () => {
+    const project = seedProject("pulse-utc-buckets-test");
+    const starts = db
+      .prepare(
+        `WITH RECURSIVE h(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM h WHERE i < 23)
+         SELECT datetime('now', '-' || (23 - i) || ' hours') AS s FROM h ORDER BY s`,
+      )
+      .all()
+      .map((r) => r.s);
+    const buckets = fetchPulse(project).map((b) => b.bucket);
+    for (const start of starts) {
+      const label = db
+        .prepare("SELECT strftime('%Y-%m-%d %H', ?, 'localtime') AS b")
+        .get(start).b;
+      assert.ok(
+        buckets.includes(label),
+        `every real UTC hour in the window must have a bucket; ${start} -> ${label} was missing`,
+      );
+    }
+    for (const label of buckets) {
+      const real = db
+        .prepare("SELECT COUNT(*) AS c FROM (SELECT 1) WHERE strftime('%Y-%m-%d %H', datetime(? || ':00:00', 'utc'), 'localtime') IS NOT NULL")
+        .get(label).c;
+      assert.equal(real, 1, `bucket ${label} must correspond to a real instant`);
+    }
+  });
+
+  it("the bucket set spans 24 real hours on a DST day too - run against pinned transitions, not whatever today is", () => {
+    // The live-clock test above agrees with a local-time implementation on 363
+    // days a year. This runs the SHIPPED sql text with 'now' pinned to each
+    // transition, which is the only way the defect is reachable from a test.
+    const project = seedProject("pulse-dst-test");
+    for (const at of ["2026-03-08 17:00:00", "2026-11-01 17:00:00", "2026-06-15 17:00:00"]) {
+      const pinned = PULSE_SQL.replaceAll("'now'", `'${at}'`);
+      const rows = db.prepare(pinned).all(project, project);
+      const labels = rows.map((r) => r.bucket);
+      assert.equal(new Set(labels).size, labels.length, `${at}: the query must not return a label twice`);
+
+      for (let i = 0; i < 24; i++) {
+        const label = db
+          .prepare(`SELECT strftime('%Y-%m-%d %H', datetime('${at}', '-' || ? || ' hours'), 'localtime') AS b`)
+          .get(23 - i).b;
+        assert.ok(labels.includes(label), `${at}: real UTC hour -${23 - i}h maps to ${label}, which is missing`);
+      }
+      for (const label of labels) {
+        const roundTrip = db
+          .prepare(`SELECT strftime('%Y-%m-%d %H', datetime(? || ':00:00'), 'utc') IS NOT NULL AS ok`)
+          .get(label).ok;
+        assert.equal(roundTrip, 1, `${at}: bucket ${label} is not a real instant`);
+      }
+    }
+  });
+
+  it("an event before the leading edge is excluded even when its own label IS in the bucket set", () => {
+    const project = seedProject("pulse-leading-edge-test");
+    const todo = seedTodo(project, { title: "t" });
+    // The oldest bucket starts mid-hour, so this event shares its LABEL and is
+    // still outside the window. Only the scan bound can exclude it - which is
+    // what makes the bound load-bearing rather than a scan hint.
+    const probe = db
+      .prepare(
+        `SELECT datetime('now', '-23 hours', '-1 second') AS ts,
+                strftime('%Y-%m-%d %H', datetime('now', '-23 hours', '-1 second'), 'localtime') AS label`,
+      )
+      .get();
+    db.prepare(
+      "INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, 'user:test', 'edge', ?)",
+    ).run(todo, probe.ts);
+
+    const buckets = fetchPulse(project);
+    assert.ok(
+      buckets.some((b) => b.bucket === probe.label),
+      "the fixture must share a label with a real bucket, or it discriminates nothing",
+    );
+    assert.equal(
+      buckets.find((b) => b.bucket === probe.label).n,
+      0,
+      "label membership is not enough: the leading edge excludes it",
+    );
+  });
+
+  it("counts todo comments and worker state changes together, in the hour each one happened", () => {
+    const project = seedProject("pulse-counts-test");
+    const todo = seedTodo(project, { title: "t" });
+    seedAgent(project, { name: "pulse-worker", actorId: "agent:pulse-1" });
+    seedComment(project, todo, "-2 hours");
+    seedComment(project, todo, "-2 hours");
+    seedLog("agent:pulse-1", "-1 hours");
+
+    const byBucket = Object.fromEntries(fetchPulse(project).map((b) => [b.bucket, b.n]));
+    assert.equal(byBucket[bucketFor("-2 hours")], 2, "both comments land in their own hour");
+    assert.equal(byBucket[bucketFor("-1 hours")], 1, "and the state-log row lands in its own");
+
+    const card = pulseCard(renderDashboard(project));
+    assert.ok(card.includes('<p class="stat-figure">3<span class="stat-unit">events in 24h</span></p>'));
+    assert.ok(card.includes("· 2 events</title>"), "each bar names its own count on hover");
+    assert.ok(card.includes("· 1 event</title>"), "and it is singular for one");
+  });
+
+  it("an event with no bucket label at all is counted from neither source, and the in-window pair proves the fixture can", () => {
+    const project = seedProject("pulse-window-excludes-test");
+    const todo = seedTodo(project, { title: "t" });
+    seedAgent(project, { name: "old-worker", actorId: "agent:pulse-old" });
+    seedComment(project, todo, "-30 hours");
+    seedLog("agent:pulse-old", "-30 hours");
+    assert.equal(
+      fetchPulse(project).reduce((sum, b) => sum + b.n, 0),
+      0,
+      "neither an old comment nor an old state-log row may be counted",
+    );
+    seedComment(project, todo, "-3 hours");
+    seedLog("agent:pulse-old", "-3 hours");
+    assert.equal(
+      fetchPulse(project).reduce((sum, b) => sum + b.n, 0),
+      2,
+      "and the positive control both negatives need: in-window rows from both sources do count",
+    );
+  });
+
+  it("never counts another project's events - state-log rows are scoped by their own actor's agent row", () => {
+    const projectA = seedProject("pulse-scope-a");
+    const projectB = seedProject("pulse-scope-b");
+    const todoB = seedTodo(projectB, { title: "t" });
+    seedComment(projectB, todoB, "-1 hours");
+    seedAgent(projectB, { name: "b-worker", actorId: "agent:pulse-scope-b" });
+    seedLog("agent:pulse-scope-b", "-1 hours");
+    assert.equal(fetchPulse(projectA).reduce((sum, b) => sum + b.n, 0), 0);
+    assert.equal(fetchPulse(projectB).reduce((sum, b) => sum + b.n, 0), 2);
+  });
+
+  it("says so rather than drawing 24 empty bars when nothing happened", () => {
+    const project = seedProject("pulse-empty-test");
+    const card = pulseCard(renderDashboard(project));
+    assert.ok(card.includes("nothing in the last 24 hours"));
+    assert.ok(!card.includes('class="pulse"'), "an all-zero chart is noise, not information");
+  });
+
+  it("draws in the same slot-1 hue as the throughput chart's first series, not an invented one", () => {
+    const project = seedProject("pulse-color-test");
+    const todo = seedTodo(project, { title: "t" });
+    seedComment(project, todo, "-1 hours");
+    const html = renderDashboard(project);
+    assert.ok(/\.pulse-bar\s*{\s*fill:\s*var\(--series-1\)/.test(html));
+  });
+});
+
+describe("renderDashboard: the todo filter (dashboard v2) - client-side, sessionStorage, reload-safe", () => {
+  function makeFilterEnv(storedState, rowTexts) {
+    const sessionData = {};
+    if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
+
+    const rows = rowTexts.map((text) => ({ textContent: text, hidden: false }));
+    const filterInput = { value: "", listeners: {}, addEventListener(t, fn) { this.listeners[t] = fn; } };
+    const countEl = { textContent: "" };
+    const noneEl = { hidden: true };
+    const navCountEl = { textContent: "" };
+    const todosSection = { open: false };
+    const elementsById = {
+      "todo-filter": filterInput,
+      "todo-filter-count": countEl,
+      "todo-filter-none": noneEl,
+      "navcount-todos": navCountEl,
+      "todo-list": { querySelectorAll: () => rows },
+      "section-todos": todosSection,
+      "live-toggle": null,
+      "generated-stamp": null,
+    };
+
+    const env = { rows, filterInput, countEl, noneEl, navCountEl, todosSection,
+      getSessionData: () => sessionData };
+    env.fakeDocument = {
+      querySelectorAll: () => [],
+      getElementById: (id) => (id in elementsById ? elementsById[id] : null),
+    };
+    env.fakeWindow = { scrollY: 0, scrollTo() {}, addEventListener() {} };
+    env.fakeSessionStorage = {
+      getItem: (k) => (k in sessionData ? sessionData[k] : null),
+      setItem: (k, v) => { sessionData[k] = v; },
+    };
+    env.fakeLocation = { reload() {} };
+    env.fakeSetTimeout = () => 1;
+    env.fakeClearTimeout = () => {};
+    return env;
+  }
+
+  const ROWS = ["#1 ship the parser high open", "#2 rewrite the dashboard medium open", "#3 fix the wake low open"];
+
+  it("renders a search input and a live match count above the list, only when there is a list to filter", () => {
+    const empty = seedProject("filter-absent-test");
+    assert.ok(!renderDashboard(empty).includes('id="todo-filter"'), "no todos means nothing to filter");
+    const project = seedProject("filter-present-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const html = renderDashboard(project);
+    assert.ok(html.includes('id="todo-filter"'));
+    assert.ok(html.includes('id="todo-filter-count"'));
+    assert.ok(html.includes('id="todo-list"'), "the script needs a stable handle on the list it filters");
+  });
+
+  it("hides every row whose own text does not contain the query, and counts the survivors", () => {
+    const project = seedProject("filter-behaviour-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const env = makeFilterEnv({ filter: "dashboard" }, ROWS);
+    runToggleScript(extractScript(renderDashboard(project)), env);
+    assert.deepEqual(env.rows.map((r) => r.hidden), [true, false, true]);
+    assert.equal(env.countEl.textContent, "1 of 3 shown");
+    assert.equal(env.navCountEl.textContent, "1", "the section nav count must track the filter, not the render");
+    assert.equal(env.noneEl.hidden, true);
+  });
+
+  it("the stylesheet lets [hidden] win over the display the row rules set, or filtering moves nothing on screen", () => {
+    const project = seedProject("filter-hidden-css-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const html = renderDashboard(project);
+    assert.ok(
+      /\[hidden\]\s*{\s*display:\s*none\s*!important/.test(html),
+      "the script hides rows with el.hidden; an author `display` on those rows outranks the UA sheet's [hidden] rule",
+    );
+    const style = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+    assert.ok(
+      style.indexOf("[hidden]") < style.indexOf("ul.rows > li"),
+      "and it must be declared before the row rules it has to survive",
+    );
+  });
+
+  it("says so, rather than showing an empty list, when nothing matches", () => {
+    const project = seedProject("filter-no-match-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const env = makeFilterEnv({ filter: "zzzznothing" }, ROWS);
+    runToggleScript(extractScript(renderDashboard(project)), env);
+    assert.deepEqual(env.rows.map((r) => r.hidden), [true, true, true]);
+    assert.equal(env.noneEl.hidden, false);
+  });
+
+  it("an empty query hides nothing and reports the full count", () => {
+    const project = seedProject("filter-empty-query-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const env = makeFilterEnv(undefined, ROWS);
+    runToggleScript(extractScript(renderDashboard(project)), env);
+    assert.deepEqual(env.rows.map((r) => r.hidden), [false, false, false]);
+    assert.equal(env.countEl.textContent, "3 shown");
+  });
+
+  it("a stored query survives the 10s reload - a second script run restores it and re-applies it", () => {
+    const project = seedProject("filter-reload-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const scriptSrc = extractScript(renderDashboard(project));
+
+    const first = makeFilterEnv(undefined, ROWS);
+    runToggleScript(scriptSrc, first);
+    first.filterInput.value = "wake";
+    first.filterInput.listeners.input();
+    assert.equal(JSON.parse(first.getSessionData()["hive-dashboard-state"]).filter, "wake");
+
+    const second = makeFilterEnv(JSON.parse(first.getSessionData()["hive-dashboard-state"]), ROWS);
+    runToggleScript(scriptSrc, second);
+    assert.equal(second.filterInput.value, "wake");
+    assert.deepEqual(second.rows.map((r) => r.hidden), [true, true, false]);
+  });
+
+  it("a restored query forces the Todos section open, so the reader is not filtering something they cannot see", () => {
+    const project = seedProject("filter-opens-section-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const env = makeFilterEnv({ filter: "parser", sections: { "section-todos": false } }, ROWS);
+    runToggleScript(extractScript(renderDashboard(project)), env);
+    assert.equal(env.todosSection.open, true);
+  });
+
+  it("reads and writes sessionStorage only - the script never touches localStorage, which file:// makes unreliable", () => {
+    const project = seedProject("filter-storage-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const script = extractScript(renderDashboard(project));
+    assert.ok(/sessionStorage\.(getItem|setItem)/.test(script));
+    assert.ok(
+      !/localStorage\s*[.[]/.test(script),
+      "localStorage is unreliable on a file:// opaque origin; naming it in a comment is fine, calling it is not",
+    );
+  });
+});
+
+describe("renderDashboard: the review round's fixes (lead triage on 645f53c)", () => {
+  it("a forced section-open is not written back as the reader's own choice", () => {
+    const project = seedProject("forced-open-not-persisted-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const html = renderDashboard(project);
+
+    const sessionData = {
+      "hive-dashboard-state": JSON.stringify({ filter: "todo", sections: { "section-todos": false } }),
+    };
+    // The fake MUST be able to observe the write-back: it keeps its toggle
+    // handler and is the same object querySelectorAll and getElementById return.
+    const todosSection = {
+      id: "section-todos",
+      open: false,
+      handlers: {},
+      addEventListener(type, fn) {
+        this.handlers[type] = fn;
+      },
+    };
+    const rows = [{ textContent: "#1 a filterable todo", hidden: false }];
+    const elementsById = {
+      "section-todos": todosSection,
+      "todo-filter": { value: "", addEventListener() {} },
+      "todo-filter-count": { textContent: "" },
+      "todo-filter-none": { hidden: true },
+      "navcount-todos": { textContent: "" },
+      "todo-list": { querySelectorAll: () => rows },
+    };
+    const env = {
+      fakeDocument: {
+        querySelectorAll: (sel) => (sel === "details[id]" ? [todosSection] : []),
+        getElementById: (id) => (id in elementsById ? elementsById[id] : null),
+      },
+      fakeWindow: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+      fakeSessionStorage: {
+        getItem: (k) => (k in sessionData ? sessionData[k] : null),
+        setItem: (k, v) => { sessionData[k] = v; },
+      },
+      fakeLocation: { reload() {} },
+      fakeSetTimeout: () => 1,
+      fakeClearTimeout: () => {},
+    };
+    runToggleScript(extractScript(html), env);
+
+    assert.equal(todosSection.open, true, "the filter must still force it open");
+    assert.ok(todosSection.handlers.toggle, "the fixture must have captured the listener, or it cannot observe the write");
+    todosSection.handlers.toggle();
+    assert.equal(
+      JSON.parse(sessionData["hive-dashboard-state"]).sections["section-todos"],
+      false,
+      "the reader's stored collapse must survive the forced open, not be overwritten by it",
+    );
+
+    todosSection.open = false;
+    todosSection.handlers.toggle();
+    assert.equal(
+      JSON.parse(sessionData["hive-dashboard-state"]).sections["section-todos"],
+      false,
+      "and the suppression is one-shot - a real toggle afterwards still persists",
+    );
+  });
+
+  it("typing restarts the reload timer rather than letting it fire mid-word", () => {
+    const project = seedProject("filter-defers-reload-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const html = renderDashboard(project);
+
+    let armed = 0;
+    let cleared = 0;
+    const filterInput = { value: "", selectionStart: 0, handlers: {}, addEventListener(t, fn) { this.handlers[t] = fn; } };
+    const sessionData = {};
+    const elementsById = {
+      "todo-filter": filterInput,
+      "todo-filter-count": { textContent: "" },
+      "todo-filter-none": { hidden: true },
+      "navcount-todos": { textContent: "" },
+      "todo-list": { querySelectorAll: () => [] },
+      "live-toggle": null,
+      "generated-stamp": null,
+    };
+    const env = {
+      fakeDocument: { querySelectorAll: () => [], getElementById: (id) => (id in elementsById ? elementsById[id] : null) },
+      fakeWindow: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+      fakeSessionStorage: {
+        getItem: (k) => (k in sessionData ? sessionData[k] : null),
+        setItem: (k, v) => { sessionData[k] = v; },
+      },
+      fakeLocation: { reload() {} },
+      fakeSetTimeout: () => { armed++; return armed; },
+      fakeClearTimeout: () => { cleared++; },
+    };
+    runToggleScript(extractScript(html), env);
+    const armedAtLoad = armed;
+    assert.equal(armedAtLoad, 1, "Live defaults on, so the timer is armed once at load");
+
+    filterInput.value = "wa";
+    filterInput.selectionStart = 2;
+    filterInput.handlers.input();
+    assert.equal(cleared, 1, "a keystroke must clear the pending reload");
+    assert.equal(armed, armedAtLoad + 1, "and re-arm it, so the 10s runs from the keystroke and Live stays honest");
+    assert.equal(JSON.parse(sessionData["hive-dashboard-state"]).filterCaret, 2, "the caret is stored for the reload that does happen");
+  });
+
+  it("restores focus and caret only when the filter actually had focus", () => {
+    const project = seedProject("filter-focus-restore-test");
+    seedTodo(project, { title: "a filterable todo" });
+    const html = renderDashboard(project);
+
+    function run(stored) {
+      const focused = [];
+      const ranges = [];
+      const filterInput = {
+        value: "",
+        selectionStart: 0,
+        addEventListener() {},
+        focus: (opts) => focused.push(opts),
+        setSelectionRange: (a, b) => ranges.push([a, b]),
+      };
+      const elementsById = {
+        "todo-filter": filterInput,
+        "todo-filter-count": { textContent: "" },
+        "todo-filter-none": { hidden: true },
+        "navcount-todos": { textContent: "" },
+        "todo-list": { querySelectorAll: () => [] },
+      };
+      runToggleScript(extractScript(html), {
+        fakeDocument: { querySelectorAll: () => [], getElementById: (id) => (id in elementsById ? elementsById[id] : null) },
+        fakeWindow: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+        fakeSessionStorage: { getItem: () => JSON.stringify(stored), setItem() {} },
+        fakeLocation: { reload() {} },
+        fakeSetTimeout: () => 1,
+        fakeClearTimeout: () => {},
+      });
+      return { focused, ranges };
+    }
+
+    const was = run({ filter: "wake", filterFocused: true, filterCaret: 3 });
+    assert.equal(was.focused.length, 1, "focus is restored when the box had it");
+    assert.deepEqual(was.focused[0], { preventScroll: true }, "and without yanking the page's scroll position");
+    assert.deepEqual(was.ranges[0], [3, 3], "with the caret exactly where it was");
+
+    const wasNot = run({ filter: "wake", filterCaret: 3 });
+    assert.equal(wasNot.focused.length, 0, "a reader reading elsewhere must not have focus stolen by a reload");
+  });
+
+  it("the sticky-header offset is measured once and read by both the CSS and the nav highlight", () => {
+    const project = seedProject("header-offset-test");
+    const html = renderDashboard(project);
+    assert.ok(html.includes('id="topbar"'), "the header must be findable to be measured");
+    assert.ok(/--header-offset:/.test(html), "a default must exist for a reader with no JavaScript");
+    assert.ok(
+      /scroll-margin-top:\s*calc\(var\(--header-offset\)/.test(html),
+      "the anchor offset must read the variable, not a second copy of the guess",
+    );
+    const script = extractScript(html);
+    assert.ok(script.includes('setProperty("--header-offset"'), "the script must write the measured height back into it");
+    assert.ok(!/<=\s*140\b/.test(script), "paintNav's hardcoded 140 must be gone");
+    assert.ok(script.includes("headerOffset + 20"), "paintNav must read the same measured number");
+  });
+
+  it("a nav chip keeps an accessible name at narrow widths - the label is hidden visually, not removed", () => {
+    const project = seedProject("navchip-a11y-test");
+    const html = renderDashboard(project);
+    const narrow = html.slice(html.indexOf("@media (max-width: 40rem)"), html.indexOf("@media (prefers-reduced-motion"));
+    assert.ok(narrow.includes(".navchip-label"), "the label is still visually hidden at narrow widths");
+    assert.ok(
+      !/\.navchip-label\s*{[^}]*display:\s*none/.test(narrow),
+      "display:none would strip the chip's only text from the accessibility tree - the icon is aria-hidden",
+    );
+    assert.ok(/\.navchip-label\s*{[^}]*clip:\s*rect\(/.test(narrow), "it must be clipped instead, so it is still announced");
+  });
+
+  it("the workers card scrolls inside itself, so a large crew cannot bury every section below it", () => {
+    const project = seedProject("workers-card-scrolls-test");
+    for (let i = 0; i < 12; i++) seedAgent(project, { name: `crew-${i}`, actorId: `agent:crew-${i}` });
+    const html = renderDashboard(project);
+    assert.ok(html.includes("crew-11"), "every worker is still in the page - the cap is visual, not a truncation");
+    assert.ok(
+      /\.stat-workers\s*{[^}]*max-height:[^}]*overflow:\s*auto/s.test(html),
+      "the card is not collapsible, so an uncapped list is an uncollapsible wall above every section",
+    );
+  });
+
+  it("every sprite symbol is reachable - the orphaned spark one is gone", () => {
+    // One fixture that reaches every state an icon belongs to: a blocked todo
+    // for the lock, and empty pads/wakes/activity for the inbox.
+    const project = seedProject("no-orphan-symbol-test");
+    const blocker = seedTodo(project, { title: "the blocker" });
+    const blocked = seedTodo(project, { title: "a blocked todo" });
+    blockOn(blocked, blocker);
+    const html = renderDashboard(project);
+    assert.ok(!html.includes('id="i-spark"'), "no symbol may sit in the sprite with no icon() call reaching it");
+
+    const defined = [...html.matchAll(/<symbol id="(i-[a-z]+)"/g)].map((m) => m[1]);
+    const used = new Set([...html.matchAll(/<use href="#(i-[a-z]+)">/g)].map((m) => m[1]));
+    assert.ok(used.has("i-lock") && used.has("i-inbox"), "the fixture must reach the conditional icons, or it proves nothing");
+    for (const id of defined) {
+      assert.ok(used.has(id), `sprite symbol ${id} is defined but nothing in this render reaches it`);
+    }
+  });
+});
+
+describe("renderDashboard: the section nav (dashboard v2)", () => {
+  it("links to every collapsible section on the page, and to nothing that is not one", () => {
+    const project = seedProject("nav-links-test");
+    const html = renderDashboard(project);
+    const targets = [...html.matchAll(/class="navchip" href="#section-([a-z]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(
+      targets,
+      ["throughput", "board", "todos", "pads", "wakes", "activity"],
+      "throughput sits under the status cards, pads follows todos, activity is last, and there is no agents section",
+    );
+    for (const id of targets) {
+      assert.ok(html.includes(`id="section-${id}"`), `the nav must not link to a section that is not rendered: ${id}`);
+    }
+  });
+
+  it("carries a count for each section whose count is a number, and none for the two that have no count", () => {
+    const project = seedProject("nav-counts-test");
+    seedTodo(project, { title: "one" });
+    seedTodo(project, { title: "two" });
+    seedAgent(project, { name: "nav-worker", actorId: "agent:nav-1" });
+    const html = renderDashboard(project);
+    assert.ok(html.includes('id="navcount-todos">2</span>'));
+    assert.ok(html.includes('id="navcount-pads">0</span>'));
+    assert.ok(!html.includes('id="navcount-board"'), "rev/updated is not a count");
+    assert.ok(!html.includes('id="navcount-throughput"'), "a 7-day total is not a section count");
+  });
+
+  it("the chip counts the rows the section actually paints, while its header keeps the true total", () => {
+    const project = seedProject("nav-count-is-rendered-test");
+    const todo = seedTodo(project, { title: "a commented todo" });
+    const total = ACTIVITY_SOURCE_LIMIT + 15;
+    for (let i = 0; i < total; i++) {
+      db.prepare(
+        "INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, 'user:test', ?, datetime('now', '-' || ? || ' seconds'))",
+      ).run(todo, `comment ${i}`, i);
+    }
+    const html = renderDashboard(project);
+    const painted = (html.match(/<li class="activity">/g) || []).length;
+    assert.equal(painted, ACTIVITY_SOURCE_LIMIT, "the fixture must exceed the source limit, or rendered equals total and this proves nothing");
+    assert.notEqual(painted, total);
+    assert.ok(
+      html.includes(`id="navcount-activity">${painted}</span>`),
+      "the chip must promise only what the reader will find there",
+    );
+    const start = html.indexOf('id="section-activity"');
+    const summary = html.slice(html.indexOf("<summary", start), html.indexOf("</summary>", start));
+    assert.ok(summary.includes(`${total} recent`), "the section header keeps the true store total");
+  });
+
+  it("marks the section the reader has scrolled into, and only that one", () => {
+    const project = seedProject("nav-current-test");
+    const html = renderDashboard(project);
+
+    const tops = { board: -300, todos: -40, throughput: 400, agents: 700, wakes: 900, activity: 1100, pads: 1300 };
+    const chips = Object.keys(tops).map((id) => {
+      const attrs = { "data-section": id };
+      return {
+        id,
+        attrs,
+        getAttribute: (k) => attrs[k],
+        setAttribute: (k, v) => { attrs[k] = v; },
+        removeAttribute: (k) => { delete attrs[k]; },
+      };
+    });
+    const fakeDocument = {
+      querySelectorAll: (sel) => (sel === ".navchip" ? chips : []),
+      getElementById: (elId) => {
+        const key = elId.replace("section-", "");
+        if (elId.startsWith("section-") && key in tops) {
+          return { getBoundingClientRect: () => ({ top: tops[key] }) };
+        }
+        return null;
+      },
+    };
+    const env = {
+      fakeDocument,
+      fakeWindow: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+      fakeSessionStorage: { getItem: () => null, setItem() {} },
+      fakeLocation: { reload() {} },
+      fakeSetTimeout: () => 1,
+      fakeClearTimeout: () => {},
+    };
+    runToggleScript(extractScript(html), env);
+
+    const current = chips.filter((c) => c.attrs["aria-current"] === "true").map((c) => c.id);
+    assert.deepEqual(current, ["todos"], "the last section whose top has passed under the sticky header wins, alone");
+  });
+
+  it("anchors clear the sticky header rather than scrolling a section title under it", () => {
+    const project = seedProject("nav-scroll-margin-test");
+    const html = renderDashboard(project);
+    assert.ok(/\.section\s*{[^}]*scroll-margin-top:/s.test(html));
+  });
+});
+
 describe("renderDashboard: every collapsed section still says something, via a count in its summary", () => {
 
   function summaryOf(html, sectionId) {
@@ -973,14 +1770,6 @@ describe("renderDashboard: every collapsed section still says something, via a c
     seedTodo(project, { title: "a third open todo" });
     const html = renderDashboard(project);
     assert.ok(summaryOf(html, "todos").includes("3 open, 1 blocked"));
-  });
-
-  it("agents: N running", () => {
-    const project = seedProject("count-agents-test");
-    seedAgent(project, { name: "a", actorId: "agent:count-a" });
-    seedAgent(project, { name: "b", actorId: "agent:count-b" });
-    const html = renderDashboard(project);
-    assert.ok(summaryOf(html, "agents").includes("2 running"));
   });
 
   it("wakes: N pending", () => {
@@ -1035,7 +1824,7 @@ describe("renderDashboard: wakes carry a live/warn status, matching held state",
     const project = seedProject("wake-status-live-test");
     seedWake(project, { body: "ordinary wake", dueInSeconds: 60 });
     const html = renderDashboard(project);
-    assert.ok(html.includes('<span class="status status-live">live</span> pending #'));
+    assert.ok(html.includes('<span class="status status-live">pending</span>'));
   });
 
   it("a held wake reads warn, not live", () => {
@@ -1043,13 +1832,23 @@ describe("renderDashboard: wakes carry a live/warn status, matching held state",
     const { id } = seedWake(project, { body: "stuck wake", dueInSeconds: 60 });
     db.prepare("UPDATE timers SET held_at = datetime('now'), held_reason = 'test hold' WHERE id = ?").run(id);
     const html = renderDashboard(project);
-    assert.ok(html.includes('<span class="status status-warn">warn</span> held #'));
-    assert.ok(!html.includes('<span class="status status-live">live</span> pending #'));
+    assert.ok(html.includes('<span class="status status-warn">held</span>'));
+    assert.ok(!html.includes('<span class="status status-live">pending</span>'));
   });
 });
 
-describe("renderDashboard: the type split - prose for human-written text, mono (the default) for data", () => {
-  it("wraps a todo title in .prose but leaves the agent name and status word unwrapped (data)", () => {
+describe("renderDashboard: the type split inverted for v2 - sans is the default, mono marks identifiers and data", () => {
+  it("the page's own body font is the sans stack, not the mono one", () => {
+    const project = seedProject("sans-first-test");
+    const html = renderDashboard(project);
+    assert.ok(
+      /body\s*{[^}]*font-family:\s*var\(--font-sans\)/s.test(html),
+      "body must set the sans stack; v1 set the mono stack here",
+    );
+    assert.ok(html.includes("--font-mono:"), "the mono stack must still exist for the marked cases");
+  });
+
+  it("wraps a todo title in .prose and an agent name in .mono - human text and identifier are still separated", () => {
     const project = seedProject("type-split-test");
     seedTodo(project, { title: "a human-written title" });
     seedAgent(project, { name: "identifier-worker", actorId: "agent:type-split", agentState: "idle" });
@@ -1057,7 +1856,11 @@ describe("renderDashboard: the type split - prose for human-written text, mono (
     assert.ok(html.includes('<span class="prose">a human-written title</span>'));
     assert.ok(
       !html.includes('<span class="prose">identifier-worker</span>'),
-      "an agent name is an identifier, not prose - it must stay in the default mono font",
+      "an agent name is an identifier, not prose",
+    );
+    assert.ok(
+      html.includes('<span class="mono">identifier-worker</span>'),
+      "an identifier must be marked mono explicitly now that mono is no longer the page default",
     );
   });
 
@@ -1108,12 +1911,47 @@ describe("renderDashboard: color, motion and focus (visual redesign)", () => {
   });
 });
 
-describe("renderDashboard: section headers render as tmux pane-border-status lines", () => {
-  it("every top-level section summary carries the pane-border class and a trailing rule", () => {
-    const project = seedProject("pane-border-test");
+describe("renderDashboard: section headers are card headers - the terminal pane-border chrome is gone (dashboard v2)", () => {
+  it("no box-drawing chrome is generated into a summary, and no rule reintroduces it", () => {
+    const project = seedProject("no-terminal-chrome-test");
     const html = renderDashboard(project);
-    assert.ok(html.includes('<summary class="pane-border">'));
-    assert.ok(/summary\.pane-border::before\s*{\s*content:\s*"[^"]*─/.test(html), "the header rule must use a box-drawing dash, not invented chrome");
+    assert.ok(!html.includes("pane-border"), "the pane-border class must be gone from markup and stylesheet alike");
+    assert.ok(!/summary[^{]*::before\s*{\s*content:\s*"[^"]*[─▸▾]/.test(html), "no summary may draw a box-drawing marker");
+  });
+
+  it("a section summary carries an icon, its title, its count and a disclosure chevron, in that order", () => {
+    const project = seedProject("card-header-test");
+    seedTodo(project, { title: "a todo so the count is not zero" });
+    const html = renderDashboard(project);
+    const start = html.indexOf('id="section-todos"');
+    const summary = html.slice(html.indexOf("<summary", start), html.indexOf("</summary>", start));
+    const order = ["sec-icon", "pb-label", "pb-count", "chev"];
+    let cursor = -1;
+    for (const cls of order) {
+      const at = summary.indexOf(cls, cursor + 1);
+      assert.ok(at > cursor, `the summary must carry ${cls} after the part before it`);
+      cursor = at;
+    }
+  });
+
+  it("the chevron rotates on open rather than swapping one glyph for another", () => {
+    const project = seedProject("chevron-rotate-test");
+    const html = renderDashboard(project);
+    assert.ok(
+      /details\[open\] > summary \.chev\s*{\s*transform:\s*rotate\(180deg\)/.test(html),
+      "open state must rotate the single drawn chevron",
+    );
+  });
+
+  it("every icon on the page comes from the page's own drawn sprite, never a unicode glyph standing in for one", () => {
+    const project = seedProject("icon-sprite-test");
+    seedTodo(project, { title: "a todo" });
+    const html = renderDashboard(project);
+    const used = new Set([...html.matchAll(/<use href="#(i-[a-z]+)">/g)].map((m) => m[1]));
+    assert.ok(used.size > 0, "the page must actually use the sprite");
+    for (const id of used) {
+      assert.ok(html.includes(`<symbol id="${id}"`), `sprite symbol ${id} must be defined in the page itself`);
+    }
   });
 });
 
@@ -1250,7 +2088,7 @@ describe("the scheduler hook: rate-limited claim, not a lockfile (todo 309)", ()
     setDashboardKey(root, true);
     await tick(null);
 
-    assert.ok(readFileSync(indexPath(root), "utf8").includes('status-live">live</span> working'));
+    assert.ok(readFileSync(indexPath(root), "utf8").includes('status-live">working</span>'));
 
     db.prepare(
       "UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE actor_id = 'agent:claim-state'",
@@ -1261,7 +2099,7 @@ describe("the scheduler hook: rate-limited claim, not a lockfile (todo 309)", ()
     await tick(null);
 
     assert.ok(
-      readFileSync(indexPath(root), "utf8").includes('status-ok">ok</span> idle'),
+      readFileSync(indexPath(root), "utf8").includes('status-ok">idle</span>'),
       "the state transition must be picked up",
     );
   });
@@ -1364,7 +2202,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
 
     const content = readFileSync(indexPath(root), "utf8");
     assert.ok(!content.includes("the board pad content"), "a deleted board pad must not go on rendering");
-    assert.ok(content.includes('No pad named "board"'), "the page must say plainly that the board pad is gone");
+    assert.ok(content.includes("This project has no board pad."), "the page must say plainly that the board pad is gone");
   });
 
   it("regenerates index.html after it is deleted from disk, even though the store itself has not changed", async () => {
