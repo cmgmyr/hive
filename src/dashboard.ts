@@ -460,7 +460,7 @@ export function fetchDayStats(projectId: number): DayStats[] {
   return stats;
 }
 
-const CHART_WIDTH = 640;
+const CHART_WIDTH = 960;
 const CHART_HEIGHT = 244;
 const CHART_PAD_LEFT = 40;
 const CHART_PAD_RIGHT = 18;
@@ -1126,13 +1126,13 @@ const STYLE = `
   .empty-hint { margin: 0; font-size: 0.8125rem; color: var(--fg-subtle); max-width: 42ch;
     margin-inline: auto; }
 
-  svg.chart { width: 100%; max-width: 52rem; height: auto; display: block; margin: 0 0 0.9rem;
+  svg.chart { width: 100%; height: auto; display: block; margin: 0 0 0.9rem;
     color: var(--fg-muted); }
-  .chart .panel-title { font-size: 11px; font-weight: 600; fill: var(--fg-muted);
+  .chart .panel-title { font-size: 13px; font-weight: 600; fill: var(--fg-muted);
     font-family: var(--font-sans); letter-spacing: 0.01em; }
-  .chart .tick { font-size: 10px; fill: var(--fg-subtle); font-family: var(--font-sans);
+  .chart .tick { font-size: 12px; fill: var(--fg-subtle); font-family: var(--font-sans);
     font-variant-numeric: tabular-nums; }
-  .chart .point-label { font-size: 11px; font-weight: 600; fill: var(--fg-muted);
+  .chart .point-label { font-size: 13px; font-weight: 600; fill: var(--fg-muted);
     font-family: var(--font-sans); font-variant-numeric: tabular-nums; }
   .chart .grid { stroke: var(--grid); stroke-dasharray: 3 4; }
   .chart .axis { stroke: var(--border-strong); }
@@ -1148,7 +1148,7 @@ const STYLE = `
   .hit { fill: var(--hit); fill-opacity: 0; }
   .hit:hover { fill-opacity: 0.045; }
 
-  .chart-table { width: 100%; max-width: 52rem; border-collapse: collapse; font-size: 0.8125rem;
+  .chart-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem;
     font-variant-numeric: tabular-nums; }
   .chart-table th, .chart-table td { padding: 0.35rem 0.4rem; text-align: right;
     border-bottom: 1px solid var(--border); }

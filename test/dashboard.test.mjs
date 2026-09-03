@@ -433,6 +433,17 @@ describe("renderDashboard: 7-day throughput chart (Chris's follow-up request)", 
     assert.ok(/<svg[^>]*class="chart"/.test(html));
     assert.ok(!/<img\b/i.test(html), "no <img> - the chart must be inline SVG, not a rendered/uploaded image");
   });
+
+  it("the chart and its table span the section body - neither rule caps its own width", () => {
+    const project = seedProject("chart-full-width-test");
+    const html = renderDashboard(project);
+    const chartStart = html.indexOf("svg.chart {");
+    const chartRule = html.slice(chartStart, html.indexOf("}", chartStart) + 1);
+    const tableStart = html.indexOf(".chart-table {");
+    const tableRule = html.slice(tableStart, html.indexOf("}", tableStart) + 1);
+    assert.ok(!/max-width/.test(chartRule), "svg.chart must not cap its own width - the section body already does");
+    assert.ok(!/max-width/.test(tableRule), ".chart-table must not cap its own width - the section body already does");
+  });
 });
 
 describe("renderDashboard: the workers card is the whole worker list (the In Flight section it duplicated is gone)", () => {
