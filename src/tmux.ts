@@ -333,6 +333,13 @@ export interface OrphanScratchServers {
 export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: number } = {}):
   | OrphanScratchServers
   | null {
+  try {
+    if (process.env.HIVE_ORPHAN_SCRATCH_JSON) {
+      return JSON.parse(process.env.HIVE_ORPHAN_SCRATCH_JSON) as OrphanScratchServers;
+    }
+  } catch {
+
+  }
   const minAgeMs = options.minAgeMs ?? ORPHAN_MIN_AGE_MS;
   const budgetMs = options.budgetMs ?? ORPHAN_PROBE_BUDGET_MS;
   const now = Date.now();

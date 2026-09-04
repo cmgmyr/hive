@@ -20,6 +20,19 @@ const DOCTOR_COMPLETED = /\n(All good\.|\d+ problem\(s\) found,)/;
 // Same threshold pair test/ptys.test.mjs's isLowHeadroom suite pins: 461/511 crosses, 459/511 does not.
 const HEALTHY = { allocated: 459, max: 511, orphanLoginShells: 0, source: "fixture" };
 const AT_MARGIN = { allocated: 461, max: 511, orphanLoginShells: 2, source: "fixture" };
+const SCRATCH_NONE = {
+  candidates: 0, aged: 0, probed: 0, live: 0, wedged: 0, oldestMs: null, sockets: [], entries: [],
+};
+const SCRATCH_LIVE = {
+  candidates: 1, aged: 1, probed: 1, live: 1, wedged: 0, oldestMs: 3_600_000,
+  sockets: ["/tmp/hive-tmux-fixture/tmux-0/default"],
+  entries: [{ socket: "/tmp/hive-tmux-fixture/tmux-0/default", state: "live", ageMs: 3_600_000 }],
+};
+const SCRATCH_WEDGED = {
+  candidates: 1, aged: 1, probed: 1, live: 0, wedged: 1, oldestMs: 3_600_000,
+  sockets: ["/tmp/hive-tmux-fixture/tmux-0/default"],
+  entries: [{ socket: "/tmp/hive-tmux-fixture/tmux-0/default", state: "wedged", ageMs: 3_600_000 }],
+};
 
 function shellsEnv(ages) {
   return JSON.stringify(
@@ -48,6 +61,7 @@ describe(
           ...baseEnv,
           HIVE_PTY_HEADROOM_JSON: JSON.stringify(AT_MARGIN),
           HIVE_PTY_PS_ROWS_JSON: shellsEnv([12, 3]),
+          HIVE_ORPHAN_SCRATCH_JSON: JSON.stringify(SCRATCH_NONE),
         },
       });
 
@@ -72,6 +86,36 @@ describe(
         /node scripts\/sweep-scratch\.mjs/,
         `must name the command that fixes it; got: ${stdout}`,
       );
+    });
+
+    it("uses the faked live scratch-server count in both doctor lines", async () => {
+      const { stdout } = await runCli(["doctor"], {
+        ...opts,
+        env: {
+          ...baseEnv,
+          HIVE_PTY_HEADROOM_JSON: JSON.stringify(AT_MARGIN),
+          HIVE_PTY_PS_ROWS_JSON: shellsEnv([]),
+          HIVE_ORPHAN_SCRATCH_JSON: JSON.stringify(SCRATCH_LIVE),
+        },
+      });
+
+      assert.match(stdout, /1 orphaned scratch tmux server\(s\) still holding a socket/);
+      assert.match(stdout, /1 orphaned server\(s\) on scratch sockets \(1 answering, 0 not answering/);
+    });
+
+    it("counts a faked wedged scratch server as holding a socket", async () => {
+      const { stdout } = await runCli(["doctor"], {
+        ...opts,
+        env: {
+          ...baseEnv,
+          HIVE_PTY_HEADROOM_JSON: JSON.stringify(AT_MARGIN),
+          HIVE_PTY_PS_ROWS_JSON: shellsEnv([]),
+          HIVE_ORPHAN_SCRATCH_JSON: JSON.stringify(SCRATCH_WEDGED),
+        },
+      });
+
+      assert.match(stdout, /1 orphaned scratch tmux server\(s\) still holding a socket/);
+      assert.match(stdout, /1 orphaned server\(s\) on scratch sockets \(0 answering, 1 not answering/);
     });
 
     it("says '0 orphaned login shell(s)' rather than omitting the line when none qualify", async () => {

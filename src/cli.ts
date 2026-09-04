@@ -1717,7 +1717,7 @@ function reportMcpRegistrations(project: Project | null): void {
   }
 }
 
-const PTY_OVERRIDE_VARS = ["HIVE_PTY_HEADROOM_JSON", "HIVE_PTY_PS_ROWS_JSON"];
+const PTY_OVERRIDE_VARS = ["HIVE_PTY_HEADROOM_JSON", "HIVE_PTY_PS_ROWS_JSON", "HIVE_ORPHAN_SCRATCH_JSON"];
 
 function ptyOverrideNote(): string {
   const active = PTY_OVERRIDE_VARS.filter((v) => process.env[v]);
