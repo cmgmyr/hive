@@ -130,6 +130,20 @@ describe("the generated hooks.json matches claude's exact nesting (the H1 schema
     assert.deepEqual(written.hooks.Stop, [hookEntry("stop")]);
     assert.deepEqual(written.hooks.UserPromptSubmit, [hookEntry("prompt")]);
   });
+
+  it("wires SessionEnd to hook.js session_end, only for a lead home (todo 782)", () => {
+    const key = `lead-${counter}`;
+    build({ key, lead: true });
+    const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+    assert.deepEqual(written.hooks.SessionEnd, [hookEntry("session_end")]);
+  });
+
+  it("omits SessionEnd for an ordinary worker home - HIVE_LEAD gates stopProcessesForEndedLead anyway, so a worker's copy could only ever no-op", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+    assert.equal("SessionEnd" in written.hooks, false);
+  });
 });
 
 describe("the cleanup skill ships with a lead home (todo 575 requirement 3)", () => {

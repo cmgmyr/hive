@@ -679,14 +679,17 @@ async function cmdLead(argv: string[]): Promise<void> {
       // must not survive the throw, because nothing records newCodexHomeKey anywhere until the CAS
       // UPDATE below succeeds - an unrecorded key is unreapable by every other path in this file.
       let homeArgs: string[];
+      let hooksWired: string[];
       try {
-        homeArgs = ensureCodexHome({
+        const home = ensureCodexHome({
           key: newCodexHomeKey,
           actorId: leadActorId,
           cwd: project.path,
           brief: renderedPosture ?? "",
           lead: true,
-        }).extraArgs;
+        });
+        homeArgs = home.extraArgs;
+        hooksWired = home.hooksWired;
       } catch (e) {
         reapCodexHome(newCodexHomeKey);
         throw e;
@@ -698,7 +701,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       if (renderedPosture !== null) {
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
       }
-      console.log(`- codex home: ${codexHomeDir(newCodexHomeKey)} (SessionStart/Stop/UserPromptSubmit hooks wired)`);
+      console.log(`- codex home: ${codexHomeDir(newCodexHomeKey)} (${hooksWired.join("/")} hooks wired)`);
     }
 
     const envFlags = buildEnvFlags({

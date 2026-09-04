@@ -13,7 +13,10 @@ more from Claude Code 2.1.240 on 2026-08-20: `stop-shell-running.json` and
 `stop-monitors-running.json`, source rows 7550 and 6809. Two more from Claude
 Code 2.1.260 on 2026-09-04: `session-end-clear.json` and
 `session-end-prompt-input-exit.json`, source rows 1 and 2 of a scratch store
-(see "capturing an event hive does not wire yet" below).
+(see "capturing an event hive does not wire yet" below). One from codex-cli
+0.151.0, also on 2026-09-04: `session-end-codex-other.json`, source row 2 of
+a separate scratch store, captured by temporarily wiring `SessionEnd` into a
+lead codex home the same way (todo 782 S1).
 
 Capture command, so a re-capture is not a reconstruction:
 
@@ -87,13 +90,26 @@ beyond identity is still a re-capture.
   hive.yml processes are stopped (todo 765). The two were captured in one
   sitting, which is why their `session_id`s differ: `/clear` had already
   started the second session.
+- `session-end-codex-other.json` — codex's `SessionEnd`, `reason: "other"`.
+  Captured twice, once from codex's own quit command (`/quit`) and once from
+  Ctrl-C twice; both produced the byte-identical shape, so one fixture covers
+  the reason (todo 782 S1). A codex lead is gone, so its project's hive.yml
+  processes are stopped, the same as claude's `prompt_input_exit`/`logout`.
 
-`src/hook.ts` acts on exactly two reasons, `prompt_input_exit` and `logout`,
-and stops nothing for any other value. That is an allowlist, so `clear`,
-`other`, and a reason nobody has seen yet all fall on the same side: they stop
-nothing. The set is documented rather than observed - only `prompt_input_exit`
-and `clear` have ever been captured - and the two that act are the two Claude
-Code documents as the session being over for good.
+`src/hook.ts` resolves each harness's own terminal-reason allowlist
+(`HarnessCapabilities.terminalSessionEndReasons`, `src/harnesses.ts`) from the
+ending lead's own row rather than sharing one set. Claude acts on exactly two
+reasons, `prompt_input_exit` and `logout`, and stops nothing for any other
+value: `clear`, `other`, and a reason nobody has seen yet all fall on the same
+side for claude. Codex acts on exactly one, `other` - the only reason ever
+observed from it, for both of its clean-exit paths - and stops nothing for
+`prompt_input_exit` or `logout`, which mean nothing to a codex lead's own row.
+Each set is documented rather than assumed: claude's `prompt_input_exit` and
+`clear` have both been captured, and codex has only ever been observed to send
+`other`. The two claude reasons that act are the two Claude Code documents as
+the session being over for good; codex documents no such list, so `other`
+being the only value ever observed, on both its exit paths, is what the
+allowlist rests on rather than any documented guarantee.
 
 The conservative default costs nothing here, which is why it is the default.
 Every pane hive creates for a lead carries a tmux `pane-exited` backstop, and
@@ -135,14 +151,17 @@ it is not a fixture here. An invented payload asserting invented behaviour
 would be worse than no fixture: it would assert what someone guessed
 `stateFor` should do, not what it was proven to do against a real payload.
 
-`SessionEnd`'s `reason` has only ever been observed as `clear` and
+Claude's `SessionEnd` `reason` has only ever been observed as `clear` and
 `prompt_input_exit`. Claude Code documents `logout` and `other` as well, and
-neither is fixtured because neither has been observed. This is why `reason` is
-a canary discriminator path: the code that reads it (`src/hook.ts`) acts on an
-allowlist of two, so an unobserved value stops nothing and cannot do harm on
-its own - but a value that turns out to be an ordinary way a lead exits would
-leave the SessionEnd path silently doing nothing, and the canary is what tells
-you it exists.
+neither is fixtured because neither has been observed from claude. This is why
+`reason` is a canary discriminator path: the code that reads it (`src/hook.ts`,
+via each harness's own `terminalSessionEndReasons`) acts on an allowlist per
+harness, so an unobserved value stops nothing and cannot do harm on its own -
+but a value that turns out to be an ordinary way a lead exits would leave the
+SessionEnd path silently doing nothing, and the canary is what tells you it
+exists. Codex's own `reason` has only ever been observed as `other`, from both
+of its clean-exit paths; codex documents no reason vocabulary at all, so
+nothing narrower than "every exit sends `other`" can be claimed for it.
 
 `notification_type` has only ever been observed as `idle_prompt` and
 `permission_prompt`. `elicitation_complete`, named in issue #32 as a concern,

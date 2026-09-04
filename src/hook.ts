@@ -120,25 +120,27 @@ function stateForNotification(payload: HookPayload): string | null {
   return idlePrompt ? null : "waiting";
 }
 
-// An allowlist, not a denylist: only these two mean the lead is gone for good. `clear` starts a new
-// session in the SAME pane, `other` is whatever Claude Code has no name for, and an unobserved
-// reason could be either, so all three stop nothing (todo 765; the reasoning is in
-// test/fixtures/hook-payloads/README.md).
-const TERMINAL_SESSION_END_REASONS = new Set(["prompt_input_exit", "logout"]);
-
+// Each harness keys its own terminal-reason allowlist (HarnessCapabilities.terminalSessionEndReasons,
+// src/harnesses.ts) rather than sharing one: claude's `clear`, `other`, and an unobserved reason all
+// stop nothing (todo 765; test/fixtures/hook-payloads/README.md), and codex's vocabulary is disjoint
+// from claude's rather than a superset of it (todo 782).
+//
 // ~/.hive/hooks.json is one file per store, shared by every lead and every worker of every project,
 // so this event fires far more often than it acts. HIVE_LEAD is set only in a lead's own pane
 // (src/cli.ts, cmdLead's envFlags), and the project comes from that lead's own row rather than cwd.
 async function stopProcessesForEndedLead(actorId: string, payload: HookPayload): Promise<void> {
   if (process.env.HIVE_LEAD !== "1") return;
-  if (typeof payload.reason !== "string" || !TERMINAL_SESSION_END_REASONS.has(payload.reason)) return;
+  if (typeof payload.reason !== "string") return;
   const row = db
-    .prepare("SELECT project_id FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
-    .get(actorId) as { project_id: number } | undefined;
+    .prepare("SELECT project_id, command FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
+    .get(actorId) as { project_id: number; command: string } | undefined;
   if (!row) return;
 
-  // Imported here and nowhere above: this pulls tmux, the yaml parser and the project config, and
-  // every other event in this file runs on every turn of every session without needing any of it.
+  // Imported here and nowhere above: harnesses.ts itself pulls tmux at module scope, and every
+  // other event in this file runs on every turn of every session without needing any of it.
+  const { harnessFor } = await import("./harnesses.js");
+  if (!harnessFor(row.command).terminalSessionEndReasons.includes(payload.reason)) return;
+
   const { stopAllProcesses, STOP_REASONS } = await import("./processes.js");
   stopAllProcesses(row.project_id, STOP_REASONS.leadSessionEnded);
 }

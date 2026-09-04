@@ -64,6 +64,11 @@ export interface HarnessCapabilities {
   // The CLI's own [PROMPT] positional, auto-submitted as the first user turn. null for claude on
   // purpose: its SessionStart hook already synthesizes one, so this would fire a second time.
   readonly initialPromptArgs: ((message: string) => string[]) | null;
+
+  // SessionEnd `reason` values this harness sends for a session that is over for good, read by
+  // src/hook.ts's stopProcessesForEndedLead. An allowlist, not a denylist: an unobserved value
+  // stops nothing rather than guessing (test/fixtures/hook-payloads/README.md).
+  readonly terminalSessionEndReasons: readonly string[];
 }
 
 export function commandHead(command: string): string {
@@ -136,6 +141,10 @@ const claudeHarness: HarnessCapabilities = {
   needsHome: false,
 
   initialPromptArgs: null,
+
+  // clear, other, and an unobserved value all stop nothing (todo 765; test/fixtures/hook-payloads/
+  // README.md). Only these two are what Claude Code documents as the session being over for good.
+  terminalSessionEndReasons: ["prompt_input_exit", "logout"],
 };
 
 export const codexHarness: HarnessCapabilities = {
@@ -173,6 +182,12 @@ export const codexHarness: HarnessCapabilities = {
 
   // Auto-submits with no Enter; verified live on v0.149.0.
   initialPromptArgs: (message) => [message],
+
+  // Measured live on 0.151.0 (todo 782 S1): both `/quit` and Ctrl-C twice fire SessionEnd with
+  // reason "other" - never claude's `prompt_input_exit` or `logout`. Codex's vocabulary is
+  // disjoint from claude's, not a superset of it, so it gets its own set rather than joining
+  // claude's.
+  terminalSessionEndReasons: ["other"],
 };
 
 const unknownHarness: HarnessCapabilities = {
@@ -201,6 +216,9 @@ const unknownHarness: HarnessCapabilities = {
   needsHome: false,
 
   initialPromptArgs: null,
+
+  // An unrecognized command's vocabulary is unknown, so it stops nothing rather than guessing.
+  terminalSessionEndReasons: [],
 };
 
 const HARNESSES: HarnessCapabilities[] = [claudeHarness, codexHarness];
@@ -234,7 +252,12 @@ export function registerHarness(harness: HarnessCapabilities): void {
         "classify. Set classifiesPaneScreen, or leave supportsRename off.",
     );
   }
-  HARNESSES.push(harness);
+  // Defends a JS caller (a test stub, or a future third-party registration with no TypeScript
+  // check behind it) that omits this field: src/hook.ts calls .includes() on it unconditionally,
+  // and undefined.includes would throw, silently swallowed by the try/catch around that call -
+  // the exact silent-no-op failure mode this whole capability exists to prevent, just for the
+  // registering harness instead of a shipped one.
+  HARNESSES.push({ ...harness, terminalSessionEndReasons: harness.terminalSessionEndReasons ?? [] });
 }
 
 export function unregisterHarness(name: string): void {

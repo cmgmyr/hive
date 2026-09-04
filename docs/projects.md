@@ -82,13 +82,13 @@ A process never outlives the lead that owns the session unless you chose that. F
 | What happened | Reason hive records |
 |---|---|
 | You ran `hive stop <name>` or `hive stop --all` | `hive stop` |
-| You ended the lead's Claude Code session with `/exit` or a logout | `lead session ended` |
+| You ended the lead's session cleanly: `/exit` or a logout for claude, `/quit` or Ctrl-C twice for codex | `lead session ended` |
 | The lead's own process died: a crash, a signal, or you quit it | `lead pane exited` |
 | A fresh `hive lead` found processes a previous lead had left running | `left running by a previous lead` |
 
-Only `/exit` and a logout count as the session ending, because those are the two reasons Claude Code documents as the session being over for good. Everything else is treated as the lead still being there. `/clear` is the obvious one: it ends the session and starts a new one in the same pane, so that lead still owns its processes. Being careful here costs nothing, since a lead whose pane really died is covered by the tmux hook instead, the `lead pane exited` row above.
+Each harness gets its own allowlist of reasons that count as the session ending for good, because their vocabularies do not overlap. For claude, only `/exit` and a logout count, the two reasons Claude Code documents as the session being over. Everything else is treated as the lead still being there; `/clear` is the obvious one, since it ends the session and starts a new one in the same pane, so that lead still owns its processes. For codex, the only reason ever observed is the one both its quit command and Ctrl-C twice send; codex has no `/clear` equivalent. Being careful here costs nothing, since a lead whose pane really died is covered by the tmux hook instead, the `lead pane exited` row above.
 
-If you `/exit` a lead and then start `claude` again in that pane by hand, its processes are already stopped and nothing brings them back: only `hive lead` starts them. Start them with `hive start <name>`, or restart the lead through `hive lead` and let it do it for you.
+If you exit a lead cleanly and then start it again in that pane by hand, its processes are already stopped and nothing brings them back: only `hive lead` starts them. Start them with `hive start <name>`, or restart the lead through `hive lead` and let it do it for you.
 
 Workers are never stopped by any of this, deliberately. You often want to finish with a worker after the lead is closed, so closing a lead takes down its processes and leaves its crew alone.
 
@@ -100,7 +100,7 @@ hive stop queue:work  # queue:work: stopped (killed after 2s)
 hive stop --all       # one line per running process
 ```
 
-The two automatic paths cover different deaths, and you need both. The Claude Code hook covers a session that ends cleanly. The tmux hook covers a process that dies without ending its session, and it is the only one of the two that a codex lead has, since hive does not wire a session hook for codex.
+The two automatic paths cover different deaths, and you need both. The session-end hook covers a session that ends cleanly, and both harnesses have it: claude fires it through its own `SessionEnd` hook, codex through the same event on its own lead home. The tmux hook covers a process that dies without ending its session, for both harnesses alike.
 
 One gap is worth knowing about. tmux fires nothing at all for a pane destroyed with `tmux kill-pane`, so a process survives that until something else stops it. The documented restart path, `scripts/restart-lead.sh`, kills the lead pane and then runs `hive lead`, and that `hive lead` is what stops the leftovers and starts them again. If you kill a lead pane by hand and do not restart it, clear its processes with `hive stop --all`.
 

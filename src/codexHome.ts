@@ -159,7 +159,7 @@ export function codexLaunchArgs(cwd: string): string[] {
 }
 
 // Generates a per-worker home: auth.json symlinked (never copied), hooks.json, config.toml.
-export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } {
+export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; hooksWired: string[] } {
   // Keep every refusing guard ABOVE the first write: a throw after one leaves a partial home the
   // caller cannot tell from a real one.
   if (!existsSync(process.execPath)) {
@@ -198,22 +198,16 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
 
   // Subagent hooks, not the Stop payload's background_tasks, which codex never sends. No
   // Notification: unreachable for codex by design (test/codex-notify-unreachable.test.mjs).
-  writeFileSync(
-    join(home, "hooks.json"),
-    JSON.stringify(
-      {
-        hooks: {
-          ...(input.lead ? { SessionStart: [kickoffHookEntry()] } : {}),
-          Stop: [hookEntry("stop")],
-          UserPromptSubmit: [hookEntry("prompt")],
-          SubagentStart: [hookEntry("subagent_start")],
-          SubagentStop: [hookEntry("subagent_stop")],
-        },
-      },
-      null,
-      2,
-    ) + "\n",
-  );
+  const hooks = {
+    // A worker's SessionEnd would be a no-op anyway (HIVE_LEAD gates stopProcessesForEndedLead
+    // in src/hook.ts), so a worker home carries no hook that can never act.
+    ...(input.lead ? { SessionStart: [kickoffHookEntry()], SessionEnd: [hookEntry("session_end")] } : {}),
+    Stop: [hookEntry("stop")],
+    UserPromptSubmit: [hookEntry("prompt")],
+    SubagentStart: [hookEntry("subagent_start")],
+    SubagentStop: [hookEntry("subagent_stop")],
+  };
+  writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks }, null, 2) + "\n");
 
   const indexJs = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
@@ -239,5 +233,5 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[] } 
     }),
   );
 
-  return { extraArgs: codexLaunchArgs(input.cwd) };
+  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired: Object.keys(hooks) };
 }

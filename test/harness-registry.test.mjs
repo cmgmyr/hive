@@ -191,6 +191,11 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(paneClassifierFor("bash"), null, "a real, unrecognised command still resolves to no classifier");
   });
 
+  it("defaults a stub harness's missing terminalSessionEndReasons to [], so a JS registration built with no TypeScript check behind it cannot make src/hook.ts's .includes() throw (todo 782 fix round)", () => {
+    assert.deepEqual(harnessFor("widget").terminalSessionEndReasons, []);
+    assert.doesNotThrow(() => harnessFor("widget").terminalSessionEndReasons.includes("other"));
+  });
+
   it("leaves the claude entry's own capabilities untouched by registering a neighbour", () => {
     const claude = harnessFor("claude");
     assert.equal(claude.stateSource, true);

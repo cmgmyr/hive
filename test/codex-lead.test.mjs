@@ -77,15 +77,27 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
     const session = sessionName();
     after(() => cleanup(session));
 
+    let freshResult;
+
     it("wires hooks and posture through the home instead of printing the claude-only skip messages", async () => {
-      const result = await runCli(["lead"], cliOpts(projectDir));
-      assert.equal(result.code, 0, result.stderr);
-      assert.doesNotMatch(result.stdout, /skipping hooks/, "a codex lead must not take the claude-only skip path");
-      assert.doesNotMatch(result.stdout, /skipping profile/, "posture is delivered through the home, not skipped");
+      freshResult = await runCli(["lead"], cliOpts(projectDir));
+      assert.equal(freshResult.code, 0, freshResult.stderr);
+      assert.doesNotMatch(freshResult.stdout, /skipping hooks/, "a codex lead must not take the claude-only skip path");
+      assert.doesNotMatch(freshResult.stdout, /skipping profile/, "posture is delivered through the home, not skipped");
 
       const row = leadRow(db, project.id);
       assert.notEqual(row.codex_home, "", "a codex lead's row must record its generated home key");
       assert.ok(existsSync(codexHomeDir(row.codex_home)), "the home directory must actually exist on disk");
+    });
+
+    it("the codex home receipt line names the events actually wired in hooks.json, not a hardcoded claim (todo 782 fix round)", () => {
+      const row = leadRow(db, project.id);
+      const hooks = JSON.parse(readFileSync(join(codexHomeDir(row.codex_home), "hooks.json"), "utf8")).hooks;
+      const expected = `- codex home: ${codexHomeDir(row.codex_home)} (${Object.keys(hooks).join("/")} hooks wired)`;
+      assert.ok(
+        freshResult.stdout.includes(expected),
+        `expected the receipt to name the real hooks.json keys (${JSON.stringify(Object.keys(hooks))}), got stdout:\n${freshResult.stdout}`,
+      );
     });
 
     it("appends the home's launch flags and the triage message as codex's own [PROMPT] positional, live-verified to auto-submit with no keystroke", async () => {
