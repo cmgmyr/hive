@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, codexLaunchArgs, ensureCodexHome } from "../codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import {
   commandHead,
@@ -515,6 +515,7 @@ export function registerAgents(server: McpServer): void {
         worktree_install: z.string().optional(),
         brief_path: z.string().optional(),
         codex_home: z.string().optional(),
+        codex_instructions: z.string().optional(),
         ready: z.boolean().optional(),
         exited: z.boolean().optional(),
         note: z.string().optional(),
@@ -593,12 +594,18 @@ export function registerAgents(server: McpServer): void {
         // Minted before the agent row exists (unlike agentId/actorId), so CODEX_HOME's own path can
         // go straight into launchAgent's static env below rather than needing agentId to name it.
         const codexHomeKey = harness.needsHome ? randomUUID() : undefined;
+        // Set inside buildCommand (below), which ensureCodexHome runs in - captured here so the
+        // receipt built after launchAgent returns can still name which layers were found.
+        let codexInstructionLayers: string[] = [];
         const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
           const brief = harness.briefDelivery || codexHomeKey ? workerBrief(briefFor(actorId)) : undefined;
           const briefPath = harness.briefDelivery ? writeAgentBrief(agentId, brief!) : undefined;
-          const homeArgs = codexHomeKey
-            ? ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief! }).extraArgs
-            : [];
+          let homeArgs: string[] = [];
+          if (codexHomeKey) {
+            const home = ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief! });
+            homeArgs = home.extraArgs;
+            codexInstructionLayers = home.instructionLayers;
+          }
           return workerCommandString({
             command: baseCommand,
             displayName: name,
@@ -688,6 +695,8 @@ export function registerAgents(server: McpServer): void {
           }
         }
 
+        const codexInstructions = codexHomeKey ? codexInstructionsPhrase(codexInstructionLayers) : undefined;
+
         return {
           agent_id: agentId,
           actor_id: actorId,
@@ -706,6 +715,7 @@ export function registerAgents(server: McpServer): void {
             ? {
                 ...(harness.briefDelivery ? { brief_path: agentBriefPath(agentId) } : {}),
                 ...(codexHomeKey ? { codex_home: codexHomeDir(codexHomeKey) } : {}),
+                ...(codexInstructions ? { codex_instructions: codexInstructions } : {}),
 
                 ready,
                 ...(ready

@@ -136,6 +136,38 @@ describe("agent_spawn: a failed codex launch does not orphan its CODEX_HOME", ()
   });
 });
 
+describe("agent_spawn: the receipt names which instruction layers (todo 787) were found", () => {
+  it("carries codex_instructions and symlinks/appends both layers when global AGENTS.md and a primary-root CLAUDE.local.md exist", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const globalAgents = join(fakeHome, ".codex", "AGENTS.md");
+    writeFileSync(globalAgents, "GLOBAL SENTINEL");
+    const localOverride = join(dirs.projectDir, "CLAUDE.local.md");
+    writeFileSync(localOverride, "LOCAL SENTINEL");
+    try {
+      const receipt = await mcp.call("agent_spawn", { name: "codex-worker-layers", command: fakeCodexBin });
+      assert.equal(receipt.codex_instructions, "instructions: global, local");
+
+      const home = receipt.codex_home;
+      await until(() => existsSync(join(home, "config.toml")), 5000);
+      assert.equal(readFileSync(join(home, "AGENTS.md"), "utf8"), "GLOBAL SENTINEL");
+      const config = parseToml(readFileSync(join(home, "config.toml"), "utf8"));
+      assert.match(config.developer_instructions, /LOCAL SENTINEL/);
+    } finally {
+      rmSync(globalAgents, { force: true });
+      rmSync(localOverride, { force: true });
+    }
+  });
+
+  it("declares codex_instructions in agent_spawn's own outputSchema, not just in the runtime receipt", async () => {
+    const listed = await mcp.request("tools/list", {});
+    const spawnTool = listed.result.tools.find((t) => t.name === "agent_spawn");
+    assert.ok(spawnTool.outputSchema, "agent_spawn must declare an outputSchema at all");
+    assert.ok(
+      "codex_instructions" in spawnTool.outputSchema.properties,
+      `codex_instructions is a real receipt field but missing from outputSchema.properties: ${Object.keys(spawnTool.outputSchema.properties)}`,
+    );
+  });
+});
+
 describe("launchAgent: the agents row is queryable before a function commandString ever runs", () => {
   // codexHome reaping (agent_close, the janitor backstop) trusts that a codex-homes/<key>
   // directory never exists without an agents row naming it first, because that ordering is what

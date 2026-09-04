@@ -206,3 +206,34 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
     });
   });
 });
+
+describe("a codex lead's receipt names which instruction layers (todo 787) were found", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  const layersHome = join(dirs.tmp, "codex-lead-layers-home");
+  mkdirSync(join(layersHome, ".codex"), { recursive: true });
+  writeFileSync(join(layersHome, ".codex", "auth.json"), JSON.stringify({ tokens: "not real" }));
+  writeFileSync(join(layersHome, ".codex", "AGENTS.md"), "GLOBAL SENTINEL");
+
+  const projectDir = newProjectDir("codex-lead-layers");
+  const project = seedProject("codex-lead-layers", projectDir);
+  writeFileSync(join(projectDir, "CLAUDE.local.md"), "LOCAL SENTINEL");
+  const session = sessionName();
+  after(() => cleanup(session));
+
+  it("prints an (instructions: global, local) phrase and writes both layers into the generated home", async () => {
+    const result = await runCli(["lead"], {
+      cwd: projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+      env: { HOME: layersHome, PATH: `${binDir}:${process.env.PATH}` },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /\(instructions: global, local\)/);
+
+    const row = leadRow(db, project.id);
+    const home = codexHomeDir(row.codex_home);
+    assert.equal(readFileSync(join(home, "AGENTS.md"), "utf8"), "GLOBAL SENTINEL");
+    const { parse: parseToml } = await import("smol-toml");
+    const parsed = parseToml(readFileSync(join(home, "config.toml"), "utf8"));
+    assert.match(parsed.developer_instructions, /LOCAL SENTINEL/);
+  });
+});

@@ -123,3 +123,12 @@ commit until the matching code is merged and the server restarts, and it is
 whoever holds that merge's job to close, not a runtime guard's. See
 `.claude/rules/profile-files.md`'s "A new conditional var needs its code
 deployed first" for the prohibition this earns.
+
+SINCE TODO 787, `developer_instructions` CAN CARRY A SECOND SECTION AFTER
+worker.md: when the primary checkout has an `AGENTS.local.md` or
+`CLAUDE.local.md` (first found wins), `ensureCodexHome` appends it under a
+heading naming the file's absolute path. A grep for worker.md's own markers
+inside `developer_instructions`, as the incident above does, still finds
+them - the append happens after the rendered brief, never in place of it -
+but a reader diffing `developer_instructions` against worker.md alone should
+expect a trailing section this file's rendering never produces.

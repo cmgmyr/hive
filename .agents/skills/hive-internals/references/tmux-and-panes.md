@@ -643,6 +643,10 @@ Two supporting facts, so the next person does not have to re-derive them either:
 
 Decision: kept the per-worker `CODEX_HOME` design. The disk cost is real and worth shrinking - `plugins/`/`cache/` look redirectable to a location shared across workers without touching hooks isolation, since they are bootstrap content rather than per-worker state - but that is todo 532's question, not a reason to drop isolation.
 
+## Two more layers land in the same generated home (todo 787)
+
+Beside the three files this section measures - auth.json, hooks.json, config.toml - `ensureCodexHome` also symlinks `<home>/AGENTS.md` to the user's own `$CODEX_HOME/AGENTS.md` when it exists, and appends the primary checkout's `AGENTS.local.md` or `CLAUDE.local.md` (first found wins) to `developer_instructions`, after hive's own brief, under a heading naming the file's absolute path. Both facts are read from strings in the 0.151.0 binary (`core/src/agents_md.rs`): global instructions load from `$CODEX_HOME/AGENTS.md`; codex ships no `AGENTS.local.md`/`CLAUDE.local.md` of its own, and `developer_instructions` is the one channel codex ranks above `AGENTS.md`, which is where a repo-local override belongs. The link is a symlink, never a copy, for the same reason auth.json is one - an edit to the real file reaches every future spawn without hive re-running anything. A worktree cwd resolves to the primary checkout via `gitPrimaryRoot`, the same function `--add-dir`'s value already goes through, because a linked worktree has no copy of a gitignored file.
+
 ## todo 532's answer: nothing is redirectable, so reaping the home is the fix
 
 Checked live against codex 0.149.0 via `codex exec --strict-config`, NOT via `doctor` - doctor silently ignores unrecognized top-level `config.toml` fields even under `--strict-config`, so it cannot tell a real key from a typo and answers this question wrongly.

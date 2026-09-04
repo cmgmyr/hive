@@ -103,6 +103,32 @@ function tomlMultilineString(s: string): string {
   return `"""\n${tomlEscape(s, { allowLiteralNewline: true })}"""`;
 }
 
+// codex has no AGENTS.local.md/CLAUDE.local.md of its own, so this order mirrors its real
+// AGENTS.md-then-project_doc_fallback_filenames precedence rather than inventing a new one.
+const LOCAL_OVERRIDE_FILENAMES = ["AGENTS.local.md", "CLAUDE.local.md"];
+
+function readLocalOverride(projectRoot: string): { path: string; text: string } | null {
+  for (const name of LOCAL_OVERRIDE_FILENAMES) {
+    const path = join(projectRoot, name);
+    try {
+      return { path, text: readFileSync(path, "utf8") };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+  }
+  return null;
+}
+
+// Names the primary checkout on purpose: a worktree cwd has no copy of this gitignored file, so a
+// worker reading its own brief must not go looking for one under its own path.
+function localOverrideHeading(path: string): string {
+  return `# Repo-local instructions from ${path} (the primary checkout's gitignored file; a worktree cwd has no copy, so do not look for it under your own path)`;
+}
+
+export function codexInstructionsPhrase(layers: string[]): string | undefined {
+  return layers.length ? `instructions: ${layers.join(", ")}` : undefined;
+}
+
 // Must be written before any [section] header, or TOML nests it inside whichever table precedes it -
 // accepted silently, delivered to nobody. See tmux-and-panes.md, "the brief-delivery TOML trap".
 function configToml(input: {
@@ -159,7 +185,9 @@ export function codexLaunchArgs(cwd: string): string[] {
 }
 
 // Generates a per-worker home: auth.json symlinked (never copied), hooks.json, config.toml.
-export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; hooksWired: string[] } {
+export function ensureCodexHome(
+  input: CodexHomeInput,
+): { extraArgs: string[]; hooksWired: string[]; instructionLayers: string[] } {
   // Keep every refusing guard ABOVE the first write: a throw after one leaves a partial home the
   // caller cannot tell from a real one.
   if (!existsSync(process.execPath)) {
@@ -167,6 +195,13 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; h
       `hive: this process's own interpreter (${process.execPath}) no longer exists on disk; refusing to register a codex worker's MCP server under a path that would start nothing.`,
     );
   }
+
+  // Read before any write: a real (non-ENOENT) read error here must not leave a partial home.
+  const projectRoot = gitPrimaryRoot(input.cwd) ?? input.cwd;
+  const localOverride = readLocalOverride(projectRoot);
+  const developerInstructions = localOverride
+    ? `${input.brief}\n\n${localOverrideHeading(localOverride.path)}\n\n${localOverride.text}`
+    : input.brief;
 
   const home = codexHomeDir(input.key);
   mkdirSync(home, { recursive: true });
@@ -180,6 +215,15 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; h
   const authLink = join(home, "auth.json");
   rmSync(authLink, { force: true });
   symlinkSync(authSource, authLink);
+
+  // GLOBAL layer: the user's own ~/.codex/AGENTS.md. Symlinked, never copied, for the same reason
+  // auth.json is - a copy goes stale the moment the real file is edited. Absent is not an error:
+  // no link, no message, same as auth.json's presence is required but this is not.
+  const globalSource = join(dirname(authSource), "AGENTS.md");
+  const globalLink = join(home, "AGENTS.md");
+  rmSync(globalLink, { force: true });
+  const hasGlobal = existsSync(globalSource);
+  if (hasGlobal) symlinkSync(globalSource, globalLink);
 
   // Touch only the "cleanup" entry, never skills/ itself: codex keeps its own .system there.
   if (input.lead) {
@@ -211,8 +255,6 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; h
 
   const indexJs = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
-  const projectRoot = gitPrimaryRoot(input.cwd) ?? input.cwd;
-
   const realConfigPath = input.realConfigSource ?? join(homedir(), ".codex", "config.toml");
   const realConfig = readRealConfig(realConfigPath);
   const statusLine = realStatusLine(realConfig) ?? HIVE_DEFAULT_STATUS_LINE;
@@ -222,7 +264,7 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; h
   writeFileSync(
     join(home, "config.toml"),
     configToml({
-      developerInstructions: input.brief,
+      developerInstructions,
       projectRoot,
       nodeBin: process.execPath,
       indexJs,
@@ -233,5 +275,7 @@ export function ensureCodexHome(input: CodexHomeInput): { extraArgs: string[]; h
     }),
   );
 
-  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired: Object.keys(hooks) };
+  const instructionLayers = [...(hasGlobal ? ["global"] : []), ...(localOverride ? ["local"] : [])];
+
+  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired: Object.keys(hooks), instructionLayers };
 }

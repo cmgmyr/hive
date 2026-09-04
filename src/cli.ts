@@ -194,7 +194,7 @@ import {
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
-import { codexHomeDir, ensureCodexHome, reapCodexHome } from "./codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { TRIAGE_MESSAGE } from "./kickoff.js";
 import {
   ageSecondsSince,
@@ -688,6 +688,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       // UPDATE below succeeds - an unrecorded key is unreapable by every other path in this file.
       let homeArgs: string[];
       let hooksWired: string[];
+      let instructionLayers: string[];
       try {
         const home = ensureCodexHome({
           key: newCodexHomeKey,
@@ -698,6 +699,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         });
         homeArgs = home.extraArgs;
         hooksWired = home.hooksWired;
+        instructionLayers = home.instructionLayers;
       } catch (e) {
         reapCodexHome(newCodexHomeKey);
         throw e;
@@ -709,7 +711,11 @@ async function cmdLead(argv: string[]): Promise<void> {
       if (renderedPosture !== null) {
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
       }
-      console.log(`- codex home: ${codexHomeDir(newCodexHomeKey)} (${hooksWired.join("/")} hooks wired)`);
+      const instructionsPhrase = codexInstructionsPhrase(instructionLayers);
+      console.log(
+        `- codex home: ${codexHomeDir(newCodexHomeKey)} (${hooksWired.join("/")} hooks wired)` +
+          (instructionsPhrase ? ` (${instructionsPhrase})` : ""),
+      );
     }
 
     const envFlags = buildEnvFlags({

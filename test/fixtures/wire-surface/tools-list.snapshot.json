@@ -619,6 +619,9 @@
         "codex_home": {
           "type": "string"
         },
+        "codex_instructions": {
+          "type": "string"
+        },
         "config_warnings": {
           "items": {
             "type": "string"
