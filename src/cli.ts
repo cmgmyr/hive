@@ -907,6 +907,10 @@ placement: split                # placement for workers and visible processes: s
 #   ticket_prefix: DEVX         # sections needing it drop when it is unset
 #   install: npm install
 #   start_command: /jira-start
+#   check: npm run lint && npx tsc --noEmit   # what a worker runs before
+                                              # reporting done; gates only,
+                                              # no suite (test_all is that)
+#   check: ./vendor/bin/pint --test && ./vendor/bin/phpstan   # a PHP stack's
 
 # processes:
 #   npm:dev: npm run dev        # shorthand; auto-starts with the session
@@ -2542,6 +2546,13 @@ function cmdDoctor(argv: string[]): void {
 
     if (missingPads.length > 0) info("profile references", `pad(s) referenced but not here: ${missingPads.join(", ")}`);
     if (missingPaths.length > 0) info("profile references", `path(s) referenced but not here: ${missingPaths.join(", ")}`);
+
+    const checkCommand = cfg?.vars?.check;
+    if (checkCommand != null && checkCommand.trim() !== "") {
+      info("check", checkCommand);
+    } else {
+      info("check", "not set in hive.yml; workers are not told what to run before reporting (vars: check: <command>)");
+    }
   };
 
   if (profile) {

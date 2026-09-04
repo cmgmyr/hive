@@ -17,5 +17,22 @@ before building; a question costs less than the wrong hour of work.
 <!--if:install-->
 A fresh worktree has no dependencies installed: {{install}}
 <!--end-->
+
+BEFORE YOU REPORT DONE, in this order. These are the steps a worker skips
+most, measured; the assignment may add project steps after them.
+1. `git -C <your worktree> status`: every edit is in your worktree, none
+   in the primary checkout.
+2. Rebuild before any screenshot, browser check, or measurement; a stale
+   build is the commonest false result.
+<!--if:check-->
+3. Run this project's gates and fix what they find: {{check}}
+<!--end-->
+4. One full test suite at a time on this machine: run scoped tests
+   freely, ask the lead for the full-suite slot.
+5. Commit; do not push. Report on the todo: files touched, tests run,
+   what remains.
+6. Run the readers the assignment names, with this harness's own review
+   command, and post their findings raw.
+
 If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
 [END HIVE CONTEXT]

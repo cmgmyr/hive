@@ -52,9 +52,12 @@ vars:
   repo: owner/name
   ticket_prefix: DEVX
   install: pnpm install
+  check: npm run lint && npx tsc --noEmit
 ```
 
 The three named files, and any fork-local extra, take `{{repo}}` and friends from `vars`, and drop whole sections whose var is unset, so one profile serves a repo with a ticket tracker and one without. `posture.md` is delivered as a path, so `hive lead` renders it into a generated file under `~/.hive/postures/` (one per project, overwritten each run) and points the flag at that; `hive posture` prints the same text, which is the only way to see what your lead actually started with. An undefined var stays visible as `{{name}}` rather than silently emptying, and `hive doctor` reports which vars any `.md` a profile has references and which the project defines (`worker.md` is excluded from this check; its vars are per-spawn identity, never `hive.yml`'s). One more family is derived, not defined: `agents_<harness>` is set for each harness `hive.yml`'s `agents:` list allows, so a section can gate on which harnesses a project runs; it is excluded from the same doctor check for the same reason, and a `vars:` entry that reuses one of those names never wins. `hive doctor` warns when it happens.
+
+`check` is the one var the shipped `worker.md` and `runbook.md` both render into a "before you report done" block, so it needs no profile edit to reach every worker: the tree-wide gate pieces a worker should run and fix before reporting - lint, types, build - as distinct from `test_all`, which stays the separate suite that needs a full-suite slot. `hive init` writes a commented example into a new project's `hive.yml`, for example `npm run lint && npx tsc --noEmit` on a JS/TS stack or `./vendor/bin/pint --test && ./vendor/bin/phpstan` on a PHP stack, and `hive doctor` reports either the command or a reminder that none is set, for any project on a profile.
 
 `vars` are repo-controlled and land in system prompts, with no approval step. Commands in `hive.yml` do have one, because hive executes them; `vars` are only quoted into a prompt, and Claude Code's own workspace trust already governs the wider version of that channel by loading a repo's `CLAUDE.md`. The practical consequence: a `hive.yml` you did not write reaches your workers' system prompts as soon as you run hive in that checkout, so read one the way you would read that repo's `CLAUDE.md`. hive is not a defense against opening a checkout you do not trust and does not pretend to be.
 

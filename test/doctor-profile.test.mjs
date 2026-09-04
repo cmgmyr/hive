@@ -171,6 +171,37 @@ describe("check 3: profile: none with no runbook pad", () => {
   });
 });
 
+describe("check var (todo 792)", () => {
+  it("says nothing about check with no profile active", () => {
+    assert.doesNotMatch(baseline.stdout, /info {2}check:/);
+  });
+
+  it("nags when a profile is active and check is unset", async () => {
+    writeFileSync(ymlPath, "profile: simple\n");
+    const out = await runCli(["doctor"], opts);
+
+    assert.match(
+      out.stdout,
+      /info {2}check: not set in hive\.yml; workers are not told what to run before reporting \(vars: check: <command>\)/,
+    );
+  });
+
+  it("reports the command instead of nagging when check is set", async () => {
+    writeFileSync(ymlPath, "profile: simple\nvars:\n  check: npm run build\n");
+    const out = await runCli(["doctor"], opts);
+
+    assert.match(out.stdout, /info {2}check: npm run build$/m);
+    assert.doesNotMatch(out.stdout, /not set in hive\.yml/);
+  });
+
+  it("nags on a whitespace-only check, the same as unset (matches profiles.ts's isSet)", async () => {
+    writeFileSync(ymlPath, 'profile: simple\nvars:\n  check: "   "\n');
+    const out = await runCli(["doctor"], opts);
+
+    assert.match(out.stdout, /not set in hive\.yml/, "a check that is only whitespace renders no <!--if:check--> block either, so doctor must agree it is unset");
+  });
+});
+
 describe("profile divergence: warn survives small drift, info replaces a rewrite (todo 326)", () => {
   function fakeUpstreamMoved(dataDir, file) {
     writeFileSync(

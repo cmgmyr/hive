@@ -119,6 +119,22 @@ describe("hive init profile selection", () => {
     assert.match(stdout, /runbook pad: seeded/);
   });
 
+  it("writes a commented check: example into the vars block (todo 792)", async () => {
+    const { dirs, cli } = optsFor();
+    const { code } = await runCli(["init"], cli);
+    assert.equal(code, 0);
+    assert.match(ymlOf(dirs), /^#\s+check: .+$/m, "the template shows a project how to set check");
+  });
+
+  it("shows a second stack's check: example, not just one (todo 792)", async () => {
+    const { dirs, cli } = optsFor();
+    const { code } = await runCli(["init"], cli);
+    assert.equal(code, 0);
+    const checkLines = ymlOf(dirs).match(/^#\s+check: .+$/gm) ?? [];
+    assert.equal(checkLines.length, 2, "one example per stack, so a PHP project isn't left inferring the syntax from a JS one");
+    assert.match(checkLines.join("\n"), /vendor\/bin\/(pint|phpstan)/, "the second example is a PHP stack, not a second JS/TS one");
+  });
+
   it("adds the key to an existing hive.yml without touching the rest", async () => {
     const { dirs, cli } = optsFor();
     const original = "placement: window\n\nprocesses:\n  dev: npm run dev   # keep me\n";

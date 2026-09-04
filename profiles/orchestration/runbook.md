@@ -18,6 +18,13 @@ THE ONE RULE
 LANES
 <the kinds of work and how each runs: who does it, on what branch, what
 counts as done>
+End every assignment with "before you report done": the same words in
+this runbook are read at session start and ranked beside forty others,
+but at the end of an assignment they are what a worker reads at the
+moment it decides it is done.
+<!--if:check-->
+Name this project's gate command there too: {{check}}
+<!--end-->
 
 <!--if:ticket_prefix-->
 TICKET LANE ({{ticket_prefix}}-NNN)

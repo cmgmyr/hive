@@ -29,6 +29,9 @@ vars:
   install: npm install && npm run build
   test_one: npm run build && node --test test/<file>.test.mjs
   test_all: npm run build && npm test
+  check: npm run build          # gates a worker runs before reporting done;
+                                # test_all above stays the separate, slot-gated
+                                # suite
   rules_check: node scripts/covering-rules.mjs
   smoke: npm run build && hive setup && hive doctor
 
