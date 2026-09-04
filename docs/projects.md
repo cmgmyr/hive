@@ -18,7 +18,8 @@ Define a project's dev processes and lead in a `hive.yml` at the project root; `
 
 ```yaml
 lead: claude --model opus     # optional command for the lead window
-placement: split              # optional worker placement: split (panes, default) or window (tabs)
+placement: split              # optional placement for workers and visible processes: split
+                              # (panes, default) or window (tabs)
 layout: main-vertical         # optional pane arrangement for split: tiled (default),
                               # main-vertical, main-horizontal, even-horizontal, even-vertical
 agents: [claude, codex]       # optional allowed harness set for spawned crew; first entry is
@@ -42,10 +43,10 @@ processes:
     command: npx tsc --watch --preserveWatchOutput
     dir: ./packages/api       # relative to the project root
     auto_start: false         # start manually with: hive start typecheck
-    visible: false            # optional; default true. true gives the process its own
-                              # window (tab). false tiles it as a pane in one shared
-                              # `<project>/processes` window, so N background processes
-                              # cost one tab instead of N.
+    visible: false            # optional; default true. true follows placement: above, the
+                              # same as a worker (split beside the lead, or its own window).
+                              # false tiles it as a pane in one shared `<project>/processes`
+                              # window instead, so N background processes cost one tab.
     env:
       NODE_ENV: development
 ```
@@ -54,7 +55,7 @@ Commands appear as windows in the session (visible in iTerm like everything else
 
 ### Background processes (`visible: false`)
 
-A process is its own window by default, which is right for one or two and wrong for six: six processes across two projects cost six tabs. Set `visible: false` and the process starts as a tiled pane in one window per project named `<project>/processes` instead. Two projects running three processes each cost two tabs, not six.
+A visible process follows `placement:` exactly like a worker does: beside the lead under the default `split`, or its own tab under `placement: window`. Set `visible: false` instead and the process tiles as a pane in one shared `<project>/processes` window per project, so six background processes across two projects cost two tabs, not six.
 
 Visibility is not part of what hive approves. Toggling `visible` never re-opens the trust prompt, because the command hive runs is unchanged; only its name, its command, its `dir` and its `env` are hashed.
 

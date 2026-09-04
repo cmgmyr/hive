@@ -3,7 +3,8 @@
 # Commands defined here run only after a one-time interactive approval, and
 # re-require it whenever they change.
 
-placement: split                # worker layout: split (panes) or window (tabs)
+placement: split                # layout for workers and visible processes: split (panes) or
+                                # window (tabs)
 
 layout: main-vertical           # pane arrangement for placement: split.
                                 # tiled (default) | main-vertical | main-horizontal
@@ -39,7 +40,7 @@ processes:
 #     command: npx tsc --watch --preserveWatchOutput
 #     dir: ./packages/api       # relative to the project root
 #     auto_start: false         # start manually with: hive start typecheck
-#     visible: false            # tile it in one <project>/processes window instead of its
-#                               # own tab; hive show/hide move it (default true)
+#     visible: false            # tile it in one <project>/processes window instead of
+#                               # following placement: above; hive show/hide move it (default true)
 #     env:
 #       NODE_ENV: development

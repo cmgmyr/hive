@@ -373,7 +373,7 @@ async function ensureTrusted(
   return true;
 }
 
-function startYmlCommand(project: Project, name: string, proc: YmlProcess): string {
+function startYmlCommand(project: Project, name: string, proc: YmlProcess, config: ProjectYml): string {
 
   if (isReservedAgentName(name)) {
     return `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`;
@@ -399,8 +399,11 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
   } catch (e) {
     return `skipped: ${errorMessage(e)}`;
   }
+  const placement: "split" | "window" | "processes" = proc.visible
+    ? (config.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split"))
+    : "processes";
   try {
-    const { target, inProcessesWindow } = launchAgent({
+    const { target, landedInProjectId, inProcessesWindow } = launchAgent({
       projectId: project.id,
       projectName: project.name,
       projectPath: project.path,
@@ -409,13 +412,18 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
       commandString: proc.command,
       cwd: dir,
       env: proc.env,
-      placement: proc.visible ? "window" : "processes",
+      placement,
+      layout: config.layout ?? DEFAULT_LAYOUT,
       parentActor: currentActor(),
     });
     if (proc.visible) {
 
       // Its own window never set a pane title, so a status line rendering #T showed the hostname.
       setPaneTitle(target, shownPaneTitle(project.name, name));
+      if (landedInProjectId != null) {
+        const landedName = getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}`;
+        return `started, landed in project "${landedName}"'s window`;
+      }
       return "started";
     }
     return inProcessesWindow
@@ -849,7 +857,7 @@ async function cmdLead(argv: string[]): Promise<void> {
           continue;
         }
         if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-          console.log(`- ${name}: ${startYmlCommand(project, name, proc)}`);
+          console.log(`- ${name}: ${startYmlCommand(project, name, proc, config)}`);
         }
       }
     }
@@ -872,7 +880,8 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # Commands defined here run only after a one-time interactive approval,
 # and re-require it whenever they change.
 
-placement: split                # worker placement: split (panes) or window (tabs)
+placement: split                # placement for workers and visible processes: split (panes) or
+                                # window (tabs)
 
 # layout: main-vertical         # pane arrangement for placement: split.
                                 # tiled (default) | main-vertical | main-horizontal
@@ -900,7 +909,7 @@ placement: split                # worker placement: split (panes) or window (tab
 #     dir: ./packages/api       # relative to the project root
 #     auto_start: false         # start manually with: hive start typecheck
 #     visible: false            # tile it in one <project>/processes window instead of
-#                               # its own tab; hive show/hide move it (default true)
+#                               # following placement: above; hive show/hide move it (default true)
 #     env:
 #       NODE_ENV: development
 `;
@@ -1421,7 +1430,7 @@ async function cmdStart(argv: string[]): Promise<void> {
     process.exit(1);
   }
   if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-    console.log(`${name}: ${startYmlCommand(project, name, proc)}`);
+    console.log(`${name}: ${startYmlCommand(project, name, proc, config)}`);
   }
 }
 
