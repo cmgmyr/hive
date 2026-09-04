@@ -35,7 +35,7 @@ hive profile read <file> [--profile <name>]  # print any .md a profile has, vars
 
 ### Fork-local artifacts: any other `.md` you add
 
-A profile directory can hold more than the three named files. Add a `.md` file directly under `~/.hive/profiles/<name>/` - nothing ships it, nothing forks it, you just create it there - and hive resolves it, renders its `{{vars}}` on read the same way it renders the three, and reports it (source, path, and any unset var it references) from `hive profile list` and `hive doctor`. It is never required and never auto-injected; something in your runbook or posture has to point at it, the same way `hive runbook` pointing at `hive profile read review-prompt.md` is what makes a reader open it.
+A profile directory can hold more than the three named files. Add a `.md` file directly under `~/.hive/profiles/<name>/` - nothing ships it, nothing forks it, you just create it there - and hive resolves it, renders its `{{vars}}` on read the same way it renders the three, and reports it (source, path, and any unset var it references) from `hive profile list` and `hive doctor`. It is never required and never auto-injected; something in your runbook or posture has to point at it, the same way `hive runbook` pointing at `hive profile read extra.md` is what makes a reader open it.
 
 Point at it with `hive profile read <file>`, never with the raw path. Reading the file directly (`cat`, an editor, a Read tool) returns the template with literal `{{braces}}` in it and no indication it was meant to render; `hive profile read` is what resolves it against the reading project's profile and substitutes that project's vars.
 

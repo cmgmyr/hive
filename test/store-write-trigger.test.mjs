@@ -34,11 +34,11 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
   it("aborts the exact incident shape: a name-addressed UPDATE across two projects, changing content, leaving updated_at alone", () => {
 
     const hive = seedProject("/scratch/hive");
-    const sideproj = seedProject("/scratch/sideproj");
+    const orchard = seedProject("/scratch/orchard");
     const hivePadId = seedPad(hive, "board", "hive's own board content");
-    const sideprojPadId = seedPad(sideproj, "board", "sideproj's own board content");
+    const orchardPadId = seedPad(orchard, "board", "orchard's own board content");
     const before1 = padRow(hivePadId);
-    const before2 = padRow(sideprojPadId);
+    const before2 = padRow(orchardPadId);
 
     assert.throws(
       () =>
@@ -49,7 +49,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     );
 
     assert.deepEqual(padRow(hivePadId), before1);
-    assert.deepEqual(padRow(sideprojPadId), before2);
+    assert.deepEqual(padRow(orchardPadId), before2);
   });
 
   it("names hive pad --save and primary-key addressing in the error", () => {

@@ -234,7 +234,7 @@ describe(
 
         const newPane = leadRow(db, proj.id).tmux_target;
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the new lead pane derived with no HIVE_SESSION override");
       },
@@ -286,7 +286,7 @@ describe(
 
         const newPane = leadRow(db, proj.id).tmux_target;
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the new lead pane despite the grouped view session");
       },
@@ -346,11 +346,11 @@ describe(
         assert.ok(panesAfter.includes(newPane), "the store's lead row must name a pane that is actually live");
 
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff prompt must land in the new lead pane");
         const decoyScreen = execFileSync("tmux", ["capture-pane", "-p", "-t", decoyPane]).toString();
-        assert.doesNotMatch(decoyScreen, /Follow the standing process/, "the handoff must never land in the decoy's pane");
+        assert.doesNotMatch(decoyScreen, /read the board pad in full/, "the handoff must never land in the decoy's pane");
       },
       { timeout: 30000 },
     );
@@ -401,7 +401,7 @@ describe(
 
         const newPane = leadRow(db, proj.id).tmux_target;
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the new lead pane even in the single-pane/single-window case");
       },
@@ -432,7 +432,7 @@ describe(
         const newPane = leadRow(db, proj.id).tmux_target;
         assert.ok(newPane, "hive lead must have produced a live lead row");
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the freshly-created lead pane");
       },
@@ -460,7 +460,7 @@ describe(
         const newPane = leadRow(db, proj.id).tmux_target;
 
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the freshly-created lead pane");
       },
@@ -608,7 +608,7 @@ describe(
 
         const newPane = leadRow(db, proj.id).tmux_target;
         const gotHandoff = await until(() =>
-          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("Follow the standing process"),
+          execFileSync("tmux", ["capture-pane", "-p", "-t", newPane]).toString().includes("read the board pad in full"),
         );
         assert.ok(gotHandoff, "the handoff must land in the new lead pane, delivered by the detached child");
       },

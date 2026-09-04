@@ -52,8 +52,8 @@ const addStandingWatch = () =>
 
 // FINISHED_SHOWN_CAP and ROSTER_STILL_GOING are both 8 in src/scheduler.ts. Ten of each is the
 // minimum corpus that forces BOTH caps' overflow tails to actually render - fewer than 9 of either
-// and the tail under test is never produced (.agents/sessions/common-issues/
-// a-fixture-corpus-blind-to-a-dimension-nobody-chose.md).
+// and the tail under test is never produced, leaving the corpus blind to a dimension
+// nobody chose.
 const watchId = addStandingWatch();
 const finisherNames = Array.from({ length: 10 }, (_, i) => `mt-fin-${i}`);
 const stillGoingNames = Array.from({ length: 10 }, (_, i) => `mt-live-${i}`);
@@ -76,8 +76,8 @@ describe("todo 476: the report matchers see structure the render folds into a ta
   });
 
   it("REGRESSION GUARD: a still-going roster name within the cap, with no claim row, must NOT be seen by namedInStandingReport", () => {
-    // Second sighting of .agents/sessions/common-issues/a-bare-name-matcher-also-matches-the-still-
-    // going-roster.md: matching the roster here re-collapses "reported" and "merely alive" into one.
+    // Second sighting of the bare-name matcher also matching the still-going roster: matching it
+    // here re-collapses "reported" and "merely alive" into one.
     const withinCapRoster = stillGoingNames[0];
     assert.match(body, new RegExp(`(?:^Still going: |; )${withinCapRoster} \\(`, "m"), "setup: this name must really be in the roster, or this guard proves nothing");
     assert.equal(

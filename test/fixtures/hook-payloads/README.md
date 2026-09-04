@@ -21,11 +21,27 @@ sqlite3 -readonly ~/.hive/hive.db "SELECT payload FROM agent_state_log WHERE id 
 Its output carries one trailing newline of its own, which is the only byte
 these files drop.
 
-If a payload needs to change (a local path, a session id), it must be
-RE-CAPTURED from a live run, never hand-edited. See the same rule in
-`test/fixtures/panes/README.md`; a captured fixture is trustworthy only
-because nothing about it was typed by hand, and editing bytes after capture
-throws that away.
+A captured fixture is trustworthy only because nothing about it was typed by
+hand, so if a payload needs to change SHAPE - a new field, a different event,
+a value the corpus has never seen - it must be RE-CAPTURED from a live run
+and never hand-edited.
+
+The one exception, taken deliberately on 2026-09-03, is IDENTITY. These
+payloads came off the maintainer's own store, so every one carried his home
+directory, a real session uuid, a real worktree name, and in one case an
+excerpt of another project's session. None of that ships (see the boundary
+invariant in the repo root `CLAUDE.md`, pinned by
+`test/no-local-leaks.test.mjs`), so those values were substituted in place:
+`/Users/devs/Code/devteam/hive` for the home path - the SAME synthetic
+identity `test/fixtures/panes/` uses, deliberately, so a grep for one corpus's
+scrubbed path finds the other's - fixed
+`aaaaaaaa-0000-4000-8000-0000000000NN` uuids that preserve which fixtures
+share a session, `lane-a`/`lane-b`/`lane-c` for the worktrees, `orchard` for
+the second project, and a synthetic three-bullet body for the one
+`last_assistant_message` that carried real content. Nothing structural was
+touched: `scripts/payload-shape.mjs` derives field paths and discriminator
+enums, never these strings, and no test asserts on any of them. Anything
+beyond identity is still a re-capture.
 
 - `prompt-user.json` — `UserPromptSubmit` for an ordinary user message.
 - `prompt-spawn-announcement.json` — `UserPromptSubmit` for the `[hive]` line

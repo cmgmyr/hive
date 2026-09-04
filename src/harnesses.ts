@@ -23,8 +23,7 @@ export interface PaneChoiceCheck {
   tail: string;
 }
 
-// The pane-level predicates each harness's chrome needs, resolved once at the call site (harnessFor)
-// rather than threaded as a command string into src/tmux.ts's capture primitives - see todo 523.
+// Resolved once at the call site, never threaded as a command string into tmux.ts's primitives.
 export interface PaneClassifier {
   choiceCheck(target: string): PaneChoiceCheck;
   inputBoxState(target: string): InputBoxState | null;
@@ -45,13 +44,8 @@ export interface HarnessCapabilities {
   readonly transcriptDir: boolean;
   readonly contextTokens: boolean;
 
-  // Whether hive itself must pre-mint a UUID and pass it at spawn (claude's --session-id), as
-  // opposed to the harness minting its own and reporting it back through its first hook payload
-  // (codex). Independent of supportsResume: codex proves the two properties can disagree (todo
-  // 563) - it resumes, but does not take an externally supplied id, so agent_spawn must not mint
-  // one for it. transcriptDir is not part of this: nothing today needs a transcript-dir-only
-  // harness to trigger minting, so folding that case into a dedicated field (rather than the old
-  // `transcriptDir || supportsResume` at agents.ts) is a rename for claude, not a behavior change.
+  // Whether hive pre-mints the id and passes it at spawn. INDEPENDENT of supportsResume: codex
+  // resumes but mints its own, so the two must stay separate fields.
   readonly mintsSessionId: boolean;
 
   readonly supportsResume: boolean;
@@ -63,19 +57,12 @@ export interface HarnessCapabilities {
   // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
   readonly hasScopes: boolean;
 
-  // Whether agent_spawn must call ensureCodexHome (src/codexHome.ts) before launch: a per-worker
-  // home directory carrying its own hooks.json, MCP registration and brief, set as an env var
-  // rather than reached through briefDelivery's CLI-arg shape. Only codex needs this today; kept
-  // as a capability flag rather than a name check for the same reason every other branch here is.
+  // Whether agent_spawn must call ensureCodexHome before launch. A flag, not a name check, like
+  // every other branch here.
   readonly needsHome: boolean;
 
-  // The CLI's own [PROMPT] positional, submitted as the first user turn with no keystroke needed -
-  // live-verified on codex v0.149.0 (a bare `codex "..."` responded with no Enter pressed). null
-  // for claude on purpose: a claude lead's SessionStart hook already synthesizes initialUserMessage
-  // itself (src/kickoff.ts), so appending a second, redundant initial turn here would fire twice.
-  // Codex's SessionStart hook schema rejects that same field outright (additionalProperties:false;
-  // see kickoff.ts's `forCodex` branch), so this positional is the only channel left for a codex
-  // lead to open on triage rather than sit idle holding a board nobody told it to act on.
+  // The CLI's own [PROMPT] positional, auto-submitted as the first user turn. null for claude on
+  // purpose: its SessionStart hook already synthesizes one, so this would fire a second time.
   readonly initialPromptArgs: ((message: string) => string[]) | null;
 }
 
@@ -83,9 +70,8 @@ export function commandHead(command: string): string {
   return command.trim().split(/\s+/)[0] ?? "";
 }
 
-// matches() strips a fixed set of prefixes before comparing basenames (todo 521), never a
-// wrapper's own flags - see the negative-control table in test/harness-wrapper-matching.test.mjs
-// and the todo for why.
+// Stripped before comparing basenames - never a wrapper's own flags. Negative controls live in
+// test/harness-wrapper-matching.test.mjs.
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const KNOWN_WRAPPERS = new Set(["env", "nice", "arch", "time"]);
 
@@ -114,10 +100,8 @@ function resolvedCommandBasename(command: string): string {
   return resolvedCommand(command).basename;
 }
 
-// The prefix matches() itself resolved through - env assignments, wrappers, and the command token
-// they lead to, with everything after it dropped - for a caller rebuilding a fresh invocation on
-// top of a recorded command that may carry old flags (agent_resume, src/tools/agents.ts). Reuses
-// matches()'s own walk rather than a second parser (todo 521 follow-up).
+// For a caller rebuilding an invocation over a recorded command that may carry stale flags
+// (agent_resume). Reuses matches()'s own walk rather than a second parser.
 export function resolvedCommandPrefix(command: string): string {
   return resolvedCommand(command).prefix;
 }
@@ -154,8 +138,6 @@ const claudeHarness: HarnessCapabilities = {
   initialPromptArgs: null,
 };
 
-// Registered below (todo 524): proven end to end that hive can drive a codex pane - hook-trust
-// bypass and brief delivery both verified live, see the tmux-and-panes reference.
 export const codexHarness: HarnessCapabilities = {
   name: "codex",
 
@@ -165,19 +147,15 @@ export const codexHarness: HarnessCapabilities = {
 
   briefDelivery: null,
 
-  // Earned by todo 525 (C3): busy/idle/session-boundary now come from codex's own hooks (prompt,
-  // stop, the rekeyed subagent latch) - the same mechanism, and the same measured exactness, as
-  // claude's. transcriptDir/contextTokens stay false below; nothing in this lane proves codex's
-  // transcript format or token accounting - that is a separate lane (staleness), not this one.
+  // State comes from codex's own hooks, same mechanism as claude's. Its transcript format and
+  // token accounting are unproven, so the two flags below stay false.
   stateSource: true,
 
   transcriptDir: false,
   contextTokens: false,
 
-  // codex resumes via `codex resume <SESSION_ID>` (a subcommand positional, live-verified on
-  // v0.149.0 - no --session-id flag exists anywhere in `codex --help`), so it mints its OWN id
-  // rather than taking one from hive: mintsSessionId stays false while supportsResume flips true
-  // (todo 563). The two disagreeing is exactly why they are separate fields.
+  // `codex resume <SESSION_ID>` is a positional; no --session-id flag exists, so codex mints its
+  // own. This pair disagreeing is why they are two fields.
   mintsSessionId: false,
   supportsResume: true,
   supportsRename: false,
@@ -193,7 +171,7 @@ export const codexHarness: HarnessCapabilities = {
 
   needsHome: true,
 
-  // codex [PROMPT] auto-submits with no Enter needed - live-verified 2026-08-25 on v0.149.0.
+  // Auto-submits with no Enter; verified live on v0.149.0.
   initialPromptArgs: (message) => [message],
 };
 
@@ -231,14 +209,11 @@ export function harnessFor(command: string): HarnessCapabilities {
   return HARNESSES.find((harness) => harness.matches(command)) ?? unknownHarness;
 }
 
-// The one source of known harness names - hive.yml's `agents:` key and agent_spawn's `harness`
-// parameter both validate against this rather than each keeping their own copy of the list.
+// The one source of known harness names; hive.yml's `agents:` and agent_spawn both validate here.
 export function harnessNames(): string[] {
   return HARNESSES.map((harness) => harness.name);
 }
 
-// Registration is the extension point a later harness (or a test proving this table's
-// independence property) adds an entry through, rather than editing every call site.
 export function registerHarness(harness: HarnessCapabilities): void {
   if (HARNESSES.some((h) => h.name === harness.name)) {
     throw new Error(`a harness named "${harness.name}" is already registered`);
@@ -271,33 +246,26 @@ export function isClaudeCommand(command: string): boolean {
   return harnessFor(command).name === "claude";
 }
 
-// An empty command is "no fact recorded", never "unclassifiable": a wake can name a pane that has no
-// agents row at all (resolveDelivery's TMUX_PANE fallback), and reading that as unclassifiable stops
+// An empty command is "no fact recorded", never "unclassifiable" - reading it the other way stops
 // every wake a plain session ever set for itself.
 export function screenClassifiable(command: string): boolean {
   if (command.trim() === "") return true;
   return harnessFor(command).classifiesPaneScreen;
 }
 
-// The predicate-level twin of screenClassifiable's empty-command case above: a pane with no agents
-// row has, historically, always been a plain claude session, so its predicates default to claude's
-// rather than to unknownHarness's null - which would make screenClassifiable's "true" a lie the first
-// time anything actually reads the pane it was supposed to gate.
+// Defaults to claude's, not null: otherwise screenClassifiable's "true" above becomes a lie the
+// first time anything reads the pane it was supposed to gate.
 export function paneClassifierFor(command: string): PaneClassifier | null {
   if (command.trim() === "") return claudeHarness.paneClassifier;
   return harnessFor(command).paneClassifier;
 }
 
-// One named predicate for stall detection's transcript-corroboration gate (src/cli.ts, src/scheduler.ts),
-// rather than each call site reading harnessFor(...).transcriptDir inline.
 export function transcriptDirFor(command: string): boolean {
   return harnessFor(command).transcriptDir;
 }
 
-// Whether a row has ANY transcript to corroborate a stall against: claude's cwd-resolved
-// directory, or a path the harness reported through its own hook payload and hive stored
-// (codex - transcriptDir is false for it, there is no directory to resolve, todo 591). One
-// predicate so both stall-report call sites admit the same rows rather than drifting apart.
+// ANY transcript to corroborate a stall against: a resolvable directory, or a path the harness
+// reported through its own hook payload. One predicate so both call sites admit the same rows.
 export function hasTranscriptSignal(row: { command: string; transcript_path: string }): boolean {
   return transcriptDirFor(row.command) || row.transcript_path !== "";
 }

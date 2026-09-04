@@ -37,8 +37,8 @@ The practical consequence when you add a tool: **declare every parameter a
 caller may pass**, because anything you leave out is now refused rather than
 ignored. And adding an optional parameter is no longer backward compatible
 against a RUNNING server: it used to be ignored by a session on older
-`dist/`, and is now refused until that session restarts. See
-`.agents/sessions/common-issues/stale-mcp-server-runs-old-code.md`.
+`dist/`, and is now refused until that session restarts. A session holds the
+`dist/` it started with, so rebuilding does not reach it.
 
 ## A tool that declares outputSchema must always return a JSON object
 

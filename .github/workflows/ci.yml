@@ -8,10 +8,9 @@ on:
   # `test-macos` job below, not `test` or `floor-boundary` - see the `if:` on
   # each of those for why adding these triggers here does not also fire them.
   schedule:
-    # Monday 08:42 UTC. WEEKLY, NOT NIGHTLY, and that is Chris's call made
-    # against nightly: roughly $0.06/day this way against roughly $8.60/day
-    # under the old every-push every-PR schedule, and during a cost-conscious
-    # stretch a 7-day worst case beats a 1-day one at 7x the price (todo 350).
+    # Monday 08:42 UTC. WEEKLY, NOT NIGHTLY: roughly $0.06/day this way against
+    # roughly $8.60/day under the old every-push every-PR schedule, and a 7-day
+    # worst case beats a 1-day one at 7x the price (todo 350).
     # A worst case of "macOS-only breakage sits undetected for up to a week"
     # is the trade being made; the four darwin-only tests below explain what
     # that breakage could be. Off the hour on purpose - GitHub throttles
@@ -41,167 +40,21 @@ jobs:
       # this matrix exists, and fail-fast throws that signal away.
       fail-fast: false
       matrix:
-        # 22 is the floor, not 20: fs.globSync (test/docs.test.mjs and
-        # scripts/covering-rules.mjs) landed in Node 22, so 20 cannot import
-        # either file. A 20 leg was tried on this branch and failed exactly
-        # there; supporting it would mean replacing globSync in a test whose
-        # dead-rule check genuinely wants a filesystem glob, and 22 was
-        # chosen as the floor instead.
+        # 22.14.0 exactly, not `22`: it is where Node-API 10 begins, and a floor leg that does
+        # not run the floor tests nothing. Below it the addon segfaults with empty stdout and
+        # empty stderr. `floor-boundary` below covers the versions this leg cannot.
         #
-        # THE 22 LEG IS PINNED AT THE EXACT DECLARED FLOOR, AND THAT IS A
-        # REVERSAL. This comment used to argue the opposite: that the ".5.0"
-        # in engines.node was reasoned from the API's history, that
-        # `node-version: 22` resolving to the latest 22.x left the patch
-        # component unexercised, and that pinning a leg to the floor "would
-        # test a version nobody runs" so the honest move was to say the gap
-        # out loud. Saying it out loud is what let issue #105 lane B ship a
-        # floor of 22.5.0 against a better-sqlite3 whose addon needs Node
-        # 22.14.0, where every version in the gap segfaults with empty stdout
-        # and empty stderr. A floor nobody runs is a claim, not a constraint,
-        # and this matrix is where the claim gets run.
+        # `alt` must have a different NODE_MODULE_VERSION from `node` or
+        # alternateInterpreter (test/helpers.mjs) silently stops discriminating, so it is paired
+        # explicitly rather than derived.
         #
-        # So: 22.14.0 exactly, which is where Node-API 10 begins. "Nobody runs
-        # it" was the wrong test - the point is not to cover a popular
-        # version, it is to cover the BOUNDARY, which is the only version
-        # where a floor error is visible. The `floor-boundary` job below
-        # covers the versions this leg cannot: below the floor on two release
-        # lines, and the 23-line start point.
+        # `skipped` is this leg's EXACT skip budget, enforced after `npm test`. Raising it is a
+        # decision: say in the commit message which test added the skip and why it is registered
+        # rather than made not to exist. A describe-level skip is invisible to this count.
         #
-        # Latest-22.x coverage is what this gives up, and that is a real cost:
-        # the 24 legs are what carry "new Node still works" now.
-        #
-        # `alt` is paired explicitly rather than derived, because the only
-        # thing that makes an alt VALID is that its NODE_MODULE_VERSION
-        # differs from `node`'s (test/helpers.mjs alternateInterpreter). A
-        # rule like "always 22" silently stops discriminating on the leg
-        # where 22 IS the primary, and the tests that need it would skip
-        # while still reporting green.
-        #
-        # THE OS SPLIT WAS A BILLING DECISION, AND STILL IS - THE CONCLUSION
-        # CHANGED, THE REASONING DIDN'T (todo 350). A private repo bills
-        # macOS at 10x, so a macOS job that really takes 2.6 minutes is
-        # charged 26. Two macOS legs were 1,360 of this account's 1,425
-        # billed minutes in the first four days of August. A later sample of
-        # the 30 most recent CI runs measured the same shape at larger scale:
-        # macOS was 77% of billed minutes (28 jobs, 150 wall minutes, 1,504
-        # billed) against 413 for both Linux legs combined and 31 for
-        # floor-boundary - macOS ran FEWER wall minutes than Linux (5.37 vs
-        # 7.38) and still cost ~3.5x both Linux legs combined, purely from the
-        # multiplier. That is what moved macOS off every push and every PR and
-        # onto the weekly canary below (`test-macos`): the platform coverage
-        # is the same, the price of getting it on every commit was not
-        # buyable at the moment this was decided.
-        #
-        # Linux carries both Node versions, which is where the version signal
-        # the comment above argues for actually comes from. This job no
-        # longer carries a macOS leg at all - `test-macos` below is where
-        # "hive is a macOS tool and the native addon builds there" now lives,
-        # on its own schedule.
-        #
-        # `skipped` is this leg's EXACT skip budget, enforced after `npm test`
-        # rather than described near it. See the comment on the tmux step.
-        #
-        # 4 -> 7 (todo 355). Every skip in this budget comes from one file,
-        # test/auto-attach-scope.test.mjs, whose cases drive ensureAttached -
-        # a no-op off darwin by construction, so a Linux leg cannot run them
-        # and a silent pass there would be worse than a skip. That lane added
-        # three: a `tmux -L` private socket, full isolation, and the ordinary
-        # no-tmux-environment case that must still attach.
-        # MEASURED RATHER THAN COUNTED OFF THE DIFF, which is the only way this
-        # number means anything: the file was run with process.platform forced
-        # to "linux", before (4) and after (7), and 4 matching the budget it
-        # replaced is what confirms no other file contributes to it.
-        #
-        # 7 -> 18 (todo 356). maybeOpenDashboard's `open` call is darwin-only
-        # by the same construction as ensureAttached above, so its positive
-        # cases (which actually call the faked `open` and assert on it) are a
-        # Linux no-op the same way and skip by design rather than pass
-        # silently for the wrong reason. Two new files, eleven skips: five in
-        # test/dashboard-open.test.mjs (symlink containment, first open+TTL,
-        # no-reopen, expired-marker reopen, failed-open retry), six in
-        # test/dashboard-open-lead.test.mjs (three `hive lead` cases, bare
-        # `hive`, `hive --no-dashboard`, the misspelled-flag rejection - that
-        # last one is darwin-gated because a rejected call is proven by
-        # asserting NOTHING was opened, which needs the real gate chain
-        # below it to be reachable; `hive attach --no-dashboard`'s own
-        # rejection test is NOT gated, since it fails before the platform
-        # check and runs identically on every OS). CI CONFIRMED THE COUNT
-        # independently of this arithmetic: the run this comment was written
-        # against reported exactly 18 skipped against the old budget of 7.
-        #
-        # 18 -> 19 (todo 356, counselors round 3, posted four times before it
-        # was actually read). resolveDashboardDir only realpath-checked the
-        # DIRECTORY chain, never the FILE - a real, contained .claude/dashboard
-        # with index.html itself committed as a symlink escaping the project
-        # root got followed by `open` unchecked. One new darwin-gated case
-        # (test/dashboard-open.test.mjs) proves the fix; it is the same
-        # positive-open-path shape as the other eighteen, so it skips on
-        # Linux for the identical reason.
-        #
-        # 19 -> 20 (todo 375, counselors round 2). One new darwin-gated case in
-        # test/auto-attach-scope.test.mjs: ensureAttached must not throw when
-        # the tmux server wedges between its client probe and the has-session
-        # that names a view session, because both of its callers reach it after
-        # the worker is already live. It sits in that file's existing
-        # darwin-only block for the same construction reason as the other
-        # seven - ensureAttached returns immediately off darwin, so a Linux
-        # pass would prove nothing. CI CONFIRMED THE COUNT rather than it
-        # being read off the diff: the first run against this branch reported
-        # exactly 20 skipped on both Linux legs, against the budget of 19.
-        #
-        # 20 -> 21 (todo 419). One new darwin-gated case in
-        # test/open-call-guard.test.mjs: its end-to-end reproduction spawns a
-        # real `hive lead` and asserts the run failed on a resolved `open`
-        # call, which needs maybeOpenDashboard's darwin-only `open` branch
-        # (src/cli.ts) to be reachable at all - a Linux run cannot reach the
-        # branch this test exists to catch escaping, so it skips there for
-        # the identical construction reason as the other twenty.
-        # MEASURED PER FILE, not read off the diff, and not by forcing the
-        # WHOLE suite to report as linux: that was tried first and measured
-        # to corrupt unrelated behaviour (native module and tmux-spawn code
-        # elsewhere in the suite that reads process.platform for real
-        # OS-specific decisions, not just this file's skip gate), so
-        # test/restart-lead.test.mjs in particular failed outright under it
-        # rather than reporting a clean skip. Scoped instead: run just
-        # test/open-call-guard.test.mjs alone, process.platform forced to
-        # "linux", 0 -> 1. test/restart-lead.test.mjs's own edit in the same
-        # branch (adding --no-dashboard to one existing `hive lead` call)
-        # touches no skip condition - confirmed by inspection, since its
-        # gates are all `hasTmux`, never darwin - so it carries no delta of
-        # its own. CI CONFIRMS THE FINAL COUNT on push, per every bump above.
-        #
-        # 21 -> 24 (todo 368 lane 1). Three new darwin-gated cases in
-        # test/auto-attach-scope.test.mjs: round 3 of that lane narrowed the
-        # shared-socket guard's predicate and restored the file's five
-        # original ensureAttached behaviours to their end-to-end assertions,
-        # keeping the three refusal tests added along the way as ADDITIONS
-        # beside them rather than replacing anything - eleven darwin-gated
-        # cases in that file now where there were eight, for the identical
-        # construction reason as every other case in it. The delta is darwin
-        # gating, not coverage leaving. CI CONFIRMED THE COUNT on both Linux
-        # legs: 24 skipped against the old budget of 21.
-        #
-        # This bump is a live worked example for todo 421: the budget is a
-        # ledger you edit whenever coverage moves deliberately, the exact
-        # per-change churn that decided 421 against converting its ~136
-        # describe-level skip sites to this same it-level, budget-visible shape.
-        #
-        # 25 -> 26 (todo 524). test/codex-live-spawn.test.mjs's one real-spawn
-        # case is gated behind HIVE_TEST_REAL_CODEX, unset on every runner - it
-        # needs a real codex binary, real network, and Chris's own ~/.codex
-        # credentials, none of which CI has or should be given. Not darwin-only
-        # construction like the rest of this budget: this is a skip CHOSEN on
-        # purpose and left REGISTERED rather than made to not exist at all, so
-        # its presence stays visible in the count a human reads rather than
-        # disappearing the way an unregistered test would. CI CONFIRMED THE
-        # COUNT: "this leg skipped 26 tests, budget is 25" on both Linux legs
-        # the run after the test was added.
-        #
-        # 26 -> 28 (todo 560). test/codex-home.test.mjs's two --strict-config
-        # cases against the real binary are gated behind the same
-        # HIVE_TEST_REAL_CODEX env var as the real-spawn case above, for the
-        # same reason: CI has no real codex binary. Registered rather than
-        # made to not exist, matching the precedent two entries up.
+        # Why the floor is where it is, why macOS moved to a weekly canary, and every bump this
+        # budget has taken: the `hive-internals` skill, references/native-addon.md and
+        # references/test-CLAUDE.md.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
@@ -219,16 +72,11 @@ jobs:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
-      # A second Node -- deliberately a different NODE_MODULE_VERSION than the
-      # one below, which is what the addon gets built against. It does not
-      # have to be OLDER, only different: alternateInterpreter() takes the
-      # first candidate whose process.versions.modules disagrees with the
-      # running one. test/kickoff-reexec.test.mjs needs it to exercise the
-      # re-exec/ABI-mismatch paths at all; without this, it depends on
-      # whatever second Node the runner image happens to carry, which is
-      # exactly the "skipped 0" guarantee the comment below exists for.
-      # Captured into GITHUB_ENV before the next step's PATH prepend would
-      # otherwise bury it.
+      # A second Node with a DIFFERENT NODE_MODULE_VERSION from the one the addon is built
+      # against - older or newer, only different. alternateInterpreter() takes the first candidate
+      # whose process.versions.modules disagrees, and without this the ABI/re-exec tests depend on
+      # whatever second Node the runner image happens to carry. Captured into GITHUB_ENV before the
+      # next step's PATH prepend buries it.
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.alt }}
@@ -237,30 +85,11 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      # Required, not a nicety. The layout tests drive a real tmux server, and
-      # the probe tests assert hive's classification of tmux's own error text
-      # (src/tmux.ts NOTHING_THERE) against a real tmux. Both skip silently
-      # without it, and a skipped classification test is how a tmux wording
-      # change would reach main: hive would read the new wording as "unknown"
-      # and stop sweeping, which is issue #14 all over again. Keep this step,
-      # and keep `npm test` reporting this leg's `matrix.skipped` NUMBER.
-      #
-      # That guarantee is per-OS, not global: test/auto-attach-scope.test.mjs
-      # skips four darwin-only cases on both ubuntu legs by design (ensureAttached
-      # is a no-op off darwin), so those four are what `test-macos` covers and
-      # this job cannot - see that job's own comment. Do not chase that number
-      # to 0 on Linux by making those cases runnable there - see that file's
-      # own comment for why that would be the false green, not a fix.
-      #
-      # It is an ASSERTION now, not this paragraph (hive todo 297 item 6). The
-      # rule two comments up says a matrix that hides its own skips is worse
-      # than one leg, and the thing enforcing it was a comment - so the day a
-      # fixture stops being available and its cases start skipping, every leg
-      # stayed green and said so. The gate is in the `npm test` step below.
-      # Bounded and retried (todo 460): a hung upstream apt mirror once held
-      # this exact step for 51 unattended minutes with nothing saying so.
-      # Normal cost across six sampled green legs was 6-42s. Reasoning and
-      # the numbers are in the commit message.
+      # Required, not a nicety: the layout and probe tests drive a real tmux server and assert hive's
+      # classification of tmux's own error text. Both skip silently without it, and the skip budget
+      # below is what turns that silence into a failure. Do not chase the Linux skip count to 0 by
+      # making the darwin-only cases runnable there - that is the false green, not a fix.
+      # Bounded and retried: a hung apt mirror once held this step for 51 unattended minutes.
       - name: install tmux (bounded, retried)
         timeout-minutes: 10
         run: |
@@ -277,32 +106,18 @@ jobs:
       # so a broken branch fails here rather than as a silent wave of skips
       # inside `npm test`.
       - run: tmux -V
-      # Todo 286. Ubuntu's `npm test` measured 191s against macOS's 119s
-      # while Ubuntu's own individual suites measured faster, and Ubuntu
-      # peaked at 2 test files in flight against macOS's 9 - `node --test`
-      # takes its file concurrency from availableParallelism(). The 2-CPU
-      # reading was a hypothesis carried across three board revisions and
-      # never actually checked; this prints the real number so it stops
-      # being one. Not a fix, and `--test-concurrency` is deliberately not
-      # raised here - this suite spawns real tmux servers and real MCP
-      # processes, and more concurrency is exactly what would feed the
-      # unexplained back-to-back full-run flake already on record.
+      # Prints the real CPU count. `node --test` takes file concurrency from availableParallelism(),
+      # and a wrong guess about it survived three board revisions unchecked. Diagnostic only:
+      # --test-concurrency stays unraised, since this suite spawns real tmux servers and real MCP
+      # processes and more concurrency is what feeds the flake already on record.
       - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
-      # The skip budget is an assertion here, not a comment on the tmux step.
-      # BLIND SPOT: a describe-level skip never appears in this count at all - test/CLAUDE.md has the measurement and the rule.
-      # An EXACT match in both directions on purpose: a leg skipping MORE than
-      # its budget is the failure this exists for (a fixture or a binary went
-      # missing and the cases quietly vanished), and a leg skipping FEWER
-      # means the budget is stale and nobody would ever notice, which is how
-      # a number stops meaning anything. Whichever direction it moves, the
-      # answer is to change matrix.skipped deliberately and say why.
-      #
-      # `set -o pipefail` is load-bearing: GitHub's default shell is `bash -e`
-      # WITHOUT it, so `npm test | tee` would report tee's exit status and a
-      # red suite would pass this step. The gate would then only ever measure
-      # the skips of a suite it could no longer fail on.
+      # The skip budget is an ASSERTION here, matched exactly in both directions: over budget means a
+      # fixture went missing and cases vanished, under budget means the number is stale. Either way,
+      # change matrix.skipped deliberately and say why. A describe-level skip is invisible to it.
+      # `set -o pipefail` is load-bearing: GitHub's default shell is `bash -e` WITHOUT it, so this
+      # would report tee's exit status and a red suite would pass the step.
       - name: npm test, with this leg's skip budget enforced
         env:
           EXPECTED_SKIPPED: ${{ matrix.skipped }}
@@ -321,45 +136,17 @@ jobs:
             exit 1
           fi
           echo "skipped $skipped, budget $EXPECTED_SKIPPED"
-      # Todo 294. Must run after npm test, not folded into it: it can only
-      # tell a real leak from an in-flight test process once every test file
-      # has actually exited, since isolateTmux()'s own exit-time cleanup
-      # (test/helpers.mjs) runs at that same moment.
-      #
-      # if: always() - without it GitHub skips this step whenever the npm
-      # test step above fails, which is exactly the run most likely to have
-      # left a server behind (a crashed or killed test file's exit handler
-      # may never have run at all).
+      # Must run AFTER npm test, never folded into it: it can only tell a real leak from an in-flight
+      # test process once every file has exited, which is when isolateTmux()'s own cleanup runs.
+      # `if: always()` because the run most likely to have leaked is the one where the suite failed.
       - if: always()
         run: ./scripts/tmux-leak-guard.sh
 
-  # THE macOS CANARY (todo 350). Everything this job runs used to be a third
-  # entry in `test`'s matrix, running on every push and every PR; it is a
-  # separate job now because GitHub Actions has no way to gate one matrix
-  # entry on a different set of trigger events than its siblings - `if:` is a
-  # job- or step-level primitive, not a per-`include`-entry one. Splitting the
-  # job is what let this move to its own schedule without touching the Linux
-  # legs' steps or their `if:` at all.
-  #
-  # WHAT THIS COVERS THAT `test` NOW CANNOT: test/auto-attach-scope.test.mjs's
-  # eleven darwin-only cases (ensureAttached is a no-op off darwin, so Linux
-  # skips them by design - they are the largest contributor to the Linux legs'
-  # `skipped: 28`, which also counts dashboard-open, dashboard-open-lead,
-  # open-call-guard, sweep-scratch's darwin-only ownership case, and the three
-  # HIVE_TEST_REAL_CODEX-gated cases that skip on every platform (todo 524's
-  # test/codex-live-spawn.test.mjs case, plus todo 560's two
-  # test/codex-home.test.mjs --strict-config cases); `skipped: 3` here, those
-  # same three platform-independent cases), and a clean-environment build of
-  # the native addon on the platform hive actually ships on. Everything else -
-  # the addon's ABI logic, the CLI, the MCP tools - is architecture-general and
-  # the Linux legs already cover it on every push and PR.
-  #
-  # WHEN THIS RUNS: the weekly `schedule:` above, or by hand via
-  # `workflow_dispatch:` before a release or before anything touching
-  # src/tmux.ts, src/spawn.ts, src/abi.ts, src/abiProbe.ts, src/db.ts, or
-  # src/dispatcher.ts. It does NOT run on `push` or `pull_request` - that is
-  # the saving. Re-enabling it there is a one-line change: fold this job's
-  # `if:` and matrix entry back into `test`'s, the way it was before todo 350.
+  # THE macOS CANARY (todo 350). A separate job rather than a third matrix entry because Actions
+  # cannot gate one `include` entry on different triggers than its siblings. It covers what the
+  # Linux legs cannot: the darwin-only cases they skip by design, and a clean-environment build of
+  # the native addon on the platform hive ships on. It does NOT run on push or pull_request - that
+  # is the saving. Run it by hand before a release, or before touching tmux/spawn/abi/db/dispatcher.
   test-macos:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
@@ -369,18 +156,8 @@ jobs:
         include:
           - node: 24
             alt: 22
-            # 0 -> 1 (todo 524). test/codex-live-spawn.test.mjs's HIVE_TEST_REAL_CODEX
-            # gate is platform-independent, not darwin-only construction like the
-            # Linux legs' budget above - it skips here too, since the canary runner
-            # has no real codex binary or credentials either.
-            #
-            # 1 -> 3 (todo 560). test/codex-home.test.mjs's two --strict-config
-            # cases sit behind the identical HIVE_TEST_REAL_CODEX gate as the
-            # case above - platform-independent for the same reason, so both
-            # skip here too. Missed on the first pass of this lane: the Linux
-            # legs' budget was bumped 26 -> 28 for these same two tests, but
-            # this leg was left at 1, which would have reported "skipped 3,
-            # budget 1" and failed on the next scheduled or dispatched run.
+            # This leg's own budget. The three HIVE_TEST_REAL_CODEX-gated cases are platform-INDEPENDENT, so
+            # they skip here too; bump this whenever the Linux budget moves for a platform-independent gate.
             skipped: 3
     name: test (macos-latest, node ${{ matrix.node }}) [canary]
     steps:
@@ -419,27 +196,12 @@ jobs:
       - if: always()
         run: ./scripts/tmux-leak-guard.sh
 
-  # THE BOUNDARY, RUN FROM BOTH SIDES OF BOTH RELEASE LINES. This is the only
-  # thing that can catch what issue #105 lane B shipped: a Node that satisfies
-  # engines.node, installs cleanly, and cannot load the addon. On 22.13.1 the
-  # pre-fix tree exits 139 with empty stdout and empty stderr - no error,
-  # nothing to classify, no diagnostic.
-  #
-  # 23.5.0 is here because the FIRST fix had the same defect one release line
-  # over. Node-API 10 is "v22.14.0+, v23.6.0+ and all later versions", so
-  # `">=22.14.0"` admitted 23.0.0 through 23.5.0, every one of them Node-API 9.
-  # A single-version floor cannot express a per-release-line matrix, and a
-  # single-version CI leg cannot catch that it does not.
-  #
-  # 23.6.0 is the positive control. Without it these legs only prove hive says
-  # no, which a guard that refused everything would also satisfy.
-  #
-  # These are fixed historical releases and are meant to stay fixed. They stop
-  # discriminating only if better-sqlite3's NAPI_VERSION moves, which reddens
-  # test/dependency-versions.test.mjs on every other leg first.
-  #
-  # None of them runs the suite. The suite needs a store, and a store is
-  # exactly what a sub-floor Node cannot open.
+  # THE BOUNDARY, FROM BOTH SIDES OF BOTH RELEASE LINES. The only thing that catches a Node that
+  # satisfies engines.node, installs cleanly, and cannot load the addon - it exits 139 with empty
+  # stdout and empty stderr, so there is nothing to classify. 23.5.0 is here because Node-API 10 is
+  # v22.14.0+ AND v23.6.0+, so a single-version floor admitted 23.0.0-23.5.0 at Node-API 9. 23.6.0
+  # is the positive control. None of these runs the suite: the suite needs a store, and a store is
+  # what a sub-floor Node cannot open.
   floor-boundary:
     # Unchanged behavior (todo 350): still push/PR only. Gated explicitly so
     # that adding `schedule` and `workflow_dispatch` above, for the macOS

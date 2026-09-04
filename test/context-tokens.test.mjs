@@ -25,7 +25,7 @@ function userLine() {
   return JSON.stringify({ type: "user", message: { role: "user", content: "hi" } });
 }
 
-// Real shape, confirmed against ~/.claude/projects/-Users-dev-Code-cmgmyr-hive: a mid-response API
+// Real shape, confirmed against a live transcript under ~/.claude/projects: a mid-response API
 // error writes an assistant record with model "<synthetic>" and every usage field 0.
 function syntheticApiErrorLine() {
   return JSON.stringify({

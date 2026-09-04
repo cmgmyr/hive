@@ -63,7 +63,7 @@ describe("hive CLI shared flag parser", () => {
     assert.equal(stdout, "", "a refused run must not render a profile file");
   });
 
-  it("hive setup refuses to let --dir silently swallow --force as its value (cg-review correctness finding)", async () => {
+  it("hive setup refuses to let --dir silently swallow --force as its value", async () => {
     const dirs = scratchDirs();
     const cliOpts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const { code, stdout, stderr } = await runCli(["setup", "--dir", "--force"], cliOpts);
@@ -76,7 +76,7 @@ describe("hive CLI shared flag parser", () => {
     );
   });
 
-  it("hive pad -- runbook treats -- as an end-of-flags separator, not an unknown flag (cg-review correctness finding, narrowed)", async () => {
+  it("hive pad -- runbook treats -- as an end-of-flags separator, not an unknown flag", async () => {
     const dirs = scratchDirs();
     const cliOpts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const init = await runCli(["init"], cliOpts);

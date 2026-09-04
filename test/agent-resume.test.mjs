@@ -123,7 +123,7 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-collide" });
   });
 
-  it("catches a non-ASCII name collision idx_agents_running_name's own COLLATE NOCASE would miss (counselors, opus)", async () => {
+  it("catches a non-ASCII name collision idx_agents_running_name's own COLLATE NOCASE would miss", async () => {
     await mcp.call("agent_spawn", { name: "resume-café", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-café");
     const closedRow = await mcp.call("agent_status", { name: "resume-café" });
@@ -179,7 +179,7 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-dup" });
   });
 
-  it("orders by closed_at, not id -- a resumed-then-reclosed LOWER id can be more recent than a HIGHER id (counselors, codex)", async () => {
+  it("orders by closed_at, not id -- a resumed-then-reclosed LOWER id can be more recent than a HIGHER id", async () => {
     await mcp.call("agent_spawn", { name: "resume-inversion", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-inversion");
     const rowA = await mcp.call("agent_status", { name: "resume-inversion" });
@@ -222,7 +222,7 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { agent_id: parked.agent_id });
   });
 
-  it("resumes with the ORIGINAL binary path, not a bare \"claude\" resolved fresh from PATH (counselors, all three seats)", async () => {
+  it("resumes with the ORIGINAL binary path, not a bare \"claude\" resolved fresh from PATH", async () => {
     const absoluteClaude = fakeClaude();
     await mcp.call("agent_spawn", { name: "resume-binary", command: absoluteClaude });
     await liveAgentRow(mcp, "resume-binary");
@@ -262,7 +262,7 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
     await mcp.call("agent_close", { name: "resume-wrapped" });
   });
 
-  it("resets agent_state/state_changed_at on resume, so a wake cannot read a pre-close latch as the fresh worker's current state (counselors, opus)", async () => {
+  it("resets agent_state/state_changed_at on resume, so a wake cannot read a pre-close latch as the fresh worker's current state", async () => {
     await mcp.call("agent_spawn", { name: "resume-stale-state", command: fakeClaude() });
     await liveAgentRow(mcp, "resume-stale-state");
     const beforeRow = await liveAgentRow(mcp, "resume-stale-state");

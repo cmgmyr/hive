@@ -143,7 +143,7 @@ describe("hive doctor names a worker whose first-prompt latch never cleared", { 
     assert.equal(
       promotedCount(after.stdout) - promotedCount(before.stdout),
       0,
-      "--strict must not promote this warn (decisions/2026-08-07-strict-promotes-only-gating-warns.md)",
+      "--strict must not promote this warn: only a gatingWarn may change the exit code",
     );
   });
 });

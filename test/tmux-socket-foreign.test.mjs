@@ -224,7 +224,7 @@ describe(
 );
 
 describe(
-  "tick()'s delivery candidates: counselors F1 - a closed lead row sharing the running lead's actor_id must not launder a foreign pane past the guard",
+  "tick()'s delivery candidates: review finding F1 - a closed lead row sharing the running lead's actor_id must not launder a foreign pane past the guard",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     beforeEach(reset);
@@ -308,7 +308,7 @@ describe(
   },
 );
 
-describe("tmuxSocketPath: counselors F3 - an unlinked socket file must not read the identical server as foreign", () => {
+describe("tmuxSocketPath: review finding F3 - an unlinked socket file must not read the identical server as foreign", () => {
 
   const scratch = mkdtempSync(join(tmpdir(), "hive-f3-"));
   const uid = process.getuid?.() ?? 0;

@@ -17,9 +17,8 @@ Quick start:
   2. pad_list / todo_list — see what other sessions have shared
   3. help(topic="workflow") — the lead/worker operating pattern
 
-PLAYBOOKS — invokable prompts (slash commands in MCP clients)
-  triage — morning ritual   orchestrate — lead/worker pattern
-  wrapup — end of day
+PROMPTS — invokable prompts (slash commands in MCP clients)
+  runbook — load this project's own standing process
 
 AGENTS — spawn and drive worker sessions in tmux
   agent_spawn, agent_list, agent_status, agent_send, agent_output,

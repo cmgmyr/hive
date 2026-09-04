@@ -17,9 +17,9 @@ One question, asked of every block: is this true right now? Not "was it true," n
 
 This is the rule that keeps a cleanup from being a loss. Before removing a block, decide where it belongs and put it there first:
 
-- a number someone will reuse (a baseline, a measurement, a count) -> the todo it belongs to, as a comment, or the project's lessons pad if it has one
+- a number someone will reuse (a baseline, a measurement, a count) -> the todo it belongs to, as a comment, or the project's own standing-lessons record if it keeps one
 - why something was decided -> a comment on that todo
-- a standing lesson that outlives this work -> the lessons pad, if the project keeps one
+- a standing lesson that outlives this work -> wherever this project keeps standing lessons, if it keeps any
 - what a lane shipped -> its todo's close-out comment and the commit message
 - live state that has simply stopped being live -> delete it, that is the job
 
@@ -57,4 +57,4 @@ A cleanup that reports only its edits cannot be audited, and the interesting par
 
 ## Where to route evidence in this project
 
-The board pad is universal - `hive init` seeds one in every hive project, and the shipped runbook template defines board discipline, so route freely to it. A "lessons" or "lane-ledger" pad is not universal; it is one profile's convention. Use one only if this project already has one. If it does not, put the evidence in a todo comment instead of creating a lessons pad yourself.
+The board pad is universal - `hive init` seeds one in every hive project, and the shipped runbook template defines board discipline, so route freely to it. A pad for standing lessons is not universal; it is one team's convention, under whatever name that team gave it. Use one only if this project already has one. If it does not, put the evidence in a todo comment rather than inventing a pad the project never agreed to.

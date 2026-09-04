@@ -16,14 +16,27 @@ live pane; none of these were typed by hand. See todo 68 / issue #27 / #30.
 `folder-trust-dialog.txt` and `model-picker-dialog.txt` both carry the
 "Esc to cancel" footer; `ready-idle.txt` and `busy-mid-turn.txt` do not.
 
-`folder-trust-dialog.txt` line 5 carries a captured absolute path with the
-local username and a session uuid. That has been flagged twice in review as
-non-blocking, and will likely be flagged again by a third reader: the
-decision was to KEEP it. There is no secret in it, and byte-for-byte fidelity
-is the only reason a captured fixture is trustworthy in the first place — see
-"none of these were typed by hand" above. If it is ever removed, the way is
-RE-CAPTURING from a short path, never hand-editing the bytes of the file
-that is here now.
+Several files carried a captured absolute path with the maintainer's own
+username, and some carried a greeting and an organisation line naming him.
+The decision here used to be to KEEP all of it, on the grounds that
+byte-for-byte fidelity is the only reason a captured fixture is trustworthy
+at all — see "none of these were typed by hand" above. That was superseded on
+2026-09-03: nothing from the maintainer's own setup ships in this tree (see
+the boundary invariant in the repo root `CLAUDE.md`), and
+`test/no-local-leaks.test.mjs` now fails on any of it coming back.
+
+Fidelity is carried instead by a LENGTH-PRESERVING scrub. Every substitution
+made in these files replaces a run of bytes with exactly as many bytes — the
+greeting now reads `Welcome back Robin!`, the shell prompt `dev@devbox01`,
+the home path `/Users/devs/Code/devteam/hive` and its transcript-directory
+encoding `-Users-devs-Code-devteam-hive`, each chosen to the exact width of
+what it replaced — so every box-drawing column, every SGR offset and every
+screen width is byte-identical to the capture. Prove it the
+way this scrub was proved, per file: `awk '{print length}'` over the file at
+the old revision and the new one, diffed, must be empty. A substitution that
+changes a line's length is not allowed here even if it looks harmless, and
+re-capturing from a short path is still the better route when a file needs
+more than a same-width rename.
 
 ## Ghost placeholder text (issue #34)
 
@@ -41,7 +54,7 @@ that is here now.
   (`send-keys -l`, no Enter) run by hand against the scratch pane.
   These replaced an EARLIER version of this file, kept for one PR (#37):
   the first version was reconstructed programmatically from issue #34's own
-  measured bytes rather than freshly captured, which counselors review
+  measured bytes rather than freshly captured, which a review pass
   flagged as suspect (B6) -- correctly, since `real-input.txt` in
   particular turned out to be indistinguishable from "ghost-suggestion.txt
   with the wrapper deleted" rather than independent evidence. If the
@@ -54,7 +67,7 @@ that is here now.
   immediately cancelled, before any visible character). This is not
   something claude has been observed to render; it is a hand-authored
   torture case for the SGR-fold logic itself (`leadingRunIsFaint` in
-  src/tmux.ts), pinning a bug counselors review caught on PR #37 (B1): the
+  src/tmux.ts), pinning a bug a review pass caught on PR #37 (B1): the
   first version asked "does '2' appear anywhere in the leading run" rather
   than folding the run in order, so a later `ESC[22m` that cancels a `ESC[2m`
   was ignored and real typed text misread as a ghost suggestion. Still
@@ -272,7 +285,7 @@ capture depth.
   transcript. Nothing else in either file is modified.
 
   ONE THING WAS CHANGED BEYOND THE SPLICE AND THE FIRST VERSION OF THIS ENTRY
-  DID NOT SAY SO (counselors round 1, two seats): the splice added 6 rows and
+  DID NOT SAY SO (review round 1, two readers): the splice added 6 rows and
   the file is still 51 lines, so six TRAILING BLANK rows were dropped from
   `tool-permission-prompt.txt`'s tail. Behaviourally inert - `findInputBox`
   trims trailing blanks and `capturePane` pops them, so no consumer can see
@@ -335,9 +348,9 @@ capture depth.
   ANOTHER PANE"}`, which holds every wake aimed at that pane forever and
   tells the dialog guard there is no dialog.
 
-## Todo 399, counselors round 1: the two regressions the lane's own fix introduced
+## Todo 399, review round 1: the two regressions the lane's own fix introduced
 
-Both were found by three independent seats, and both are cases where the
+Both were found by three independent readers, and both are cases where the
 first version of the box anchor was WORSE than the footer regex it replaced.
 Neither is hypothetical; both were reproduced against the real predicate on
 an isolated tmux server before either fixture was written.
@@ -522,7 +535,7 @@ What these fixtures do NOT and cannot cover: codex's pane TITLE (idle,
 busy-spinner, "Action Required") and a genuinely LIVE cursor accepting
 keystrokes one at a time - a fixture replay (`cat file; sleep`) prints a
 screen once and the cursor sits below it, so nothing can be pending in it
-(`.agents/sessions/dead-ends/2026-08-14-staging-a-pending-box-on-a-static-fixture-pane.md`).
+- staging one was tried and abandoned for exactly that reason.
 Both are covered live instead, against a synthetic pane rather than real
 codex, in `test/codex-live-pane.test.mjs`.
 

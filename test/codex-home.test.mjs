@@ -268,7 +268,7 @@ describe("todo 560: status_line and project_doc_fallback_filenames reach the gen
     assert.equal(
       "hooks" in parsed,
       false,
-      "the real config's [hooks] table must never cross into a worker's config - that is the whole reason per-worker homes exist (decisions/2026-08-23-per-worker-codex-home-stays.md)",
+      "the real config's [hooks] table must never cross into a worker's config - that is the whole reason per-worker homes exist rather than -c overrides on the real one",
     );
     assert.equal("unrelated_top_level_key" in parsed, false, "no unrelated top-level key from the real config may cross over");
   });

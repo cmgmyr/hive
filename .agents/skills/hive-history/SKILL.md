@@ -27,7 +27,7 @@ Check `.claude/skills/hive-internals/references/` first - most tmux, store-and-d
 |---|---|
 | a prohibition spanning files, that nobody would think to ask about | `.claude/rules/` |
 | evidence, mechanism, or a measurement expensive to re-derive | the `hive-internals` skill's references |
-| a standing lesson about how work runs here | the `lessons` pad |
+| a standing lesson about how work runs here | wherever this project keeps standing lessons |
 | why one lane decided something | a todo comment |
 | a gotcha the next person editing that exact line needs | a code comment, one or two lines |
 

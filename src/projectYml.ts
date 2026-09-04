@@ -23,6 +23,8 @@ export interface ProjectYml {
 
   agents: string[] | null;
 
+  review_tags: string[];
+
   lead_branches: string[] | null;
 
   dashboard: boolean;
@@ -142,6 +144,22 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
+  const review_tags: string[] = [];
+  if (root.review_tags != null) {
+    if (!Array.isArray(root.review_tags)) {
+      warnings.push("review_tags must be a list of todo tags; ignoring it.");
+    } else {
+      for (const entry of root.review_tags) {
+        const value = typeof entry === "string" ? entry.trim() : "";
+        if (value === "") {
+          warnings.push("review_tags entry must be a non-empty tag; skipped.");
+        } else if (!review_tags.includes(value)) {
+          review_tags.push(value);
+        }
+      }
+    }
+  }
+
   let lead_branches: string[] | null = null;
   if (root.lead_branches != null) {
     const raw = Array.isArray(root.lead_branches) ? root.lead_branches : null;
@@ -218,7 +236,18 @@ export function loadProjectYml(projectPath: string): {
   }
 
   return {
-    config: { lead, placement, layout, profile, agents, lead_branches, dashboard, vars, processes },
+    config: {
+      lead,
+      placement,
+      layout,
+      profile,
+      agents,
+      review_tags,
+      lead_branches,
+      dashboard,
+      vars,
+      processes,
+    },
     warnings,
   };
 }

@@ -207,7 +207,7 @@ describe("agent_spawn refuses a cwd belonging to a different project", () => {
   });
 });
 
-describe("a worker's project comes from its own agents row, guarded by HIVE_PROJECT_PATH (issue #63, fix round after counselors run 8)", () => {
+describe("a worker's project comes from its own agents row, guarded by HIVE_PROJECT_PATH (issue #63, fix round)", () => {
 
   const pinRoot = mkdtempSync(join(unitRoot, "pin63-"));
   let nextAgentId = 950;
@@ -378,7 +378,7 @@ describe("a worker's project comes from its own agents row, guarded by HIVE_PROJ
     assert.equal(todosTitled(closed.id, "written-after-reuse-q").length, 0);
   });
 
-  it("(q2) THE FALSE-CLOSURE DEFECT (counselors run 9, finding 1): a closed row in an UNREGISTERED cwd resolves to the project HIVE_PROJECT_PATH still names, and registers no new project", async () => {
+  it("(q2) THE FALSE-CLOSURE DEFECT: a closed row in an UNREGISTERED cwd resolves to the project HIVE_PROJECT_PATH still names, and registers no new project", async () => {
 
     const project = pinnedProject("pin-q2");
     const actorId = insertAgentsRow(project.id, "closed");

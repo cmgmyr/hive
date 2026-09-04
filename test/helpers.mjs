@@ -899,8 +899,8 @@ function claimedUnderWatch(db, watchId, name, condition) {
 // whether it made the visible slice (claimStandingBatch's stampEpisodeNotice), so reading THAT is the
 // only way to answer "was this name's finish reported at all" once the render has folded it away.
 // Do NOT also match the "Still going" roster here: that would re-open the 2026-08-11 defect the
-// two-space anchor was added to close (.agents/sessions/common-issues/a-bare-name-matcher-also-
-// matches-the-still-going-roster.md) - "was this worker reported" and "is this worker merely alive
+// two-space anchor was added to close, where a bare-name matcher also matched the still-going
+// roster - "was this worker reported" and "is this worker merely alive
 // and mentioned in passing" collapsing back into one question. A worker's roster mention carries no
 // claim row at all, so a still-going name folded past ROSTER_STILL_GOING is a real, undecidable gap,
 // same shape as the finish-overflow one but with no ground truth to fall back on.

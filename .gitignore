@@ -1,5 +1,8 @@
 node_modules/
 dist/
+
+# Your own lead command, profile and vars. hive.example.yml is the tracked shape.
+/hive.yml
 *.db
 *.db-shm
 *.db-wal

@@ -6,6 +6,10 @@ npm run watch    # compile on change
 npm test         # run the suite against dist/ (build first)
 ```
 
+`hive.yml` is gitignored, so nobody's lead command, profile or vars ship to
+anyone else. Copy `hive.example.yml` to `hive.yml` and edit it; hive works
+without one, and every key in it is optional.
+
 Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on macOS for every push and pull request.
 
 Smoke test without touching your real data:

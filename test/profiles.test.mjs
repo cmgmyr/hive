@@ -238,10 +238,10 @@ describe("referenced pads and paths (todo 332)", () => {
       "Read the pad with `hive pad lessons --save`.",
       'pad_read(name="board")',
       'pad_write(name="scratch")',
-      '"goal-prompts" pad is optional.',
-      'append to pad "lane-ledger" when you ship.',
+      '"prompts" pad is optional.',
+      'append to pad "ledger" when you ship.',
     ].join("\n");
-    assert.deepEqual(referencedPads(text), ["board", "goal-prompts", "lane-ledger", "lessons", "scratch"]);
+    assert.deepEqual(referencedPads(text), ["board", "ledger", "lessons", "prompts", "scratch"]);
   });
 
   it("does not read `hive pad <name>`'s own placeholder syntax as a pad name", () => {
@@ -254,7 +254,7 @@ describe("referenced pads and paths (todo 332)", () => {
     assert.deepEqual(referencedPads("use `hive pad --save <file>` for a large pad."), []);
   });
 
-  it("catches both path shapes from the sideproj regression", () => {
+  it("catches both path shapes, a directory and a file", () => {
     const text = "See `.claude/rules/` and `scripts/covering-rules.mjs` for the covering rules.";
     assert.deepEqual(referencedPaths(text), [".claude/rules/", "scripts/covering-rules.mjs"]);
   });

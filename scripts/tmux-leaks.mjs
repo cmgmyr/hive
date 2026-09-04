@@ -75,7 +75,6 @@ export function describeLeaks(result, { requireManifest = true } = {}) {
     }),
     "isolateTmux()'s exit-time kill-server (test/helpers.mjs) should have reaped each of these.",
     "Reap by socket, never by pid: tmux -S <socket> kill-server",
-    "A WEDGED one will not answer that either - see",
-    "  .agents/sessions/dead-ends/2026-08-11-reaping-a-wedged-tmux-server-by-socket-alone.md",
+    "A WEDGED one answers neither, and cannot be reaped by socket at all: kill its pid.",
   ];
 }

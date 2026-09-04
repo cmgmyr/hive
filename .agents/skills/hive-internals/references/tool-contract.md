@@ -193,8 +193,8 @@ The practical consequence when you add a tool: **declare every parameter a
 caller may pass**, because anything you leave out is now refused rather than
 ignored. And adding an optional parameter is no longer backward compatible
 against a RUNNING server: it used to be ignored by a session on older
-`dist/`, and is now refused until that session restarts. See
-`.agents/sessions/common-issues/stale-mcp-server-runs-old-code.md`. That cost
+`dist/`, and is now refused until that session restarts, because a session holds the
+`dist/` it started with and rebuilding does not reach it. That cost
 was weighed and accepted: bounded by one restart, and
 loud rather than silent. A refusal is per call, not per session - the SDK
 turns it into an `isError` tool result carrying the -32602, so the caller
@@ -223,9 +223,8 @@ and once as `structuredContent`, with the second copy buying nothing for a
 tool the SDK never validates. `pad_read` is the most-read tool call in this
 project.
 
-The fix moved to `src/strictInput.ts`'s wrapper instead, following the
-reasoning already recorded for input strictness in
-`decisions/2026-08-07-strictness-at-registration-not-at-the-call-sites.md`:
+The fix moved to `src/strictInput.ts`'s wrapper instead, following the same
+reasoning input strictness already rests on:
 a rule enforced by sweeping the 28 declaring call sites is correct until
 the 29th one is added by someone who doesn't know to repeat it; a rule
 enforced at the one choke point every `registerTool` call already passes
@@ -273,8 +272,7 @@ The reason the split holds is mechanical, not stylistic: an MCP tool runs
 inside the MCP server process, which Claude Code starts from its own
 registration, and a value set in a shell the human is typing into does not
 reach that process by any path except accident of how the session was
-launched. `.agents/sessions/dead-ends/2026-08-02-env-var-for-mcp-server-
-config.md` measured exactly this trying to make `HIVE_ATTACH_MODE` an env
+launched. That was measured exactly, trying to make `HIVE_ATTACH_MODE` an env
 var an MCP tool could read: the CLI half honored it, the MCP half silently
 did not, and it looked like it worked right up until it did not. Anything
 an MCP tool needs to read has to be stored config (`hive.yml`, the

@@ -15,13 +15,13 @@ beforeEach(() => {
 describe("transcriptDirName", () => {
 
   it("replaces every slash and dot with a dash", () => {
-    assert.equal(transcriptDirName("/Users/dev/Code/cmgmyr/hive"), "-Users-dev-Code-cmgmyr-hive");
+    assert.equal(transcriptDirName("/Users/devs/Code/devteam/hive"), "-Users-devs-Code-devteam-hive");
   });
 
   it("gives /.claude two dashes, one per character, not one merged separator", () => {
     assert.equal(
-      transcriptDirName("/Users/dev/Code/cmgmyr/hive/.claude/worktrees/issue-14-janitor-probe"),
-      "-Users-dev-Code-cmgmyr-hive--claude-worktrees-issue-14-janitor-probe",
+      transcriptDirName("/Users/devs/Code/devteam/hive/.claude/worktrees/issue-14-janitor-probe"),
+      "-Users-devs-Code-devteam-hive--claude-worktrees-issue-14-janitor-probe",
     );
   });
 });
@@ -29,15 +29,15 @@ describe("transcriptDirName", () => {
 describe("transcriptDir", () => {
   it("joins the encoded name under CLAUDE_CONFIG_DIR/projects", () => {
     assert.equal(
-      transcriptDir("/Users/dev/Code/cmgmyr/hive"),
-      join(scratch, "projects", "-Users-dev-Code-cmgmyr-hive"),
+      transcriptDir("/Users/devs/Code/devteam/hive"),
+      join(scratch, "projects", "-Users-devs-Code-devteam-hive"),
     );
   });
 
   it("falls back to ~/.claude only when CLAUDE_CONFIG_DIR is unset", () => {
     delete process.env.CLAUDE_CONFIG_DIR;
-    const dir = transcriptDir("/Users/dev/Code/cmgmyr/hive");
-    assert.ok(dir.endsWith(join(".claude", "projects", "-Users-dev-Code-cmgmyr-hive")), dir);
+    const dir = transcriptDir("/Users/devs/Code/devteam/hive");
+    assert.ok(dir.endsWith(join(".claude", "projects", "-Users-devs-Code-devteam-hive")), dir);
   });
 });
 

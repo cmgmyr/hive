@@ -33,7 +33,7 @@ What is still real:
 ## hive still pins its interpreter, for a smaller reason than it used to
 
 - `npm approve-scripts better-sqlite3` is LIVE. `package.json`'s
-`"allowScripts": {"better-sqlite3@13.0.3": false}` is VERSION-PINNED on purpose: a bump re-requires approval. `false` IS WHAT SHIPS, decided by Chris 2026-08-07.
+`"allowScripts": {"better-sqlite3@13.0.3": false}` is VERSION-PINNED on purpose: a bump re-requires approval. `false` IS WHAT SHIPS.
 
 ## The SessionStart hook is the one entry point the pin does not cover
 

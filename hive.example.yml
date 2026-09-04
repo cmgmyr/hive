@@ -1,6 +1,7 @@
-# hive project config. Read by `hive lead` from the project root.
-# Commands defined here run only after a one-time interactive approval,
-# and re-require it whenever they change.
+# hive project config. Copy to hive.yml, which is gitignored: this file is the
+# shape, your hive.yml is your own machine's lead command, profile and vars.
+# Commands defined here run only after a one-time interactive approval, and
+# re-require it whenever they change.
 
 placement: split                # worker layout: split (panes) or window (tabs)
 
@@ -9,7 +10,7 @@ layout: main-vertical           # pane arrangement for placement: split.
                                 # | even-horizontal | even-vertical.
                                 # main-* gives the lead half the window.
 
-lead: claude --model fable      # custom command for the lead window (default: claude)
+lead: claude                    # custom command for the lead window (default: claude)
 
 agents: [claude, codex]         # crew harness pool agent_spawn may pick from; claude is first so
                                 # it stays the default. lead: above is separate and unaffected.
@@ -17,8 +18,13 @@ agents: [claude, codex]         # crew harness pool agent_spawn may pick from; c
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 dashboard: true                 # write .claude/dashboard/index.html (hive dogfoods its own feature)
+
+review_tags: [from-review]      # todo tags `hive doctor` counts as review findings and reports as
+                                # triaged (a comment, completed, or archived) or untriaged. A tag
+                                # also matches its own suffixed rounds. Absent means it tracks none.
+
 vars:
-  repo: cmgmyr/hive
+  repo: your-org/your-repo
   install: npm install && npm run build
   test_one: npm run build && node --test test/<file>.test.mjs
   test_all: npm run build && npm test

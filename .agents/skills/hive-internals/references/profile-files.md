@@ -65,9 +65,8 @@ belong in the other scan, not `worker.md` as a whole.
 
 ## `hive doctor`'s referenced-but-missing check already covered extras for free
 
-Per `decisions/2026-08-14-scan-the-prose-rather-than-declare-the-references.md`,
-that check scans rendered prose for pad/path shapes rather than a declared
-list. Once an extra's rendered text is folded into `renderedText` (the
+That check scans rendered prose for pad/path shapes rather than reading a
+declared list, which is why it covers whatever text it is handed. Once an extra's rendered text is folded into `renderedText` (the
 change above), the scan needs no changes of its own to catch a pad or path
 referenced only by that extra - it was already reading whatever text it was
 handed.
@@ -99,8 +98,8 @@ before its matching `src/tools/agents.ts`/`src/brief.ts` change had merged.
 MEASURED, not theorized: the lead spawned a real codex worker (agent 381)
 against the still-unmerged branch and read its generated
 `CODEX_HOME/config.toml` directly. `developer_instructions` carried worker.md
-with BOTH review blocks stripped - `grep "codex review"` and `grep "WAITING
-ON CHECKS"` both returned nothing. The running server's `dist/brief.js` had
+with BOTH of its harness-conditional blocks stripped - a grep for a marker
+unique to each one returned nothing. The running server's `dist/brief.js` had
 no `mergedBriefVars` (`grep -c mergedBriefVars dist/brief.js` on `main` was
 `0`), so no `harness_claude`/`harness_codex` var was ever set on that spawn,
 and `renderConditionals`'s presence check (`src/profiles.ts`) has no else:

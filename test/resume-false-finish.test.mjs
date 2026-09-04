@@ -106,7 +106,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     const row = await parkAndResume("ff-premise");
 
     const afterResume = stateOf(row.id);
-    assert.equal(afterResume.agent_state, "unknown", "resumeAgent resets the latch (lane A's counselors fix)");
+    assert.equal(afterResume.agent_state, "unknown", "resumeAgent resets the latch (lane A's fix)");
     assert.equal(afterResume.state_changed_at, null);
 
     await fireStopHook(row.actor_id);

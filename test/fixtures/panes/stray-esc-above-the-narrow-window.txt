@@ -1,14 +1,14 @@
-dev@host hive % grep -n 'Esc to cancel' src/tmux.ts
+dev@devbox01 hive % grep -n 'Esc to cancel' src/tmux.ts
 2234:// Matched on "Esc to cancel", which is the footer claude renders under every
 2243:// match over a window that (since todo 72) holds up to 18 rows of
 2345:// "Esc to cancel" is UNCHANGED, and the non-claude-pane degeneration above
 2363:const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
-dev@host hive % npm run build
+dev@devbox01 hive % npm run build
 
 > hive@0.1.0 build
 > tsc
 
-dev@host hive % node --test test/db.test.mjs
+dev@devbox01 hive % node --test test/db.test.mjs
 TAP version 13
 # Subtest: migrations run in order and stop at the recorded version
 ok 1 - migrations run in order and stop at the recorded version
@@ -34,8 +34,8 @@ ok 3 - WAL mode is set on every connection
 # skipped 0
 # todo 0
 # duration_ms 118.42
-dev@host hive % git status --short
+dev@devbox01 hive % git status --short
  M src/tmux.ts
  M test/pane-fixtures.test.mjs
-dev@host hive % git add -A
-dev@host hive % 
+dev@devbox01 hive % git add -A
+dev@devbox01 hive % 

@@ -61,6 +61,6 @@ test("a shell comment line counts, a shebang does not", () => {
 test("the over-budget message routes rather than telling you to delete", () => {
   const msg = overBudgetMessage({ pct: 9, comment: 1, code: 10, groups: [] }, { name: "src/", pct: 9, comment: 1, code: 10 });
   assert.match(msg, /skill's references/);
-  assert.match(msg, /lessons pad/);
+  assert.match(msg, /lessons record/);
   assert.match(msg, /Do not delete the comment to get green/);
 });

@@ -274,7 +274,7 @@ describe("wake_get / wake_update", () => {
 
   it(
     "a body-only wake_update landing mid-tick is not silently overwritten by the stale in-memory body " +
-      "(counselors round on #101, P1: due_at alone was not a sufficient guard)",
+      "(#101: due_at alone was not a sufficient guard)",
     NEEDS_TMUX,
     async () => {
       const { tick } = await import("../dist/scheduler.js");
@@ -302,7 +302,7 @@ describe("wake_get / wake_update", () => {
 
   it(
     "converting a due one-shot into a repeating wake mid-tick does not fire it twice " +
-      "(counselors round on #101, P1's 'worse case')",
+      "(#101, the worse case: the conversion, not the fire, is what races)",
     NEEDS_TMUX,
     async () => {
       const { tick } = await import("../dist/scheduler.js");

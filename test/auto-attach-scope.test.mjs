@@ -31,12 +31,12 @@ if [ "$1" = "list-clients" ]; then
   else cat ${JSON.stringify(SERVER_CLIENTS)} 2>/dev/null
   fi
 fi
-# freeViewSessionName (issue #117 counselors, F1) probes has-session before
+# freeViewSessionName (issue #117, review finding F1) probes has-session before
 # naming a view - this fixture creates no real sessions, so every candidate
 # name must read as free (exit nonzero) or the probe loops through all 1000
 # and throws. An unconditional "exit 0" below answered has-session as "found"
 # for every name, which is wrong for a fixture with nothing on the server.
-# HIVE_TEST_HANG_HAS_SESSION is todo 375's case (counselors round 2, F7): the
+# HIVE_TEST_HANG_HAS_SESSION is todo 375's case (review round 2, F7): the
 # client probe ANSWERS and the server wedges before the has-session that
 # follows it, which is the only window in which ensureAttached could throw
 # over a worker that is already live. Logged above before hanging, so the

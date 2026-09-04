@@ -107,7 +107,7 @@ const fixture = (name, body, panes = ["%1", "%2"]) => {
     HIVE_DATA_DIR: dataDir,
     CLAUDE_CONFIG_DIR: configDir,
     // This fixture's own scratch dir, for writeCodexTranscript - never a literal /tmp path, or two
-    // concurrent runs of this file race on the same rollout file (todo 591, /code-review finding).
+    // concurrent runs of this file race on the same rollout file (todo 591).
     CODEX_HOME_ROOT: tmp,
     TMUX_TMPDIR: process.env.TMUX_TMPDIR,
   });

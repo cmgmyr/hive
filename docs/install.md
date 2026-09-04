@@ -24,7 +24,6 @@ A codex worker is not at parity with a claude one, and hive does not pretend oth
 - It cannot be parked or resumed (`agent_park`, `agent_resume`); closing one ends that session for good.
 - Stall reporting skips it entirely. A stall report corroborates a worker's state against its transcript's mtime, and codex writes no transcript hive can read, so hive excludes the row rather than guessing at it, both in `hive doctor` and in the stall notice a standing watch sends a lead. Context-percentage reporting is unavailable for the same reason.
 - `.claude/rules/*.md` are not injected automatically the way Claude Code injects them for a claude worker; a codex worker only reads one if its brief tells it to.
-- `codex review` is not the same rigor as `/code-review`: no adversarial second pass, no separate findings artifact.
 
 `agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
 
@@ -106,7 +105,7 @@ The new code reaches each entry point at a different time:
 - New Claude Code sessions pick it up immediately; each session starts its own server from `dist/`.
 - Sessions already running keep the old server in memory. Run `/mcp` in that session and reconnect hive, or let it catch up when the session ends. Pulling before you open sessions for the day avoids this entirely.
 
-When developing hive itself, this project's `hive.yml` auto-starts `npm run watch`, which replaces the manual build step. The restart rules for running sessions still apply.
+When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, so your lead command and vars stay yours) and uncomment its `watch: npm run watch` process. That auto-starts the compiler with the session and replaces the manual build step. The restart rules for running sessions still apply.
 
 ## Uninstall
 

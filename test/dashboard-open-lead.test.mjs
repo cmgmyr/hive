@@ -125,7 +125,7 @@ describe("bare `hive` (no subcommand) reaches the same dashboard-open path as `h
   );
 });
 
-describe("--no-dashboard argument-parsing edge cases (todo 356, counselors delta round)", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+describe("--no-dashboard argument-parsing edge cases (todo 356)", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   const dirs3 = scratchDirs();
   const fakeClaude = makeFakeClaude(dirs3.tmp);
   const claudePath = fakeClaude("sleep 600");

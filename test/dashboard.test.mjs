@@ -338,7 +338,7 @@ describe("renderDashboard: open todos", () => {
   });
 });
 
-describe("renderDashboard: 7-day throughput chart (Chris's follow-up request)", () => {
+describe("renderDashboard: 7-day throughput chart", () => {
   it("always returns exactly CHART_DAYS entries, so a day with no activity renders as a real zero, never a gap", () => {
     const project = seedProject("chart-empty-project");
     const stats = fetchDayStats(project);
@@ -743,7 +743,7 @@ describe("renderDashboard: recent activity", () => {
   });
 });
 
-describe("renderDashboard: pads section (Chris's follow-up request)", () => {
+describe("renderDashboard: pads section", () => {
   it("lists an active pad other than board, collapsed by default, with revision/updated/size in the summary", () => {
     const project = seedProject("pads-list-test");
     seedPad(project, "lessons", "some lessons content");
@@ -920,7 +920,7 @@ describe("renderDashboard: what a fresh load shows before anyone touches it", ()
   });
 });
 
-describe("renderDashboard: escaping is pinned at every sink, not the board pad alone (counselors, finding 4)", () => {
+describe("renderDashboard: escaping is pinned at every sink, not the board pad alone", () => {
 
   const XSS = "<script>alert(1)</script>";
   const XSS_ESCAPED = "&lt;script&gt;alert(1)&lt;/script&gt;";
@@ -1046,7 +1046,7 @@ describe("renderDashboard: self-contained and read-only", () => {
   });
 });
 
-describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
+describe("renderDashboard: the Live toggle", () => {
   it("the checkbox carries `checked` by default in the server-rendered markup, for a reader with no JavaScript at all", () => {
     const project = seedProject("live-toggle-markup-default-test");
     const html = renderDashboard(project);
@@ -1135,7 +1135,7 @@ describe("renderDashboard: the Live toggle (Chris's follow-up request)", () => {
   });
 });
 
-describe("renderDashboard: a worker's kind is dropped when it only repeats the name (Chris, 2026-09-01)", () => {
+describe("renderDashboard: a worker's kind is dropped when it only repeats the name", () => {
   const workersCard = (html) => html.slice(html.indexOf('id="stat-workers"'), html.indexOf('id="stat-wake"'));
 
   it("a lead literally named 'lead' shows the name once, with no kind beside it", () => {
@@ -1156,7 +1156,7 @@ describe("renderDashboard: a worker's kind is dropped when it only repeats the n
   });
 });
 
-describe("renderDashboard: the pulse card - the project's last 24 hours (Chris's 4th box)", () => {
+describe("renderDashboard: the pulse card - the project's last 24 hours", () => {
   const pulseCard = (html) => html.slice(html.indexOf('id="stat-pulse"'), html.indexOf("</section>"));
 
   function seedComment(projectId, todoId, sqlAgo) {
@@ -2158,7 +2158,7 @@ describe("the scheduler hook: dirty check does not regenerate an unchanged store
   });
 });
 
-describe("the scheduler hook: content hash closes the old column-mark's blind spots (counselors, findings 2/3)", () => {
+describe("the scheduler hook: content hash closes the old column-mark's blind spots", () => {
   it("picks up a wake_update-style body edit alone, with no timer column changing", async () => {
     const { id, root } = seedProjectAt("dirty-check-wake-body-edit");
     const { id: wakeId } = seedWake(id, { body: "original wake body", dueInSeconds: 3600 });
@@ -2263,7 +2263,7 @@ describe("the scheduler hook: the throughput chart and pads section must not def
   });
 });
 
-describe("the scheduler hook: output directory must never escape the project root (counselors P1)", () => {
+describe("the scheduler hook: output directory must never escape the project root", () => {
   it("refuses to write when .claude/dashboard already exists as a symlink pointing outside the project", async () => {
     const { id, root } = seedProjectAt("path-escape-existing-symlink");
     const outside = mkdtempSync(join(tmpdir(), "hive-dashboard-outside-"));

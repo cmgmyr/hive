@@ -73,10 +73,10 @@ describe("hive kickoff gates", () => {
 
   it("says nothing when the profile is not on this machine", async () => {
 
-    yml("profile: chris-only\n");
+    yml("profile: local-only\n");
     const { code, stdout } = await kickoff(["--explain"]);
     assert.equal(code, 0);
-    assert.match(stdout, /silent \(profile "chris-only" is not on this machine\)/);
+    assert.match(stdout, /silent \(profile "local-only" is not on this machine\)/);
   });
 
   it("says nothing in a hive-spawned worker session", async () => {

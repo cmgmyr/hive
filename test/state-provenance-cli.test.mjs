@@ -394,7 +394,7 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
   });
 });
 
-describe("hive doctor names a foreign-socket row it cannot sweep (counselors F4 on #73)", () => {
+describe("hive doctor names a foreign-socket row it cannot sweep (#73)", () => {
   it("warns, naming both sockets, for a running row recorded on a socket this process does not use", async () => {
     reset();
     agentRow({ name: "stuck-worker", state: "unknown", target: "%9999", socket: FOREIGN_SOCKET });

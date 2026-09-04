@@ -141,7 +141,7 @@ describe("attachScripts (ensureAttached's AppleScript)", () => {
 });
 
 describe(
-  "attachScripts avoids a live view collision (issue #117 counselors)",
+  "attachScripts avoids a live view collision (issue #117)",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     it("bumps past a view session this same pid already left running", () => {
@@ -172,7 +172,7 @@ describe(
 );
 
 describe(
-  "attachScripts' live tmux behaviour (issue #117 counselors, replacing a flaked race fixture)",
+  "attachScripts' live tmux behaviour (issue #117, replacing a flaked race fixture)",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     it("puts a real client on its own view, grouped with base, with destroy-unattached in effect", async () => {

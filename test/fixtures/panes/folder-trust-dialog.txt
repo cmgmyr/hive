@@ -2,7 +2,7 @@
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Accessing workspace:
 
- /private/tmp/claude-501/-Users-dev-Code-cmgmyr-hive--claude-worktrees-issue-27-guard-typing-paths/8c842a13-0cf0-40dc-b5a4-32ea3bda4356/scratchpad/untrusted-dir
+ /private/tmp/claude-501/-Users-devs-Code-devteam-hive--claude-worktrees-issue-27-guard-typing-paths/8c842a13-0cf0-40dc-b5a4-32ea3bda4356/scratchpad/untrusted-dir
 
  Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this folder first.
 

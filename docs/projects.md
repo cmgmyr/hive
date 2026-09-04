@@ -8,7 +8,7 @@ Setting a project up, `hive.yml`, the store's automatic backups, and reaching pa
 
 A project **with** a profile reads its process from `hive runbook` and gets no runbook pad; a second copy in the store would only go stale. A project on `profile: none` gets the `runbook` pad instead, seeded with a starter template whose first-run section has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite it to fit. Either way `hive runbook` prints the right one.
 
-After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the standing process before orchestrating. The server also exposes three playbook prompts, which Claude Code surfaces as slash commands: `/mcp__hive__triage` runs the morning ritual, `/mcp__hive__orchestrate` loads the lead/worker pattern, and `/mcp__hive__wrapup` closes the day (handoffs, worker close-out, board rotation).
+After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the standing process before orchestrating. The server also exposes one prompt, which Claude Code surfaces as a slash command: `/mcp__hive__runbook` loads whatever this project's runbook says. hive registers nothing beyond that on purpose. A prompt reaches every user of every project, so a routine that belongs to one team's way of working belongs in that project's runbook or its profile, not in the server.
 
 The board holds today's lanes, what's waiting on you, and what's next up. The runbook instructs the lead to update it the moment tasks change (todos created, re-scoped, blocked, completed; lanes started or finished), keep it small, and at day end `pad_archive` it and write a fresh one under the same name. Archiving frees the name and keeps history readable via `pad_list(include_archived=true)`.
 
@@ -25,6 +25,11 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
                               # the default. Absent or empty means claude only, and agent_spawn
                               # REFUSES a harness or command outside this list. lead: above is a
                               # separate key and stays reachable regardless of this list.
+review_tags: [from-review]    # optional todo tags `hive doctor` counts as review findings and
+                              # reports as triaged (a comment, completed, or archived) or
+                              # untriaged. A tag also matches its own suffixed rounds, so
+                              # from-review covers from-review-3. Absent means doctor tracks
+                              # none and says so; hive ships no tag names of its own.
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .claude/dashboard/index.html on every tick:
                               # the board pad, open todos, running agents, pending wakes, and
@@ -44,6 +49,15 @@ processes:
 Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output`. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
 
 `agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
+
+### Choosing `review_tags`
+
+`review_tags` names todo tags that already mean something in your project. hive applies none of them: a finding becomes a review finding because whoever filed it tagged the todo, by hand or from whatever review step your process runs. So pick the names your process already uses, and if it does not tag findings at all, leave the key out - hive ships no tag names of its own, and an absent `review_tags` is the honest state for a project with no review pipeline rather than a gap to fill.
+
+What the check does with them: `hive doctor` counts every todo carrying one of those tags, or a suffixed round of one (`from-review` covers `from-review-3`), and splits them into triaged and untriaged. Triaged means the todo has at least one comment, or is completed, or is archived - any comment counts, on the theory that a decision you wrote down is a decision you made. Untriaged findings get a warning naming each todo by id.
+
+It is a reminder, never a gate. That warning is non-gating, so `hive doctor --strict` does not fail on it. What it catches is a finding that was filed and then never answered, which happens quietly and is cheap to fix once someone sees the id.
+
 
 ## Automatic backups
 

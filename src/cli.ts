@@ -825,6 +825,11 @@ placement: split                # worker placement: split (panes) or window (tab
 # lead: claude --model opus     # custom command for the lead window (default: claude)
 
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
+
+# review_tags: [from-review]    # todo tags \`hive doctor\` counts as review findings and
+                                # reports as triaged (has a comment, completed, or archived)
+                                # or untriaged. Absent means doctor tracks none.
+
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}
 #   ticket_prefix: DEVX         # sections needing it drop when it is unset
@@ -1475,17 +1480,8 @@ const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]
   if (doctorVerbose) report("info", label, lines);
 };
 
-const REVIEW_FINDING_TAGS = [
-  "from-counselors",
-  "from-gate",
-  "from-code-review",
-  "from-simplify",
-  "from-smoke-test",
-  "from-sideproj",
-];
-
-const isReviewFindingTag = (tag: string): boolean =>
-  REVIEW_FINDING_TAGS.some((base) => tag === base || tag.startsWith(`${base}-`));
+const isReviewFindingTag = (bases: string[], tag: string): boolean =>
+  bases.some((base) => tag === base || tag.startsWith(`${base}-`));
 
 function cmdSetup(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--force"], valued: ["--dir", "--attach", "--auto-attach"] });
@@ -1804,7 +1800,7 @@ interface CodexHomesSummary {
   otherProjectsInUse: number;
 }
 
-// Walks with lstat, never stat: a home directory holds an auth.json SYMLINK to Chris's real
+// Walks with lstat, never stat: a home directory holds an auth.json SYMLINK to the user's own real
 // ~/.codex/auth.json, and this report must never read through it - the link's own (tiny) size is
 // what counts against the home, not the real credential file's.
 function codexHomeSizeBytes(path: string): number {
@@ -2583,7 +2579,12 @@ function cmdDoctor(argv: string[]): void {
     }
   }
 
-  if (here) {
+  const reviewTags = config?.review_tags ?? [];
+  // Never name hive.yml here: doctor stays silent about that file when nothing is wrong with it
+  // (test/config-warnings.test.mjs), and this line prints on every ordinary run.
+  if (here && reviewTags.length === 0) {
+    info("review findings", "no review_tags configured; nothing to track.");
+  } else if (here) {
     const findings = (
       db
         .prepare(
@@ -2597,13 +2598,13 @@ function cmdDoctor(argv: string[]): void {
         archived_at: string | null;
         comment_count: number;
       }[]
-    ).filter((t) => parseTags(t.tags).some(isReviewFindingTag));
+    ).filter((t) => parseTags(t.tags).some((tag) => isReviewFindingTag(reviewTags, tag)));
     const untriaged = findings.filter(
       (t) => t.comment_count === 0 && t.status !== "completed" && t.archived_at == null,
     );
     info(
       "review findings",
-      `${findings.length} tracked (tagged ${REVIEW_FINDING_TAGS.join(", ")}): ` +
+      `${findings.length} tracked (tagged ${reviewTags.join(", ")}): ` +
         `${findings.length - untriaged.length} triaged, ${untriaged.length} untriaged.`,
     );
     if (untriaged.length > 0) {

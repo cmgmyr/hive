@@ -12,45 +12,45 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 const ymlPath = join(dirs.projectDir, "hive.yml");
 
-function writesideprojRepro() {
-  const dir = join(dirs.dataDir, "profiles", "sideproj-repro");
+function writeMissingRefsProfile() {
+  const dir = join(dirs.dataDir, "profiles", "refs-repro");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "posture.md"), "# posture\nMinimal.\n");
   writeFileSync(
     join(dir, "runbook.md"),
     [
-      "# sideproj repro runbook",
+      "# Referenced-but-missing repro runbook",
       'Read the "board" pad first, always - a new project has only this one.',
-      'Read the "goal-prompts" pad before drafting a goal.',
-      'Append to the "lane-ledger" pad when you ship.',
+      'Read the "prompts" pad before drafting a goal.',
+      'Append to the "ledger" pad when you ship.',
       "THE COVERING RULES live under `.claude/rules/` in the main checkout.",
       "See also `docs/notes.md`, which every project on this profile carries.",
     ].join("\n") + "\n",
   );
   writeFileSync(
     join(dir, "worker.md"),
-    "# sideproj repro worker\nThe matcher script is `scripts/covering-rules.mjs`.\n",
+    "# Referenced-but-missing repro worker\nThe matcher script is `scripts/covering-rules.mjs`.\n",
   );
 
   writeFileSync(join(dirs.projectDir, "docs", "notes.md"), "notes\n");
 }
 
 describe("todo 332: referenced-but-missing pads and paths", () => {
-  it("catches all four sideproj regression cases, and stays non-gating", async () => {
+  it("catches all four referenced-but-missing shapes, and stays non-gating", async () => {
 
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
     const baseline = await runCli(["doctor"], opts);
 
     mkdirSync(join(dirs.projectDir, "docs"), { recursive: true });
-    writesideprojRepro();
-    writeFileSync(ymlPath, "profile: sideproj-repro\n");
+    writeMissingRefsProfile();
+    writeFileSync(ymlPath, "profile: refs-repro\n");
 
     const out = await runCli(["doctor"], opts);
 
     assert.match(
       out.stdout,
-      /info {2}profile references: pad\(s\) referenced but not here: goal-prompts, lane-ledger$/m,
+      /info {2}profile references: pad\(s\) referenced but not here: ledger, prompts$/m,
     );
 
     assert.match(

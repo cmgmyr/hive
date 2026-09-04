@@ -259,7 +259,7 @@ fi
 STORE_PANE=$(db_query "select tmux_target from agents where project_id = $PROJECT_ID and kind = 'lead' and status = 'running' order by id limit 1;")
 [ "$STORE_PANE" = "$PANE" ] || gone "about to type into $PANE, but the store's lead row now names '${STORE_PANE:-<none>}' - refusing to type a handoff into a pane the store no longer considers the lead; check by hand"
 
-PROMPT='Follow the standing process: run `hive runbook`, then pad_read(name="board") and read it IN FULL, then continue from its DO THIS FIRST. This session was restarted automatically by scripts/restart-lead.sh, so nothing was handed to you in conversation and the store is the only handoff. Anything outward-facing still waits for the human.'
+PROMPT='Run `hive runbook`, read the board pad in full, then continue from its first live item. This session was restarted automatically by scripts/restart-lead.sh, so nothing was handed to you in conversation and the store is the only handoff. Anything outward-facing still waits for the human.'
 
 tmux send-keys -t "$PANE" -l "$PROMPT" || gone "send-keys (prompt) failed against $PANE after the kill; the new lead may be up with no handoff typed - check it by hand"
 sleep 0.3

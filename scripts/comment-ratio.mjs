@@ -215,7 +215,7 @@ export function overBudgetMessage(m, over = m.groups?.find((g) => g.pct > CEILIN
     "editing that exact line would get wrong without:",
     "  a prohibition spanning files      -> .claude/rules/ or CLAUDE.md",
     "  evidence, mechanism, measurement  -> a skill's references",
-    "  a standing lesson about the work  -> the lessons pad",
+    "  a standing lesson about the work  -> the project's lessons record, if it keeps one",
     "  why this lane decided it          -> a todo comment",
     "  what changed and why              -> the commit message",
     "",

@@ -1,6 +1,6 @@
 # src/AGENTS.md
 
-This file exists for agents that read `AGENTS.md` and have no path-scoped rule mechanism. Codex is the one that matters here, because it is a counselors review seat.
+This file exists for agents that read `AGENTS.md` and have no path-scoped rule mechanism. Codex is the one that matters here, because it reviews and edits this directory like any other harness.
 
 Claude Code gets these automatically: `.claude/rules/*.md` declare `paths:` globs and are injected when a matching file is opened, and the `hive-internals` skill loads the evidence behind each rule on invoke. Neither mechanism exists for codex, so open both files by hand.
 

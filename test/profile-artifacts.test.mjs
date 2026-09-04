@@ -30,19 +30,19 @@ function writeExtra(name, file, content) {
 
 describe("todo 339/454: a fork-local .md that is not one of the three named files", () => {
   it("resolves and reads, returning source \"user\", with no forking involved", () => {
-    writeExtra("orchestration", "review-prompt.md", "Review checklist for {{repo}}.\n");
-    const resolved = resolveProfileFile("orchestration", "review-prompt.md");
+    writeExtra("orchestration", "extra.md", "Review checklist for {{repo}}.\n");
+    const resolved = resolveProfileFile("orchestration", "extra.md");
     assert.equal(resolved.source, "user");
-    assert.equal(readProfileFile("orchestration", "review-prompt.md"), "Review checklist for {{repo}}.\n");
+    assert.equal(readProfileFile("orchestration", "extra.md"), "Review checklist for {{repo}}.\n");
   });
 
   it("renders its {{vars}} the same as the three named files, drops sections whose var is unset", () => {
     writeExtra(
       "orchestration",
-      "review-prompt.md",
+      "extra.md",
       ["Repo: {{repo}}", "<!--if:strict-->", "Strict mode: {{strict}}", "<!--end-->"].join("\n"),
     );
-    const rendered = renderProfileFile("orchestration", "review-prompt.md", { repo: "cmgmyr/hive" });
+    const rendered = renderProfileFile("orchestration", "extra.md", { repo: "cmgmyr/hive" });
     assert.match(rendered, /Repo: cmgmyr\/hive/);
     assert.doesNotMatch(rendered, /Strict mode/);
   });
@@ -56,10 +56,10 @@ describe("todo 339/454: a fork-local .md that is not one of the three named file
   });
 
   it("prints through `hive profile read <file> --profile <name>`", async () => {
-    writeExtra("orchestration", "review-prompt.md", "Fixed review text, no vars.\n");
+    writeExtra("orchestration", "extra.md", "Fixed review text, no vars.\n");
     const dirs = scratchDirs();
     const { code, stdout } = await runCli(
-      ["profile", "read", "review-prompt.md", "--profile", "orchestration"],
+      ["profile", "read", "extra.md", "--profile", "orchestration"],
       { cwd: dirs.projectDir, dataDir: scratch, tmp: dirs.tmp },
     );
     assert.equal(code, 0, stdout);
@@ -67,10 +67,10 @@ describe("todo 339/454: a fork-local .md that is not one of the three named file
   });
 
   it("`hive profile read` defaults to the current project's profile and vars", async () => {
-    writeExtra("orchestration", "review-prompt.md", "Repo under review: {{repo}}\n");
+    writeExtra("orchestration", "extra.md", "Repo under review: {{repo}}\n");
     const dirs = scratchDirs();
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n");
-    const { code, stdout } = await runCli(["profile", "read", "review-prompt.md"], {
+    const { code, stdout } = await runCli(["profile", "read", "extra.md"], {
       cwd: dirs.projectDir,
       dataDir: scratch,
       tmp: dirs.tmp,
@@ -91,10 +91,10 @@ describe("todo 339/454: a fork-local .md that is not one of the three named file
   });
 
   it("reads correctly with --profile BEFORE the file argument, not just after", async () => {
-    writeExtra("orchestration", "review-prompt.md", "Fixed review text, no vars.\n");
+    writeExtra("orchestration", "extra.md", "Fixed review text, no vars.\n");
     const dirs = scratchDirs();
     const { code, stdout } = await runCli(
-      ["profile", "read", "--profile", "orchestration", "review-prompt.md"],
+      ["profile", "read", "--profile", "orchestration", "extra.md"],
       { cwd: dirs.projectDir, dataDir: scratch, tmp: dirs.tmp },
     );
     assert.equal(code, 0, stdout);
@@ -111,8 +111,9 @@ describe("todo 339/454: the filename guard is the load-bearing part of the widen
   });
 
   it("accepts a plain <name>.md", () => {
-    assert.equal(isValidProfileFileName("review-prompt.md"), true);
-    assert.equal(isValidProfileFileName("goal-prompts.md"), true);
+    assert.equal(isValidProfileFileName("extra.md"), true);
+    assert.equal(isValidProfileFileName("review-notes.md"), true);
+    assert.equal(isValidProfileFileName("checklist.md"), true);
   });
 
   it("cannot escape the profile directory even when the target file exists one level up", () => {
@@ -142,7 +143,7 @@ describe("todo 339/454: the filename guard is the load-bearing part of the widen
     const dirs = scratchDirs();
     const escape = relative(join(scratch, "profiles"), join(REPO, "docs"));
     const { code, stdout } = await runCli(
-      ["profile", "read", "review-prompt.md", "--profile", escape],
+      ["profile", "read", "extra.md", "--profile", escape],
       { cwd: dirs.projectDir, dataDir: scratch, tmp: dirs.tmp },
     );
     assert.equal(code, 1);
@@ -158,7 +159,7 @@ describe("todo 339/454: doctor sees an unset {{var}} in a fork-local extra", () 
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "posture.md"), "# posture\n");
     writeFileSync(join(dir, "runbook.md"), "# runbook\n");
-    writeFileSync(join(dir, "review-prompt.md"), "Run {{reviewer_command}} before merging.\n");
+    writeFileSync(join(dir, "extra.md"), "Run {{reviewer_command}} before merging.\n");
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: extra-var-repro\n");
 
     const init = await runCli(["init"], opts);
@@ -189,7 +190,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const dir = join(dirs.dataDir, "profiles", "orchestration");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "posture.md"), "Lead for {{repo}}.\n");
-    writeFileSync(join(dir, "review-prompt.md"), "unrelated extra\n");
+    writeFileSync(join(dir, "extra.md"), "unrelated extra\n");
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n");
 
     const { code, stdout } = await runCli(["posture"], opts);
@@ -203,7 +204,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const dir = join(dirs.dataDir, "profiles", "extra-only");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "review-prompt.md"), "an extra with no runbook alongside it\n");
+    writeFileSync(join(dir, "extra.md"), "an extra with no runbook alongside it\n");
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: extra-only\n");
 
     const init = await runCli(["init"], opts);
@@ -211,7 +212,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const out = await runCli(["doctor"], opts);
 
     assert.match(out.stdout, /FAIL {2}profile: "extra-only" has no readable runbook\.md/);
-    assert.match(out.stdout, /info {2}profile: extra-only \(review-prompt\.md: user\)/);
+    assert.match(out.stdout, /info {2}profile: extra-only \(extra\.md: user\)/);
   });
 
   it("`hive profile list` still shows the three named files, plus an extra with no drift column", async () => {
@@ -219,7 +220,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const dir = join(dirs.dataDir, "profiles", "orchestration");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "review-prompt.md"), "an extra\n");
+    writeFileSync(join(dir, "extra.md"), "an extra\n");
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\n");
 
     const { code, stdout } = await runCli(["profile", "list"], opts);
@@ -227,9 +228,9 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     assert.match(stdout, /posture\.md\s+shipped/);
     assert.match(stdout, /runbook\.md\s+shipped/);
     assert.match(stdout, /worker\.md\s+shipped/);
-    assert.match(stdout, /review-prompt\.md\s+user\s+\S+review-prompt\.md$/m);
-    assert.doesNotMatch(stdout, /review-prompt\.md.*rewrite/);
-    assert.doesNotMatch(stdout, /review-prompt\.md.*diverged/);
+    assert.match(stdout, /extra\.md\s+user\s+\S+extra\.md$/m);
+    assert.doesNotMatch(stdout, /extra\.md.*rewrite/);
+    assert.doesNotMatch(stdout, /extra\.md.*diverged/);
   });
 
   it("widens the filename column to fit a longer extra, keeping the source column aligned", async () => {
@@ -237,7 +238,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
     const dir = join(dirs.dataDir, "profiles", "orchestration");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "goal-prompts.md"), "an extra longer than the 11-char column\n");
+    writeFileSync(join(dir, "checklist.md"), "a file name longer than the 11-char column\n");
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\n");
 
     const { code, stdout } = await runCli(["profile", "list"], opts);
@@ -249,6 +250,6 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     const positions = new Set(lines.map(sourceColumnAt));
     assert.equal(positions.size, 1, `source column should start at the same offset on every row: ${lines.join(" | ")}`);
 
-    assert.match(stdout, /goal-prompts\.md\s+user/);
+    assert.match(stdout, /checklist\.md\s+user/);
   });
 });

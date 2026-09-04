@@ -88,7 +88,7 @@ describe("session_id on agent_status and agent_list", { skip: hasTmux ? false : 
     assert.ok(!("session_id" in plainRow), `non-claude row should never get one: ${JSON.stringify(plainRow)}`);
   });
 
-  it("skips the auto --session-id when extra_args already requests --resume (counselors, fable)", async () => {
+  it("skips the auto --session-id when extra_args already requests --resume", async () => {
 
     await mcp.call("agent_spawn", {
       name: "session-manual-resume",

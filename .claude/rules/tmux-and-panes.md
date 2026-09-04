@@ -127,7 +127,7 @@ strands what survives, unsubmitted, with every receipt reporting success.
 `agent_send`'s `text` over 300 characters, inbound to a LEAD from anyone who is not that lead, is stored whole and typed as a one-line pointer (`src/leadMessage.ts`, todo 475). That is the entire exception.
 
 - **Do not widen it to worker-bound text at any length.** There the message IS the assignment, and a truncated assignment is a broken one. Pinned by `test/lead-message-shortening.test.mjs`.
-- **Do not shorten at write time.** The row must store the FULL text and the pointer must be rendered at delivery, or the lookup the pointer names reads something that was never written (`dead-ends/2026-08-20-shortening-a-notice-at-write-time.md`).
+- **Do not shorten at write time.** The row must store the FULL text and the pointer must be rendered at delivery, or the lookup the pointer names reads something that was never written.
 - **Every field interpolated into the pointer goes through `flatten`** (`src/slug.ts`), the sender's name included. A raw control byte in any of it reaches tmux as a keystroke and submits the pointer early.
 - **A lookup that misses must say WHICH miss it is.** The pointer outlives its row, so `pruned`, `never-issued` and `other-project` are distinct answers. Do not collapse them into "not found".
 

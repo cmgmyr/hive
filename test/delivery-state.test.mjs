@@ -468,7 +468,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
   });
 });
 
-describe("issue #27, counselors A4: the held_at write is guarded against a concurrent claim", () => {
+describe("issue #27, review finding A4: the held_at write is guarded against a concurrent claim", () => {
 
   it("does not hold a timer a concurrent instance already claimed and delivered", async () => {
     if (!hasTmux) return;

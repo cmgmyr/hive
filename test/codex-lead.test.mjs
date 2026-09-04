@@ -169,9 +169,8 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
     after(() => cleanup(session));
 
     // No .codex/auth.json under this HOME, so ensureCodexHome's authSource check throws AFTER
-    // mkdirSync(home) has already created the directory - exactly the shape /code-review and
-    // cg-review both found (a different trigger each, same defect: a partial home nothing records
-    // to agents.codex_home, so no reap path can ever find it by key).
+    // mkdirSync(home) has already created the directory - a partial home nothing records to
+    // agents.codex_home, so no reap path can ever find it by key.
     const brokenHome = join(dirs.tmp, "codex-lead-broken-home");
     mkdirSync(brokenHome, { recursive: true });
 

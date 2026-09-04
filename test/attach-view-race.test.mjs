@@ -43,58 +43,33 @@ import { resolveAttachTarget } from ${JSON.stringify(join(DIST, "tmux.js"))};
 
 const [session, projectId] = process.argv.slice(2);
 const argv = resolveAttachTarget(session, Number(projectId), false);
-// -C, not the product's own -CC: the second C disables echo and needs a
-// real terminal, so a headless -CC client dies with "tcgetattr failed" and
-// attaches nothing at all - which is a test that passes while proving
-// nothing. Control mode here is only the transport that lets a client exist
-// without a tty; whether hive passes -CC is controlModeFor's own question and
-// test/attach-mode.test.mjs's. Kept alive across the observation below by
-// this process staying alive: a client whose stdin pipe closes detaches,
-// which would end the very state being observed.
+// -C, never the product's own -CC: a headless -CC client dies with "tcgetattr failed" and
+// attaches nothing. This process must stay alive or the client detaches and ends the state.
 const client = spawn("tmux", ["-C", ...argv], { stdio: ["pipe", "pipe", "pipe"] });
 const q = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).trim();
-// This process's OWN view session, read out of the argv under test rather
-// than rebuilt here: what is being checked is what the product asked for.
+// Read out of the argv under test, never rebuilt here: check what the product asked for.
 const myView = argv[argv.indexOf("-s") + 1];
 const clientsOn = (target) => {
   try {
     return q("list-clients", "-t", "=" + target, "-F", "#{client_session}");
   } catch (e) {
-    // Distinguish "no clients" (a real answer) from "the query failed" (no
-    // answer at all) - swallowing every error here made a broken probe read
-    // as the PASSING value for the base-session assertion below.
+    // "no clients" and "the query failed" must stay distinct: swallowing errors here made a
+    // broken probe read as the PASSING value below.
     const msg = String(e.stderr ?? e.message ?? e);
     if (/can't find session|no such session/i.test(msg)) return "";
     throw e;
   }
 };
-// Wait for THIS process's own client, not for the peer's. An earlier version
-// waited for both views to exist at once and was flaky under a loaded suite
-// for a reason worth keeping written down: each child kills its client when
-// it finishes, and destroy-unattached takes its view with it, so "both alive
-// at the same instant" is a rendezvous between two processes that have no
-// reason to be in step. Each child proving its own attach landed on its own
-// view is the same claim without the coupling - the peer's independence is
-// then just the two reported names differing, which the parent checks.
+// THIS process's own client, never the peer's: waiting for both at once is a rendezvous
+// between processes with no reason to be in step, and it flaked.
 for (const deadline = Date.now() + 8000; Date.now() < deadline && clientsOn(myView) === ""; ) {
   await new Promise((r) => setTimeout(r, 50));
 }
-// Issue #117 counselors, F4. A mutation that drops the '-t =<base>' from
-// the created session (making it a standalone session rather than a view
-// GROUPED with base) passed every assertion in this file before these two
-// reads existed: every check here was a regex over the emitted string or a
-// client-location probe, neither of which can tell a grouped view from an
-// ungrouped one that merely happens to be named the same shape. list-windows
-// on the view itself is the only way to prove grouping means anything, and
-// show-options reads whether destroy-unattached TOOK EFFECT on the live
-// session rather than merely that the string asking for it was built.
+// These two reads are the only ones that can fail on an UNGROUPED view; every other assertion
+// in this file passes against one. Do not drop them for a string check.
 const baseWindows = q("list-windows", "-t", "=" + session, "-F", "#{window_id}");
 const viewWindows = myView ? q("list-windows", "-t", "=" + myView, "-F", "#{window_id}") : "";
-// show-options' -t does not accept the "=" exact-match form other tmux
-// commands here take (measured: throws "no such session" against a real,
-// live, client-attached view where has-session/list-clients/list-windows
-// all succeed) - bare here, deliberately inconsistent with the rest of this
-// file's targets.
+// Bare target on purpose: show-options -t rejects the "=" form the rest of this file uses.
 const destroyUnattachedValue = myView ? q("show-options", "-t", myView, "-v", "destroy-unattached") : "";
 const observed = {
   argv,
