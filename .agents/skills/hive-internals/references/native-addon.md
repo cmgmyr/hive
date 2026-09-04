@@ -81,6 +81,12 @@ The matrix also catches the third environment class, alongside paths and install
 
 ## Why CI's floor leg is pinned at the exact declared floor (todo 350, issue #105)
 
+### ci.yml: floor-boundary job
+
+The boundary runs from both sides of both release lines. It catches a Node that satisfies `engines.node`, installs cleanly, and cannot load the addon: it exits 139 with empty stdout and stderr, leaving nothing to classify. 23.5.0 is here because Node-API 10 is v22.14.0+ and v23.6.0+, so a single-version floor admitted 23.0.0-23.5.0 at Node-API 9; 23.6.0 is the positive control. None of these runs the suite because a sub-floor Node cannot open the store. The job remains push/PR only: its explicit gate prevents the canary's schedule and manual triggers from adding another run.
+
+The boundary builds under a supported Node and runs only the final doctor step under the boundary interpreter; building under 22.13.1 could fail for an unrelated toolchain reason and read as a pass. setup-node can log a download attempt yet fall back to the runner's preinstalled interpreter (todo 416), so the verification step checks both the exact Node version and Node-API level. The positive-control assertion checks the addon's own loaded line rather than doctor's exit code, because a runner without `claude` can make doctor fail correctly.
+
 22 is the floor, not 20: fs.globSync (test/docs.test.mjs and scripts/covering-rules.mjs) landed in Node 22, so 20 cannot import either file. A 20 leg was tried on this branch and failed exactly there; supporting it would mean replacing globSync in a test whose dead-rule check genuinely wants a filesystem glob, and 22 was chosen as the floor instead.
 
 THE 22 LEG IS PINNED AT THE EXACT DECLARED FLOOR, AND THAT IS A REVERSAL. This comment used to argue the opposite: that the ".5.0" in engines.node was reasoned from the API's history, that `node-version: 22` resolving to the latest 22.x left the patch component unexercised, and that pinning a leg to the floor "would test a version nobody runs" so the honest move was to say the gap out loud. Saying it out loud is what let issue #105 lane B ship a floor of 22.5.0 against a better-sqlite3 whose addon needs Node 22.14.0, where every version in the gap segfaults with empty stdout and empty stderr. A floor nobody runs is a claim, not a constraint, and this matrix is where the claim gets run.

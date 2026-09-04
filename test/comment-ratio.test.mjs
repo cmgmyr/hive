@@ -14,6 +14,15 @@ test("every group stays under the comment ceiling", () => {
   }
 });
 
+test("the workflows group matches YAML files and measures shell comments", () => {
+  const m = measure(REPO);
+  const workflows = m.groups.find((g) => g.name === ".github/workflows/");
+  assert.ok(workflows, "workflows group must be declared");
+  assert.ok(workflows.files > 0, "workflows group must match at least one YAML workflow");
+  assert.ok(workflows.code > 0, "workflows group must measure workflow code lines");
+  assert.ok(workflows.comment > 0, "workflows group must measure shell comments");
+});
+
 // A glob that stopped matching reports zero comments and reads exactly like a
 // clean tree. Renaming scripts/*.mjs to *.js, or moving tests under
 // test/unit/*.test.js, used to drop that group out of the cap with the suite
@@ -27,10 +36,19 @@ test("every group matches files, so none can silently leave the cap", () => {
   }
 });
 
+test("the workflows group matches YAML files and measures shell comments", () => {
+  const m = measure(REPO);
+  const workflows = m.groups.find((g) => g.name === ".github/workflows/");
+  assert.ok(workflows, "workflows group must be declared");
+  assert.ok(workflows.files > 0, "workflows group must match at least one YAML workflow");
+  assert.ok(workflows.code > 0, "workflows group must measure workflow code lines");
+});
+
 test("a comment on its own line counts, one trailing real code does not", () => {
   assert.deepEqual(countFile("// why\nconst a = 1;\n"), { comment: 1, code: 1 });
   assert.deepEqual(countFile("const a = 1; // why\n"), { comment: 0, code: 1 });
   assert.deepEqual(countFile("/* a\n b */\nconst a = 1;\n"), { comment: 2, code: 1 });
+  assert.deepEqual(countFile("# why\nkey: value\n", "sh"), { comment: 1, code: 1 });
 });
 
 test("comment markers inside strings, templates and regexes are not comments", () => {

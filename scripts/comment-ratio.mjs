@@ -17,6 +17,7 @@ export const GROUPS = [
   { name: "scripts/", globs: ["scripts/**/*.mjs"], lang: "js" },
   { name: "scripts/ shell", globs: ["scripts/**/*.sh"], lang: "sh" },
   { name: "claude-plugin/", globs: ["claude-plugin/**/*.mjs"], lang: "js" },
+  { name: ".github/workflows/", globs: [".github/workflows/*.yml", ".github/workflows/*.yaml"], lang: "sh" },
 ];
 
 export function findComments(src) {

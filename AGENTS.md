@@ -84,7 +84,7 @@ Every one of them is enforced by code and pinned by a test, except `tool-contrac
 
 ## Where a thing you have learned goes
 
-**Code comments here are capped by an enforced ceiling, not held near zero.** `test/comment-ratio.test.mjs` pins that ceiling at 5% PER GROUP - `src/`, `test/`, `scripts/`, the shell scripts, `claude-plugin/` - never pooled, because one pooled ratio lets `test/`'s code lines fund comments that all land in `src/`; every group stays under it today. All 33,620 that were here got stripped to `docs/attic/`, verbatim, one file per source file: 16,030 from `src/` (todo 436), then 16,803 from `test/` and `scripts/` plus 787 from the shell scripts and `claude-plugin/` (todo 438). The prose was accurate and it was never the problem; its volume and its eager loading were.
+**Code comments here are capped by an enforced ceiling, not held near zero.** `test/comment-ratio.test.mjs` pins that ceiling at 5% PER GROUP - `src/`, `test/`, `scripts/`, the shell scripts, `claude-plugin/`, `.github/workflows/` - never pooled, because one pooled ratio lets `test/`'s code lines fund comments that all land in `src/`; every group stays under it today. All 33,620 that were here got stripped to `docs/attic/`, verbatim, one file per source file: 16,030 from `src/` (todo 436), then 16,803 from `test/` and `scripts/` plus 787 from the shell scripts and `claude-plugin/` (todo 438). The prose was accurate and it was never the problem; its volume and its eager loading were.
 
 A test is code and the rule applies to it: the test's NAME is where you say what it pins, not a paragraph above it (`test/CLAUDE.md`).
 

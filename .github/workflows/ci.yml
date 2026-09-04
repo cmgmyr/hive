@@ -4,66 +4,25 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Weekly macOS canary (todo 350), plus a manual trigger. Both feed the
-  # `test-macos` job below, not `test` or `floor-boundary` - see the `if:` on
-  # each of those for why adding these triggers here does not also fire them.
   schedule:
-    # Monday 08:42 UTC. WEEKLY, NOT NIGHTLY: roughly $0.06/day this way against
-    # roughly $8.60/day under the old every-push every-PR schedule, and a 7-day
-    # worst case beats a 1-day one at 7x the price (todo 350).
-    # A worst case of "macOS-only breakage sits undetected for up to a week"
-    # is the trade being made; the four darwin-only tests below explain what
-    # that breakage could be. Off the hour on purpose - GitHub throttles
-    # scheduled runs and recommends avoiding :00 to reduce queuing at peak
-    # load.
     - cron: "42 8 * * 1"
   workflow_dispatch:
 
-# A superseded run used to continue to completion. On a 10x macOS runner that
-# is the most expensive possible way to learn nothing, and a lane that pushes
-# several times paid for every intermediate head.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    # Linux only now - see `test-macos` below for the canary. Gated to the
-    # same two events this job always ran on, so adding `schedule` and
-    # `workflow_dispatch` to the triggers above (for the macOS canary) does
-    # not also give this job two new ways to fire.
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
-      # Every version reports, rather than the first failure hiding the rest.
-      # A break real on one version and absent on another is the whole reason
-      # this matrix exists, and fail-fast throws that signal away.
       fail-fast: false
       matrix:
-        # 22.14.0 exactly, not `22`: it is where Node-API 10 begins, and a floor leg that does
-        # not run the floor tests nothing. Below it the addon segfaults with empty stdout and
-        # empty stderr. `floor-boundary` below covers the versions this leg cannot.
-        #
-        # `alt` must have a different NODE_MODULE_VERSION from `node` or
-        # alternateInterpreter (test/helpers.mjs) silently stops discriminating, so it is paired
-        # explicitly rather than derived.
-        #
-        # `skipped` is this leg's EXACT skip budget, enforced after `npm test`. Raising it is a
-        # decision: say in the commit message which test added the skip and why it is registered
-        # rather than made not to exist. A describe-level skip is invisible to this count.
-        #
-        # Why the floor is where it is, why macOS moved to a weekly canary, and every bump this
-        # budget has taken: the `hive-internals` skill, references/native-addon.md and
-        # references/test-CLAUDE.md.
         include:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
-            # 24 + 1: sweep-scratch's end-to-end ownership case is darwin-only,
-            # because linux reports tty `?` for a shell whose pty master has
-            # closed and the sweep cannot select that population there at all
-            # (todo 372, todo 472). The guard it proves is pinned on every
-            # platform by the handed-population case beside it.
             skipped: 28
           - os: ubuntu-latest
             node: 24
@@ -72,11 +31,6 @@ jobs:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
-      # A second Node with a DIFFERENT NODE_MODULE_VERSION from the one the addon is built
-      # against - older or newer, only different. alternateInterpreter() takes the first candidate
-      # whose process.versions.modules disagrees, and without this the ABI/re-exec tests depend on
-      # whatever second Node the runner image happens to carry. Captured into GITHUB_ENV before the
-      # next step's PATH prepend buries it.
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.alt }}
@@ -85,11 +39,6 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      # Required, not a nicety: the layout and probe tests drive a real tmux server and assert hive's
-      # classification of tmux's own error text. Both skip silently without it, and the skip budget
-      # below is what turns that silence into a failure. Do not chase the Linux skip count to 0 by
-      # making the darwin-only cases runnable there - that is the false green, not a fix.
-      # Bounded and retried: a hung apt mirror once held this step for 51 unattended minutes.
       - name: install tmux (bounded, retried)
         timeout-minutes: 10
         run: |
@@ -102,22 +51,13 @@ jobs:
           done
           echo "::error::apt install failed after 3 attempts"
           exit 1
-      # Unconditional on purpose: it proves the install above actually ran,
-      # so a broken branch fails here rather than as a silent wave of skips
-      # inside `npm test`.
+      # Preflight proves tmux installation ran before tests can silently skip tmux cases.
       - run: tmux -V
-      # Prints the real CPU count. `node --test` takes file concurrency from availableParallelism(),
-      # and a wrong guess about it survived three board revisions unchecked. Diagnostic only:
-      # --test-concurrency stays unraised, since this suite spawns real tmux servers and real MCP
-      # processes and more concurrency is what feeds the flake already on record.
       - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
-      # The skip budget is an ASSERTION here, matched exactly in both directions: over budget means a
-      # fixture went missing and cases vanished, under budget means the number is stale. Either way,
-      # change matrix.skipped deliberately and say why. A describe-level skip is invisible to it.
-      # `set -o pipefail` is load-bearing: GitHub's default shell is `bash -e` WITHOUT it, so this
-      # would report tee's exit status and a red suite would pass the step.
+      # Exact skip budget: update matrix.skipped deliberately when intentional skips change.
+      # pipefail prevents tee from masking a failed npm test under GitHub's default bash -e.
       - name: npm test, with this leg's skip budget enforced
         env:
           EXPECTED_SKIPPED: ${{ matrix.skipped }}
@@ -136,17 +76,10 @@ jobs:
             exit 1
           fi
           echo "skipped $skipped, budget $EXPECTED_SKIPPED"
-      # Must run AFTER npm test, never folded into it: it can only tell a real leak from an in-flight
-      # test process once every file has exited, which is when isolateTmux()'s own cleanup runs.
-      # `if: always()` because the run most likely to have leaked is the one where the suite failed.
+      # Run after npm test and always: only then can the guard detect leaks from failed tests.
       - if: always()
         run: ./scripts/tmux-leak-guard.sh
 
-  # THE macOS CANARY (todo 350). A separate job rather than a third matrix entry because Actions
-  # cannot gate one `include` entry on different triggers than its siblings. It covers what the
-  # Linux legs cannot: the darwin-only cases they skip by design, and a clean-environment build of
-  # the native addon on the platform hive ships on. It does NOT run on push or pull_request - that
-  # is the saving. Run it by hand before a release, or before touching tmux/spawn/abi/db/dispatcher.
   test-macos:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
@@ -156,8 +89,6 @@ jobs:
         include:
           - node: 24
             alt: 22
-            # This leg's own budget. The three HIVE_TEST_REAL_CODEX-gated cases are platform-INDEPENDENT, so
-            # they skip here too; bump this whenever the Linux budget moves for a platform-independent gate.
             skipped: 3
     name: test (macos-latest, node ${{ matrix.node }}) [canary]
     steps:
@@ -196,17 +127,7 @@ jobs:
       - if: always()
         run: ./scripts/tmux-leak-guard.sh
 
-  # THE BOUNDARY, FROM BOTH SIDES OF BOTH RELEASE LINES. The only thing that catches a Node that
-  # satisfies engines.node, installs cleanly, and cannot load the addon - it exits 139 with empty
-  # stdout and empty stderr, so there is nothing to classify. 23.5.0 is here because Node-API 10 is
-  # v22.14.0+ AND v23.6.0+, so a single-version floor admitted 23.0.0-23.5.0 at Node-API 9. 23.6.0
-  # is the positive control. None of these runs the suite: the suite needs a store, and a store is
-  # what a sub-floor Node cannot open.
   floor-boundary:
-    # Unchanged behavior (todo 350): still push/PR only. Gated explicitly so
-    # that adding `schedule` and `workflow_dispatch` above, for the macOS
-    # canary, does not also hand this job two new ways to fire - it is 1x and
-    # cheap, but it is not what those triggers were added for.
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     strategy:
@@ -228,18 +149,11 @@ jobs:
     name: node ${{ matrix.node }} must ${{ matrix.expect }} (${{ matrix.why }})
     steps:
       - uses: actions/checkout@v5
-      # Install and build under a supported Node; only the last step runs
-      # under the boundary one. Building under 22.13.1 would risk failing for
-      # an unrelated toolchain reason and reading as a pass.
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
       - run: echo "HIVE_BOUNDARY_NODE=$(command -v node)" >> "$GITHUB_ENV"
-      # setup-node logs a download attempt and does not fail the step if it
-      # falls back to whatever's already on the runner (todo 416: it silently
-      # handed us the image's preinstalled 22.23.2 under a step named for
-      # 22.13.1). Nothing above this line checks that the interpreter IS the
-      # version this leg is named for, and every assertion below trusts it.
+      # Verify setup-node's interpreter: it can silently fall back to the runner image (todo 416).
       - name: the runner handed us the interpreter this leg is named for
         env:
           EXPECT_NODE: ${{ matrix.node }}
@@ -283,9 +197,6 @@ jobs:
             printf '%s\n' "$out" | grep -q "Rebuilding does NOT help" \
               || { echo "FAIL: the advice reverted to something a rebuild cannot fix"; exit 1; }
           else
-            # Not the exit code: a runner without `claude` makes doctor fail
-            # correctly and exit 1, which test/CLAUDE.md's standing rule exists
-            # for. The addon's own line is the claim under test.
             printf '%s\n' "$out" | grep -qE "ok +better-sqlite3: addon loaded" \
               || { echo "FAIL: the addon should load on this Node"; exit 1; }
           fi
