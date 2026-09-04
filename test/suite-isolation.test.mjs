@@ -24,6 +24,8 @@ const REACHES_TMUX = [
   { pattern: /\[\s*(CLI|SERVER|KICKOFF)\b/, what: "a bare hive spawn", spawns: true },
   { pattern: /execFileSync\(\s*"tmux"/, what: "a direct tmux call", spawns: true },
   { pattern: /["']\.\.\/dist\/tmux\.js["']/, what: "a dist/tmux.js import", spawns: false },
+
+  { pattern: /["']\.\.\/dist\/processes\.js["']/, what: "a dist/processes.js import", spawns: false },
 ];
 
 describe("every test file that can reach tmux isolates its server first", () => {

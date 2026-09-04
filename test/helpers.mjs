@@ -38,14 +38,30 @@ export function clearHiveEnv() {
   }
 }
 
+// A process value is either the shorthand command string or the expanded form
+// {command, visible?, dir?, env?}; the two render as the two hive.yml shapes.
 export async function seedTrustedYml({ db, projectId, projectDir, processes }) {
   const { configHash } = await import("../dist/projectYml.js");
-  const lines = Object.entries(processes).map(([name, command]) => `  ${name}: ${command}`);
+  const expanded = Object.fromEntries(
+    Object.entries(processes).map(([name, value]) => [
+      name,
+      typeof value === "string" ? { command: value } : value,
+    ]),
+  );
+  const lines = Object.entries(processes).map(([name, value]) => {
+    if (typeof value === "string") return `  ${name}: ${value}`;
+    const rows = [`  ${name}:`, `    command: ${value.command}`];
+    if (value.visible !== undefined) rows.push(`    visible: ${value.visible}`);
+    if (value.dir !== undefined) rows.push(`    dir: ${value.dir}`);
+    const env = Object.entries(value.env ?? {});
+    if (env.length > 0) rows.push("    env:", ...env.map(([k, v]) => `      ${k}: ${v}`));
+    return rows.join("\n");
+  });
   writeFileSync(join(projectDir, "hive.yml"), `processes:\n${lines.join("\n")}\n`);
-  for (const [name, command] of Object.entries(processes)) {
+  for (const [name, proc] of Object.entries(expanded)) {
     db.prepare(
       "INSERT OR IGNORE INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)",
-    ).run(projectId, name, configHash(name, command, null, {}));
+    ).run(projectId, name, configHash(name, proc.command, proc.dir ?? null, proc.env ?? {}));
   }
 }
 

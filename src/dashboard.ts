@@ -1,6 +1,33 @@
 import { createHash } from "node:crypto";
 import { db } from "./db.js";
 import { getProject } from "./context.js";
+import type { PaneVisibility } from "./tmux.js";
+
+// The dashboard's own input contract, defined here so this file keeps no runtime dependency on the
+// tmux-aware producer (src/processes.ts) that fills it - see docs/attic/src__dashboard.ts.md.
+export interface ProcessSnapshot {
+  name: string;
+  running: boolean;
+  visibility: PaneVisibility | null;
+  startedAt: string | null;
+}
+
+export const describeVisibility = (visibility: PaneVisibility | null): string =>
+  visibility === null ? "running" : visibility === "window" ? "own window" : visibility;
+
+export function processCounts(procs: ProcessSnapshot[]): {
+  running: number;
+  hidden: number;
+  unlocated: number;
+  notStarted: number;
+} {
+  return {
+    running: procs.filter((p) => p.running).length,
+    hidden: procs.filter((p) => p.visibility === "hidden").length,
+    unlocated: procs.filter((p) => p.running && p.visibility === null).length,
+    notStarted: procs.filter((p) => !p.running).length,
+  };
+}
 
 import { awaitingFirstPrompt } from "./firstPrompt.js";
 
@@ -136,11 +163,13 @@ interface TodoCounts {
   completed7d: number;
 }
 
+// kind='command' is excluded here and rendered in its own section: a hive.yml process has no state
+// channel, so in the workers card it showed as a worker with "no log event recorded" forever.
 function fetchNowAgents(projectId: number): RunningAgentRow[] {
   return db
     .prepare(
       `SELECT id, name, kind, actor_id, agent_state, resumed_at, state_changed_at, created_at
-       FROM agents WHERE project_id = ? AND status = 'running' ORDER BY created_at`,
+       FROM agents WHERE project_id = ? AND status = 'running' AND kind != 'command' ORDER BY created_at`,
     )
     .all(projectId) as RunningAgentRow[];
 }
@@ -285,7 +314,15 @@ function statCard(id: string, label: string, iconName: string, body: string): st
   );
 }
 
-function renderNowStrip(projectId: number): string {
+function renderNowProcessesLine(procs: ProcessSnapshot[]): string {
+  const { running, hidden, notStarted } = processCounts(procs);
+  return (
+    `<p class="stat-figure">${running}<span class="stat-unit">running</span></p>` +
+    `<p class="stat-sub">${hidden} hidden · ${notStarted} not started</p>`
+  );
+}
+
+function renderNowStrip(projectId: number, procs: ProcessSnapshot[]): string {
   const agents = fetchNowAgents(projectId);
   const nextWake = fetchNextWake(projectId);
   const todos = fetchTodoCounts(projectId);
@@ -306,7 +343,7 @@ ${statCard(
   `<p class="stat-figure">${todos.open}<span class="stat-unit">open</span></p>` +
     `<p class="stat-sub">${todos.blocked} blocked · ${todos.completed7d} completed in 7d</p>`,
 )}
-${statCard(
+${procs.length > 0 ? statCard("processes", "processes", "inbox", renderNowProcessesLine(procs)) + "\n" : ""}${statCard(
   "pulse",
   "pulse",
   "activity",
@@ -776,6 +813,34 @@ function renderPadsSection(index: SectionMeta[], projectId: number): string {
           .join("\n")
       : emptyState("No other active pads.", "Plans, findings and lessons written with pad_write collect here.");
   return section(index, "pads", "Pads", `${pads.length} pad${pads.length === 1 ? "" : "s"}`, "file", String(pads.length), intro + list);
+}
+
+function processStateEl(p: ProcessSnapshot): string {
+  return p.running
+    ? statusBadge("live", describeVisibility(p.visibility))
+    : statusBadge("warn", "not started");
+}
+
+function renderProcessesSection(index: SectionMeta[], procs: ProcessSnapshot[]): string {
+  const { running, notStarted } = processCounts(procs);
+  const rows = procs
+    .map((p) => {
+      const when = p.startedAt ? `started ${timeEl(p.startedAt)}` : `<span class="muted">start with hive start</span>`;
+      return (
+        `<li class="wake"><span class="row-main">${processStateEl(p)} ${mono(p.name)} ` +
+        `<span class="muted">${when}</span></span></li>`
+      );
+    })
+    .join("\n");
+  return section(
+    index,
+    "processes",
+    "Processes",
+    `${running} running, ${notStarted} not started`,
+    "inbox",
+    String(running),
+    `<ul class="rows wakes">${rows}</ul>`,
+  );
 }
 
 function capNote(shown: number, total: number, pluralNoun: string): string {
@@ -1370,7 +1435,7 @@ const BRAND_MARK = `<svg class="mark" viewBox="0 0 32 32" role="img" aria-label=
 <path d="M16 11 21 14v6l-5 3-5-3v-6Z" fill="currentColor" fill-opacity="0.22" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
 </svg>`;
 
-function buildDashboard(projectId: number): {
+function buildDashboard(projectId: number, procs: ProcessSnapshot[]): {
   projectName: string;
   sections: string;
   html: string;
@@ -1382,12 +1447,13 @@ function buildDashboard(projectId: number): {
     renderThroughputSection(index, stats),
     renderBoardSection(index, projectId),
     renderTodosSection(index, projectId),
+    ...(procs.length > 0 ? [renderProcessesSection(index, procs)] : []),
     renderPadsSection(index, projectId),
     renderWakesSection(index, projectId),
     renderActivitySection(index, projectId),
   ];
   const nav = renderSectionNav(index);
-  const sections = [renderNowStrip(projectId), ...cards].join("\n");
+  const sections = [renderNowStrip(projectId, procs), ...cards].join("\n");
   const generatedLocal = formatDate(new Date());
 
   const html = `<!doctype html>
@@ -1422,12 +1488,15 @@ ${sections}
   return { projectName: project.name, sections, html };
 }
 
-export function renderDashboard(projectId: number): string {
-  return buildDashboard(projectId).html;
+export function renderDashboard(projectId: number, procs: ProcessSnapshot[] = []): string {
+  return buildDashboard(projectId, procs).html;
 }
 
-export function renderDashboardForWrite(projectId: number): { html: string; contentHash: string } {
-  const { projectName, sections, html } = buildDashboard(projectId);
+export function renderDashboardForWrite(
+  projectId: number,
+  procs: ProcessSnapshot[] = [],
+): { html: string; contentHash: string } {
+  const { projectName, sections, html } = buildDashboard(projectId, procs);
   const contentHash = createHash("sha256").update(projectName).update("\0").update(sections).digest("hex");
   return { html, contentHash };
 }

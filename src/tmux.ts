@@ -607,16 +607,33 @@ export function configureHiveWindow(window: string, created: boolean, projectId:
   }
 }
 
-export function listOwnedWindows(session: string): [string, string][] {
-  return tmux(
-    "list-windows", "-t", `=${session}`, "-F", "#{session_name}:#{window_id}\t#{@hive-project-id}",
-  )
-    .split("\n")
-    .map((row) => row.split("\t") as [string, string]);
+export interface OwnedWindow {
+  window: string;
+  projectId: string;
+  processesOf: string;
 }
 
+// Both stamps in one list-windows: a window is found by a stamp and never by its name, and every
+// caller that wants one of these wants to know about the other in the same breath.
+export function listOwnedWindows(session: string): OwnedWindow[] {
+  return tmux(
+    "list-windows", "-t", `=${session}`,
+    "-F", `#{session_name}:#{window_id}\t#{@hive-project-id}\t#{${PROCESSES_WINDOW_OPTION}}`,
+  )
+    .split("\n")
+    .map((row) => {
+      const [window, projectId = "", processesOf = ""] = row.split("\t");
+      return { window, projectId, processesOf };
+    });
+}
+
+const ownsProject = (w: OwnedWindow, projectId: number): boolean => Number(w.projectId) === projectId;
+
+const holdsProcesses = (w: OwnedWindow, projectId: number): boolean =>
+  w.processesOf !== "" && Number(w.processesOf) === projectId;
+
 export function findProjectWindow(session: string, projectId: number): string | undefined {
-  return listOwnedWindows(session).find(([, ownerId]) => Number(ownerId) === projectId)?.[0];
+  return listOwnedWindows(session).find((w) => ownsProject(w, projectId))?.window;
 }
 
 export function windowOwner(window: string): number | null {
@@ -628,13 +645,101 @@ export function windowOwner(window: string): number | null {
   }
 }
 
+// Its own stamp, never @hive-project-id: findProjectWindow takes the FIRST window carrying that one,
+// so a processes window wearing it would be handed out as the project's window.
+export const PROCESSES_WINDOW_OPTION = "@hive-processes-of";
+
+export const processesWindowName = (projectName: string) => `${projectName}/processes`;
+
+export const processesPaneTitle = (projectName: string, name: string) =>
+  `${processesWindowName(projectName)} · ${name}`;
+
+export const PROCESSES_LAYOUT: WindowLayout = "tiled";
+
+export function findProcessesWindow(session: string, projectId: number): string | undefined {
+  return listOwnedWindows(session).find((w) => holdsProcesses(w, projectId))?.window;
+}
+
+// The whole definition of a processes window, so the spawn path and hide's recreate path cannot
+// drift: hive's own window options, its stamp, and the rename lock that keeps its name.
+export function makeProcessesWindow(window: string, projectId: number): void {
+  configureHiveWindow(window, true, null);
+  try {
+    tmux(
+      "set-window-option", "-t", window, PROCESSES_WINDOW_OPTION, String(projectId), ";",
+      "set-window-option", "-t", window, "automatic-rename", "off",
+    );
+  } catch {
+
+  }
+}
+
+export const shownPaneTitle = (projectName: string, name: string) => `${projectName}/${name}`;
+
+export type PaneVisibility = "shown" | "hidden" | "window";
+
+export interface ProjectWindows {
+  processes: string | undefined;
+  project: string | undefined;
+}
+
+// Read once per command or dashboard tick, not once per process: the two lookups are the whole cost
+// of deriving visibility, and paneVisibility below then costs one call per pane.
+export function projectWindows(session: string, projectId: number): ProjectWindows | null {
+  try {
+    const windows = listOwnedWindows(session);
+    return {
+      processes: windows.find((w) => holdsProcesses(w, projectId))?.window,
+      project: windows.find((w) => ownsProject(w, projectId))?.window,
+    };
+  } catch (e) {
+
+    // Two different answers, and collapsing them makes a failed read look like a located pane: tmux
+    // saying there is no session is "no windows", undefined per window. A timeout, a wedged server
+    // or no tmux at all is nobody answering, and the caller must say it cannot tell.
+    return tmuxSaysNothingThere(e) && !tmuxNotInstalled(e) ? { processes: undefined, project: undefined } : null;
+  }
+}
+
+// Compared on the WINDOW ID alone: paneWindow answers with whichever grouped session tmux picks,
+// so once a human is attached its session half is the view's name and never the base session's.
+const sameWindow = (a: string | undefined, b: string | undefined): boolean =>
+  a !== undefined && b !== undefined && a.split(":")[1] === b.split(":")[1];
+
+export function paneVisibility(pane: string, windows: ProjectWindows): PaneVisibility | null {
+  const current = paneWindow(pane);
+  if (!current) return null;
+  if (sameWindow(current, windows.processes)) return "hidden";
+  if (sameWindow(current, windows.project)) return "shown";
+  return "window";
+}
+
+// `#{window_panes}` off the pane itself, so the caller needs no window id: break-pane on a lone pane
+// is a rename in place, not a move, and hands back the window it started in.
+export function paneIsAloneInWindow(pane: string): boolean | null {
+  try {
+    const count = Number(tmux("display-message", "-p", "-t", pane, "#{window_panes}"));
+    return Number.isFinite(count) ? count <= 1 : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setPaneTitle(target: string, title: string): void {
+  try {
+    tmux("select-pane", "-t", target, "-T", title);
+  } catch {
+
+  }
+}
+
 export function adoptableWindow(session: string, projectId: number, pane: string): string | null {
   const paneWin = paneWindow(pane);
   if (!paneWin) return null;
   const windowId = paneWin.split(":")[1];
-  const match = listOwnedWindows(session).find(([window]) => window.split(":")[1] === windowId);
+  const match = listOwnedWindows(session).find((w) => w.window.split(":")[1] === windowId);
   if (!match) return null;
-  const owner = match[1] === "" ? null : Number(match[1]);
+  const owner = match.projectId === "" ? null : Number(match.projectId);
   if (owner !== null && owner !== projectId) return null;
   return `${session}:${windowId}`;
 }

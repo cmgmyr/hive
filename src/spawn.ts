@@ -8,12 +8,18 @@ import {
   DEFAULT_LAYOUT,
   ensureSession,
   crossServerRefusal,
+  findProcessesWindow,
   findProjectWindow,
   panePid,
   paneWindow,
+  PROCESSES_LAYOUT,
+  processesPaneTitle,
+  processesWindowName,
   retainOnExitArgs,
   rowLive,
   sessionName,
+  setPaneTitle,
+  makeProcessesWindow,
   tmux,
   tmuxSocketPath,
   untrustedTmuxServer,
@@ -47,7 +53,10 @@ export interface LaunchSpec {
   commandString: string | ((ids: { agentId: number; actorId: string }) => string);
   cwd: string;
   env: Record<string, string>;
-  placement: "split" | "window";
+
+  // "processes" is reachable only from a hive.yml `visible: false` command (startYmlCommand);
+  // agent_spawn's own enum stays "split" | "window", so no worker or lead can be placed this way.
+  placement: "split" | "window" | "processes";
 
   layout?: WindowLayout;
   parentActor: string;
@@ -162,32 +171,65 @@ function placeAgentPane(
   session: string,
   spec: Pick<
     LaunchSpec,
-    "projectId" | "projectName" | "projectPath" | "cwd" | "placement" | "layout" | "parentActor" | "retainOnExit"
+    | "projectId"
+    | "projectName"
+    | "projectPath"
+    | "name"
+    | "cwd"
+    | "placement"
+    | "layout"
+    | "parentActor"
+    | "retainOnExit"
   >,
   envFlags: string[],
   commandString: string,
   title: string,
-): { target: string; landedInProjectId: number | null; layoutApplied: boolean } {
+): { target: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
   let landedInProjectId: number | null = null;
   let layoutApplied = false;
+  let inProcessesWindow = false;
   const target = withWindowClaim((): string => {
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
     const windowOwnerId = spec.placement === "split" ? spec.projectId : null;
     const started = ensureSession(session, spec.cwd, { envFlags, command: commandString });
     if (started.created) {
+
+      // Deliberate for placement "processes" too: this pane IS the new session's initial window, so it
+      // takes that window rather than a tile. The caller reports it; `hive hide` moves it in later.
       return claimInitialWindow(started, windowName, windowOwnerId).pane;
+    }
+    const splitInto = (window: string, layout: WindowLayout): string => {
+      const pane = tmux(
+        "split-window", "-d", "-P", "-F", "#{pane_id}",
+        "-t", window, "-c", spec.cwd, ...envFlags, commandString,
+        ...(spec.retainOnExit ? retainOnExitArgs(window) : []),
+      );
+      applyLayout(window, layout);
+      layoutApplied = true;
+      return pane;
+    };
+    if (spec.placement === "processes") {
+      let pane: string;
+      const existing = findProcessesWindow(session, spec.projectId);
+      if (existing) {
+        pane = splitInto(existing, PROCESSES_LAYOUT);
+      } else {
+        const made = createWindow(
+          session, processesWindowName(spec.projectName), spec.cwd, envFlags, commandString, null, true,
+          spec.retainOnExit ?? false,
+        );
+        makeProcessesWindow(made.window, spec.projectId);
+        pane = made.pane;
+      }
+      setPaneTitle(pane, processesPaneTitle(spec.projectName, spec.name));
+      inProcessesWindow = true;
+      return pane;
     }
     if (spec.placement === "split") {
       const found = splitTargetWindow(session, spec.projectId, spec.parentActor);
       if (found) {
-        const pane = tmux(
-          "split-window", "-d", "-P", "-F", "#{pane_id}",
-          "-t", found, "-c", spec.cwd, ...envFlags, commandString,
-          ...(spec.retainOnExit ? retainOnExitArgs(found) : []),
-        );
-        applyLayout(found, spec.layout ?? DEFAULT_LAYOUT);
-        layoutApplied = true;
+        const pane = splitInto(found, spec.layout ?? DEFAULT_LAYOUT);
         const owner = windowOwner(found);
         if (owner !== null && owner !== spec.projectId) landedInProjectId = owner;
         return pane;
@@ -198,12 +240,17 @@ function placeAgentPane(
       spec.retainOnExit ?? false,
     ).pane;
   });
-  return { target, landedInProjectId, layoutApplied };
+  return { target, landedInProjectId, layoutApplied, inProcessesWindow };
 }
 
-export function launchAgent(
-  spec: LaunchSpec,
-): { agentId: number; actorId: string; target: string; landedInProjectId: number | null; layoutApplied: boolean } {
+export function launchAgent(spec: LaunchSpec): {
+  agentId: number;
+  actorId: string;
+  target: string;
+  landedInProjectId: number | null;
+  layoutApplied: boolean;
+  inProcessesWindow: boolean;
+} {
 
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
 
@@ -252,14 +299,16 @@ export function launchAgent(
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const { target, landedInProjectId, layoutApplied } = placeAgentPane(session, spec, envFlags, commandString, title);
+    const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placeAgentPane(
+      session, spec, envFlags, commandString, title,
+    );
     paneUp = true;
 
     if (!recordPane(agentId, target, socket)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
-    return { agentId, actorId, target, landedInProjectId, layoutApplied };
+    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow };
   } catch (e) {
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);

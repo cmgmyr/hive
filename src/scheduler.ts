@@ -4,6 +4,7 @@ import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
+import { snapshotProcesses } from "./processes.js";
 import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
@@ -463,7 +464,7 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
 
     if (!claimDashboardAttempt(project.id)) return;
 
-    const { html, contentHash } = renderDashboardForWrite(project.id);
+    const { html, contentHash } = renderDashboardForWrite(project.id, snapshotProcesses(project.id));
     const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(project.id) as {
       last_mark: string | null;
     };

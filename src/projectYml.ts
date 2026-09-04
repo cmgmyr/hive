@@ -11,6 +11,7 @@ export interface YmlProcess {
   command: string;
   dir: string | null;
   auto_start: boolean;
+  visible: boolean;
   env: Record<string, string>;
 }
 
@@ -206,7 +207,7 @@ export function loadProjectYml(projectPath: string): {
     } else {
       for (const [name, value] of Object.entries(rawProcesses as Record<string, unknown>)) {
         if (typeof value === "string" && value.trim() !== "") {
-          processes[name] = { command: value.trim(), dir: null, auto_start: true, env: {} };
+          processes[name] = { command: value.trim(), dir: null, auto_start: true, visible: true, env: {} };
           continue;
         }
         if (value == null || typeof value !== "object") {
@@ -219,6 +220,16 @@ export function loadProjectYml(projectPath: string): {
           continue;
         }
         const dirValue = p.dir ?? p.working_dir;
+        let visible = true;
+        if (p.visible != null) {
+          if (typeof p.visible === "boolean") {
+            visible = p.visible;
+          } else {
+            warnings.push(
+              `Process "${name}": visible must be true or false; ignoring "${String(p.visible)}".`,
+            );
+          }
+        }
         const env: Record<string, string> = {};
         if (p.env != null && typeof p.env === "object") {
           for (const [k, v] of Object.entries(p.env as Record<string, unknown>)) {
@@ -229,6 +240,7 @@ export function loadProjectYml(projectPath: string): {
           command: p.command.trim(),
           dir: typeof dirValue === "string" && dirValue.trim() !== "" ? dirValue.trim() : null,
           auto_start: p.auto_start !== false,
+          visible,
           env,
         };
       }

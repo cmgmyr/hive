@@ -7,6 +7,7 @@ paths:
   - "src/cli.ts"
   - "src/leadMessage.ts"
   - "src/harnesses.ts"
+  - "src/processes.ts"
 ---
 
 # tmux, panes, and typing into them

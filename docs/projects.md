@@ -42,11 +42,36 @@ processes:
     command: npx tsc --watch --preserveWatchOutput
     dir: ./packages/api       # relative to the project root
     auto_start: false         # start manually with: hive start typecheck
+    visible: false            # optional; default true. true gives the process its own
+                              # window (tab). false tiles it as a pane in one shared
+                              # `<project>/processes` window, so N background processes
+                              # cost one tab instead of N.
     env:
       NODE_ENV: development
 ```
 
-Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output`. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
+Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output` - that works for a process exactly as it does for a worker, including a hidden one, so you can read a dev server's log without putting it on screen. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
+
+### Background processes (`visible: false`)
+
+A process is its own window by default, which is right for one or two and wrong for six: six processes across two projects cost six tabs. Set `visible: false` and the process starts as a tiled pane in one window per project named `<project>/processes` instead. Two projects running three processes each cost two tabs, not six.
+
+Visibility is not part of what hive approves. Toggling `visible` never re-opens the trust prompt, because the command hive runs is unchanged; only its name, its command, its `dir` and its `env` are hashed.
+
+Two commands move a running process between the two places:
+
+```bash
+hive show queue:work    # move its pane beside the lead
+hive hide queue:work    # move it back into <project>/processes
+```
+
+Neither restarts anything. The pane keeps its process, its pid and its scrollback; only its window changes. While it is in the group its pane is titled `<project>/processes · <name>`, and beside the lead it is titled `<project>/<name>`, so a tmux status line that renders the pane title tells you which process you are looking at either way.
+
+Where a process is showing is derived from tmux every time it is asked, never stored: tmux destroys a window when its last pane leaves, so the `<project>/processes` window comes and goes as you show and hide the last tile. `hive hide` recreates it when it is gone.
+
+One case does not tile. If a `visible: false` process is the thing that opens the project's tmux session, it takes that session's first window, because a session's first window belongs to whoever created it. `hive start` says so and tells you the `hive hide` that moves it in.
+
+`hive status` labels each running process `shown` or `hidden`, `hive doctor` reports one line counting them, and the dashboard gets a Processes card and section listing every process the project defines - running or not - with its state, where it is showing, and when it started.
 
 `agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
 

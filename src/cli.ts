@@ -120,10 +120,12 @@ import {
 } from "./spawn.js";
 import {
   adoptableWindow,
+  applyLayout,
   claimInitialWindow,
   configureHiveWindow,
   controlModeFor,
   createWindow,
+  DEFAULT_LAYOUT,
   describePaneChoice,
   ensureSession,
   findProjectWindow,
@@ -131,11 +133,19 @@ import {
   isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
+  type OwnedWindow,
   ORPHAN_MIN_AGE_MS,
   type OrphanScratchServers,
   orphanScratchServers,
   orphansWorthWarningAbout,
+  paneIsAloneInWindow,
+  paneVisibility,
   panePid,
+  type ProjectWindows,
+  PROCESSES_LAYOUT,
+  processesPaneTitle,
+  processesWindowName,
+  projectWindows,
   RAW_ATTACH_TMUX_CONFIG,
   renderAttachCommand,
   resolveAttachTarget,
@@ -145,7 +155,10 @@ import {
   rowLiveProbe,
   SESSION_PREFIX,
   sessionName,
+  setPaneTitle,
   shellQuote,
+  shownPaneTitle,
+  makeProcessesWindow,
   tmux,
   TMUX_DOC,
   tmuxSaysNothingThere,
@@ -153,7 +166,10 @@ import {
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
+  windowLayout,
 } from "./tmux.js";
+import { describeVisibility, processCounts } from "./dashboard.js";
+import { snapshotProcesses } from "./processes.js";
 import {
   activeProfile,
   agentVarKeys,
@@ -161,6 +177,7 @@ import {
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
+  type ProjectYml,
   resolveCommandDir,
   type YmlProcess,
 } from "./projectYml.js";
@@ -231,6 +248,8 @@ Usage:
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
   hive start <process> [path] start one hive.yml process by name
+  hive show <process> [path]  move a running process's pane beside the lead
+  hive hide <process> [path]  move it back into the <project>/processes window
   hive status                overview of agents, todos, and wake-ups everywhere
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
@@ -353,7 +372,11 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
   if (existing) {
 
     const live = rowLive(existing.tmux_socket, existing.tmux_target);
-    if (live) return "already running";
+    if (live) {
+      const windows = projectWindows(sessionName(), project.id);
+      const where = windows === null ? null : paneVisibility(existing.tmux_target, windows);
+      return where === "shown" || where === "hidden" ? `already running (${where})` : "already running";
+    }
 
     if (live === null) return "skipped: tmux could not be probed, so hive cannot tell whether it is already running";
     closeAgentRow(existing.id);
@@ -365,7 +388,7 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
     return `skipped: ${errorMessage(e)}`;
   }
   try {
-    launchAgent({
+    const { target, inProcessesWindow } = launchAgent({
       projectId: project.id,
       projectName: project.name,
       projectPath: project.path,
@@ -374,10 +397,19 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess): stri
       commandString: proc.command,
       cwd: dir,
       env: proc.env,
-      placement: "window",
+      placement: proc.visible ? "window" : "processes",
       parentActor: currentActor(),
     });
-    return "started";
+    if (proc.visible) {
+
+      // Its own window never set a pane title, so a status line rendering #T showed the hostname.
+      setPaneTitle(target, shownPaneTitle(project.name, name));
+      return "started";
+    }
+    return inProcessesWindow
+      ? "started (hidden)"
+      : "started in its own window: it opened this project's tmux session, and a session's first window " +
+          `cannot be a tile. Move it with: hive hide "${name}"`;
   } catch (e) {
     return `failed: ${errorMessage(e)}`;
   }
@@ -842,6 +874,8 @@ placement: split                # worker placement: split (panes) or window (tab
 #     command: npx tsc --watch --preserveWatchOutput
 #     dir: ./packages/api       # relative to the project root
 #     auto_start: false         # start manually with: hive start typecheck
+#     visible: false            # tile it in one <project>/processes window instead of
+#                               # its own tab; hive show/hide move it (default true)
 #     env:
 #       NODE_ENV: development
 `;
@@ -1371,13 +1405,128 @@ async function cmdStart(argv: string[]): Promise<void> {
   }
 }
 
+const CANNOT_TELL_WHERE = (name: string) =>
+  `${name}: tmux could not be probed, so hive cannot tell where its pane is`;
+
+function resolveNamedProcess(
+  argv: string[],
+  verb: "show" | "hide",
+): { project: Project; name: string; config: ProjectYml; target: string } | null {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags(verb, parsed, "none");
+
+  const name = parsed.positional[0];
+  if (!name) {
+    console.log(`Usage: hive ${verb} <process> [path]`);
+    process.exit(1);
+  }
+  const project = resolveProject(parsed.positional[1]);
+  const { config, warnings } = loadProjectYml(project.path);
+  for (const w of warnings) console.log(`! ${w}`);
+  if (!config?.processes[name]) {
+    const known = Object.keys(config?.processes ?? {});
+    console.log(
+      known.length > 0
+        ? `No process "${name}" in hive.yml. Defined: ${known.join(", ")}`
+        : "This project has no hive.yml processes.",
+    );
+    process.exit(1);
+  }
+  const row = db
+    .prepare(
+      "SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND name = ? AND kind = 'command' AND status = 'running'",
+    )
+    .get(project.id, name) as { tmux_target: string; tmux_socket: string; pane_pid: string } | undefined;
+  if (!row) {
+    console.log(`${name}: not running (start with: hive start "${name}")`);
+    return null;
+  }
+  const probe = rowLiveProbe(row.tmux_socket, row.tmux_target);
+  if (probe.live === null) {
+    console.log(CANNOT_TELL_WHERE(name));
+    return null;
+  }
+
+  // A pane id alone is not an identity: tmux restarts them at %0 on a fresh server, so a stale
+  // running row names whoever holds that id now. Same compare as janitor() and wake delivery.
+  if (!probe.live || paneReissued(row.pane_pid, probe)) {
+    console.log(`${name}: not running (start with: hive start "${name}")`);
+    return null;
+  }
+  return { project, name, config, target: row.tmux_target };
+}
+
+function cmdShow(argv: string[]): void {
+  const found = resolveNamedProcess(argv, "show");
+  if (!found) return;
+  const { project, name, config, target } = found;
+  const session = sessionName();
+
+  // Read the window inside the claim, never before it: tmux destroys a window when its last pane
+  // leaves, so an id resolved outside the lock names a window a concurrent show or hide may have
+  // already taken down, and join-pane then fails with tmux's own "can't find window".
+  console.log(
+    withWindowClaim((): string => {
+      const windows = projectWindows(session, project.id);
+      if (windows === null) return CANNOT_TELL_WHERE(name);
+      if (!windows.project) return `${name}: this project has no window to show it beside yet; run hive first`;
+      if (paneVisibility(target, windows) === "shown") return `${name}: already shown`;
+
+      tmux("join-pane", "-h", "-d", "-s", target, "-t", windows.project);
+      applyLayout(windows.project, windowLayout(windows.project) ?? config.layout ?? DEFAULT_LAYOUT);
+      setPaneTitle(target, shownPaneTitle(project.name, name));
+      return `${name}: shown`;
+    }),
+  );
+}
+
+function cmdHide(argv: string[]): void {
+  const found = resolveNamedProcess(argv, "hide");
+  if (!found) return;
+  const { project, name, target } = found;
+  const session = sessionName();
+
+  // One claim over the whole decision: the group window comes and goes with its last pane, so both
+  // the read that finds it and the read that finds it missing have to hold the lock the creating
+  // branch takes, or two callers still each create one and a join still races a destroy.
+  console.log(
+    withWindowClaim((): string => {
+      const windows = projectWindows(session, project.id);
+      if (windows === null) return CANNOT_TELL_WHERE(name);
+      const where = paneVisibility(target, windows);
+      if (where === "hidden") return `${name}: already hidden`;
+
+      if (windows.processes) {
+        tmux("join-pane", "-d", "-s", target, "-t", windows.processes);
+        applyLayout(windows.processes, PROCESSES_LAYOUT);
+      } else if (where === "shown" && paneIsAloneInWindow(target) !== false) {
+
+        // break-pane on a lone pane renames its window in place and returns that same window, so
+        // this would stamp @hive-processes-of onto the window already carrying @hive-project-id.
+        return (
+          `${name}: it is the only pane in this project's window, so there is nothing to hide it behind; ` +
+          "start the lead (hive) first, then hide it"
+        );
+      } else {
+        const created = tmux(
+          "break-pane", "-d", "-P", "-F", "#{session_name}:#{window_id}",
+          "-s", target, "-n", processesWindowName(project.name),
+        );
+        makeProcessesWindow(created, project.id);
+      }
+      setPaneTitle(target, processesPaneTitle(project.name, name));
+      return `${name}: hidden`;
+    }),
+  );
+}
+
 function cmdStatus(): void {
   janitor();
   let anyOutput = false;
 
-  let windows: [string, string][] | null | undefined;
+  let windows: OwnedWindow[] | null | undefined;
   let windowsError: unknown;
-  const ownedWindows = (): [string, string][] | null => {
+  const ownedWindows = (): OwnedWindow[] | null => {
     if (windows === undefined) {
       try {
         windows = listOwnedWindows(sessionName());
@@ -1424,14 +1573,19 @@ function cmdStatus(): void {
     let windowLabel: string;
     const fetched = ownedWindows();
     if (fetched) {
-      windowLabel = fetched.find(([, ownerId]) => Number(ownerId) === project.id)?.[0] ?? "none yet";
+      windowLabel = fetched.find((w) => Number(w.projectId) === project.id)?.window ?? "none yet";
     } else {
       windowLabel = tmuxSaysNothingThere(windowsError) ? "none yet" : "unknown (tmux unreachable)";
     }
     console.log(`\n${project.name}  (${project.path})  window: ${windowLabel}`);
+    const procs = agents.some((a) => a.kind === "command") ? snapshotProcesses(project.id) : [];
+    const whereIs = new Map(procs.filter((p) => p.running).map((p) => [p.name, describeVisibility(p.visibility)]));
     for (const a of agents) {
 
-      const state = a.kind === "agent" ? describeForHuman(deriveProvenance(a, null)) : "running";
+      const state =
+        a.kind === "agent"
+          ? describeForHuman(deriveProvenance(a, null))
+          : (whereIs.get(a.name) ?? "running");
 
       const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
       console.log(`  ${label}  ${a.name.padEnd(20)} ${state}`);
@@ -2483,9 +2637,9 @@ function cmdDoctor(argv: string[]): void {
 
     if (!allSessions.includes(session)) return "no session";
     const byProject = new Map<string, string[]>();
-    for (const [window, owner] of listOwnedWindows(session)) {
-      if (owner === "") continue;
-      byProject.set(owner, [...(byProject.get(owner) ?? []), window]);
+    for (const { window, projectId } of listOwnedWindows(session)) {
+      if (projectId === "") continue;
+      byProject.set(projectId, [...(byProject.get(projectId) ?? []), window]);
     }
     const duplicates = [...byProject.entries()].filter(([, windows]) => windows.length > 1);
     if (duplicates.length > 0) {
@@ -2576,6 +2730,15 @@ function cmdDoctor(argv: string[]): void {
       } catch {
 
       }
+    }
+  }
+
+  if (here) {
+    const procs = snapshotProcesses(here.id);
+    if (procs.length > 0) {
+      const { running, hidden, unlocated, notStarted } = processCounts(procs);
+      const located = unlocated > 0 ? `${hidden} hidden, ${unlocated} hive cannot locate` : `${hidden} hidden`;
+      info("processes", `${running} running (${located}), ${notStarted} defined not running`);
     }
   }
 
@@ -3148,7 +3311,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "status", "setup", "doctor",
+  "lead", "init", "attach", "start", "show", "hide", "status", "setup", "doctor",
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
@@ -3178,6 +3341,12 @@ try {
       break;
     case "start":
       await cmdStart(rest);
+      break;
+    case "show":
+      cmdShow(rest);
+      break;
+    case "hide":
+      cmdHide(rest);
       break;
     case "status":
       cmdStatus();

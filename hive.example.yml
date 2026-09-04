@@ -39,5 +39,7 @@ processes:
 #     command: npx tsc --watch --preserveWatchOutput
 #     dir: ./packages/api       # relative to the project root
 #     auto_start: false         # start manually with: hive start typecheck
+#     visible: false            # tile it in one <project>/processes window instead of its
+#                               # own tab; hive show/hide move it (default true)
 #     env:
 #       NODE_ENV: development

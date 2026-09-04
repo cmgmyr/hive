@@ -2375,3 +2375,31 @@ describe("the scheduler hook: project scoping (todo 309)", () => {
     assert.ok(!statOrNull(indexPath(disabled.root)), "the disabled project must have no file at all");
   });
 });
+
+describe("a project with no hive.yml processes renders what it always did (todo 767)", () => {
+  it("adds no processes card, no section and no nav chip", () => {
+    const project = seedProject("no-processes");
+
+    const html = renderDashboard(project);
+
+    assert.doesNotMatch(html, /stat-processes|section-processes|navcount-processes/);
+    assert.deepEqual(
+      [...html.matchAll(/id="section-([a-z]+)"/g)].map((m) => m[1]),
+      ["throughput", "board", "todos", "pads", "wakes", "activity"],
+    );
+  });
+
+  it("counts and lists workers in the workers card but never a hive.yml command row", () => {
+    const project = seedProject("workers-vs-commands");
+    seedAgent(project, { name: "impl", actorId: "agent:9001" });
+    seedAgent(project, { name: "npm:dev", actorId: "cmd:9002", kind: "command" });
+
+    const html = renderDashboard(project);
+    const card = html.slice(html.indexOf('id="stat-workers"'), html.indexOf('id="stat-wake"'));
+
+    assert.match(card, />impl</);
+    assert.doesNotMatch(card, />npm:dev</);
+    assert.doesNotMatch(card, /no log event recorded/);
+    assert.match(card, /<p class="stat-figure">1<\/p>/);
+  });
+});

@@ -198,7 +198,7 @@ describe("hive never creates a pane it has to destroy", () => {
 const PANE_CREATION_SITES = [
   ["src/cli.ts", "new-window", "hive attach's project window - DELIBERATELY BARE, and nothing destroys it"],
   ["src/cli.ts", "split-window", "carries leadCommand"],
-  ["src/spawn.ts", "split-window", "carries commandString"],
+  ["src/spawn.ts", "split-window", "splitInto, used by placement split and placement processes - carries commandString"],
   ["src/tmux.ts", "new-session", "ensureSession - carries initial.command on every claiming path"],
   ["src/tmux.ts", "new-session", "a GROUPED view session (-t), which shares windows and forks nothing"],
   ["src/tmux.ts", "new-session", "a GROUPED view session (-t), which shares windows and forks nothing"],
