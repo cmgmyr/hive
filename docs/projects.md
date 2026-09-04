@@ -75,6 +75,48 @@ One case does not tile. If a `visible: false` process is the thing that opens th
 
 `agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
 
+### Process lifetime
+
+A process never outlives the lead that owns the session unless you chose that. Four things stop one, and each names its own reason:
+
+| What happened | Reason hive records |
+|---|---|
+| You ran `hive stop <name>` or `hive stop --all` | `hive stop` |
+| You ended the lead's Claude Code session with `/exit` or a logout | `lead session ended` |
+| The lead's own process died: a crash, a signal, or you quit it | `lead pane exited` |
+| A fresh `hive lead` found processes a previous lead had left running | `left running by a previous lead` |
+
+Only `/exit` and a logout count as the session ending, because those are the two reasons Claude Code documents as the session being over for good. Everything else is treated as the lead still being there. `/clear` is the obvious one: it ends the session and starts a new one in the same pane, so that lead still owns its processes. Being careful here costs nothing, since a lead whose pane really died is covered by the tmux hook instead, the `lead pane exited` row above.
+
+If you `/exit` a lead and then start `claude` again in that pane by hand, its processes are already stopped and nothing brings them back: only `hive lead` starts them. Start them with `hive start <name>`, or restart the lead through `hive lead` and let it do it for you.
+
+Workers are never stopped by any of this, deliberately. You often want to finish with a worker after the lead is closed, so closing a lead takes down its processes and leaves its crew alone.
+
+A stop is graceful first: hive types C-c into the pane, waits two seconds for the process to exit, and kills the pane only if it is still there. The receipt says which one ended it, so `stopped` never covers for a process that is still holding its port:
+
+```bash
+hive stop npm:dev     # npm:dev: stopped (C-c)
+hive stop queue:work  # queue:work: stopped (killed after 2s)
+hive stop --all       # one line per running process
+```
+
+The two automatic paths cover different deaths, and you need both. The Claude Code hook covers a session that ends cleanly. The tmux hook covers a process that dies without ending its session, and it is the only one of the two that a codex lead has, since hive does not wire a session hook for codex.
+
+One gap is worth knowing about. tmux fires nothing at all for a pane destroyed with `tmux kill-pane`, so a process survives that until something else stops it. The documented restart path, `scripts/restart-lead.sh`, kills the lead pane and then runs `hive lead`, and that `hive lead` is what stops the leftovers and starts them again. If you kill a lead pane by hand and do not restart it, clear its processes with `hive stop --all`.
+
+A fresh `hive lead` reports what it found:
+
+```
+- npm:dev: stopped (C-c); left running by a previous lead
+- npm:dev: started (hidden)
+```
+
+Re-running `hive lead` while the lead is alive adopts that pane and stops nothing, because those processes belong to the lead that is still running.
+
+A process that dies on its own tells the lead so, once, naming the command that restarts it. A process you stopped says nothing. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
+
+A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
+
 ### Choosing `review_tags`
 
 `review_tags` names todo tags that already mean something in your project. hive applies none of them: a finding becomes a review finding because whoever filed it tagged the todo, by hand or from whatever review step your process runs. So pick the names your process already uses, and if it does not tag findings at all, leave the key out - hive ships no tag names of its own, and an absent `review_tags` is the honest state for a project with no review pipeline rather than a gap to fill.

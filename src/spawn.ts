@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { reapCodexHome } from "./codexHome.js";
+import { getProject } from "./context.js";
 import { dataDir, db } from "./db.js";
+import { loadProjectYml } from "./projectYml.js";
 import {
   applyLayout,
   claimInitialWindow,
@@ -10,6 +12,7 @@ import {
   crossServerRefusal,
   findProcessesWindow,
   findProjectWindow,
+  isPaneTarget,
   panePid,
   paneWindow,
   PROCESSES_LAYOUT,
@@ -24,6 +27,7 @@ import {
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
+  windowLayout,
   windowOwner,
   windowTitle,
   type WindowLayout,
@@ -112,6 +116,28 @@ function recordPane(agentId: number, target: string, socket: string): boolean {
       )
       .run(target, socket, panePid(target), agentId).changes > 0
   );
+}
+
+// Two callers, one meaning: whatever is left in the window re-tiles to the layout it was arranged
+// with. agent_close kills a worker's pane through this; stopProcess (src/processes.ts) is the only
+// thing that kills a command's, and its graceful leg loses the pane without a kill at all - which is
+// why the re-tile is reachable on its own.
+export function relayoutAfterPaneLeft(window: string | null): void {
+  if (!window) return;
+  const ownerId = windowOwner(window);
+  const ownerProject = ownerId != null ? getProject(ownerId) : undefined;
+  applyLayout(
+    window,
+    windowLayout(window) ?? (ownerProject ? loadProjectYml(ownerProject.path).config?.layout : undefined) ?? DEFAULT_LAYOUT,
+  );
+}
+
+export function killAgentPane(target: string): void {
+  const pane = isPaneTarget(target);
+
+  const window = pane ? paneWindow(target) : null;
+  tmux(pane ? "kill-pane" : "kill-window", "-t", target);
+  relayoutAfterPaneLeft(window);
 }
 
 export function discardOrphanedPane(target: string): void {

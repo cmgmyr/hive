@@ -157,9 +157,9 @@ The failure this prevents is a body that only parses as a reply. "Yes, go ahead 
 
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism, including the drain-path race and its dated measurements, is in `.claude/skills/hive-internals/references/tmux-and-panes.md`. Separately, two paths exist where a wake genuinely never fires, in `.claude/rules/tmux-and-panes.md`: a pane sitting on a dialog, and a pane holding unsubmitted human text. Both hold past `max_wait_at`, and the second was added deliberately - delivery pastes and presses Enter, so a box with text already in it would submit the wake merged with whatever the human was typing.
 
-## The two generated exceptions to verbatim delivery, and what each was measured at (todo 473)
+## The generated exceptions to verbatim delivery, and what each was measured at (todo 473, extended by todo 765)
 
-Both ride on a standing watch's finish notice and neither has an author, so neither is covered by the verbatim rule. Both were measured on the lead's own pane on 2026-08-20/21, and both were invisible until someone read the DELIVERED string rather than the stored body - the 455/456 lane and todo 465's lane each measured the body and missed them.
+The first two ride on a standing watch's finish notice and neither has an author, so neither is covered by the verbatim rule. Both were measured on the lead's own pane on 2026-08-20/21, and both were invisible until someone read the DELIVERED string rather than the stored body - the 455/456 lane and todo 465's lane each measured the body and missed them.
 
 **The crew render.** `shortRenderForLeadDelivery` builds one line per WORKER from the notice's own `wake_idle_notices` claim rows. It used to build one entry per CLAIM, which put three separate wrong beliefs in a lead's pane in one evening:
 
@@ -170,6 +170,38 @@ Both ride on a standing watch's finish notice and neither has an author, so neit
 The fork was settled on 2026-08-21: the notice reports CREW STATE, not episodes, because a lead does not act on the fact that a worker finished four turns - it acts on whether that worker is done and whether to go and look. The reversal cost is recorded with the decision: an episode-shaped render is a different render, not a tweak to this one.
 
 **The staleness trailer.** `noticeStalenessNote` had no threshold. On wake #885 it appended 138 characters to a 72-character notice held ONE second, so the provenance was 66% of the wake and it was the half that said nothing: at a short hold `heldSince` and `timer.created_at` are the same instant, so the two sentences that carefully distinguish them printed the same timestamp and the same age twice. Wakes #880 through #885 all delivered with holds of 1-2 seconds. The bound is `CONVERSATION_HOLD_TTL_SECONDS` rather than a number of its own, because the conversation hold is what produces these delays; it gates both printing at all and collapsing the two clauses into one. It is not truncated: the long-hold case is what it was built for (the 2026-08-13 stranded-paste incident), and that case still gets it in full.
+
+**The dead-process notice (todo 765).** The third one, and the only one that is not a wake's: the
+janitor files it when its sweep closes a running `kind='command'` row whose pane is gone
+(`reportDeadProcess`). Before this, that sweep reported a crashed hive.yml process as part of a
+count - "stale state: N dead agents closed" - so a `visible: false` process that died was invisible
+until somebody went looking for it.
+
+Three things about it are the same decisions the other two already made, and one is new:
+
+- It goes through the same "never mint a notice hive could not deliver" guard. No running lead row
+  with a live pane, no notice. A project whose lead is gone would otherwise collect one row per
+  dead process, forever, with nobody left to type them to.
+- It is parentless, so `noticeDisposition` can never age it out and `noticeStalenessNote` never
+  rides on it. Both follow from `parent_timer_id IS NULL` rather than from anything this code does.
+- It is one row per sweep of one process, and the sweep's own conditional UPDATE is what stops a
+  second scheduler instance filing a duplicate: only the instance that actually closed the row puts
+  it in `swept`.
+- NEW, AND THE PART THAT IS EASY TO BREAK: what makes this notice mean "died on its own" is a
+  STOPPING MARKER that `stopProcess` (`src/processes.ts`) writes before it touches the pane - a
+  `stopping:<agent id>` kv row with a 30s TTL - and that this sweep skips a swept command row whose
+  marker is still live.
+  It was an ORDERING first, and that was wrong in a way worth keeping written down. The first shape
+  closed the row before killing the pane, on the theory that a stopped process is then never a
+  running row with a dead pane and so never swept. It is not, as long as the stop finishes. A stop
+  interrupted after the close and before the kill - Ctrl-C on `hive stop`, a SIGKILL, a hook timeout
+  - left a CLOSED ROW OVER A LIVE PROCESS, invisible to `hive status`, to `hive stop --all`, to the
+  dashboard and to the janitor, which sweeps only running rows; `hive start` then launched a second
+  copy on the same port. Measured on a scratch store by sending SIGINT 700ms into a `hive stop` of a
+  process that ignores SIGINT (todo 765, found by a concurrency review pass).
+  So the row now closes only once the pane is confirmed gone, a stop that cannot finish returns the
+  `still-running` leg and leaves the row RUNNING and visible, and the marker is what tells a
+  deliberate stop from a crash. `test/process-died-notice.test.mjs` pins both halves.
 
 ## A standing watch reports its owner's crew, not the whole project (todo 455)
 

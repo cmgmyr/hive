@@ -3,7 +3,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-export const DISCRIMINATOR_PATHS = ["notification_type", "background_tasks[].type", "background_tasks[].status"];
+export const DISCRIMINATOR_PATHS = ["notification_type", "reason", "background_tasks[].type", "background_tasks[].status"];
 
 export function jsonType(value) {
   if (value === null) return "null";

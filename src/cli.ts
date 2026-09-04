@@ -154,6 +154,9 @@ import {
   rowLive,
   rowLiveProbe,
   SESSION_PREFIX,
+  appendGlobalHook,
+  globalHooks,
+  replaceGlobalHooks,
   sessionName,
   setPaneTitle,
   shellQuote,
@@ -169,7 +172,15 @@ import {
   windowLayout,
 } from "./tmux.js";
 import { describeVisibility, processCounts } from "./dashboard.js";
-import { snapshotProcesses } from "./processes.js";
+import {
+  runningCommandRow,
+  runningCommandRows,
+  snapshotProcesses,
+  stopAllProcesses,
+  stopLine,
+  stopProcess,
+  STOP_REASONS,
+} from "./processes.js";
 import {
   activeProfile,
   agentVarKeys,
@@ -248,6 +259,7 @@ Usage:
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
   hive start <process> [path] start one hive.yml process by name
+  hive stop <process> [path]  stop one running process; --all stops every one
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
   hive status                overview of agents, todos, and wake-ups everywhere
@@ -815,6 +827,16 @@ async function cmdLead(argv: string[]): Promise<void> {
     }
     if (!createdPane && newCodexHomeKey && newCodexHomeKey !== previousCodexHome) {
       reapCodexHome(newCodexHomeKey);
+    }
+
+    if (createdPane) {
+      armLeadPaneExitedHook();
+      clearLeftoverProcesses(project, config);
+    } else if (!leadPaneExitedHookArmed()) {
+      console.log(
+        `! this tmux server carries no ${LEAD_PANE_EXITED_HOOK} backstop and hive arms one only on a pane it created, ` +
+          "so this project's processes will outlive a crash here. Clear them with: hive stop --all",
+      );
     }
 
     if (config) {
@@ -1392,17 +1414,19 @@ async function cmdStart(argv: string[]): Promise<void> {
   for (const w of warnings) console.log(`! ${w}`);
   const proc = config?.processes[name];
   if (!proc) {
-    const known = Object.keys(config?.processes ?? {});
-    console.log(
-      known.length > 0
-        ? `No process "${name}" in hive.yml. Defined: ${known.join(", ")}`
-        : "This project has no hive.yml processes.",
-    );
+    console.log(processNotDefined(config, name));
     process.exit(1);
   }
   if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
     console.log(`${name}: ${startYmlCommand(project, name, proc)}`);
   }
+}
+
+function processNotDefined(config: ProjectYml | null, name: string): string {
+  const known = Object.keys(config?.processes ?? {});
+  return known.length > 0
+    ? `No process "${name}" in hive.yml. Defined: ${known.join(", ")}`
+    : "This project has no hive.yml processes.";
 }
 
 const CANNOT_TELL_WHERE = (name: string) =>
@@ -1424,12 +1448,7 @@ function resolveNamedProcess(
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   if (!config?.processes[name]) {
-    const known = Object.keys(config?.processes ?? {});
-    console.log(
-      known.length > 0
-        ? `No process "${name}" in hive.yml. Defined: ${known.join(", ")}`
-        : "This project has no hive.yml processes.",
-    );
+    console.log(processNotDefined(config, name));
     process.exit(1);
   }
   const row = db
@@ -1454,6 +1473,133 @@ function resolveNamedProcess(
     return null;
   }
   return { project, name, config, target: row.tmux_target };
+}
+
+const LEAD_PANE_EXITED_HOOK = "pane-exited";
+const LEAD_PANE_EXITED_VERB = "lead-pane-exited";
+
+// tmux runs a hook with the SERVER's environment and no login shell, so a bare `hive` resolves to
+// nothing (the iTerm rule in .claude/rules/tmux-and-panes.md) and HIVE_DATA_DIR is not there at all
+// - without it the backstop would open the DEFAULT store and find no project. Absolute interpreter,
+// absolute script, and this lead's own store, all resolved at arm time.
+function leadPaneExitedHookCommand(): string {
+  const argv = [process.execPath, cliPath(), LEAD_PANE_EXITED_VERB];
+
+  // The identity vars are cleared, not carried: this runs on behalf of nobody, and a tmux server
+  // started from inside a worker's pane hands them to every run-shell it ever runs, where a stale
+  // HIVE_AGENT_ID is a hard refusal before the verb is reached at all. The same clearing
+  // scripts/restart-lead.sh does around its own `hive lead`, plus the two project vars.
+  const clear = ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_LEAD", "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH"]
+    .flatMap((name) => ["-u", name]);
+
+  // Redirected because tmux prints a run-shell's output into the pane it fires from, which is a
+  // human's own window: a backstop that failed to start must not type into it.
+  const command = `env ${clear.join(" ")} HIVE_DATA_DIR=${shellQuote(dataDir)} ${argv
+    .map(shellQuote)
+    .join(" ")} "#{hook_pane}" >/dev/null 2>&1`;
+  return `run-shell ${shellQuote(command)}`;
+}
+
+// tmux re-quotes an option value on read-back, so the string hive armed is never the string it gets
+// back and an equality test can only ever be false. Both halves of this predicate survive requoting.
+const ourHookEntry = (entry: string): boolean =>
+  entry.includes(LEAD_PANE_EXITED_VERB) && entry.includes(dataDir);
+
+// A worktree torn down leaves its own entry behind forever, and nothing else would ever remove it.
+// An entry whose script path cannot be extracted is KEPT: a path with a space in it does not match,
+// and dropping an entry hive cannot read is worse than leaving a dead one.
+function hookScriptGone(entry: string): boolean {
+  const script = entry.match(/([^\s'"]+cli\.js)\s/);
+  return script !== null && !existsSync(script[1]);
+}
+
+// Under the store's own write lock: two `hive lead` runs on one store would otherwise both read the
+// list, both append, and leave a duplicate that fires an extra node process on every pane exit.
+function armLeadPaneExitedHook(): void {
+  withWindowClaim(() => {
+    const entries = globalHooks(LEAD_PANE_EXITED_HOOK);
+    const dead = entries.filter((e) => ourHookEntry(e) && hookScriptGone(e));
+    const armed = entries.some((e) => ourHookEntry(e) && !hookScriptGone(e));
+    if (armed && dead.length === 0) return;
+    const kept = entries.filter((e) => !dead.includes(e));
+    if (armed) replaceGlobalHooks(LEAD_PANE_EXITED_HOOK, kept);
+    else if (dead.length === 0) appendGlobalHook(LEAD_PANE_EXITED_HOOK, leadPaneExitedHookCommand());
+    else replaceGlobalHooks(LEAD_PANE_EXITED_HOOK, [...kept, leadPaneExitedHookCommand()]);
+  });
+}
+
+const leadPaneExitedHookArmed = (): boolean =>
+  globalHooks(LEAD_PANE_EXITED_HOOK).some((e) => ourHookEntry(e) && !hookScriptGone(e));
+
+// Runs from tmux with nobody reading it, so it prints nothing and never throws. Every pane exit in
+// the session reaches this - workers, processes, a human's own shell - and the only thing that makes
+// one of them act is the store saying that pane is a project's running lead. That lookup is also
+// what identifies the project, so the hook itself carries no project and one hook serves them all.
+function cmdLeadPaneExited(argv: string[]): void {
+  try {
+    const parsed = parseArgs(argv, {});
+    if (parsed.unknown.length > 0) return;
+    const pane = parsed.positional[0];
+    if (!pane) return;
+    // Pane id alone, with no socket compare: a global hook only ever runs on the server it was
+    // armed on, so a pane id reaching here cannot be another server's.
+    const lead = db
+      .prepare("SELECT project_id FROM agents WHERE kind = ? AND status = 'running' AND tmux_target = ?")
+      .get(LEAD_KIND, pane) as { project_id: number } | undefined;
+    if (!lead) return;
+    stopAllProcesses(lead.project_id, STOP_REASONS.leadPaneExited);
+  } catch {
+
+  }
+}
+
+// Only a lead that CREATED its pane clears leftovers. An adopted live lead is the same lead those
+// processes belong to, and stopping them there would take down a running crew's dev server.
+function clearLeftoverProcesses(project: Project, config: ProjectYml | null): void {
+  for (const row of runningCommandRows(project.id)) {
+    const stopped = stopProcess(row, STOP_REASONS.previousLead);
+
+    // Nothing was running under it, so the auto-start line that follows is the whole story.
+    if (stopped.leg === "already-gone") continue;
+    const why =
+      stopped.leg === "unreachable"
+        ? ""
+        : `; ${STOP_REASONS.previousLead}${config?.processes[row.name] ? "" : ", and it is no longer defined in hive.yml"}`;
+    console.log(`- ${stopLine(stopped)}${why}`);
+  }
+}
+
+// Row first, hive.yml second, unlike show and hide: a process whose definition has since been
+// deleted from hive.yml is exactly the leftover a human most needs to stop.
+function cmdStop(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--all"] });
+  rejectUnknownFlags("stop", parsed, "--all");
+
+  if (parsed.flags.has("--all")) {
+    const project = resolveProject(parsed.positional[0]);
+    const stopped = stopAllProcesses(project.id, STOP_REASONS.byHand);
+    console.log(stopped.length === 0 ? "No processes are running." : stopped.map(stopLine).join("\n"));
+    return;
+  }
+
+  const name = parsed.positional[0];
+  if (!name) {
+    console.log("Usage: hive stop <process> [path] | hive stop --all [path]");
+    process.exit(1);
+  }
+  const project = resolveProject(parsed.positional[1]);
+  const row = runningCommandRow(project.id, name);
+  if (!row) {
+    const { config, warnings } = loadProjectYml(project.path);
+    for (const w of warnings) console.log(`! ${w}`);
+    if (!config?.processes[name]) {
+      console.log(processNotDefined(config, name));
+      process.exit(1);
+    }
+    console.log(`${name}: not running (start with: hive start "${name}")`);
+    return;
+  }
+  console.log(stopLine(stopProcess(row, STOP_REASONS.byHand)));
 }
 
 function cmdShow(argv: string[]): void {
@@ -3311,7 +3457,8 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "show", "hide", "status", "setup", "doctor",
+  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "setup", "doctor",
+  LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
@@ -3341,6 +3488,12 @@ try {
       break;
     case "start":
       await cmdStart(rest);
+      break;
+    case "stop":
+      cmdStop(rest);
+      break;
+    case LEAD_PANE_EXITED_VERB:
+      cmdLeadPaneExited(rest);
       break;
     case "show":
       cmdShow(rest);

@@ -553,3 +553,32 @@ describe("docs cite real code, not just real files", () => {
     );
   });
 });
+
+describe("docs/projects.md accounts for every way hive stops a process", () => {
+  const REASONS_SOURCE = readRepo("src/processes.ts");
+  const projects = readRepo("docs/projects.md");
+
+  function declaredReasons() {
+    const block = REASONS_SOURCE.match(/export const STOP_REASONS = \{([\s\S]*?)\} as const;/);
+    assert.ok(block, "STOP_REASONS is no longer an object literal src/processes.ts declares by that name");
+    return [...block[1].matchAll(/:\s*"([^"]+)"/g)].map((m) => m[1]);
+  }
+
+  it("finds the reasons in the source rather than repeating a list of them here", () => {
+    const reasons = declaredReasons();
+
+    assert.ok(reasons.length >= 4, `expected the stop reasons, parsed ${JSON.stringify(reasons)}`);
+    assert.ok(reasons.includes("hive stop"), `the parse is wrong: ${JSON.stringify(reasons)}`);
+  });
+
+  it("names every declared stop reason, so a new one cannot ship undocumented", () => {
+    const missing = declaredReasons().filter((reason) => !projects.includes(reason));
+
+    assert.deepEqual(
+      missing,
+      [],
+      "src/processes.ts declares a stop reason docs/projects.md never mentions. Add it to the Process " +
+        "lifetime table; a reason a user can see printed and cannot look up is worse than no reason.",
+    );
+  });
+});

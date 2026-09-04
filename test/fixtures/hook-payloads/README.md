@@ -10,7 +10,10 @@ rows: `agent_state_log` ids 1, 2, 3, 4, 9, 33. One later capture, from Claude
 Code 2.1.228 on 2026-08-12: `prompt-spawn-announcement.json`, source row id
 4105, the announcement `agent_spawn` typed into todo 373's own worker. Two
 more from Claude Code 2.1.240 on 2026-08-20: `stop-shell-running.json` and
-`stop-monitors-running.json`, source rows 7550 and 6809.
+`stop-monitors-running.json`, source rows 7550 and 6809. Two more from Claude
+Code 2.1.260 on 2026-09-04: `session-end-clear.json` and
+`session-end-prompt-input-exit.json`, source rows 1 and 2 of a scratch store
+(see "capturing an event hive does not wire yet" below).
 
 Capture command, so a re-capture is not a reconstruction:
 
@@ -76,6 +79,50 @@ beyond identity is still a re-capture.
   produces is logged as `unchanged`.
 - `notify-permission-prompt.json` — `Notification`, `notification_type:
   "permission_prompt"`. Decides `waiting`.
+- `session-end-clear.json` — `SessionEnd`, `reason: "clear"`. Decides nothing
+  and, more to the point, stops nothing: `/clear` ends the session and starts
+  a new one in the same pane, so that lead still owns its processes.
+- `session-end-prompt-input-exit.json` — `SessionEnd`, `reason:
+  "prompt_input_exit"`, from typing `/exit`. A lead is gone, so its project's
+  hive.yml processes are stopped (todo 765). The two were captured in one
+  sitting, which is why their `session_id`s differ: `/clear` had already
+  started the second session.
+
+`src/hook.ts` acts on exactly two reasons, `prompt_input_exit` and `logout`,
+and stops nothing for any other value. That is an allowlist, so `clear`,
+`other`, and a reason nobody has seen yet all fall on the same side: they stop
+nothing. The set is documented rather than observed - only `prompt_input_exit`
+and `clear` have ever been captured - and the two that act are the two Claude
+Code documents as the session being over for good.
+
+The conservative default costs nothing here, which is why it is the default.
+Every pane hive creates for a lead carries a tmux `pane-exited` backstop, and
+that fires on the pane's process dying however the session ended, so a reason
+this allowlist declines is still covered. What SessionEnd is really for is the
+one case the backstop cannot see: a lead running in a pane hive did not create
+(`hive lead` adopting a live pane), where nothing armed a hook. Guessing wrong
+in the other direction is not symmetric: stopping a dev server under a lead
+that is still alive costs a human their processes with no auto-restart, since
+only `hive lead` starts them.
+
+## Capturing an event hive does not wire yet
+
+`SessionEnd` had no hive hook when these two were captured, so there was no
+live-store row to read. The corpus rule is that a fixture comes off a real
+run, not that it comes off the developer's own store, so the capture was made
+the same way against a scratch one:
+
+```
+HIVE_DATA_DIR=<scratch> with a settings.json wiring
+  SessionEnd -> node dist/hook.js session_end
+claude --settings <that file>, run in a pane on a scratch tmux socket
+/clear, then /exit
+sqlite3 -readonly <scratch>/hive.db "SELECT payload FROM agent_state_log"
+```
+
+`dist/hook.js` records any argv label it has no case for, so no code change
+was needed to capture the payload of an event hive did not yet handle. Reuse
+this for the next unwired event rather than hand-writing one.
 
 ## What this corpus does not cover, on purpose
 
@@ -87,6 +134,15 @@ notes that `waitingOnSubagents` does not look at that field at all, so a
 it is not a fixture here. An invented payload asserting invented behaviour
 would be worse than no fixture: it would assert what someone guessed
 `stateFor` should do, not what it was proven to do against a real payload.
+
+`SessionEnd`'s `reason` has only ever been observed as `clear` and
+`prompt_input_exit`. Claude Code documents `logout` and `other` as well, and
+neither is fixtured because neither has been observed. This is why `reason` is
+a canary discriminator path: the code that reads it (`src/hook.ts`) acts on an
+allowlist of two, so an unobserved value stops nothing and cannot do harm on
+its own - but a value that turns out to be an ordinary way a lead exits would
+leave the SessionEnd path silently doing nothing, and the canary is what tells
+you it exists.
 
 `notification_type` has only ever been observed as `idle_prompt` and
 `permission_prompt`. `elicitation_complete`, named in issue #32 as a concern,
@@ -116,8 +172,8 @@ paths, plus enum values, from this corpus at runtime, and
 that derivation. Both are shape-only: neither asserts what `stateFor` decides,
 only whether Claude Code is still sending what this corpus recorded.
 
-`notification_type`, `background_tasks[].type` and `background_tasks[].status`
-are the canary's discriminator paths. The moment a real `Notification` payload
+`notification_type`, `reason`, `background_tasks[].type` and
+`background_tasks[].status` are the canary's discriminator paths. The moment a real `Notification` payload
 carries `notification_type: "elicitation_complete"`, or a real `Stop` payload
 carries a `background_tasks` entry with a FOURTH type or a terminal `status`,
 the canary FAILS loudly with the exact value observed, and that finding is a

@@ -674,6 +674,38 @@ export function makeProcessesWindow(window: string, projectId: number): void {
   }
 }
 
+// GLOBAL, appended: every narrower scope dies with its window (.claude/rules/tmux-and-panes.md).
+export function appendGlobalHook(hook: string, command: string): void {
+  try {
+    tmux("set-hook", "-ga", hook, command);
+  } catch {
+
+  }
+}
+
+// tmux can only unset a hook's whole array, so replacing one entry means writing them all back.
+export function replaceGlobalHooks(hook: string, commands: string[]): void {
+  try {
+    tmux("set-hook", "-gu", hook);
+    for (const command of commands) tmux("set-hook", "-ga", hook, command);
+  } catch {
+
+  }
+}
+
+// Hooks live in the options table and read back as `pane-exited[0] <command>`, never from show-hooks.
+export function globalHooks(hook: string): string[] {
+  try {
+    const prefix = new RegExp(`^${hook}(\\[\\d+\\])? `);
+    return tmux("show-options", "-g", hook)
+      .split("\n")
+      .filter((row) => prefix.test(row))
+      .map((row) => row.replace(prefix, ""));
+  } catch {
+    return [];
+  }
+}
+
 export const shownPaneTitle = (projectName: string, name: string) => `${projectName}/${name}`;
 
 export type PaneVisibility = "shown" | "hidden" | "window";

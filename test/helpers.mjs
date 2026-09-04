@@ -65,6 +65,37 @@ export async function seedTrustedYml({ db, projectId, projectDir, processes }) {
   }
 }
 
+export async function seedLeadProject(db, { root, name, leadBin, processes, yml }) {
+  const { configHash } = await import("../dist/projectYml.js");
+  const dir = join(root, name);
+  mkdirSync(dir, { recursive: true });
+  const defined = Object.entries(processes);
+  const body =
+    yml ??
+    `lead: ${leadBin}\nprocesses:\n${defined
+      .map(([n, command]) => `  ${n}:\n    command: ${command}\n    visible: false`)
+      .join("\n")}\n`;
+  writeFileSync(join(dir, "hive.yml"), body);
+  const project = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get(name, dir);
+  const trust = (n, command) =>
+    db
+      .prepare("INSERT OR IGNORE INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)")
+      .run(project.id, n, configHash(n, command, null, {}));
+  trust("lead", leadBin);
+  for (const [n, command] of defined) trust(n, command);
+  return { id: project.id, dir };
+}
+
+// A crash, not a kill-pane: tmux fires pane-exited when a pane's PROCESS dies and fires nothing at
+// all for a pane destroyed outright (.claude/rules/tmux-and-panes.md).
+export const crashPane = (pane) => execFileSync("kill", ["-9", paneField(pane, "#{pane_pid}")], { stdio: "ignore" });
+
+export const runningCommandNames = (db, projectId) =>
+  db
+    .prepare("SELECT name FROM agents WHERE project_id = ? AND kind = 'command' AND status = 'running' ORDER BY name")
+    .all(projectId)
+    .map((r) => r.name);
+
 export async function assertScratchStore() {
   const { storeDir, DEFAULT_DATA_DIR } = await import("../dist/dataDir.js");
   const resolved = storeDir();

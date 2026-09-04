@@ -164,6 +164,15 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 **IT BOUNDS THE DAMAGE AND LEAVES THE CAUSE OPEN.** `execFileSync`'s timeout kills the CHILD, not the tmux SERVER it was talking to, so a wedge now costs ten seconds per call instead of an hour of a core, and the wedged server keeps running. It REPORTS and never reaps.
 
+## The lead-pane backstop is a GLOBAL hook, and its entries are matched by a marker
+
+- **The `pane-exited` backstop is `set-hook -g` and must stay global.** A WINDOW hook is destroyed with its window, and the window holding a lone lead pane is destroyed by the very death that should have fired the hook; `set-hook -t <session>` resolves its target the way a pane target does and lands on that session's current window, so it dies the same way. Both were run against a real server before `-g` was chosen.
+- **Append with `-ga`, never a plain `set-hook -g`.** Two hive stores can share one tmux server, and a plain set silently disarms the other store's backstop.
+- **Hooks read back from `show-options -g`, not from `show-hooks`.** tmux keeps them in the options table, indexed as an array (`pane-exited[0] <command>`).
+- **Never compare a hook entry against the string you armed.** tmux re-quotes an option value on read-back, so equality is always false and the dedup silently appends forever. Match on a normalized marker that survives requoting, and take the store's window claim around the read-modify-write.
+- **`kill-pane` fires no `pane-exited` hook**, with or without `remain-on-exit`. tmux fires it when a pane's PROCESS dies. Nothing that destroys a pane outright is covered by this backstop, so do not let anything rely on it for that.
+- **Redirect the output of anything `run-shell` runs.** tmux prints it into the pane the hook fired from, which is a human's own window.
+
 ## Three shell traps
 
 - A leading `=` in a tmux target breaks when the string passes through zsh (path expansion). Safe in `execFileSync` arg arrays, unsafe in shell command strings. Target a session by id when its name starts with `=`.
@@ -174,7 +183,7 @@ Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle p
 
 Never build a shell command string out of data.
 
-`tmux()` in `src/tmux.ts` is the way to reach tmux, but it is **not the only path**, so do not read it as a coverage claim. Known others, not guaranteed exhaustive: `src/cli.ts`'s `attach()` calls `spawnSync("tmux", argv, { stdio: "inherit" })` twice (`:381`, `:392`) because it hands the terminal over rather than capturing output; doctor probes `execFileSync("tmux", ["-V"])` (`:1885`); and `ensureAttached` runs `execFileSync("osascript", ["-e", script])` (`src/tmux.ts:1129`) where `script` comes from `attachScripts()` and **is a built string carrying the session name** - the one live exception to the sentence above, and the reason it is called out here rather than left to be discovered.
+`tmux()` in `src/tmux.ts` is the way to reach tmux, but it is **not the only path**, so do not read it as a coverage claim. Known others, not guaranteed exhaustive: `src/cli.ts`'s `attach()` calls `spawnSync("tmux", argv, { stdio: "inherit" })` twice (`:381`, `:392`) because it hands the terminal over rather than capturing output; doctor probes `execFileSync("tmux", ["-V"])` (`:1885`); and `ensureAttached` runs `execFileSync("osascript", ["-e", script])` (`src/tmux.ts:1129`) where `script` comes from `attachScripts()` and **is a built string carrying the session name** - one of two live exceptions to the sentence above, and the reason they are called out here rather than left to be discovered. The second is `leadPaneExitedHookCommand` (`src/cli.ts`), which builds the string tmux `run-shell` hands to `/bin/sh` for the lead-pane backstop; every value interpolated into it goes through `shellQuote`.
 
 What those paths do NOT carry is what `tmux()` itself adds, which is exactly two things: the timeout bound, and `scratchStoreOnSharedSocket()`. **`untrustedTmuxServer()` is NOT one of them** - it is applied per call site (`ensureSession`, `targetLiveProbe`, `src/tmux.ts:432`, `src/spawn.ts:186`/`:297`, `src/cli.ts:1987`), so a NEW read path built on `tmux()` gets the timeout and the socket guard for free and still needs its own cross-server check. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
 

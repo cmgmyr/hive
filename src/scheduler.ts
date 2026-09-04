@@ -7,6 +7,7 @@ import { renderDashboardForWrite } from "./dashboard.js";
 import { snapshotProcesses } from "./processes.js";
 import { loadProjectYml } from "./projectYml.js";
 import { listProjects } from "./context.js";
+import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
 import {
@@ -272,6 +273,41 @@ function reapClosedCodexHomes(): number {
   return reaped;
 }
 
+// A deliberate stop is told apart by its STOPPING MARKER (stopProcess, src/processes.ts), never by
+// the order two writes happened in: an interrupted stop is a swept row too. Parentless, like
+// ageOutNotice's replacement and for the same reason - nothing can age out a notice about
+// something that already happened.
+function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): void {
+  try {
+
+    // A deliberate stop writes this marker before it touches the pane, so a stop that was
+    // interrupted between the two is not reported as a crash.
+    if (stoppingMarkerLive(agent.project_id, agent.id)) return;
+    const lead = stmt(
+      `SELECT actor_id, tmux_target, tmux_socket FROM agents
+        WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id DESC LIMIT 1`,
+    ).get(agent.project_id, LEAD_KIND) as
+      | { actor_id: string; tmux_target: string; tmux_socket: string }
+      | undefined;
+
+    // Never mint a notice hive could not deliver: with no live lead pane there is nobody this could
+    // ever reach, and the row would sit in timers forever.
+    if (!lead?.tmux_target || rowAlive(lead.tmux_socket, lead.tmux_target, snapshot) !== true) return;
+    insertNotice(
+      { project_id: agent.project_id, owner: lead.actor_id },
+      lead.actor_id,
+      lead.tmux_target,
+      deadProcessBody(agent.name),
+      null,
+    );
+  } catch {
+
+  }
+}
+
+const deadProcessBody = (name: string): string =>
+  `[hive] process "${name}" exited on its own; its pane is gone. Restart it with: hive start "${name}"`;
+
 export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   closed_agents: number;
   cancelled_timers: number;
@@ -309,6 +345,10 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
       }
     }
   }
+  for (const agent of swept) {
+    if (agent.kind === COMMAND_KIND) reportDeadProcess(agent, snapshot);
+  }
+
   // A sweep is not evidence of a death when the thing that would report the death was never
   // reachable: with no tmux binary on PATH, liveTargets() answers with an EMPTY snapshot, and
   // recording that as a teardown manufactures an incident out of an unset PATH.
@@ -833,8 +873,11 @@ function commandForActor(actorId: string): string {
   return row?.command ?? "";
 }
 
+// The first argument is only ever read for these two columns, so a notice with no timer behind it -
+// the janitor's dead-process report - routes through here too rather than growing a second INSERT
+// that a future column would silently miss.
 function insertNotice(
-  timer: TimerRow,
+  timer: { project_id: number; owner: string },
   deliverActor: string,
   pane: string,
   body: string,

@@ -42,6 +42,7 @@ import {
   discardOrphanedPane,
   isReservedAgentName,
   isRunningLeadActor,
+  killAgentPane,
   launchAgent,
   LEAD_KIND,
   parkAgentRow,
@@ -50,9 +51,9 @@ import {
   renameAgent,
   resumeAgent,
 } from "../spawn.js";
+import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
 import { readContextTokens, resolveTranscriptDir } from "../transcript.js";
 import {
-  applyLayout,
   capturePane,
   captureFinalScreen,
   DEFAULT_LAYOUT,
@@ -60,7 +61,6 @@ import {
   ensureAttached,
   findUnsafeControlChar,
   holdsHumanInput,
-  isPaneTarget,
   liveTargets,
   paneCurrentCommand,
   paneInCopyMode,
@@ -76,8 +76,6 @@ import {
   tmux,
   TmuxTimeoutError,
   WINDOW_LAYOUTS,
-  windowLayout,
-  windowOwner,
   type AliveSnapshot,
   type InputBoxState,
   type Liveness,
@@ -222,21 +220,6 @@ function findClosedAgent(projectId: number, ref: { agent_id?: number; name?: str
     return match;
   }
   throw new Error("Pass agent_id or name.");
-}
-
-function killAgentPane(target: string): void {
-  const pane = isPaneTarget(target);
-
-  const window = pane ? paneWindow(target) : null;
-  tmux(pane ? "kill-pane" : "kill-window", "-t", target);
-  if (!window) return;
-
-  const ownerId = windowOwner(window);
-  const ownerProject = ownerId != null ? getProject(ownerId) : undefined;
-  applyLayout(
-    window,
-    windowLayout(window) ?? (ownerProject ? loadProjectYml(ownerProject.path).config?.layout : undefined) ?? DEFAULT_LAYOUT,
-  );
 }
 
 function laneTodoIds(projectId: number, actorId: string): number[] {
@@ -942,6 +925,13 @@ export function registerAgents(server: McpServer): void {
       run(() => {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
+        if (agent.kind === COMMAND_KIND) {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}") is a hive.yml process, not a worker session, so there is no ` +
+              "conversation to resume and parking it would promise one. Stop it with agent_close, or " +
+              `hive stop "${agent.name}".`,
+          );
+        }
 
         if (agent.kind === LEAD_KIND) {
           throw new Error(
@@ -1567,6 +1557,19 @@ export function registerAgents(server: McpServer): void {
           throw new Error(
             "This would close your own session. Pass confirm_self=true only if the user explicitly asked you to close yourself.",
           );
+        }
+        // A hive.yml process gets the graceful leg and the stopping marker, exactly as `hive stop`
+        // does: kill-pane alone is SIGHUP, and a kill without the marker can be reported as a crash.
+        const commandRow = agent.kind === COMMAND_KIND ? runningCommandRow(project.id, agent.name) : undefined;
+        if (commandRow && live) {
+          const stopped = stopProcess(commandRow, STOP_REASONS.byHand);
+          return {
+            agent_id: agent.id,
+            name: agent.name,
+            closed: stopped.leg !== "still-running",
+            stop_leg: stopped.leg,
+            note: stopLine(stopped),
+          };
         }
         if (live) killAgentPane(agent.tmux_target);
 

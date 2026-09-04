@@ -29,6 +29,7 @@ export function ensureHooksFile(): string {
       Stop: [hookEntry("stop")],
       UserPromptSubmit: [hookEntry("prompt")],
       Notification: [hookEntry("notify")],
+      SessionEnd: [hookEntry("session_end")],
     },
   };
   const path = join(dataDir, "hooks.json");

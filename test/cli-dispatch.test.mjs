@@ -5,11 +5,18 @@ import { CLI } from "./helpers.mjs";
 
 const source = readFileSync(CLI, "utf8");
 
-const COMMANDS = (() => {
+const COMMANDS_TABLE = (() => {
   const table = /const COMMANDS = \[([\s\S]*?)\];/.exec(source);
   assert.ok(table, "COMMANDS table not found in dist/cli.js");
-  return [...table[1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+  return table[1];
 })();
+
+const COMMANDS = [...COMMANDS_TABLE.matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+
+// A hidden verb is spelled as an identifier, which is how it stays out of the two docs guards that
+// scrape this table for names to require in --help and the README. Nothing should let it out of
+// THIS one: with no case label it falls to default: and exits 1 with nobody reading.
+const HIDDEN_COMMANDS = [...COMMANDS_TABLE.matchAll(/^\s*([A-Z][A-Z0-9_]*),?\s*$/gm)].map((m) => m[1]);
 
 const switchBody = (() => {
   const start = source.indexOf("switch (command) {");
@@ -26,6 +33,17 @@ describe("hive CLI dispatch", () => {
         switchBody,
         new RegExp(`case "${command}":`),
         `COMMANDS lists "${command}" but the dispatch switch has no case for it`,
+      );
+    }
+  });
+
+  it("routes every hidden COMMANDS entry to its own case label too, so a backstop cannot die silently", () => {
+    assert.ok(HIDDEN_COMMANDS.length > 0, "no identifier-spelled COMMANDS entries found; did the table change?");
+    for (const identifier of HIDDEN_COMMANDS) {
+      assert.match(
+        switchBody,
+        new RegExp(`case ${identifier}:`),
+        `COMMANDS lists ${identifier} but the dispatch switch has no case for it`,
       );
     }
   });

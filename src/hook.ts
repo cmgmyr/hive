@@ -7,6 +7,7 @@ import { liveBackgroundTasks, SUBAGENT_LATCH_SQL, withholdsIdle } from "./backgr
 
 interface HookPayload {
   message?: unknown;
+  reason?: unknown;
   notification_type?: unknown;
   background_tasks?: unknown;
   session_id?: unknown;
@@ -119,6 +120,29 @@ function stateForNotification(payload: HookPayload): string | null {
   return idlePrompt ? null : "waiting";
 }
 
+// An allowlist, not a denylist: only these two mean the lead is gone for good. `clear` starts a new
+// session in the SAME pane, `other` is whatever Claude Code has no name for, and an unobserved
+// reason could be either, so all three stop nothing (todo 765; the reasoning is in
+// test/fixtures/hook-payloads/README.md).
+const TERMINAL_SESSION_END_REASONS = new Set(["prompt_input_exit", "logout"]);
+
+// ~/.hive/hooks.json is one file per store, shared by every lead and every worker of every project,
+// so this event fires far more often than it acts. HIVE_LEAD is set only in a lead's own pane
+// (src/cli.ts, cmdLead's envFlags), and the project comes from that lead's own row rather than cwd.
+async function stopProcessesForEndedLead(actorId: string, payload: HookPayload): Promise<void> {
+  if (process.env.HIVE_LEAD !== "1") return;
+  if (typeof payload.reason !== "string" || !TERMINAL_SESSION_END_REASONS.has(payload.reason)) return;
+  const row = db
+    .prepare("SELECT project_id FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
+    .get(actorId) as { project_id: number } | undefined;
+  if (!row) return;
+
+  // Imported here and nowhere above: this pulls tmux, the yaml parser and the project config, and
+  // every other event in this file runs on every turn of every session without needing any of it.
+  const { stopAllProcesses, STOP_REASONS } = await import("./processes.js");
+  stopAllProcesses(row.project_id, STOP_REASONS.leadSessionEnded);
+}
+
 function reconcileSessionId(actorId: string, payload: HookPayload): void {
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
   if (!sessionId) return;
@@ -180,6 +204,14 @@ try {
 
         `UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND ${awaitingFirstPromptSql("agents")}`,
       ).run(actorId);
+    }
+
+    if (event === "session_end") {
+      try {
+        await stopProcessesForEndedLead(actorId, readPayload());
+      } catch {
+
+      }
     }
 
     reconcileSessionId(actorId, readPayload());

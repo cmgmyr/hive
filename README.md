@@ -64,6 +64,7 @@ Two more things worth turning on:
 | `hive init` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad |
 | `hive attach` | Attach to the project's tmux session without opening a lead |
 | `hive start <name>` | Start a `hive.yml` process by hand |
+| `hive stop <name>` / `hive stop --all` | Stop one running process, or every one in this project |
 | `hive show <name>` | Move a running process's pane beside the lead |
 | `hive hide <name>` | Move it back into the project's `processes` window |
 | `hive status` | Every project's agents, commands, todos, and timers, in one shot |
