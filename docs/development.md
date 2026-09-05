@@ -10,7 +10,7 @@ npm test         # run the suite against dist/ (build first)
 anyone else. Copy `hive.example.yml` to `hive.yml` and edit it; hive works
 without one, and every key in it is optional.
 
-Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on macOS for every push and pull request.
+Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on the Monday 08:42 UTC schedule and on `workflow_dispatch` only, covering both ubuntu and macOS legs; it does not run on push or pull request, so a local full suite run is the merge gate.
 
 Smoke test without touching your real data:
 

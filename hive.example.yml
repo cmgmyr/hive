@@ -32,6 +32,9 @@ vars:
   check: npm run build          # gates a worker runs before reporting done;
                                 # test_all above stays the separate, slot-gated
                                 # suite
+  ci: weekly                    # absent: CI runs on push/PR. weekly: CI runs
+                                # on schedule + dispatch only, and the local
+                                # full suite gates the merge (todo 807)
   rules_check: node scripts/covering-rules.mjs
   smoke: npm run build && hive setup && hive doctor
 

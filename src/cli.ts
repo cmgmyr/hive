@@ -911,6 +911,9 @@ placement: split                # placement for workers and visible processes: s
                                               # reporting done; gates only,
                                               # no suite (test_all is that)
 #   check: ./vendor/bin/pint --test && ./vendor/bin/phpstan   # a PHP stack's
+#   ci: weekly                  # absent: CI runs on push/PR. weekly: CI runs
+                                # on schedule + dispatch only, and the local
+                                # full suite gates the merge
 
 # processes:
 #   npm:dev: npm run dev        # shorthand; auto-starts with the session
