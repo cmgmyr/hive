@@ -1127,6 +1127,17 @@ export function paneInCopyMode(target: string): boolean | null {
   }
 }
 
+// `-X` must come before `-t`, never after a `--`, which would type it as a key.
+export function cancelCopyMode(target: string): boolean {
+  if (paneInCopyMode(target) !== true) return false;
+  try {
+    tmux("send-keys", "-X", "-t", target, "cancel");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function paneAwaitingChoice(target: string): boolean | null {
   try {
     const raw = captureRawPane(target, tailCaptureLines());

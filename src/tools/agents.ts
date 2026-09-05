@@ -57,6 +57,7 @@ import {
   capturePane,
   captureFinalScreen,
   DEFAULT_LAYOUT,
+  cancelCopyMode,
   describePaneChoice,
   ensureAttached,
   findUnsafeControlChar,
@@ -1212,7 +1213,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode and send again.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -1252,7 +1253,11 @@ export function registerAgents(server: McpServer): void {
                 "(text still works); unstick or restart it from its own terminal instead.",
             );
           }
-          tmux("send-keys", "-t", target, "--", ...args.keys);
+          if (args.keys.length === 2 && args.keys[0] === "-X" && args.keys[1] === "cancel") {
+            cancelCopyMode(target);
+          } else {
+            tmux("send-keys", "-t", target, "--", ...args.keys);
+          }
         } else if (args.text != null) {
 
           const badChar = findUnsafeControlChar(args.text, TEXT_ALLOWED_CONTROL_CHARS);

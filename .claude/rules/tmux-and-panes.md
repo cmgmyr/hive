@@ -121,7 +121,9 @@ strands what survives, unsubmitted, with every receipt reporting success.
   scrollback position away while they are reading it. Waiting is what the other
   holds already do.
 - **`keys` is unaffected and is the deliberate escape hatch**, as everywhere else
-  in this file.
+  in this file. `keys: ["-X", "cancel"]` is the one routed list, handled by
+  `cancelCopyMode` instead of the generic `send-keys -- ...keys`, because `--`
+  would type it literally; every other list still goes through `--` unchanged.
 
 ## Only ONE channel into a pane is shortened, and widening it breaks an assignment
 

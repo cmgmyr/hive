@@ -98,4 +98,52 @@ describe("a pane in tmux copy mode is not typed into, because a paste there lose
       "a hold is a delay, not a drop - it must deliver once the mode is gone",
     );
   });
+
+  it(
+    "agent_send(keys: [\"-X\", \"cancel\"]) - the refusal's own named remedy - actually cancels copy mode " +
+      "instead of typing the literal string \"-Xcancel\" into the pane",
+    NEEDS_TMUX,
+    async () => {
+      const name = "copymode-keys-cancel";
+      const receipt = await spawnClaude(name);
+      const pane = receipt.tmux_target;
+
+      enterCopyMode(pane);
+      assert.equal(inMode(pane), "1", "the fixture is meaningless unless the pane really entered copy mode");
+
+      const sent = await mcp.call("agent_send", { name, keys: ["-X", "cancel"] });
+      assert.equal(sent.sent, true, "the remedy is a keys send, not a refusal");
+
+      assert.equal(inMode(pane), "0", "the pane must actually leave copy mode, not just report success");
+
+      const { output } = await mcp.call("agent_output", { name });
+      assert.doesNotMatch(
+        output,
+        /-Xcancel/,
+        "\"--\" ends option parsing on the generic keys path, so \"-X\" arrives as a KEY NAME and types literally",
+      );
+      assert.doesNotMatch(output, /-X\b/, "no trace of the flag itself should land on the pane's input line");
+    },
+  );
+
+  it(
+    "agent_send(keys: [\"-X\", \"cancel\"]) on a pane that is NOT in copy mode is a silent no-op, " +
+      "never a thrown tmux error and never typed text",
+    NEEDS_TMUX,
+    async () => {
+      const name = "copymode-keys-cancel-noop";
+      const receipt = await spawnClaude(name);
+      const pane = receipt.tmux_target;
+
+      assert.equal(inMode(pane), "0", "the pane must start out of copy mode for this case to mean anything");
+      const before = (await mcp.call("agent_output", { name })).output;
+
+      const sent = await mcp.call("agent_send", { name, keys: ["-X", "cancel"] });
+      assert.equal(sent.sent, true, "the call must not throw just because there was nothing to cancel");
+
+      assert.equal(inMode(pane), "0", "still not in copy mode");
+      const after = (await mcp.call("agent_output", { name })).output;
+      assert.equal(after, before, "nothing should be typed into a pane that was never in copy mode");
+    },
+  );
 });
