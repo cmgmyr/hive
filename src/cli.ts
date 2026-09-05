@@ -2508,10 +2508,15 @@ function cmdDoctor(argv: string[]): void {
           return text ? templateVars(text) : [];
         }),
     )].filter((v) => !agentKeys.includes(v)).sort();
+    // worker.md can still reference a hive.yml var (e.g. {{check}}) even though it stays out of
+    // `referenced` above; count that for the unused direction only, never for missing.
+    const workerReferenced = templateVars(readProfileFile(name, "worker.md") ?? "").filter(
+      (v) => !agentKeys.includes(v),
+    );
     const configuredKeys = Object.keys(cfg?.vars ?? {});
     const defined = configuredKeys.filter((v) => !agentKeys.includes(v));
     const missing = referenced.filter((v) => !defined.includes(v));
-    const unused = defined.filter((v) => !referenced.includes(v));
+    const unused = defined.filter((v) => !referenced.includes(v) && !workerReferenced.includes(v));
     if (referenced.length > 0) {
       info("profile vars", `profile files reference ${referenced.join(", ")}`);
       if (missing.length > 0) info("profile vars", `not set here (sections drop): ${missing.join(", ")}`);

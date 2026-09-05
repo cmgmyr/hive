@@ -181,6 +181,27 @@ describe("todo 339/454: doctor sees an unset {{var}} in a fork-local extra", () 
     assert.doesNotMatch(out.stdout, /agent_name/);
     assert.doesNotMatch(out.stdout, /actor_id/);
   });
+
+  it("does not report a hive.yml var as unreferenced when only worker.md's conditional block uses it", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const dir = join(dirs.dataDir, "profiles", "worker-only-var");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "posture.md"), "Repo: {{repo}}\n");
+    writeFileSync(join(dir, "runbook.md"), "# runbook\n");
+    writeFileSync(join(dir, "worker.md"), ["<!--if:check-->", "Run {{check}} before you report done.", "<!--end-->"].join("\n"));
+    writeFileSync(
+      join(dirs.projectDir, "hive.yml"),
+      "profile: worker-only-var\nvars:\n  repo: cmgmyr/hive\n  check: npm run build\n",
+    );
+
+    const init = await runCli(["init"], opts);
+    assert.equal(init.code, 0, init.stderr);
+
+    const out = await runCli(["doctor"], opts);
+    assert.match(out.stdout, /info {2}profile vars: profile files reference repo/);
+    assert.doesNotMatch(out.stdout, /defined but unreferenced/);
+  });
 });
 
 describe("todo 339/454: no-regression, the three named files behave exactly as before", () => {
