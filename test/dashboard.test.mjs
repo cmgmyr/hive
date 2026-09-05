@@ -2402,4 +2402,16 @@ describe("a project with no hive.yml processes renders what it always did (todo 
     assert.doesNotMatch(card, /no log event recorded/);
     assert.match(card, /<p class="stat-figure">1<\/p>/);
   });
+
+  it("the NOW strip's grid minimum lets five tiles share a 1200px row (todo 809)", () => {
+    const project = seedProject("five-tiles-row");
+    const procs = [{ name: "api", running: true, visibility: null, startedAt: null }];
+
+    const html = renderDashboard(project, procs);
+    const style = html.slice(html.indexOf("<style>"), html.indexOf("</style>"));
+    const nowRule = style.slice(style.indexOf(".now {"), style.indexOf("}", style.indexOf(".now {")));
+
+    assert.match(nowRule, /minmax\(13rem, 1fr\)/);
+    assert.doesNotMatch(nowRule, /minmax\(15rem/);
+  });
 });

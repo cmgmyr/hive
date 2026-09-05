@@ -1068,7 +1068,7 @@ const STYLE = `
     box-shadow: var(--shadow); }
 
   .now { display: grid; gap: 0.75rem; margin: 0.9rem 0 1rem; align-items: stretch;
-    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
   .stat { padding: 0.9rem 1rem 1rem; display: flex; flex-direction: column; min-width: 0; }
   .stat-label { display: flex; align-items: center; gap: 0.4rem; margin: 0 0 0.5rem;
     font-size: 0.71875rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
