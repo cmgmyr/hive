@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
 import { scratchGit } from "./helpers.mjs";
@@ -21,7 +21,9 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-codex-home-"));
 process.env.HIVE_DATA_DIR = join(scratch, "data");
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const { codexHomeDir, ensureCodexHome, reapCodexHome } = await import("../dist/codexHome.js");
+const { codexHomeDir, codexRolloutsDir, ensureCodexHome, preserveCodexRollouts, reapCodexHome } = await import(
+  "../dist/codexHome.js"
+);
 const { hookEntry } = await import("../dist/hooks.js");
 
 const fakeAuth = join(scratch, "fake-auth.json");
@@ -451,5 +453,141 @@ describe("reapCodexHome removes the home directory without ever following the au
 
   it("is a safe no-op against a home that was already removed", () => {
     assert.doesNotThrow(() => reapCodexHome("never-existed-key"));
+  });
+});
+
+describe("todo 919: reapCodexHome preserves a worker's rollout transcripts before deleting its home", () => {
+  it("moves every rollout-*.jsonl under sessions/, nested included, to codex-rollouts/<key> at the same relative path, byte-equal, and removes the home", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const home = codexHomeDir(key);
+    const dayDir = join(home, "sessions", "2026", "09", "09");
+    mkdirSync(dayDir, { recursive: true });
+    const rolloutA = join(dayDir, "rollout-a.jsonl");
+    const rolloutBContent = '{"nested":true}\n';
+    const nestedDir = join(dayDir, "sub");
+    mkdirSync(nestedDir, { recursive: true });
+    const rolloutB = join(nestedDir, "rollout-b.jsonl");
+    writeFileSync(rolloutA, '{"turn":1}\n');
+    writeFileSync(rolloutB, rolloutBContent);
+
+    const preserved = reapCodexHome(key);
+
+    const destA = join(codexRolloutsDir(key), "2026", "09", "09", "rollout-a.jsonl");
+    const destB = join(codexRolloutsDir(key), "2026", "09", "09", "sub", "rollout-b.jsonl");
+    assert.ok(preserved.includes(destA), `expected ${destA} in ${JSON.stringify(preserved)}`);
+    assert.ok(preserved.includes(destB), `expected ${destB} in ${JSON.stringify(preserved)}`);
+    assert.equal(readFileSync(destA, "utf8"), '{"turn":1}\n');
+    assert.equal(readFileSync(destB, "utf8"), rolloutBContent);
+    assert.equal(existsSync(home), false, "the home directory must still be removed");
+  });
+
+  it("leaves the auth.json symlink's real target untouched by the rollout walk", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const dayDir = join(codexHomeDir(key), "sessions", "2026", "09", "09");
+    mkdirSync(dayDir, { recursive: true });
+    writeFileSync(join(dayDir, "rollout-c.jsonl"), '{"turn":1}\n');
+    const before = readFileSync(fakeAuth, "utf8");
+
+    reapCodexHome(key);
+
+    assert.equal(existsSync(fakeAuth), true, "the symlink's real target must survive");
+    assert.equal(readFileSync(fakeAuth, "utf8"), before);
+  });
+
+  it("returns [] and still removes the home when it has no sessions dir at all", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const home = codexHomeDir(key);
+    assert.equal(existsSync(join(home, "sessions")), false);
+
+    const preserved = reapCodexHome(key);
+
+    assert.deepEqual(preserved, []);
+    assert.equal(existsSync(home), false);
+  });
+
+  it("throws and leaves the home in place when the durable destination cannot be written", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const home = codexHomeDir(key);
+    const dayDir = join(home, "sessions", "2026", "09", "09");
+    mkdirSync(dayDir, { recursive: true });
+    writeFileSync(join(dayDir, "rollout-d.jsonl"), '{"turn":1}\n');
+
+    // A FILE sitting where codex-rollouts/<key> needs to be a directory makes every mkdirSync
+    // under it fail - the preserve-failure shape the acceptance test asks for.
+    mkdirSync(dirname(codexRolloutsDir(key)), { recursive: true });
+    writeFileSync(codexRolloutsDir(key), "blocking file");
+
+    assert.throws(() => reapCodexHome(key));
+    assert.equal(existsSync(home), true, "a failed preserve must not be followed by rmSync of the home");
+
+    rmSync(codexRolloutsDir(key), { force: true });
+  });
+
+  it("a second reap of the same key, after the first already succeeded, is a no-op that returns []", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const dayDir = join(codexHomeDir(key), "sessions", "2026", "09", "09");
+    mkdirSync(dayDir, { recursive: true });
+    writeFileSync(join(dayDir, "rollout-e.jsonl"), '{"turn":1}\n');
+
+    const first = reapCodexHome(key);
+    assert.equal(first.length, 1);
+
+    assert.doesNotThrow(() => {
+      const second = preserveCodexRollouts(key);
+      assert.deepEqual(second, []);
+    });
+    assert.equal(readFileSync(first[0], "utf8"), '{"turn":1}\n', "the first reap's preserved file must survive a second, no-op reap attempt");
+  });
+
+  it("two concurrent preserves of the same key race real ENOENTs per file, neither throws, and every rollout survives exactly once (the close/janitor race)", async () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const dayDir = join(codexHomeDir(key), "sessions", "2026", "09", "09");
+    mkdirSync(dayDir, { recursive: true });
+    const names = Array.from({ length: 12 }, (_, i) => `rollout-race-${i}.jsonl`);
+    for (const name of names) writeFileSync(join(dayDir, name), `{"file":"${name}"}\n`);
+
+    const runnerPath = join(scratch, `race-runner-${counter}.mjs`);
+    writeFileSync(
+      runnerPath,
+      [
+        "const { preserveCodexRollouts } = await import(process.env.CODEX_HOME_DIST);",
+        "const startAt = Number(process.env.RACE_BARRIER_AT);",
+        "while (Date.now() < startAt) {}",
+        `const preserved = preserveCodexRollouts(${JSON.stringify(key)});`,
+        "process.stdout.write(JSON.stringify(preserved));",
+      ].join("\n"),
+    );
+
+    const barrier = String(Date.now() + 500);
+    const run = () =>
+      new Promise((resolve, reject) => {
+        let stdout = "";
+        const child = spawn(process.execPath, [runnerPath], {
+          env: {
+            ...process.env,
+            HIVE_DATA_DIR: process.env.HIVE_DATA_DIR,
+            CODEX_HOME_DIST: new URL("../dist/codexHome.js", import.meta.url).pathname,
+            RACE_BARRIER_AT: barrier,
+          },
+        });
+        child.stdout.on("data", (d) => (stdout += d));
+        child.on("exit", (code) => (code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(`race runner exited ${code}: ${stdout}`))));
+      });
+
+    const [a, b] = await Promise.all([run(), run()]);
+
+    const union = new Set([...a, ...b]);
+    assert.equal(union.size, names.length, `expected ${names.length} distinct preserved files across both racers, got ${JSON.stringify([...union])}`);
+    for (const name of names) {
+      const dest = join(codexRolloutsDir(key), "2026", "09", "09", name);
+      assert.ok(union.has(dest), `${name} must have been preserved by exactly one of the two racers`);
+      assert.equal(readFileSync(dest, "utf8"), `{"file":"${name}"}\n`);
+    }
   });
 });

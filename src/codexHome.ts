@@ -1,6 +1,17 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { gitPrimaryRoot } from "./context.js";
@@ -30,10 +41,81 @@ export function codexHomeDir(key: string): string {
   return join(storeDir(), "codex-homes", key);
 }
 
+export function codexRolloutsDir(key: string): string {
+  return join(storeDir(), "codex-rollouts", key);
+}
+
+// undefined means transcriptPath does not point inside this home's sessions/.
+export function preservedRolloutPath(key: string, transcriptPath: string): string | undefined {
+  const sessionsPrefix = `${join(codexHomeDir(key), "sessions")}/`;
+  if (!transcriptPath.startsWith(sessionsPrefix)) return undefined;
+  return join(codexRolloutsDir(key), transcriptPath.slice(sessionsPrefix.length));
+}
+
+const ROLLOUT_FILE = /^rollout-.*\.jsonl$/;
+
+// Dirent.isFile()/.isDirectory() answer about the entry itself, not its target, so a symlinked
+// file or directory under sessions/ is neither and is silently skipped - never followed, never
+// moved. That is what keeps this walk off the auth.json symlink without naming it specially.
+function collectRolloutFiles(dir: string): string[] {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const files: string[] = [];
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...collectRolloutFiles(full));
+    else if (entry.isFile() && ROLLOUT_FILE.test(entry.name)) files.push(full);
+  }
+  return files;
+}
+
+// A throw here must reach reapCodexHome before its rmSync, so a durable root that cannot be
+// written leaves the home in place rather than losing the only copy of its rollout.
+export function preserveCodexRollouts(key: string): string[] {
+  const sessionsDir = join(codexHomeDir(key), "sessions");
+  if (!existsSync(sessionsDir)) return [];
+
+  const sources = collectRolloutFiles(sessionsDir);
+  const destRoot = codexRolloutsDir(key);
+  const moved: string[] = [];
+
+  for (const src of sources) {
+    const dest = join(destRoot, relative(sessionsDir, src));
+    mkdirSync(dirname(dest), { recursive: true });
+    try {
+      renameSync(src, dest);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // ENOENT here is the close/janitor race, not a failure: a concurrent reap of this same key
+      // already moved this file. Whichever process's rename won, the file ends up preserved once.
+      if (code === "ENOENT") {
+        if (existsSync(dest)) moved.push(dest);
+        continue;
+      }
+      if (code === "EXDEV") {
+        copyFileSync(src, dest);
+        unlinkSync(src);
+        moved.push(dest);
+        continue;
+      }
+      throw e;
+    }
+    moved.push(dest);
+  }
+  return moved;
+}
+
 // Never follow a link out of here: auth.json is a SYMLINK to the real ~/.codex/auth.json, and
 // rmSync unlinks entries rather than resolving them. Prove any change against a real symlink.
-export function reapCodexHome(key: string): void {
+export function reapCodexHome(key: string): string[] {
+  const preserved = preserveCodexRollouts(key);
   rmSync(codexHomeDir(key), { recursive: true, force: true });
+  return preserved;
 }
 
 // Built from character codes, not a literal \u escape range in source - see the reference on why.

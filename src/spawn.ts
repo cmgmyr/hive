@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { reapCodexHome } from "./codexHome.js";
+import { existsSync } from "node:fs";
+import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
 import { dataDir, db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
@@ -557,8 +558,24 @@ export function releaseParkRow(agentId: number): boolean {
 // backstop sweep - rather than the failure being silently swallowed by a claim that already fired.
 // The column IS the retry token; that is the guard here, it is just not shaped like a CAS.
 // Both callers wrap this, so a failure here costs a retry, never the close or the sweep it runs inside.
+// The target comes from the row's own transcript_path, not from reapCodexHome's returned list, so
+// a retry and a racing reap converge on the same file; the rewrite runs before the codex_home clear.
 export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): void {
+  const before = db.prepare("SELECT transcript_path FROM agents WHERE id = ?").get(agentId) as
+    | { transcript_path: string }
+    | undefined;
+  const oldTranscriptPath = before?.transcript_path ?? "";
+  const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
+
   reapCodexHome(codexHome);
+
+  if (dest && existsSync(dest)) {
+    db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ? AND transcript_path = ?").run(
+      dest,
+      agentId,
+      oldTranscriptPath,
+    );
+  }
   db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
 }
 
