@@ -191,7 +191,7 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
       assert.match(err.message, /^\[agent_send:paste-landed-enter-failed\]/, "the stable tag must not change");
       assert.match(
         err.message,
-        /\[hive message #\d+ from [^,]+, \d+ chars\]/,
+        /\[message #\d+, \d+ chars\]/,
         "it must name the pointer that is actually on that screen - without it the caller hunts for its own words",
       );
       assert.match(err.message, /agent_message_get\(\d+\)/, "and say the full text is stored, with the id");
@@ -216,7 +216,7 @@ describe("agent_send tells the truth when the paste lands but the Enter fails (t
         assert.match(err.message, /^\[agent_send:paste-timeout-ambiguous\]/);
         assert.match(
           err.message,
-          /\[hive message #\d+ from [^,]+, 900 chars\]/,
+          /\[message #\d+, 900 chars\]/,
           "\"only send again if the text genuinely is not there\" is unusable without naming what to look for",
         );
         assert.match(err.message, /agent_message_get\(\d+\)/);

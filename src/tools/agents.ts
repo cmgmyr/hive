@@ -29,7 +29,7 @@ import {
   leadPointerMarker,
   missMessage,
   readLeadMessage,
-  renderLeadPointer,
+  renderLeadPointer, senderTag,
   shortenedSendFailureClause,
   shortenedSendNote,
   storeLeadMessage,
@@ -1213,7 +1213,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
       inputSchema: {
         name: agentNameParam,
         agent_id: agentIdParam,
@@ -1231,7 +1231,7 @@ export function registerAgents(server: McpServer): void {
         const agent = findAgent(project.id, args);
         requireLive(agent);
         const target = agent.tmux_target;
-        let outgoing = args.text ?? "";
+        let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
         const withShortened = <T extends Record<string, unknown> & { note?: string }>(receipt: T) =>
           shortened === null
@@ -1353,15 +1353,17 @@ export function registerAgents(server: McpServer): void {
             // Stored BEFORE the paste, deliberately: storing after a successful paste lets a pointer
             // reach the pane naming a row that does not exist yet, which is worse than the orphan row a
             // failed paste leaves behind.
-            const { id, fromName } = storeLeadMessage(project.id, currentActor(), agent.id, args.text);
-            const pointer = renderLeadPointer(id, fromName, args.text);
+            const { id } = storeLeadMessage(project.id, currentActor(), agent.id, args.text);
+            const pointer = renderLeadPointer(id, args.text, tag);
             shortened = {
               message_id: id,
               note: shortenedSendNote(id, pointer.length),
-              marker: leadPointerMarker(id, fromName, args.text),
+              marker: tag + leadPointerMarker(id, args.text),
             };
             outgoing = pointer;
           }
+
+          if (shortened === null) outgoing = tag + args.text;
 
           let pasted = false;
           let buffered = false;
@@ -1434,7 +1436,7 @@ export function registerAgents(server: McpServer): void {
     "agent_message_get",
     {
       description:
-        "Read one agent-to-lead message in full, by the id in a \"[hive message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed verbatim and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
+        "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
       inputSchema: {
         message_id: idParam,
         project_id: projectIdParam,

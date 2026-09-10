@@ -52,12 +52,12 @@ describe("surrogate-safe truncation (todo 411)", () => {
   });
 
   it("leadMessage.ts's renderLeadPointer does not split an astral character at its 140-char head bound", () => {
-    const out = renderLeadPointer(7, "w", `${reproducer(139)}${"z".repeat(400)}`);
+    const out = renderLeadPointer(7, `${reproducer(139)}${"z".repeat(400)}`, "");
     assert.ok(!LONE_SURROGATE.test(out), `must not contain a lone surrogate half: ${JSON.stringify(out)}`);
   });
 
   it("leadMessage.ts's renderLeadPointer keeps an astral character whole when it fits inside the head", () => {
-    const out = renderLeadPointer(7, "w", `${reproducer(138)}${"z".repeat(400)}`);
+    const out = renderLeadPointer(7, `${reproducer(138)}${"z".repeat(400)}`, "");
     assert.ok(!LONE_SURROGATE.test(out), `must not contain a lone surrogate half: ${JSON.stringify(out)}`);
     assert.ok(out.includes("\u{1F600}"), `must keep a fitting emoji intact: ${JSON.stringify(out)}`);
   });

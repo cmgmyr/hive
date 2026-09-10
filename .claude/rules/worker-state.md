@@ -88,7 +88,7 @@ like any other, and reporting it as a crash was the smaller half of that bug.
 
 **This rule is about WAKE BODIES and nothing else.** `agent_send`'s `text` is a separate channel with its own, differently-shaped shortening for lead-bound messages; do not read either rule as governing the other (`.claude/rules/tmux-and-panes.md`).
 
-**`[hive message #` is DELIBERATELY not excluded from `conversationHoldsWake`, and `[hive wake #` is.** Two hive-authored prefixes now reach a lead's pane and only one is excluded from the human-conversation discriminator; that is todo 467's recorded disposal (leave it and document it), not an oversight to close. The marker 467 said would be needed to reverse it now exists, and is unused. It would cover shortened sends only, so a sub-threshold worker message still reads as a human turn.
+**`[hive:%` and `[hive wake #` are excluded from `conversationHoldsWake`.** Sender tags now mark every `agent_send` text delivery, and the extracted prompt is checked at offset 0, so worker messages do not count as human conversation. Wake bodies keep their separate `[hive wake #` marker.
 
 **A delivery into a BUSY pane may not be confirmed, so `unconfirmed` does not mean undelivered.** Do not read that as a failure and do not build anything that waits for a late confirmation. Mechanism and its measurements: `.claude/skills/hive-internals/references/tmux-and-panes.md`.
 

@@ -58,7 +58,7 @@ Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`h
 Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and types a single pointer line into that pane instead:
 
 ```
-[hive message #7 from api, 885 chars] BLOCKED: the migration test wedges on a
+[hive:worker api] [message #7, 885 chars] BLOCKED: the migration test wedges on a
 lock the sweep never releases, and I cannot get a clean red… agent_message_get(7)
 for the full text.
 ```
@@ -116,10 +116,10 @@ That worker really is idle, so the watch still speaks and you still get control 
 
 ### hive holds a wake while you are talking
 
-If a message was SENT to a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. A notice that waited that long says so when it lands, in one line; below that, the hold is too short to have made anything stale and hive stays quiet about it. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Usually that message is yours. It does not have to be: anything that submits a prompt into the lead's pane counts, including another agent reaching it with `agent_send`, and only hive's own wake deliveries are excluded. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
+If a human message reaches a lead in the last five minutes, a wake bound for that lead **waits** instead of landing mid-conversation. A notice that waited that long says so when it lands, in one line; below that, the hold is too short to have made anything stale and hive stays quiet about it. It is a submitted turn that counts, not text sitting in the box - unsent text is the separate `typing` hold. Tagged `agent_send` deliveries and hive's own wake deliveries are excluded, so crew reports do not hold a lead's wakes. Nothing is lost or cancelled: the scheduler re-checks every few seconds and delivers once you have been quiet for the window, and `hive statusline` shows the hold as `1 held (2m, talking)` while it lasts. If more than one worker finishes during that time, they merge into a single notice rather than queueing up.
 
 A hold of any kind that lasts more than an hour is the one case where a finish notice does not arrive as written. hive will not type an hour-old "your worker finished" as news, so it cancels that notice - and tells you it did, in a line naming the workers it covered and pointing at `wake_get` on the cancelled notice, which still holds the full text. You lose the timing, never the fact.
 
 So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking.
 
-Under a `/goal` the lead takes its own turns without anyone prompting it, so nothing refreshes the window and the hold stays out of the way. It is not unreachable there: a worker that reports in with `agent_send` refreshes the window exactly as you would, so an unattended run whose crew messages its lead holds each wake until the crew goes quiet, or until the fifteen-minute ceiling.
+Under a `/goal` the lead takes its own turns without anyone prompting it, so nothing refreshes the window and the hold stays out of the way. Human conversation still refreshes it, while tagged worker reports do not, so an unattended run's crew can report without delaying each wake.

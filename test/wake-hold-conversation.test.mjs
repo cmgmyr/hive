@@ -92,6 +92,20 @@ describe("todo 455 commit 2: the conversation hold", () => {
     );
   });
 
+  it("delivers when the most recent prompt row is a tagged agent send, not a human message", () => {
+    const result = fixture(
+      "tagged-agent-send-not-human",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-30 seconds', '[hive:worker a-worker] a report landed here');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "a tagged agent send must deliver rather than hold as human conversation");
+    assert.ok(result.row.held_reason === null, "delivery must clear the conversation hold instead of leaving it recorded");
+  });
+
   it("delivers once the TTL has passed, even though a human did message this lead earlier", () => {
     const result = fixture(
       "ttl-expired",

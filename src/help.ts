@@ -146,6 +146,7 @@ runbook (fork it first), not a pad write.`,
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
+    Text is prefixed with the sender tag.
     Text over 300 chars sent to a LEAD by anyone but that lead is stored and
     delivered as a one-line pointer, so the human's own pane stays readable;
     the receipt says shortened and names the message id.

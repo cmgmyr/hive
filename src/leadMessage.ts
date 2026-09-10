@@ -43,6 +43,18 @@ function senderName(projectId: number, actorId: string): string {
   return actor?.name?.trim() || actorId;
 }
 
+export function senderTag(projectId: number, actorId: string): string {
+  const row = db
+    .prepare(
+      `SELECT name, kind FROM agents WHERE project_id = ? AND actor_id = ?
+        ORDER BY (status = 'running') DESC, id DESC LIMIT 1`,
+    )
+    .get(projectId, actorId) as { name: string; kind: string } | undefined;
+  if (row?.kind === "lead") return "[hive:lead] ";
+  const name = row?.name ?? senderName(projectId, actorId);
+  return `[hive:${row ? "worker" : "agent"} ${flatten(name)}] `;
+}
+
 export function storeLeadMessage(
   projectId: number,
   fromActor: string,
@@ -108,16 +120,17 @@ export function missMessage(messageId: number, kind: MissKind): string {
 }
 
 // flatten, not slug.ts's stripControlChars: that one is [\x00-\x1F\x7F] and this is \p{Cc}\p{Cf}, which
-// also covers format characters. Both the name and the head come from outside, and a raw control byte in
-// either reaches tmux as a keystroke rather than as text, submitting this pointer early and splitting it.
-export function leadPointerMarker(id: number, fromName: string, text: string): string {
-  return `[hive message #${id} from ${flatten(fromName)}, ${text.length} chars]`;
+// also covers format characters. The head comes from outside, and a raw control byte in it reaches tmux
+// as a keystroke rather than as text, submitting this pointer early and splitting it. The sender's name
+// is flattened by senderTag when it builds the tag ahead of this marker - the tag is who, this is what.
+export function leadPointerMarker(id: number, text: string): string {
+  return `[message #${id}, ${text.length} chars]`;
 }
 
-export function renderLeadPointer(id: number, fromName: string, text: string): string {
+export function renderLeadPointer(id: number, text: string, tag: string): string {
   const flat = flatten(text);
   const head = flat.length > HEAD_BUDGET ? cutToUnitBudget(flat, HEAD_BUDGET) + ELLIPSIS : flat;
-  return `${leadPointerMarker(id, fromName, text)} ${head} agent_message_get(${id}) for the full text.`;
+  return `${tag}${leadPointerMarker(id, text)} ${head} agent_message_get(${id}) for the full text.`;
 }
 
 export function shortenedSendNote(id: number, deliveredChars: number): string {

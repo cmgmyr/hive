@@ -10,7 +10,7 @@ const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { sessionName } = await import("../dist/tmux.js");
-const { LEAD_MESSAGE_THRESHOLD, renderLeadPointer } = await import("../dist/leadMessage.js");
+const { LEAD_MESSAGE_THRESHOLD, leadPointerMarker, renderLeadPointer } = await import("../dist/leadMessage.js");
 
 const { join } = await import("node:path");
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
@@ -101,8 +101,8 @@ describe("todo 475: a long worker message to a lead lands as a pointer, and the 
 
     await until(async () => (await screen(name)).includes("agent_message_get("));
     const shown = await screen(name);
-    assert.ok(shown.includes(`[hivemessage#${receipt.message_id}`), "the pointer names its own id");
-    assert.ok(shown.includes(`from${sender},`), "the pointer names who sent it, by that worker's own name");
+    assert.ok(shown.includes(`[hive:worker${sender}]`), "the pointer's tag opens with who sent it, by that worker's own name");
+    assert.ok(shown.includes(`[message#${receipt.message_id}`), "the pointer names its own id");
     assert.ok(shown.includes("900chars"), "the pointer says how much it is not showing");
     assert.ok(
       !shown.includes(DEEP),
@@ -134,7 +134,7 @@ describe("todo 475: a long worker message to a lead lands as a pointer, and the 
   });
 });
 
-describe("todo 475: the pointer's first job is saying WHO, so the name resolves past the agents table", () => {
+describe("todo 475: the pointer's first job is saying WHO, so the tag resolves past the agents table", () => {
   it("names a sender that has no agents row in this project, from its actor record", NEEDS_TMUX, async () => {
     const name = "t475-no-agent-row";
     await spawnLead(name);
@@ -150,7 +150,10 @@ describe("todo 475: the pointer's first job is saying WHO, so the name resolves 
       "a sender with no agents row here still has an actor record, and `agent:900475` names nobody",
     );
     await until(async () => (await screen(name)).includes("agent_message_get("));
-    assert.ok((await screen(name)).includes("fromfaraway-worker,"), "and that is the name the pointer shows");
+    assert.ok(
+      (await screen(name)).includes("[hive:agentfaraway-worker]"),
+      "and that is the name the sender tag ahead of the pointer shows",
+    );
   });
 
   it("falls back to the actor id when nothing names the sender, rather than to an empty slot", NEEDS_TMUX, async () => {
@@ -163,7 +166,10 @@ describe("todo 475: the pointer's first job is saying WHO, so the name resolves 
     const got = await mcp.call("agent_message_get", { message_id: receipt.message_id });
     assert.equal(got.from, nameless, "an unnamed sender renders as its id - never as blank, null or undefined");
     await until(async () => (await screen(name)).includes("agent_message_get("));
-    assert.ok((await screen(name)).includes(`from${nameless},`), "and the pointer shows it rather than a gap");
+    assert.ok(
+      (await screen(name)).includes(`[hive:agent${nameless}]`),
+      "and the tag shows it rather than a gap",
+    );
   });
 });
 
@@ -286,11 +292,10 @@ describe("todo 475: a pointer outlives its message, so a lookup that misses says
   });
 });
 
-describe("todo 475: the pointer is typed into a pane, so every interpolated field is flattened", () => {
-  it("collapses newlines and tabs out of both the head and the sender's name", () => {
-    const line = renderLeadPointer(7, "wor\rker\tname", `first\nline\r\nsecond\ttab ${"b".repeat(400)}`);
+describe("todo 475: the pointer is typed into a pane, so its head is flattened", () => {
+  it("collapses newlines and tabs out of the head", () => {
+    const line = renderLeadPointer(7, `first\nline\r\nsecond\ttab ${"b".repeat(400)}`, "");
     assert.doesNotMatch(line, /[\p{Cc}\p{Cf}]/u, "a raw control byte reaches tmux as a keystroke, not as text");
-    assert.match(line, /wor ker name/, "the control byte becomes a space - the name is flattened, not dropped");
     assert.match(line, /first line second tab/, "the head is flattened, not dropped");
   });
 
@@ -299,16 +304,36 @@ describe("todo 475: the pointer is typed into a pane, so every interpolated fiel
     // (code <= 0x1f || 0x7f) passes them and they reach this render through the real path. Narrowing
     // flatten to \p{Cc} alone - the shape a merge with slug.ts's stripControlChars would produce - passes
     // every other test in this repo, which is why this case exists rather than a comment saying not to.
-    const line = renderLeadPointer(7, "wor\u00ADker", `zero\u200Dwidth ${"d".repeat(400)}`);
-    assert.doesNotMatch(line, /[\p{Cf}]/u, "a format character in the name or the head must not survive the flatten");
-    assert.match(line, /wor ker/, "and it is replaced with a space, not deleted");
+    const line = renderLeadPointer(7, `zero\u200Dwidth ${"d".repeat(400)}`, "");
+    assert.doesNotMatch(line, /[\p{Cf}]/u, "a format character in the head must not survive the flatten");
     assert.match(line, /zero width/);
   });
 
   it("keeps the head to its budget and marks that it was cut", () => {
-    const line = renderLeadPointer(7, "w", "c".repeat(1000));
+    const line = renderLeadPointer(7, "c".repeat(1000), "");
     assert.match(line, /…/, "a cut head must show it was cut");
     assert.ok(line.length < 300, `the pointer must be far shorter than what it replaced, got ${line.length}`);
-    assert.match(line, /^\[hive message #7 from w, 1000 chars\] c+… agent_message_get\(7\) for the full text\.$/);
+    assert.match(line, /^\[message #7, 1000 chars\] c+… agent_message_get\(7\) for the full text\.$/);
+  });
+
+  it("opens with the sender tag before the pointer marker", () => {
+    const line = renderLeadPointer(7, "c".repeat(1000), "[hive:worker w] ");
+    assert.match(line, /^\[hive:worker w\] \[message #7, 1000 chars\]/);
+  });
+});
+
+describe("todo 914 A1: a failed Enter's error text names what is actually at offset 0 of the pasted line", () => {
+  it("the marker shortenedSendFailureClause is told to quote is a real prefix of renderLeadPointer's own output", () => {
+    // This is the assertion the fix round asked for: not a re-check of the string shapes above, but a
+    // proof that the two build paths agree with each other, since agents.ts builds `marker` and `pointer`
+    // separately and nothing but this test would catch them drifting apart again.
+    const tag = "[hive:worker cg-812] ";
+    const text = "c".repeat(1000);
+    const marker = tag + leadPointerMarker(7, text);
+    const pointer = renderLeadPointer(7, text, tag);
+    assert.ok(
+      pointer.startsWith(marker),
+      `shortenedSendFailureClause's marker must open the pane content it names, got pointer=${JSON.stringify(pointer.slice(0, 60))} marker=${JSON.stringify(marker)}`,
+    );
   });
 });

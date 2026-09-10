@@ -748,7 +748,7 @@ function conversationHoldsWake(timer: TimerRow): boolean {
   return (
     stmt(
       `SELECT 1 AS hit FROM agent_state_log
-        WHERE actor_id = ? AND event = 'prompt' AND payload NOT LIKE '%[hive wake #%'
+        WHERE actor_id = ? AND event = 'prompt' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '%[hive wake #%' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '[hive:%'
           AND created_at >= datetime('now', ?)
         ORDER BY id DESC LIMIT 1`,
     ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined
