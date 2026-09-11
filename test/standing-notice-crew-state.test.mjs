@@ -211,6 +211,12 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
       `
       addWorker('agent:1', 'w1', '%1', 'idle', '-50 seconds');
       addWorker('agent:2', 'w2', '%2', 'idle', '-50 seconds');
+      const { writeFileSync } = await import('node:fs');
+      const { recordClaudeWindowSize } = await import(${JSON.stringify(join(DIST, "statusline.js"))});
+      const contextPath = process.env.HIVE_DATA_DIR + '/crew-context.jsonl';
+      writeFileSync(contextPath, JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: 25000 } } }) + '\\n');
+      recordClaudeWindowSize('agent:1', JSON.stringify({ context_window: { context_window_size: 100000 } }));
+      db.prepare('UPDATE agents SET transcript_path = ? WHERE actor_id = ?').run(contextPath, 'agent:1');
       stopWith('agent:1', ${JSON.stringify(shell)}, '-50 seconds');
       const watchId = addStandingWatch();
       await tick(snapshot);
@@ -224,10 +230,10 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
 
     assert.match(
       result.text,
-      /w1: idle, 1 background shell running - may not be done\./,
+      /w1: idle, 1 background shell running - may not be done, context 25%\./,
       `the per-worker line carries the worker's own background-task fact; got: ${result.text}`,
     );
-    assert.match(result.text, /w2: idle\./, "and a worker with no live task carries no such clause");
+    assert.match(result.text, /w2: idle, context unavailable\./, "and a worker with no live task carries no such clause");
     assert.match(
       result.full,
       /worker\(s\) in this project have finished or gone away/,
@@ -257,7 +263,7 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
 
     assert.match(
       result.text,
-      /w1: waiting - may be stopped on a dialog; read its pane\./,
+      /w1: waiting - may be stopped on a dialog; read its pane, context unavailable\./,
       `\`waiting\` is the one state that needs a human, and the full render says so in as many words; ` +
         `got: ${result.text}`,
     );
@@ -266,7 +272,7 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
       /w1: waiting again since it reported in/,
       "the generic 'again since it reported in' clause phrases a blocked worker as one making progress",
     );
-    assert.match(result.text, /w2: idle\./, "the unaffected worker is the control that the render still works");
+    assert.match(result.text, /w2: idle, context unavailable\./, "the unaffected worker is the control that the render still works");
   });
 
   it("does not read a resumed worker's placeholder state as work it went back to", () => {
@@ -291,7 +297,7 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
 
     assert.match(
       result.text,
-      /w1: resumed, awaiting its first assignment\./,
+      /w1: resumed, awaiting its first assignment, context unavailable\./,
       `a resumed worker has no state yet; got: ${result.text}`,
     );
     assert.doesNotMatch(result.text, /unknown/, "and the raw enum value must never reach the pane");
@@ -360,7 +366,7 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
     assert.equal(result.claims.a, 1, "and both must belong to the same worker");
     assert.match(
       result.text,
-      /\bw1: idle\.$/m,
+      /\bw1: idle, context unavailable\.$/m,
       `the newer episode left nothing running, and it is the one that describes the worker now; ` +
         `got: ${result.text}`,
     );
@@ -385,7 +391,7 @@ describe("todo 473: the staleness note earns its space or is not printed", () =>
       ["%1", "%2"],
     );
 
-    assert.match(result.text, /w1: idle\./, "the notice itself must have reached the pane, or the absence proves nothing");
+    assert.match(result.text, /w1: idle, context unavailable\./, "the notice itself must have reached the pane, or the absence proves nothing");
     assert.doesNotMatch(
       result.text,
       /Held/,

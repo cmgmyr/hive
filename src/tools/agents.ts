@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome } from "../codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import {
   commandHead,
@@ -21,7 +21,7 @@ import {
   resolvedCommandPrefix,
   screenClassifiable,
 } from "../harnesses.js";
-import { ensureHooksFile } from "../hooks.js";
+import { ensureWorkerHooksFile } from "../hooks.js";
 import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
   classifyMiss,
@@ -52,7 +52,7 @@ import {
   resumeAgent,
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
-import { readContextTokens, resolveTranscriptDir } from "../transcript.js";
+import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
 import {
   capturePane,
   captureFinalScreen,
@@ -107,6 +107,7 @@ export interface AgentRow {
   state_changed_at: string | null;
   kind: string;
   session_id: string;
+  transcript_path: string;
   parked_at: string;
   parked_branch: string;
   resumed_at: string;
@@ -413,12 +414,13 @@ function permissionModeField(row: AgentRow): { permission_mode: string | null } 
   return reportsAgentStateLog(row) ? { permission_mode: lastPermissionMode(row.actor_id) } : {};
 }
 
-// Reads its own contextTokens capability, distinct from claudeOnlyFields' transcriptDir: agent_status
-// is the only caller, and claudeOnlyFields also feeds agent_list's closed-row path, which this must not.
-export function contextTokensField(row: AgentRow): { context_tokens: number | null } | Record<string, never> {
-  return harnessFor(row.command).contextTokens
-    ? { context_tokens: readContextTokens(row.cwd, row.session_id) }
-    : {};
+export function contextFillField(row: AgentRow): { context_fill: ContextFill | null } | Record<string, never> {
+  const kind = harnessFor(row.command).contextRecord;
+  return row.kind === "agent" && kind != null ? { context_fill: readContextFill(kind, row) } : {};
+}
+
+export function contextTokensField(row: AgentRow, fill: ContextFill | null = null): { context_tokens: number | null } | Record<string, never> {
+  return harnessFor(row.command).contextTokens ? { context_tokens: fill?.used_tokens ?? readContextTokens(row.cwd, row.session_id, row.transcript_path) } : {};
 }
 
 function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<string, never> {
@@ -444,6 +446,7 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
 
     ...lastLogEventField(row),
     ...permissionModeField(row),
+    ...contextFillField(row),
 
     ...(row.parked_at ? { parked_at: row.parked_at, parked_branch: row.parked_branch || null } : {}),
     tmux_target: row.tmux_target,
@@ -452,6 +455,11 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     parent_actor_id: row.parent_actor_id,
     created_at: row.created_at,
   };
+}
+
+export function contextCheckpointEnv(config: ProjectYml | null): Record<string, string> {
+  const value = config?.context_checkpoint_percent;
+  return value == null ? {} : { HIVE_CONTEXT_CHECKPOINT_PERCENT: String(value) };
 }
 
 export function worktreeInstallNotice(cwd: string, projectPath: string, config: ProjectYml | null): string | undefined {
@@ -603,7 +611,7 @@ export function registerAgents(server: McpServer): void {
           const briefPath = harness.briefDelivery ? writeAgentBrief(agentId, brief!) : undefined;
           let homeArgs: string[] = [];
           if (codexHomeKey) {
-            const home = ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief! });
+            const home = ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief!, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
             homeArgs = home.extraArgs;
             codexInstructionLayers = home.instructionLayers;
           }
@@ -618,7 +626,7 @@ export function registerAgents(server: McpServer): void {
                 ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
                 : (args.extra_args ?? [])),
             ],
-            settingsPath: harness.briefDelivery ? ensureHooksFile() : undefined,
+            settingsPath: harness.briefDelivery ? ensureWorkerHooksFile(agentId, { includePostToolUse: projectConfig?.context_checkpoint_percent != null }) : undefined,
             briefPath,
           });
         };
@@ -638,7 +646,7 @@ export function registerAgents(server: McpServer): void {
             kind: "agent",
             commandString: buildCommand,
             cwd,
-            env: codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {},
+            env: { ...contextCheckpointEnv(projectConfig), ...(codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {}) },
             placement,
             layout,
             parentActor: parent,
@@ -851,7 +859,7 @@ export function registerAgents(server: McpServer): void {
         const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
 
         let commandString: string;
-        let resumeEnv: Record<string, string> = {};
+        let resumeEnv: Record<string, string> = contextCheckpointEnv(projectConfig);
         if (resumeHarness.name === "codex") {
           commandString = workerCommandString({
             command: resolvedCommandPrefix(agent.command) || "codex",
@@ -865,14 +873,15 @@ export function registerAgents(server: McpServer): void {
             // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
             extraArgs: [...codexLaunchArgs(agent.cwd), "resume", agent.session_id],
           });
-          resumeEnv = { CODEX_HOME: codexHomeDir(agent.codex_home) };
+          resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home) };
+          ensureCodexHooksFile(agent.codex_home, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
         } else {
           const claudeBinary = resolvedCommandPrefix(agent.command) || "claude";
           commandString = workerCommandString({
             command: claudeBinary,
             displayName: agent.name,
             extraArgs: ["--resume", agent.session_id],
-            settingsPath: ensureHooksFile(),
+            settingsPath: ensureWorkerHooksFile(agent.id, { includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
           });
         }
 
@@ -1204,7 +1213,7 @@ export function registerAgents(server: McpServer): void {
           ...(agent.exit_tail ? { exit_tail: agent.exit_tail } : {}),
 
           ...claudeOnlyFields(agent),
-          ...contextTokensField(agent),
+          ...contextTokensField(agent, "context_fill" in summary ? summary.context_fill : null),
         };
       }),
   );

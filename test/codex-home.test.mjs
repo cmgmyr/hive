@@ -91,6 +91,21 @@ describe("ensureCodexHome writes a real, self-contained per-worker home", () => 
 });
 
 describe("the generated hooks.json matches claude's exact nesting (the H1 schema trap)", () => {
+  it("adds PostToolUse only to configured workers, never lead homes", () => {
+    for (const options of [{}, { includePostToolUse: true }, { lead: true, includePostToolUse: true }]) {
+      const key = `context-${counter++}`;
+      const result = build({ key, ...options });
+      const written = JSON.parse(readFileSync(join(codexHomeDir(key), "hooks.json"), "utf8"));
+      if (options.includePostToolUse && !options.lead) {
+        assert.deepEqual(written.hooks.PostToolUse, [hookEntry("post_tool_use", "codex")]);
+        assert.ok(result.hooksWired.includes("PostToolUse"));
+      } else {
+        assert.equal(written.hooks.PostToolUse, undefined);
+        assert.equal(result.hooksWired.includes("PostToolUse"), false);
+      }
+    }
+  });
+
   it("wires Stop and UserPromptSubmit using the identical hookEntry() shape ensureHooksFile builds for claude", () => {
     const key = `worker-${counter}`;
     build({ key });

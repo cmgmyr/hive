@@ -26,6 +26,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
                               # the default. Absent or empty means claude only, and agent_spawn
                               # REFUSES a harness or command outside this list. lead: above is a
                               # separate key and stays reachable regardless of this list.
+context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 review_tags: [from-review]    # optional todo tags `hive doctor` counts as review findings and
                               # reports as triaged (a comment, completed, or archived) or
                               # untriaged. A tag also matches its own suffixed rounds, so
@@ -52,6 +53,12 @@ processes:
 ```
 
 Commands appear as windows in the session (visible in iTerm like everything else) and show up in `agent_list`, so the lead can read their output with `agent_output` - that works for a process exactly as it does for a worker, including a hidden one, so you can read a dev server's log without putting it on screen. Because the file is repo-controlled, each command runs only after you approve it once interactively; changing a command in any way requires re-approval, and `dir` cannot escape the project root. Unknown keys are ignored, so configs from similar tools parse after a copy.
+
+### Worker context checkpoint
+
+Set `context_checkpoint_percent` to an integer from 1 through 100 to notify workers when their context fill reaches that percentage. An absent key or `null` disables the hook. Invalid values are ignored with a warning. Hive sends a factual context reading once per upward crossing; it does not stop the worker or prescribe an action. A below-threshold observation after compaction allows another crossing.
+
+The value is captured in the worker-only `HIVE_CONTEXT_CHECKPOINT_PERCENT` environment variable when a worker spawns or resumes. Editing `hive.yml` affects the next spawn or resume, not a running worker. This setting applies to Claude and Codex workers only. It has no `agent_spawn` argument and does not instrument the lead.
 
 ### Background processes (`visible: false`)
 

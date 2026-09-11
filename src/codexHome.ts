@@ -35,6 +35,7 @@ export interface CodexHomeInput {
   // Lead homes only: wires SessionStart to kickoff. A worker's evaluate() no-ops anyway, so
   // wiring it there would fire and do nothing every turn.
   lead?: boolean;
+  includePostToolUse?: boolean;
 }
 
 export function codexHomeDir(key: string): string {
@@ -266,6 +267,24 @@ export function codexLaunchArgs(cwd: string): string[] {
   ];
 }
 
+export function ensureCodexHooksFile(key: string, options: { lead?: boolean; includePostToolUse?: boolean }): string[] {
+  // Subagent hooks, not the Stop payload's background_tasks, which codex never sends. No
+  // Notification: unreachable for codex by design (test/codex-notify-unreachable.test.mjs).
+  const hooks = {
+    // A worker's SessionEnd would be a no-op anyway (HIVE_LEAD gates stopProcessesForEndedLead
+    // in src/hook.ts), so a worker home carries no hook that can never act.
+    ...(options.lead ? { SessionStart: [kickoffHookEntry()], SessionEnd: [hookEntry("session_end")] } : {}),
+    ...(!options.lead && options.includePostToolUse ? { PostToolUse: [hookEntry("post_tool_use", "codex")] } : {}),
+    Stop: [hookEntry("stop")],
+    UserPromptSubmit: [hookEntry("prompt")],
+    SubagentStart: [hookEntry("subagent_start")],
+    SubagentStop: [hookEntry("subagent_stop")],
+  };
+  writeFileSync(join(codexHomeDir(key), "hooks.json"), JSON.stringify({ hooks }, null, 2) + "\n");
+
+  return Object.keys(hooks);
+}
+
 // Generates a per-worker home: auth.json symlinked (never copied), hooks.json, config.toml.
 export function ensureCodexHome(
   input: CodexHomeInput,
@@ -322,18 +341,7 @@ export function ensureCodexHome(
     symlinkSync(cleanupSource, cleanupLink);
   }
 
-  // Subagent hooks, not the Stop payload's background_tasks, which codex never sends. No
-  // Notification: unreachable for codex by design (test/codex-notify-unreachable.test.mjs).
-  const hooks = {
-    // A worker's SessionEnd would be a no-op anyway (HIVE_LEAD gates stopProcessesForEndedLead
-    // in src/hook.ts), so a worker home carries no hook that can never act.
-    ...(input.lead ? { SessionStart: [kickoffHookEntry()], SessionEnd: [hookEntry("session_end")] } : {}),
-    Stop: [hookEntry("stop")],
-    UserPromptSubmit: [hookEntry("prompt")],
-    SubagentStart: [hookEntry("subagent_start")],
-    SubagentStop: [hookEntry("subagent_stop")],
-  };
-  writeFileSync(join(home, "hooks.json"), JSON.stringify({ hooks }, null, 2) + "\n");
+  const hooksWired = ensureCodexHooksFile(input.key, input);
 
   const indexJs = join(dirname(fileURLToPath(import.meta.url)), "index.js");
 
@@ -359,5 +367,5 @@ export function ensureCodexHome(
 
   const instructionLayers = [...(hasGlobal ? ["global"] : []), ...(localOverride ? ["local"] : [])];
 
-  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired: Object.keys(hooks), instructionLayers };
+  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired, instructionLayers };
 }

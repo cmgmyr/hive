@@ -65,3 +65,11 @@ Conventions borrowed from tools that got this right:
 - Pads use optimistic concurrency: reads return a `revision`, overwrites require `expected_revision`.
 - Leases and kv TTLs expire on their own, so a dead session never wedges the team.
 - Todo blockers form a dependency graph; cycles are rejected.
+
+## Worker context fields
+
+`agent_list` and `agent_status` include `context_fill: { used_tokens, window_tokens, used_percent }` for Claude and Codex workers. It describes the latest request's input tokens against the recorded model window, with `used_percent` rounded to the nearest whole percentage. The field is `null` before usable evidence is available and is omitted for unknown commands and non-worker rows. Claude workers need a statusline window record as well as transcript usage; Codex rollouts carry both values.
+
+`agent_status` also retains Claude's `context_tokens` compatibility field. It reports the input numerator even when no window is known, or `null` when no usable usage record exists. Codex workers and unknown commands omit this compatibility field.
+
+Standing crew notices and one-shot idle wake trailers read context again at delivery time. They show `context N%` or `context unavailable` for recognized workers. To notify the worker itself during a turn, configure [the optional project checkpoint](projects.md#worker-context-checkpoint).

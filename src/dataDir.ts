@@ -32,6 +32,7 @@ function productEntryPoints(): string[] {
     join(dist, "cli.js"),
     join(dist, "index.js"),
     join(dist, "hook.js"),
+    join(dist, "statusline.js"),
     join(dist, "kickoff.js"),
     join(dist, "..", "claude-plugin", "kickoff.mjs"),
   ];

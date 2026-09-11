@@ -36,7 +36,7 @@ const controlHook =
 const ABI_FAILURE = /^hive: cannot run under this Node\.$/m;
 
 const { db, migrate } = await import("../dist/db.js");
-const { ensureHooksFile } = await import("../dist/hooks.js");
+const { ensureHooksFile, ensureWorkerHooksFile } = await import("../dist/hooks.js");
 const { shellQuote } = await import("../dist/tmux.js");
 migrate();
 
@@ -78,6 +78,19 @@ function runHookCommand(command, { actorId, payload, path }) {
 }
 
 describe("the generated hook commands carry an absolute interpreter", () => {
+
+  it("adds the same PostToolUse nesting to configured Claude worker settings only", () => {
+    const id = agentRow("context-registration");
+    const enabled = JSON.parse(readFileSync(ensureWorkerHooksFile(id, { includePostToolUse: true }), "utf8"));
+    const { hooks } = enabled;
+    assert.equal(hooks.PostToolUse.length, 1);
+    assert.equal(hooks.PostToolUse[0].hooks[0].type, "command");
+    assert.ok(hooks.PostToolUse[0].hooks[0].command.startsWith(`${shellQuote(process.execPath)} `));
+    assert.match(hooks.PostToolUse[0].hooks[0].command, /post_tool_use claude$/);
+    const disabled = JSON.parse(readFileSync(ensureWorkerHooksFile(id, { includePostToolUse: false }), "utf8"));
+    assert.equal(disabled.hooks.PostToolUse, undefined);
+    assert.equal(JSON.parse(readFileSync(ensureHooksFile(), "utf8")).hooks.PostToolUse, undefined);
+  });
 
   it("quotes the writing interpreter, not a bare `node`, for every registered event", () => {
     const hooksPath = ensureHooksFile();
@@ -137,6 +150,16 @@ describe(
         [{ event: "stop", state: "idle" }],
         "the scratch tree must be able to write a row, or the control below proves only that it is broken",
       );
+
+      const workerId = agentRow("hook-abi-statusline");
+      const workerSettings = JSON.parse(readFileSync(ensureWorkerHooksFile(workerId, { includePostToolUse: false }), "utf8"));
+      const statusActor = "agent:hook-abi-statusline";
+      const statusRun = await runHookCommand(workerSettings.statusLine.command, {
+        actorId: statusActor, payload: JSON.stringify({ context_window: { context_window_size: 1000000 } }), path: binDir,
+      });
+      assert.equal(statusRun.code, 0, statusRun.stderr);
+      const { claudeWindowPath } = await import("../dist/transcript.js");
+      assert.equal(JSON.parse(readFileSync(claudeWindowPath(statusActor), "utf8")), 1000000);
 
       const controlActorId = "agent:hook-abi-stop-control";
       agentRow("hook-abi-stop-control");

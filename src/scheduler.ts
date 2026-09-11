@@ -18,8 +18,8 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
-import { transcriptDir } from "./transcript.js";
+import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
+import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
 import {
   ageSecondsSince,
   describeLastLogEvent,
@@ -1185,9 +1185,10 @@ const unreported = (condition: string, episode: string): string => `NOT EXISTS (
 
 const CREW_COLUMNS =
   `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.agent_state,
-   a.state_changed_at, a.status, a.command, a.kind, a.resumed_at, a.closed_at`;
+   a.state_changed_at, a.status, a.command, a.kind, a.resumed_at, a.closed_at,
+   a.cwd, a.session_id, a.transcript_path`;
 
-interface CrewRow {
+interface CrewRow extends ContextWorker {
   id: number;
   name: string;
   actor_id: string;
@@ -1381,6 +1382,13 @@ function crewStateClause(c: StandingCandidate): string {
   return live.length === 0 ? "idle" : `idle, ${describeLiveTasks(live)} running - may not be done`;
 }
 
+function contextClause(row: ContextWorker & { command: string; kind: string }): string {
+  const kind = harnessFor(row.command).contextRecord;
+  if (row.kind !== "agent" || kind == null) return "";
+  const fill = readContextFill(kind, row);
+  return fill === null ? ", context unavailable" : `, context ${fill.used_percent}%`;
+}
+
 // Rendered at DELIVERY time only, from the notice row's own wake_idle_notices claim rows - never at
 // write time. The stored body (below) always carries the full text, so wake_get(noticeId) returns
 // real detail. A stale-GONE diagnostic (isStaleGoneReport) stays inline: it corrects a fact THIS SAME
@@ -1392,7 +1400,7 @@ function crewStateClause(c: StandingCandidate): string {
 function standingNoticeBodyShort(timer: TimerRow, finished: StandingCandidate[], noticeId: number): string {
   const crew = crewFromClaims(finished);
   const shown = crew.slice(0, FINISHED_SHOWN_CAP);
-  const lines = shown.map((c) => `${c.row.name}: ${crewStateClause(c)}.`);
+  const lines = shown.map((c) => `${c.row.name}: ${crewStateClause(c)}${contextClause(c.row)}.`);
 
   const reported = new Set(shown.map((c) => c.row.actor_id));
   const rows = stillGoingRows(timer);
@@ -2140,7 +2148,7 @@ function watchedTail(timer: TimerRow): string {
     const shown: string[] = [];
     for (const id of ids.slice(0, TAIL_AGENTS)) {
       const agent = stmt(
-        "SELECT name, tmux_target, tmux_socket, agent_state, state_changed_at, status, actor_id, command, kind FROM agents WHERE id = ?",
+        "SELECT name, tmux_target, tmux_socket, agent_state, state_changed_at, status, actor_id, command, kind, cwd, session_id, transcript_path FROM agents WHERE id = ?",
       ).get(id) as
         | {
             name: string;
@@ -2152,18 +2160,22 @@ function watchedTail(timer: TimerRow): string {
             actor_id: string;
             command: string;
             kind: string;
+            cwd: string;
+            session_id: string;
+            transcript_path: string;
           }
         | undefined;
       if (!agent) continue;
+      const context = contextClause(agent);
 
       if (agent.status !== "running") {
-        shown.push(`${agent.name} (hive state now: ${stateNowClause(agent)}): closed, so there is no terminal left to read.`);
+        shown.push(`${agent.name} (hive state now: ${stateNowClause(agent)}${context}): closed, so there is no terminal left to read.`);
         continue;
       }
 
       if (foreignSocket(agent.tmux_socket)) {
         shown.push(
-          `${agent.name} (hive state now: ${stateNowClause(agent)}): its terminal lives on a different tmux ` +
+          `${agent.name} (hive state now: ${stateNowClause(agent)}${context}): its terminal lives on a different tmux ` +
             "socket than this process, so it cannot honestly be read from here.",
         );
         continue;
@@ -2175,7 +2187,7 @@ function watchedTail(timer: TimerRow): string {
       } catch {
 
       }
-      const stateNow = stateNowClause(agent);
+      const stateNow = stateNowClause(agent) + context;
       shown.push(
         tail
           ? `${agent.name} (hive state now: ${stateNow}), last lines of its terminal:\n${tail}`

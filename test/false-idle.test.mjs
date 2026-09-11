@@ -578,7 +578,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     await until(() => delivered().includes(`hive wake #${wake}`));
 
     const text = delivered();
-    const m = text.match(/stalled-worker \(hive state now: working for (\d+)m, last log event: notify \((\d+)s ago\)\)/);
+    const m = text.match(/stalled-worker \(hive state now: working for (\d+)m, last log event: notify \((\d+)s ago\), context unavailable\)/);
     assert.ok(m, `must report both facts together; got: ${JSON.stringify(text)}`);
     const [, latchMinutes, notifySeconds] = m.map(Number);
 
@@ -589,6 +589,11 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
   it("keeps both facts small and close together for a worker that is actually healthy", async () => {
 
     const agent = agentRow("healthy-worker", watchedPane, "working");
+    const { recordClaudeWindowSize } = await import("../dist/statusline.js");
+    const contextPath = join(tmp, "healthy-context.jsonl");
+    writeFileSync(contextPath, JSON.stringify({ type: "assistant", message: { usage: { input_tokens: 25000 } } }) + "\n");
+    recordClaudeWindowSize("agent:healthy-worker", JSON.stringify({ context_window: { context_window_size: 100000 } }));
+    db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ?").run(contextPath, agent);
     const wake = idleWake(agent);
     goIdle(agent);
     db.prepare(
@@ -600,7 +605,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     await until(() => delivered().includes(`hive wake #${wake}`));
 
     const text = delivered();
-    const m = text.match(/healthy-worker \(hive state now: idle for (\d+)s, last log event: stop \((\d+)s ago\)\)/);
+    const m = text.match(/healthy-worker \(hive state now: idle for (\d+)s, last log event: stop \((\d+)s ago\), context 25%\)/);
     assert.ok(m, `must show both facts fresh, not the stalled worker's divergence; got: ${JSON.stringify(text)}`);
     const [, latchSeconds, stopSeconds] = m.map(Number);
     assert.ok(latchSeconds < 10 && stopSeconds < 10, `both facts must read as fresh; got ${latchSeconds}s / ${stopSeconds}s`);
@@ -618,7 +623,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(
       text,
-      /evicted-log \(hive state now: working for 10m, last log event: no record\)/,
+      /evicted-log \(hive state now: working for 10m, last log event: no record, context unavailable\)/,
       `retention evicting every row for this actor must still say so, not render blank; got: ${JSON.stringify(text)}`,
     );
   });
@@ -665,7 +670,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(
       text,
-      /foreign-with-history \(hive state now: working for 2m, last log event: prompt \(2m ago\)\): its terminal lives on a different tmux/,
+      /foreign-with-history \(hive state now: working for 2m, last log event: prompt \(2m ago\), context unavailable\): its terminal lives on a different tmux/,
       `the foreign-socket branch must carry the same facts as every other branch; got: ${JSON.stringify(text)}`,
     );
   });
@@ -687,7 +692,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(
       text,
-      /closed-frozen-latch \(hive state now: working, last log event: stop \(1h ago\)\): closed, so there is no terminal left to read\./,
+      /closed-frozen-latch \(hive state now: working, last log event: stop \(1h ago\), context unavailable\): closed, so there is no terminal left to read\./,
       `a closed row's history must still be reported, but its latch must not be aged; got: ${JSON.stringify(text)}`,
     );
 
@@ -716,7 +721,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
     assert.match(
       text,
-      /last log event: stop \(0s ago\)\s{7}\[truncated\] \(1h ago\)\)/,
+      /last log event: stop \(0s ago\)\s{7}\[truncated\] \(1h ago\), context unavailable\)/,
       `the real age must survive immediately after the capped, marked event; got: ${JSON.stringify(text)}`,
     );
   });
@@ -764,7 +769,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     assert.ok(!text.includes(ESC), "an ESC in a hostile log event must not survive into the wake body");
     assert.match(
       text,
-      /last log event: stop\[201~ --- fake h\[truncated\] \(\d+s ago\)\)/,
+      /last log event: stop\[201~ --- fake h\[truncated\] \(\d+s ago\), context unavailable\)/,
       `the newline must collapse to a space before the cap, not forge a second line; got: ${JSON.stringify(text)}`,
     );
     assert.equal(
@@ -789,7 +794,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     const text = delivered();
     assert.match(
       text,
-      /never-set-latch \(hive state now: working \(latch age: no record\), last log event: prompt \(\d+s ago\)\)/,
+      /never-set-latch \(hive state now: working \(latch age: no record\), last log event: prompt \(\d+s ago\), context unavailable\)/,
       `a never-recorded latch must say so explicitly, not drop the duration silently; got: ${JSON.stringify(text)}`,
     );
   });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
@@ -1662,7 +1662,7 @@ describe("the tool surface", () => {
       assert.match(
         text,
         new RegExp(
-          `(w\\d+: gone\\.\\n){8}And 2 more not shown\\. Nothing else is running\\. wake_get\\(${stored.id}\\) for detail\\.`,
+          `(w\\d+: gone, context unavailable\\.\\n){8}And 2 more not shown\\. Nothing else is running\\. wake_get\\(${stored.id}\\) for detail\\.`,
         ),
         "the DELIVERED text is one line per worker, capped the same as the full render, citing the notice's own id",
       );
@@ -1832,5 +1832,94 @@ describe("the tool surface", () => {
       db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice).cancelled_at !== null,
       "a notice orphaned by its watch types into a lead's pane about a watch that no longer exists",
     );
+  });
+});
+
+
+describe("delivery-time context on idle notices", () => {
+  it("reads both harnesses at render time, deduplicates repeated worker episodes, and names unavailable context", () => {
+    const result = fixture("context-at-delivery", `
+      const { writeFileSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const { recordClaudeWindowSize } = await import(${JSON.stringify(join(DIST, "statusline.js"))});
+      const { shortRenderForLeadDelivery } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});
+      const a = addWorker('agent:context-a', 'context-a', '%1', 'idle', '-30 seconds');
+      const b = addWorker('agent:context-b', 'context-b', '%2', 'idle', '-30 seconds');
+      const c = addWorker('agent:context-c', 'context-c', '%3', 'idle', '-30 seconds');
+      const d = addWorker('agent:context-d', 'context-d', '%4', 'idle', '-30 seconds');
+      const claudePath = join(process.env.HIVE_DATA_DIR, 'claude.jsonl');
+      const codexPath = join(process.env.HIVE_DATA_DIR, 'codex.jsonl');
+      const claude = (input) => JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: input } } });
+      const codex = (input) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: {
+        last_token_usage: { input_tokens: input, cached_input_tokens: input - 1 },
+        total_token_usage: { input_tokens: 40000000 }, model_context_window: 800000,
+      } } });
+      writeFileSync(claudePath, claude(10000) + '\\n');
+      writeFileSync(codexPath, codex(80000) + '\\n');
+      recordClaudeWindowSize('agent:context-a', JSON.stringify({ context_window: { context_window_size: 1000000 } }));
+      db.prepare('UPDATE agents SET transcript_path = ? WHERE id = ?').run(claudePath, a);
+      db.prepare("UPDATE agents SET command = 'codex', transcript_path = ? WHERE id = ?").run(codexPath, b);
+      db.prepare("UPDATE agents SET command = 'sleep' WHERE id = ?").run(d);
+      const watchId = addStandingWatch();
+      await tick(snapshot);
+      const notice = db.prepare('SELECT * FROM timers WHERE parent_timer_id = ?').get(watchId);
+      const before = shortRenderForLeadDelivery(notice);
+      db.prepare("UPDATE agents SET state_changed_at = datetime('now') WHERE id = ?").run(a);
+      logRow('agent:context-a', 'prompt', 'working', '-2 seconds');
+      await tick(snapshot);
+      writeFileSync(claudePath, claude(810000) + '\\n');
+      writeFileSync(codexPath, codex(240000) + '\\n');
+      const after = shortRenderForLeadDelivery(notice);
+      const claims = cursor(watchId);
+      const untouched = shortRenderForLeadDelivery({ ...notice, id: -1 });
+      ${out("{ before, after, claims, untouched, stored: notices(watchId)[0].body }")}
+    `, ["%1", "%2", "%3", "%4"]);
+    assert.match(result.before, /^context-a: idle, context 1%\.$/m);
+    assert.match(result.before, /^context-b: idle, context 10%\.$/m);
+    assert.match(result.after, /^context-a: idle, context 81%\.$/m);
+    assert.match(result.after, /^context-b: idle, context 30%\.$/m);
+    assert.match(result.after, /^context-c: idle, context unavailable\.$/m);
+    assert.match(result.after, /^context-d: idle\.$/m);
+    assert.equal(result.claims.length, 5);
+    assert.equal(result.after.split("\n").filter((line) => line.startsWith("context-a:")).length, 1);
+    assert.equal(result.untouched, null);
+    assert.doesNotMatch(result.stored, /context (?:81%|30%)/);
+  });
+
+  it("delivers one-shot idle context in its generated trailer while retaining the author's body verbatim", NEEDS_TMUX, async () => {
+    const session = `hive-context-idle-${process.pid}`;
+    const captureFile = join(dirs.tmp, "context-idle-capture.txt");
+    execFileSync("tmux", ["new-session", "-d", "-s", session, "bash", "-c", `cat > ${captureFile}`], { stdio: "ignore" });
+    const leadPane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+    const workerPane = execFileSync("tmux", ["split-window", "-d", "-t", leadPane, "-P", "-F", "#{pane_id}", "sleep 600"], { encoding: "utf8" }).trim();
+    const client = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: "lead:990003", TMUX_PANE: leadPane } });
+    try {
+      await client.start();
+      const { db } = await import("../dist/db.js");
+      const { recordClaudeWindowSize } = await import("../dist/statusline.js");
+      const projectId = (await client.call("whoami", {})).project.id;
+      const path = join(dirs.tmp, "idle-context.jsonl");
+      const usage = (input) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: input } } }) + "\n";
+      writeFileSync(path, usage(1000));
+      recordClaudeWindowSize("agent:idle-context", JSON.stringify({ context_window: { context_window_size: 100000 } }));
+      const row = db.prepare(`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+        agent_state, state_changed_at, created_at, transcript_path) VALUES (?, 'agent:idle-context', 'idle-context', ?, 'claude', ?, 'agent',
+        'running', 'working', datetime('now', '-120 seconds'), datetime('now', '-300 seconds'), ?) RETURNING id`)
+        .get(projectId, workerPane, dirs.projectDir, path);
+      const body = "Keep this exact author text: punctuation, Unicode é, and a second line.\nDo the recorded task.";
+      const receipt = await client.call("wake_when_idle", { agents: ["idle-context"], body, mode: "all" });
+      writeFileSync(path, usage(75000));
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(row.id);
+      const capture = () => existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "";
+      assert.ok(await until(() => capture().includes("context 75%"), 18000), "the actual typed trailer must carry the context figure");
+      const text = capture();
+      assert.ok(text.includes(body));
+      assert.match(text, /idle-context \(hive state now: idle[^\n]*context 75%\)/);
+      assert.equal(db.prepare("SELECT body FROM timers WHERE id = ?").get(receipt.wake_id).body, body);
+      await client.call("wake_cancel", { wake_id: receipt.wake_id });
+    } finally {
+      await client.close();
+      cleanup(session);
+    }
   });
 });

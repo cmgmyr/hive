@@ -16,6 +16,8 @@ lead: claude                    # custom command for the lead window (default: c
 agents: [claude, codex]         # crew harness pool agent_spawn may pick from; claude is first so
                                 # it stays the default. lead: above is separate and unaffected.
 
+context_checkpoint_percent: 70 # unset means off; percentage of the worker context window
+
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 dashboard: true                 # write .claude/dashboard/index.html (hive dogfoods its own feature)

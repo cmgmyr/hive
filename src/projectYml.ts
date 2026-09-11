@@ -28,6 +28,7 @@ export interface ProjectYml {
 
   lead_branches: string[] | null;
 
+  context_checkpoint_percent: number | null;
   dashboard: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
@@ -91,6 +92,15 @@ export function loadProjectYml(projectPath: string): {
   }
 
   const root = raw as Record<string, unknown>;
+  let context_checkpoint_percent: number | null = null;
+  if (root.context_checkpoint_percent != null) {
+    const value = root.context_checkpoint_percent;
+    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100) {
+      context_checkpoint_percent = value;
+    } else {
+      warnings.push("context_checkpoint_percent must be an integer from 1 through 100; ignoring it.");
+    }
+  }
   const lead = typeof root.lead === "string" && root.lead.trim() !== "" ? root.lead.trim() : null;
   let placement: "split" | "window" | null = null;
   if (root.placement != null) {
@@ -256,6 +266,7 @@ export function loadProjectYml(projectPath: string): {
       agents,
       review_tags,
       lead_branches,
+      context_checkpoint_percent,
       dashboard,
       vars,
       processes,

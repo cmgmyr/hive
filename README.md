@@ -92,6 +92,7 @@ Environment variables, mostly for advanced or automated setups. Everyday use nee
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box. Default `45000` |
 | `HIVE_EDITOR` | External editor for `hive pad <name> --edit` |
 | `HIVE_PROJECT_PATH` | Set automatically by `agent_spawn`; guards a worker's project pin |
+| `HIVE_CONTEXT_CHECKPOINT_PERCENT` | Hive sets this on worker processes from `hive.yml`'s `context_checkpoint_percent`. You do not set it by hand. |
 | `HIVE_LEAD` | Set automatically by `hive lead`, so its session-start hook still fires |
 | `HIVE_ALLOW_DEFAULT_STORE` | Set to `1` to let a non-hive process open the real store |
 | `HIVE_AUTO_ATTACH`, `HIVE_ATTACH_MODE` | Testing overrides; use `hive setup --auto-attach` / `--attach` instead |

@@ -65,6 +65,8 @@ fi
 
 Use a plain `if`, not `[ ... ] && printf`: as the last command in the script, that pattern exits 1 when the line is empty, and a failing status line command renders nothing at all.
 
+Hive-spawned Claude workers keep your existing statusline command. Their generated settings wrap the effective local project, shared project, or user command, forward its input unchanged, and relay its output. The wrapper records only the model's context window size so hive can report worker context fill. It preserves your refresh interval and display options. Lead sessions keep their existing settings. The optional [worker context checkpoint](projects.md#worker-context-checkpoint) adds a per-tool hook only when your project enables it.
+
 The status line only re-renders on session activity by default. Add `"refreshInterval": 10` to the `statusLine` block in `~/.claude/settings.json` so the counts stay current while the session sits idle:
 
 ```json

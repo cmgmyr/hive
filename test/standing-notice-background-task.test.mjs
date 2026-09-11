@@ -21,6 +21,16 @@ const IMPORTS =
   "migrate();\n";
 
 const SEED = `
+const { writeFileSync } = await import('node:fs');
+const { join } = await import('node:path');
+const { recordClaudeWindowSize } = await import(${JSON.stringify(join(DIST, "statusline.js"))});
+const seedContext = (id, actor) => {
+  const path = join(process.env.HIVE_DATA_DIR, encodeURIComponent(actor) + '.jsonl');
+  writeFileSync(path, JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: 25000 } } }) + '\\n');
+  recordClaudeWindowSize(actor, JSON.stringify({ context_window: { context_window_size: 100000 } }));
+  db.prepare('UPDATE agents SET transcript_path = ? WHERE id = ?').run(path, id);
+  return id;
+};
 const EPISODE = '-5 seconds';
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('bt', '/tmp/bt') RETURNING id").get().id;
 db.prepare(
@@ -28,19 +38,19 @@ db.prepare(
     VALUES (?, 'lead:1', 'lead', '%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWorker = (actor, name, pane, state, changedOffset) =>
-  db.prepare(
+  seedContext(db.prepare(
     \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
         agent_state, state_changed_at, created_at)
       VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset).id;
+  ).get(project, actor, name, pane, state, changedOffset).id, actor);
 const addDeadWorker = (actor, name, offset) =>
-  db.prepare(
+  seedContext(db.prepare(
     \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
         agent_state, state_changed_at, closed_at, created_at)
       VALUES (?, ?, ?, '%gone', 'claude', '/tmp', 'agent', 'closed', 'working',
         datetime('now', ?), datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, offset, offset).id;
+  ).get(project, actor, name, offset, offset).id, actor);
 const addStandingWatch = () =>
   db.prepare(
     \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
@@ -109,12 +119,12 @@ describe("todo 468: a finish that left a background task running says so, in bot
     assert.equal(result.cleanState, "idle");
     assert.match(
       result.short,
-      /^w1: idle, 1 background shell running - may not be done\.$/m,
+      /^w1: idle, 1 background shell running - may not be done, context 25%\.$/m,
       "the SHORT render is the one a lead reads; six lead turns were spent on it saying only '1 finished'",
     );
     assert.match(
       result.short,
-      /^w2: idle\.$/m,
+      /^w2: idle, context 25%\.$/m,
       "w2's Stop payload carried no live task, so its line carries no such clause - or the clause proves nothing",
     );
     assert.match(
@@ -138,7 +148,7 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /^w1: idle, 3 background monitors running - may not be done\.$/m);
+    assert.match(result.short, /^w1: idle, 3 background monitors running - may not be done, context 25%\.$/m);
     assert.match(
       result.full,
       /It went idle with 3 background monitors still running/,
@@ -163,7 +173,7 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /^w1: idle, 1 background parachute running - may not be done\.$/m);
+    assert.match(result.short, /^w1: idle, 1 background parachute running - may not be done, context 25%\.$/m);
     assert.match(
       result.full,
       /It went idle with 1 background parachute still running \(parachute: "something new"\)/,
@@ -209,7 +219,7 @@ describe("todo 468: a finish that left a background task running says so, in bot
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /^w1: idle\.$/m, "and it is still reported, with nothing hanging off it");
+    assert.match(result.short, /^w1: idle, context 25%\.$/m, "and it is still reported, with nothing hanging off it");
     assert.doesNotMatch(result.short, /background/);
   });
 });
@@ -246,7 +256,7 @@ describe("todo 468/473: the crew render grows with the CREW, never with the epis
     const result = render("short-n3", 3, 2);
     assert.equal(workerLines(result.short), 3);
     assert.equal(clauseCount(result.short), 2);
-    assert.match(result.short, /^w3: idle\.$/m, "the third left nothing running, so its line says only that");
+    assert.match(result.short, /^w3: idle, context 25%\.$/m, "the third left nothing running, so its line says only that");
     assert.ok(
       result.short.length < 300,
       `three workers must not need more than a few lines; got ${result.short.length} chars: ${result.short}`,
@@ -351,7 +361,7 @@ describe("todo 468: which log row the clause is read from", () => {
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /^w1: idle\.$/m, "the finish is still reported");
+    assert.match(result.short, /^w1: idle, context 25%\.$/m, "the finish is still reported");
     assert.doesNotMatch(
       result.short,
       /background/,
@@ -379,12 +389,12 @@ describe("todo 468: which log row the clause is read from", () => {
     );
     assert.match(
       result.short,
-      /^w2: idle\.$/m,
+      /^w2: idle, context 25%\.$/m,
       "w2 finished clean and a LATER episode of its own is not evidence about the one being reported",
     );
     assert.match(
       result.short,
-      /^w1: idle, 1 background shell running - may not be done\.$/m,
+      /^w1: idle, 1 background shell running - may not be done, context 25%\.$/m,
       "w1 is the control that must keep its clause, so a query that stopped reporting anything at all " +
         "cannot pass this",
     );
@@ -404,7 +414,7 @@ describe("todo 468: which log row the clause is read from", () => {
     );
     assert.match(
       result.short,
-      /^w1: idle, 1 background shell running - may not be done\.$/m,
+      /^w1: idle, 1 background shell running - may not be done, context 25%\.$/m,
       "this is the harmful direction: a later clean stop must not turn the reported episode into a clean " +
         "finish, which is the false negative this whole todo exists to prevent",
     );
@@ -442,7 +452,7 @@ describe("todo 468: which log row the clause is read from", () => {
       ${out("shortAndFull(watchId)")}
       `,
     );
-    assert.match(result.short, /^w1: idle\.$/m, "the notice must still be written");
+    assert.match(result.short, /^w1: idle, context 25%\.$/m, "the notice must still be written");
     assert.doesNotMatch(result.short, /background/);
   });
 });

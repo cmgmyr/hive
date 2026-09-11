@@ -898,6 +898,8 @@ placement: split                # placement for workers and visible processes: s
 
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
 
+# context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+
 # review_tags: [from-review]    # todo tags \`hive doctor\` counts as review findings and
                                 # reports as triaged (has a comment, completed, or archived)
                                 # or untriaged. Absent means doctor tracks none.

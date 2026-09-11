@@ -1,3 +1,4 @@
+import type { ContextRecordKind } from "./transcript.js";
 import {
   codexInputBoxState,
   codexPaneChoiceCheck,
@@ -43,6 +44,7 @@ export interface HarnessCapabilities {
 
   readonly transcriptDir: boolean;
   readonly contextTokens: boolean;
+  readonly contextRecord: ContextRecordKind | null;
 
   // Whether hive pre-mints the id and passes it at spawn. INDEPENDENT of supportsResume: codex
   // resumes but mints its own, so the two must stay separate fields.
@@ -128,6 +130,7 @@ const claudeHarness: HarnessCapabilities = {
 
   transcriptDir: true,
   contextTokens: true,
+  contextRecord: "claude",
 
   mintsSessionId: true,
   supportsResume: true,
@@ -156,12 +159,11 @@ export const codexHarness: HarnessCapabilities = {
 
   briefDelivery: null,
 
-  // State comes from codex's own hooks, same mechanism as claude's. Its transcript format and
-  // token accounting are unproven, so the two flags below stay false.
   stateSource: true,
 
   transcriptDir: false,
   contextTokens: false,
+  contextRecord: "codex",
 
   // `codex resume <SESSION_ID>` is a positional; no --session-id flag exists, so codex mints its
   // own. This pair disagreeing is why they are two fields.
@@ -203,6 +205,7 @@ const unknownHarness: HarnessCapabilities = {
 
   transcriptDir: false,
   contextTokens: false,
+  contextRecord: null,
 
   mintsSessionId: false,
   supportsResume: false,

@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
-import { db } from "./db.js";
 import { awaitingFirstPromptSql } from "./firstPrompt.js";
 import { liveBackgroundTasks, SUBAGENT_LATCH_SQL, withholdsIdle } from "./backgroundTasks.js";
 
@@ -189,6 +188,16 @@ function stateFor(event: string, actorId: string): string | null {
       return null;
   }
 }
+
+if (process.argv[2] === "post_tool_use") {
+  try {
+    const { runContextCheckpointHook } = await import("./contextCheckpoint.js");
+    runContextCheckpointHook(process.argv[3]);
+  } catch {}
+  process.exit(0);
+}
+
+const { db } = await import("./db.js");
 
 try {
   const actorId = process.env.HIVE_AGENT_ID;
