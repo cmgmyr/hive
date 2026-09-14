@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
-import { harnessFor, harnessNames } from "./harnesses.js";
+import { carriesNameFlag, harnessFor, harnessNames } from "./harnesses.js";
 import { agentVarKeys } from "./projectYml.js";
 import { readProfileFile, renderTemplate } from "./profiles.js";
 import { withTrailingNewline } from "./result.js";
@@ -136,10 +136,7 @@ export { isClaudeCommand } from "./harnesses.js";
 export function workerCommandString(spec: WorkerCommandSpec): string {
   const harness = harnessFor(spec.command);
 
-  const namedByCaller = (spec.extraArgs ?? []).some(
-    (arg) =>
-      arg === "--name" || arg.startsWith("--name=") || (arg.startsWith("-n") && !arg.startsWith("--")),
-  );
+  const namedByCaller = carriesNameFlag(spec.extraArgs ?? []);
 
   return [
     // Split, not passed whole: spec.command can itself be multiple tokens (a wrapped command,

@@ -193,7 +193,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
-import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { TRIAGE_MESSAGE } from "./kickoff.js";
 import {
@@ -654,6 +654,9 @@ async function cmdLead(argv: string[]): Promise<void> {
         console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
       }
     } else {
+      if (!carriesNameFlag(leadCommand.trim().split(/\s+/))) {
+        leadCommand += ` --name ${shellQuote(project.name)}`;
+      }
       leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
       if (renderedPosture !== null) {
         const posturePath = writeProjectPosture(project.id, renderedPosture);

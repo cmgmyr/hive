@@ -77,6 +77,12 @@ export function commandHead(command: string): string {
   return command.trim().split(/\s+/)[0] ?? "";
 }
 
+export function carriesNameFlag(tokens: string[]): boolean {
+  return tokens.some(
+    (arg) => arg === "--name" || arg.startsWith("--name=") || (arg.startsWith("-n") && !arg.startsWith("--")),
+  );
+}
+
 // Stripped before comparing basenames - never a wrapper's own flags. Negative controls live in
 // test/harness-wrapper-matching.test.mjs.
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;

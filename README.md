@@ -48,7 +48,7 @@ cd ~/Code/your-project
 hive
 ```
 
-`hive` is shorthand for `hive lead`. It opens a `lead` window running Claude in this project's tmux session; ask it to triage, and it reads the standing process and proposes work. Spawn workers with `agent_spawn`, and watch or take over any of them with `tmux -CC attach -t hive-main` (or plain `tmux attach`).
+`hive` is shorthand for `hive lead`. It opens a `lead` window running Claude in this project's tmux session, with the lead session named after the project so your other Claude Code sessions can address it by that name; ask it to triage, and it reads the standing process and proposes work. Spawn workers with `agent_spawn`, and watch or take over any of them with `tmux -CC attach -t hive-main` (or plain `tmux attach`).
 
 Two more things worth turning on:
 

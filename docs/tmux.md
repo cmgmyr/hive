@@ -54,7 +54,7 @@ Under `placement: split` a worker is a pane you are usually not looking at, and 
 
 hive sets these on its own windows so split workers remain distinguishable.
 
-hive names tmux windows for the project alone (the window holds the lead AND its workers now, not just the lead) and deliberately never names panes. A worker's identity comes from `claude --name <agent name>`, which Claude writes to the terminal title, which tmux records as `pane_title`. Under `placement: split` every worker is a pane in one window, so with `pane-border-status off` (the default) a whole crew reads as one window called by the project's name alone, with no way to tell which pane is which.
+hive names tmux windows for the project alone (the window holds the lead AND its workers now, not just the lead) and deliberately never names panes. The lead and each worker get a stable Claude session name from `claude --name`, which Claude writes to the terminal title, which tmux records as `pane_title`. Under `placement: split` every worker is a pane in one window, so with `pane-border-status off` (the default) a whole crew reads as one window called by the project's name alone, with no way to tell which pane is which.
 
 Do not try to solve this with `select-pane -T`. hive did consider it and rejected it: the application writes its own title afterwards and wins. Measured again on 2026-08-03, `select-pane -T "hive - worker-1"` held until the pane's Claude session wrote its own OSC 0 title, and then read whatever Claude set.
 
