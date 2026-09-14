@@ -49,6 +49,8 @@ export function ensureWorkerHooksFile(agentId: number, options: { includePostToo
   const settings = {
     ...stateHookSettings(),
     statusLine: statusLineEntry(effectiveClaudeStatusLine(worker.cwd)),
+    permissions: { deny: ["SendMessage", "ListAgents"] },
+    crossSessionInbound: "refuse",
   };
   if (options.includePostToolUse) settings.hooks.PostToolUse = [hookEntry("post_tool_use", "claude")];
   const path = join(dataDir, `worker-${agentId}-hooks.json`);
