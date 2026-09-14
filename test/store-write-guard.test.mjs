@@ -186,7 +186,7 @@ describe("classify: known limit, dropping segmentation denies an unrelated pair 
 describe("classify: prose mentioning the store with no mutation is allowed", () => {
   const cases = [
     ["echo 'the default store lives at ~/.hive/hive.db'", "no SQL keyword at all"],
-    ["cat docs/attic/README.md | grep '.hive'", "grepping for the store path in a doc"],
+    ["cat docs/patterns.md | grep '.hive'", "grepping for the store path in a doc"],
   ];
   for (const [command, why] of cases) {
     it(why, () => {

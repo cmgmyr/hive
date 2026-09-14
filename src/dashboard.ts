@@ -4,7 +4,7 @@ import { getProject } from "./context.js";
 import type { PaneVisibility } from "./tmux.js";
 
 // The dashboard's own input contract, defined here so this file keeps no runtime dependency on the
-// tmux-aware producer (src/processes.ts) that fills it - see docs/attic/src__dashboard.ts.md.
+// tmux-aware producer (src/processes.ts) that fills it.
 export interface ProcessSnapshot {
   name: string;
   running: boolean;
