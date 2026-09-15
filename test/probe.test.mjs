@@ -584,7 +584,7 @@ describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is no
     const receipt = await callTool(
       "agent_send",
       { agent_id: id, text: "hello-tail-fail", submit: false, wait_ms: 250 },
-      { PATH: captureFailPath },
+      { HIVE_AGENT_ID: "user:runner", PATH: captureFailPath },
     );
 
     assert.equal(receipt.sent, true, "the send itself succeeded through the paste path, not capture-pane");
@@ -595,20 +595,28 @@ describe("agent_send's wait_ms tail read", { skip: hasTmux ? false : "tmux is no
     assert.match(rendered, /hello-tail-fail/, "sent: true must mean the keystrokes actually reached the pane");
   });
 
-  it("still returns the tail on the happy path, unaffected by the wrap", async () => {
+  it("matches the happy-path tail across the pane's 80-column wrap", async () => {
 
     const id = agentRow("wait-ms-happy", livePane);
 
-    const receipt = await callTool("agent_send", {
-      agent_id: id,
-      text: "hello-happy-path",
-      submit: false,
-      wait_ms: 250,
-    });
+    const receipt = await callTool(
+      "agent_send",
+      {
+        agent_id: id,
+        text: "hello-happy-path",
+        submit: false,
+        wait_ms: 250,
+      },
+      { HIVE_AGENT_ID: "user:runner" },
+    );
 
     assert.equal(receipt.sent, true);
 
-    assert.match(receipt.tail, /hello-happy-path/, "the captured tail must actually show what was just sent");
+    assert.match(
+      receipt.tail.replace(/\n/g, ""),
+      /hello-happy-path/,
+      "the captured tail must actually show what was just sent",
+    );
     assert.equal(receipt.note, undefined);
   });
 });

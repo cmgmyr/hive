@@ -16,6 +16,9 @@ const { carriesNameFlag } = await import("../dist/harnesses.js");
 
 const binDir = join(dirs.tmp, "bin");
 mkdirSync(binDir, { recursive: true });
+const fakeHome = join(dirs.tmp, "home");
+mkdirSync(join(fakeHome, ".codex"), { recursive: true });
+writeFileSync(join(fakeHome, ".codex", "auth.json"), "{}\n");
 writeFileSync(join(binDir, "claude"), "#!/bin/sh\nsleep 600\n");
 writeFileSync(join(binDir, "codex"), "#!/bin/sh\nsleep 600\n");
 chmodSync(join(binDir, "claude"), 0o755);
@@ -50,7 +53,7 @@ async function start(project) {
     cwd: project.dir,
     dataDir: dirs.dataDir,
     tmp: dirs.tmp,
-    env: { PATH: `${binDir}:${process.env.PATH}` },
+    env: { HOME: fakeHome, PATH: `${binDir}:${process.env.PATH}` },
   });
   assert.equal(result.code, 0, result.stderr);
   return leadRow(db, project.id).command;
