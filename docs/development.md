@@ -18,3 +18,9 @@ Smoke test without touching your real data:
 HIVE_DATA_DIR=/tmp/hive-test node dist/index.js
 # then speak JSON-RPC on stdin, or just register it with Claude Code
 ```
+
+## Releasing
+
+You cut a release with the `release` skill in `.agents/skills/release`. It gates on a local full suite, then tags with `np`.
+
+The publish workflow (`.github/workflows/publish.yml`) runs on `v*` tags only and publishes with npm trusted publishing, so no token is stored. Nothing publishes on push or pull request.
