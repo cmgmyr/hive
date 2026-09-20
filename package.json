@@ -1,5 +1,5 @@
 {
-  "name": "hive",
+  "name": "@cmgmyr/hive",
   "version": "0.1.0",
   "description": "Shared memory and coordination for Claude Code sessions: one lead, many tmux workers, one project-scoped store.",
   "type": "module",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/gen-version.mjs",
+    "prepublishOnly": "npm run build",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "test": "node scripts/run-tests.mjs"
@@ -17,6 +18,14 @@
     "node": "^22.14.0 || >=23.6.0"
   },
   "license": "MIT",
+  "author": "Chris Gmyr",
+  "files": [
+    "dist",
+    "claude-plugin",
+    "profiles",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/cmgmyr/hive.git"
