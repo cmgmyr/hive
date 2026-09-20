@@ -1,4 +1,9 @@
-# hive
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" alt="hive" height="96">
+  </picture>
+</p>
 
 Shared, persistent memory and a visible crew of tmux workers for Claude Code and Codex sessions on one project.
 
