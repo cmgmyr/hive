@@ -11,8 +11,7 @@ Shared, persistent memory and a visible crew of tmux workers for Claude Code and
 - Exact state: workers report it through their own CLI's hooks, so nothing polls.
 - One local SQLite store: no daemon, and nothing leaves your machine.
 
-<!-- demo gif: lane oss-6 -->
-![hive demo](docs/assets/demo.gif)
+![hive: a lead plans, spawns workers, and is woken when they finish](docs/assets/demo.svg)
 
 ## Install
 
