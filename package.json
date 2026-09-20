@@ -17,6 +17,24 @@
     "node": "^22.14.0 || >=23.6.0"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cmgmyr/hive.git"
+  },
+  "homepage": "https://github.com/cmgmyr/hive#readme",
+  "bugs": {
+    "url": "https://github.com/cmgmyr/hive/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "mcp",
+    "tmux",
+    "agents",
+    "multi-agent",
+    "sqlite",
+    "coordination"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^13.0.3",

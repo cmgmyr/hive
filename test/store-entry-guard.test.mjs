@@ -129,7 +129,7 @@ describe("hive's own entry points", () => {
 
 describe("scratchStoreOnSharedSocket exempts a real product entry point (todo 368 finding E)", () => {
 
-  // HIVE_DATA_DIR is a documented user setting (README.md), not evidence of a test or a hand-rolled
+  // HIVE_DATA_DIR is a documented user setting (docs/configuration.md), not evidence of a test or a hand-rolled
   // driver on its own - hive namespaces session names by data-dir tag precisely so a custom store can
   // share the real server. None of these fixtures touch a real tmux binary: scratchStoreOnSharedSocket()
   // only computes paths and reads env, so no isolateTmux() is needed here.

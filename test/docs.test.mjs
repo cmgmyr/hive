@@ -35,10 +35,10 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
-  it("documents every command in the README", () => {
-    const readme = readRepo("README.md");
+  it("documents every command in docs/commands.md", () => {
+    const commands = readRepo("docs/commands.md");
     for (const command of COMMANDS) {
-      assert.match(readme, new RegExp(`hive ${command}\\b`), `README omits "${command}"`);
+      assert.match(commands, new RegExp(`hive ${command}\\b`), `docs/commands.md omits "${command}"`);
     }
   });
 
@@ -81,11 +81,11 @@ describe("docs keep up with the CLI", () => {
   });
 
   it("tells a reader to re-pin the interpreter after an update", () => {
-    const readme = readRepo("README.md");
+    const install = readRepo("docs/install.md");
 
-    assert.match(readme, /## Updating[\s\S]*?node dist\/cli\.js setup\s+# not `hive setup`/);
-    assert.doesNotMatch(readme, /no re-registration, on any machine/);
-    assert.match(readme, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
+    assert.match(install, /## Updating[\s\S]*?node dist\/cli\.js setup\s+# not `hive setup`/);
+    assert.doesNotMatch(install, /no re-registration, on any machine/);
+    assert.match(install, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   });
 
   it("records why a passing require proves nothing", () => {
@@ -283,13 +283,13 @@ describe("docs enumerate every statusline hold label the CLI can print", () => {
     }
   });
 
-  for (const file of ["README.md", "docs/install.md"]) {
+  for (const file of ["docs/install.md"]) {
     it(`names every label in ${file}, which states them as a closed list`, () => {
       const doc = readRepo(file);
       for (const label of DECLARED) {
         assert.ok(
           doc.includes(`\`${label}\``),
-          `${file} does not name the statusline label \`${label}\`; both docs enumerate this set with a count, ` +
+          `${file} does not name the statusline label \`${label}\`; the doc enumerates this set with a count, ` +
             "so adding a label without adding it here leaves a sentence that is wrong rather than merely short",
         );
       }
@@ -364,13 +364,13 @@ describe("docs keep up with the MCP surface", () => {
           "document it and drop the exemption",
       );
     }
-    const docs = readRepo("README.md") + readRepo("src/help.ts");
+    const docs = readRepo("docs/configuration.md") + readRepo("src/help.ts");
     for (const name of HIVE_ENV_VARS) {
       if (EXEMPT_HIVE_ENV_VARS.has(name)) continue;
       assert.match(
         docs,
         new RegExp(name),
-        `${name} is read from process.env under src/ but appears in neither README.md nor src/help.ts`,
+        `${name} is read from process.env under src/ but appears in neither docs/configuration.md nor src/help.ts`,
       );
     }
   });

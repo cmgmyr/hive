@@ -516,7 +516,9 @@ describe("against the real repo", () => {
       [
         "CLAUDE.md",
         "docs/architecture.md",
+        "docs/commands.md",
         "docs/concepts.md",
+        "docs/configuration.md",
         "docs/daily-driver.md",
         "docs/development.md",
         "docs/install.md",

@@ -14,7 +14,7 @@ const COMMANDS_TABLE = (() => {
 const COMMANDS = [...COMMANDS_TABLE.matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
 
 // A hidden verb is spelled as an identifier, which is how it stays out of the two docs guards that
-// scrape this table for names to require in --help and the README. Nothing should let it out of
+// scrape this table for names to require in --help and docs/commands.md. Nothing should let it out of
 // THIS one: with no case label it falls to default: and exits 1 with nobody reading.
 const HIDDEN_COMMANDS = [...COMMANDS_TABLE.matchAll(/^\s*([A-Z][A-Z0-9_]*),?\s*$/gm)].map((m) => m[1]);
 

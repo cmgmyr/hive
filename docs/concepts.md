@@ -14,6 +14,15 @@ The vocabulary, identity model, workflow, and shared store behind hive.
 | board | The pad holding today's live state; archived and rewritten each day. |
 | lane | One independent stream of work: typically one worker plus one or more todos. |
 
+## Why not subagents?
+
+Claude Code's built-in subagents are great for fan-out within one conversation, and hive workers can still use them. Hive covers what subagents can't:
+
+- Subagents are invisible while they run and report only at the end. Hive workers are live terminals you read mid-task and type into.
+- Subagent results vanish with the conversation. Pads and todos outlive every session, so tomorrow's lead picks up where today's stopped.
+- Subagents die with their parent. Hive workers keep running when the lead detaches, restarts, or crashes.
+- Subagents serve one session. The hive store is shared: several sessions, several terminals, even several humans coordinate through the same pads and todos.
+
 ## Identity
 
 Every write records who made it. Set identity through environment variables when starting a worker session:

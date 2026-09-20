@@ -3050,7 +3050,7 @@ function cmdStatusline(): void {
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
 }
 
-// test/docs.test.mjs fails if a label here is missing from README.md or docs/install.md. It checks
+// test/docs.test.mjs fails if a label here is missing from docs/install.md. It checks
 // presence only: docs/install.md also counts the set in prose, and nothing guards that number.
 export const HELD_REASON_LABELS = ["typing", "talking", "needs you", "blocked"] as const;
 

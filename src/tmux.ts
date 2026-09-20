@@ -53,7 +53,7 @@ export function tmuxTimeoutOverride(): number | null {
 // (socket alone): refuses a NON-DEFAULT store paired with the SHARED socket, the shape produced once
 // TMUX_TMPDIR has gone unreachable. See .claude/rules/store-and-datadir.md.
 //
-// A non-default HIVE_DATA_DIR is a documented user setting (README.md), not evidence of a test or a
+// A non-default HIVE_DATA_DIR is a documented user setting (docs/configuration.md), not evidence of a test or a
 // hand-rolled driver on its own - namespacing session names by data-dir tag exists precisely so a
 // custom store can share the real server. So this only fires for the shapes todo 368 is actually
 // about: a test runner, or a process that is not hive's own CLI/MCP/hooks entry point at all. A real

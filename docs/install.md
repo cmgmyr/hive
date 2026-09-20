@@ -12,6 +12,14 @@ The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive
 
 Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
 
+`hive setup` writes a dispatcher to `~/.local/bin/hive`, and refuses to point it at a build inside a linked git worktree, since worktrees are disposable and the shim breaks the moment its target is torn down (`--force` overrides). Put that ahead of any version manager's shims in your shell profile:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"     # below the version manager's block in the file
+```
+
+Both lines prepend to PATH, so whichever runs LAST ends up first. Put hive's line below the version manager's, not above it, or the version manager's shim wins and you are back to the failure `hive setup` exists to prevent.
+
 ## Codex workers
 
 A worker can run `codex` instead of Claude Code. Two things beyond a plain `claude` worker's requirements:
@@ -85,7 +93,16 @@ Register hive in one scope only. A project-scoped registration shadows the user-
 
 ## Updating
 
-See the README's [Updating](../README.md#updating) section for the exact recipe; `hive` runs `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`, both live pointers into your checkout.
+Both entry points, the `hive` command and the MCP registration, are live pointers into your checkout, so code updates need no reinstall or re-registration, just a rebuild and a re-pin. `hive` runs `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`:
+
+```bash
+cd <this checkout>
+git pull --ff-only
+npm install
+npm run build
+node dist/cli.js setup        # not `hive setup`: that runs through the OLD dispatcher
+hive doctor --strict          # confirms the addon, the pin, and the registration all agree
+```
 
 The pin is the part that can drift, and the way it drifts changed with `better-sqlite3` 13. The addon is no longer built here, so it is no longer built *against* a particular Node, and an update cannot leave the addon and the interpreter disagreeing about a compiled ABI. What can still happen is that the interpreter running setup is not the one you want pinned, or that a version manager retires the Node your dispatcher names. Re-running setup costs nothing when nothing changed, and `hive doctor` says so either way. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
 
