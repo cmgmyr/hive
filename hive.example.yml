@@ -36,7 +36,7 @@ vars:
                                 # suite
   ci: weekly                    # absent: CI runs on push/PR. weekly: CI runs
                                 # on schedule + dispatch only, and the local
-                                # full suite gates the merge (todo 807)
+                                # full suite gates the merge
   rules_check: node scripts/covering-rules.mjs
   smoke: npm run build && hive setup && hive doctor
 
