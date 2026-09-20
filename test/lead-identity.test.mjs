@@ -126,7 +126,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         .get(project.id);
       const timerId = db
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+          `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
            VALUES (?, 'user:test', 'pending lead wake', 'delay', '[]', ?, '%nonexistent-dead-pane',
              datetime('now', '+1 hour'), datetime('now', '-1 hour'))
            RETURNING id`,
@@ -135,7 +135,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
 
       const result = janitor();
       assert.equal(result.cancelled_timers, 0, "a lead-owned wake must not be cancelled by the janitor sweep");
-      const timer = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(timerId);
+      const timer = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(timerId);
       assert.equal(timer.cancelled_at, null, "the timer must remain active, not cancelled");
     });
 
@@ -145,7 +145,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         .get(project.id);
       const timerId = db
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+          `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
            VALUES (?, 'user:test', 'due lead wake', 'delay', '[]', ?, '%nonexistent-dead-pane',
              datetime('now', '-1 second'), datetime('now'))
            RETURNING id`,
@@ -154,7 +154,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
 
       await tick();
       const timer = db
-        .prepare("SELECT cancelled_at, fired_at, held_at, held_reason FROM timers WHERE id = ?")
+        .prepare("SELECT cancelled_at, fired_at, held_at, held_reason FROM wakes WHERE id = ?")
         .get(timerId);
       assert.equal(timer.cancelled_at, null, "a dead pane must not cancel a lead-owned wake on its due tick");
       assert.equal(timer.fired_at, null, "and it must not have been claimed as fired into a dead pane either");
@@ -531,7 +531,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
 
         const timerId = db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at)
+            `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at)
              VALUES (?, 'user:test', ?, 'delay', '[]', ?, ?, datetime('now', '+1 hour'))
              RETURNING id`,
           )
@@ -550,7 +550,7 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         assert.notEqual(newPane, oldPane, "sanity check: the restart must have landed a genuinely different pane");
 
         const timerAfterRestart = db
-          .prepare("SELECT deliver_pane, held_at, held_reason FROM timers WHERE id = ?")
+          .prepare("SELECT deliver_pane, held_at, held_reason FROM wakes WHERE id = ?")
           .get(timerId);
         assert.equal(
           timerAfterRestart.deliver_pane,
@@ -559,13 +559,13 @@ describe("the lead's hook identity", { skip: hasTmux ? false : "tmux is not inst
         );
         assert.equal(timerAfterRestart.held_at, null, "re-pointing clears any hold (none was set here, but the column must not carry one)");
 
-        db.prepare("UPDATE timers SET due_at = datetime('now', '-1 second') WHERE id = ?").run(timerId);
+        db.prepare("UPDATE wakes SET due_at = datetime('now', '-1 second') WHERE id = ?").run(timerId);
         await tick();
 
         const capture = (target) => execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString();
         assert.ok(capture(newPane).includes(WAKE_BODY), "the wake must actually be typed into the NEW pane, not just recorded there");
 
-        const fired = db.prepare("SELECT typed_at FROM timers WHERE id = ?").get(timerId);
+        const fired = db.prepare("SELECT typed_at FROM wakes WHERE id = ?").get(timerId);
         assert.ok(fired.typed_at, "the delivery must be recorded, not just visible on the pane by coincidence");
       } finally {
         cleanup(session);

@@ -177,7 +177,7 @@ function fetchNowAgents(projectId: number): RunningAgentRow[] {
 function fetchNextWake(projectId: number): NextWakeBrief | undefined {
   return db
     .prepare(
-      `SELECT kind, due_at, max_wait_at, deliver_actor FROM timers
+      `SELECT kind, due_at, max_wait_at, deliver_actor FROM wakes
        WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at) LIMIT 1`,
     )
@@ -357,7 +357,7 @@ ${procs.length > 0 ? statCard("processes", "processes", "inbox", renderNowProces
 
 function renderBoardSection(index: SectionMeta[], projectId: number): string {
   const pad = db
-    .prepare("SELECT content, revision, updated_at FROM scratchpads WHERE project_id = ? AND name = 'board' AND archived = 0")
+    .prepare("SELECT content, revision, updated_at FROM pads WHERE project_id = ? AND name = 'board' AND archived = 0")
     .get(projectId) as { content: string; revision: number; updated_at: string } | undefined;
   const count = pad ? `rev ${pad.revision} · updated ${formatLocal(pad.updated_at)} local` : "no board pad";
   const body = pad
@@ -640,7 +640,7 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
   const all = db
     .prepare(
       `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, held_at
-       FROM timers WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
+       FROM wakes WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at)`,
     )
     .all(projectId) as WakeRow[];
@@ -789,7 +789,7 @@ interface PadListRow {
 }
 
 const PADS_LIST_SQL = `
-  SELECT name, content, revision, updated_at FROM scratchpads
+  SELECT name, content, revision, updated_at FROM pads
   WHERE project_id = ? AND archived = 0 AND name != 'board'
   ORDER BY name`;
 

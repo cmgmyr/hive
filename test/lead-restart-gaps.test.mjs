@@ -287,7 +287,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
         db.prepare("UPDATE agents SET command = ? WHERE id = ?").run("some-other-harness --flag", before.id);
         const timerId = db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+            `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
                due_at, held_at, held_reason)
              VALUES (?, ?, 'body', 'delay', '[]', ?, ?, datetime('now', '-1 seconds'), datetime('now'), ?)
              RETURNING id`,
@@ -305,7 +305,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
           "hive did not start this pane and must not claim it runs the configured command",
         );
 
-        const held = db.prepare("SELECT held_at, held_reason FROM timers WHERE id = ?").get(timerId);
+        const held = db.prepare("SELECT held_at, held_reason FROM wakes WHERE id = ?").get(timerId);
         assert.ok(held.held_at, "an unclassifiable hold must survive an adopt - nothing about the pane changed");
         assert.match(held.held_reason ?? "", /not one hive can classify/);
 
@@ -329,7 +329,7 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
           "sanity: this must be a FRESH pane - its id can repeat, since killing the last pane takes the session with it",
         );
         assert.match(fresh.command, /claude/, "a pane hive created carries the command hive launched into it");
-        const clearedTimer = db.prepare("SELECT held_at, held_reason FROM timers WHERE id = ?").get(timerId);
+        const clearedTimer = db.prepare("SELECT held_at, held_reason FROM wakes WHERE id = ?").get(timerId);
         assert.equal(clearedTimer.held_at, null, "a re-created pane clears the hold, or the gate is just 'never clear'");
         assert.equal(clearedTimer.held_reason, null);
       } finally {

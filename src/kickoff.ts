@@ -124,7 +124,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   }
 
   const wakes = db
-    .prepare(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`)
+    .prepare(`SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`)
     .get(project.id) as { n: number };
   if (wakes.n > 0) lines.push("", `WAKE-UPS: ${wakes.n} pending (wake_list for detail).`);
 

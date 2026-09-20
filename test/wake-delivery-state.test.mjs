@@ -164,7 +164,7 @@ describe(
       const ghostActor = "user:ghost-lead-no-channel";
       const noChannelId = db
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+          `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
              due_at, created_at, fired_at, typed_at)
            VALUES (?, 'user:test', 'no channel wake', 'delay', '[]', ?, '%ghost',
              datetime('now', '-30 seconds'), datetime('now', '-60 seconds'),
@@ -175,7 +175,7 @@ describe(
 
       const neverTypedId = db
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+          `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
              due_at, created_at, fired_at)
            VALUES (?, 'user:test', 'never typed wake', 'delay', '[]', 'user:test', '%nowhere',
              datetime('now', '-30 seconds'), datetime('now', '-60 seconds'), datetime('now', '-20 seconds'))
@@ -214,7 +214,7 @@ describe(
       const seedTimer = (actor, typedBusy) =>
         db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+            `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
                due_at, created_at, fired_at, typed_at, typed_busy)
              VALUES (?, 'user:test', 'busy report wake', 'delay', '[]', ?, '%busy-report',
                datetime('now', '-30 seconds'), datetime('now', '-60 seconds'),
@@ -310,7 +310,7 @@ describe(
     it("excludes a one-shot fired past the retention window from recently_delivered", async () => {
       const staleId = db
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+          `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
              due_at, created_at, fired_at, typed_at)
            VALUES (?, 'user:test', 'ancient wake', 'delay', '[]', 'user:test', '%ancient',
              datetime('now', '-8 days'), datetime('now', '-8 days'),
@@ -335,7 +335,7 @@ describe(
         ids.push(
           db
             .prepare(
-              `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+              `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
                  due_at, created_at, fired_at, typed_at)
                VALUES (?, 'user:test', ?, 'delay', '[]', 'user:test', '%burst',
                  ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))

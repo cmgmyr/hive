@@ -29,7 +29,7 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
 
   beforeEach(() => {
     db.prepare("DELETE FROM agents WHERE project_id = ? AND kind = 'lead'").run(projectId);
-    db.prepare("DELETE FROM timers WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM wakes WHERE project_id = ?").run(projectId);
   });
 
   const REFUSAL = /wake_when_idle refuses a lead target/;
@@ -47,7 +47,7 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
       REFUSAL,
     );
 
-    const pending = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const pending = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     assert.equal(pending, 0, "a refused wake_when_idle must not leave a timer row behind");
   });
 
@@ -64,7 +64,7 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
       REFUSAL,
     );
 
-    const pending = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const pending = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     assert.equal(pending, 0, "one lead among several watched agents must still refuse the whole call");
   });
 
@@ -82,7 +82,7 @@ describe("wake_when_idle refuses a lead target", { skip: hasTmux ? false : "tmux
     });
 
     assert.ok(scheduled.wake_id, "an ordinary worker must still be watchable");
-    const pending = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const pending = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     assert.equal(pending, 1);
   });
 });

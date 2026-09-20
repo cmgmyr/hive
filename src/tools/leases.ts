@@ -14,13 +14,13 @@ interface LeaseRow {
 }
 
 function purgeExpired(projectId: number): void {
-  db.prepare("DELETE FROM locks WHERE project_id = ? AND expires_at < datetime('now')").run(
+  db.prepare("DELETE FROM leases WHERE project_id = ? AND expires_at < datetime('now')").run(
     projectId,
   );
 }
 
 export function readLease(projectId: number, key: string): LeaseRow | undefined {
-  return db.prepare("SELECT * FROM locks WHERE project_id = ? AND lock_key = ?").get(projectId, key) as
+  return db.prepare("SELECT * FROM leases WHERE project_id = ? AND lock_key = ?").get(projectId, key) as
     | LeaseRow
     | undefined;
 }
@@ -28,7 +28,7 @@ export function readLease(projectId: number, key: string): LeaseRow | undefined 
 export function extendOwnedLease(projectId: number, key: string, actor: string, ttlSeconds: number): boolean {
   const info = db
     .prepare(
-      `UPDATE locks SET expires_at = datetime('now', printf('+%d seconds', ?))
+      `UPDATE leases SET expires_at = datetime('now', printf('+%d seconds', ?))
        WHERE project_id = ? AND lock_key = ? AND owner = ?`,
     )
     .run(ttlSeconds, projectId, key, actor);
@@ -63,7 +63,7 @@ export function registerLeases(server: McpServer): void {
 
         const inserted = db
           .prepare(
-            `INSERT INTO locks (project_id, lock_key, owner, expires_at)
+            `INSERT INTO leases (project_id, lock_key, owner, expires_at)
              VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
              ON CONFLICT(project_id, lock_key) DO NOTHING
              RETURNING expires_at`,
@@ -116,7 +116,7 @@ export function registerLeases(server: McpServer): void {
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
         const info = db
-          .prepare("DELETE FROM locks WHERE project_id = ? AND lock_key = ? AND owner = ?")
+          .prepare("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND owner = ?")
           .run(projectId, args.key, currentActor());
         return { project_id: projectId, key: args.key, released: info.changes > 0 };
       }),

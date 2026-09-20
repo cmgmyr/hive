@@ -61,14 +61,14 @@ const agentRow = (name) => db.prepare("SELECT id, actor_id, tmux_target FROM age
 
 const noticesAbout = (wakeId) =>
   db
-    .prepare("SELECT * FROM timers WHERE id != ? AND body LIKE ? ORDER BY id")
+    .prepare("SELECT * FROM wakes WHERE id != ? AND body LIKE ? ORDER BY id")
     .all(wakeId, `%wake #${wakeId} %`);
 
-const timerRow = (id) => db.prepare("SELECT * FROM timers WHERE id = ?").get(id);
+const timerRow = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
 
 async function ownedWake(ownerName, targetAgentId, body) {
   const wake = await mcp.call("wake_set", { delay_seconds: 5, body, deliver_to: targetAgentId });
-  db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
+  db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
   return wake.wake_id;
 }
 
@@ -79,7 +79,7 @@ async function ownedIdleWake(ownerName, watchNames, deliverToAgentId, body) {
     deliver_to: deliverToAgentId,
     max_wait_seconds: 900,
   });
-  db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
+  db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
   return wake.wake_id;
 }
 
@@ -91,7 +91,7 @@ async function ownedStandingWatch(ownerName, deliverToAgentId, body) {
     max_wait_seconds: 900,
   });
   const setBy = timerRow(watch.wake_id).owner;
-  db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, watch.wake_id);
+  db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, watch.wake_id);
   return { watchId: watch.wake_id, setBy };
 }
 
@@ -120,7 +120,7 @@ describe(
       assert.equal(notice.owner, agentRow("hold-notify-owner").actor_id, "owned by the actor that set the wake");
       assert.equal(notice.deliver_pane, owner.tmux_target, "delivered to that owner's own pane");
       assert.equal(
-        notice.parent_timer_id,
+        notice.parent_wake_id,
         wakeId,
         "parent-linked to the wake it reports on, so cancelling that wake cascades to this notice (todo 322)",
       );
@@ -246,7 +246,7 @@ db.prepare(
    VALUES (?, 'agent:9', 'the-owner', 'agent', '%live', 'claude', '/tmp', 'running', 'idle', datetime('now', '-60 seconds'))\`,
 ).run(project);
 const timerId = db.prepare(
-  \`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+  \`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
    VALUES (?, 'agent:9', 'wake body', 'delay', '[]', 'lead:1', '%dead', datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
    RETURNING id\`,
 ).get(project).id;
@@ -278,7 +278,7 @@ describe(
       assert.match(notices[0].body, /block-notify-stuck/, "naming the blocked worker");
       assert.match(notices[0].body, /cannot go idle/, "and saying why the wake is not firing");
       assert.equal(
-        notices[0].parent_timer_id,
+        notices[0].parent_wake_id,
         wakeId,
         "parent-linked to the wake it reports on, so cancelling that wake cascades to this notice (todo 322)",
       );
@@ -339,13 +339,13 @@ describe(
       });
       const wakeId = wake.wake_id;
       const setBy = timerRow(wakeId).owner;
-      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow("block-cancel-owner").actor_id, wakeId);
+      db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow("block-cancel-owner").actor_id, wakeId);
 
       await until(async () => noticeCount(wakeId) > 0, 15000);
       const notice = noticesAbout(wakeId)[0];
-      assert.equal(notice.parent_timer_id, wakeId, "filed with the parent link this lane adds");
+      assert.equal(notice.parent_wake_id, wakeId, "filed with the parent link this lane adds");
 
-      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(setBy, wakeId);
+      db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(setBy, wakeId);
       const cancelResult = await mcp.call("wake_cancel", { wake_id: wakeId });
       assert.equal(cancelResult.cancelled_notices, 1, "wake_cancel's existing cascade covers it once parented");
       assert.ok(timerRow(notice.id).cancelled_at, "the block notice about a wake that no longer exists is cancelled");
@@ -444,7 +444,7 @@ describe(
         "and AS that actor: the pane and the actor must come from the same place or the socket join is wrong",
       );
 
-      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow("rowless-block-owner").actor_id, wakeId);
+      db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow("rowless-block-owner").actor_id, wakeId);
       assert.notEqual(later.tmux_target, teller.tmux_target, "the owner and the delivery target must differ here");
       markWaiting("rowless-block-stuck", "2026-08-09 09:10:00");
       await until(async () => noticeCount(wakeId) > 1, 15000);
@@ -502,7 +502,7 @@ describe(
   () => {
 
     const cancelWatch = async (watchId, originalOwner) => {
-      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(originalOwner, watchId);
+      db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(originalOwner, watchId);
       await mcp.call("wake_cancel", { wake_id: watchId });
       assert.ok(timerRow(watchId).cancelled_at, "the watch must really be cancelled, or it outlives its own test");
     };
@@ -514,7 +514,7 @@ describe(
     const TRUST_DIALOG = "Yes, I trust this folder";
     const blockNoticesNaming = (name) =>
       db
-        .prepare("SELECT * FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND body LIKE ? ORDER BY id")
+        .prepare("SELECT * FROM wakes WHERE parent_wake_id IS NULL AND kind = 'delay' AND body LIKE ? ORDER BY id")
         .all(`%${readCall(name)}%`);
 
     it("files a block notice for a crew member it never had in a watch list", async () => {
@@ -565,7 +565,7 @@ describe(
         // means an exact-string match can flake across a second boundary - a small tolerance instead.
         `observed-at (${observedMatch[1]}) must be within 2s of the notice's created_at (${filed[0].created_at})`,
       );
-      assert.equal(filed[0].parent_timer_id, null, "left unparented on purpose: it may still be true after a cancel");
+      assert.equal(filed[0].parent_wake_id, null, "left unparented on purpose: it may still be true after a cancel");
 
       assert.ok(timerRow(watchId).max_wait_at, "a standing watch does have a max_wait_at - it is the lifetime");
       assert.match(filed[0].body, /keys/, "the way out is agent_send with keys, as on the one-shot half");
@@ -590,7 +590,7 @@ describe(
       assert.equal(blockNoticesNaming("standing-block-stuck").length, 1, "one per block, not one per tick");
 
       assert.equal(
-        db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE timer_id = ? AND agent_id = ?").get(
+        db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE wake_id = ? AND agent_id = ?").get(
           watchId,
           agentRow("standing-block-stuck").id,
         ).n,
@@ -598,7 +598,7 @@ describe(
         "and the claim lives in wake_block_notices, which the finish half never touches",
       );
       assert.equal(
-        db.prepare("SELECT COUNT(*) AS n FROM wake_idle_notices WHERE timer_id = ? AND agent_id = ?").get(
+        db.prepare("SELECT COUNT(*) AS n FROM wake_idle_notices WHERE wake_id = ? AND agent_id = ?").get(
           watchId,
           agentRow("standing-block-stuck").id,
         ).n,
@@ -611,7 +611,7 @@ describe(
 
       const late = await spawnShowing("standing-block-latecomer", replayFixture("model-picker-dialog.txt"));
       assert.ok(
-        db.prepare("SELECT created_at > (SELECT created_at FROM timers WHERE id = ?) AS after FROM agents WHERE id = ?")
+        db.prepare("SELECT created_at > (SELECT created_at FROM wakes WHERE id = ?) AS after FROM agents WHERE id = ?")
           .get(watchId, agentRow("standing-block-latecomer").id).after,
         "the second worker must really postdate the watch, or it proves nothing about later joiners",
       );
@@ -658,7 +658,7 @@ describe(
       );
       assert.deepEqual(
         db
-          .prepare("SELECT id FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND body LIKE ?")
+          .prepare("SELECT id FROM wakes WHERE parent_wake_id IS NULL AND kind = 'delay' AND body LIKE ?")
           .all('%agent_output(name: "batch\\"two")%')
           .map((n) => n.id),
         [filed[0].id],
@@ -675,7 +675,7 @@ describe(
 
       assert.equal(
         db
-          .prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE timer_id = ? AND agent_id IN (?, ?)")
+          .prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE wake_id = ? AND agent_id IN (?, ?)")
           .get(watchId, agentRow("batch-block-one").id, agentRow('batch"two').id).n,
         2,
         "two blocks, two claim rows, one notice",
@@ -695,8 +695,8 @@ describe("the lead-pane-dead hold stays silent", () => {
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
         `migrate();\n${LEAD_DEAD_SEED}\n` +
         `await tick(snapshot);\nawait tick(snapshot);\n` +
-        `const row = db.prepare("SELECT held_reason, fired_at FROM timers WHERE id = ?").get(timerId);\n` +
-        `const total = db.prepare("SELECT COUNT(*) AS n FROM timers").get().n;\n` +
+        `const row = db.prepare("SELECT held_reason, fired_at FROM wakes WHERE id = ?").get(timerId);\n` +
+        `const total = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;\n` +
         `const ownerRunning = db.prepare("SELECT status FROM agents WHERE actor_id = 'agent:9'").get().status;\n` +
         `process.stdout.write(JSON.stringify({ heldReason: row.held_reason, fired: row.fired_at !== null, total, ownerRunning }));`,
       { HIVE_DATA_DIR: dataDir },
@@ -743,14 +743,14 @@ describe("the block half does not re-read a pane it just found no dialog on", ()
         `    agent_state, state_changed_at, created_at)\n` +
         `  VALUES (?, 'agent:1', 'stale', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting',\n` +
         `    datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, pane, socket);\n` +
-        `const watchId = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor,\n` +
+        `const watchId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor,\n` +
         `    deliver_pane, max_wait_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'lead:1', '%dead',\n` +
         `    datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`).get(project).id;\n` +
         `const snapshot = { panes: new Set([pane]), windows: new Set() };\n` +
         `await tick(snapshot);\nawait tick(snapshot);\nawait tick(snapshot);\n` +
-        `const notices = db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE timer_id = ?").get(watchId).n;\n` +
-        `process.stdout.write(JSON.stringify({ notices, watching: db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(watchId).fired_at }));`,
+        `const notices = db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE wake_id = ?").get(watchId).n;\n` +
+        `process.stdout.write(JSON.stringify({ notices, watching: db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(watchId).fired_at }));`,
       { HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR, PATH: `${shimDir}:${process.env.PATH}` },
     );
 
@@ -798,15 +798,15 @@ describe("a block notice falls back when the owner's pane is dead", () => {
         `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
         `  VALUES (?, 'agent:3', 'stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket);\n` +
 
-        `const watchId = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at, created_at)\n` +
+        `const watchId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'agent:2', ?, datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, tellPane).id;\n` +
         `const snapshot = { panes: new Set([stuckPane, tellPane]), windows: new Set() };\n` +
 
         `await tick(snapshot);\n` +
         `await tick(snapshot);\n` +
-        `const notices = db.prepare("SELECT deliver_pane, deliver_actor, body FROM timers WHERE id != ? AND kind = 'delay'").all(watchId);\n` +
-        `const claims = db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE timer_id = ?").get(watchId).n;\n` +
-        `const typed = db.prepare("SELECT typed_at FROM timers WHERE id != ? AND kind = 'delay' ORDER BY id LIMIT 1").get(watchId).typed_at;\n` +
+        `const notices = db.prepare("SELECT deliver_pane, deliver_actor, body FROM wakes WHERE id != ? AND kind = 'delay'").all(watchId);\n` +
+        `const claims = db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE wake_id = ?").get(watchId).n;\n` +
+        `const typed = db.prepare("SELECT typed_at FROM wakes WHERE id != ? AND kind = 'delay' ORDER BY id LIMIT 1").get(watchId).typed_at;\n` +
         `process.stdout.write(JSON.stringify({ notices, claims, typed }));`,
       { HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR },
     );
@@ -852,18 +852,18 @@ describe("a modal hold does not spend its claim on a dead lead pane", () => {
         `const stuckId = db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
         `  VALUES (?, 'agent:2', 'stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds')) RETURNING id\`).get(project, stuckPane, socket).id;\n` +
 
-        `const wakeId = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
+        `const wakeId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'go on then', 'delay', 'agent:2', ?, datetime('now', '-5 seconds'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, stuckPane).id;\n` +
         `const snapshot = { panes: new Set([stuckPane, leadPane]), windows: new Set() };\n` +
         `await tick(snapshot);\n` +
-        `const dead = { notices: db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id != ?").get(wakeId).n,\n` +
+        `const dead = { notices: db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id != ?").get(wakeId).n,\n` +
         `  claims: db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices").get().n,\n` +
-        `  held: db.prepare("SELECT held_reason FROM timers WHERE id = ?").get(wakeId).held_reason };\n` +
+        `  held: db.prepare("SELECT held_reason FROM wakes WHERE id = ?").get(wakeId).held_reason };\n` +
 
         `db.prepare("UPDATE agents SET tmux_target = ? WHERE actor_id = 'lead:1'").run(leadPane);\n` +
-        `db.prepare("UPDATE timers SET held_at = NULL, held_reason = NULL WHERE id = ?").run(wakeId);\n` +
+        `db.prepare("UPDATE wakes SET held_at = NULL, held_reason = NULL WHERE id = ?").run(wakeId);\n` +
         `await tick(snapshot);\n` +
-        `const alive = { notices: db.prepare("SELECT deliver_pane, body FROM timers WHERE id != ?").all(wakeId),\n` +
+        `const alive = { notices: db.prepare("SELECT deliver_pane, body FROM wakes WHERE id != ?").all(wakeId),\n` +
         `  claims: db.prepare("SELECT agent_id FROM wake_block_notices").all() };\n` +
         `process.stdout.write(JSON.stringify({ dead, alive, stuckId }));`,
       { HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR },

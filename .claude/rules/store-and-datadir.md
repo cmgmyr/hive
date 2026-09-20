@@ -96,7 +96,7 @@ and the worker's cwd.
 
 Never edit an existing entry in `MIGRATIONS`; add a new one.
 
-**A trigger migration adds a standing constraint on every migration after it.** Any future migration that rewrites `scratchpads.content`, `todos.title`/`body`, or `kv.value` for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration.
+**A trigger migration adds a standing constraint on every migration after it.** Any future migration that rewrites `pads.content`, `todos.title`/`body`, or `kv.value` for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration.
 
 ## The store's write lock now also excludes something that is not a store write
 

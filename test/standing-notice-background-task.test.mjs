@@ -53,7 +53,7 @@ const addDeadWorker = (actor, name, offset) =>
   ).get(project, actor, name, offset, offset).id, actor);
 const addStandingWatch = () =>
   db.prepare(
-    \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+    \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
         max_wait_at, created_at)
       VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'lead:1', '%lead',
         datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`,
@@ -73,7 +73,7 @@ const notifyRow = (actor, body) =>
       VALUES (?, 'notify', 'unchanged', ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))\`,
   ).run(actor, body);
 const noticeRow = (watchId) =>
-  db.prepare("SELECT * FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1").get(watchId);
+  db.prepare("SELECT * FROM wakes WHERE parent_wake_id = ? ORDER BY id DESC LIMIT 1").get(watchId);
 const shortAndFull = (watchId) => {
   const row = noticeRow(watchId);
   return row === undefined ? null : { full: row.body, short: shortRenderForLeadDelivery(row) };

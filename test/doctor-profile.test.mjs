@@ -89,7 +89,7 @@ describe("check 2: a profile resolving no readable content, or none for runbook.
     const init = await runCli(["init"], freshOpts);
     assert.equal(init.code, 0, init.stderr);
     const freshId = db.prepare("SELECT id FROM projects WHERE path = ?").get(fresh.projectDir).id;
-    db.prepare("UPDATE scratchpads SET archived = 1 WHERE project_id = ? AND name = 'runbook'").run(freshId);
+    db.prepare("UPDATE pads SET archived = 1 WHERE project_id = ? AND name = 'runbook'").run(freshId);
     writeFileSync(join(fresh.projectDir, "hive.yml"), "profile: simple\n");
 
     const out = await runCli(["doctor"], freshOpts);
@@ -151,7 +151,7 @@ describe("check 3: profile: none with no runbook pad", () => {
 
     assert.doesNotMatch(withPad.stdout, /FAIL {2}profile/, "hive init already seeded a runbook pad");
 
-    db.prepare("UPDATE scratchpads SET archived = 1 WHERE project_id = ? AND name = 'runbook'").run(projectId);
+    db.prepare("UPDATE pads SET archived = 1 WHERE project_id = ? AND name = 'runbook'").run(projectId);
     const withoutPad = await runCli(["doctor"], opts);
 
     assert.match(

@@ -26,14 +26,14 @@ db.prepare(
    VALUES (?, 'agent:9', 'a-worker', 'agent', '%worker', 'claude', '/tmp', 'running', 'idle', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWake = (deliverActor, deliverPane) => db.prepare(
-  \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+  \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
    VALUES (?, ?, 'wake body', 'delay', ?, ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
    RETURNING id\`,
 ).get(project, deliverActor, deliverActor, deliverPane).id;
 const logPrompt = (actor, offset, prompt) => db.prepare(
   "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, 'prompt', 'working', ?, datetime('now', ?))",
 ).run(actor, JSON.stringify({ prompt }), offset);
-const timerRow = (id) => db.prepare("SELECT held_at, held_reason, first_held_at, fired_at, typed_at FROM timers WHERE id = ?").get(id);
+const timerRow = (id) => db.prepare("SELECT held_at, held_reason, first_held_at, fired_at, typed_at FROM wakes WHERE id = ?").get(id);
 const snapshot = { panes: new Set(['%lead', '%worker']), windows: new Set() };
 `;
 
@@ -127,7 +127,7 @@ describe("todo 455 commit 2: the conversation hold", () => {
       // The ceiling is measured against due_at (todo 455 fix 2), stamped once at creation - a wake
       // due 20 minutes ago is well past CONVERSATION_HOLD_MAX (15 minutes).
       db.prepare(
-        "UPDATE timers SET due_at = datetime('now', '-1200 seconds'), held_at = datetime('now', '-1200 seconds'), held_reason = 'a human talked to this lead', first_held_at = datetime('now', '-1200 seconds') WHERE id = ?",
+        "UPDATE wakes SET due_at = datetime('now', '-1200 seconds'), held_at = datetime('now', '-1200 seconds'), held_reason = 'a human talked to this lead', first_held_at = datetime('now', '-1200 seconds') WHERE id = ?",
       ).run(wakeId);
       logPrompt('lead:1', '-30 seconds', 'still talking, right now');
       await tick(snapshot);
@@ -155,7 +155,7 @@ describe("todo 455 commit 2: the conversation hold", () => {
       // finds held_at IS NULL - so a first_held_at that looks fresh despite a long-overdue due_at is
       // exactly what that laundering produces, not a contrived state.
       db.prepare(
-        "UPDATE timers SET due_at = datetime('now', '-1200 seconds'), held_at = NULL, held_reason = NULL, first_held_at = datetime('now', '-30 seconds') WHERE id = ?",
+        "UPDATE wakes SET due_at = datetime('now', '-1200 seconds'), held_at = NULL, held_reason = NULL, first_held_at = datetime('now', '-30 seconds') WHERE id = ?",
       ).run(wakeId);
       logPrompt('lead:1', '-15 seconds', 'still talking, right after the reattach');
       await tick(snapshot);

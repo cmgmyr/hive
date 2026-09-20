@@ -21,16 +21,16 @@ const STALE_UPDATED_AT = "2020-01-01 00:00:00";
 function seedPad(projectId, name, content) {
   return db
     .prepare(
-      "INSERT INTO scratchpads (project_id, name, content, updated_at) VALUES (?, ?, ?, ?) RETURNING id",
+      "INSERT INTO pads (project_id, name, content, updated_at) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .get(projectId, name, content, STALE_UPDATED_AT).id;
 }
 
 function padRow(id) {
-  return db.prepare("SELECT * FROM scratchpads WHERE id = ?").get(id);
+  return db.prepare("SELECT * FROM pads WHERE id = ?").get(id);
 }
 
-describe("the scratchpads content-vs-updated_at trigger", () => {
+describe("the pads content-vs-updated_at trigger", () => {
   it("aborts the exact incident shape: a name-addressed UPDATE across two projects, changing content, leaving updated_at alone", () => {
 
     const hive = seedProject("/scratch/hive");
@@ -43,7 +43,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     assert.throws(
       () =>
         db
-          .prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE name = ?")
+          .prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE name = ?")
           .run("hive's content, copied over both projects", "board"),
       /leaves updated_at unchanged/,
     );
@@ -58,14 +58,14 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     assert.throws(
       () =>
         db
-          .prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE id = ?")
+          .prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE id = ?")
           .run("new content", padId),
       /hive pad <name> --save <file>/,
     );
     assert.throws(
       () =>
         db
-          .prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE id = ?")
+          .prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE id = ?")
           .run("new content", padId),
       /BY PRIMARY KEY/,
     );
@@ -75,11 +75,11 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
 
     const projectId = seedProject("/scratch/same-second");
     const padId = db
-      .prepare("INSERT INTO scratchpads (project_id, name, content) VALUES (?, 'board', 'v1') RETURNING id")
+      .prepare("INSERT INTO pads (project_id, name, content) VALUES (?, 'board', 'v1') RETURNING id")
       .get(projectId).id;
     assert.doesNotThrow(() =>
       db
-        .prepare("UPDATE scratchpads SET content = ?, revision = revision + 1, updated_at = datetime('now') WHERE id = ?")
+        .prepare("UPDATE pads SET content = ?, revision = revision + 1, updated_at = datetime('now') WHERE id = ?")
         .run("v2", padId),
     );
     assert.equal(padRow(padId).content, "v2");
@@ -90,11 +90,11 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     const projectId = seedProject("/scratch/seed-then-rewrite");
     const padId = db
       .prepare(
-        "INSERT INTO scratchpads (project_id, name, content, updated_at) VALUES (?, 'board', 'seeded', datetime('now')) RETURNING id",
+        "INSERT INTO pads (project_id, name, content, updated_at) VALUES (?, 'board', 'seeded', datetime('now')) RETURNING id",
       )
       .get(projectId).id;
     assert.doesNotThrow(
-      () => db.prepare("UPDATE scratchpads SET content = ?, revision = revision + 1 WHERE id = ?").run("BYPASSED", padId),
+      () => db.prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE id = ?").run("BYPASSED", padId),
       "if this throws, the same-second gap has closed - update the migration comment too, do not just delete this test",
     );
     assert.equal(padRow(padId).content, "BYPASSED");
@@ -104,7 +104,7 @@ describe("the scratchpads content-vs-updated_at trigger", () => {
     const projectId = seedProject("/scratch/touch-only");
     const padId = seedPad(projectId, "board", "same content throughout");
     assert.doesNotThrow(() =>
-      db.prepare("UPDATE scratchpads SET revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(padId),
+      db.prepare("UPDATE pads SET revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(padId),
     );
   });
 });

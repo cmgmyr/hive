@@ -90,7 +90,7 @@ function seedScenario(pane) {
     .get(project, `agent:${tag}`, `w-${tag}`).id;
   const watch = db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
           max_wait_at, created_at)
         VALUES (?, ?, 'crew update', 'idle_any', 'project', ?, ?,
           datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id`,
@@ -102,15 +102,15 @@ function seedScenario(pane) {
 const notices = (watch) =>
   db
     .prepare(
-      `SELECT id, body, fired_at, typed_at, cancelled_at FROM timers
-        WHERE parent_timer_id = ? ORDER BY id`,
+      `SELECT id, body, fired_at, typed_at, cancelled_at FROM wakes
+        WHERE parent_wake_id = ? ORDER BY id`,
     )
     .all(watch);
 const cursor = (watch) =>
   db
     .prepare(
-      `SELECT agent_id, condition, episode, notice_timer_id, notified_at
-         FROM wake_idle_notices WHERE timer_id = ? ORDER BY notified_at`,
+      `SELECT agent_id, condition, episode, notice_wake_id, notified_at
+         FROM wake_idle_notices WHERE wake_id = ? ORDER BY notified_at`,
     )
     .all(watch);
 
@@ -124,7 +124,7 @@ function capture(pane) {
 }
 
 const ageNoticePastRetry = (noticeId) =>
-  db.prepare("UPDATE timers SET fired_at = datetime('now', '-61 seconds') WHERE id = ?").run(noticeId);
+  db.prepare("UPDATE wakes SET fired_at = datetime('now', '-61 seconds') WHERE id = ?").run(noticeId);
 
 describe("a notice whose paste landed but whose Enter failed", () => {
   it("is not reported a second time, on a pane where the text will hold", NEEDS_TMUX, async () => {
@@ -162,7 +162,7 @@ describe("a notice whose paste landed but whose Enter failed", () => {
     assert.equal(rows.length, 1, "one claim row per agent, unchanged");
     assert.equal(rows[0].agent_id, worker);
     assert.equal(
-      rows[0].notice_timer_id,
+      rows[0].notice_wake_id,
       delivered.id,
       "the claim must still name the notice that carried it, not a later one",
     );

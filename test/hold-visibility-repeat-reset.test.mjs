@@ -56,7 +56,7 @@ describe("first_held_at resets per repeating-wake cycle", { skip: hasTmux ? fals
       return got.fire_count >= 1 && got.typed_at != null;
     }, 10000);
 
-    db.prepare("UPDATE timers SET first_held_at = datetime('now') WHERE id = ?").run(wake.wake_id);
+    db.prepare("UPDATE wakes SET first_held_at = datetime('now') WHERE id = ?").run(wake.wake_id);
     const seeded = await mcp.call("wake_get", { wake_id: wake.wake_id });
     assert.ok(seeded.first_held_at != null, "the seed itself must have taken, or this test proves nothing");
 

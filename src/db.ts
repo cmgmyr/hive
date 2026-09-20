@@ -48,7 +48,7 @@ for (let attempt = 0; ; attempt++) {
 }
 db.pragma("foreign_keys = ON");
 
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   `
 CREATE TABLE projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -359,6 +359,44 @@ ALTER TABLE agents ADD COLUMN exit_tail TEXT NOT NULL DEFAULT '';
 
   `
 ALTER TABLE agents ADD COLUMN transcript_path TEXT NOT NULL DEFAULT '';
+`,
+
+  `
+ALTER TABLE scratchpads RENAME TO pads;
+
+DROP INDEX idx_scratchpads_project;
+DROP INDEX idx_scratchpads_active_name;
+CREATE INDEX idx_pads_project ON pads(project_id, archived, name);
+CREATE UNIQUE INDEX idx_pads_active_name
+  ON pads(project_id, name) WHERE archived = 0;
+
+DROP TRIGGER guard_scratchpads_content_update;
+CREATE TRIGGER guard_pads_content_update
+BEFORE UPDATE ON pads
+FOR EACH ROW
+WHEN NEW.content IS NOT OLD.content AND NEW.updated_at IS NOT datetime('now')
+BEGIN
+  SELECT RAISE(ABORT, 'Refused: this UPDATE changes pads.content but leaves updated_at unchanged, which every hive pad tool (pad_write, pad_edit, pad_append) stamps in the same statement. To overwrite a large pad, use hive pad <name> --save <file>, which does this correctly. If you must run SQL directly, address the row BY PRIMARY KEY (id), never by name: pad names are unique per project, not globally, so a name-only WHERE clause matches every project''s pad with that name and silently overwrites the wrong project''s data.');
+END;
+`,
+
+  `
+ALTER TABLE locks RENAME TO leases;
+`,
+
+  `
+DROP INDEX idx_timers_active;
+DROP INDEX idx_timers_parent;
+
+ALTER TABLE timers RENAME TO wakes;
+ALTER TABLE wakes RENAME COLUMN parent_timer_id TO parent_wake_id;
+ALTER TABLE wake_idle_notices RENAME COLUMN timer_id TO wake_id;
+ALTER TABLE wake_idle_notices RENAME COLUMN notice_timer_id TO notice_wake_id;
+ALTER TABLE wake_block_notices RENAME COLUMN timer_id TO wake_id;
+
+CREATE INDEX idx_wakes_active ON wakes(project_id, kind)
+  WHERE cancelled_at IS NULL;
+CREATE INDEX idx_wakes_parent ON wakes(parent_wake_id) WHERE parent_wake_id IS NOT NULL;
 `,
 ];
 

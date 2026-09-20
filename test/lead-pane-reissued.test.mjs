@@ -62,7 +62,7 @@ function insertLeadRow(projectId, actorId, pane, panePid) {
 function insertDueLeadWake(projectId, actorId, pane, body) {
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
        VALUES (?, ?, ?, 'delay', '[]', ?, ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
        RETURNING id`,
     )
@@ -80,7 +80,7 @@ function insertWorkerRow(projectId, actorId, pane, panePid) {
 }
 
 const timerRow = (id) =>
-  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, cancelled_at FROM timers WHERE id = ?").get(id);
+  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, cancelled_at FROM wakes WHERE id = ?").get(id);
 
 const agentStatus = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
 

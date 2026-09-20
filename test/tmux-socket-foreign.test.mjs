@@ -42,7 +42,7 @@ before(() => {
 after(() => cleanup(session));
 
 function reset() {
-  db.exec("DELETE FROM timers; DELETE FROM agents;");
+  db.exec("DELETE FROM wakes; DELETE FROM agents;");
 }
 
 function agentRow(name, target, { age = "-60 seconds", socket = "" } = {}) {
@@ -59,7 +59,7 @@ function agentRow(name, target, { age = "-60 seconds", socket = "" } = {}) {
 function timerRow({ pane, deliverActor = "user:test", due = "+1 hour" }) {
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, deliver_actor, deliver_pane, due_at, created_at)
+      `INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane, due_at, created_at)
        VALUES (?, 'user:test', 'wake body', ?, ?, datetime('now', ?), datetime('now', '-60 seconds'))
        RETURNING id`,
     )
@@ -67,7 +67,7 @@ function timerRow({ pane, deliverActor = "user:test", due = "+1 hour" }) {
 }
 
 const agentStatus = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
-const timerOf = (id) => db.prepare("SELECT * FROM timers WHERE id = ?").get(id);
+const timerOf = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
 
 describe("foreignSocket/rowLive/rowAlive: the predicate itself, no tmux fork needed", () => {
   it("'' is never foreign - D2, the load-bearing call", () => {
@@ -149,7 +149,7 @@ describe(
 );
 
 describe(
-  "janitor's timers sweep never cancels a wake whose delivery target joins to a foreign-socket agents row",
+  "janitor's wake sweep never cancels a wake whose delivery target joins to a foreign-socket agents row",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     beforeEach(reset);

@@ -122,7 +122,7 @@ function seedProject(name) {
 }
 
 function seedPad(projectId, name, content) {
-  db.prepare("INSERT INTO scratchpads (project_id, name, content) VALUES (?, ?, ?)").run(
+  db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, ?)").run(
     projectId,
     name,
     content,
@@ -155,7 +155,7 @@ function seedWake(projectId, { body, dueInSeconds, kind = "delay", maxWaitInSeco
   const maxWaitAt = maxWaitInSeconds != null ? `datetime('now', '+${maxWaitInSeconds} seconds')` : "NULL";
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, max_wait_at)
+      `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, max_wait_at)
        VALUES (?, 'user:test', ?, ?, 'user:test', '%1', ${dueAt}, ${maxWaitAt}) RETURNING id, due_at, max_wait_at`,
     )
     .get(projectId, body, kind);
@@ -643,7 +643,7 @@ describe("renderDashboard: pending wakes", () => {
   it("excludes a wake that already fired and is not repeating", () => {
     const project = seedProject("wakes-fired-test");
     const { id } = seedWake(project, { body: "already delivered", dueInSeconds: -60 });
-    db.prepare("UPDATE timers SET fired_at = datetime('now') WHERE id = ?").run(id);
+    db.prepare("UPDATE wakes SET fired_at = datetime('now') WHERE id = ?").run(id);
     const html = renderDashboard(project);
     assert.ok(!html.includes("already delivered"), "a fired one-shot wake must not appear as pending");
   });
@@ -772,7 +772,7 @@ describe("renderDashboard: pads section", () => {
   it("excludes an archived pad entirely", () => {
     const project = seedProject("pads-excludes-archived-test");
     seedPad(project, "archived-one", "should never appear");
-    db.prepare("UPDATE scratchpads SET archived = 1 WHERE project_id = ? AND name = 'archived-one'").run(project);
+    db.prepare("UPDATE pads SET archived = 1 WHERE project_id = ? AND name = 'archived-one'").run(project);
     const html = renderDashboard(project);
     assert.ok(!html.includes("should never appear"), "an archived pad must not be inlined");
   });
@@ -1841,7 +1841,7 @@ describe("renderDashboard: wakes carry a live/warn status, matching held state",
   it("a held wake reads warn, not live", () => {
     const project = seedProject("wake-status-held-test");
     const { id } = seedWake(project, { body: "stuck wake", dueInSeconds: 60 });
-    db.prepare("UPDATE timers SET held_at = datetime('now'), held_reason = 'test hold' WHERE id = ?").run(id);
+    db.prepare("UPDATE wakes SET held_at = datetime('now'), held_reason = 'test hold' WHERE id = ?").run(id);
     const html = renderDashboard(project);
     assert.ok(html.includes('<span class="status status-warn">held</span>'));
     assert.ok(!html.includes('<span class="status status-live">pending</span>'));
@@ -2166,7 +2166,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     await tick(null);
     assert.ok(readFileSync(indexPath(root), "utf8").includes("original wake body"));
 
-    db.prepare("UPDATE timers SET body = ? WHERE id = ?").run("edited wake body", wakeId);
+    db.prepare("UPDATE wakes SET body = ? WHERE id = ?").run("edited wake body", wakeId);
     db.prepare(
       "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
     ).run(id);
@@ -2205,7 +2205,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     assert.ok(readFileSync(indexPath(root), "utf8").includes("the board pad content"));
 
     seedPad(id, "other", "unrelated pad");
-    db.prepare("DELETE FROM scratchpads WHERE project_id = ? AND name = 'board'").run(id);
+    db.prepare("DELETE FROM pads WHERE project_id = ? AND name = 'board'").run(id);
     db.prepare(
       "UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-10 seconds') WHERE project_id = ?",
     ).run(id);

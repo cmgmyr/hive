@@ -20,7 +20,7 @@ const runningRow = (name) =>
   db.prepare("SELECT * FROM agents WHERE project_id = ? AND name = ? AND status = 'running'").get(projectId, name);
 
 const noticeCount = () =>
-  db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND cancelled_at IS NULL").get(projectId).n;
+  db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND cancelled_at IS NULL").get(projectId).n;
 
 before(async () => {
   assert.equal((await runCli(["init"], opts)).code, 0);

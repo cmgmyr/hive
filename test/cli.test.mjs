@@ -112,7 +112,7 @@ describe("hive CLI pads", () => {
     try {
       store
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
+          `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
              held_at, held_reason, first_held_at)
            VALUES (?, 'agent:1', 'go on', 'delay', 'agent:1', '%1', datetime('now', '-60 seconds'),
              datetime('now', '-54 seconds'), ?, datetime('now', '-3240 seconds'))`,
@@ -144,7 +144,7 @@ describe("hive CLI pads", () => {
     try {
       store
         .prepare(
-          `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
+          `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at,
              held_at, held_reason, first_held_at)
            VALUES (?, 'agent:1', 'go on', 'delay', 'agent:1', '%1', datetime('now', '-60 seconds'),
              datetime('now', '-1 seconds'), ?, ${firstHeldAtExpr})`,

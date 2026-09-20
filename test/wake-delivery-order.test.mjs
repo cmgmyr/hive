@@ -54,7 +54,7 @@ describe(
 
       const wake = await mcp.call("wake_set", { delay_seconds: 1, body: "WAKE-ORDER marker" });
 
-      const recorded = db.prepare("SELECT deliver_pane FROM timers WHERE id = ?").get(wake.wake_id);
+      const recorded = db.prepare("SELECT deliver_pane FROM wakes WHERE id = ?").get(wake.wake_id);
       assert.equal(
         recorded.deliver_pane,
         pane,

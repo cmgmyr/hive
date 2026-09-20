@@ -40,7 +40,7 @@ describe("tick() delivers a due wake-up even when the backup path is broken", ()
       .get("backup-tick-test", projectDir).id;
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', 'wake body', 'delay', '[]', 'user:test', ?,
            datetime('now', '-5 seconds'), datetime('now', '-60 seconds'))
@@ -57,7 +57,7 @@ describe("tick() delivers a due wake-up even when the backup path is broken", ()
 
     await tick();
 
-    const row = db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(timerId);
+    const row = db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(timerId);
     assert.ok(row.fired_at, "a due wake-up must still fire when the backup path is broken");
 
     const meta = db.prepare("SELECT last_error FROM backup_meta WHERE id = 1").get();

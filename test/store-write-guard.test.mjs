@@ -12,9 +12,9 @@ import { classify } from "../scripts/store-write-guard.mjs";
 const GUARD_SCRIPT = join(REPO, "scripts", "store-write-guard.mjs");
 const HOME = homedir();
 
-const INCIDENT_SQL = "UPDATE scratchpads SET content=?, revision=revision+1 WHERE name='board'";
+const INCIDENT_SQL = "UPDATE pads SET content=?, revision=revision+1 WHERE name='board'";
 const INCIDENT_SQL_WITH_STAMP =
-  "UPDATE scratchpads SET content=?, revision=revision+1, updated_at=datetime('now') WHERE name='board'";
+  "UPDATE pads SET content=?, revision=revision+1, updated_at=datetime('now') WHERE name='board'";
 
 describe("classify: denies the incident statement against the default store", () => {
   const cases = [
@@ -55,8 +55,8 @@ describe("classify: denies the incident correlated across a real command separat
 
 describe("classify: denies this repo's own INSERT OR IGNORE idiom and other SQL shapes WRITE_RE missed, review round 2 finding 3", () => {
   const cases = [
-    ['sqlite3 ~/.hive/hive.db "INSERT OR IGNORE INTO scratchpads (id) VALUES (1)"', "INSERT OR IGNORE INTO, used nine times in src/"],
-    ['sqlite3 ~/.hive/hive.db "UPDATE OR REPLACE scratchpads SET content=1"', "UPDATE OR REPLACE"],
+    ['sqlite3 ~/.hive/hive.db "INSERT OR IGNORE INTO pads (id) VALUES (1)"', "INSERT OR IGNORE INTO, used nine times in src/"],
+    ['sqlite3 ~/.hive/hive.db "UPDATE OR REPLACE pads SET content=1"', "UPDATE OR REPLACE"],
     ['sqlite3 ~/.hive/hive.db "CREATE TABLE evil (id)"', "CREATE TABLE"],
     ['sqlite3 ~/.hive/hive.db "DROP VIEW some_view"', "DROP VIEW"],
   ];
@@ -82,7 +82,7 @@ describe("classify: denies rm of the store's database file, review round 2 findi
 
 describe("classify: rm-of-store detection is correlated, not a bare rm keyword", () => {
   it("an unrelated rm of a scratch file alongside an unrelated default-store read is allowed", () => {
-    const command = 'sqlite3 -json ~/.hive/hive.db "SELECT * FROM scratchpads" && rm /tmp/scratch/leftover.db';
+    const command = 'sqlite3 -json ~/.hive/hive.db "SELECT * FROM pads" && rm /tmp/scratch/leftover.db';
     assert.equal(classify(command).deny, false, command);
   });
   it("rm of a scratch store's own db file is allowed", () => {
@@ -108,8 +108,8 @@ describe("classify: denies the trigger's own bypass, stamping updated_at does no
 
 describe("classify: allows reads against the default store", () => {
   const cases = [
-    ['sqlite3 ~/.hive/hive.db "SELECT * FROM scratchpads WHERE name=\'board\'"', "bare SELECT"],
-    ["sqlite3 -json ~/.hive/hive.db \"SELECT id, name FROM scratchpads\"", "sqlite3 -json read, the board's own recommended form"],
+    ['sqlite3 ~/.hive/hive.db "SELECT * FROM pads WHERE name=\'board\'"', "bare SELECT"],
+    ["sqlite3 -json ~/.hive/hive.db \"SELECT id, name FROM pads\"", "sqlite3 -json read, the board's own recommended form"],
     ["ls -la ~/.hive", "no SQL at all"],
   ];
   for (const [command, why] of cases) {
@@ -149,7 +149,7 @@ describe("classify: allows a write against a real scratch store", () => {
   });
 
   it("a scratch HIVE_DATA_DIR under /tmp, no default-store spelling present", () => {
-    const command = 'sqlite3 /tmp/hive-test-abc123/data/hive.db "UPDATE scratchpads SET content=? WHERE id=1"';
+    const command = 'sqlite3 /tmp/hive-test-abc123/data/hive.db "UPDATE pads SET content=? WHERE id=1"';
     assert.equal(classify(command).deny, false, command);
   });
 });
@@ -171,14 +171,14 @@ describe("classify: HIVE_ALLOW_DEFAULT_STORE=1 is the documented escape hatch", 
   });
 
   it("known limit: an env prefix on one clause unblocks an unrelated raw mutation in another, review round 2 finding 6", () => {
-    const command = `HIVE_ALLOW_DEFAULT_STORE=1 node one-off.mjs && sqlite3 ~/.hive/hive.db "DELETE FROM scratchpads"`;
+    const command = `HIVE_ALLOW_DEFAULT_STORE=1 node one-off.mjs && sqlite3 ~/.hive/hive.db "DELETE FROM pads"`;
     assert.equal(classify(command).deny, false, command);
   });
 });
 
 describe("classify: known limit, dropping segmentation denies an unrelated pair sharing one command, review round 2 finding 5", () => {
   it("a live-store READ on one clause and a scratch-store WRITE on another are denied together", () => {
-    const command = `sqlite3 ~/.hive/hive.db "SELECT * FROM scratchpads" && sqlite3 /tmp/scratch/hive.db "${INCIDENT_SQL}"`;
+    const command = `sqlite3 ~/.hive/hive.db "SELECT * FROM pads" && sqlite3 /tmp/scratch/hive.db "${INCIDENT_SQL}"`;
     assert.equal(classify(command).deny, true, command);
   });
 });
@@ -238,7 +238,7 @@ describe("wrapper: denies via exit code 2 + stderr, never stdout", () => {
 
 describe("wrapper: allows via exit 0 and no output", () => {
   it("a read against the default store", () => {
-    const result = runGuard('sqlite3 ~/.hive/hive.db "SELECT * FROM scratchpads"');
+    const result = runGuard('sqlite3 ~/.hive/hive.db "SELECT * FROM pads"');
     assert.equal(result.status, 0);
     assert.equal(result.stdout, "");
     assert.equal(result.stderr, "");

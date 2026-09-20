@@ -90,21 +90,21 @@ async function watchOwnedBy(name) {
     deliver_to: agentRow(name).id,
     max_wait_seconds: 900,
   });
-  db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow(name).actor_id, watch.wake_id);
+  db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow(name).actor_id, watch.wake_id);
   return watch.wake_id;
 }
 
 const stallNotices = (watchId) =>
-  db.prepare("SELECT id, body FROM timers WHERE parent_timer_id = ? ORDER BY id").all(watchId);
+  db.prepare("SELECT id, body FROM wakes WHERE parent_wake_id = ? ORDER BY id").all(watchId);
 const stallCursor = (watchId) =>
   db
-    .prepare("SELECT agent_id, episode FROM wake_idle_notices WHERE timer_id = ? AND condition = 'stall'")
+    .prepare("SELECT agent_id, episode FROM wake_idle_notices WHERE wake_id = ? AND condition = 'stall'")
     .all(watchId);
 const blockCursor = (watchId) =>
-  db.prepare("SELECT agent_id, blocked_since FROM wake_block_notices WHERE timer_id = ?").all(watchId);
+  db.prepare("SELECT agent_id, blocked_since FROM wake_block_notices WHERE wake_id = ?").all(watchId);
 const blockNotices = (watchId) =>
   db
-    .prepare("SELECT id, body FROM timers WHERE parent_timer_id IS NULL AND body LIKE ? ORDER BY id")
+    .prepare("SELECT id, body FROM wakes WHERE parent_wake_id IS NULL AND body LIKE ? ORDER BY id")
     .all(`%watch #${watchId}%`);
 
 const STALE_SECONDS = 30 * 60;
@@ -112,7 +112,7 @@ const STALE_SECONDS = 30 * 60;
 function freshCase(episode, fixture) {
   db.prepare("UPDATE agents SET agent_state = 'unknown', state_changed_at = NULL WHERE kind = 'agent'").run();
   db.prepare(
-    "UPDATE timers SET cancelled_at = datetime('now') WHERE cancelled_at IS NULL AND watch_scope IS NOT NULL",
+    "UPDATE wakes SET cancelled_at = datetime('now') WHERE cancelled_at IS NULL AND watch_scope IS NOT NULL",
   ).run();
   const row = agentRow("stall-stuck");
   repaintPaneAsSameWorker(db, row.tmux_target, replayFixture(fixture));

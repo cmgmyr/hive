@@ -29,19 +29,19 @@ const addWorker = (actor, name, pane, state, changedOffset) =>
   ).get(project, actor, name, pane, state, changedOffset).id;
 const addStandingWatch = () =>
   db.prepare(
-    \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+    \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
         max_wait_at, created_at)
       VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'lead:1', '%lead',
         datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`,
   ).get(project).id;
 const notices = (watchId) =>
-  db.prepare("SELECT id, fired_at, typed_at FROM timers WHERE parent_timer_id = ? ORDER BY id").all(watchId);
+  db.prepare("SELECT id, fired_at, typed_at FROM wakes WHERE parent_wake_id = ? ORDER BY id").all(watchId);
 const cursor = (watchId) =>
   db.prepare(
-    "SELECT agent_id, condition, episode, notice_timer_id, notified_at FROM wake_idle_notices WHERE timer_id = ? ORDER BY agent_id",
+    "SELECT agent_id, condition, episode, notice_wake_id, notified_at FROM wake_idle_notices WHERE wake_id = ? ORDER BY agent_id",
   ).all(watchId);
 const backdateCursor = (watchId, agentId, offset) =>
-  db.prepare("UPDATE wake_idle_notices SET notified_at = datetime('now', ?) WHERE timer_id = ? AND agent_id = ?").run(
+  db.prepare("UPDATE wake_idle_notices SET notified_at = datetime('now', ?) WHERE wake_id = ? AND agent_id = ?").run(
     offset,
     watchId,
     agentId,
@@ -89,7 +89,7 @@ describe("wake_idle_notices.notified_at as the re-insert-vs-update discriminator
         // exactly rearmSpentEpisode's own condition, and it is the only real
         // path that ever reaches it (src/scheduler.ts's own comment: "fires
         // only for a claim whose notice was spent WITHOUT ever being typed").
-        db.prepare("UPDATE timers SET fired_at = datetime('now', '-70 seconds'), typed_at = NULL WHERE id = ?").run(
+        db.prepare("UPDATE wakes SET fired_at = datetime('now', '-70 seconds'), typed_at = NULL WHERE id = ?").run(
           firstNotice.id,
         );
 
@@ -104,7 +104,7 @@ describe("wake_idle_notices.notified_at as the re-insert-vs-update discriminator
         ${out(`{
           backdated,
           notifiedAt: after.notified_at,
-          noticeTimerId: after.notice_timer_id,
+          noticeTimerId: after.notice_wake_id,
           firstNoticeId: firstNotice.id,
           afterNoticeIds: afterNotices.map((n) => n.id),
         }`)}
@@ -164,8 +164,8 @@ describe("wake_idle_notices.notified_at as the re-insert-vs-update discriminator
           backdated,
           sameNotice: merged.length === 1 && merged[0].id === firstNotice.id,
           w1NotifiedAt: w1Row.notified_at,
-          w1NoticeTimerId: w1Row.notice_timer_id,
-          w2NoticeTimerId: w2Row.notice_timer_id,
+          w1NoticeTimerId: w1Row.notice_wake_id,
+          w2NoticeTimerId: w2Row.notice_wake_id,
         }`)}
         `,
       );

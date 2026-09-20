@@ -78,9 +78,9 @@ describe("a wake is refused at the door when its target's harness cannot be clas
 // target row changed command underneath it: `hive lead` UPDATEs agents.command on every run, and the
 // delivery join resolves the row by actor_id at delivery time, not at creation.
 //
-// ONE TIMER PER RUN, deliberately. tick()'s loop is wrapped in a single try/catch, so a delivery that
+// ONE WAKE PER RUN, deliberately. tick()'s loop is wrapped in a single try/catch, so a delivery that
 // throws (these panes are synthetic and no tmux server has them) skips every later candidate - three
-// timers in one tick left the two controls silently unreached and passing.
+// wakes in one tick left the two controls silently unreached and passing.
 function tickOne({ command, deliverActor = "agent:1" }) {
   const { dataDir, tmp } = scratchDirs();
   const seedAgent =
@@ -97,17 +97,17 @@ function tickOne({ command, deliverActor = "agent:1" }) {
       `migrate();\n` +
       `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('pane-guard', '/tmp/pane-guard') RETURNING id").get().id;\n` +
       seedAgent +
-      `const id = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+      `const id = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
 ` +
       `   VALUES (?, 'owner:1', 'MARKERBODY', 'delay', '[]', ?, '%pane', datetime('now', '-1 seconds'), datetime('now', '-60 seconds')) RETURNING id\`)\n` +
       `  .get(project, ${JSON.stringify(deliverActor)}).id;\n` +
-      `const joined = db.prepare(\`SELECT COALESCE(agents.command, '') AS c FROM timers
+      `const joined = db.prepare(\`SELECT COALESCE(agents.command, '') AS c FROM wakes
 ` +
-      `   LEFT JOIN agents ON agents.id = (SELECT a.id FROM agents a WHERE a.actor_id = timers.deliver_actor ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
+      `   LEFT JOIN agents ON agents.id = (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
 ` +
-      `   WHERE timers.id = ?\`).get(id).c;\n` +
+      `   WHERE wakes.id = ?\`).get(id).c;\n` +
       `try { await tick({ panes: new Set(['%pane']), windows: new Set() }); } catch {}\n` +
-      `const row = db.prepare("SELECT held_reason, typed_at, fired_at FROM timers WHERE id = ?").get(id);\n` +
+      `const row = db.prepare("SELECT held_reason, typed_at, fired_at FROM wakes WHERE id = ?").get(id);\n` +
       `process.stdout.write(JSON.stringify({ joined, ...row }));`,
     { HIVE_DATA_DIR: dataDir },
   );
@@ -332,10 +332,10 @@ describe("a lead whose own harness hive cannot classify cannot receive wakes at 
         },
       );
 
-      const timers = db
-        .prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND deliver_actor = 'lead:998'")
+      const wakes = db
+        .prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND deliver_actor = 'lead:998'")
         .get(projectId).n;
-      assert.equal(timers, 0, "a refused wake must leave no timer row behind");
+      assert.equal(wakes, 0, "a refused wake must leave no wake row behind");
     } finally {
       db.prepare("DELETE FROM agents WHERE id = ?").run(leadId);
       execFileSync("tmux", ["kill-pane", "-t", pane]);
@@ -424,10 +424,10 @@ describe("the door checks the harness on the ROW, not behind a liveness probe (t
         /only classify a claude screen/,
         "an unanswerable probe must not launder an unclassifiable row past the door",
       );
-      const timers = db
-        .prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND deliver_actor = 'agent:707'")
+      const wakes = db
+        .prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND deliver_actor = 'agent:707'")
         .get(projectId).n;
-      assert.equal(timers, 0, "and no timer may be left behind for the scheduler to hold forever");
+      assert.equal(wakes, 0, "and no wake may be left behind for the scheduler to hold forever");
     } finally {
       await self.close();
       db.prepare("DELETE FROM agents WHERE id = ?").run(rowId);
@@ -471,18 +471,18 @@ function ageOutAgainst(command) {
          VALUES (?, 'agent:1', 'target', 'agent', '%pane', ?, '/tmp', 'running', 'idle', datetime('now', '-3 hours')) RETURNING id\`)
         .get(project, ${JSON.stringify(command)}).id;\n` +
       // A parent older than NOTICE_MAX_AGE (1h), so its child notice ages out on this tick.
-      `const parent = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+      `const parent = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
          VALUES (?, 'agent:1', 'watch', 'delay', '[]', 'agent:1', '%pane', datetime('now', '+1 hours'), datetime('now', '-3 hours')) RETURNING id\`).get(project).id;\n` +
-      `const notice = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at, parent_timer_id)
+      `const notice = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at, parent_wake_id)
          VALUES (?, 'agent:1', 'notice body', 'delay', '[]', 'agent:1', '%pane', datetime('now', '-1 seconds'), datetime('now', '-3 hours'), ?) RETURNING id\`).get(project, parent).id;\n` +
       // Finish-shaped, per todo 322: noticeDisposition now only ages a notice holding a
       // wake_idle_notices claim. This fixture is about the immortal-replacement guard, not about
       // finish-vs-hold semantics, so it seeds the minimum claim needed to still reach "aged".
-      `db.prepare(\`INSERT INTO wake_idle_notices (timer_id, agent_id, condition, episode, notice_timer_id)
+      `db.prepare(\`INSERT INTO wake_idle_notices (wake_id, agent_id, condition, episode, notice_wake_id)
          VALUES (?, ?, 'idle', 'ep1', ?)\`).run(parent, agentId, notice);\n` +
       `try { await tick({ panes: new Set(['%pane']), windows: new Set() }); } catch {}\n` +
-      `const orig = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice);\n` +
-      `const replacements = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id > ? AND parent_timer_id IS NULL").get(notice).n;\n` +
+      `const orig = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(notice);\n` +
+      `const replacements = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id > ? AND parent_wake_id IS NULL").get(notice).n;\n` +
       `process.stdout.write(JSON.stringify({ cancelled: orig.cancelled_at !== null, replacements }));`,
     { HIVE_DATA_DIR: dataDir },
   );

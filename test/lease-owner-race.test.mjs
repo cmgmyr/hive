@@ -22,23 +22,23 @@ describe("lease owner race (todo 345 / issue #148)", () => {
     makeActor("agent:B");
 
     db.prepare(
-      `INSERT INTO locks (project_id, lock_key, owner, expires_at)
+      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
        VALUES (?, ?, ?, datetime('now', '+1 seconds'))`,
     ).run(project.id, "file:x.ts", "agent:A");
 
-    db.prepare("DELETE FROM locks WHERE project_id = ? AND lock_key = ?").run(project.id, "file:x.ts");
+    db.prepare("DELETE FROM leases WHERE project_id = ? AND lock_key = ?").run(project.id, "file:x.ts");
     db.prepare(
-      `INSERT INTO locks (project_id, lock_key, owner, expires_at)
+      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
        VALUES (?, ?, ?, datetime('now', '+30 seconds'))`,
     ).run(project.id, "file:x.ts", "agent:B");
     const bsExpiryBeforeAsExtend = db
-      .prepare("SELECT expires_at FROM locks WHERE project_id = ? AND lock_key = ?")
+      .prepare("SELECT expires_at FROM leases WHERE project_id = ? AND lock_key = ?")
       .get(project.id, "file:x.ts").expires_at;
 
     const extended = extendOwnedLease(project.id, "file:x.ts", "agent:A", 60);
     assert.equal(extended, false, "A must not be told it extended a lease it no longer owns");
 
-    const row = db.prepare("SELECT owner, expires_at FROM locks WHERE project_id = ? AND lock_key = ?").get(project.id, "file:x.ts");
+    const row = db.prepare("SELECT owner, expires_at FROM leases WHERE project_id = ? AND lock_key = ?").get(project.id, "file:x.ts");
     assert.equal(row.owner, "agent:B", "the row must still belong to B");
     assert.equal(row.expires_at, bsExpiryBeforeAsExtend, "B's expiry must be untouched by A's failed extend");
   });
@@ -47,7 +47,7 @@ describe("lease owner race (todo 345 / issue #148)", () => {
     const project = makeProject("owner-race-2");
     makeActor("agent:C");
     db.prepare(
-      `INSERT INTO locks (project_id, lock_key, owner, expires_at)
+      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
        VALUES (?, ?, ?, datetime('now', '+1 seconds'))`,
     ).run(project.id, "file:y.ts", "agent:C");
 

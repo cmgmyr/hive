@@ -162,14 +162,14 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
 
     const oneShot = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            max_wait_at, created_at)
          VALUES (?, 'lead:false-finish', 'one-shot idle', 'idle_any', ?, 'lead:false-finish', '%deadlead',
            datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id`,
       )
       .get(projectId, JSON.stringify([row.id])).id;
 
-    const heldAt = () => db.prepare("SELECT held_at FROM timers WHERE id = ?").get(oneShot).held_at;
+    const heldAt = () => db.prepare("SELECT held_at FROM wakes WHERE id = ?").get(oneShot).held_at;
 
     const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
     await tick(snapshot);

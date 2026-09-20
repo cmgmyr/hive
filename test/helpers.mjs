@@ -913,7 +913,7 @@ export const UPSERT_ACTOR_SQL_PREFIX = "INSERT INTO actors (id, name, kind)";
 export function seedStandingWatch(db, projectId, owner, { pane = "%deadlead", body = "crew update" } = {}) {
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, watch_scope, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, watch_scope, deliver_actor, deliver_pane,
          max_wait_at, created_at)
        VALUES (?, ?, ?, 'idle_any', '[]', 'project', ?, ?, datetime('now', '+4 hours'),
          datetime('now', '-60 seconds')) RETURNING id`,
@@ -923,7 +923,7 @@ export function seedStandingWatch(db, projectId, owner, { pane = "%deadlead", bo
 
 export function standingNoticeBodies(db, watchId) {
   return db
-    .prepare("SELECT body FROM timers WHERE parent_timer_id = ? ORDER BY id")
+    .prepare("SELECT body FROM wakes WHERE parent_wake_id = ? ORDER BY id")
     .all(watchId)
     .map((r) => r.body);
 }
@@ -933,7 +933,7 @@ function claimedUnderWatch(db, watchId, name, condition) {
     db
       .prepare(
         `SELECT 1 FROM wake_idle_notices n JOIN agents a ON a.id = n.agent_id
-          WHERE n.timer_id = ? AND a.name = ? AND n.notice_timer_id IS NOT NULL
+          WHERE n.wake_id = ? AND a.name = ? AND n.notice_wake_id IS NOT NULL
             ${condition === null ? "" : "AND n.condition = ?"}`,
       )
       .get(...(condition === null ? [watchId, name] : [watchId, name, condition])) !== undefined

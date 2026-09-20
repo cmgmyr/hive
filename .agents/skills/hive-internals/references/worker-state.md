@@ -163,7 +163,7 @@ The first two ride on a standing watch's finish notice and neither has an author
 
 **The crew render.** `shortRenderForLeadDelivery` builds one line per WORKER from the notice's own `wake_idle_notices` claim rows. It used to build one entry per CLAIM, which put three separate wrong beliefs in a lead's pane in one evening:
 
-- Wake #892, held about 12 minutes by the conversation hold, delivered `4 finished: t475-quiet-lead-pane, t475-quiet-lead-pane, t475-quiet-lead-pane, t475-quiet-lead-pane (bg). 1 went idle with background tasks running and may not be done (bg). 0 still going.` Verified against the store rather than eyeballed: `SELECT COUNT(*), COUNT(DISTINCT agent_id) FROM wake_idle_notices WHERE notice_timer_id = 892` returned 4 claims and 1 agent. A count beside a list of names reads as a headcount, so a lead acting on it believes its crew is four times its real size.
+- Wake #892, held about 12 minutes by the conversation hold, delivered `4 finished: t475-quiet-lead-pane, t475-quiet-lead-pane, t475-quiet-lead-pane, t475-quiet-lead-pane (bg). 1 went idle with background tasks running and may not be done (bg). 0 still going.` Verified against the store rather than eyeballed: `SELECT COUNT(*), COUNT(DISTINCT agent_id) FROM wake_idle_notices WHERE notice_wake_id = 892` returned 4 claims and 1 agent. A count beside a list of names reads as a headcount, so a lead acting on it believes its crew is four times its real size.
 - Wake #891 delivered `1 finished: t475-quiet-lead-pane. 1 still going.` with exactly one worker in the project. The finish is claim-time and the roster is delivery-time: the notice was held 4 minutes and the worker had taken new work by the time it rendered, so the same worker was counted once in each half of one sentence.
 - Both predate `d11c028`; the `(bg)` markers that commit added were correct in every case.
 
@@ -183,7 +183,7 @@ Three things about it are the same decisions the other two already made, and one
   with a live pane, no notice. A project whose lead is gone would otherwise collect one row per
   dead process, forever, with nobody left to type them to.
 - It is parentless, so `noticeDisposition` can never age it out and `noticeStalenessNote` never
-  rides on it. Both follow from `parent_timer_id IS NULL` rather than from anything this code does.
+  rides on it. Both follow from `parent_wake_id IS NULL` rather than from anything this code does.
 - It is one row per sweep of one process, and the sweep's own conditional UPDATE is what stops a
   second scheduler instance filing a duplicate: only the instance that actually closed the row puts
   it in `swept`.

@@ -33,7 +33,7 @@ describe("pad revision race (todo 345 / issue #148)", () => {
       /Revision mismatch for pad \d+: expected 1, current 2/,
     );
 
-    const row = db.prepare("SELECT content, revision FROM scratchpads WHERE id = ?").get(padId);
+    const row = db.prepare("SELECT content, revision FROM pads WHERE id = ?").get(padId);
     assert.equal(row.content, "from A", "A's write must survive; B's must not have silently applied");
     assert.equal(row.revision, 2);
   });
@@ -47,10 +47,10 @@ describe("pad revision race (todo 345 / issue #148)", () => {
 
     bumpPad(padId, readByA.revision, "content = ?", "from A");
 
-    const info = db.prepare("DELETE FROM scratchpads WHERE id = ? AND revision = ?").run(padId, readByB.revision);
+    const info = db.prepare("DELETE FROM pads WHERE id = ? AND revision = ?").run(padId, readByB.revision);
     assert.equal(info.changes, 0, "B's delete must not remove a row it never actually saw current");
 
-    const row = db.prepare("SELECT content FROM scratchpads WHERE id = ?").get(padId);
+    const row = db.prepare("SELECT content FROM pads WHERE id = ?").get(padId);
     assert.equal(row.content, "from A", "the pad must still exist with A's content");
   });
 

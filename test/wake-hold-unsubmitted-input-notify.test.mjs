@@ -46,15 +46,15 @@ async function spawnShowing(name, shellCommand) {
 }
 
 const agentRow = (name) => db.prepare("SELECT id, actor_id, tmux_target FROM agents WHERE name = ?").get(name);
-const timerRow = (id) => db.prepare("SELECT * FROM timers WHERE id = ?").get(id);
+const timerRow = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
 const noticesAbout = (wakeId) =>
   db
-    .prepare("SELECT * FROM timers WHERE id != ? AND body LIKE ? ORDER BY id")
+    .prepare("SELECT * FROM wakes WHERE id != ? AND body LIKE ? ORDER BY id")
     .all(wakeId, `%wake #${wakeId} %`);
 
 async function ownedWake(ownerName, targetAgentId, body) {
   const wake = await mcp.call("wake_set", { delay_seconds: 5, body, deliver_to: targetAgentId });
-  db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
+  db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow(ownerName).actor_id, wake.wake_id);
   return wake.wake_id;
 }
 
@@ -85,7 +85,7 @@ describe(
         assert.match(notice.body, /unsub-notify-stuck/, "it must name the pane holding the wake");
         assert.match(notice.body, /unsubmitted/, "and say what is holding it");
         assert.equal(
-          notice.parent_timer_id,
+          notice.parent_wake_id,
           wakeId,
           "parent-linked to the wake it reports on (todo 322's deliberate widening): cancelling that " +
             "wake cascades to this notice, but it never ages out on its own - it is not finish-shaped",
@@ -115,7 +115,7 @@ describe(
         body: "INTEGRATION unsub-rearm body",
         deliver_to: stuck.agent_id,
       });
-      db.prepare("UPDATE timers SET owner = ? WHERE id = ?").run(agentRow("unsub-rearm-owner").actor_id, wake.wake_id);
+      db.prepare("UPDATE wakes SET owner = ? WHERE id = ?").run(agentRow("unsub-rearm-owner").actor_id, wake.wake_id);
       const wakeId = wake.wake_id;
 
       await until(async () => noticesAbout(wakeId).length > 0, 15000);
@@ -214,7 +214,7 @@ describe("two schedulers holding the same unsubmitted-input wake", () => {
         `  VALUES (?, 'agent:9', 'conc-owner', ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, ownerPane, socket);\n` +
         `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
         `  VALUES (?, 'agent:2', 'conc-stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket);\n` +
-        `const wakeId = db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
+        `const wakeId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
         `  VALUES (?, 'agent:9', 'go on then', 'delay', 'agent:2', ?, datetime('now', '-5 seconds'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, stuckPane).id;\n`;
 
       const TICKER =
@@ -251,8 +251,8 @@ describe("two schedulers holding the same unsubmitted-input wake", () => {
           });
         await Promise.all([run(), run()]);
 
-        const notices = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id != ? AND body LIKE ?").get(wakeId, "%wake #" + wakeId + " %").n;
-        const held = db.prepare("SELECT held_reason, held_at FROM timers WHERE id = ?").get(wakeId);
+        const notices = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id != ? AND body LIKE ?").get(wakeId, "%wake #" + wakeId + " %").n;
+        const held = db.prepare("SELECT held_reason, held_at FROM wakes WHERE id = ?").get(wakeId);
         process.stdout.write(JSON.stringify({ notices, heldReason: held.held_reason, heldAt: held.held_at }));
         `,
           { HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR },

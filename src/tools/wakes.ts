@@ -82,7 +82,7 @@ function resolveDelivery(
 
 function pendingWakes(projectId: number): TimerRow[] {
   return db
-    .prepare(`SELECT * FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} ORDER BY id`)
+    .prepare(`SELECT * FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} ORDER BY id`)
     .all(projectId) as TimerRow[];
 }
 
@@ -91,7 +91,7 @@ const RECENTLY_FIRED_LIMIT = 10;
 function recentlyFiredWakes(projectId: number): TimerRow[] {
   return db
     .prepare(
-      `SELECT * FROM timers
+      `SELECT * FROM wakes
        WHERE project_id = ? AND cancelled_at IS NULL AND fired_at IS NOT NULL AND repeat_every_ms IS NULL
          AND fired_at >= datetime('now', ?)
        ORDER BY fired_at DESC, id DESC LIMIT ${RECENTLY_FIRED_LIMIT}`,
@@ -167,7 +167,7 @@ const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   owner: t.owner,
   deliver_to: t.deliver_actor,
   ...(t.watch_scope ? { scope: t.watch_scope, standing: true } : {}),
-  ...(t.parent_timer_id != null ? { parent_wake_id: t.parent_timer_id } : {}),
+  ...(t.parent_wake_id != null ? { parent_wake_id: t.parent_wake_id } : {}),
 });
 
 const STANDING_WATCH_LIFETIME_SECONDS = 4 * 60 * 60;
@@ -183,7 +183,7 @@ const openStandingWatch = db.transaction(
   ): { id: number; max_wait_at: string } => {
     const existing = db
       .prepare(
-        `SELECT id, max_wait_at FROM timers
+        `SELECT id, max_wait_at FROM wakes
           WHERE project_id = ? AND owner = ? AND watch_scope IS NOT NULL AND ${ACTIVE_TIMER_WHERE}
           ORDER BY id LIMIT 1`,
       )
@@ -199,7 +199,7 @@ const openStandingWatch = db.transaction(
     }
     const row = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at)
+        `INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at)
          VALUES (?, ?, ?, 'idle_any', ?, ?, ?, datetime('now', printf('+%d seconds', ?)))
          RETURNING id, max_wait_at`,
       )
@@ -282,7 +282,7 @@ export function registerWakes(server: McpServer): void {
         const delivery = resolveDelivery(projectId, args.deliver_to);
         const row = db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms)
+            `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms)
              VALUES (?, ?, ?, 'delay', ?, ?, datetime('now', printf('+%d seconds', ?)), ?)
              RETURNING id, due_at`,
           )
@@ -420,7 +420,7 @@ export function registerWakes(server: McpServer): void {
         const maxWait = args.max_wait_seconds ?? 900;
         const info = db
           .prepare(
-            `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+            `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
                max_wait_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))`,
           )
@@ -466,7 +466,7 @@ export function registerWakes(server: McpServer): void {
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
         const t = db
-          .prepare("SELECT * FROM timers WHERE id = ? AND project_id = ?")
+          .prepare("SELECT * FROM wakes WHERE id = ? AND project_id = ?")
           .get(args.wake_id, projectId) as TimerRow | undefined;
         if (!t) throw new Error(`Wake ${args.wake_id} not found in this project.`);
         const hasChannel = makeChannelChecker();
@@ -518,7 +518,7 @@ export function registerWakes(server: McpServer): void {
         if (args.delay_seconds != null || args.repeat_every_seconds != null) {
           const target = db
             .prepare(
-              `SELECT kind FROM timers WHERE id = ? AND project_id = ? AND owner = ? AND parent_timer_id IS NULL
+              `SELECT kind FROM wakes WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
                  AND ${ACTIVE_TIMER_WHERE}`,
             )
             .get(args.wake_id, projectId, currentActor()) as { kind: string } | undefined;
@@ -552,8 +552,8 @@ export function registerWakes(server: McpServer): void {
 
         const row = db
           .prepare(
-            `UPDATE timers SET ${sets.join(", ")}
-             WHERE id = ? AND project_id = ? AND owner = ? AND parent_timer_id IS NULL AND ${ACTIVE_TIMER_WHERE}
+            `UPDATE wakes SET ${sets.join(", ")}
+             WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL AND ${ACTIVE_TIMER_WHERE}
              RETURNING due_at`,
           )
           .get(...params) as { due_at: string } | undefined;
@@ -589,13 +589,13 @@ export function registerWakes(server: McpServer): void {
         const info = isLead
           ? db
               .prepare(
-                `UPDATE timers SET cancelled_at = datetime('now')
+                `UPDATE wakes SET cancelled_at = datetime('now')
                  WHERE id = ? AND project_id = ? AND cancelled_at IS NULL`,
               )
               .run(args.wake_id, projectId)
           : db
               .prepare(
-                `UPDATE timers SET cancelled_at = datetime('now')
+                `UPDATE wakes SET cancelled_at = datetime('now')
                  WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
               )
               .run(args.wake_id, projectId, currentActor());
@@ -604,8 +604,8 @@ export function registerWakes(server: McpServer): void {
           info.changes > 0
             ? db
                 .prepare(
-                  `UPDATE timers SET cancelled_at = datetime('now')
-                   WHERE parent_timer_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                  `UPDATE wakes SET cancelled_at = datetime('now')
+                   WHERE parent_wake_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
                 )
                 .run(args.wake_id).changes
             : 0;

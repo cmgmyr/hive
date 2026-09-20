@@ -818,7 +818,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         ).changes;
       if (updated === 0) return false;
       db.prepare(
-        `UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+        `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
          WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
            AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
       ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
@@ -1731,11 +1731,11 @@ function cmdStatus(): void {
         .get(project.id) as { n: number }
     ).n;
 
-    const { timers, heldWakes } = db
+    const { wakes, heldWakes } = db
       .prepare(
-        `SELECT COUNT(*) AS timers, COUNT(held_at) AS heldWakes FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
+        `SELECT COUNT(*) AS wakes, COUNT(held_at) AS heldWakes FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
       )
-      .get(project.id) as { timers: number; heldWakes: number };
+      .get(project.id) as { wakes: number; heldWakes: number };
 
     const parked = db
       .prepare(
@@ -1743,7 +1743,7 @@ function cmdStatus(): void {
           "WHERE project_id = ? AND status = 'closed' AND parked_at != '' ORDER BY parked_at, id",
       )
       .all(project.id) as { id: number; name: string; parked_at: string; parked_branch: string; cwd: string }[];
-    if (agents.length === 0 && todos === 0 && timers === 0 && parked.length === 0) continue;
+    if (agents.length === 0 && todos === 0 && wakes === 0 && parked.length === 0) continue;
     anyOutput = true;
 
     let windowLabel: string;
@@ -1778,7 +1778,7 @@ function cmdStatus(): void {
       console.log(`         resume: agent_resume(agent_id: ${p.id})`);
     }
     console.log(
-      `  open todos: ${todos}   pending wake-ups: ${timers}${heldWakes > 0 ? ` (${heldWakes} held)` : ""}`,
+      `  open todos: ${todos}   pending wake-ups: ${wakes}${heldWakes > 0 ? ` (${heldWakes} held)` : ""}`,
     );
   }
   if (!anyOutput) console.log("Nothing running and no open work in any project.");
@@ -3003,22 +3003,22 @@ function cmdStatusline(): void {
      WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
        AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
   );
-  const pads = count("SELECT COUNT(*) AS n FROM scratchpads WHERE project_id = ? AND archived = 0");
-  const wakes = count(`SELECT COUNT(*) AS n FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
+  const pads = count("SELECT COUNT(*) AS n FROM pads WHERE project_id = ? AND archived = 0");
+  const wakes = count(`SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
 
   // One statement, not two: the count and the chosen row must come from the same read, or a wake that
   // delivers/re-arms between two separate queries leaves the second with no row to read.
   const held = db
     .prepare(
       `WITH chosen AS (
-         SELECT held_reason, first_held_at FROM timers
+         SELECT held_reason, first_held_at FROM wakes
           WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL
           ORDER BY (held_reason LIKE ?) DESC, (held_reason LIKE ?) ASC,
                    first_held_at IS NULL ASC, first_held_at ASC
           LIMIT 1
        )
        SELECT
-         (SELECT COUNT(*) FROM timers WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL) AS n,
+         (SELECT COUNT(*) FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL) AS n,
          (SELECT held_reason FROM chosen) AS held_reason,
          (SELECT first_held_at FROM chosen) AS first_held_at`,
     )

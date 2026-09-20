@@ -17,7 +17,7 @@ describe("lease_acquire's success receipt (fix round 1, P1)", () => {
       assert.equal(acquired.acquired, true);
       assert.ok(acquired.expires_at, "the receipt must carry the expiry the INSERT itself produced");
 
-      const row = db.prepare("SELECT expires_at FROM locks WHERE lock_key = ?").get("file:x.ts");
+      const row = db.prepare("SELECT expires_at FROM leases WHERE lock_key = ?").get("file:x.ts");
       assert.equal(acquired.expires_at, row.expires_at, "the receipt's expiry must be the row's actual expiry, not a value computed separately");
     } finally {
       await mcp.close();

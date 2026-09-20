@@ -52,7 +52,7 @@ One consequence for anyone writing tests here: `isolateTmux()` sets that private
 
 Never edit an existing entry in `MIGRATIONS`; add a new one. A snapshot is taken before any pending migration runs, which is one of the two backup triggers.
 
-**A trigger migration adds a standing constraint on every migration after it.** `scratchpads`, `todos` and `kv` each carry a SQL `BEFORE UPDATE` trigger that aborts when a content column (`scratchpads.content`, `todos.title`/`body`, `kv.value`) changes while `updated_at` does not read as the current moment. Any future migration that rewrites one of those columns for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration, since migrations are append-only - know this going in, not after a migration fails against a store that already has it.
+**A trigger migration adds a standing constraint on every migration after it.** `pads`, `todos` and `kv` each carry a SQL `BEFORE UPDATE` trigger that aborts when a content column (`pads.content`, `todos.title`/`body`, `kv.value`) changes while `updated_at` does not read as the current moment. Any future migration that rewrites one of those columns for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration, since migrations are append-only - know this going in, not after a migration fails against a store that already has it.
 
 ## The store's write lock now also excludes something that is not a store write
 

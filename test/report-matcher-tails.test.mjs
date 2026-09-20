@@ -43,7 +43,7 @@ const addStillGoing = (name) =>
 const addStandingWatch = () =>
   db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
           max_wait_at, created_at)
         VALUES (?, ?, 'crew update', 'idle_any', 'project', ?, '%deadlead',
           datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id`,

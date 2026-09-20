@@ -276,7 +276,7 @@ at session start:
   HIVE_AGENT_NAME  display name, e.g. "API worker"
 
 Without HIVE_AGENT_ID you are "user:<username>" (kind: human). Launch worker
-sessions with distinct ids so handoffs and locks are attributable:
+sessions with distinct ids so handoffs and leases are attributable:
 
   HIVE_AGENT_ID=worker-1 claude
 

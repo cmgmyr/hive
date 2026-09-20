@@ -90,7 +90,7 @@ export interface TimerRow {
 
   watch_scope: string | null;
 
-  parent_timer_id: number | null;
+  parent_wake_id: number | null;
 }
 
 export const WATCH_SCOPE_PROJECT = "project";
@@ -98,7 +98,7 @@ export const WATCH_SCOPE_PROJECT = "project";
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
 export const DELIVER_SOCKET_JOIN = `LEFT JOIN agents ON agents.id = (
-  SELECT a.id FROM agents a WHERE a.actor_id = timers.deliver_actor
+  SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
    ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1
 )`;
 
@@ -291,7 +291,7 @@ function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): vo
       | undefined;
 
     // Never mint a notice hive could not deliver: with no live lead pane there is nobody this could
-    // ever reach, and the row would sit in timers forever.
+    // ever reach, and the row would sit in wakes forever.
     if (!lead?.tmux_target || rowAlive(lead.tmux_socket, lead.tmux_target, snapshot) !== true) return;
     insertNotice(
       { project_id: agent.project_id, owner: lead.actor_id },
@@ -356,12 +356,12 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   const teardown =
     sawARealServer && snapshot.panes.size === 0 && swept.length > 0 ? recordTeardown(snapshot, swept) : undefined;
 
-  const timers = stmt(
-    `SELECT timers.id, timers.due_at, timers.held_reason, timers.deliver_pane,
+  const wakes = stmt(
+    `SELECT wakes.id, wakes.due_at, wakes.held_reason, wakes.deliver_pane,
             COALESCE(agents.tmux_socket, '') AS deliver_socket
-       FROM timers ${DELIVER_SOCKET_JOIN}
-      WHERE ${ACTIVE_TIMER_WHERE} AND timers.deliver_actor NOT LIKE ?
-        AND timers.created_at < datetime('now', ?)`,
+       FROM wakes ${DELIVER_SOCKET_JOIN}
+      WHERE ${ACTIVE_TIMER_WHERE} AND wakes.deliver_actor NOT LIKE ?
+        AND wakes.created_at < datetime('now', ?)`,
   ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as {
     id: number;
     due_at: string | null;
@@ -369,7 +369,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
     deliver_pane: string;
     deliver_socket: string;
   }[];
-  for (const timer of timers) {
+  for (const timer of wakes) {
     if (rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot) === false) {
       if (wasHeldForPaneReissue(timer.held_reason)) {
         holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
@@ -389,7 +389,7 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
 }
 
 function cancelTimer(timerId: number): void {
-  stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(timerId);
+  stmt("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(timerId);
 }
 
 export const LOG_RETENTION = "-7 days";
@@ -531,17 +531,17 @@ function maybeGenerateDashboards(): void {
 export function checkConfirmations(): void {
   const confirmationQuery = `
        SELECT MIN(created_at) FROM agent_state_log
-        WHERE actor_id = timers.deliver_actor AND event = 'prompt' AND created_at >= timers.typed_at
-          AND (payload LIKE '%[hive wake #' || timers.id || ']%'
-               OR payload LIKE '%[hive wake #' || timers.id || ',%')`;
+        WHERE actor_id = wakes.deliver_actor AND event = 'prompt' AND created_at >= wakes.typed_at
+          AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
+               OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
   try {
     const pending = stmt(
-      `SELECT 1 AS hit FROM timers
+      `SELECT 1 AS hit FROM wakes
         WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?) LIMIT 1`,
     ).get(LOG_RETENTION);
     if (!pending) return;
     stmt(
-      `UPDATE timers SET confirmed_at = (${confirmationQuery})
+      `UPDATE wakes SET confirmed_at = (${confirmationQuery})
        WHERE typed_at IS NOT NULL AND confirmed_at IS NULL AND typed_at >= datetime('now', ?)
          AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
     ).run(LOG_RETENTION);
@@ -573,14 +573,14 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
     const candidates = stmt(
-      `SELECT timers.*, COALESCE(agents.tmux_socket, '') AS deliver_socket,
+      `SELECT wakes.*, COALESCE(agents.tmux_socket, '') AS deliver_socket,
               COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
               COALESCE(agents.command, '') AS deliver_command
-         FROM timers ${DELIVER_SOCKET_JOIN}
-        WHERE timers.cancelled_at IS NULL AND (
-         (timers.kind = 'delay' AND timers.due_at <= datetime('now')
-           AND (timers.fired_at IS NULL OR timers.repeat_every_ms IS NOT NULL))
-         OR (timers.kind != 'delay' AND timers.fired_at IS NULL)
+         FROM wakes ${DELIVER_SOCKET_JOIN}
+        WHERE wakes.cancelled_at IS NULL AND (
+         (wakes.kind = 'delay' AND wakes.due_at <= datetime('now')
+           AND (wakes.fired_at IS NULL OR wakes.repeat_every_ms IS NOT NULL))
+         OR (wakes.kind != 'delay' AND wakes.fired_at IS NULL)
        )`,
     ).all() as TimerRow[];
 
@@ -652,7 +652,7 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
 
 function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void {
   bestEffortRun(
-    `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+    `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
      WHERE id = ? AND cancelled_at IS NULL
        AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?))`,
@@ -885,7 +885,7 @@ function insertNotice(
 ): number {
   return (
     stmt(
-      `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id)
+      `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id)
        VALUES (?, ?, ?, 'delay', ?, ?, datetime('now'), ?)
        RETURNING id`,
     ).get(timer.project_id, timer.owner, body, deliverActor, pane, parentTimerId) as { id: number }
@@ -895,10 +895,10 @@ function insertNotice(
 function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]): { id: number } | undefined {
   const placeholders = conditions.map(() => "?").join(", ");
   return stmt(
-    `SELECT t.id FROM timers t
-      WHERE t.parent_timer_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
+    `SELECT t.id FROM wakes t
+      WHERE t.parent_wake_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
         AND EXISTS (
-          SELECT 1 FROM wake_idle_notices n WHERE n.notice_timer_id = t.id AND n.condition IN (${placeholders})
+          SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = t.id AND n.condition IN (${placeholders})
         )
       ORDER BY t.id DESC LIMIT 1`,
   ).get(parentTimerId, ...conditions) as { id: number } | undefined;
@@ -907,7 +907,7 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
 function updateNoticeInPlace(noticeId: number, body: string): boolean {
   return (
     stmt(
-      `UPDATE timers SET body = ?, created_at = datetime('now')
+      `UPDATE wakes SET body = ?, created_at = datetime('now')
         WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
     ).run(body, noticeId).changes === 1
   );
@@ -916,7 +916,7 @@ function updateNoticeInPlace(noticeId: number, body: string): boolean {
 function claimBlockNotice(timerId: number, agentId: number, blockedSince: string): boolean {
   return (
     stmt(
-      `INSERT OR IGNORE INTO wake_block_notices (timer_id, agent_id, blocked_since)
+      `INSERT OR IGNORE INTO wake_block_notices (wake_id, agent_id, blocked_since)
        VALUES (?, ?, ?)`,
     ).run(timerId, agentId, blockedSince).changes === 1
   );
@@ -927,7 +927,7 @@ const claimModalHoldWithNotice = db.transaction(
 
     const claimed =
       stmt(
-        `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+        `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
           WHERE id = ? AND cancelled_at IS NULL
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
@@ -977,7 +977,7 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
 
     const claimed =
       stmt(
-        `UPDATE timers SET held_at = datetime('now'), held_reason = ?,
+        `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
           WHERE id = ? AND cancelled_at IS NULL
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
@@ -1073,7 +1073,7 @@ function blockedWatchedAgents(
 
 const stillPending = (timerId: number): boolean =>
   stmt(
-    `SELECT 1 AS hit FROM timers WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+    `SELECT 1 AS hit FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
   ).get(timerId) !== undefined;
 
 const claimBlockNoticeWithNotice = db.transaction(
@@ -1158,7 +1158,7 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
   return (
     stmt(
       `SELECT 1 AS hit FROM wake_block_notices
-        WHERE timer_id = ? AND agent_id = ? AND blocked_since = ?`,
+        WHERE wake_id = ? AND agent_id = ? AND blocked_since = ?`,
     ).get(timerId, agentId, blockedSince) !== undefined
   );
 }
@@ -1178,8 +1178,8 @@ const STANDING_EXPIRED_NOTE =
   "this standing watch has expired and nothing is watching now; set a new one if the crew is still working";
 
 const unreported = (condition: string, episode: string): string => `NOT EXISTS (
-    SELECT 1 FROM wake_idle_notices n LEFT JOIN timers nt ON nt.id = n.notice_timer_id
-     WHERE n.timer_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
+    SELECT 1 FROM wake_idle_notices n LEFT JOIN wakes nt ON nt.id = n.notice_wake_id
+     WHERE n.wake_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
        AND NOT (nt.fired_at IS NOT NULL AND nt.typed_at IS NULL AND nt.cancelled_at IS NULL
                 AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
 
@@ -1244,9 +1244,9 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
 
 export function markGoneReported(agentId: number, projectId: number): void {
   stmt(
-    `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+    `INSERT OR IGNORE INTO wake_idle_notices (wake_id, agent_id, condition, episode)
        SELECT t.id, a.id, '${CONDITION_GONE}', a.closed_at
-         FROM timers t
+         FROM wakes t
          JOIN agents a ON a.id = ?
         WHERE t.project_id = ? AND t.kind = 'idle_any' AND t.watch_scope IS NOT NULL
           AND t.cancelled_at IS NULL AND t.fired_at IS NULL
@@ -1256,7 +1256,7 @@ export function markGoneReported(agentId: number, projectId: number): void {
 
 export function seedGoneCursor(timerId: number, projectId: number): void {
   stmt(
-    `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+    `INSERT OR IGNORE INTO wake_idle_notices (wake_id, agent_id, condition, episode)
        SELECT ?, a.id, '${CONDITION_GONE}', a.closed_at
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed'
@@ -1268,7 +1268,7 @@ function idleIsAFreshTransition(timerId: number, row: CrewRow): boolean {
   const previous = (
     stmt(
       `SELECT MAX(episode) AS episode FROM wake_idle_notices
-        WHERE timer_id = ? AND agent_id = ? AND condition = '${CONDITION_IDLE}'`,
+        WHERE wake_id = ? AND agent_id = ? AND condition = '${CONDITION_IDLE}'`,
     ).get(timerId, row.id) as { episode: string | null }
   ).episode;
   if (previous === null) return true;
@@ -1508,9 +1508,9 @@ function standingNoticeBody(
 function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): void {
   stmt(
     `DELETE FROM wake_idle_notices
-      WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?
-        AND notice_timer_id IS NOT NULL
-        AND EXISTS (SELECT 1 FROM timers t WHERE t.id = wake_idle_notices.notice_timer_id
+      WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ?
+        AND notice_wake_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM wakes t WHERE t.id = wake_idle_notices.notice_wake_id
                       AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
                       AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
   ).run(timerId, agentId, condition, episode);
@@ -1519,7 +1519,7 @@ function rearmSpentEpisode(timerId: number, agentId: number, condition: string, 
 function claimEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
   return (
     stmt(
-      `INSERT OR IGNORE INTO wake_idle_notices (timer_id, agent_id, condition, episode)
+      `INSERT OR IGNORE INTO wake_idle_notices (wake_id, agent_id, condition, episode)
        VALUES (?, ?, ?, ?)`,
     ).run(timerId, agentId, condition, episode).changes === 1
   );
@@ -1533,8 +1533,8 @@ function stampEpisodeNotice(
   episode: string,
 ): void {
   stmt(
-    `UPDATE wake_idle_notices SET notice_timer_id = ?
-      WHERE timer_id = ? AND agent_id = ? AND condition = ? AND episode = ?`,
+    `UPDATE wake_idle_notices SET notice_wake_id = ?
+      WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ?`,
   ).run(noticeId, timerId, agentId, condition, episode);
 }
 
@@ -1560,11 +1560,11 @@ const claimStandingBatch = db.transaction(
 
       const priorStats = stmt(
         `SELECT COUNT(*) AS n, MIN(episode) AS lo, MAX(episode) AS hi
-           FROM wake_idle_notices WHERE notice_timer_id = ?`,
+           FROM wake_idle_notices WHERE notice_wake_id = ?`,
       ).get(pending.id) as { n: number; lo: string | null; hi: string | null };
       const priorCap = Math.max(0, FINISHED_SHOWN_CAP - won.length);
       const prior = stmt(
-        `SELECT agent_id, condition, episode FROM wake_idle_notices WHERE notice_timer_id = ?
+        `SELECT agent_id, condition, episode FROM wake_idle_notices WHERE notice_wake_id = ?
            ORDER BY episode DESC LIMIT ?`,
       ).all(pending.id, priorCap) as { agent_id: number; condition: string; episode: string }[];
       const carried: StandingCandidate[] = [];
@@ -1785,15 +1785,15 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
 type NoticeDisposition = "deliver" | "aged" | "orphaned";
 
 function noticeDisposition(timer: TimerRow): NoticeDisposition {
-  if (timer.parent_timer_id === null) return "deliver";
+  if (timer.parent_wake_id === null) return "deliver";
   try {
     const check = stmt(
       `SELECT (p.cancelled_at IS NULL) AS live,
               (p.fired_at IS NOT NULL AND p.repeat_every_ms IS NULL) AS parent_finished,
               (? >= datetime('now', ?)) AS fresh,
-              EXISTS (SELECT 1 FROM wake_idle_notices n WHERE n.notice_timer_id = ?) AS finish_shaped
-         FROM timers p WHERE p.id = ?`,
-    ).get(timer.created_at, NOTICE_MAX_AGE, timer.id, timer.parent_timer_id) as
+              EXISTS (SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = ?) AS finish_shaped
+         FROM wakes p WHERE p.id = ?`,
+    ).get(timer.created_at, NOTICE_MAX_AGE, timer.id, timer.parent_wake_id) as
       | { live: number; parent_finished: number; fresh: number; finish_shaped: number }
       | undefined;
     if (check === undefined || check.live !== 1) return "orphaned";
@@ -1823,7 +1823,7 @@ const AGED_OUT_CONDITION: Readonly<Record<string, string>> = {
 function agedOutBody(timer: TimerRow): string {
   const rows = stmt(
     `SELECT a.name, n.condition FROM wake_idle_notices n JOIN agents a ON a.id = n.agent_id
-      WHERE n.notice_timer_id = ? ORDER BY n.episode`,
+      WHERE n.notice_wake_id = ? ORDER BY n.episode`,
   ).all(timer.id) as { name: string; condition: string }[];
   const shown = rows
     .slice(0, FINISHED_SHOWN_CAP)
@@ -1850,12 +1850,12 @@ export function watchStillWatchingClause(timer: TimerRow): string {
     `SELECT (cancelled_at IS NULL AND fired_at IS NULL
              AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching,
             (watch_scope IS NOT NULL) AS standing
-       FROM timers WHERE id = ?`,
-  ).get(timer.parent_timer_id) as { watching: number; standing: number } | undefined;
+       FROM wakes WHERE id = ?`,
+  ).get(timer.parent_wake_id) as { watching: number; standing: number } | undefined;
   // The parent is not always a standing watch: a modal-hold or one-shot block notice's parent is
   // the ORDINARY wake it is about (todo 322), which has no crew to re-arm a watch for.
   const label =
-    parent?.standing === 1 ? `Standing watch #${timer.parent_timer_id}` : `Wake #${timer.parent_timer_id}`;
+    parent?.standing === 1 ? `Standing watch #${timer.parent_wake_id}` : `Wake #${timer.parent_wake_id}`;
   return parent !== undefined && parent.watching === 1
     ? `${label} is unaffected and still active.`
     : `${label} is no longer active; set a new one if you still need it.`;
@@ -1867,7 +1867,7 @@ export function watchStillWatchingClause(timer: TimerRow): string {
 // age-out cannot itself age out, and nothing re-queues, so nothing loops.
 const ageOutNotice = db.transaction((timer: TimerRow): void => {
   const cancelled =
-    stmt("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ? AND cancelled_at IS NULL")
+    stmt("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ? AND cancelled_at IS NULL")
       .run(timer.id, timer.created_at).changes === 1;
   if (!cancelled) return;
   // Parentless, so noticeDisposition can never age it out, and deliverable() holds it forever when
@@ -1986,7 +1986,7 @@ async function fireDelay(
   }
   if (disposition === "orphaned") {
     bestEffortRun(
-      "UPDATE timers SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ?",
+      "UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND created_at IS ?",
       timer.id,
       timer.created_at,
     );
@@ -2000,7 +2000,7 @@ async function fireDelay(
 
     claimed =
       stmt(
-        `UPDATE timers SET due_at = datetime('now', printf('+%d seconds', ?)),
+        `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
            fired_at = datetime('now'), fire_count = fire_count + 1,
            typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
            typed_seen = NULL, first_held_at = NULL
@@ -2015,7 +2015,7 @@ async function fireDelay(
 function claimOneShot(timer: TimerRow): boolean {
   return (
     stmt(
-      `UPDATE timers SET fired_at = datetime('now'), fire_count = fire_count + 1
+      `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
          AND fired_at IS NULL AND cancelled_at IS NULL`,
     ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
@@ -2211,7 +2211,7 @@ function watchedTail(timer: TimerRow): string {
 
 function firstEpisodeFiledAt(noticeId: number): string | null {
   return (
-    stmt("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_timer_id = ?").get(noticeId) as {
+    stmt("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_wake_id = ?").get(noticeId) as {
       t: string | null;
     }
   ).t;
@@ -2222,7 +2222,7 @@ function firstEpisodeFiledAt(noticeId: number): string | null {
 // less than that after the hold began is not a fact a reader can act on separately, so the two clauses
 // collapse to one. At a one-second hold the pair printed the same timestamp and the same age twice.
 export function noticeStalenessNote(timer: TimerRow): string {
-  if (timer.parent_timer_id === null) return "";
+  if (timer.parent_wake_id === null) return "";
   try {
     const heldSince = firstEpisodeFiledAt(timer.id) ?? timer.created_at;
     const heldSeconds = ageSecondsSince(heldSince);
@@ -2249,7 +2249,7 @@ export function noticeStalenessNote(timer: TimerRow): string {
 export function shortRenderForLeadDelivery(timer: TimerRow): string | null {
   const rows = stmt(
     `SELECT agent_id, condition, episode FROM wake_idle_notices
-      WHERE notice_timer_id = ? AND condition IN ('${CONDITION_IDLE}', '${CONDITION_GONE}')
+      WHERE notice_wake_id = ? AND condition IN ('${CONDITION_IDLE}', '${CONDITION_GONE}')
       ORDER BY notified_at, agent_id, episode`,
   ).all(timer.id) as { agent_id: number; condition: string; episode: string }[];
   if (rows.length === 0) return null;
@@ -2284,7 +2284,7 @@ async function deliver(
 
   const recordTyped = () =>
     bestEffortRun(
-      `UPDATE timers SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
+      `UPDATE wakes SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
          typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
        WHERE id = ?`,
       typedBusy,

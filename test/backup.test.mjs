@@ -700,7 +700,7 @@ describe("restore: write rows, destroy them, restore, read them back", () => {
     rmSync(backupsDir(dataDir), { recursive: true, force: true });
     db.prepare("INSERT INTO projects (name, path) VALUES ('restore-test', '/tmp/restore-test-project')").run();
     const projectId = db.prepare("SELECT id FROM projects WHERE path = '/tmp/restore-test-project'").get().id;
-    db.prepare("INSERT INTO scratchpads (project_id, name, content) VALUES (?, 'plan', 'do not lose this')").run(
+    db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, 'plan', 'do not lose this')").run(
       projectId,
     );
     db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'recoverable todo')").run(projectId);
@@ -709,7 +709,7 @@ describe("restore: write rows, destroy them, restore, read them back", () => {
     assert.ok(backup.ok, backup.error);
     const snapshotName = listSnapshots(dataDir)[0].name;
 
-    db.prepare("DELETE FROM scratchpads WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM pads WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM todos WHERE project_id = ?").run(projectId);
     db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
     assert.equal(db.prepare("SELECT COUNT(*) AS c FROM projects WHERE id = ?").get(projectId).c, 0);
@@ -721,7 +721,7 @@ describe("restore: write rows, destroy them, restore, read them back", () => {
     const restored = new Database(join(dataDir, "hive.db"));
     const project = restored.prepare("SELECT * FROM projects WHERE path = '/tmp/restore-test-project'").get();
     assert.ok(project, "the deleted project must be back after restore");
-    const pad = restored.prepare("SELECT * FROM scratchpads WHERE project_id = ?").get(project.id);
+    const pad = restored.prepare("SELECT * FROM pads WHERE project_id = ?").get(project.id);
     assert.equal(pad.content, "do not lose this");
     const todo = restored.prepare("SELECT * FROM todos WHERE project_id = ?").get(project.id);
     assert.equal(todo.title, "recoverable todo");

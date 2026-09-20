@@ -43,7 +43,7 @@ const addWorker = (actor, name, pane, state, changedOffset, opts = {}) =>
 
 const addStandingWatch = (opts = {}) =>
   db.prepare(
-    \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+    \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
         max_wait_at, created_at)
       VALUES (?, ?, ?, 'idle_any', 'project', ?, ?,
         datetime('now', ?), datetime('now', '-60 seconds')) RETURNING id\`,
@@ -79,16 +79,16 @@ const writeCodexTranscript = (path, ageSeconds) => {
 
 const notices = (watchId) =>
   db.prepare(
-    "SELECT id, body, fired_at, typed_at, cancelled_at, deliver_pane FROM timers WHERE parent_timer_id = ? ORDER BY id",
+    "SELECT id, body, fired_at, typed_at, cancelled_at, deliver_pane FROM wakes WHERE parent_wake_id = ? ORDER BY id",
   ).all(watchId);
 const stallCursor = (watchId) =>
   db.prepare(
-    "SELECT agent_id, condition, episode, notice_timer_id FROM wake_idle_notices WHERE timer_id = ? AND condition = 'stall' ORDER BY agent_id, episode",
+    "SELECT agent_id, condition, episode, notice_wake_id FROM wake_idle_notices WHERE wake_id = ? AND condition = 'stall' ORDER BY agent_id, episode",
   ).all(watchId);
 const blockCursor = () =>
   db.prepare("SELECT agent_id, blocked_since FROM wake_block_notices ORDER BY agent_id").all();
 const watchRow = (watchId) =>
-  db.prepare("SELECT fired_at, fire_count, cancelled_at FROM timers WHERE id = ?").get(watchId);
+  db.prepare("SELECT fired_at, fire_count, cancelled_at FROM wakes WHERE id = ?").get(watchId);
 const agentRow = (id) =>
   db.prepare("SELECT status, agent_state, state_changed_at FROM agents WHERE id = ?").get(id);
 `;
@@ -149,7 +149,7 @@ describe("the stall detector reports a worker whose transcript has gone quiet", 
     assert.equal(result.cursor.length, 1, "and only one episode was claimed");
     assert.equal(result.cursor[0].agent_id, result.staleId);
     assert.equal(result.cursor[0].condition, "stall");
-    assert.ok(result.cursor[0].notice_timer_id, "the claim records WHICH notice carried it");
+    assert.ok(result.cursor[0].notice_wake_id, "the claim records WHICH notice carried it");
   });
 
   it("reports a worker that never wrote a transcript at all, with its own sentence", () => {
@@ -249,7 +249,7 @@ describe("the stall detector reports a worker whose transcript has gone quiet", 
       // Spent, never typed, and older than NOTICE_RETRY_AFTER: the exact
       // shape of a notice whose sendText threw.
       db.prepare(
-        "UPDATE timers SET fired_at = datetime('now', '-120 seconds'), typed_at = NULL WHERE id = ?",
+        "UPDATE wakes SET fired_at = datetime('now', '-120 seconds'), typed_at = NULL WHERE id = ?",
       ).run(first[0].id);
 
       await tick(snapshot);
@@ -277,7 +277,7 @@ describe("the stall detector reports a worker whose transcript has gone quiet", 
       await tick(snapshot);
       const dark = { notices: notices(watchId).length, cursor: stallCursor(watchId).length };
 
-      db.prepare("UPDATE timers SET deliver_pane = '%lead' WHERE id = ?").run(watchId);
+      db.prepare("UPDATE wakes SET deliver_pane = '%lead' WHERE id = ?").run(watchId);
       await tick(snapshot);
 
       ${out(`{ dark, notices: notices(watchId).length, cursor: stallCursor(watchId).length, watch: watchRow(watchId) }`)}

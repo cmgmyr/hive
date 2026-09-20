@@ -145,7 +145,7 @@ function workerAssignment(completionsDir) {
 function readTimer(dbPath, timerId) {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    return db.prepare("SELECT fired_at, cancelled_at, due_at, max_wait_at FROM timers WHERE id = ?").get(timerId);
+    return db.prepare("SELECT fired_at, cancelled_at, due_at, max_wait_at FROM wakes WHERE id = ?").get(timerId);
   } finally {
     db.close();
   }
@@ -169,7 +169,7 @@ function readRows(dbPath, actorId, timerId) {
     const log = db
       .prepare("SELECT event, state, payload, created_at FROM agent_state_log WHERE actor_id = ? ORDER BY id")
       .all(actorId);
-    const timer = db.prepare("SELECT fired_at, cancelled_at, due_at, max_wait_at FROM timers WHERE id = ?").get(timerId);
+    const timer = db.prepare("SELECT fired_at, cancelled_at, due_at, max_wait_at FROM wakes WHERE id = ?").get(timerId);
     return { log, timer };
   } finally {
     db.close();

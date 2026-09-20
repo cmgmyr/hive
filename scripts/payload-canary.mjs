@@ -22,7 +22,7 @@ function mcpVerificationPath(completionsDir) {
 async function pollUntilIdle(dbPath, timerId) {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
-    const stmt = db.prepare("SELECT fired_at, cancelled_at FROM timers WHERE id = ?");
+    const stmt = db.prepare("SELECT fired_at, cancelled_at FROM wakes WHERE id = ?");
     const deadline = Date.now() + RUN_TIMEOUT_MS;
     for (;;) {
       const timer = stmt.get(timerId);

@@ -62,7 +62,7 @@ export function assertWakeFiredAfterLastCompletion(result) {
       );
     }
     throw new Error(
-      "PROVES NOTHING: timers.fired_at is still null in the final sample -- the wake never fired (or was never observed firing), so there is no timestamp to compare against the last completion.",
+      "PROVES NOTHING: wakes.fired_at is still null in the final sample -- the wake never fired (or was never observed firing), so there is no timestamp to compare against the last completion.",
     );
   }
   const firedEpoch = parseUtcSeconds(firedAt);
@@ -112,7 +112,7 @@ export function assertWakeFiredByIdleNotMaxWaitTimeout(result) {
       );
     }
     throw new Error(
-      "PROVES NOTHING: timers.fired_at is still null in the final sample -- the wake never fired (or was never observed firing), so there is nothing to check against max_wait_at.",
+      "PROVES NOTHING: wakes.fired_at is still null in the final sample -- the wake never fired (or was never observed firing), so there is nothing to check against max_wait_at.",
     );
   }
   const maxWaitAt = last?.maxWaitAt;

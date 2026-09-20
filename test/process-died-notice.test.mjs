@@ -22,7 +22,7 @@ let leadPane;
 
 const noticeBodies = () =>
   db
-    .prepare("SELECT body FROM timers WHERE project_id = ? AND cancelled_at IS NULL ORDER BY id")
+    .prepare("SELECT body FROM wakes WHERE project_id = ? AND cancelled_at IS NULL ORDER BY id")
     .all(projectId)
     .map((r) => r.body);
 
@@ -76,9 +76,9 @@ describe("a process that dies on its own is reported to the lead once; a stopped
     assert.deepEqual(noticeBodies(), [
       `[hive] process "api" exited on its own; its pane is gone. Restart it with: hive start "api"`,
     ]);
-    const notice = db.prepare("SELECT * FROM timers WHERE project_id = ? ORDER BY id DESC LIMIT 1").get(projectId);
+    const notice = db.prepare("SELECT * FROM wakes WHERE project_id = ? ORDER BY id DESC LIMIT 1").get(projectId);
     assert.equal(notice.deliver_pane, leadPane, "it has to be aimed at the lead's own pane");
-    assert.equal(notice.parent_timer_id, null, "parentless, so nothing can age out a report of a death");
+    assert.equal(notice.parent_wake_id, null, "parentless, so nothing can age out a report of a death");
   });
 
   it("files nothing more on the next sweep, because the row it reported is already closed", needsTmux, () => {

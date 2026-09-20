@@ -20,7 +20,7 @@ describe("lease_acquire's conflict-path read cannot throw on a released row (fix
     const project = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get("p2-conflict-2", "/tmp/lease-p2-conflict-2");
     db.prepare("INSERT INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run("agent:C", "agent:C");
     db.prepare(
-      `INSERT INTO locks (project_id, lock_key, owner, expires_at)
+      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
        VALUES (?, ?, ?, datetime('now', '+30 seconds'))`,
     ).run(project.id, "file:y.ts", "agent:C");
     const row = readLease(project.id, "file:y.ts");

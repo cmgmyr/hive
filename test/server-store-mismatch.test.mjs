@@ -52,7 +52,7 @@ function agentRow(name, target) {
 const agentStatus = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
 
 function reset() {
-  db.exec("DELETE FROM timers; DELETE FROM agents;");
+  db.exec("DELETE FROM wakes; DELETE FROM agents;");
 }
 
 const asDefaultStore = (fn) => withEnv({ HIVE_DATA_DIR: undefined }, fn);
@@ -388,7 +388,7 @@ describe("the janitor sweeps nothing when it cannot trust the server it probed",
   it("does not cancel wake-ups whose delivery pane lives on the other server", () => {
     const timer = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', 'wake body', 'delay', '[]', 'user:test', '%9603',
            datetime('now', '+1 hour'), datetime('now', '-60 seconds'))
@@ -398,7 +398,7 @@ describe("the janitor sweeps nothing when it cannot trust the server it probed",
 
     asDefaultStore(() => janitor());
 
-    const row = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(timer);
+    const row = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(timer);
     assert.equal(row.cancelled_at, null, "a lead's pending wake must survive a probe of the wrong server");
   });
 });

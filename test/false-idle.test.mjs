@@ -51,7 +51,7 @@ function agentRow(name, target, state = "idle", socket = "") {
 const stateOf = (id) => db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(id).agent_state;
 
 function reset() {
-  db.exec("DELETE FROM timers; DELETE FROM agents; DELETE FROM agent_state_log;");
+  db.exec("DELETE FROM wakes; DELETE FROM agents; DELETE FROM agent_state_log;");
 }
 
 const sequenceFor = (actorId) =>
@@ -493,7 +493,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
   function idleWake(agentId) {
     return db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            max_wait_at, created_at)
          VALUES (?, 'user:test', 'lane check', 'idle_any', ?, 'user:test', ?,
            datetime('now', '+1 hour'), datetime('now'))
@@ -505,7 +505,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
   function timedOutIdleWake(agentId) {
     return db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            max_wait_at, created_at)
          VALUES (?, 'user:test', 'lane check', 'idle_any', ?, 'user:test', ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
@@ -860,7 +860,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     await tick();
     await tick();
 
-    const row = db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(wake);
+    const row = db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(wake);
     assert.equal(row.fired_at, null, "an idle the lead could already see is not a fresh transition");
     assert.ok(!delivered().includes("lane check"), "and nothing was typed at the lead");
   });
@@ -875,7 +875,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     await until(() => delivered().includes("lane check"));
 
     assert.notEqual(
-      db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(wake).fired_at,
+      db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(wake).fired_at,
       null,
     );
   });
@@ -895,7 +895,7 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
     const wake = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', 'plain body', 'delay', '[]', 'user:test', ?,
            datetime('now', '-1 second'), datetime('now', '-60 seconds'))
@@ -951,7 +951,7 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
   function wakeInto(pane, body) {
     return db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', ?, 'delay', '[]', 'user:test', ?,
            datetime('now', '-1 second'), datetime('now', '-60 seconds'))
@@ -962,7 +962,7 @@ describe("a wake is never typed into a pane that is waiting on a choice", { skip
 
   const timerRow = (id) =>
     db
-      .prepare("SELECT fired_at, cancelled_at, fire_count, typed_at, held_at, held_reason FROM timers WHERE id = ?")
+      .prepare("SELECT fired_at, cancelled_at, fire_count, typed_at, held_at, held_reason FROM wakes WHERE id = ?")
       .get(id);
 
   it("sees a dialog on the screen", async () => {

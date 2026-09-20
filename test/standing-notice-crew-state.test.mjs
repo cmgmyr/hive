@@ -47,18 +47,18 @@ const stopWith = (actor, body, offset) =>
   ).run(actor, body, offset);
 const addStandingWatch = () =>
   db.prepare(
-    \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+    \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
         max_wait_at, created_at)
       VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'lead:1', '%doesnotexist',
         datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`,
   ).get(project).id;
 const noticeRow = (watchId) =>
-  db.prepare("SELECT * FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1").get(watchId);
+  db.prepare("SELECT * FROM wakes WHERE parent_wake_id = ? ORDER BY id DESC LIMIT 1").get(watchId);
 const claimCount = (noticeId) =>
-  db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT agent_id) AS a FROM wake_idle_notices WHERE notice_timer_id = ?")
+  db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT agent_id) AS a FROM wake_idle_notices WHERE notice_wake_id = ?")
     .get(noticeId);
 const pointAt = (noticeId, pane) =>
-  db.prepare("UPDATE timers SET deliver_pane = ?, held_at = NULL, held_reason = NULL WHERE id = ?")
+  db.prepare("UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL WHERE id = ?")
     .run(pane, noticeId);
 const resumeWorker = (actor) =>
   db.prepare(
@@ -66,13 +66,13 @@ const resumeWorker = (actor) =>
   ).run(actor);
 const shareOneNotifiedSecond = (noticeId) =>
   db.prepare(
-    "UPDATE wake_idle_notices SET notified_at = datetime('now', '-30 seconds') WHERE notice_timer_id = ?",
+    "UPDATE wake_idle_notices SET notified_at = datetime('now', '-30 seconds') WHERE notice_wake_id = ?",
   ).run(noticeId);
 const backdate = (noticeId, offset, alsoCreatedAt) => {
-  db.prepare("UPDATE wake_idle_notices SET notified_at = datetime('now', ?) WHERE notice_timer_id = ?")
+  db.prepare("UPDATE wake_idle_notices SET notified_at = datetime('now', ?) WHERE notice_wake_id = ?")
     .run(offset, noticeId);
   if (alsoCreatedAt) {
-    db.prepare("UPDATE timers SET created_at = datetime('now', ?) WHERE id = ?").run(offset, noticeId);
+    db.prepare("UPDATE wakes SET created_at = datetime('now', ?) WHERE id = ?").run(offset, noticeId);
   }
 };
 `;
@@ -136,7 +136,7 @@ describe("todo 473: the standing notice reports crew state, not episodes", () =>
       const claims = claimCount(notice.id);
       pointAt(notice.id, deliveryPane);
       await tick(snapshot);
-      ${out("{ claims, delivered: db.prepare('SELECT typed_at FROM timers WHERE id = ?').get(notice.id).typed_at !== null }")}
+      ${out("{ claims, delivered: db.prepare('SELECT typed_at FROM wakes WHERE id = ?').get(notice.id).typed_at !== null }")}
       `,
       ["%1", "%2", "%3"],
     );

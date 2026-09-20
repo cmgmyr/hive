@@ -24,8 +24,8 @@ function backdateLastSeen(actorId) {
 
 function seedProjectOwnerRow(table, projectId, ownerActorId) {
   switch (table) {
-    case "scratchpads":
-      db.prepare("INSERT INTO scratchpads (project_id, name) VALUES (?, 'x')").run(projectId);
+    case "pads":
+      db.prepare("INSERT INTO pads (project_id, name) VALUES (?, 'x')").run(projectId);
       return;
     case "todos":
       db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(projectId);
@@ -33,9 +33,9 @@ function seedProjectOwnerRow(table, projectId, ownerActorId) {
     case "kv":
       db.prepare("INSERT INTO kv (project_id, key, value) VALUES (?, 'k', 'v')").run(projectId);
       return;
-    case "locks":
+    case "leases":
       db.prepare(
-        "INSERT INTO locks (project_id, lock_key, owner, expires_at) VALUES (?, 'k', ?, datetime('now', '+1 day'))",
+        "INSERT INTO leases (project_id, lock_key, owner, expires_at) VALUES (?, 'k', ?, datetime('now', '+1 day'))",
       ).run(projectId, ownerActorId);
       return;
     case "agents":
@@ -43,9 +43,9 @@ function seedProjectOwnerRow(table, projectId, ownerActorId) {
         projectId,
       );
       return;
-    case "timers":
+    case "wakes":
       db.prepare(
-        "INSERT INTO timers (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'x', 'x', 'x', 'x')",
+        "INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'x', 'x', 'x', 'x')",
       ).run(projectId);
       return;
     case "command_trust":
@@ -82,26 +82,26 @@ function seedActorOwnerRow(table, column, actorId, homeProjectId, sharedTodoId) 
         actorId,
       );
       return;
-    case "locks.owner":
+    case "leases.owner":
       db.prepare(
-        "INSERT INTO locks (project_id, lock_key, owner, expires_at) VALUES (?, ?, ?, datetime('now', '+1 day'))",
+        "INSERT INTO leases (project_id, lock_key, owner, expires_at) VALUES (?, ?, ?, datetime('now', '+1 day'))",
       ).run(homeProjectId, `key-${actorId}`, actorId);
       return;
-    case "scratchpads.updated_by":
-      db.prepare("INSERT INTO scratchpads (project_id, name, updated_by) VALUES (?, ?, ?)").run(
+    case "pads.updated_by":
+      db.prepare("INSERT INTO pads (project_id, name, updated_by) VALUES (?, ?, ?)").run(
         homeProjectId,
         `pad-${actorId}`,
         actorId,
       );
       return;
-    case "timers.owner":
+    case "wakes.owner":
       db.prepare(
-        "INSERT INTO timers (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, ?, 'x', 'x', 'x')",
+        "INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, ?, 'x', 'x', 'x')",
       ).run(homeProjectId, actorId);
       return;
-    case "timers.deliver_actor":
+    case "wakes.deliver_actor":
       db.prepare(
-        "INSERT INTO timers (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'x', 'x', ?, 'x')",
+        "INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'x', 'x', ?, 'x')",
       ).run(homeProjectId, actorId);
       return;
     case "agent_state_log.actor_id":
@@ -152,7 +152,7 @@ describe("project_prune", () => {
   it("PROJECT_OWNER_TABLES is exactly the audited list from #97 (todo 235) - a change here must be deliberate", () => {
     assert.deepEqual(
       [...PROJECT_OWNER_TABLES].sort(),
-      ["agents", "command_trust", "kv", "locks", "scratchpads", "timers", "todos"],
+      ["agents", "command_trust", "kv", "leases", "pads", "todos", "wakes"],
     );
   });
 
@@ -337,10 +337,10 @@ describe("actor_prune", () => {
         "agents.actor_id",
         "agents.parent_actor_id",
         "kv.updated_by",
-        "locks.owner",
-        "scratchpads.updated_by",
-        "timers.deliver_actor",
-        "timers.owner",
+        "leases.owner",
+        "pads.updated_by",
+        "wakes.deliver_actor",
+        "wakes.owner",
         "todo_comments.author",
         "todos.locked_by",
       ].sort(),

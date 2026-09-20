@@ -39,7 +39,7 @@ describe("wake_cancel: a running lead may cancel a wake it does not own", () => 
   function seedWorkerOwnedWake() {
     return db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
          VALUES (?, ?, 'the worker set this for itself', 'delay', '[]', ?, '%nowhere',
            datetime('now', '+3600 seconds'), datetime('now', '-60 seconds'))
          RETURNING id`,
@@ -53,7 +53,7 @@ describe("wake_cancel: a running lead may cancel a wake it does not own", () => 
     const result = await leadMcp.call("wake_cancel", { wake_id: wakeId });
     assert.equal(result.cancelled, true, "a running lead must be able to cancel any pending wake in the project");
 
-    const row = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(wakeId);
+    const row = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(wakeId);
     assert.ok(row.cancelled_at, "the row itself must actually be cancelled, not just the receipt claiming so");
   });
 

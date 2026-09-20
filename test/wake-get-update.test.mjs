@@ -47,7 +47,7 @@ function seedTimer({
 
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at, repeat_every_ms, cancelled_at, fired_at)
        VALUES (?, ?, ?, ?, '[]', 'user:test', ?,
          CASE WHEN ? = 'delay' THEN datetime('now', ?) ELSE NULL END,
@@ -82,7 +82,7 @@ describe("wake_get / wake_update", () => {
       .get(`${dirs.projectDir}-other`).id;
     const foreign = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, ?, 'foreign project wake', 'delay', '[]', 'user:test', '%nowhere',
            datetime('now', '+3600 seconds'), datetime('now', '-60 seconds'))
@@ -101,15 +101,15 @@ describe("wake_get / wake_update", () => {
 
   it("edits in place: the wake keeps its id, and no second row is created", async () => {
     const seeded = seedTimer();
-    const before = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
 
     const result = await mcp.call("wake_update", { wake_id: seeded.id, body: "edited body" });
     assert.equal(result.wake_id, seeded.id);
     assert.equal(result.updated, true);
 
-    const afterCount = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const afterCount = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     assert.equal(afterCount, before, "wake_update must edit the existing row, never insert a new one");
-    assert.equal(db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body, "edited body");
+    assert.equal(db.prepare("SELECT body FROM wakes WHERE id = ?").get(seeded.id).body, "edited body");
   });
 
   it("delay_seconds moves due_at relative to NOW, not relative to the wake's original due_at", async () => {
@@ -133,14 +133,14 @@ describe("wake_get / wake_update", () => {
     const seeded = seedTimer({ dueOffsetSeconds: 3600 });
     const result = await mcp.call("wake_update", { wake_id: seeded.id, body: "only the body changed" });
     assert.equal(result.due_at, seeded.due_at, "due_at must be untouched when only body is edited");
-    assert.equal(db.prepare("SELECT due_at FROM timers WHERE id = ?").get(seeded.id).due_at, seeded.due_at);
+    assert.equal(db.prepare("SELECT due_at FROM wakes WHERE id = ?").get(seeded.id).due_at, seeded.due_at);
   });
 
   it("a repeat_every_seconds-only update does not move due_at either - the two fields are independent", async () => {
     const seeded = seedTimer({ dueOffsetSeconds: 3600, repeatEveryMs: 5000 });
     const result = await mcp.call("wake_update", { wake_id: seeded.id, repeat_every_seconds: 10 });
     assert.equal(result.due_at, seeded.due_at, "changing the interval alone must not move the next fire time");
-    const row = db.prepare("SELECT due_at, repeat_every_ms FROM timers WHERE id = ?").get(seeded.id);
+    const row = db.prepare("SELECT due_at, repeat_every_ms FROM wakes WHERE id = ?").get(seeded.id);
     assert.equal(row.due_at, seeded.due_at);
     assert.equal(row.repeat_every_ms, 10000, "the interval itself must still have changed");
   });
@@ -149,7 +149,7 @@ describe("wake_get / wake_update", () => {
     const seeded = seedTimer({ cancelled: true });
     const result = await mcp.call("wake_update", { wake_id: seeded.id, body: "should not apply" });
     assert.equal(result.updated, false);
-    assert.notEqual(db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body, "should not apply");
+    assert.notEqual(db.prepare("SELECT body FROM wakes WHERE id = ?").get(seeded.id).body, "should not apply");
   });
 
   it("refuses an already-fired one-shot wake, but a repeating wake stays editable after firing once", async () => {
@@ -170,7 +170,7 @@ describe("wake_get / wake_update", () => {
     const seeded = seedTimer({ owner: "user:someone-else" });
     const result = await mcp.call("wake_update", { wake_id: seeded.id, body: "not yours" });
     assert.equal(result.updated, false);
-    assert.notEqual(db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body, "not yours");
+    assert.notEqual(db.prepare("SELECT body FROM wakes WHERE id = ?").get(seeded.id).body, "not yours");
   });
 
   it(
@@ -198,7 +198,7 @@ describe("wake_get / wake_update", () => {
       const seeded = seedTimer({ kind: "idle_any" });
       await assert.rejects(mcp.call("wake_update", { wake_id: seeded.id, delay_seconds: 60 }), /idle_any/);
       assert.equal(
-        db.prepare("SELECT due_at FROM timers WHERE id = ?").get(seeded.id).due_at,
+        db.prepare("SELECT due_at FROM wakes WHERE id = ?").get(seeded.id).due_at,
         null,
         "a refused update must not write a due_at nothing would ever read",
       );
@@ -215,7 +215,7 @@ describe("wake_get / wake_update", () => {
         /idle_all/,
       );
       assert.equal(
-        db.prepare("SELECT repeat_every_ms FROM timers WHERE id = ?").get(seeded.id).repeat_every_ms,
+        db.prepare("SELECT repeat_every_ms FROM wakes WHERE id = ?").get(seeded.id).repeat_every_ms,
         null,
       );
     },
@@ -225,7 +225,7 @@ describe("wake_get / wake_update", () => {
     const seeded = seedTimer({ kind: "idle_any" });
     const result = await mcp.call("wake_update", { wake_id: seeded.id, body: "idle wake edited" });
     assert.equal(result.updated, true);
-    assert.equal(db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body, "idle wake edited");
+    assert.equal(db.prepare("SELECT body FROM wakes WHERE id = ?").get(seeded.id).body, "idle wake edited");
   });
 
   function seedRacePair(bOverrides = {}) {
@@ -235,7 +235,7 @@ describe("wake_get / wake_update", () => {
   }
 
   function assertFillerFired(aId) {
-    const aRow = db.prepare("SELECT fired_at FROM timers WHERE id = ?").get(aId);
+    const aRow = db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(aId);
     assert.ok(aRow.fired_at, "sanity check: the filler wake must actually have fired, or nothing was raced");
   }
 
@@ -255,7 +255,7 @@ describe("wake_get / wake_update", () => {
       await tickPromise;
       assertFillerFired(a.id);
 
-      const bRow = db.prepare("SELECT fired_at, fire_count, due_at, body FROM timers WHERE id = ?").get(b.id);
+      const bRow = db.prepare("SELECT fired_at, fire_count, due_at, body FROM wakes WHERE id = ?").get(b.id);
       assert.equal(
         bRow.fired_at,
         null,
@@ -288,7 +288,7 @@ describe("wake_get / wake_update", () => {
       await tickPromise;
       assertFillerFired(a.id);
 
-      const bRow = db.prepare("SELECT fired_at, fire_count, body FROM timers WHERE id = ?").get(b.id);
+      const bRow = db.prepare("SELECT fired_at, fire_count, body FROM wakes WHERE id = ?").get(b.id);
       assert.equal(
         bRow.fired_at,
         null,
@@ -317,7 +317,7 @@ describe("wake_get / wake_update", () => {
       await tickPromise;
       assertFillerFired(a.id);
 
-      const afterFirstTick = db.prepare("SELECT fired_at, fire_count, due_at FROM timers WHERE id = ?").get(b.id);
+      const afterFirstTick = db.prepare("SELECT fired_at, fire_count, due_at FROM wakes WHERE id = ?").get(b.id);
       assert.equal(
         afterFirstTick.fired_at,
         null,
@@ -329,7 +329,7 @@ describe("wake_get / wake_update", () => {
       assert.equal(afterFirstTick.due_at, b.due_at, "an untouched delay_seconds must leave due_at exactly as seeded");
 
       await tick();
-      const afterSecondTick = db.prepare("SELECT fired_at, fire_count, due_at FROM timers WHERE id = ?").get(b.id);
+      const afterSecondTick = db.prepare("SELECT fired_at, fire_count, due_at FROM wakes WHERE id = ?").get(b.id);
       assert.equal(afterSecondTick.fire_count, 1, "exactly one delivery total, never two");
       assert.ok(afterSecondTick.fired_at, "the second, unraced tick must claim it normally");
       const toDate = (s) => new Date(`${s.replace(" ", "T")}Z`);
@@ -362,11 +362,11 @@ describe("wake_get / wake_update", () => {
       );
 
       assert.ok(
-        await until(() => db.prepare("SELECT fire_count FROM timers WHERE id = ?").get(seeded.id).fire_count >= 1, 15000),
+        await until(() => db.prepare("SELECT fire_count FROM wakes WHERE id = ?").get(seeded.id).fire_count >= 1, 15000),
         "the real scheduler must have fired this wake within its own tick cadence",
       );
 
-      const row = db.prepare("SELECT due_at, fired_at FROM timers WHERE id = ?").get(seeded.id);
+      const row = db.prepare("SELECT due_at, fired_at FROM wakes WHERE id = ?").get(seeded.id);
       const toDate = (s) => new Date(`${s.replace(" ", "T")}Z`);
       const advancedSeconds = (toDate(row.due_at) - toDate(row.fired_at)) / 1000;
       assert.ok(
@@ -409,9 +409,9 @@ describe("control bytes in a wake body (issue #150)", () => {
   });
 
   it("nothing is inserted when wake_set refuses a bad body", async () => {
-    const before = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     await assert.rejects(mcp.call("wake_set", { delay_seconds: 60, body: "bad byte" }));
-    const after = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE project_id = ?").get(projectId).n;
+    const after = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
     assert.equal(after, before, "a refused body must never reach the INSERT");
   });
 
@@ -422,7 +422,7 @@ describe("control bytes in a wake body (issue #150)", () => {
       /ESC, 0x1B/,
     );
     assert.equal(
-      db.prepare("SELECT body FROM timers WHERE id = ?").get(seeded.id).body,
+      db.prepare("SELECT body FROM wakes WHERE id = ?").get(seeded.id).body,
       "clean body",
       "a refused update must not partially land",
     );

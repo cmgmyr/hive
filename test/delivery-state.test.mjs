@@ -52,7 +52,7 @@ function seedProject() {
 const timerRow = (id) =>
   db
     .prepare(
-      "SELECT fired_at, typed_at, held_at, held_reason, fire_count, due_at, typed_busy FROM timers WHERE id = ?",
+      "SELECT fired_at, typed_at, held_at, held_reason, fire_count, due_at, typed_busy FROM wakes WHERE id = ?",
     )
     .get(id);
 
@@ -64,7 +64,7 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
 
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', 'wake body', 'delay', '[]', 'user:test', '%999999',
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
@@ -85,7 +85,7 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
     const project = seedProject();
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at, repeat_every_ms)
          VALUES (?, 'user:test', 'repeat body', 'delay', '[]', 'user:test', ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), 5000)
@@ -102,7 +102,7 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
     assert.ok(row.due_at, "the repeat schedule must still have advanced, unrelated to typed_at");
   });
 
-  it("ACTIVE_TIMER_WHERE is unchanged - a wider clause would fire timers this lane must not touch", () => {
+  it("ACTIVE_TIMER_WHERE is unchanged - a wider clause would fire wakes this lane must not touch", () => {
     assert.equal(
       ACTIVE_TIMER_WHERE,
       "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)",
@@ -114,7 +114,7 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
 function seedDueTimer(project, actor, pane) {
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at)
        VALUES (?, 'user:test', 'busy-check wake', 'delay', '[]', ?, ?,
          datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
@@ -207,7 +207,7 @@ describe("issue #75: the scheduler records whether the target was busy at delive
     insertStateLogRow(db, actor, "prompt", "working", 5);
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at, repeat_every_ms)
          VALUES (?, 'user:test', 'repeat busy-check', 'delay', '[]', ?, ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), 999999999)
@@ -220,7 +220,7 @@ describe("issue #75: the scheduler records whether the target was busy at delive
     assert.equal(fire1.typed_busy, 1, "fire 1 must record the working observation seeded above");
 
     insertStateLogRow(db, actor, "stop", "idle", 0);
-    db.prepare("UPDATE timers SET due_at = datetime('now', '-1 seconds') WHERE id = ?").run(timerId);
+    db.prepare("UPDATE wakes SET due_at = datetime('now', '-1 seconds') WHERE id = ?").run(timerId);
     await tick();
 
     const fire2 = timerRow(timerId);
@@ -236,7 +236,7 @@ describe("issue #75: the scheduler records whether the target was busy at delive
 function seedDelivered(project, actor, typedAt) {
   return db
     .prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at, fired_at, typed_at)
        VALUES (?, 'user:test', 'wake body', 'delay', '[]', ?, '%confirm-pane',
          datetime('now', '-60 seconds'), datetime('now', '-60 seconds'), datetime('now', '-30 seconds'), ?)
@@ -260,7 +260,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     insertStateLogRow(db, actor, "prompt", "working", 50, wakeConfirmPayload(timerId));
     await tick(EMPTY_SNAPSHOT);
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       null,
       "an earlier turn must not confirm a later wake, even carrying that wake's own marker",
     );
@@ -268,7 +268,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     insertStateLogRow(db, actor, "prompt", "working", 35);
     await tick(EMPTY_SNAPSHOT);
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       null,
       "a same-actor prompt row at or after typed_at must NOT confirm without this wake's own marker - " +
         "an unrelated turn (a different wake, a background subagent's task-notification) is exactly this shape",
@@ -281,7 +281,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     await tick(EMPTY_SNAPSHOT);
 
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       confirming,
       "a prompt row at or after typed_at carrying this wake's own marker must confirm it",
     );
@@ -295,14 +295,14 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     insertStateLogRow(db, actor, "prompt", "working", 39, wakeConfirmPayload(timerId));
 
     await tick(EMPTY_SNAPSHOT);
-    const stamped = db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at;
+    const stamped = db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at;
     assert.notEqual(stamped, null, "must have observed and stamped the confirmation");
 
     db.prepare("DELETE FROM agent_state_log WHERE actor_id = ?").run(actor);
 
     await tick(EMPTY_SNAPSHOT);
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       stamped,
       "a stored confirmation must survive the log row it was derived from being evicted later",
     );
@@ -316,7 +316,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     await tick(EMPTY_SNAPSHOT);
 
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       null,
       "absence of a prompt row means not-yet-confirmed, never inferred loss",
     );
@@ -334,12 +334,12 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     checkConfirmations();
 
     assert.notEqual(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(confirmId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(confirmId).confirmed_at,
       null,
       "the timer with a matching prompt row must actually be confirmed for this test to mean anything",
     );
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(pendingId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(pendingId).confirmed_at,
       null,
     );
     assert.equal(
@@ -356,7 +356,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     const actor = `agent:confirm-subsecond-${project}`;
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at)
          VALUES (?, 'user:test', 'wake body', 'delay', '[]', ?, ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
@@ -365,7 +365,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
       .get(project, actor, livePane).id;
 
     await tick();
-    const typedAt = db.prepare("SELECT typed_at FROM timers WHERE id = ?").get(timerId).typed_at;
+    const typedAt = db.prepare("SELECT typed_at FROM wakes WHERE id = ?").get(timerId).typed_at;
     assert.ok(typedAt, "must have actually delivered for this test to mean anything");
 
     const hasMs = typedAt.includes(".");
@@ -386,7 +386,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     await tick();
 
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       null,
       "a prompt row genuinely before typed_at must never confirm it, whole-second flooring or not",
     );
@@ -399,7 +399,7 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
 
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at, repeat_every_ms)
          VALUES (?, 'user:test', 'repeat confirm body', 'delay', '[]', ?, ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), 999999999)
@@ -408,22 +408,22 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
       .get(project, actor, livePane).id;
 
     await tick();
-    const fire1 = db.prepare("SELECT typed_at FROM timers WHERE id = ?").get(timerId);
+    const fire1 = db.prepare("SELECT typed_at FROM wakes WHERE id = ?").get(timerId);
     assert.ok(fire1.typed_at, "must have actually delivered fire 1 for this test to mean anything");
 
     insertStateLogRow(db, actor, "prompt", "working", 0, wakeConfirmPayload(timerId));
     await tick();
-    const confirmed1 = db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at;
+    const confirmed1 = db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at;
     assert.notEqual(confirmed1, null, "fire 1 must be confirmed before this test can prove anything about later fires");
 
     db.prepare(
-      "UPDATE timers SET due_at = datetime('now', '-1 seconds'), deliver_pane = '%999999' WHERE id = ?",
+      "UPDATE wakes SET due_at = datetime('now', '-1 seconds'), deliver_pane = '%999999' WHERE id = ?",
     ).run(timerId);
     const fakePaneSnapshot = { panes: new Set(["%999999"]), windows: new Set() };
     await tick(fakePaneSnapshot);
 
     const failedCycle = db
-      .prepare("SELECT typed_at, confirmed_at, held_at, fire_count FROM timers WHERE id = ?")
+      .prepare("SELECT typed_at, confirmed_at, held_at, fire_count FROM wakes WHERE id = ?")
       .get(timerId);
     assert.equal(failedCycle.fire_count, 2, "the claim must still succeed even though the send then fails");
     assert.equal(
@@ -438,13 +438,13 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
     );
     assert.equal(failedCycle.held_at, null, "a send failure is not a hold; it must not be reported as one");
 
-    db.prepare("UPDATE timers SET due_at = datetime('now', '-1 seconds'), deliver_pane = ? WHERE id = ?").run(
+    db.prepare("UPDATE wakes SET due_at = datetime('now', '-1 seconds'), deliver_pane = ? WHERE id = ?").run(
       livePane,
       timerId,
     );
     await tick();
 
-    const fire3 = db.prepare("SELECT typed_at, confirmed_at, fire_count FROM timers WHERE id = ?").get(timerId);
+    const fire3 = db.prepare("SELECT typed_at, confirmed_at, fire_count FROM wakes WHERE id = ?").get(timerId);
     assert.equal(fire3.fire_count, 3, "must have actually re-fired for this test to mean anything");
     assert.notEqual(fire3.typed_at, fire1.typed_at, "fire 3 must record its own, later typed_at");
     assert.equal(
@@ -455,14 +455,14 @@ describe("issue #27: confirmation is read from agent_state_log, stamped once as 
 
     await tick();
     assert.equal(
-      db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at,
+      db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at,
       null,
       "a stale prompt row from before this delivery must not confirm it",
     );
 
     insertStateLogRow(db, actor, "prompt", "working", 0, wakeConfirmPayload(timerId));
     await tick();
-    const confirmed3 = db.prepare("SELECT confirmed_at FROM timers WHERE id = ?").get(timerId).confirmed_at;
+    const confirmed3 = db.prepare("SELECT confirmed_at FROM wakes WHERE id = ?").get(timerId).confirmed_at;
     assert.notEqual(confirmed3, null, "a fresh prompt row after fire 3's typed_at must confirm it");
     assert.notEqual(confirmed3, confirmed1, "fire 3's confirmation must be its own, not fire 1's stale value");
   });
@@ -476,7 +476,7 @@ describe("issue #27, review finding A4: the held_at write is guarded against a c
     const actor = `agent:held-race-${project}`;
 
     db.prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at)
        VALUES (?, 'user:test', 'decoy', 'delay', '[]', ?, ?,
          datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))`,
@@ -492,18 +492,18 @@ describe("issue #27, review finding A4: the held_at write is guarded against a c
 
     const timerId = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
            due_at, created_at, repeat_every_ms)
          VALUES (?, 'user:test', 'raced repeat', 'delay', '[]', ?, ?,
            datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), 999999999)
          RETURNING id`,
       )
       .get(project, actor, dialogPane).id;
-    const staleDueAt = db.prepare("SELECT due_at FROM timers WHERE id = ?").get(timerId).due_at;
+    const staleDueAt = db.prepare("SELECT due_at FROM wakes WHERE id = ?").get(timerId).due_at;
 
     setTimeout(() => {
       db.prepare(
-        `UPDATE timers SET due_at = datetime('now', '+999999 seconds'),
+        `UPDATE wakes SET due_at = datetime('now', '+999999 seconds'),
            fired_at = datetime('now'), fire_count = fire_count + 1,
            typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), confirmed_at = NULL,
            held_at = NULL, held_reason = NULL
@@ -514,11 +514,11 @@ describe("issue #27, review finding A4: the held_at write is guarded against a c
     await tick();
 
     const decoyTyped = db
-      .prepare("SELECT typed_at FROM timers WHERE deliver_actor = ? AND body = 'decoy'")
+      .prepare("SELECT typed_at FROM wakes WHERE deliver_actor = ? AND body = 'decoy'")
       .get(actor).typed_at;
     assert.ok(decoyTyped, "the decoy must have actually delivered - it is what buys this test its race window");
 
-    const raced = db.prepare("SELECT held_at, held_reason, due_at FROM timers WHERE id = ?").get(timerId);
+    const raced = db.prepare("SELECT held_at, held_reason, due_at FROM wakes WHERE id = ?").get(timerId);
     assert.notEqual(raced.due_at, staleDueAt, "the simulated concurrent claim must have actually landed for this test to mean anything");
     assert.equal(
       raced.held_at,
@@ -556,7 +556,7 @@ describe("issue #27: a bookkeeping write that fails costs the record, never the 
 
     try {
       const seed = (pane, body) =>
-        `db.prepare(\`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at) VALUES (?, 'user:test', ?, 'delay', '[]', 'user:test', ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))\`).run(project, ${JSON.stringify(body)}, ${JSON.stringify(pane)});\n`;
+        `db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at) VALUES (?, 'user:test', ?, 'delay', '[]', 'user:test', ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))\`).run(project, ${JSON.stringify(body)}, ${JSON.stringify(pane)});\n`;
       const out = runFixture(
         bkTmp,
         "bookkeeping",
@@ -568,12 +568,12 @@ describe("issue #27: a bookkeeping write that fails costs the record, never the 
           seed(deliveryPane, "ALPHA delivered") +
           seed(deliveryPane, "BETA delivered") +
 
-          `db.exec("ALTER TABLE timers DROP COLUMN held_at");\n` +
-          `db.exec("ALTER TABLE timers DROP COLUMN typed_at");\n` +
+          `db.exec("ALTER TABLE wakes DROP COLUMN held_at");\n` +
+          `db.exec("ALTER TABLE wakes DROP COLUMN typed_at");\n` +
 
           `db.exec("DROP TABLE agent_state_log");\n` +
           `await tick();\n` +
-          `const dialogRow = db.prepare("SELECT fired_at, cancelled_at FROM timers WHERE deliver_pane = ? AND body = 'HELD wake'").get(${JSON.stringify(dialogPane)});\n` +
+          `const dialogRow = db.prepare("SELECT fired_at, cancelled_at FROM wakes WHERE deliver_pane = ? AND body = 'HELD wake'").get(${JSON.stringify(dialogPane)});\n` +
           `process.stdout.write(JSON.stringify({ dialogFired: dialogRow.fired_at !== null, dialogCancelled: dialogRow.cancelled_at !== null }));\n`,
         { HIVE_DATA_DIR: bkDataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR },
       );
@@ -612,7 +612,7 @@ describe("issue #27: `hive status` surfaces the held count, not just the pending
     const statusTmp = scratchDirs().tmp;
 
     db.prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at)
        VALUES (?, 'user:test', 'wake body', 'delay', '[]', 'user:test', '%status-plain',
          datetime('now', '+60 seconds'), datetime('now'))`,
@@ -627,7 +627,7 @@ describe("issue #27: `hive status` surfaces the held count, not just the pending
     );
 
     db.prepare(
-      `INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
          due_at, created_at, held_at, held_reason)
        VALUES (?, 'user:test', 'wake body', 'delay', '[]', 'user:test', '%status-held',
          datetime('now', '+60 seconds'), datetime('now'), datetime('now'), 'pane is awaiting a modal choice')`,

@@ -41,7 +41,7 @@ const addWorkerWithParent = (actor, name, pane, state, changedOffset, parentActo
   ).get(project, actor, name, pane, state, changedOffset, parentActorId).id;
 const addStandingWatch = (createdOffset = '-60 seconds', maxWait = '+4 hours', opts = {}) =>
   db.prepare(
-    \`INSERT INTO timers (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
+    \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
         max_wait_at, created_at)
       VALUES (?, ?, ?, 'idle_any', 'project', ?, ?,
         datetime('now', ?), datetime('now', ?)) RETURNING id\`,
@@ -59,10 +59,10 @@ const logRow = (actor, event, state, offset) =>
     "INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES (?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now', ?))",
   ).run(actor, event, state, offset);
 const notices = (watchId) =>
-  db.prepare("SELECT id, body, watch, owner, deliver_actor, deliver_pane, fired_at, cancelled_at FROM timers WHERE parent_timer_id = ? ORDER BY id").all(watchId);
-const watchRow = (watchId) => db.prepare("SELECT fired_at, fire_count, cancelled_at FROM timers WHERE id = ?").get(watchId);
+  db.prepare("SELECT id, body, watch, owner, deliver_actor, deliver_pane, fired_at, cancelled_at FROM wakes WHERE parent_wake_id = ? ORDER BY id").all(watchId);
+const watchRow = (watchId) => db.prepare("SELECT fired_at, fire_count, cancelled_at FROM wakes WHERE id = ?").get(watchId);
 const cursor = (watchId) =>
-  db.prepare("SELECT agent_id, condition, episode, notice_timer_id FROM wake_idle_notices WHERE timer_id = ? ORDER BY agent_id, condition").all(watchId);
+  db.prepare("SELECT agent_id, condition, episode, notice_wake_id FROM wake_idle_notices WHERE wake_id = ? ORDER BY agent_id, condition").all(watchId);
 `;
 
 const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
@@ -262,7 +262,7 @@ describe("a standing watch keeps watching", () => {
     assert.equal(result.notices, 1, "three ticks over one unchanged idle must file exactly one notice");
     assert.equal(result.cursor.length, 1);
     assert.equal(result.cursor[0].condition, "idle");
-    assert.ok(result.cursor[0].notice_timer_id !== null, "the cursor row records which notice carried it");
+    assert.ok(result.cursor[0].notice_wake_id !== null, "the cursor row records which notice carried it");
   });
 
   it("reports a worker that was ALREADY idle when the watch was set", () => {
@@ -273,12 +273,12 @@ describe("a standing watch keeps watching", () => {
       const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-600 seconds');
       const standing = addStandingWatch('-60 seconds');
       const oneShot = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at, created_at)
           VALUES (?, 'lead:1', 'one-shot', 'idle_any', ?, 'lead:1', '%lead', datetime('now', '+4 hours'), datetime('now', '-60 seconds'))
           RETURNING id\`,
       ).get(project, JSON.stringify([w1])).id;
       await tick(snapshot);
-      const oneShotRow = db.prepare("SELECT fired_at, held_reason FROM timers WHERE id = ?").get(oneShot);
+      const oneShotRow = db.prepare("SELECT fired_at, held_reason FROM wakes WHERE id = ?").get(oneShot);
       ${out("{ standingNotices: notices(standing).length, oneShotRow }")}
       `,
     );
@@ -510,7 +510,7 @@ describe("a watched worker that dies", () => {
       db.prepare("UPDATE agents SET status = 'closed', closed_at = ? WHERE id = ?").run(t, before);
       // Delivered to a worker, to pin the FULL render's GONE prose.
       const watchId = addStandingWatch('-60 seconds', '+4 hours', { deliverActor: 'agent:9', deliverPane: '%9' });
-      db.prepare("UPDATE timers SET created_at = ? WHERE id = ?").run(t, watchId);
+      db.prepare("UPDATE wakes SET created_at = ? WHERE id = ?").run(t, watchId);
       seedGoneCursor(watchId, project);
 
       // And this one dies while the watch is standing, still inside it.
@@ -530,7 +530,7 @@ describe("a watched worker that dies", () => {
     assert.doesNotMatch(result.first[0], /died-before/, "and one that was already dead is not, at the same resolution");
     assert.equal(result.later, 1, "the seeded row is never re-armed: it has no spent claim behind it to repair");
     assert.deepEqual(
-      result.cursor.map((c) => c.notice_timer_id === null),
+      result.cursor.map((c) => c.notice_wake_id === null),
       [true, false],
       "the pre-seeded row carries no notice; the reported one carries the notice that named it",
     );
@@ -543,13 +543,13 @@ describe("a watched worker that dies", () => {
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'working', '-120 seconds');
       const oneShot = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at, created_at)
           VALUES (?, 'lead:1', 'one-shot', 'idle_any', ?, 'lead:1', '%lead', datetime('now', '+4 hours'), datetime('now', '-60 seconds'))
           RETURNING id\`,
       ).get(project, JSON.stringify([w1])).id;
       const shrunk = { panes: new Set(), windows: new Set() };
       await tick(shrunk);
-      const heldNotFired = db.prepare("SELECT fired_at, held_reason FROM timers WHERE id = ?").get(oneShot);
+      const heldNotFired = db.prepare("SELECT fired_at, held_reason FROM wakes WHERE id = ?").get(oneShot);
       ${out("{ heldNotFired, agentClosed: db.prepare(\"SELECT status FROM agents WHERE id = ?\").get(w1).status }")}
       `,
     );
@@ -576,7 +576,7 @@ describe("a notice that was claimed but never typed", () => {
       // The claim committed and the send did or did not happen. fired_at is
       // pushed well past NOTICE_RETRY_AFTER so this is a settled outcome, not
       // a delivery still in flight.
-      db.prepare("UPDATE timers SET fired_at = datetime('now', '-300 seconds'), typed_at = ${typedAt} WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET fired_at = datetime('now', '-300 seconds'), typed_at = ${typedAt} WHERE id = ?").run(notice.id);
       await tick(snapshot);
       ${out("{ notices: notices(watchId).length }")}
       `,
@@ -608,9 +608,9 @@ describe("the parent link", () => {
       const watchId = addStandingWatch();
       await tick(snapshot);
       const notice = notices(watchId)[0];
-      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(watchId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(watchId);
       await tick(snapshot);
-      const after = db.prepare("SELECT cancelled_at, typed_at, fired_at FROM timers WHERE id = ?").get(notice.id);
+      const after = db.prepare("SELECT cancelled_at, typed_at, fired_at FROM wakes WHERE id = ?").get(notice.id);
       ${out("{ after }")}
       `,
     );
@@ -627,9 +627,9 @@ describe("the parent link", () => {
       const watchId = addStandingWatch();
       await tick(snapshot);
       const notice = notices(watchId)[0];
-      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
       await tick(snapshot);
-      const after = db.prepare("SELECT cancelled_at, typed_at FROM timers WHERE id = ?").get(notice.id);
+      const after = db.prepare("SELECT cancelled_at, typed_at FROM wakes WHERE id = ?").get(notice.id);
       ${out("{ after }")}
       `,
     );
@@ -645,18 +645,18 @@ describe("the parent link", () => {
       const watchId = addStandingWatch();
       await tick(snapshot);
       const notice = notices(watchId)[0];
-      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
       await tick(snapshot);
       const replacement = db.prepare(
-        "SELECT id, body, parent_timer_id, cancelled_at, deliver_actor, deliver_pane FROM timers " +
-        "WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
+        "SELECT id, body, parent_wake_id, cancelled_at, deliver_actor, deliver_pane FROM wakes " +
+        "WHERE parent_wake_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
       ).get(notice.id);
 
       // Backdated the same way the notice was, then ticked again: whatever exempts the replacement
       // has to survive the bound that killed the thing it is reporting.
-      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(replacement.id);
+      db.prepare("UPDATE wakes SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(replacement.id);
       await tick(snapshot);
-      const afterSecondTick = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(replacement.id);
+      const afterSecondTick = db.prepare("SELECT cancelled_at, held_reason FROM wakes WHERE id = ?").get(replacement.id);
       const refiled = notices(watchId).filter((n) => n.cancelled_at === null).length;
       const claims = cursor(watchId);
       ${out("{ replacement, afterSecondTick, refiled, claims, noticeId: notice.id }")}
@@ -688,13 +688,13 @@ describe("the parent link", () => {
       const notice = notices(watchId)[0];
       // Expiry FIRES the watch row (maybeFireIdle -> claimOneShot); it does not cancel it. A test
       // using a cancelled watch would pass while proving nothing, since that is the other branch.
-      db.prepare("UPDATE timers SET fired_at = datetime('now'), max_wait_at = datetime('now', '-1 minutes') WHERE id = ?").run(watchId);
-      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET fired_at = datetime('now'), max_wait_at = datetime('now', '-1 minutes') WHERE id = ?").run(watchId);
+      db.prepare("UPDATE wakes SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
       await tick(snapshot);
       const replacement = db.prepare(
-        "SELECT body FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
+        "SELECT body FROM wakes WHERE parent_wake_id IS NULL AND kind = 'delay' AND id > ? ORDER BY id DESC LIMIT 1",
       ).get(notice.id);
-      const watch = db.prepare("SELECT fired_at, cancelled_at FROM timers WHERE id = ?").get(watchId);
+      const watch = db.prepare("SELECT fired_at, cancelled_at FROM wakes WHERE id = ?").get(watchId);
       ${out("{ replacement, watch }")}
       `,
     );
@@ -714,20 +714,20 @@ describe("the parent link", () => {
       "no-age-out-for-a-notice-about-a-wake",
       `
       const parentWake = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
             held_reason, created_at)
           VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
             datetime('now'), 'pane is awaiting a modal choice (folder-trust or /model picker)', datetime('now', '-90 seconds'))
           RETURNING id\`,
       ).get(project).id;
       const holdNotice = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id, created_at)
           VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-6 hours'))
           RETURNING id\`,
       ).get(project, parentWake).id;
       await tick(snapshot);
-      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(holdNotice);
-      const strays = db.prepare("SELECT COUNT(*) AS n FROM timers WHERE id > ?").get(holdNotice).n;
+      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM wakes WHERE id = ?").get(holdNotice);
+      const strays = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id > ?").get(holdNotice).n;
       ${out("{ noticeAfter, strays }")}
       `,
     );
@@ -741,20 +741,20 @@ describe("the parent link", () => {
       "orphan-without-age-out",
       `
       const parentWake = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, held_at,
             held_reason, created_at)
           VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
             datetime('now'), 'pane is awaiting a modal choice (folder-trust or /model picker)', datetime('now', '-90 seconds'))
           RETURNING id\`,
       ).get(project).id;
       const holdNotice = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id, created_at)
           VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
           RETURNING id\`,
       ).get(project, parentWake).id;
-      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(parentWake);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(parentWake);
       await tick(snapshot);
-      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM timers WHERE id = ?").get(holdNotice);
+      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM wakes WHERE id = ?").get(holdNotice);
       ${out("{ noticeAfter }")}
       `,
     );
@@ -767,17 +767,17 @@ describe("the parent link", () => {
       "orphan-on-fired-one-shot-parent",
       `
       const parentWake = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, created_at)
           VALUES (?, 'lead:1', 'INTEGRATION original body', 'delay', 'lead:1', '%stuck', datetime('now', '-1 seconds'),
             datetime('now'), datetime('now', '-90 seconds')) RETURNING id\`,
       ).get(project).id;
       const holdNotice = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id, created_at)
           VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
           RETURNING id\`,
       ).get(project, parentWake).id;
       await tick(snapshot);
-      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM timers WHERE id = ?").get(holdNotice);
+      const noticeAfter = db.prepare("SELECT cancelled_at, typed_at FROM wakes WHERE id = ?").get(holdNotice);
       ${out("{ noticeAfter }")}
       `,
     );
@@ -793,17 +793,17 @@ describe("the parent link", () => {
       "no-orphan-on-fired-repeating-parent",
       `
       const parentWake = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, repeat_every_ms, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, repeat_every_ms, created_at)
           VALUES (?, 'lead:1', 'INTEGRATION repeating reminder', 'delay', 'lead:1', '%stuck', datetime('now', '+1 hours'),
             datetime('now', '-30 seconds'), 60000, datetime('now', '-90 seconds')) RETURNING id\`,
       ).get(project).id;
       const holdNotice = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id, created_at)
           VALUES (?, 'lead:1', 'hold notice about the wake', 'delay', 'lead:1', '%lead', datetime('now'), ?, datetime('now', '-10 seconds'))
           RETURNING id\`,
       ).get(project, parentWake).id;
       await tick(snapshot);
-      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(holdNotice);
+      const noticeAfter = db.prepare("SELECT cancelled_at, held_reason FROM wakes WHERE id = ?").get(holdNotice);
       ${out("{ noticeAfter }")}
       `,
     );
@@ -821,14 +821,14 @@ describe("the parent link", () => {
       `
       const { watchStillWatchingClause } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});
       const ordinaryWake = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
           VALUES (?, 'lead:1', 'ordinary wake', 'delay', 'lead:1', '%lead', datetime('now', '+1 hours'), datetime('now'))
           RETURNING id\`,
       ).get(project).id;
       const standingWatchId = addStandingWatch();
-      const stillWatching = watchStillWatchingClause({ parent_timer_id: ordinaryWake });
-      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(standingWatchId);
-      const noLongerWatching = watchStillWatchingClause({ parent_timer_id: standingWatchId });
+      const stillWatching = watchStillWatchingClause({ parent_wake_id: ordinaryWake });
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(standingWatchId);
+      const noLongerWatching = watchStillWatchingClause({ parent_wake_id: standingWatchId });
       ${out("{ stillWatching, noLongerWatching }")}
       `,
     );
@@ -836,14 +836,14 @@ describe("the parent link", () => {
     assert.match(result.noLongerWatching, /^Standing watch #\d+ is no longer active; set a new one if you still need it\.$/);
   });
 
-  it("carries the staleness trailer on a late-delivered hold notice too, not only a standing watch's finish notice - todo 322 widened WHO carries a parent, and noticeStalenessNote's gate (parent_timer_id !== null) widened with it", () => {
+  it("carries the staleness trailer on a late-delivered hold notice too, not only a standing watch's finish notice - todo 322 widened WHO carries a parent, and noticeStalenessNote's gate (parent_wake_id !== null) widened with it", () => {
     const result = fixture(
       "staleness-trailer-on-hold-notice",
       `
       const { noticeStalenessNote } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});
       const staleHoldNotice = {
         id: 999999,
-        parent_timer_id: 1,
+        parent_wake_id: 1,
         created_at: db.prepare("SELECT datetime('now', '-6 minutes') AS t").get().t,
       };
       const trailer = noticeStalenessNote(staleHoldNotice);
@@ -865,11 +865,11 @@ describe("the parent link", () => {
       const watchId = addStandingWatch();
       await tick(snapshot);
       const notice = notices(watchId)[0];
-      db.prepare("UPDATE timers SET cancelled_at = datetime('now') WHERE id = ?").run(watchId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(watchId);
       await tick(snapshot);
-      const after = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice.id);
+      const after = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(notice.id);
       const extras = db.prepare(
-        "SELECT COUNT(*) AS n FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ?",
+        "SELECT COUNT(*) AS n FROM wakes WHERE parent_wake_id IS NULL AND kind = 'delay' AND id > ?",
       ).get(notice.id).n;
       ${out("{ after, extras }")}
       `,
@@ -888,7 +888,7 @@ describe("the parent link", () => {
       "stale-notice-cancel-throws",
       `
       const delayWake = (body) => db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
           VALUES (?, 'lead:1', ?, 'delay', 'lead:1', '%lead', datetime('now'), datetime('now', '-300 seconds'))
           RETURNING id\`,
       ).get(project, body).id;
@@ -902,20 +902,20 @@ describe("the parent link", () => {
 
       // Stale past NOTICE_MAX_AGE, so the next tick cancels rather than types
       // it - and the trigger makes that cancel fail.
-      db.prepare("UPDATE timers SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET created_at = datetime('now', '-6 hours') WHERE id = ?").run(notice.id);
       db.exec(
-        "CREATE TRIGGER cancel_fails BEFORE UPDATE OF cancelled_at ON timers " +
+        "CREATE TRIGGER cancel_fails BEFORE UPDATE OF cancelled_at ON wakes " +
           "WHEN NEW.id = " + notice.id + " BEGIN SELECT RAISE(ABORT, 'cancel failed'); END",
       );
       // Both siblings were already held by the tick above; the assertions want
       // what THIS tick does, so the instrument is cleared first.
-      db.prepare("UPDATE timers SET held_at = NULL, held_reason = NULL WHERE id IN (?, ?)").run(earlier, later);
+      db.prepare("UPDATE wakes SET held_at = NULL, held_reason = NULL WHERE id IN (?, ?)").run(earlier, later);
 
       await tick(snapshot);
-      const held = db.prepare("SELECT id, held_reason FROM timers WHERE id IN (?, ?) ORDER BY id").all(earlier, later);
-      const noticeRow = db.prepare("SELECT cancelled_at, fired_at, typed_at FROM timers WHERE id = ?").get(notice.id);
+      const held = db.prepare("SELECT id, held_reason FROM wakes WHERE id IN (?, ?) ORDER BY id").all(earlier, later);
+      const noticeRow = db.prepare("SELECT cancelled_at, fired_at, typed_at FROM wakes WHERE id = ?").get(notice.id);
       const strays = db.prepare(
-        "SELECT COUNT(*) AS n FROM timers WHERE parent_timer_id IS NULL AND kind = 'delay' AND id > ?",
+        "SELECT COUNT(*) AS n FROM wakes WHERE parent_wake_id IS NULL AND kind = 'delay' AND id > ?",
       ).get(later).n;
       ${out("{ ids: { earlier, notice: notice.id, later }, held, noticeRow, strays }")}
       `,
@@ -948,12 +948,12 @@ describe("the parent link", () => {
       "parentless-notice",
       `
       const parentless = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
           VALUES (?, 'lead:1', 'a standing watch block notice', 'delay', 'lead:1', '%lead', datetime('now'), datetime('now', '-6 hours'))
           RETURNING id\`,
       ).get(project).id;
       await tick(snapshot);
-      const after = db.prepare("SELECT cancelled_at, held_reason FROM timers WHERE id = ?").get(parentless);
+      const after = db.prepare("SELECT cancelled_at, held_reason FROM wakes WHERE id = ?").get(parentless);
       ${out("{ after }")}
       `,
     );
@@ -1007,7 +1007,7 @@ describe("todo 390: coalescing while held", () => {
     assert.match(result.bodyAfterSecond, /^ {2}w2: /m);
     assert.equal(result.cursor.length, 2, "both episodes are recorded in the cursor");
     assert.deepEqual(
-      result.cursor.map((c) => c.notice_timer_id),
+      result.cursor.map((c) => c.notice_wake_id),
       [result.idsAfterSecond[0], result.idsAfterSecond[0]],
       "both episodes point at the ONE notice that carries them - what the delivery-failure re-arm reads",
     );
@@ -1024,7 +1024,7 @@ describe("todo 390: coalescing while held", () => {
       db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w1);
       await tick(snapshot);
       const first = notices(watchId)[0];
-      db.prepare("UPDATE timers SET fired_at = datetime('now'), typed_at = datetime('now') WHERE id = ?").run(first.id);
+      db.prepare("UPDATE wakes SET fired_at = datetime('now'), typed_at = datetime('now') WHERE id = ?").run(first.id);
 
       db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
       await tick(snapshot);
@@ -1057,15 +1057,15 @@ describe("todo 390: coalescing while held", () => {
       await tick(snapshot);
       const first = notices(watchId)[0];
       db.prepare(
-        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_timer_id = ?",
+        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_wake_id = ?",
       ).run(first.id);
 
       db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now') WHERE id = ?").run(w2);
       await tick(snapshot);
       const merged = notices(watchId)[0];
-      const createdAt = db.prepare("SELECT created_at FROM timers WHERE id = ?").get(merged.id).created_at;
+      const createdAt = db.prepare("SELECT created_at FROM wakes WHERE id = ?").get(merged.id).created_at;
       const heldSince = db
-        .prepare("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_timer_id = ?")
+        .prepare("SELECT MIN(notified_at) AS t FROM wake_idle_notices WHERE notice_wake_id = ?")
         .get(merged.id).t;
       ${out("{ sameRow: first.id === merged.id, createdAt, heldSince }")}
       `,
@@ -1156,7 +1156,7 @@ describe("the guards nothing else reaches", () => {
       const watchId = addStandingWatch();
       await tick(snapshot);
       const notice = notices(watchId)[0];
-      db.prepare("UPDATE timers SET fired_at = datetime('now', '-5 seconds'), typed_at = NULL WHERE id = ?").run(notice.id);
+      db.prepare("UPDATE wakes SET fired_at = datetime('now', '-5 seconds'), typed_at = NULL WHERE id = ?").run(notice.id);
       await tick(snapshot);
       ${out("{ notices: notices(watchId).length }")}
       `,
@@ -1175,18 +1175,18 @@ describe("the guards nothing else reaches", () => {
       `
       const w1 = addWorker('agent:1', 'w1', '%1', 'idle', '-30 seconds');
       const earlier = db.prepare(
-        \`INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
+        \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
           VALUES (?, 'lead:1', 'held first', 'delay', 'lead:1', '%lead', datetime('now'), datetime('now', '-300 seconds'))
           RETURNING id\`,
       ).get(project).id;
       const watchId = addStandingWatch();
       db.exec(
-        "CREATE TRIGGER cancel_mid_tick AFTER UPDATE OF held_at ON timers WHEN NEW.id = " + earlier +
-          " BEGIN UPDATE timers SET cancelled_at = datetime('now') WHERE id = " + watchId + "; END",
+        "CREATE TRIGGER cancel_mid_tick AFTER UPDATE OF held_at ON wakes WHEN NEW.id = " + earlier +
+          " BEGIN UPDATE wakes SET cancelled_at = datetime('now') WHERE id = " + watchId + "; END",
       );
       await tick(snapshot);
-      const held = db.prepare("SELECT held_reason FROM timers WHERE id = ?").get(earlier).held_reason;
-      const watch = db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(watchId).cancelled_at;
+      const held = db.prepare("SELECT held_reason FROM wakes WHERE id = ?").get(earlier).held_reason;
+      const watch = db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(watchId).cancelled_at;
       ${out("{ held, cancelled: watch !== null, notices: notices(watchId).length, cursor: cursor(watchId).length }")}
       `,
     );
@@ -1416,9 +1416,9 @@ describe("the tool surface", () => {
   it("stores a row an OLD scheduler cannot misread", NEEDS_TMUX, async () => {
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const { db } = await import("../dist/db.js");
-    const row = db.prepare("SELECT kind, watch, watch_scope, max_wait_at FROM timers WHERE id = ?").get(receipt.wake_id);
+    const row = db.prepare("SELECT kind, watch, watch_scope, max_wait_at FROM wakes WHERE id = ?").get(receipt.wake_id);
 
-    assert.equal(row.kind, "idle_any", "a new kind would need `timers` rebuilt past its CHECK, under live writers");
+    assert.equal(row.kind, "idle_any", "a new kind would need `wakes` rebuilt past its CHECK, under live writers");
 
     assert.equal(row.watch, "[]", "a standing watch stores no list: its membership is a query, evaluated every tick");
     assert.equal(row.watch_scope, "project");
@@ -1460,7 +1460,7 @@ describe("the tool surface", () => {
   it("delivers one last wake saying it expired, and then stops being a candidate", NEEDS_TMUX, async () => {
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const { db } = await import("../dist/db.js");
-    db.prepare("UPDATE timers SET max_wait_at = datetime('now', '-1 seconds') WHERE id = ?").run(receipt.wake_id);
+    db.prepare("UPDATE wakes SET max_wait_at = datetime('now', '-1 seconds') WHERE id = ?").run(receipt.wake_id);
 
     const SCHEDULER_TICK_MS = 3000;
     const delivered = await until(
@@ -1468,7 +1468,7 @@ describe("the tool surface", () => {
       SCHEDULER_TICK_MS * 6,
     );
     assert.ok(delivered, "the expiry wake was never typed into the owner's pane");
-    const row = db.prepare("SELECT fired_at, fire_count FROM timers WHERE id = ?").get(receipt.wake_id);
+    const row = db.prepare("SELECT fired_at, fire_count FROM wakes WHERE id = ?").get(receipt.wake_id);
     assert.ok(row.fired_at !== null, "the expiry must SPEAK; a silent one is the original bug with a timer on it");
     assert.equal(row.fire_count, 1, "and it leaves the candidate set, so it can never fire twice");
     assert.match(
@@ -1493,7 +1493,7 @@ describe("the tool surface", () => {
       await staleMcp.start();
       const receipt = await staleMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
-      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(receipt.wake_id).project_id;
 
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
@@ -1539,9 +1539,9 @@ describe("the tool surface", () => {
       await clockMcp.start();
       const receipt = await clockMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
-      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(receipt.wake_id).project_id;
 
-      db.prepare("UPDATE timers SET deliver_pane = '%doesnotexist' WHERE id = ?").run(receipt.wake_id);
+      db.prepare("UPDATE wakes SET deliver_pane = '%doesnotexist' WHERE id = ?").run(receipt.wake_id);
 
       const addDead = (actor, name) =>
         db
@@ -1554,7 +1554,7 @@ describe("the tool surface", () => {
           .run(projectId, actor, name);
       const noticeRow = () =>
         db
-          .prepare("SELECT id, body, fired_at FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .prepare("SELECT id, body, fired_at FROM wakes WHERE parent_wake_id = ? ORDER BY id DESC LIMIT 1")
           .get(receipt.wake_id);
       const SCHEDULER_TICK_MS = 3000;
 
@@ -1565,7 +1565,7 @@ describe("the tool surface", () => {
       assert.equal(first.fired_at, null, "must still be HELD (dead pane), or the coalescing window is already closed");
 
       db.prepare(
-        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_timer_id = ?",
+        "UPDATE wake_idle_notices SET notified_at = datetime('now', '-45 minutes') WHERE notice_wake_id = ?",
       ).run(first.id);
       addDead("agent:clocks-2", "clock-b");
       const coalesced = await until(() => {
@@ -1574,7 +1574,7 @@ describe("the tool surface", () => {
       }, SCHEDULER_TICK_MS * 4);
       assert.ok(coalesced, "the second finish must update the SAME notice, or this is not testing a coalesced one");
 
-      db.prepare("UPDATE timers SET deliver_pane = ? WHERE id = ?").run(clockPane, first.id);
+      db.prepare("UPDATE wakes SET deliver_pane = ? WHERE id = ?").run(clockPane, first.id);
 
       const clockCapture = () => (existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "");
 
@@ -1624,7 +1624,7 @@ describe("the tool surface", () => {
       await leadMcp.start();
       const receipt = await leadMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
-      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(receipt.wake_id).project_id;
 
       // Closed directly, the same shape the "clocks"/"staleness" tests above use: a genuinely running
       // worker on a pane not in any snapshot would be reaped by the janitor as GONE before this test
@@ -1643,7 +1643,7 @@ describe("the tool surface", () => {
 
       const noticeRow = () =>
         db
-          .prepare("SELECT id, body FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .prepare("SELECT id, body FROM wakes WHERE parent_wake_id = ? ORDER BY id DESC LIMIT 1")
           .get(receipt.wake_id);
       const SCHEDULER_TICK_MS = 3000;
       const filed = await until(() => noticeRow() !== undefined, SCHEDULER_TICK_MS * 4);
@@ -1705,7 +1705,7 @@ describe("the tool surface", () => {
       await leadMcp.start();
       const receipt = await leadMcp.call("wake_when_idle", { body: "crew update", scope: "project" });
       const { db } = await import("../dist/db.js");
-      const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(receipt.wake_id).project_id;
+      const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(receipt.wake_id).project_id;
 
       // agent_state 'working' needs no live-pane check at all in noteStalledCrew (only 'waiting' does),
       // so a real pane here is only to survive the janitor sweep, not to satisfy the stall detector
@@ -1720,7 +1720,7 @@ describe("the tool surface", () => {
 
       const noticeRow = () =>
         db
-          .prepare("SELECT id, body FROM timers WHERE parent_timer_id = ? ORDER BY id DESC LIMIT 1")
+          .prepare("SELECT id, body FROM wakes WHERE parent_wake_id = ? ORDER BY id DESC LIMIT 1")
           .get(receipt.wake_id);
       const SCHEDULER_TICK_MS = 3000;
       const filed = await until(() => noticeRow() !== undefined, SCHEDULER_TICK_MS * 4);
@@ -1763,7 +1763,7 @@ describe("the tool surface", () => {
     const { db } = await import("../dist/db.js");
 
     const probe = await mcp.call("wake_when_idle", { body: "probe", scope: "project" });
-    const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(probe.wake_id).project_id;
+    const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(probe.wake_id).project_id;
     await mcp.call("wake_cancel", { wake_id: probe.wake_id });
 
     db.prepare(
@@ -1790,7 +1790,7 @@ describe("the tool surface", () => {
     const { db } = await import("../dist/db.js");
 
     const probe = await mcp.call("wake_when_idle", { body: "probe", scope: "project" });
-    const projectId = db.prepare("SELECT project_id FROM timers WHERE id = ?").get(probe.wake_id).project_id;
+    const projectId = db.prepare("SELECT project_id FROM wakes WHERE id = ?").get(probe.wake_id).project_id;
     await mcp.call("wake_cancel", { wake_id: probe.wake_id });
     const dead = db
       .prepare(
@@ -1802,13 +1802,13 @@ describe("the tool surface", () => {
       .get(projectId).id;
     const receipt = await mcp.call("wake_when_idle", { body: "crew update", scope: "project" });
     const seeded = db
-      .prepare("SELECT condition, episode, notice_timer_id FROM wake_idle_notices WHERE timer_id = ? AND agent_id = ?")
+      .prepare("SELECT condition, episode, notice_wake_id FROM wake_idle_notices WHERE wake_id = ? AND agent_id = ?")
       .get(receipt.wake_id, dead);
     await mcp.call("wake_cancel", { wake_id: receipt.wake_id });
     assert.ok(seeded, "a worker already dead when the watch is set is recorded by the creation itself");
     assert.equal(seeded.condition, "gone");
     assert.equal(
-      seeded.notice_timer_id,
+      seeded.notice_wake_id,
       null,
       "with no notice behind it, so the delivery-failure re-arm can never resurrect it as news",
     );
@@ -1820,16 +1820,16 @@ describe("the tool surface", () => {
 
     const notice = db
       .prepare(
-        `INSERT INTO timers (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_timer_id)
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id)
          SELECT project_id, owner, 'w1 finished', 'delay', deliver_actor, deliver_pane, datetime('now', '+3600 seconds'), id
-           FROM timers WHERE id = ? RETURNING id`,
+           FROM wakes WHERE id = ? RETURNING id`,
       )
       .get(receipt.wake_id).id;
     const cancelled = await mcp.call("wake_cancel", { wake_id: receipt.wake_id });
     assert.equal(cancelled.cancelled, true);
     assert.equal(cancelled.cancelled_notices, 1);
     assert.ok(
-      db.prepare("SELECT cancelled_at FROM timers WHERE id = ?").get(notice).cancelled_at !== null,
+      db.prepare("SELECT cancelled_at FROM wakes WHERE id = ?").get(notice).cancelled_at !== null,
       "a notice orphaned by its watch types into a lead's pane about a watch that no longer exists",
     );
   });
@@ -1862,7 +1862,7 @@ describe("delivery-time context on idle notices", () => {
       db.prepare("UPDATE agents SET command = 'sleep' WHERE id = ?").run(d);
       const watchId = addStandingWatch();
       await tick(snapshot);
-      const notice = db.prepare('SELECT * FROM timers WHERE parent_timer_id = ?').get(watchId);
+      const notice = db.prepare('SELECT * FROM wakes WHERE parent_wake_id = ?').get(watchId);
       const before = shortRenderForLeadDelivery(notice);
       db.prepare("UPDATE agents SET state_changed_at = datetime('now') WHERE id = ?").run(a);
       logRow('agent:context-a', 'prompt', 'working', '-2 seconds');
@@ -1915,7 +1915,7 @@ describe("delivery-time context on idle notices", () => {
       const text = capture();
       assert.ok(text.includes(body));
       assert.match(text, /idle-context \(hive state now: idle[^\n]*context 75%\)/);
-      assert.equal(db.prepare("SELECT body FROM timers WHERE id = ?").get(receipt.wake_id).body, body);
+      assert.equal(db.prepare("SELECT body FROM wakes WHERE id = ?").get(receipt.wake_id).body, body);
       await client.call("wake_cancel", { wake_id: receipt.wake_id });
     } finally {
       await client.close();

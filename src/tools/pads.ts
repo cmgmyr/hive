@@ -21,7 +21,7 @@ type PadMeta = Pick<PadRow, "id" | "name" | "revision" | "archived">;
 
 function selectPad<T>(projectId: number, padId: number, columns: string): T {
   const row = db
-    .prepare(`SELECT ${columns} FROM scratchpads WHERE project_id = ? AND id = ?`)
+    .prepare(`SELECT ${columns} FROM pads WHERE project_id = ? AND id = ?`)
     .get(projectId, padId) as T | undefined;
   if (!row) throw new Error(`No pad with id ${padId} in project ${projectId}. Call pad_list.`);
   return row;
@@ -47,7 +47,7 @@ function revisionMismatchError(padId: number, expected: number | undefined, curr
 }
 
 function currentRevisionOrDeleted(padId: number): number | null {
-  const row = db.prepare("SELECT revision FROM scratchpads WHERE id = ?").get(padId) as
+  const row = db.prepare("SELECT revision FROM pads WHERE id = ?").get(padId) as
     | { revision: number }
     | undefined;
   return row?.revision ?? null;
@@ -78,7 +78,7 @@ export function bumpPad(padId: number, predicateRevision: number | undefined, se
   const whereParams = predicateRevision != null ? [padId, predicateRevision] : [padId];
   const row = db
     .prepare(
-      `UPDATE scratchpads SET ${set}, revision = revision + 1,
+      `UPDATE pads SET ${set}, revision = revision + 1,
        updated_by = ?, updated_at = datetime('now') WHERE ${where} RETURNING revision`,
     )
     .get(...params, currentActor(), ...whereParams) as { revision: number } | undefined;
@@ -91,7 +91,7 @@ export const APPEND_WITH_SEPARATOR_SET =
 
 export function getActivePadByName(projectId: number, name: string): PadRow | undefined {
   return db
-    .prepare("SELECT * FROM scratchpads WHERE project_id = ? AND name = ? AND archived = 0")
+    .prepare("SELECT * FROM pads WHERE project_id = ? AND name = ? AND archived = 0")
     .get(projectId, name) as PadRow | undefined;
 }
 
@@ -103,7 +103,7 @@ export function listActivePads(projectId: number): PadListRow[] {
   return db
     .prepare(
       `SELECT name, revision, length(content) AS content_length, updated_by, updated_at
-       FROM scratchpads WHERE project_id = ? AND archived = 0 ORDER BY name`,
+       FROM pads WHERE project_id = ? AND archived = 0 ORDER BY name`,
     )
     .all(projectId) as PadListRow[];
 }
@@ -127,7 +127,7 @@ export function createPad(
 ): number | null {
   const row = db
     .prepare(
-      `INSERT OR IGNORE INTO scratchpads (project_id, name, content, tags, updated_by)
+      `INSERT OR IGNORE INTO pads (project_id, name, content, tags, updated_by)
        VALUES (?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(projectId, name, content, JSON.stringify(tags), currentActor()) as
@@ -196,7 +196,7 @@ export function registerPads(server: McpServer): void {
           pad = getPad(projectId, args.pad_id);
         } else if (args.name) {
           const row = db
-            .prepare("SELECT * FROM scratchpads WHERE project_id = ? AND name = ? AND archived = 0")
+            .prepare("SELECT * FROM pads WHERE project_id = ? AND name = ? AND archived = 0")
             .get(projectId, args.name) as PadRow | undefined;
           if (!row) throw new Error(`No active pad named "${args.name}". Call pad_list.`);
           pad = row;
@@ -329,7 +329,7 @@ export function registerPads(server: McpServer): void {
         const pad = getPadMeta(projectId, args.pad_id);
         checkRevision(pad, args.expected_revision, false);
 
-        const info = db.prepare("DELETE FROM scratchpads WHERE id = ? AND revision = ?").run(pad.id, pad.revision);
+        const info = db.prepare("DELETE FROM pads WHERE id = ? AND revision = ?").run(pad.id, pad.revision);
         assertRowChanged(pad.id, pad.revision, info.changes > 0);
         return { pad_id: pad.id, deleted: true };
       }),
@@ -357,7 +357,7 @@ export function registerPads(server: McpServer): void {
 
         const columns = `id, name, revision, tags, archived, updated_by, updated_at,
           length(content) AS content_length${args.query ? ", content" : ""}`;
-        let sql = `SELECT ${columns} FROM scratchpads WHERE project_id = ?`;
+        let sql = `SELECT ${columns} FROM pads WHERE project_id = ?`;
         const params: unknown[] = [project.id];
         if (!args.include_archived) sql += " AND archived = 0";
         if (args.query) {
