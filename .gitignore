@@ -18,3 +18,6 @@ dist/
 /.agents/*
 !/.agents/skills/
 /.hive/
+
+# maintainer-local leak scan; runs here, never ships
+/test/no-local-leaks.test.mjs

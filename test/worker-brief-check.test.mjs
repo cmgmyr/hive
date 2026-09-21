@@ -54,7 +54,7 @@ describe("shipped orchestration worker.md: before-you-report-done block (todo 79
 
   it("says nothing machine-specific: no signing flag, no unshipped skill name, no personal path", () => {
     // Forbidden substrings are built at runtime, not spelled out here, so this
-    // test itself does not become a tracked-tree leak (test/no-local-leaks.test.mjs).
+    // test itself does not become a tracked-tree leak.
     const rendered = renderShipped(mergedBriefVars({ check: "npm run build" }, "claude"));
     const forbidden = [
       "gpg-sign",

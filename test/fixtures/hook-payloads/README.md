@@ -37,7 +37,7 @@ payloads came off the maintainer's own store, so every one carried his home
 directory, a real session uuid, a real worktree name, and in one case an
 excerpt of another project's session. None of that ships (see the boundary
 invariant in the repo root `CLAUDE.md`, pinned by
-`test/no-local-leaks.test.mjs`), so those values were substituted in place:
+the maintainer-local scan), so those values were substituted in place:
 `/Users/devs/Code/devteam/hive` for the home path - the SAME synthetic
 identity `test/fixtures/panes/` uses, deliberately, so a grep for one corpus's
 scrubbed path finds the other's - fixed

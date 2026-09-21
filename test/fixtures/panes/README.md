@@ -23,7 +23,7 @@ byte-for-byte fidelity is the only reason a captured fixture is trustworthy
 at all — see "none of these were typed by hand" above. That was superseded on
 2026-09-03: nothing from the maintainer's own setup ships in this tree (see
 the boundary invariant in the repo root `CLAUDE.md`), and
-`test/no-local-leaks.test.mjs` now fails on any of it coming back.
+A maintainer-local scan now fails on any of it coming back.
 
 Fidelity is carried instead by a LENGTH-PRESERVING scrub. Every substitution
 made in these files replaces a run of bytes with exactly as many bytes — the
