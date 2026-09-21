@@ -6,6 +6,8 @@ Setting a project up, `hive.yml`, the store's automatic backups, and reaching pa
 
 `hive init` sets a project up. It writes a starter `hive.yml`, asks which profile the project should use (or takes `--profile <name>` / `--no-profile`), and seeds the `board` pad, the live picture of the work.
 
+When you pass a path, `hive init` registers the git checkout containing that path, or the path itself when it is not in a checkout. It can register a new project below an existing registration and reports the ancestor so you know which registration is deepest.
+
 A project **with** a profile reads its process from `hive runbook` and gets no runbook pad; a second copy in the store would only go stale. A project on `profile: none` gets the `runbook` pad instead, seeded with a starter template whose first-run section has the lead interview you (how work arrives, branch and PR rules, worktree setup, how workers verify, what needs explicit approval) and rewrite it to fit. Either way `hive runbook` prints the right one.
 
 After that, opening the lead with "good morning, let's triage" is enough; every hive session is instructed to read the standing process before orchestrating. The server also exposes one prompt, which Claude Code surfaces as a slash command: `/mcp__hive__runbook` loads whatever this project's runbook says. hive registers nothing beyond that on purpose. A prompt reaches every user of every project, so a routine that belongs to one team's way of working belongs in that project's runbook or its profile, not in the server.

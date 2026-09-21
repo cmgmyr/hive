@@ -57,6 +57,10 @@ export function getProject(id: number): Project | undefined {
   return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Project | undefined;
 }
 
+export function getProjectByPath(path: string): Project | undefined {
+  return db.prepare("SELECT * FROM projects WHERE path = ?").get(path) as Project | undefined;
+}
+
 export function addProject(path?: string, name?: string): Project {
   let resolved: string;
   try {
@@ -102,6 +106,11 @@ function bestPrefixMatch(projects: Project[], dir: string): Project | null {
     }
   }
   return best;
+}
+
+export function registeredAncestor(dir: string): Project | null {
+  const projects = listProjects().filter((project) => project.path !== dir);
+  return bestPrefixMatch(projects, dir);
 }
 
 export function gitPrimaryRoot(dir: string): string | null {

@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
@@ -56,12 +56,16 @@ import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate } from "./db.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
+  addProject,
   agentProjectPin,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
+  getProjectByPath,
+  gitPrimaryRoot,
   getProject,
   listProjects,
+  registeredAncestor,
   takeRegistrationNotice,
   type Project,
 } from "./context.js";
@@ -1081,8 +1085,53 @@ async function cmdInit(argv: string[]): Promise<void> {
     chosen = value;
   }
 
-  const project = resolveProject(path);
-  console.log(`Project: ${project.name} (${project.path})`);
+  let project: Project;
+  let registration: string | null = null;
+  let target: string | null = null;
+  let newlyRegistered = false;
+  if (agentProjectPin() != null) {
+    project = resolveProject(path);
+  } else {
+    try {
+      target = realpathSync(path ?? process.cwd());
+    } catch {
+      throw new Error(`Path does not exist: ${path}`);
+    }
+    process.chdir(target);
+    registration = gitPrimaryRoot(target) ?? target;
+    let homePath: string;
+    try {
+      homePath = realpathSync(homedir());
+    } catch {
+      homePath = homedir();
+    }
+    if (registration === homePath || registration === "/") {
+      console.log(
+        `hive init: ${registration} is a home directory, not a project; every directory under it would resolve to it. Run hive init inside the project.`,
+      );
+      process.exit(1);
+    }
+    const existing = getProjectByPath(registration);
+    project = existing ?? addProject(registration);
+    newlyRegistered = existing == null;
+  }
+  console.log(
+    newlyRegistered
+      ? `Project: ${project.name} (${project.path}) - registered`
+      : `Project: ${project.name} (${project.path})`,
+  );
+  if (registration != null && target !== registration) {
+    console.log(`  (the checkout root for ${target})`);
+  }
+  if (newlyRegistered) {
+    const ancestor = registeredAncestor(registration!);
+    if (ancestor != null) {
+      console.log(
+        `  note: "${ancestor.name}" (${ancestor.path}) is registered above this directory; hive resolves the deepest registration, so sessions here belong to ${project.name}.`,
+      );
+    }
+  }
+  if (path == null && newlyRegistered) console.error(registrationNoticeText(project));
 
   const ymlPath = join(project.path, "hive.yml");
   const already = existsSync(ymlPath) ? loadProjectYml(project.path).config?.profile ?? null : null;
@@ -2034,6 +2083,36 @@ function reportSessionInterpreters(): void {
   }
 }
 
+function reportProjectScope(here: Project | null): void {
+  const locked = process.env.HIVE_PROJECT_LOCK === "1";
+  let homePath: string;
+  try {
+    homePath = realpathSync(homedir());
+  } catch {
+    homePath = homedir();
+  }
+  const projects = listProjects().sort((a, b) => a.path.localeCompare(b.path));
+  for (const project of projects) {
+    if (locked && project.id !== here?.id) continue;
+    if (project.path === homePath || project.path === "/") {
+      warn(
+        "project scope",
+        `"${project.name}" (${project.path}) is a home directory; every unregistered directory under it resolves to this project. hive project prune removes it once it holds nothing.`,
+      );
+    }
+  }
+  for (const parent of projects) {
+    for (const child of projects) {
+      if (locked && parent.id !== here?.id && child.id !== here?.id) continue;
+      if (parent.path === child.path || !child.path.startsWith(parent.path + sep)) continue;
+      warn(
+        "project scope",
+        `"${parent.name}" (${parent.path}) is registered above "${child.name}" (${child.path}); sessions in ${parent.path} outside ${child.path} resolve to "${parent.name}"`,
+      );
+    }
+  }
+}
+
 function reportMcpRegistrations(project: Project | null): void {
   const registrations = hiveRegistrations(project?.path ?? null);
   if (registrations.length === 0) {
@@ -2491,6 +2570,7 @@ function cmdDoctor(argv: string[]): void {
   const here = findProjectForCwd();
   reportDispatcher();
   reportMcpRegistrations(here);
+  reportProjectScope(here);
   reportSessionInterpreters();
   reportCodexHomes(here?.id ?? null);
 

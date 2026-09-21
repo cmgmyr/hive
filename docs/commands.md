@@ -6,7 +6,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 |---|---|
 | `hive --version` | Print the version, short sha, and dirty marker this build was stamped with |
 | `hive` / `hive lead` | Start, or reattach to, this project's lead session |
-| `hive init` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad |
+| `hive init [path]` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad, and registers the checkout it is pointed at even under a registered parent |
 | `hive attach` | Attach to the project's tmux session without opening a lead |
 | `hive start <name>` | Start a `hive.yml` process by hand |
 | `hive stop <name>` / `hive stop --all` | Stop one running process, or every one in this project |

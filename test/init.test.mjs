@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -216,5 +217,73 @@ describe("hive init profile selection", () => {
     const { code, stdout } = await runCli(["init", "--profile"], cli);
     assert.equal(code, 1);
     assert.match(stdout, /Usage: hive init/);
+  });
+});
+
+describe("hive init target registration", () => {
+  it("registers a new project at an explicit path under a registered ancestor instead of attaching to the ancestor, and says so", async () => {
+    const { dirs, cli } = optsFor();
+    const child = join(dirs.projectDir, "newproj");
+    mkdirSync(child);
+    await runCli(["init", "--no-profile"], cli);
+
+    const result = await runCli(["init", "--no-profile", child], cli);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, new RegExp(`Project: newproj \\(${child.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}\\) - registered`));
+    assert.match(result.stdout, /is registered above this directory/);
+    assert.match(result.stdout, /sessions here belong to newproj/);
+  });
+
+  it("registers the current directory's checkout when run without a path under a registered ancestor", async () => {
+    const { dirs, cli } = optsFor();
+    const child = join(dirs.projectDir, "current-project");
+    mkdirSync(child);
+    await runCli(["init", "--no-profile"], cli);
+
+    const result = await runCli(["init", "--no-profile"], { ...cli, cwd: child });
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, new RegExp(`Project: current-project \\(${child.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}\\) - registered`));
+    assert.match(result.stdout, /is registered above this directory/);
+  });
+
+  it("refuses to register the home directory", async () => {
+    const { dirs, cli } = optsFor();
+    const realHome = join(dirs.tmp, "real-home");
+    const home = join(dirs.tmp, "home-link");
+    mkdirSync(realHome);
+    symlinkSync(realHome, home);
+
+    const result = await runCli(["init", "--no-profile", home], { ...cli, env: { HOME: home } });
+    assert.equal(result.code, 1);
+    assert.match(result.stdout, /is a home directory/);
+    assert.equal(existsSync(join(realHome, "hive.yml")), false, "refused home init must not write project files");
+  });
+
+  it("registers the git checkout root when pointed at a subdirectory of an unregistered repo", async () => {
+    const { dirs, cli } = optsFor();
+    const repo = join(dirs.tmp, "repo");
+    const child = join(repo, "sub");
+    mkdirSync(child, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+
+    const result = await runCli(["init", "--no-profile", child], cli);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, new RegExp(`Project: repo \\(${repo.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}\\) - registered`));
+    assert.match(result.stdout, new RegExp(`the checkout root for ${child.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}`));
+  });
+
+  it("attaches to the registered checkout when run in one of its subdirectories and registers nothing new", async () => {
+    const { dirs, cli } = optsFor();
+    const repo = join(dirs.tmp, "registered-repo");
+    const child = join(repo, "sub");
+    mkdirSync(child, { recursive: true });
+    execFileSync("git", ["init", "-q", repo]);
+    await runCli(["init", "--no-profile", repo], cli);
+
+    const result = await runCli(["init", "--no-profile", child], cli);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, new RegExp(`Project: registered-repo \\(${repo.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}\\)`));
+    assert.doesNotMatch(result.stdout, /- registered/);
+    assert.doesNotMatch(result.stdout, /is registered above this directory/);
   });
 });
