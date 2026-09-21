@@ -1975,7 +1975,7 @@ function seedProjectAt(name) {
 }
 
 function indexPath(root) {
-  return join(root, ".claude", "dashboard", "index.html");
+  return join(root, ".hive", "dashboard.html");
 }
 
 function setDashboardKey(root, value) {
@@ -2036,15 +2036,15 @@ describe("the scheduler hook: enable gate is hive.yml's dashboard key (todo 309)
     assert.ok(written.includes('id="live-toggle"'));
   });
 
-  it("creates .claude/dashboard/ itself the first time the key is true and the directory is missing - the key is now the switch, not the directory", async () => {
+  it("creates .hive/ itself the first time the key is true and the directory is missing - the key is now the switch, not the directory", async () => {
     const { id, root } = seedProjectAt("gate-creates-dir");
     seedTodo(id, { title: "first run" });
     setDashboardKey(root, true);
-    assert.ok(!statOrNull(join(root, ".claude", "dashboard")), "precondition: the directory must not exist yet");
+    assert.ok(!statOrNull(join(root, ".hive")), "precondition: the directory must not exist yet");
 
     await tick(null);
 
-    assert.ok(statOrNull(join(root, ".claude", "dashboard")).isDirectory());
+    assert.ok(statOrNull(join(root, ".hive")).isDirectory());
     assert.ok(readFileSync(indexPath(root), "utf8").includes("first run"));
   });
 });
@@ -2216,7 +2216,7 @@ describe("the scheduler hook: content hash closes the old column-mark's blind sp
     assert.ok(content.includes("This project has no board pad."), "the page must say plainly that the board pad is gone");
   });
 
-  it("regenerates index.html after it is deleted from disk, even though the store itself has not changed", async () => {
+  it("regenerates dashboard.html after it is deleted from disk, even though the store itself has not changed", async () => {
     const { id, root } = seedProjectAt("dirty-check-deleted-file");
     seedTodo(id, { title: "must reappear after deletion" });
     setDashboardKey(root, true);
@@ -2264,35 +2264,34 @@ describe("the scheduler hook: the throughput chart and pads section must not def
 });
 
 describe("the scheduler hook: output directory must never escape the project root", () => {
-  it("refuses to write when .claude/dashboard already exists as a symlink pointing outside the project", async () => {
+  it("refuses to write when .hive already exists as a symlink pointing outside the project", async () => {
     const { id, root } = seedProjectAt("path-escape-existing-symlink");
     const outside = mkdtempSync(join(tmpdir(), "hive-dashboard-outside-"));
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    symlinkSync(outside, join(root, ".claude", "dashboard"));
+    symlinkSync(outside, join(root, ".hive"));
     setDashboardKey(root, true);
     seedTodo(id, { title: "must never leave the project root" });
 
     await assert.doesNotReject(() => tick(null));
 
     assert.ok(
-      !statOrNull(join(outside, "index.html")),
+      !statOrNull(join(outside, "dashboard.html")),
       "the symlink's real target outside the project must never receive a write",
     );
     const meta = db.prepare("SELECT 1 FROM dashboard_meta WHERE project_id = ?").get(id);
     assert.equal(meta, undefined, "an escaping project must never get a dashboard_meta row or a claim write either");
   });
 
-  it("refuses even when .claude/dashboard does not exist yet, but .claude itself is a symlink pointing outside", async () => {
+  it("refuses even when .hive does not exist yet, but its project ancestor is a symlink pointing outside", async () => {
     const { id, root } = seedProjectAt("path-escape-ancestor-symlink");
     const outside = mkdtempSync(join(tmpdir(), "hive-dashboard-outside-ancestor-"));
-    symlinkSync(outside, join(root, ".claude"));
+    symlinkSync(outside, join(root, ".hive"));
     setDashboardKey(root, true);
     seedTodo(id, { title: "must never leave the project root" });
 
     await assert.doesNotReject(() => tick(null));
 
     assert.ok(
-      !statOrNull(join(outside, "dashboard")),
+      !statOrNull(join(outside, "dashboard.html")),
       "no directory may be created inside the symlinked ancestor before the escape is even detected",
     );
   });
@@ -2313,10 +2312,10 @@ describe("the scheduler hook: a broken generator must not take the scheduler dow
     const { id, root } = seedProjectAt("write-failure");
     seedTodo(id, { title: "should never reach disk" });
     setDashboardKey(root, true);
-    const dashboardDir = join(root, ".claude", "dashboard");
+    const dashboardDir = join(root, ".hive");
     mkdirSync(dashboardDir, { recursive: true });
 
-    mkdirSync(join(dashboardDir, `.index.html.tmp-${process.pid}`));
+    mkdirSync(join(dashboardDir, `.dashboard.html.tmp-${process.pid}`));
 
     await assert.doesNotReject(() => tick(null), "a write failure for one project must not escape the tick");
 
@@ -2332,9 +2331,9 @@ describe("the scheduler hook: a broken generator must not take the scheduler dow
     seedTodo(healthy.id, { title: "sibling project should still render" });
     setDashboardKey(broken.root, true);
     setDashboardKey(healthy.root, true);
-    const brokenDashboardDir = join(broken.root, ".claude", "dashboard");
+    const brokenDashboardDir = join(broken.root, ".hive");
     mkdirSync(brokenDashboardDir, { recursive: true });
-    mkdirSync(join(brokenDashboardDir, `.index.html.tmp-${process.pid}`));
+    mkdirSync(join(brokenDashboardDir, `.dashboard.html.tmp-${process.pid}`));
 
     await tick(null);
 
@@ -2348,13 +2347,13 @@ describe("the scheduler hook: a broken generator must not take the scheduler dow
     const { id, root } = seedProjectAt("write-failure-temp-cleanup");
     seedTodo(id, { title: "irrelevant" });
     setDashboardKey(root, true);
-    const dashboardDir = join(root, ".claude", "dashboard");
+    const dashboardDir = join(root, ".hive");
     mkdirSync(dashboardDir, { recursive: true });
     mkdirSync(indexPath(root));
 
     await assert.doesNotReject(() => tick(null));
 
-    const leftoverTemp = statOrNull(join(dashboardDir, `.index.html.tmp-${process.pid}`));
+    const leftoverTemp = statOrNull(join(dashboardDir, `.dashboard.html.tmp-${process.pid}`));
     assert.equal(leftoverTemp, null, "a failed rename must not leave its temp file behind");
   });
 });

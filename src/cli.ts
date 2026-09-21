@@ -78,7 +78,7 @@ import {
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   isUnsubmittedInputHold,
   janitor,
-  resolveDashboardDir,
+  resolveDashboardFile,
   transcriptStaleness,
   wasHeldForPaneReissue,
 } from "./scheduler.js";
@@ -1125,6 +1125,25 @@ async function cmdInit(argv: string[]): Promise<void> {
       : `- board pad: seeded starter template (pad ${boardId})`,
   );
 
+  console.log("- .hive/: hive writes generated output here (the dashboard); ignore it in .gitignore or your global excludes.");
+  console.log("  hive.yml is meant to be committed.");
+  const gitignorePath = join(project.path, ".gitignore");
+  if (process.stdin.isTTY && process.stdout.isTTY && existsSync(gitignorePath)) {
+    const gitignore = readFileSync(gitignorePath, "utf8");
+    const hasHiveIgnore = gitignore.split(/\r?\n/).some((line) => [".hive/", ".hive", "/.hive/", "/.hive"].includes(line));
+    if (!hasHiveIgnore) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question("Append `.hive/` to .gitignore? [y/N] ")).trim().toLowerCase();
+      rl.close();
+      if (answer === "y") {
+        writeFileSync(gitignorePath, `${gitignore}${gitignore.endsWith("\n") ? "" : "\n"}.hive/\n`);
+        console.log("- .gitignore: added .hive/");
+      } else {
+        console.log("- .gitignore: left untouched");
+      }
+    }
+  }
+
   if (chosen == null) {
     console.log(`\nNo profile set (nothing was asked, since this is not an interactive terminal).
 Pick one later with: hive init --profile <name>   (hive profile list shows them)
@@ -1367,9 +1386,8 @@ function maybeOpenDashboard(project: Project, dashboardEnabled: boolean): void {
   if (process.platform !== "darwin") return;
   if (!dashboardEnabled) return;
 
-  const dashboardDir = resolveDashboardDir(project.path);
-  if (dashboardDir === null) return;
-  const dashboardFile = join(dashboardDir, "index.html");
+  const dashboardFile = resolveDashboardFile(project.path);
+  if (dashboardFile === null) return;
 
   if (!existsSync(dashboardFile)) return;
 
@@ -2481,6 +2499,12 @@ function cmdDoctor(argv: string[]): void {
   for (const w of loaded.warnings) warn("hive.yml", w);
   const config = loaded.config;
   const profile = activeProfile(config);
+  if (here && existsSync(join(here.path, ".claude", "dashboard", "index.html"))) {
+    info(
+      "dashboard",
+      "an older hive wrote .claude/dashboard/index.html; hive now writes .hive/dashboard.html. Delete the old file and directory.",
+    );
+  }
 
   const reportProfile = (name: string, cfg: ReturnType<typeof loadProjectYml>["config"]) => {
     if (!profileExists(name)) {

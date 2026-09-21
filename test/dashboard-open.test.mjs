@@ -58,10 +58,8 @@ describe(
 
       const outside = join(dirs.tmp, "outside-project");
       mkdirSync(outside, { recursive: true });
-      writeFileSync(join(outside, "index.html"), "<html>not the real dashboard</html>");
-      const claudeDir = join(dirs.projectDir, ".claude");
-      mkdirSync(claudeDir, { recursive: true });
-      symlinkSync(outside, join(claudeDir, "dashboard"));
+      writeFileSync(join(outside, "dashboard.html"), "<html>not the real dashboard</html>");
+      symlinkSync(outside, join(dirs.projectDir, ".hive"));
 
       const attached = await runCli(["attach"], {
         cwd: dirs.projectDir,
@@ -74,16 +72,16 @@ describe(
       assert.equal(marker(project.id), undefined, "a refused open must not leave a marker behind");
 
       const { unlinkSync } = await import("node:fs");
-      unlinkSync(join(claudeDir, "dashboard"));
+      unlinkSync(join(dirs.projectDir, ".hive"));
     });
 
-    it("does not open a checked-in index.html that is ITSELF a symlink escaping the project root, inside an otherwise-real, contained .claude/dashboard", { skip: runnable ? false : "darwin-only behaviour" }, async () => {
+    it("does not open a checked-in dashboard.html that is ITSELF a symlink escaping the project root, inside an otherwise-real, contained .hive", { skip: runnable ? false : "darwin-only behaviour" }, async () => {
 
       const outsideFile = join(dirs.tmp, "outside-secret.html");
       writeFileSync(outsideFile, "<html>not the real dashboard</html>");
-      const dashDir = join(dirs.projectDir, ".claude", "dashboard");
+      const dashDir = join(dirs.projectDir, ".hive");
       mkdirSync(dashDir, { recursive: true });
-      symlinkSync(outsideFile, join(dashDir, "index.html"));
+      symlinkSync(outsideFile, join(dashDir, "dashboard.html"));
 
       const attached = await runCli(["attach"], {
         cwd: dirs.projectDir,
@@ -95,18 +93,18 @@ describe(
       assert.deepEqual(
         fakeOpen.calls(),
         [],
-        "an index.html symlinked outside the project root must never be opened, even inside a real, contained .claude/dashboard",
+        "a dashboard.html symlinked outside the project root must never be opened, even inside a real, contained .hive",
       );
       assert.equal(marker(project.id), undefined, "a refused open must not leave a marker behind");
 
       const { unlinkSync } = await import("node:fs");
-      unlinkSync(join(dashDir, "index.html"));
+      unlinkSync(join(dashDir, "dashboard.html"));
     });
 
     it("opens the dashboard exactly once the file exists, and marks it with a real TTL", { skip: runnable ? false : "darwin-only behaviour" }, async () => {
-      const dashDir = join(dirs.projectDir, ".claude", "dashboard");
+      const dashDir = join(dirs.projectDir, ".hive");
       mkdirSync(dashDir, { recursive: true });
-      writeFileSync(join(dashDir, "index.html"), "<html></html>");
+      writeFileSync(join(dashDir, "dashboard.html"), "<html></html>");
 
       const before = Date.now();
       const attached = await runCli(["attach"], {
@@ -118,7 +116,7 @@ describe(
       assert.equal(attached.code, 0, attached.stderr);
       const calls = fakeOpen.calls();
       assert.equal(calls.length, 1, `expected exactly one open call, got ${JSON.stringify(calls)}`);
-      assert.match(calls[0], /^file:\/\/.*index\.html$/, "must open the dashboard's own file:// URL");
+      assert.match(calls[0], /^file:\/\/.*\.hive\/dashboard\.html$/, "must open the dashboard's own file:// URL");
 
       const row = marker(project.id);
       assert.ok(row, "a marker row must exist once the dashboard has been opened");
@@ -192,9 +190,9 @@ describe("cmdAttach and dashboard: false (todo 356)", { skip: hasTmux ? false : 
 
   before(async () => {
     writeYml(dirs2.projectDir, "dashboard: false\n");
-    const dashDir = join(dirs2.projectDir, ".claude", "dashboard");
+      const dashDir = join(dirs2.projectDir, ".hive");
     mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, "index.html"), "<html></html>");
+    writeFileSync(join(dashDir, "dashboard.html"), "<html></html>");
     const init = await runCli(["init"], { cwd: dirs2.projectDir, dataDir: dirs.dataDir, tmp: dirs2.tmp });
     assert.equal(init.code, 0, init.stderr);
     project2 = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs2.projectDir);

@@ -35,9 +35,9 @@ describe(
 
     before(async () => {
       writeFileSync(join(dirs.projectDir, "hive.yml"), "dashboard: true\n");
-      const dashDir = join(dirs.projectDir, ".claude", "dashboard");
+      const dashDir = join(dirs.projectDir, ".hive");
       mkdirSync(dashDir, { recursive: true });
-      writeFileSync(join(dashDir, "index.html"), "<html></html>");
+      writeFileSync(join(dashDir, "dashboard.html"), "<html></html>");
       const init = await runCli(["init"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
       assert.equal(init.code, 0, init.stderr);
       project = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs.projectDir);
@@ -68,7 +68,7 @@ describe(
         assert.equal(led.code, 0, led.stderr);
         const calls = fakeOpen.calls();
         assert.equal(calls.length, 1, `expected exactly one open call, got ${JSON.stringify(calls)}`);
-        assert.match(calls[0], /^file:\/\/.*index\.html$/);
+      assert.match(calls[0], /^file:\/\/.*\.hive\/dashboard\.html$/);
         assert.ok(
           db.prepare("SELECT 1 FROM kv WHERE project_id = ? AND key = ?").get(project.id, MARKER_KEY),
           "a successful open must leave a marker",
@@ -97,9 +97,9 @@ describe("bare `hive` (no subcommand) reaches the same dashboard-open path as `h
 
   before(async () => {
     writeFileSync(join(dirs2.projectDir, "hive.yml"), "dashboard: true\n");
-    const dashDir = join(dirs2.projectDir, ".claude", "dashboard");
+    const dashDir = join(dirs2.projectDir, ".hive");
     mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, "index.html"), "<html></html>");
+    writeFileSync(join(dashDir, "dashboard.html"), "<html></html>");
     const init = await runCli(["init"], { cwd: dirs2.projectDir, dataDir: dirs.dataDir, tmp: dirs2.tmp });
     assert.equal(init.code, 0, init.stderr);
     project2 = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs2.projectDir);
@@ -134,9 +134,9 @@ describe("--no-dashboard argument-parsing edge cases (todo 356)", { skip: hasTmu
 
   before(async () => {
     writeFileSync(join(dirs3.projectDir, "hive.yml"), "dashboard: true\n");
-    const dashDir = join(dirs3.projectDir, ".claude", "dashboard");
+    const dashDir = join(dirs3.projectDir, ".hive");
     mkdirSync(dashDir, { recursive: true });
-    writeFileSync(join(dashDir, "index.html"), "<html></html>");
+    writeFileSync(join(dashDir, "dashboard.html"), "<html></html>");
     const init = await runCli(["init"], { cwd: dirs3.projectDir, dataDir: dirs.dataDir, tmp: dirs3.tmp });
     assert.equal(init.code, 0, init.stderr);
     project3 = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs3.projectDir);

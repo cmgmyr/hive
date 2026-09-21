@@ -454,9 +454,8 @@ function claimDashboardAttempt(projectId: number): boolean {
   );
 }
 
-function writeDashboardAtomically(dashboardDir: string, html: string): void {
-  const target = join(dashboardDir, "index.html");
-  const temp = join(dashboardDir, `.index.html.tmp-${process.pid}`);
+function writeDashboardAtomically(target: string, html: string): void {
+  const temp = join(dirname(target), `.dashboard.html.tmp-${process.pid}`);
   try {
     writeFileSync(temp, html);
     renameSync(temp, target);
@@ -476,16 +475,16 @@ function realpathContained(existingPath: string, projectPath: string): boolean {
   return resolved === resolvedProjectPath || resolved.startsWith(resolvedProjectPath + sep);
 }
 
-export function resolveDashboardDir(projectPath: string): string | null {
-  const dashboardDir = join(projectPath, ".claude", "dashboard");
-  let ancestor = dashboardDir;
+export function resolveDashboardFile(projectPath: string): string | null {
+  const dashboardFile = join(projectPath, ".hive", "dashboard.html");
+  let ancestor = dirname(dashboardFile);
   while (!existsSync(ancestor)) {
     const parent = dirname(ancestor);
     if (parent === ancestor) break;
     ancestor = parent;
   }
   if (!realpathContained(ancestor, projectPath)) return null;
-  return dashboardDir;
+  return dashboardFile;
 }
 
 export function dashboardFileContained(dashboardFile: string, projectPath: string): boolean {
@@ -497,10 +496,10 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
 
     if (!loadProjectYml(project.path).config?.dashboard) return;
 
-    const dashboardDir = resolveDashboardDir(project.path);
-    if (dashboardDir === null) return;
+    const dashboardFile = resolveDashboardFile(project.path);
+    if (dashboardFile === null) return;
 
-    mkdirSync(dashboardDir, { recursive: true });
+    mkdirSync(dirname(dashboardFile), { recursive: true });
 
     if (!claimDashboardAttempt(project.id)) return;
 
@@ -509,9 +508,8 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
       last_mark: string | null;
     };
 
-    const target = join(dashboardDir, "index.html");
-    if (known.last_mark === contentHash && existsSync(target)) return;
-    writeDashboardAtomically(dashboardDir, html);
+    if (known.last_mark === contentHash && existsSync(dashboardFile)) return;
+    writeDashboardAtomically(dashboardFile, html);
     bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", contentHash, project.id);
   } catch {
 

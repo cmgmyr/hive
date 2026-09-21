@@ -61,6 +61,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Configuration](docs/configuration.md) | The `HIVE_*` environment variables |
 | [Profiles](docs/profiles.md) | Standing instructions across projects, the session-start plugin |
 | [Projects](docs/projects.md) | `hive init`, `hive.yml`, automatic backups, pads and todos from the shell |
+| [Dashboard](docs/dashboard.md) | The generated dashboard: enabling it, where it lives, what it shows |
 | [Install details](docs/install.md) | The interpreter pin, iTerm settings, the status line, MCP scope, codex workers, updating, uninstalling |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
 | [Tools](docs/tools.md) | The 45 MCP tools: what each does and when to use it |

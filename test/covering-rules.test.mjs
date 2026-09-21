@@ -520,6 +520,7 @@ describe("against the real repo", () => {
         "docs/concepts.md",
         "docs/configuration.md",
         "docs/daily-driver.md",
+        "docs/dashboard.md",
         "docs/development.md",
         "docs/install.md",
         "docs/patterns.md",

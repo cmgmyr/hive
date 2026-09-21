@@ -20,7 +20,7 @@ context_checkpoint_percent: 70 # unset means off; percentage of the worker conte
 
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
-dashboard: true                 # write .claude/dashboard/index.html (hive dogfoods its own feature)
+dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
 
 review_tags: [from-review]      # todo tags `hive doctor` counts as review findings and reports as
                                 # triaged (a comment, completed, or archived) or untriaged. A tag

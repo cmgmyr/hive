@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { CLI, isolateTmux, panesIn, resolvedTmuxSocket, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux } = isolateTmux("the init tests");
 after(() => cleanupTmux());
@@ -13,6 +13,27 @@ const optsFor = () => {
 };
 
 const ymlOf = (dirs) => readFileSync(join(dirs.projectDir, "hive.yml"), "utf8");
+
+async function initWithGitignoreAnswer(answer) {
+  const { dirs } = optsFor();
+  writeFileSync(join(dirs.projectDir, ".gitignore"), "node_modules/");
+  const session = `init-prompt-${process.pid}-${Date.now()}`;
+  mkdirSync(dirname(resolvedTmuxSocket()), { recursive: true });
+  const command = `env -u HIVE_AGENT_ID -u HIVE_PROJECT_LOCK -u HIVE_PROJECT_PATH HIVE_DATA_DIR=${JSON.stringify(dirs.dataDir)} ${JSON.stringify(process.execPath)} ${JSON.stringify(CLI)} init --no-profile ${JSON.stringify(dirs.projectDir)}`;
+  tmux("new-session", "-d", "-s", session, "sleep", "600");
+  const pane = panesIn(`=${session}`)[0];
+  tmux("respawn-pane", "-k", "-t", pane, "sh", "-c", `${command}; sleep 600`);
+  for (let i = 0; i < 50 && !tmux("capture-pane", "-p", "-t", pane).includes("Append `.hive/` to .gitignore?"); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  tmux("send-keys", "-t", pane, answer, "Enter");
+  for (let i = 0; i < 50 && !tmux("capture-pane", "-p", "-t", pane).includes("- .gitignore:"); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const gitignore = readFileSync(join(dirs.projectDir, ".gitignore"), "utf8");
+  tmux("kill-session", "-t", `=${session}`);
+  return { dirs, gitignore };
+}
 
 describe("hive init profile selection", () => {
   it("writes the profile and skips the runbook pad", async () => {
@@ -117,6 +138,27 @@ describe("hive init profile selection", () => {
     assert.doesNotMatch(ymlOf(dirs), /^profile:/m, "an absent key means never asked");
     assert.match(stdout, /hive init --profile <name>/);
     assert.match(stdout, /runbook pad: seeded/);
+  });
+
+  it("prints the generated .hive/ note without a TTY and never changes an existing gitignore", async () => {
+    const { dirs, cli } = optsFor();
+    const original = "node_modules/\n";
+    writeFileSync(join(dirs.projectDir, ".gitignore"), original);
+    const { code, stdout } = await runCli(["init", "--no-profile"], cli);
+    assert.equal(code, 0);
+    assert.match(stdout, /\.hive\/: hive writes generated output here/);
+    assert.doesNotMatch(stdout, /Append `\.hive\//, "non-TTY init must not ask for input");
+    assert.equal(readFileSync(join(dirs.projectDir, ".gitignore"), "utf8"), original);
+  });
+
+  it("appends exactly one .hive/ line after an explicit TTY y, preserving a missing trailing newline", async () => {
+    const { gitignore } = await initWithGitignoreAnswer("y");
+    assert.equal(gitignore, "node_modules/\n.hive/\n");
+  });
+
+  it("leaves the gitignore byte-identical after an explicit TTY n", async () => {
+    const { gitignore } = await initWithGitignoreAnswer("n");
+    assert.equal(gitignore, "node_modules/");
   });
 
   it("writes a commented check: example into the vars block (todo 792)", async () => {

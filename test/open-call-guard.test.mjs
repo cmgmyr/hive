@@ -94,9 +94,9 @@ describe("the run-level open-call check", () => {
           `const claudePath = makeFakeClaude(dirs.tmp)("sleep 600");\n` +
           `test("reproduces todo 419's two preconditions and reaches real hive lead", async () => {\n` +
           `  writeFileSync(join(dirs.projectDir, "hive.yml"), "dashboard: true\\n");\n` +
-          `  const dashDir = join(dirs.projectDir, ".claude", "dashboard");\n` +
+          `  const dashDir = join(dirs.projectDir, ".hive");\n` +
           `  mkdirSync(dashDir, { recursive: true });\n` +
-          `  writeFileSync(join(dashDir, "index.html"), "<html>todo 419 e2e fixture</html>");\n` +
+          `  writeFileSync(join(dashDir, "dashboard.html"), "<html>todo 419 e2e fixture</html>");\n` +
           `  const init = await runCli(["init"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });\n` +
           `  if (init.code !== 0) throw new Error("init failed: " + init.stderr);\n` +
           `  const led = await runCli(["lead"], {\n` +
@@ -116,7 +116,7 @@ describe("the run-level open-call check", () => {
       assert.match(out, /open-call check FAILED/, out);
       assert.match(
         out,
-        /ARGS: file:\/\/.*\.claude\/dashboard\/index\.html/,
+        /ARGS: file:\/\/.*\.hive\/dashboard\.html/,
         `must name the real resolved dashboard file, not a placeholder:\n${out}`,
       );
 

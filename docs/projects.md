@@ -33,7 +33,7 @@ review_tags: [from-review]    # optional todo tags `hive doctor` counts as revie
                               # from-review covers from-review-3. Absent means doctor tracks
                               # none and says so; hive ships no tag names of its own.
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
-                              # HTML dashboard to .claude/dashboard/index.html on every tick:
+                              # HTML dashboard to .hive/dashboard.html on every tick (see [the dashboard guide](dashboard.md)):
                               # the board pad, open todos, running agents, pending wakes, and
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
