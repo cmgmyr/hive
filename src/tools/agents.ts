@@ -1142,19 +1142,63 @@ export function registerAgents(server: McpServer): void {
   server.registerTool(
     "agent_list",
     {
-      description: "List this project's agents with live status.",
+      description:
+        "List this project's agents with live status. Without include_closed, this is every running agent, in full. With include_closed, it is every agent (running and closed/parked), newest first, bounded by limit (default 20, max 100); when the receipt carries next_before_id, page through the rest by passing it back as before_id.",
       inputSchema: {
         include_closed: z.boolean().optional(),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe(
+            "Max rows to return when include_closed is true, newest first. Default 20, max 100. Ignored otherwise.",
+          ),
+        before_id: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Page cursor for include_closed: only rows with id below this value. Pass the previous receipt's next_before_id to get the next page.",
+          ),
         project_id: projectIdParam,
       },
     },
     (args) =>
       run(() => {
         const project = resolveProject(args.project_id);
-        let sql = "SELECT * FROM agents WHERE project_id = ?";
-        if (!args.include_closed) sql += " AND status = 'running'";
-        const rows = db.prepare(`${sql} ORDER BY id`).all(project.id) as AgentRow[];
         const snapshot = liveTargets();
+
+        let rows: AgentRow[];
+        let total: number;
+        let nextBeforeId: number | undefined;
+
+        if (args.include_closed) {
+          const limit = Math.min(args.limit ?? 20, 100);
+          total = (
+            db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ?").get(project.id) as { n: number }
+          ).n;
+          let sql = "SELECT * FROM agents WHERE project_id = ?";
+          const params: unknown[] = [project.id];
+          if (args.before_id != null) {
+            sql += " AND id < ?";
+            params.push(args.before_id);
+          }
+          sql += " ORDER BY id DESC LIMIT ?";
+          params.push(limit + 1);
+          const page = db.prepare(sql).all(...params) as AgentRow[];
+          const truncated = page.length > limit;
+          rows = truncated ? page.slice(0, limit) : page;
+          if (truncated) nextBeforeId = rows[rows.length - 1].id;
+        } else {
+          rows = db
+            .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+            .all(project.id) as AgentRow[];
+          total = rows.length;
+        }
+
         return {
           project_id: project.id,
           project_name: project.name,
@@ -1164,6 +1208,10 @@ export function registerAgents(server: McpServer): void {
                 note: `${PROBE_FAILED_NOTE} These rows are what the store holds; do not conclude a worker died.`,
               }
             : {}),
+
+          total,
+          returned: rows.length,
+          ...(nextBeforeId !== undefined ? { next_before_id: nextBeforeId } : {}),
 
           agents: rows.map((r) => {
             const summary = agentSummary(r, snapshot);
