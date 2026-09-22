@@ -15,11 +15,12 @@ function packManifest() {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
   });
-  return JSON.parse(output)[0];
+  const parsed = JSON.parse(output);
+  return Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
 }
 
 describe("the npm tarball contains only the runtime tree and required metadata", () => {
-  it("rejects unshipped directories and retains every runtime entry point", () => {
+  it("rejects unshipped directories and retains every runtime entry point under npm 11's array and npm 12's object output", () => {
     const pkg = JSON.parse(execFileSync("node", ["-e", "process.stdout.write(JSON.stringify(require('./package.json')))"], { cwd: REPO, encoding: "utf8" }));
     const manifest = packManifest();
     const paths = manifest.files.map(({ path }) => path);
