@@ -2281,13 +2281,9 @@
       "additionalProperties": false,
       "properties": {
         "due_at": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+          "type": [
+            "string",
+            "null"
           ]
         },
         "updated": {
