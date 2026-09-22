@@ -47,14 +47,14 @@ function seedRunningAgent(name) {
 }
 
 describe("agent_list limit and paging", { skip: hasTmux ? false : "tmux is not installed" }, () => {
-  it("bounds a closed listing past the limit, newest first, with total and next_before_id set", async () => {
+  it("bounds a closed listing to the default limit, newest first, with total and next_before_id set", async () => {
     const ids = [];
     for (let i = 0; i < 60; i++) ids.push(seedClosedAgent(`closed-bound-${i}`));
 
-    const receipt = await mcp.call("agent_list", { include_closed: true, limit: 50 });
+    const receipt = await mcp.call("agent_list", { include_closed: true });
 
-    assert.equal(receipt.returned, 50, "returned must equal the requested limit when more rows exist");
-    assert.equal(receipt.agents.length, 50);
+    assert.equal(receipt.returned, 20, "returned must equal the default limit (20) when more rows exist");
+    assert.equal(receipt.agents.length, 20);
     assert.equal(receipt.total, ids.length, "total must count every matching row, not just the page");
 
     const returnedIds = receipt.agents.map((a) => a.agent_id);
@@ -102,6 +102,14 @@ describe("agent_list limit and paging", { skip: hasTmux ? false : "tmux is not i
     for (const id of ids) {
       assert.ok(seen.includes(id), `id ${id} from this seed set must appear on some page`);
     }
+  });
+
+  it("rejects a limit above 100, the ceiling that keeps a single page inside a tool result", async () => {
+    await assert.rejects(
+      () => mcp.call("agent_list", { include_closed: true, limit: 101 }),
+      /Too big|100/,
+      "limit must be capped at 100, not the old 500 - 500 closed rows at ~1.1k chars each overflows a tool result",
+    );
   });
 
   it("a running-only listing stays complete and ascending, unaffected by closed-listing paging", async () => {

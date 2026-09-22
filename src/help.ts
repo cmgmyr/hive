@@ -157,7 +157,7 @@ runbook (fork it first), not a pad write.`,
     short tail, and the path to the brief this worker was given
     (include_brief=true returns its text; no transcript records it).
   agent_list(include_closed?, limit?, before_id?) — agents with live status.
-    include_closed adds closed/parked rows, newest first, limit 50/max 500;
+    include_closed adds closed/parked rows, newest first, limit 20/max 100;
     page with before_id set to the receipt's next_before_id.
   agent_rename(name|agent_id, new_name) — change the display name. actor_id
     stays agent:N, so older pad writes and todo comments still point here.

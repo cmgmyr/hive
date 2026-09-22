@@ -1143,17 +1143,17 @@ export function registerAgents(server: McpServer): void {
     "agent_list",
     {
       description:
-        "List this project's agents with live status. Without include_closed, this is every running agent, in full. With include_closed, it is every agent (running and closed/parked), newest first, bounded by limit (default 50, max 500); when the receipt carries next_before_id, page through the rest by passing it back as before_id.",
+        "List this project's agents with live status. Without include_closed, this is every running agent, in full. With include_closed, it is every agent (running and closed/parked), newest first, bounded by limit (default 20, max 100); when the receipt carries next_before_id, page through the rest by passing it back as before_id.",
       inputSchema: {
         include_closed: z.boolean().optional(),
         limit: z
           .number()
           .int()
           .min(1)
-          .max(500)
+          .max(100)
           .optional()
           .describe(
-            "Max rows to return when include_closed is true, newest first. Default 50, max 500. Ignored otherwise.",
+            "Max rows to return when include_closed is true, newest first. Default 20, max 100. Ignored otherwise.",
           ),
         before_id: z
           .number()
@@ -1176,7 +1176,7 @@ export function registerAgents(server: McpServer): void {
         let nextBeforeId: number | undefined;
 
         if (args.include_closed) {
-          const limit = Math.min(args.limit ?? 50, 500);
+          const limit = Math.min(args.limit ?? 20, 100);
           total = (
             db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ?").get(project.id) as { n: number }
           ).n;
