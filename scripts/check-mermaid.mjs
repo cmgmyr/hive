@@ -20,14 +20,16 @@ for (const file of files) {
 }
 
 const temp = mkdtempSync(join(tmpdir(), "hive-mermaid-"));
+const puppeteerConfig = join(temp, "puppeteer.json");
 let failed = false;
 
 try {
+  writeFileSync(puppeteerConfig, JSON.stringify({ args: ["--no-sandbox", "--disable-setuid-sandbox"] }));
   for (const [position, block] of blocks.entries()) {
     const input = join(temp, `${position}.mmd`);
     const output = join(temp, `${position}.svg`);
     writeFileSync(input, block.source);
-    const result = spawnSync("npx", ["--yes", "@mermaid-js/mermaid-cli@11", "-i", input, "-o", output, "-q"], {
+    const result = spawnSync("npx", ["--yes", "@mermaid-js/mermaid-cli@11", "-p", puppeteerConfig, "-i", input, "-o", output, "-q"], {
       cwd: root,
       encoding: "utf8",
     });
@@ -39,7 +41,11 @@ try {
     failed = true;
     const error = (result.stderr || result.stdout || result.error?.message || "unknown error")
       .split(/\r?\n/)
-      .find((line) => line.trim()) || "unknown error";
+      .filter((line) => line.trim())
+      .slice(0, 4)
+      .join(" | ")
+      .trim()
+      .slice(0, 400) || "unknown error";
     console.log(`${block.file} block ${block.index}: FAIL: ${error}`);
   }
 } finally {
