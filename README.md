@@ -14,16 +14,15 @@ Shared, persistent memory and a visible crew of tmux workers for Claude Code and
 Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. codex is optional, only needed if a project opts a worker into it; see [docs/install.md](docs/install.md#codex-workers).
 
 ```bash
-git clone https://github.com/cmgmyr/hive.git hive && cd hive
-npm install
-npm run build
-npm link             # puts the hive command on your PATH
-hive setup           # pins that command to one interpreter
+npm install -g @cmgmyr/hive
+hive setup           # pins the hive command to one interpreter, prints the MCP line
 brew install tmux
-claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
-ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
+claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
 hive doctor          # verify: node, ABI, tmux, claude, database, hooks all green
 ```
+
+Working from a clone instead? See [docs/install.md](docs/install.md#from-source).
 
 Put `~/.local/bin` on your PATH below your version manager's block. See [Node version and the interpreter pin](docs/install.md#node-version-and-the-interpreter-pin) for why the order matters.
 

@@ -1,6 +1,37 @@
 # Install details
 
-The Node version and interpreter pin, the session-start plugin, one-time iTerm settings, the status line, registering hive in more than one MCP scope, updating a checkout, and uninstalling.
+The npm and source install paths, the Node version and interpreter pin, the session-start plugin, one-time iTerm settings, the status line, registering hive in more than one MCP scope, updating, and uninstalling.
+
+## Install from npm
+
+Install the published package globally, then pin the command to the Node interpreter you used. `hive setup` prints the MCP registration line when the registration is missing or stale.
+
+```bash
+npm install -g @cmgmyr/hive
+hive setup
+brew install tmux
+claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
+hive doctor
+```
+
+Put `~/.local/bin` on your PATH below your version manager's block. See [Node version and the interpreter pin](#node-version-and-the-interpreter-pin) for why the order matters.
+
+## From source
+
+Clone the repository when you want to work from source:
+
+```bash
+git clone https://github.com/cmgmyr/hive.git hive && cd hive
+npm install
+npm run build
+npm link             # puts the hive command on your PATH
+hive setup           # pins that command to one interpreter
+brew install tmux
+claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
+ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
+hive doctor          # verify: node, ABI, tmux, claude, database, hooks all green
+```
 
 ## Node version and the interpreter pin
 
@@ -40,7 +71,7 @@ A codex worker is not at parity with a claude one, and hive does not pretend oth
 Symlink the plugin once per machine, not per project:
 
 ```bash
-ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive
 ```
 
 A session opened afterward in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, and pending wake-ups. See [docs/profiles.md](profiles.md) for what it loads, when it stays silent, and `hive kickoff --explain`.
@@ -87,11 +118,24 @@ The status line only re-renders on session activity by default. Add `"refreshInt
 
 ## Registering hive in more than one scope
 
-`--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: run `claude mcp add hive -- "$(command -v node)" /absolute/path/to/hive/dist/index.js` from that project's directory. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
+`--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: run `claude mcp add hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"` from that project's directory, or use the checkout's `dist/index.js` when you installed from source. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
 
 Register hive in one scope only. A project-scoped registration shadows the user-scoped one, and `claude mcp list` is the way to catch it: two entries named hive means the project one is what your session is actually running.
 
 ## Updating
+
+### npm install
+
+Update the published package and re-pin the command:
+
+```bash
+npm install -g @cmgmyr/hive@latest
+hive setup
+```
+
+Run the MCP registration line again only if `hive setup` prints one. A version manager can change `npm root -g` when you upgrade Node, so the absolute MCP path and plugin symlink can become stale too.
+
+### From source
 
 Both entry points, the `hive` command and the MCP registration, are live pointers into your checkout, so code updates need no reinstall or re-registration, just a rebuild and a re-pin. `hive` runs `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`:
 
@@ -138,7 +182,8 @@ tmux ls | grep view- || true    # a second terminal's attach opens its own VIEW
                                  # too (or just close their terminals - a view
                                  # destroys itself once its own client detaches)
 claude mcp remove hive          # the MCP registration (add --scope user if registered there)
-npm rm -g hive                  # the linked hive command
+npm uninstall -g @cmgmyr/hive  # the npm install, if you used it
+npm rm -g hive                  # the linked hive command, if you used it
 rm ~/.local/bin/hive            # the dispatcher hive setup wrote, if you ran it
 rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made it
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
