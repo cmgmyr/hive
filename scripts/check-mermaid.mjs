@@ -21,10 +21,10 @@ for (const file of files) {
 
 const temp = mkdtempSync(join(tmpdir(), "hive-mermaid-"));
 const puppeteerConfig = join(temp, "puppeteer.json");
-writeFileSync(puppeteerConfig, JSON.stringify({ args: ["--no-sandbox", "--disable-setuid-sandbox"] }));
 let failed = false;
 
 try {
+  writeFileSync(puppeteerConfig, JSON.stringify({ args: ["--no-sandbox", "--disable-setuid-sandbox"] }));
   for (const [position, block] of blocks.entries()) {
     const input = join(temp, `${position}.mmd`);
     const output = join(temp, `${position}.svg`);
