@@ -5,7 +5,7 @@ description: "Cut a hive release: gate on a clean main and a green full suite, b
 
 # Release hive
 
-Run every step in order, from the main checkout. Stop at the first failure and say which step failed. The tag push is the point of no return. Nothing before step 4 publishes or pushes. The publish workflow (`.github/workflows/publish.yml`) fires on a `v*` tag and publishes with npm trusted publishing. You never publish from your machine. Steps 6 and 7 need registry access; nothing needs an npm login, because the workflow publishes.
+Run every step in order, from the main checkout. Stop at the first failure and say which step failed. The tag push is the point of no return. Nothing before step 5 publishes or pushes. The publish workflow (`.github/workflows/publish.yml`) fires on a `v*` tag, publishes with npm trusted publishing, and creates the GitHub release from `CHANGELOG.md`. You never publish from your machine. Steps 7 and 8 need registry access; nothing needs an npm login, because the workflow publishes.
 
 Flags below were read from `npx np@latest --help` on np 12.1.1. Re-read them if `npx np@latest --version` prints a different major.
 
@@ -42,7 +42,18 @@ Choose `patch`, `minor`, `major` or an explicit version such as `0.2.0`. Before 
 
 Prerelease versions such as `1.0.0-rc.1` are not supported. The workflow publishes without `--tag`, and npm refuses a prerelease on `latest`.
 
-## 4. Bump, tag and push
+## 4. Write the changelog
+
+Write the `CHANGELOG.md` section `## <version> - <date>` and commit it before `np` runs:
+
+```bash
+git add CHANGELOG.md
+git commit --no-gpg-sign -m "document <version> release"
+```
+
+The changelog commit must land before the version bump, tag, and push. Write for a stranger. Include the user-visible changes and keep internal workflow details out of the section.
+
+## 5. Bump, tag and push
 
 ```bash
 npx np@latest <version> --no-tests --no-publish --no-2fa --no-release-draft --no-cleanup
@@ -51,12 +62,12 @@ npx np@latest <version> --no-tests --no-publish --no-2fa --no-release-draft --no
 - `--no-tests`: the gate in step 2 already ran the suite; np would rerun it.
 - `--no-publish`: np does not publish; the workflow does.
 - `--no-2fa`: np does not try to enable 2FA on the package, which needs a publish.
-- `--no-release-draft`: np only opens a prefilled browser form; step 8 creates the release with `gh`.
+- `--no-release-draft`: np does not create a GitHub release; the publish workflow creates it from `CHANGELOG.md` after npm publish succeeds.
 - `--no-cleanup`: np's cleanup runs `npm ci` in this checkout and deletes `node_modules` under the hive servers running from it.
 
 np bumps `package.json` and the lockfile, commits, tags `v<version>`, and pushes the commit and the tag. Pushing the tag starts the workflow.
 
-## 5. Watch the publish run
+## 6. Watch the publish run
 
 ```bash
 sha=$(git rev-parse HEAD)
@@ -74,14 +85,14 @@ The loop waits up to two minutes for the run to appear. If the tag check or the 
 git tag -d v<version> && git push origin :refs/tags/v<version>
 ```
 
-## 6. Verify the registry
+## 7. Verify the registry
 
 ```bash
 npm view @cmgmyr/hive version                 # must equal <version>
 npm view @cmgmyr/hive dist.attestations       # must print attestation data (provenance)
 ```
 
-## 7. Install smoke
+## 8. Install smoke
 
 ```bash
 P=$(mktemp -d); D=$(mktemp -d)
@@ -92,15 +103,21 @@ rm -rf "$P" "$D"
 
 Never run `hive setup` here without a scratch `HIVE_BIN_DIR`; it rewrites your real shim.
 
-## 8. Create the release
+## 9. Verify the release
 
 ```bash
-gh release create v<version> --verify-tag --generate-notes
+gh release view v<version> --json name,body -q .name
+```
+
+The command must print the version. If the publish workflow's release job failed because the changelog section was missing, fix `CHANGELOG.md` on main and re-run the release job for the existing tag:
+
+```bash
+gh workflow run publish.yml -f tag=v<version>
 ```
 
 Read the notes on the page it prints and edit them there if needed.
 
-## 9. Record
+## 10. Record
 
 Write the version, the commit sha (`git rev-parse HEAD`), the publish run URL and the suite counts wherever this project keeps lane records.
 
@@ -117,3 +134,5 @@ The npm docs list those fields, `id-token: write`, npm 11.5.1 or later and Node 
 1. Preview what would ship, from a clean checkout of main: `npm publish --access public --dry-run`.
 2. Open the package's settings on npmjs.com. If the trusted publisher can be registered before the package exists, do that and run steps 0 to 9 as written. np needs a version above the one in `package.json`, so the first workflow release is a later version than today's.
 3. If it cannot, publish once by hand with your 2FA: `npm version <first version> --no-git-tag-version`, commit it, then `npm publish --access public`. Register the trusted publisher. Then `git tag v<first version> && git push origin v<first version>` is safe: the workflow sees the version on the registry and publishes nothing.
+
+For the 1.0.0 release, package.json is already 1.0.0, so write its changelog section and push the tag by hand. Do not run `np`, which would bump the package to another version.

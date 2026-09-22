@@ -3,6 +3,12 @@ name: Publish
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v1.0.0
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -10,6 +16,7 @@ permissions:
 
 jobs:
   publish:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -44,3 +51,49 @@ jobs:
             exit 0
           fi
           npm publish --provenance --access public
+
+  release:
+    needs: publish
+    if: always() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ inputs.tag || github.ref_name }}
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          VERSION="${TAG#v}"
+          awk -v v="$VERSION" '
+            /^## / {
+              if (found) exit
+              rest = substr($0, 4)
+              if (rest == v || index(rest, v " ") == 1) found = 1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::CHANGELOG.md has no non-empty '## $VERSION' section for tag $TAG"
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Create or update the GitHub release
+        run: |
+          VERSION="${TAG#v}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$VERSION" --notes-file notes.md
+          else
+            PRERELEASE=
+            case "$TAG" in *-*) PRERELEASE=--prerelease ;; esac
+            gh release create "$TAG" --title "$VERSION" --notes-file notes.md --verify-tag $PRERELEASE
+          fi

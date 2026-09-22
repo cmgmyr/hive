@@ -23,4 +23,4 @@ HIVE_DATA_DIR=/tmp/hive-test node dist/index.js
 
 You cut a release with the `release` skill in `.agents/skills/release`. It gates on a local full suite, then tags with `np`.
 
-The publish workflow (`.github/workflows/publish.yml`) runs on `v*` tags only and publishes with npm trusted publishing, so no token is stored. Nothing publishes on push or pull request.
+The publish workflow (`.github/workflows/publish.yml`) runs on `v*` tags only and publishes with npm trusted publishing, so no token is stored. It also creates the GitHub release from the matching section in `CHANGELOG.md`. Nothing publishes on push or pull request.
