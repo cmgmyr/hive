@@ -1,4 +1,5 @@
-<p align="center"><img src="docs/assets/logo-card.svg" alt="hive" height="112"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/cmgmyr/hive/main/docs/assets/logo-card.svg" alt="hive" height="112"></p>
+<p align="center"><a href="https://github.com/cmgmyr/hive/actions/workflows/ci.yml"><img src="https://github.com/cmgmyr/hive/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
 
 Shared, persistent memory and a visible crew of tmux workers for Claude Code and Codex sessions on one project.
 
@@ -6,7 +7,7 @@ Shared, persistent memory and a visible crew of tmux workers for Claude Code and
 - Exact state: workers report it through their own CLI's hooks, so nothing polls.
 - One local SQLite store: no daemon, and nothing leaves your machine.
 
-![hive: a lead plans, spawns workers, and is woken when they finish](docs/assets/demo.svg)
+![hive: a lead plans, spawns workers, and is woken when they finish](https://raw.githubusercontent.com/cmgmyr/hive/main/docs/assets/demo.svg)
 
 ## Install
 

@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   schedule:
     - cron: "42 8 * * 1"
   workflow_dispatch:
@@ -11,7 +14,6 @@ concurrency:
 
 jobs:
   test:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -78,7 +80,6 @@ jobs:
         run: ./scripts/tmux-leak-guard.sh
 
   test-macos:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -125,7 +126,6 @@ jobs:
         run: ./scripts/tmux-leak-guard.sh
 
   floor-boundary:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
