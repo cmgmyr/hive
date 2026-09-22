@@ -108,7 +108,7 @@ stateDiagram-v2
     idle --> waiting: Notification, not idle_prompt (claude only)
     waiting --> working: UserPromptSubmit
     waiting --> idle: Stop, no live subagent
-    working --> working: SubagentStart, SubagentStop (codex; log-only, no state write)
+    working --> working: SubagentStart, SubagentStop (codex, log-only, no state write)
     note right of unknown
       every hook call appends one row to agent_state_log
     end note

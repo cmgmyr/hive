@@ -6,11 +6,13 @@ npm run watch    # compile on change
 npm test         # run the suite against dist/ (build first)
 ```
 
+Run `npm run check:mermaid` to render every Mermaid diagram in `README.md` and `docs/`.
+
 `hive.yml` is gitignored, so nobody's lead command, profile or vars ship to
 anyone else. Copy `hive.example.yml` to `hive.yml` and edit it; hive works
 without one, and every key in it is optional.
 
-Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on the Monday 08:42 UTC schedule and on `workflow_dispatch` only, covering both ubuntu and macOS legs; it does not run on push or pull request, so a local full suite run is the merge gate.
+Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on the Monday 08:42 UTC schedule and on `workflow_dispatch`, covering both ubuntu and macOS legs; its Mermaid docs check also runs on push and pull request, so a local full suite run is the merge gate.
 
 Smoke test without touching your real data:
 
