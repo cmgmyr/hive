@@ -165,7 +165,7 @@
     }
   },
   "agent_list": {
-    "description": "List this project's agents with live status.",
+    "description": "List this project's agents with live status. Without include_closed, this is every running agent, in full. With include_closed, it is every agent (running and closed/parked), newest first, bounded by limit (default 50, max 500); when the receipt carries next_before_id, page through the rest by passing it back as before_id.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -173,8 +173,20 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "before_id": {
+          "description": "Page cursor for include_closed: only rows with id below this value. Pass the previous receipt's next_before_id to get the next page.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
         "include_closed": {
           "type": "boolean"
+        },
+        "limit": {
+          "description": "Max rows to return when include_closed is true, newest first. Default 50, max 500. Ignored otherwise.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
         },
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
