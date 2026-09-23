@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -24,6 +25,21 @@ function isolated(dataDir, env = {}) {
 }
 
 describe("CLI npm update checks", () => {
+  it("queryUpdate returns newer, current and unknown without creating an update cache", () => {
+    for (const [version, status] of [["9.9.9", "newer"], ["1.1.0", "current"], ["invalid", "unknown"]]) {
+      const dataDir = mkdtempSync(join(dirs.tmp, "query-"));
+      const bin = fakeNpm(version, dirs.tmp);
+      const output = execFileSync(process.execPath, ["--input-type=module", "-e",
+        `import { queryUpdate, updateLine } from ${JSON.stringify(join(DIST, "updateCheck.js"))}; const r = queryUpdate(); console.log(JSON.stringify({r,line:updateLine(r)}));`], {
+        encoding: "utf8", env: { ...process.env, HIVE_DATA_DIR: dataDir, HIVE_NO_UPDATE_CHECK: "0", PATH: `${bin}:${process.env.PATH}` },
+      });
+      const result = JSON.parse(output);
+      assert.equal(result.r.status, status);
+      if (status === "newer") assert.match(result.line, /run: hive upgrade$/);
+      assert.equal(existsSync(join(dataDir, "update-check.json")), false);
+    }
+  });
+
   it("--check with a higher fake npm version prints update available and caches latest", async () => {
     const dataDir = mkdtempSync(join(dirs.tmp, "higher-") );
     const bin = fakeNpm("9.9.9", dirs.tmp);

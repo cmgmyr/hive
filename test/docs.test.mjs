@@ -83,7 +83,15 @@ describe("docs keep up with the CLI", () => {
   it("tells a reader to re-pin the interpreter after an update", () => {
     const install = readRepo("docs/install.md");
 
-    assert.match(install, /## Updating[\s\S]*?node dist\/cli\.js setup\s+# not `hive setup`/);
+    const updating = install.slice(install.indexOf("## Updating"));
+    assert.match(updating, /"<absolute path to the current Node interpreter>" "<this checkout>\/dist\/cli\.js" setup/);
+    assert.match(updating, /Do not re-pin through bare `hive setup` or ambient `node`/);
+    for (const block of updating.matchAll(/```bash\n([\s\S]*?)```/g)) {
+      assert.doesNotMatch(block[1], /^\s*(?:hive setup|node .*setup)/m);
+    }
+    for (const command of ["hive upgrade --check", "hive upgrade --run", "hive doctor --strict"]) assert.ok(updating.includes(command));
+    assert.match(updating, /never edit those tools' configuration files/);
+    assert.match(updating, /Restart every Claude Code or Codex session/);
     assert.doesNotMatch(install, /no re-registration, on any machine/);
     assert.match(install, /export PATH="\$HOME\/\.local\/bin:\$PATH"/);
   });

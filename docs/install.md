@@ -124,31 +124,46 @@ Register hive in one scope only. A project-scoped registration shadows the user-
 
 ## Updating
 
-### npm install
+### Global npm install
 
-Update the published package and re-pin the command:
+Run `hive upgrade` to check the latest published version, install it, and re-pin the command through the new install's own setup. It keeps the absolute Node interpreter running your current CLI. `hive upgrade --check` prints the commands and makes no changes to your install: no install, setup, dispatcher write, MCP config write, or update-cache write. Like other CLI commands, it still opens hive's database.
 
 ```bash
-npm install -g @cmgmyr/hive@latest
-hive setup
+hive upgrade --check
+hive upgrade
+hive doctor --strict
 ```
 
-Run the MCP registration line again only if `hive setup` prints one. A version manager can change `npm root -g` when you upgrade Node, so the absolute MCP path and plugin symlink can become stale too.
+An already-current install exits successfully without installing or re-pinning. If npm cannot report a version, upgrade exits with an unknown result and installs nothing. `HIVE_NO_UPDATE_CHECK=1` also prevents the registry query and upgrade. The npm on your PATH must own the running package's global root. If a version manager switched that root, put the npm for this install first on PATH before retrying. Copied installs and npx caches are refused.
 
 ### From source
 
-Both entry points, the `hive` command and the MCP registration, are live pointers into your checkout, so code updates need no reinstall or re-registration, just a rebuild and a re-pin. `hive` runs `dist/cli.js`, and the MCP registration runs `<absolute node> <checkout>/dist/index.js`:
+`hive upgrade` detects the checkout containing its running `dist/cli.js`, including linked worktrees. By default it prints the recipe. `hive upgrade --check` does the same. Run it only when you want to pull, install, build, and re-pin:
+
+```bash
+hive upgrade --run
+hive doctor --strict
+```
+
+The steps run in the checkout, in this order, and stop on the first failure. The printed recipe names your current absolute interpreter and the new CLI explicitly:
 
 ```bash
 cd <this checkout>
 git pull --ff-only
 npm install
 npm run build
-node dist/cli.js setup        # not `hive setup`: that runs through the OLD dispatcher
-hive doctor --strict          # confirms the addon, the pin, and the registration all agree
+"<absolute path to the current Node interpreter>" "<this checkout>/dist/cli.js" setup
 ```
 
-The pin is the part that can drift, and the way it drifts changed with `better-sqlite3` 13. The addon is no longer built here, so it is no longer built *against* a particular Node, and an update cannot leave the addon and the interpreter disagreeing about a compiled ABI. What can still happen is that the interpreter running setup is not the one you want pinned, or that a version manager retires the Node your dispatcher names. Re-running setup costs nothing when nothing changed, and `hive doctor` says so either way. If the interpreter changed, the MCP server needs re-registering too, and `hive setup` prints the exact line for it: pinning the `hive` command does not touch the registration Claude Code starts the server from. Setup says nothing when the registration already runs the interpreter it pinned.
+Do not re-pin through bare `hive setup` or ambient `node`: either can select the interpreter you meant to replace. Upgrade runs the explicit interpreter and CLI command above. Setup still refuses to pin a linked worktree without `--force`; use a durable checkout for your installed command. `--run` is only for checkouts and cannot be combined with `--check`.
+
+### Registration drift and recovery
+
+Setup and doctor report interpreter and server-path drift for registrations hive recognises as hive; a renamed registration whose path no longer points at the current hive dist is not detected. They print the exact repair commands for the current install and never edit those tools' configuration files. Codex repairs print `codex mcp remove` followed by `codex mcp add`. Run the commands shown, then `hive doctor --strict`. Registration drift warns but does not turn a completed upgrade into a failure.
+
+If npm fails, the package may be partially changed. Follow the printed install retry and explicit setup command. If setup fails after npm succeeds, the package is new but the dispatcher has not been confirmed re-pinned. Run the printed command naming the absolute interpreter and new `dist/cli.js`, then `hive doctor --strict`. Checkout failures name the failed step and list the remaining steps as not run. Repair that step before continuing.
+
+**Restart every Claude Code or Codex session that has hive loaded after upgrading or completing a repair.** Existing sessions keep running old in-memory code even after the files change.
 
 `npm install` deciding a package is up to date is not proof the addon file is still there, and this is measured rather than assumed: delete `node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node`, run a plain `npm install`, and it prints `up to date` without restoring it. The repair is to make npm reinstall the package rather than re-examine it:
 

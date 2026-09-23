@@ -75,7 +75,7 @@ function writeCache(result: UpdateCheck): void {
   renameSync(temporary, path);
 }
 
-export function refreshUpdate(): UpdateCheck {
+export function queryUpdate(): UpdateCheck {
   const current = currentVersion();
   const checkedAt = new Date().toISOString();
   let latest: string | null = null;
@@ -96,7 +96,11 @@ export function refreshUpdate(): UpdateCheck {
     }
   }
   const status = reason === null && latest !== null ? compareVersions(current, latest) : "unknown";
-  const result: UpdateCheck = { current, latest, status, reason, checkedAt };
+  return { current, latest, status, reason, checkedAt };
+}
+
+export function refreshUpdate(): UpdateCheck {
+  const result = queryUpdate();
   writeCache(result);
   return result;
 }
@@ -109,7 +113,7 @@ export function cacheIsStale(update: UpdateCheck | null, now = Date.now()): bool
 
 export function updateLine(update: UpdateCheck): string {
   if (update.status === "newer" && update.latest) {
-    return `update available: hive ${update.latest} (you have ${update.current}); run: npm install -g @cmgmyr/hive@latest && hive setup`;
+    return `update available: hive ${update.latest} (you have ${update.current}); run: hive upgrade`;
   }
   if (update.status === "current") return `up to date: hive ${update.current} is the latest on npm`;
   return `update check: unknown (${update.reason ?? "offline or npm failed"})`;

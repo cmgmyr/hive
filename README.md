@@ -67,3 +67,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Tools](docs/tools.md) | The 45 MCP tools: what each does and when to use it |
 | [tmux settings](docs/tmux.md) | Attach modes, pane options, and what to put in `~/.tmux.conf` |
 | [Development](docs/development.md) | Building and testing hive itself |
+
+## Updating
+
+Run `hive upgrade` for a global npm install, or `hive upgrade --check` to preview the commands without changing your install. In a git checkout, the default prints the recipe; `hive upgrade --run` executes it. Upgrade reports Claude Code and Codex registration repairs without editing their configs. Restart every session with hive loaded after the upgrade. See [Updating and recovery](docs/install.md#updating).

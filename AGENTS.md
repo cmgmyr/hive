@@ -2,7 +2,7 @@
 
 ## What this is
 
-hive is an MCP server plus CLI that gives multiple Claude Code sessions one shared, project-scoped state store: pads, todos with blockers, kv, leases, tmux-backed worker agents, and scheduled wake-ups. Every session runs its own server instance over stdio; all instances share one WAL-mode SQLite database (default `~/.hive/hive.db`). There is no daemon. The CLI makes one npm registry request only for an explicit `hive --version --check`, or an interactive doctor refresh, and `HIVE_NO_UPDATE_CHECK=1` disables it. The MCP server, hooks, and scheduler never make that request.
+hive is an MCP server plus CLI that gives multiple Claude Code sessions one shared, project-scoped state store: pads, todos with blockers, kv, leases, tmux-backed worker agents, and scheduled wake-ups. Every session runs its own server instance over stdio; all instances share one WAL-mode SQLite database (default `~/.hive/hive.db`). There is no daemon. The CLI makes one npm registry request only for an explicit `hive --version --check`, `hive upgrade`, or an interactive doctor refresh, and `HIVE_NO_UPDATE_CHECK=1` disables it. The MCP server, hooks, and scheduler never make that request.
 
 ## Commands
 
@@ -10,6 +10,7 @@ hive is an MCP server plus CLI that gives multiple Claude Code sessions one shar
 npm run build     # compile to dist/ (required before anything runs)
 npm run watch     # compile on change
 hive setup        # re-pin the hive command to the interpreter that built dist/
+hive upgrade      # update a global install; checkouts print a recipe unless --run
 hive doctor       # environment check + stale-state sweep
 ```
 
@@ -29,7 +30,7 @@ Curated, not exhaustive: the modules that shape decisions, not every file under 
 | Path | Role |
 |---|---|
 | `src/index.ts` | MCP server entry: registers tools, starts the scheduler |
-| `src/cli.ts` | `hive` CLI: lead, attach, start, status, setup, doctor |
+| `src/cli.ts` | `hive` CLI: lead, attach, start, status, setup, upgrade, doctor |
 | `src/db.ts` | SQLite open + append-only `MIGRATIONS` array |
 | `src/abi.ts` | Loads the native addon before the store opens; names an interpreter mismatch |
 | `src/dispatcher.ts` | Writes and reads the pinned `hive` shim; PATH resolution |

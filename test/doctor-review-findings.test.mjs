@@ -16,6 +16,7 @@ import {
 
 const { cleanup: cleanupTmux } = isolateTmux("the doctor review-findings tests");
 after(() => cleanupTmux());
+process.env.CODEX_HOME = scratchDirs().tmp;
 
 const TAGS = ["from-review-a", "from-review-b"];
 

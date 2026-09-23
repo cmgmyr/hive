@@ -12,7 +12,7 @@ Environment variables, mostly for advanced or automated setups. Everyday use nee
 | `HIVE_SPAWN_PLACEMENT` | `split` (panes) or `window` (tabs) for new workers. Default `split` |
 | `HIVE_SPAWN_READY_MS` | How long `agent_spawn` waits for a worker's prompt box. Default `45000` |
 | `HIVE_EDITOR` | External editor for `hive pad <name> --edit` |
-| `HIVE_NO_UPDATE_CHECK` | Set to `1` to disable npm update checks from `hive --version --check` and `hive doctor` |
+| `HIVE_NO_UPDATE_CHECK` | Set to `1` to disable npm update checks from `hive --version --check`, `hive doctor`, and `hive upgrade` (upgrade then refuses to install) |
 | `HIVE_BACKUP_KEEP_LAST`, `HIVE_BACKUP_KEEP_DAILY_DAYS`, `HIVE_BACKUP_STALE_DAYS` | Snapshot retention and staleness tuning |
 
 ## Set by hive or for tests

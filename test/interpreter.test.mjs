@@ -25,6 +25,7 @@ const configDir = join(dirs.tmp, "claude-config");
 mkdirSync(configDir, { recursive: true });
 
 process.env.HIVE_DATA_DIR = dirs.dataDir;
+process.env.CODEX_HOME = join(dirs.tmp, "empty-codex-home");
 
 const REPO = new URL("..", import.meta.url).pathname;
 
@@ -441,7 +442,7 @@ describe("hive setup writes a dispatcher", () => {
       assert.ok(stdout.includes(line), `setup should print:\n${line}\ngot:\n${stdout}`);
     }
 
-    assert.match(stdout, /npm install && npm run build && hive setup/);
+    assert.match(stdout, /For future updates, run hive upgrade/);
   });
 
   it("re-pins a stale dispatcher and says what it replaced", async () => {
@@ -521,6 +522,22 @@ describe("hive setup writes a dispatcher", () => {
 });
 
 describe("doctor reads the MCP registration", () => {
+  it("reports missing, nonexistent and old Claude server paths without rewriting config", async () => {
+    const old = join(dirs.tmp, "old-index.js");
+    writeFileSync(old, "");
+    for (const args of [[], [join(dirs.tmp, "missing-index.js")], [old]]) {
+      writeUserConfig({ mcpServers: { hive: { command: process.execPath, args } } });
+      const config = join(configDir, ".claude.json");
+      const before = readFileSync(config, "utf8");
+      for (const command of [["doctor"], ["setup", "--force"]]) {
+        const r = await runCli(command, { ...doctorOpts, env: { ...doctorOpts.env, HIVE_BIN_DIR: join(dirs.tmp, "drift-bin") } });
+        assert.match(r.stdout, /mcp registration \(user scope\): (has no server path|points at a missing server|points at a different server)/);
+        assert.ok(r.stdout.includes(`claude mcp add --scope user hive -- "${process.execPath}" "${SERVER}"`));
+        assert.equal(readFileSync(config, "utf8"), before);
+      }
+    }
+  });
+
   before(async () => {
     const init = await runCli(["init"], doctorOpts);
     assert.equal(init.code, 0, init.stderr);
