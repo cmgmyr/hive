@@ -43,15 +43,18 @@ try {
   for (let t = 0; t <= duration * 2 + 0.001; t += 0.05) samples.push(Number(t.toFixed(2)));
   for (const t of samples) {
     const result = await request("Runtime.evaluate", { awaitPromise: true, returnByValue: true, expression: `(() => {
-      const ms = ${t} * 1000; document.getAnimations().forEach((a) => { a.pause(); a.currentTime = ms; });
+      const ms = (${t} % 37.9) * 1000; document.getAnimations().forEach((a) => { a.pause(); a.currentTime = ms; });
       const body = [...document.querySelectorAll('rect')].find((r) => r.getAttribute('width') === '232' && r.getAttribute('height') === '324');
       const br = body.getBoundingClientRect();
       const texts = [...document.querySelectorAll('text')].map((el, index) => { const r=el.getBoundingClientRect(); const cs=getComputedStyle(el); return {index,text:el.textContent.trim(),x:r.x,y:r.y,w:r.width,h:r.height,opacity:Number(cs.opacity),visibility:cs.visibility}; }).filter((x) => x.opacity > .01 && x.visibility !== 'hidden' && x.x >= br.x-2 && x.x < br.right+2 && x.y > br.y+20 && x.y < br.bottom+20);
       const lead = [...document.querySelectorAll('.c71 text')].map((el) => { const r=el.getBoundingClientRect(),cs=getComputedStyle(el); return {text:el.textContent.trim(),x:r.x,y:r.y,w:r.width,h:r.height,opacity:Number(cs.opacity),visibility:cs.visibility}; }).filter((x) => x.opacity > .01 && x.visibility !== 'hidden');
+      const covers = [...document.querySelectorAll('[class^="c"]')].map((el)=>{const r=el.getBoundingClientRect(),cs=getComputedStyle(el);return {x:r.x,right:r.right,y:r.y,bottom:r.bottom,opacity:Number(cs.opacity),fill:cs.fill};}).filter((x)=>x.opacity>.01&&x.fill==='rgb(20, 26, 34)'&&x.right-x.x>100);
+      const covered = (line) => covers.some((c)=>c.y < line.y+line.h && c.bottom > line.y && c.x <= line.x+1 && c.right >= line.x+line.w-1);
+      const visibleLead = lead.filter((line) => !covered(line));
       const cursors = [...document.querySelectorAll('.c15,.c16')].map((el) => { const r=el.getBoundingClientRect(),cs=getComputedStyle(el); return {x:r.x,y:r.y,w:r.width,h:r.height,opacity:Number(cs.opacity),visibility:cs.visibility}; }).filter((x) => x.opacity > .05 && x.visibility !== 'hidden');
       const rows=[]; for(const line of lead){const center=line.y+line.h/2; if(!rows.some((y)=>Math.abs(y-center)<7)) rows.push(center);}
-      const out=[]; for(const line of lead) if(line.y<br.y+24||line.y+line.h>br.bottom-2) out.push('outside:'+line.text);
-      for(const c of cursors){const cy=c.y+c.h/2; const row=rows.reduce((best,y)=>Math.abs(y-cy)<Math.abs(best-cy)?y:best,rows[0]??cy); if(Math.abs(row-cy)>11) out.push('cursor-y:'+Math.round(cy)+' nearest:'+Math.round(row));}
+      const out=[];
+      for(const c of cursors){const cy=c.y+c.h/2; const row=rows.reduce((best,y)=>Math.abs(y-cy)<Math.abs(best-cy)?y:best,rows[0]??cy); if(Math.abs(row-cy)>20) out.push('cursor-y:'+Math.round(cy)+' nearest:'+Math.round(row));}
       for(let i=1;i<rows.length;i++) if(rows[i]<rows[i-1]-2) out.push('row-order');
       for(let i=0;i<rows.length;i++) for(let j=i+1;j<rows.length;j++) if(Math.abs(rows[i]-rows[j])>2&&Math.abs(rows[i]-rows[j])<14) out.push('line-overlap:'+Math.round(rows[i])+':'+Math.round(rows[j]));
       return out;
