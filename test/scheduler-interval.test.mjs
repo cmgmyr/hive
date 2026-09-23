@@ -10,9 +10,9 @@ const { cleanup } = isolateTmux("the scheduler interval knob tests");
 after(() => cleanup());
 
 describe("schedulerIntervalMs() reads HIVE_SCHEDULER_INTERVAL_MS", () => {
-  it("returns the value when valid, and 3000 for garbage or anything under 100ms", () => {
+  it("returns the value from 100 to 2147483647 inclusive, and 3000 for garbage or anything outside that range", () => {
     const { dataDir, tmp } = scratchDirs();
-    const inputs = ["", "500", "100", "99", "0", "-500", "abc", "250.5", "Infinity", "NaN", " ", "1e400"];
+    const inputs = ["", "500", "100", "99", "0", "-500", "abc", "250.5", "Infinity", "NaN", " ", "1e400", "2147483647", "2147483648", "9999999999"];
     const out = runFixture(
       tmp,
       "interval-parse",
@@ -24,7 +24,7 @@ describe("schedulerIntervalMs() reads HIVE_SCHEDULER_INTERVAL_MS", () => {
       { HIVE_DATA_DIR: dataDir, HIVE_SCHEDULER_INTERVAL_MS: "750" },
     );
     assert.equal(out.fallback, 3000, "the default tick is still three seconds");
-    assert.deepEqual(out.fromArg, [3000, 500, 100, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000]);
+    assert.deepEqual(out.fromArg, [3000, 500, 100, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 3000, 2147483647, 3000, 3000]);
     assert.equal(out.fromEnv, 750, "with no argument it reads the environment at call time");
   });
 });

@@ -2338,10 +2338,12 @@ async function deliver(
 
 export const DEFAULT_SCHEDULER_INTERVAL_MS = 3000;
 const MIN_SCHEDULER_INTERVAL_MS = 100;
+// Node clamps a setInterval delay above this to 1ms.
+const MAX_SCHEDULER_INTERVAL_MS = 2_147_483_647;
 
 export function schedulerIntervalMs(raw = process.env.HIVE_SCHEDULER_INTERVAL_MS): number {
   const parsed = Number(raw);
-  return raw && Number.isSafeInteger(parsed) && parsed >= MIN_SCHEDULER_INTERVAL_MS
+  return raw && Number.isInteger(parsed) && parsed >= MIN_SCHEDULER_INTERVAL_MS && parsed <= MAX_SCHEDULER_INTERVAL_MS
     ? parsed
     : DEFAULT_SCHEDULER_INTERVAL_MS;
 }
