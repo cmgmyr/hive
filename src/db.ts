@@ -400,6 +400,18 @@ CREATE INDEX idx_wakes_parent ON wakes(parent_wake_id) WHERE parent_wake_id IS N
 `,
 ];
 
+export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
+  try {
+    const { version } = database.prepare("SELECT MAX(version) AS version FROM migrations").get() as {
+      version: number | null;
+    };
+    if (version == null || !Number.isFinite(version) || version <= MIGRATIONS.length) return null;
+    return { store: version, build: MIGRATIONS.length };
+  } catch {
+    return null;
+  }
+}
+
 function readAppliedVersions(): Set<number> {
   return new Set(
     (db.prepare("SELECT version FROM migrations").all() as { version: number }[]).map(

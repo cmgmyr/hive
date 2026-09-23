@@ -53,7 +53,7 @@ import {
   type McpRegistration,
 } from "./mcpConfig.js";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
-import { dataDir, db, migrate } from "./db.js";
+import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   addProject,
@@ -2566,6 +2566,13 @@ function cmdDoctor(argv: string[]): void {
   check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
+    const ahead = storeSchemaAhead(db);
+    if (ahead) {
+      warn(
+        "database",
+        `store schema v${ahead.store} is ahead of this build (v${ahead.build}): a newer hive has migrated your shared store. Upgrade this install before relying on it.`,
+      );
+    }
     return `${dataDir} (schema v${n})`;
   });
   check("hooks file", () => ensureHooksFile());
@@ -3112,6 +3119,7 @@ function cmdStatusline(): void {
   );
   const pads = count("SELECT COUNT(*) AS n FROM pads WHERE project_id = ? AND archived = 0");
   const wakes = count(`SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`);
+  const schemaAhead = storeSchemaAhead(db);
 
   // One statement, not two: the count and the chosen row must come from the same read, or a wake that
   // delivers/re-arms between two separate queries leaves the second with no row to read.
@@ -3140,7 +3148,7 @@ function cmdStatusline(): void {
     first_held_at: string | null;
   };
 
-  if (agents + commands + todos + pads + wakes === 0) return;
+  if (agents + commands + todos + pads + wakes === 0 && !schemaAhead) return;
 
   const s = (n: number) => (n === 1 ? "" : "s");
   const parts = [
@@ -3154,6 +3162,7 @@ function cmdStatusline(): void {
     const age = held.first_held_at ? humanizeAge(ageSecondsSince(held.first_held_at)) : "?";
     parts.push(`${held.n} held (${age}, ${heldReasonLabel(held.held_reason)})`);
   }
+  if (schemaAhead) parts.push("store ahead (update hive)");
   let turns: number | null = null;
   let budget: { warn: number; stop: number } | null = null;
   try {
