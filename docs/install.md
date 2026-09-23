@@ -159,7 +159,7 @@ Do not re-pin through bare `hive setup` or ambient `node`: either can select the
 
 ### Registration drift and recovery
 
-Setup and doctor report Claude Code and Codex registrations that name a different interpreter, a missing server path, or an old server path. They print the exact repair commands for the current install and never edit those tools' configuration files. Codex repairs print `codex mcp remove` followed by `codex mcp add`. Run the commands shown, then `hive doctor --strict`. Registration drift warns but does not turn a completed upgrade into a failure.
+Setup and doctor report interpreter and server-path drift for registrations hive recognises as hive; a renamed registration whose path no longer points at the current hive dist is not detected. They print the exact repair commands for the current install and never edit those tools' configuration files. Codex repairs print `codex mcp remove` followed by `codex mcp add`. Run the commands shown, then `hive doctor --strict`. Registration drift warns but does not turn a completed upgrade into a failure.
 
 If npm fails, the package may be partially changed. Follow the printed install retry and explicit setup command. If setup fails after npm succeeds, the package is new but the dispatcher has not been confirmed re-pinned. Run the printed command naming the absolute interpreter and new `dist/cli.js`, then `hive doctor --strict`. Checkout failures name the failed step and list the remaining steps as not run. Repair that step before continuing.
 

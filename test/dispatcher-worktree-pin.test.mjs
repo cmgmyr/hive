@@ -15,6 +15,7 @@ import {
 
 const { cleanup: cleanupTmux } = isolateTmux("the dispatcher worktree-pin tests");
 after(() => cleanupTmux());
+process.env.CODEX_HOME = scratchDirs().tmp;
 
 let realAddon;
 async function addonForScratch() {
