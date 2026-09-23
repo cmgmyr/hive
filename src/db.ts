@@ -6,9 +6,8 @@ import { guardStoreDir } from "./dataDir.js";
 import { maybeBackupBeforeMigrations } from "./backup.js";
 import { errorMessage } from "./result.js";
 
-const VERSION_ONLY = process.argv[2] === "--version" || process.argv[2] === "-v";
 export const dataDir = guardStoreDir();
-if (!VERSION_ONLY) mkdirSync(dataDir, { recursive: true });
+mkdirSync(dataDir, { recursive: true });
 
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -16,10 +15,9 @@ function sleepSync(ms: number): void {
 
 guardAbi();
 const storePath = join(dataDir, "hive.db");
-const dbInstance = new Database(VERSION_ONLY ? ":memory:" : storePath);
-export const db = dbInstance as NonNullable<typeof dbInstance>;
+export const db = new Database(storePath);
 
-const openedInode = VERSION_ONLY ? 0 : statSync(storePath).ino;
+const openedInode = statSync(storePath).ino;
 let storeReplacedLatch = false;
 
 export function storeReplaced(): boolean {
@@ -37,20 +35,18 @@ export function storeReplaced(): boolean {
   return storeReplacedLatch;
 }
 
-if (!VERSION_ONLY) {
-  db.pragma("busy_timeout = 5000");
+db.pragma("busy_timeout = 5000");
 
-  for (let attempt = 0; ; attempt++) {
-    try {
-      db.pragma("journal_mode = WAL");
-      break;
-    } catch (e) {
-      if (attempt >= 40 || !(e instanceof Error) || !/database is locked/.test(e.message)) throw e;
-      sleepSync(25);
-    }
+for (let attempt = 0; ; attempt++) {
+  try {
+    db.pragma("journal_mode = WAL");
+    break;
+  } catch (e) {
+    if (attempt >= 40 || !(e instanceof Error) || !/database is locked/.test(e.message)) throw e;
+    sleepSync(25);
   }
 }
-if (!VERSION_ONLY) db.pragma("foreign_keys = ON");
+db.pragma("foreign_keys = ON");
 
 export const MIGRATIONS: string[] = [
   `

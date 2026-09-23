@@ -100,14 +100,6 @@ describe("CLI npm update checks", () => {
     assert.equal(existsSync(marker), false);
   });
 
-  it("--check creates only the cache, not hive.db, in a fresh data directory", async () => {
-    const dataDir = mkdtempSync(join(dirs.tmp, "no-store-") );
-    const bin = fakeNpm("1.1.0", dirs.tmp);
-    await runCli(["--version", "--check"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
-    assert.equal(existsSync(join(dataDir, "hive.db")), false);
-    assert.equal(existsSync(join(dataDir, "update-check.json")), true);
-  });
-
   it("MCP server static imports never reach dist/updateCheck.js", () => {
     const seen = new Set();
     const visit = (file) => {
