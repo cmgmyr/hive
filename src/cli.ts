@@ -86,6 +86,8 @@ import {
   transcriptStaleness,
   wasHeldForPaneReissue,
 } from "./scheduler.js";
+import { transcriptPath } from "./transcript.js";
+import { readTurnCount } from "./turnCount.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
   probeSessionInterpreter,
@@ -906,6 +908,8 @@ placement: split                # placement for workers and visible processes: s
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+
+# lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 # review_tags: [from-review]    # todo tags \`hive doctor\` counts as review findings and
                                 # reports as triaged (has a comment, completed, or archived)
@@ -3150,6 +3154,32 @@ function cmdStatusline(): void {
   if (held.n > 0) {
     const age = held.first_held_at ? humanizeAge(ageSecondsSince(held.first_held_at)) : "?";
     parts.push(`${held.n} held (${age}, ${heldReasonLabel(held.held_reason)})`);
+  }
+  let turns: number | null = null;
+  let budget: { warn: number; stop: number } | null = null;
+  try {
+    const actorId = process.env.HIVE_AGENT_ID;
+    if (actorId) {
+      const lead = db.prepare(
+        "SELECT cwd, session_id, transcript_path FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
+      ).get(project.id, actorId) as { cwd: string; session_id: string; transcript_path: string } | undefined;
+      if (lead) {
+        let inputPath = "";
+        if (!process.stdin.isTTY) {
+          try {
+            const raw = readFileSync(0, "utf8").trim();
+            const input = raw ? JSON.parse(raw) as { transcript_path?: unknown } : null;
+            inputPath = typeof input?.transcript_path === "string" ? input.transcript_path : "";
+          } catch {}
+        }
+        turns = readTurnCount(transcriptPath(lead.cwd, lead.session_id, inputPath || lead.transcript_path));
+        budget = loadProjectYml(project.path).config?.lead_turn_budget ?? null;
+      }
+    }
+  } catch {}
+  if (turns !== null) {
+    const color = budget === null ? "" : turns >= budget.stop ? "\x1b[31m" : turns >= budget.warn ? "\x1b[33m" : "";
+    parts.push(`${color}turns ${turns}${color ? "\x1b[0m" : ""}`);
   }
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
 }
