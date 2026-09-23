@@ -28,6 +28,10 @@ export const CLI = join(DIST, "cli.js");
 
 export const KICKOFF = join(DIST, "kickoff.js");
 
+export function installedVersion() {
+  return JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
+}
+
 export function baseEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HIVE_")));
 }

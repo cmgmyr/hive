@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { CLI, DIST, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { CLI, DIST, installedVersion, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the update-check tests");
 after(() => cleanup());
@@ -25,8 +25,13 @@ function isolated(dataDir, env = {}) {
 }
 
 describe("CLI npm update checks", () => {
-  it("queryUpdate returns newer, current and unknown without creating an update cache", () => {
-    for (const [version, status] of [["9.9.9", "newer"], ["1.1.0", "current"], ["invalid", "unknown"]]) {
+  it("queryUpdate returns newer for a higher npm version, current for the same or an older npm version, and unknown for unparseable input, without creating an update cache", () => {
+    for (const [version, status] of [
+      ["9.9.9", "newer"],
+      [installedVersion(), "current"],
+      ["0.0.1", "current"],
+      ["invalid", "unknown"],
+    ]) {
       const dataDir = mkdtempSync(join(dirs.tmp, "query-"));
       const bin = fakeNpm(version, dirs.tmp);
       const output = execFileSync(process.execPath, ["--input-type=module", "-e",
@@ -50,9 +55,18 @@ describe("CLI npm update checks", () => {
 
   it("--check with the same fake npm version prints up to date", async () => {
     const dataDir = mkdtempSync(join(dirs.tmp, "same-") );
-    const bin = fakeNpm("1.1.0", dirs.tmp);
+    const version = installedVersion();
+    const bin = fakeNpm(version, dirs.tmp);
     const result = await runCli(["--version", "--check"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
-    assert.match(result.stdout, /up to date: hive 1\.1\.0 is the latest on npm/);
+    assert.match(result.stdout, new RegExp(`up to date: hive ${version.replaceAll(".", "\\.")} is the latest on npm`));
+  });
+
+  it("--check with an older fake npm version than installed also prints up to date", async () => {
+    const dataDir = mkdtempSync(join(dirs.tmp, "older-") );
+    const version = installedVersion();
+    const bin = fakeNpm("0.0.1", dirs.tmp);
+    const result = await runCli(["--version", "--check"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
+    assert.match(result.stdout, new RegExp(`up to date: hive ${version.replaceAll(".", "\\.")} is the latest on npm`));
   });
 
   it("--check caches npm failure as unknown offline or npm failed", async () => {
@@ -102,7 +116,7 @@ describe("CLI npm update checks", () => {
     const result = await runCli(["doctor"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
     assert.match(result.stdout, /warn  update: update available: hive 9\.9\.9/);
     assert.equal(existsSync(marker), false);
-    writeFileSync(join(dataDir, "update-check.json"), JSON.stringify({ checked_at: new Date().toISOString(), latest: "1.1.0", error: null }));
+    writeFileSync(join(dataDir, "update-check.json"), JSON.stringify({ checked_at: new Date().toISOString(), latest: installedVersion(), error: null }));
     const current = await runCli(["doctor"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
     assert.doesNotMatch(current.stdout, /warn  update:/);
   });

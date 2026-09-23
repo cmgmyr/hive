@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { DIST, isolateTmux, REPO, runNode, scratchDirs } from "./helpers.mjs";
+import { DIST, installedVersion, isolateTmux, REPO, runNode, scratchDirs } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the upgrade tests");
 after(() => cleanup());
@@ -173,8 +173,12 @@ describe("hive upgrade CLI", () => {
     f.configsUnchanged();
   });
 
-  it("already-current and unknown registry results never install or setup", async () => {
-    for (const [latest, code, message] of [["1.1.0", 0, /up to date/], ["invalid", 1, /not upgrading: could not read the latest version/]]) {
+  it("already-current, older-than-installed, and unknown registry results never install or setup", async () => {
+    for (const [latest, code, message] of [
+      [installedVersion(), 0, /up to date/],
+      ["0.0.1", 0, /up to date/],
+      ["invalid", 1, /not upgrading: could not read the latest version/],
+    ]) {
       const f = cliFixture({ latest });
       const r = await f.run([]);
       assert.equal(r.code, code);
