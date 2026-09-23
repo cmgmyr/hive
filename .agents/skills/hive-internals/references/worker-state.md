@@ -203,6 +203,16 @@ Three things about it are the same decisions the other two already made, and one
   `still-running` leg and leaves the row RUNNING and visible, and the marker is what tells a
   deliberate stop from a crash. `test/process-died-notice.test.mjs` pins both halves.
 
+## The changed-build notice belongs to the detecting lead's own server
+
+`reportRunningBuildChange` in `src/scheduler.ts` is the fourth generated notice path. A running server retains its imported code after a rebuild or package update. The startup identity in `src/version.ts` stays fixed while the detector compares the adjacent disk stamp by opaque `build_id`. Version, sha, and dirty state cannot distinguish repeated dirty rebuilds. Missing, malformed, and legacy identities are unknown and stay silent.
+
+Only a server whose own `HIVE_AGENT_ID` resolves to a running lead row files this notice, and it addresses that same lead. Sending one notice per worker to the project's newest lead would turn every rebuild into a burst of restart instructions for short-lived workers. The MCP trailer also skips worker rows (`kind='agent'`) and appears once per distinct disk id in each remaining process. A session with no agent row can still see the trailer.
+
+The scheduler reuses `insertNotice` and the existing delivery guards. It requires a live, classifiable pane with no recorded pid mismatch before filing. The notice is parentless, so it neither ages out nor receives the staleness trailer. The stored and delivered body names this session's server and tells the user to restart this session or reconnect hive in `/mcp`. The per-process set records an id only after insertion succeeds, so an unavailable pane or failed insert remains retryable. It never changes an authored wake body and introduces no shared build registry.
+
+This detection cannot run in a server that predates the feature. The first installation still requires a one-time restart or reconnect; subsequent builds can be detected by that process.
+
 ## A standing watch reports its owner's crew, not the whole project (todo 455)
 
 `OWNED_BY_WATCH` (`src/scheduler.ts`) scopes `standingIdleRows`, `standingGoneRows`, and the still-going roster to agents whose `parent_actor_id` is the watch's own owner, or NULL. Measured against the live store on 2026-08-20: 282 `kind='agent'` rows, 0 NULL, 204 parented by a `lead:`, 24 by an `agent:`, 54 by a `user:`. Every noise notice that night traced to the 24 `agent:`-parented rows - a worker's own throwaway probe, spawned and abandoned without telling anyone; every notice the lead actually needed traced to a `lead:`-parented row.
