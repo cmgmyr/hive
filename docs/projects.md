@@ -29,6 +29,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
                               # REFUSES a harness or command outside this list. lead: above is a
                               # separate key and stays reachable regardless of this list.
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 review_tags: [from-review]    # optional todo tags `hive doctor` counts as review findings and
                               # reports as triaged (a comment, completed, or archived) or
                               # untriaged. A tag also matches its own suffixed rounds, so

@@ -29,6 +29,7 @@ export interface ProjectYml {
   lead_branches: string[] | null;
 
   context_checkpoint_percent: number | null;
+  lead_turn_budget: { warn: number; stop: number } | null;
   dashboard: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
@@ -99,6 +100,23 @@ export function loadProjectYml(projectPath: string): {
       context_checkpoint_percent = value;
     } else {
       warnings.push("context_checkpoint_percent must be an integer from 1 through 100; ignoring it.");
+    }
+  }
+  let lead_turn_budget: { warn: number; stop: number } | null = null;
+  if (root.lead_turn_budget != null) {
+    const value = root.lead_turn_budget;
+    const budget = typeof value === "object" && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+    const warn = budget?.warn;
+    const stop = budget?.stop;
+    if (
+      typeof warn === "number" && Number.isInteger(warn) && warn > 0 &&
+      typeof stop === "number" && Number.isInteger(stop) && stop > warn
+    ) {
+      lead_turn_budget = { warn, stop };
+    } else {
+      warnings.push("lead_turn_budget must contain positive integer warn and stop values, with stop greater than warn; ignoring it.");
     }
   }
   const lead = typeof root.lead === "string" && root.lead.trim() !== "" ? root.lead.trim() : null;
@@ -267,6 +285,7 @@ export function loadProjectYml(projectPath: string): {
       review_tags,
       lead_branches,
       context_checkpoint_percent,
+      lead_turn_budget,
       dashboard,
       vars,
       processes,

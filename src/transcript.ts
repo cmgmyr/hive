@@ -11,6 +11,10 @@ export function transcriptDir(cwd: string): string {
   return join(claudeConfigDir(), "projects", transcriptDirName(cwd));
 }
 
+export function transcriptPath(cwd: string, sessionId: string, explicitPath = ""): string {
+  return explicitPath || (sessionId ? join(transcriptDir(cwd), `${sessionId}.jsonl`) : "");
+}
+
 export function resolveTranscriptDir(cwd: string): string | null {
   const dir = transcriptDir(cwd);
   return existsSync(dir) ? dir : null;
@@ -129,7 +133,7 @@ export function readContextFill(kind: ContextRecordKind, worker: ContextWorker):
   };
 }
 
-export function readContextTokens(cwd: string, sessionId: string, transcriptPath = ""): number | null {
-  if (!sessionId && !transcriptPath) return null;
-  return claudeTokens(tailRecords(transcriptPath || join(transcriptDir(cwd), `${sessionId}.jsonl`)));
+export function readContextTokens(cwd: string, sessionId: string, explicitPath = ""): number | null {
+  if (!sessionId && !explicitPath) return null;
+  return claudeTokens(tailRecords(transcriptPath(cwd, sessionId, explicitPath)));
 }

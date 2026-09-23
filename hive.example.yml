@@ -17,6 +17,7 @@ agents: [claude, codex]         # crew harness pool agent_spawn may pick from; c
                                 # it stays the default. lead: above is separate and unaffected.
 
 context_checkpoint_percent: 70 # unset means off; percentage of the worker context window
+lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
