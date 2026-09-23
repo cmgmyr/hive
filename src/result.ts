@@ -1,6 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Project } from "./context.js";
+import { runningBuildChange, runningBuildNotice } from "./version.js";
 
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -25,11 +26,33 @@ export function registrationNoticeText(notice: Pick<Project, "id" | "path">): st
   );
 }
 
+const reportedBuilds = new Set<string>();
+
+export async function appendRunningBuildNotice(result: CallToolResult, session?: string): Promise<CallToolResult> {
+  try {
+    const change = runningBuildChange();
+    if (!change || reportedBuilds.has(change.disk.build_id)) return result;
+    const actor = process.env.HIVE_AGENT_ID;
+    if (actor) {
+      const { db } = await import("./db.js");
+      const row = db.prepare("SELECT kind FROM agents WHERE actor_id = ?").get(actor) as
+        { kind: string } | undefined;
+      if (row?.kind === "agent") return result;
+    }
+    if (reportedBuilds.has(change.disk.build_id)) return result;
+    result.content.push({ type: "text", text: runningBuildNotice(change, session) });
+    reportedBuilds.add(change.disk.build_id);
+  } catch {
+
+  }
+  return result;
+}
+
 export async function run(fn: () => unknown): Promise<CallToolResult> {
 
   const { storeReplaced } = await import("./db.js");
   if (storeReplaced()) {
-    return { content: [{ type: "text", text: STORE_REPLACED_MESSAGE }], isError: true };
+    return appendRunningBuildNotice({ content: [{ type: "text", text: STORE_REPLACED_MESSAGE }], isError: true });
   }
 
   const { takeRegistrationNotice } = await import("./context.js");
@@ -43,7 +66,7 @@ export async function run(fn: () => unknown): Promise<CallToolResult> {
   if (notice) {
     result.content.push({ type: "text", text: registrationNoticeText(notice) });
   }
-  return result;
+  return appendRunningBuildNotice(result);
 }
 
 export function parseTags(text: string): string[] {

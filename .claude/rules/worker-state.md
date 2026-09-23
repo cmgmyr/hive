@@ -86,6 +86,8 @@ stop writes a short-lived `stopping:<agent id>` kv row before it touches the pan
 was tried first and could not carry it - a stop interrupted between the two writes is a swept row
 like any other, and reporting it as a crash was the smaller half of that bug.
 
+**A fourth generated notice reports a changed build to the lead whose own server detected it.** `reportRunningBuildChange` must target only its own running `kind='lead'` row and a confirmed-live, classifiable pane. Keep it parentless, with no staleness trailer, and file it once per process per distinct disk `build_id`, only latching after insertion succeeds. A worker's server files no restart notice. Authored wake bodies stay verbatim.
+
 **This rule is about WAKE BODIES and nothing else.** `agent_send`'s `text` is a separate channel with its own, differently-shaped shortening for lead-bound messages; do not read either rule as governing the other (`.claude/rules/tmux-and-panes.md`).
 
 **`[hive:%` and `[hive wake #` are excluded from `conversationHoldsWake`.** Sender tags now mark every `agent_send` text delivery, and the extracted prompt is checked at offset 0, so worker messages do not count as human conversation. Wake bodies keep their separate `[hive wake #` marker.

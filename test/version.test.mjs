@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { DIST, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
@@ -151,7 +151,9 @@ describe("scripts/gen-version.mjs: the build-time stamp writer", () => {
     const sha = initGitRepo(scratch);
     execFileSync(process.execPath, [join(scratch, "scripts", "gen-version.mjs")], { cwd: scratch });
     const info = JSON.parse(readFileSync(join(scratch, "dist", "build-info.json"), "utf8"));
-    assert.deepEqual(info, { version: "1.2.3", sha, dirty: false });
+    assert.ok(info.build_id.length > 0);
+    assert.deepEqual(readdirSync(join(scratch, "dist")), ["build-info.json"]);
+    assert.deepEqual(info, { build_id: info.build_id, version: "1.2.3", sha, dirty: false });
   });
 
   it("stamps a checkout with local edits as dirty: true", () => {
@@ -160,7 +162,9 @@ describe("scripts/gen-version.mjs: the build-time stamp writer", () => {
     writeFileSync(join(scratch, "package.json"), JSON.stringify({ version: "1.2.3", extra: true }));
     execFileSync(process.execPath, [join(scratch, "scripts", "gen-version.mjs")], { cwd: scratch });
     const info = JSON.parse(readFileSync(join(scratch, "dist", "build-info.json"), "utf8"));
-    assert.deepEqual(info, { version: "1.2.3", sha, dirty: true });
+    assert.ok(info.build_id.length > 0);
+    assert.deepEqual(readdirSync(join(scratch, "dist")), ["build-info.json"]);
+    assert.deepEqual(info, { build_id: info.build_id, version: "1.2.3", sha, dirty: true });
   });
 
   it("exits 0 and stamps sha: null when git is not reachable, rather than failing the build", () => {
@@ -172,6 +176,78 @@ describe("scripts/gen-version.mjs: the build-time stamp writer", () => {
     });
     assert.equal(result, "");
     const info = JSON.parse(readFileSync(join(scratch, "dist", "build-info.json"), "utf8"));
-    assert.deepEqual(info, { version: "1.2.3", sha: null, dirty: false });
+    assert.ok(info.build_id.length > 0);
+    assert.deepEqual(readdirSync(join(scratch, "dist")), ["build-info.json"]);
+    assert.deepEqual(info, { build_id: info.build_id, version: "1.2.3", sha: null, dirty: false });
   });
+});
+
+
+describe("running build identity", () => {
+  const stamp = { version: "1.2.3", sha: "abc", dirty: true, build_id: "first" };
+  async function fixture(initial = stamp) {
+    const scratch = scratchVersionModule(dirs.tmp);
+    const path = join(scratch, "dist", "build-info.json");
+    if (initial !== null) writeFileSync(path, JSON.stringify(initial));
+    const module = await import(join(scratch, "dist", "version.js"));
+    const swap = (value) => {
+      writeFileSync(path + ".tmp", typeof value === "string" ? value : JSON.stringify(value));
+      renameSync(path + ".tmp", path);
+    };
+    return { ...module, path, swap };
+  }
+
+  it("equal ids stay silent, including after atomic replacement", async () => {
+    const f = await fixture();
+    assert.equal(f.runningBuildChange(), null);
+    f.swap(stamp);
+    assert.equal(f.runningBuildChange(), null);
+  });
+
+  it("an atomic same-sha dirty rebuild changes identity without changing the startup snapshot", async () => {
+    const f = await fixture();
+    const disk = { ...stamp, build_id: "second" };
+    f.swap(disk);
+    assert.deepEqual(f.runningBuildChange(), { loaded: stamp, disk });
+    f.swap({ ...stamp, build_id: "third" });
+    assert.equal(f.runningBuildChange().loaded.build_id, "first");
+    assert.equal(f.runningBuildChange().disk.build_id, "third");
+    assert.match(f.runningBuildNotice(f.runningBuildChange()), /the build on disk changed.*Restart this session/);
+  });
+
+  it("missing, malformed, legacy and invalid disk identities are silent and recover after replacement", async () => {
+    const f = await fixture();
+    rmSync(f.path);
+    assert.equal(f.runningBuildChange(), null);
+    for (const value of ["{", null, { version: "1" }, { ...stamp, build_id: 5 }, { ...stamp, build_id: "" }]) {
+      f.swap(value);
+      assert.equal(f.runningBuildChange(), null);
+    }
+    f.swap({ ...stamp, build_id: "recovered" });
+    assert.equal(f.runningBuildChange().disk.build_id, "recovered");
+  });
+
+  it("an unknown startup identity is never replaced by a later valid disk stamp", async () => {
+    for (const initial of [null, { version: "1.2.3", sha: null, dirty: false }]) {
+      const f = await fixture(initial);
+      f.swap(stamp);
+      assert.equal(f.runningBuildChange(), null);
+    }
+  });
+});
+
+
+it("restart notices describe changed versions, sha and dirty state, abbreviating ids only for identical descriptions", async () => {
+  const scratch = scratchVersionModule(dirs.tmp);
+  const { runningBuildNotice } = await import(join(scratch, "dist", "version.js"));
+  const loaded = { version: "1.1.0", sha: "abc1234", dirty: false, build_id: "28fca1bf-1111-2222-3333-444444444444" };
+  const disk = { version: "1.2.0", sha: "def5678", dirty: true, build_id: "91deb234-1111-2222-3333-444444444444" };
+  const prefix = "hive: this session's hive server loaded ";
+  const remedy = ". Restart this session, or reconnect hive in /mcp, to pick it up.";
+  assert.equal(runningBuildNotice({ loaded, disk }),
+    prefix + "hive 1.1.0 (abc1234); the build on disk changed to hive 1.2.0 (def5678-dirty)" + remedy);
+  assert.equal(runningBuildNotice({ loaded, disk: { ...loaded, build_id: disk.build_id } }),
+    prefix + "hive 1.1.0 (abc1234, build 28fca1bf); the build on disk changed to hive 1.1.0 (abc1234, build 91deb234)" + remedy);
+  assert.equal(runningBuildNotice({ loaded: { ...loaded, sha: null }, disk: { ...disk, sha: null } }),
+    prefix + "hive 1.1.0 (no git sha); the build on disk changed to hive 1.2.0 (no git sha)" + remedy);
 });

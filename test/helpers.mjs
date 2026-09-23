@@ -490,8 +490,8 @@ export function windowFor(session, projectId) {
 }
 
 export class McpClient {
-  constructor({ cwd, dataDir, env = {} }) {
-    this.child = spawn("node", [SERVER], {
+  constructor({ cwd, dataDir, env = {}, server = SERVER }) {
+    this.child = spawn("node", [server], {
       cwd,
       env: {
         ...baseEnv(),

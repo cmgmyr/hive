@@ -582,3 +582,18 @@ describe("docs/projects.md accounts for every way hive stops a process", () => {
     );
   });
 });
+
+
+it("documents the restart remedy and the lead-only generated notice without weakening verbatim wake bodies", () => {
+  const doc = readRepo("docs/troubleshooting.md");
+  assert.ok(doc.includes("the build on disk changed"));
+  assert.ok(readRepo("src/version.ts").includes("the build on disk changed"));
+  assert.ok(doc.includes("Restart this session, or reconnect hive in /mcp, to pick it up."));
+  assert.match(doc, /server that predates it cannot report/);
+  const rule = readRepo(".claude/rules/worker-state.md");
+  assert.match(rule, /fourth generated notice/);
+  assert.match(readRepo("AGENTS.md"), /four generated exceptions/);
+  assert.match(doc, /first eight characters of each build id/);
+  assert.match(rule, /Authored wake bodies stay verbatim/);
+  assert.match(rule, /worker's server files no restart notice/);
+});

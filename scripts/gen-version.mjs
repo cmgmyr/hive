@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,10 +26,17 @@ function gitState() {
   }
 }
 
+const temporary = join(REPO, "dist", `build-info.${randomUUID()}.tmp`);
 try {
   const { version } = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
   const { sha, dirty } = gitState();
-  writeFileSync(join(REPO, "dist", "build-info.json"), JSON.stringify({ version, sha, dirty }));
+  const build_id = randomUUID();
+  writeFileSync(temporary, JSON.stringify({ version, sha, dirty, build_id }));
+  renameSync(temporary, join(REPO, "dist", "build-info.json"));
 } catch (e) {
   console.error(`gen-version: could not stamp a build version (${e.message}); hive --version will fall back to package.json alone.`);
+}
+
+finally {
+  rmSync(temporary, { force: true });
 }
