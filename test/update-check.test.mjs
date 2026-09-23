@@ -25,8 +25,13 @@ function isolated(dataDir, env = {}) {
 }
 
 describe("CLI npm update checks", () => {
-  it("queryUpdate returns newer, current and unknown without creating an update cache", () => {
-    for (const [version, status] of [["9.9.9", "newer"], [installedVersion(), "current"], ["invalid", "unknown"]]) {
+  it("queryUpdate returns newer for a higher npm version, current for the same or an older npm version, and unknown for unparseable input, without creating an update cache", () => {
+    for (const [version, status] of [
+      ["9.9.9", "newer"],
+      [installedVersion(), "current"],
+      ["0.0.1", "current"],
+      ["invalid", "unknown"],
+    ]) {
       const dataDir = mkdtempSync(join(dirs.tmp, "query-"));
       const bin = fakeNpm(version, dirs.tmp);
       const output = execFileSync(process.execPath, ["--input-type=module", "-e",
@@ -52,6 +57,14 @@ describe("CLI npm update checks", () => {
     const dataDir = mkdtempSync(join(dirs.tmp, "same-") );
     const version = installedVersion();
     const bin = fakeNpm(version, dirs.tmp);
+    const result = await runCli(["--version", "--check"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
+    assert.match(result.stdout, new RegExp(`up to date: hive ${version.replaceAll(".", "\\.")} is the latest on npm`));
+  });
+
+  it("--check with an older fake npm version than installed also prints up to date", async () => {
+    const dataDir = mkdtempSync(join(dirs.tmp, "older-") );
+    const version = installedVersion();
+    const bin = fakeNpm("0.0.1", dirs.tmp);
     const result = await runCli(["--version", "--check"], isolated(dataDir, { PATH: `${bin}:${process.env.PATH}` }));
     assert.match(result.stdout, new RegExp(`up to date: hive ${version.replaceAll(".", "\\.")} is the latest on npm`));
   });

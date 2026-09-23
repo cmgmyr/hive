@@ -173,8 +173,12 @@ describe("hive upgrade CLI", () => {
     f.configsUnchanged();
   });
 
-  it("already-current and unknown registry results never install or setup", async () => {
-    for (const [latest, code, message] of [[installedVersion(), 0, /up to date/], ["invalid", 1, /not upgrading: could not read the latest version/]]) {
+  it("already-current, older-than-installed, and unknown registry results never install or setup", async () => {
+    for (const [latest, code, message] of [
+      [installedVersion(), 0, /up to date/],
+      ["0.0.1", 0, /up to date/],
+      ["invalid", 1, /not upgrading: could not read the latest version/],
+    ]) {
       const f = cliFixture({ latest });
       const r = await f.run([]);
       assert.equal(r.code, code);
