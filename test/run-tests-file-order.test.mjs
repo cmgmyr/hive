@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+
+import { REPO } from "./helpers.mjs";
 
 const scratchDirs = [];
 after(() => {
@@ -56,5 +58,14 @@ describe("node --test's own file-list sort, which the longest-file hoist relies 
         "sorts an absolute spelling ahead of a relative one, and scripts/run-tests.mjs's longest-file " +
         "hoist (LONGEST_FILE_HOIST) has silently stopped working",
     );
+  });
+});
+
+describe("scripts/run-tests.mjs's LONGEST_FILE_HOIST", () => {
+  it("names a test file that exists, so a rename or split cannot leave the hoist pointing at nothing", () => {
+    const source = readFileSync(join(REPO, "scripts", "run-tests.mjs"), "utf8");
+    const hoisted = source.match(/const LONGEST_FILE_HOIST = "([^"]+)";/)?.[1];
+    assert.ok(hoisted, "run-tests.mjs must still declare LONGEST_FILE_HOIST as a string literal");
+    assert.ok(existsSync(join(REPO, "test", hoisted)), `LONGEST_FILE_HOIST names test/${hoisted}, which does not exist`);
   });
 });
