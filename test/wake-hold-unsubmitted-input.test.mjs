@@ -19,7 +19,7 @@ const replayFixture = (file) => `cat '${fixturePath(file)}'; sleep 600`;
 let mcp;
 
 before(async () => {
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000", HIVE_SCHEDULER_INTERVAL_MS: "500" } });
   await mcp.start();
   if (!hasTmux) return;
   execFileSync("tmux", [

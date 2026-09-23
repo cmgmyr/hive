@@ -28,10 +28,15 @@ const FIXTURES = join(REPO, "test", "fixtures", "panes");
 const fixturePath = (file) => join(FIXTURES, file);
 const replayFixture = (file) => `cat '${fixturePath(file)}'; sleep 600`;
 
+const TICK_MS = 500;
+const SERVER_ENV = { HIVE_SPAWN_READY_MS: "2000", HIVE_SCHEDULER_INTERVAL_MS: String(TICK_MS) };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const settleTicks = () => sleep(3 * TICK_MS);
+
 let mcp;
 
 before(async () => {
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: SERVER_ENV });
   await mcp.start();
   if (!hasTmux) return;
   execFileSync("tmux", [
@@ -149,7 +154,7 @@ describe(
       );
 
       await mcp.close();
-      mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+      mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: SERVER_ENV });
       await mcp.start();
       assert.ok((await mcp.call("whoami")).actor_id, "the replacement server must really be serving");
       const heldAtHandover = timerRow(wakeId).held_at;
@@ -205,7 +210,7 @@ describe(
       assert.match(heldNotice.held_reason, /modal choice/, "for the same reason, recorded the same way");
       assert.equal(heldNotice.typed_at, null, "and must never be typed into a dialog");
 
-      await until(async () => noticesAbout(notice.id).length > 0, 9000);
+      await until(async () => noticesAbout(notice.id).length > 0, 6 * TICK_MS);
       assert.equal(
         noticesAbout(notice.id).length,
         0,
@@ -294,12 +299,13 @@ describe(
         body: "INTEGRATION block-notify control wake",
         deliver_to: owner.agent_id,
       });
-      await new Promise((resolve) => setTimeout(resolve, 9000));
+      await until(async () => timerRow(control.wake_id).typed_at != null, 15000);
+      await settleTicks();
       assert.ok(timerRow(control.wake_id).typed_at, "the scheduler must have been ticking through that window");
       assert.equal(noticeCount(wakeId), 1, "one per block, not one per tick");
 
       await mcp.close();
-      mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+      mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: SERVER_ENV });
       await mcp.start();
       const handoverControl = await mcp.call("wake_set", {
         delay_seconds: 2,
@@ -318,7 +324,7 @@ describe(
         "2026-08-08 10:05:00",
         "block-notify-stuck",
       );
-      await new Promise((resolve) => setTimeout(resolve, 4000));
+      await settleTicks();
       assert.equal(noticeCount(wakeId), 1, "nothing new while the worker is not blocked");
 
       repaintPaneAsSameWorker(db, stuck.tmux_target, replayFixture("model-picker-dialog.txt"));
@@ -405,7 +411,7 @@ describe(
         "the latch must really say waiting, or this tests nothing",
       );
 
-      await until(async () => noticeCount(wakeId) > 0, 10000);
+      await until(async () => noticeCount(wakeId) > 0, 6 * TICK_MS);
       assert.equal(noticeCount(wakeId), 0, "a stale latch over a pane with no dialog must say nothing");
       assert.equal(timerRow(wakeId).fired_at, null, "and the wake keeps waiting for a real idle");
     });
@@ -487,7 +493,8 @@ describe(
         body: "INTEGRATION both-paths control wake",
         deliver_to: other.agent_id,
       });
-      await new Promise((resolve) => setTimeout(resolve, 9000));
+      await until(async () => timerRow(control.wake_id).typed_at != null, 15000);
+      await settleTicks();
       assert.ok(timerRow(control.wake_id).typed_at, "the scheduler must have been ticking through that window");
       assert.match(timerRow(wakeId).held_reason ?? "", /modal choice/, "the wake really did reach the held path");
       assert.equal(timerRow(wakeId).typed_at, null, "and was never typed into the dialog");
@@ -585,7 +592,8 @@ describe(
         body: "INTEGRATION standing-block control wake",
         deliver_to: owner.agent_id,
       });
-      await new Promise((resolve) => setTimeout(resolve, 9000));
+      await until(async () => timerRow(control.wake_id).typed_at != null, 15000);
+      await settleTicks();
       assert.ok(timerRow(control.wake_id).typed_at, "the scheduler must have been ticking through that window");
       assert.equal(blockNoticesNaming("standing-block-stuck").length, 1, "one per block, not one per tick");
 
