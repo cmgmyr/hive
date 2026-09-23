@@ -48,7 +48,7 @@
 .c21{animation:k23 28s linear infinite,k22 28s linear infinite,bl 1.06s linear infinite}
 @keyframes k24{0%{opacity:0;transform:translateY(7px)}27.1429%{opacity:0;transform:translateY(7px);animation-timing-function:cubic-bezier(.23,1,.32,1)}28.2857%{opacity:1;transform:translateY(0px)}69.2857%{opacity:1;transform:translateY(0px);animation-timing-function:cubic-bezier(.23,1,.32,1)}71.0714%{opacity:0;transform:translateY(-10px)}100%{opacity:0;transform:translateY(-10px)}}
 .c22{animation:k24 28s linear infinite}
-@keyframes k25{0%{opacity:0;transform:translate(0,0)}27.8571%{opacity:0;transform:translate(0,0)}28.2857%{opacity:1;transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}30.4286%{opacity:1;transform:translate(148.0px,-114.0px)}31.25%{opacity:0;transform:translate(148.0px,-114.0px)}100%{opacity:0;transform:translate(148.0px,-114.0px)}}
+@keyframes k25{0%{opacity:0;transform:translate(140px,182px)}27.8571%{opacity:0;transform:translate(140px,182px)}28.2857%{opacity:1;transform:translate(140px,182px);animation-timing-function:cubic-bezier(.23,1,.32,1)}30.4286%{opacity:1;transform:translate(288px,68px)}31.25%{opacity:0;transform:translate(288px,68px)}100%{opacity:0;transform:translate(288px,68px)}}
 .c23{animation:k25 28s linear infinite}
 @keyframes k26{0%{opacity:0;transform:translateY(4px)}41.4286%{opacity:0;transform:translateY(4px);animation-timing-function:cubic-bezier(.23,1,.32,1)}42.3571%{opacity:1;transform:translateY(0)}100%{opacity:1;transform:translateY(0)}}
 .c24{animation:k26 28s linear infinite}
@@ -63,7 +63,7 @@
 .c28{animation:k31 28s linear infinite,k30 28s linear infinite,bl 1.06s linear infinite}
 @keyframes k32{0%{opacity:0;transform:translateY(7px)}30.7143%{opacity:0;transform:translateY(7px);animation-timing-function:cubic-bezier(.23,1,.32,1)}31.8571%{opacity:1;transform:translateY(0px)}70%{opacity:1;transform:translateY(0px);animation-timing-function:cubic-bezier(.77,0,.175,1)}72.1429%{opacity:1;transform:translateY(-112px)}77.8571%{opacity:1;transform:translateY(-112px);animation-timing-function:cubic-bezier(.23,1,.32,1)}79.6429%{opacity:0;transform:translateY(-122px)}100%{opacity:0;transform:translateY(-122px)}}
 .c29{animation:k32 28s linear infinite}
-@keyframes k33{0%{opacity:0;transform:translate(0,0)}31.4286%{opacity:0;transform:translate(0,0)}31.8571%{opacity:1;transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}34%{opacity:1;transform:translate(148.0px,-20.0px)}34.8214%{opacity:0;transform:translate(148.0px,-20.0px)}100%{opacity:0;transform:translate(148.0px,-20.0px)}}
+@keyframes k33{0%{opacity:0;transform:translate(140px,200px)}31.4286%{opacity:0;transform:translate(140px,200px)}31.8571%{opacity:1;transform:translate(140px,200px);animation-timing-function:cubic-bezier(.23,1,.32,1)}34%{opacity:1;transform:translate(288px,180px)}34.8214%{opacity:0;transform:translate(288px,180px)}100%{opacity:0;transform:translate(288px,180px)}}
 .c30{animation:k33 28s linear infinite}
 @keyframes k34{0%{opacity:0;transform:translateY(4px)}43.5714%{opacity:0;transform:translateY(4px);animation-timing-function:cubic-bezier(.23,1,.32,1)}44.5%{opacity:1;transform:translateY(0)}100%{opacity:1;transform:translateY(0)}}
 .c31{animation:k34 28s linear infinite}
@@ -78,7 +78,7 @@
 .c35{animation:k39 28s linear infinite,k38 28s linear infinite,bl 1.06s linear infinite}
 @keyframes k40{0%{opacity:0;transform:translateY(7px)}34.2857%{opacity:0;transform:translateY(7px);animation-timing-function:cubic-bezier(.23,1,.32,1)}35.4286%{opacity:1;transform:translateY(0px)}70%{opacity:1;transform:translateY(0px);animation-timing-function:cubic-bezier(.77,0,.175,1)}72.1429%{opacity:1;transform:translateY(-112px)}78.5714%{opacity:1;transform:translateY(-112px);animation-timing-function:cubic-bezier(.77,0,.175,1)}80.7143%{opacity:1;transform:translateY(-224px)}86.4286%{opacity:1;transform:translateY(-224px);animation-timing-function:cubic-bezier(.23,1,.32,1)}88.2143%{opacity:0;transform:translateY(-234px)}100%{opacity:0;transform:translateY(-234px)}}
 .c36{animation:k40 28s linear infinite}
-@keyframes k41{0%{opacity:0;transform:translate(0,0)}35%{opacity:0;transform:translate(0,0)}35.4286%{opacity:1;transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}37.5714%{opacity:1;transform:translate(148.0px,74.0px)}38.3929%{opacity:0;transform:translate(148.0px,74.0px)}100%{opacity:0;transform:translate(148.0px,74.0px)}}
+@keyframes k41{0%{opacity:0;transform:translate(140px,218px)}35%{opacity:0;transform:translate(140px,218px)}35.4286%{opacity:1;transform:translate(140px,218px);animation-timing-function:cubic-bezier(.23,1,.32,1)}37.5714%{opacity:1;transform:translate(288px,292px)}38.3929%{opacity:0;transform:translate(288px,292px)}100%{opacity:0;transform:translate(288px,292px)}}
 .c37{animation:k41 28s linear infinite}
 @keyframes k42{0%{opacity:0;transform:translateY(4px)}11.9643%{opacity:0;transform:translateY(4px);animation-timing-function:cubic-bezier(.23,1,.32,1)}12.8929%{opacity:1;transform:translateY(0)}100%{opacity:1;transform:translateY(0)}}
 .c38{animation:k42 28s linear infinite}
