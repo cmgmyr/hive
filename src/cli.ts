@@ -54,6 +54,7 @@ import {
 } from "./mcpConfig.js";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
+import { cacheIsStale, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   addProject,
@@ -2546,6 +2547,12 @@ function cmdDoctor(argv: string[]): void {
     const { line, drift } = versionInfo();
     return drift ? [line, drift].join("\n        ") : line;
   });
+  let cachedUpdate = readCachedUpdate();
+  if (cacheIsStale(cachedUpdate) && shouldAutoRefresh()) cachedUpdate = refreshUpdate();
+  if (cachedUpdate?.status === "newer" && cachedUpdate.checkedAt) {
+    const hours = Math.max(0, Math.floor((Date.now() - Date.parse(cachedUpdate.checkedAt)) / (60 * 60 * 1000)));
+    warn("update", `${updateLine(cachedUpdate)} (checked ${hours}h ago)`);
+  }
   check("node", () => describeInterpreter());
 
   check("better-sqlite3", () => {
@@ -3638,6 +3645,13 @@ if (command === "--version" || command === "-v") {
   const { line, drift } = versionInfo();
   console.log(line);
   if (drift) console.log(`! ${drift}`);
+  if (rest.includes("--check")) {
+    if (process.env.HIVE_NO_UPDATE_CHECK === "1") console.log("update check disabled (HIVE_NO_UPDATE_CHECK)");
+    else console.log(updateLine(refreshUpdate()));
+  } else {
+    const cached = readCachedUpdate();
+    if (cached?.status === "newer" && !cacheIsStale(cached)) console.log(`! ${updateLine(cached)}`);
+  }
   process.exit(0);
 }
 const COMMANDS = [
