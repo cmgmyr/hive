@@ -235,3 +235,19 @@ describe("running build identity", () => {
     }
   });
 });
+
+
+it("restart notices describe changed versions, sha and dirty state, abbreviating ids only for identical descriptions", async () => {
+  const scratch = scratchVersionModule(dirs.tmp);
+  const { runningBuildNotice } = await import(join(scratch, "dist", "version.js"));
+  const loaded = { version: "1.1.0", sha: "abc1234", dirty: false, build_id: "28fca1bf-1111-2222-3333-444444444444" };
+  const disk = { version: "1.2.0", sha: "def5678", dirty: true, build_id: "91deb234-1111-2222-3333-444444444444" };
+  const prefix = "hive: this session's hive server loaded ";
+  const remedy = ". Restart this session, or reconnect hive in /mcp, to pick it up.";
+  assert.equal(runningBuildNotice({ loaded, disk }),
+    prefix + "hive 1.1.0 (abc1234); the build on disk changed to hive 1.2.0 (def5678-dirty)" + remedy);
+  assert.equal(runningBuildNotice({ loaded, disk: { ...loaded, build_id: disk.build_id } }),
+    prefix + "hive 1.1.0 (abc1234, build 28fca1bf); the build on disk changed to hive 1.1.0 (abc1234, build 91deb234)" + remedy);
+  assert.equal(runningBuildNotice({ loaded: { ...loaded, sha: null }, disk: { ...disk, sha: null } }),
+    prefix + "hive 1.1.0 (no git sha); the build on disk changed to hive 1.2.0 (no git sha)" + remedy);
+});

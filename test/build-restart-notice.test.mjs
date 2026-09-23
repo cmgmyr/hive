@@ -51,7 +51,7 @@ it("real server preserves its primary receipt and reports each disk id once, inc
     const after = await call(mcp);
     assert.deepEqual(after.content[0], before.content[0]);
     assert.equal(after.content.length, 2);
-    assert.match(after.content[1].text, /loaded build loaded; the build on disk changed to second.*reconnect hive in \/mcp/);
+    assert.match(after.content[1].text, /loaded hive 1\.2\.3 \(abc-dirty, build loaded\); the build on disk changed to hive 1\.2\.3 \(abc-dirty, build second\).*reconnect hive in \/mcp/);
     assert.equal((await call(mcp)).content.length, 1);
     f.swap(changed("third"));
     const results = await Promise.all([call(mcp), call(mcp)]);
@@ -69,7 +69,7 @@ it("index.js captures the build before its first tool call, not on first detecto
     f.swap(changed("before-first-tool"));
     const result = await call(mcp);
     assert.equal(result.content.length, 2);
-    assert.match(result.content[1].text, /loaded build loaded;.*before-first-tool/);
+    assert.match(result.content[1].text, /loaded hive 1\.2\.3 \(abc-dirty, build loaded\);.*build before-f/);
   } finally { await mcp.close(); f.db.close(); }
 });
 
@@ -153,7 +153,7 @@ it("two ticks file one notice to the server's own lead and a second build files 
     assert.equal(notice.deliver_actor, f.actor);
     assert.equal(notice.deliver_pane, pane);
     assert.equal(notice.parent_wake_id, null);
-    assert.match(notice.body, /this session's hive server loaded build loaded;.*second.*Restart this session/);
+    assert.match(notice.body, /this session's hive server loaded hive 1\.2\.3 \(abc-dirty, build loaded\);.*second.*Restart this session/);
     assert.ok(notice.typed_at, "the real private pane must receive the notice");
     const screen = tmux("capture-pane", "-p", "-t", pane, "-J", "-S", "-100");
     assert.ok(screen.includes(notice.body), screen);
@@ -210,7 +210,7 @@ it("a store-replaced refusal remains primary and does not consume or lose the bu
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /store on disk was replaced/);
     assert.equal(result.content.length, 2);
-    assert.match(result.content[1].text, /replacement-build/);
+    assert.match(result.content[1].text, /build replacem/);
     assert.equal((await run(() => null)).content.length, 1);
   } finally { f.db.close(); }
 });

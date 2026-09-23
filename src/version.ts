@@ -63,8 +63,12 @@ export function runningBuildChange(): RunningBuildChange | null {
 
 export function runningBuildNotice(change: RunningBuildChange, session?: string): string {
   const subject = session ? `session ${JSON.stringify(session)}'s` : "this session's";
-  return `hive: ${subject} hive server loaded build ${change.loaded.build_id}; ` +
-    `the build on disk changed to ${change.disk.build_id}. ` +
+  const detail = (info: BuildInfo) => info.sha === null ? "no git sha" : describe(info.sha, info.dirty);
+  const sameDescription = change.loaded.version === change.disk.version && detail(change.loaded) === detail(change.disk);
+  const label = (info: BuildInfo) =>
+    `hive ${info.version} (${detail(info)}${sameDescription ? `, build ${info.build_id.slice(0, 8)}` : ""})`;
+  return `hive: ${subject} hive server loaded ${label(change.loaded)}; ` +
+    `the build on disk changed to ${label(change.disk)}. ` +
     "Restart this session, or reconnect hive in /mcp, to pick it up.";
 }
 

@@ -592,6 +592,8 @@ it("documents the restart remedy and the lead-only generated notice without weak
   assert.match(doc, /server that predates it cannot report/);
   const rule = readRepo(".claude/rules/worker-state.md");
   assert.match(rule, /fourth generated notice/);
+  assert.match(readRepo("AGENTS.md"), /four generated exceptions/);
+  assert.match(doc, /first eight characters of each build id/);
   assert.match(rule, /Authored wake bodies stay verbatim/);
   assert.match(rule, /worker's server files no restart notice/);
 });
