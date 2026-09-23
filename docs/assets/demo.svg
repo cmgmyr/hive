@@ -129,7 +129,7 @@
 @keyframes k68{0%{opacity:0}84.076517%{opacity:0}87.400792%{opacity:0}87.401055%{opacity:1}100%{opacity:1}}
 @keyframes k69{0%{opacity:0}91.622691%{opacity:0}91.859894%{opacity:0}91.860158%{opacity:1}100%{opacity:1}}
 @keyframes k70{0%{display:none}87%{display:none}87.6667%{display:block}100%{display:block}}
-@keyframes k71{0%{transform:translate(0,0)}75.05277%{transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}75.580475%{transform:translate(0,-18px)}83.548813%{transform:translate(0,-18px);animation-timing-function:cubic-bezier(.23,1,.32,1)}84.076517%{transform:translate(0,-36px)}91.094987%{transform:translate(0,-36px);animation-timing-function:cubic-bezier(.23,1,.32,1)}91.622691%{transform:translate(0,-54px)}100%{transform:translate(0,-54px)}}
+@keyframes k71{0%{transform:translate(0,0)}74.656992%{transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}75.580475%{transform:translate(0,-18px)}83.153034%{transform:translate(0,-18px);animation-timing-function:cubic-bezier(.23,1,.32,1)}84.076517%{transform:translate(0,-36px)}90.699208%{transform:translate(0,-36px);animation-timing-function:cubic-bezier(.23,1,.32,1)}91.622691%{transform:translate(0,-54px)}100%{transform:translate(0,-54px)}}
 @keyframes k72{0%{fill:#F5A524}60%{fill:#F5A524}61%{fill:#8B949E}100%{fill:#8B949E}}
 @keyframes k73{0%{fill:#F5A524}68%{fill:#F5A524}69%{fill:#8B949E}100%{fill:#8B949E}}
 @keyframes k74{0%{fill:#F5A524}76%{fill:#F5A524}77%{fill:#8B949E}100%{fill:#8B949E}}
