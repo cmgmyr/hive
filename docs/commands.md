@@ -14,6 +14,9 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive show <name>` | Move a running process's pane beside the lead |
 | `hive hide <name>` | Move it back into the project's `processes` window |
 | `hive status` | Every project's agents, commands, todos, and wake-ups, in one shot |
+| `hive upgrade` | Update a global npm install and re-pin; in a checkout, print the recipe only |
+| `hive upgrade --check` | Preview the commands without changing your install or update cache |
+| `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
 | `hive setup` | Pin the `hive` command to the interpreter that built it |
 | `hive doctor` | Check the environment and sweep stale state |
 | `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
