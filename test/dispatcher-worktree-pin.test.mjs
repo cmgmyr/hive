@@ -29,8 +29,15 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function binFirstEnv(binDir) {
-  return { HIVE_BIN_DIR: binDir, PATH: `${binDir}:${dirname(process.execPath)}:/usr/bin:/bin` };
+function binFirstEnv(binDir, extra = {}) {
+  const configDir = join(dirname(binDir), "claude-config");
+  mkdirSync(configDir, { recursive: true });
+  return {
+    ...extra,
+    CLAUDE_CONFIG_DIR: configDir,
+    HIVE_BIN_DIR: binDir,
+    PATH: `${binDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
+  };
 }
 
 function makeLinkedWorktree(tmp) {
@@ -194,7 +201,7 @@ describe("hive setup and doctor do not treat a git submodule's dist as a worktre
   });
 
   it("doctor does not warn for that pin", async () => {
-    const { stdout } = await runNode(scratch.cli, ["doctor"], { ...opts, env: binFirstEnv(binDir) });
+    const { stdout } = await runNode(scratch.cli, ["doctor"], { ...opts, env: binFirstEnv(binDir, opts.env) });
     assert.doesNotMatch(stdout, /warn {2}dispatcher/, stdout);
   });
 });
@@ -220,7 +227,7 @@ describe("hive setup pins a durable checkout's dist exactly as before", () => {
   });
 
   it("doctor stays green for that pin", async () => {
-    const { stdout } = await runNode(scratch.cli, ["doctor"], { ...opts, env: binFirstEnv(binDir) });
+    const { stdout } = await runNode(scratch.cli, ["doctor"], { ...opts, env: binFirstEnv(binDir, opts.env) });
     assert.doesNotMatch(stdout, /warn {2}dispatcher/, stdout);
   });
 });
@@ -241,7 +248,7 @@ describe("hive doctor flags a shim pinned to a linked worktree", () => {
     const { dispatcherScript } = await import("../dist/dispatcher.js");
     writeFileSync(join(binDir, "hive"), dispatcherScript(process.execPath, scratch.cli), { mode: 0o755 });
 
-    const env = binFirstEnv(binDir);
+    const env = binFirstEnv(binDir, opts.env);
     plain = await runNode(scratch.cli, ["doctor"], { ...opts, env });
     strict = await runNode(scratch.cli, ["doctor", "--strict"], { ...opts, env });
   });
@@ -289,7 +296,7 @@ describe("hive doctor flags a shim whose target no longer exists", () => {
 
     rmSync(worktreeDir, { recursive: true, force: true });
 
-    const env = binFirstEnv(binDir);
+    const env = binFirstEnv(binDir, opts.env);
     plain = await runNode(survivorCli, ["doctor"], { ...opts, env });
     strict = await runNode(survivorCli, ["doctor", "--strict"], { ...opts, env });
   });
