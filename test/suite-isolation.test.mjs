@@ -20,6 +20,7 @@ const REACHES_TMUX = [
   { pattern: /\brunCli\s*\(/, what: "runCli", spawns: true },
   { pattern: /\brunNode\s*\(/, what: "runNode", spawns: true },
   { pattern: /new McpClient\s*\(/, what: "McpClient", spawns: true },
+  { pattern: /\bwakeNotifyFixture\s*\(/, what: "wakeNotifyFixture", spawns: true },
 
   { pattern: /\[\s*(CLI|SERVER|KICKOFF)\b/, what: "a bare hive spawn", spawns: true },
   { pattern: /execFileSync\(\s*"tmux"/, what: "a direct tmux call", spawns: true },
