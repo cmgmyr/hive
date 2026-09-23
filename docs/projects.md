@@ -28,6 +28,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
                               # the default. Absent or empty means claude only, and agent_spawn
                               # REFUSES a harness or command outside this list. lead: above is a
                               # separate key and stays reachable regardless of this list.
+lead_branches: [main, master] # branches where a session gets hive's kickoff
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 review_tags: [from-review]    # optional todo tags `hive doctor` counts as review findings and
@@ -41,6 +42,7 @@ dashboard: true               # optional; default false. Writes a generated, aut
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
                               # (`hive lead --no-dashboard` skips this run's open).
+vars:                         # substituted into the profile runbook
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
   typecheck:                  # expanded form

@@ -909,15 +909,20 @@ placement: split                # placement for workers and visible processes: s
 
 # lead: claude --model opus     # custom command for the lead window (default: claude)
 
+# agents: [claude, codex]       # crew harness pool; the first entry is the default
+
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 
 # lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
+# dashboard: true               # write .hive/dashboard.html (default: false)
+
 # review_tags: [from-review]    # todo tags \`hive doctor\` counts as review findings and
                                 # reports as triaged (has a comment, completed, or archived)
-                                # or untriaged. Absent means doctor tracks none.
+                                # or untriaged. A tag also matches its own suffixed rounds.
+                                # Absent means it tracks none.
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

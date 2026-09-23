@@ -28,6 +28,7 @@ review_tags: [from-review]      # todo tags `hive doctor` counts as review findi
                                 # also matches its own suffixed rounds. Absent means it tracks none.
 
 vars:
+  shot: phone-dark, 390px wide # optional profile var; the lead opens this screenshot on UI lanes
   repo: your-org/your-repo
   install: npm install && npm run build
   test_one: npm run build && node --test test/<file>.test.mjs
