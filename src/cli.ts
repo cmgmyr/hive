@@ -47,6 +47,7 @@ import {
 import {
   codexConfigPath,
   codexHiveRegistrations,
+  codexRegistrationProblem,
   hiveRegistrations,
   registrationOffer,
   registrationProblem,
@@ -54,7 +55,8 @@ import {
 } from "./mcpConfig.js";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
 import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
-import { cacheIsStale, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
+import { cacheIsStale, queryUpdate, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
+import { checkoutUpgradeSteps, detectInstallShape, globalUpgradeSteps, type UpgradeStep } from "./upgrade.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   addProject,
@@ -269,6 +271,8 @@ Usage:
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
   hive status                overview of agents, todos, and wake-ups everywhere
+  hive upgrade [--check]    upgrade a global npm install; preview with --check
+  hive upgrade --run        run the printed pull/install/build/setup checkout recipe
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
   hive setup --attach <mode> auto|raw|control: whether tmux attaches carry -CC
@@ -1884,6 +1888,69 @@ const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]
 const isReviewFindingTag = (bases: string[], tag: string): boolean =>
   bases.some((base) => tag === base || tag.startsWith(`${base}-`));
 
+function cmdUpgrade(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--check", "--run"] });
+  rejectUnknownFlags("upgrade", parsed, "--check, --run");
+  if (parsed.positional.length || (parsed.flags.has("--check") && parsed.flags.has("--run"))) {
+    console.error("hive upgrade: use --check or --run, without positional arguments.");
+    process.exitCode = 1;
+    return;
+  }
+  const shape = detectInstallShape();
+  if (shape.kind === "unknown") {
+    console.error(`Cannot upgrade this install: ${shape.reason}`);
+    console.error(`CLI: ${shape.cli}\nPackage root: ${shape.packageRoot}\n.git: ${shape.gitState}\nnpm root -g: ${shape.npmRoot ?? "unavailable"}`);
+    console.error("Put the npm for this package's global root first on PATH, or use a git checkout.");
+    process.exitCode = 1;
+    return;
+  }
+  if (shape.kind === "global" && parsed.flags.has("--run")) {
+    console.error("hive upgrade: --run is only for checkouts; global installs upgrade by default.");
+    process.exitCode = 1;
+    return;
+  }
+  const steps = shape.kind === "checkout" ? checkoutUpgradeSteps(shape.packageRoot) : globalUpgradeSteps(shape);
+  const render = (step: UpgradeStep): string => [step.command, ...step.args]
+    .map((arg) => /^[a-zA-Z0-9_@./=-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+  const restart = "Restart every Claude Code or Codex session that has hive loaded; existing sessions keep running old in-memory code.";
+  if (shape.kind === "global") {
+    const update = queryUpdate();
+    console.log(updateLine(update));
+    if (update.status === "unknown") {
+      console.error("not upgrading: could not read the latest version");
+      process.exitCode = 1;
+      return;
+    }
+    if (update.status === "current") return;
+  }
+  if (parsed.flags.has("--check") || (shape.kind === "checkout" && !parsed.flags.has("--run"))) {
+    console.log(shape.kind === "checkout" ? `Checkout: ${shape.packageRoot}\nRun in that directory, or use hive upgrade --run:` : "Would run:");
+    for (const step of steps) console.log(`  ${render(step)}`);
+    console.log(restart);
+    return;
+  }
+  for (const [index, step] of steps.entries()) {
+    console.log(`\n${step.label}: ${render(step)}`);
+    const result = spawnSync(step.command, step.args, { cwd: step.cwd, stdio: "inherit" });
+    if (result.status === 0 && !result.error && !result.signal) continue;
+    console.error(`${step.label} failed: ${result.error?.message ?? (result.signal ? `signal ${result.signal}` : `exit ${result.status}`)}`);
+    if (shape.kind === "global") {
+      console.error(index === 0
+        ? "npm may have left the global package partially changed. Retry the install, then repair setup:"
+        : "The package is new, but the dispatcher was not confirmed re-pinned. Repair setup:");
+      for (const remaining of steps.slice(index)) console.error(`  ${render(remaining)}`);
+      console.error("  hive doctor --strict");
+    } else {
+      console.error(`Stopped at ${render(step)}. Remaining recipe not run:`);
+      for (const remaining of steps.slice(index + 1)) console.error(`  ${render(remaining)}`);
+    }
+    console.error(`After repair: ${restart}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`\nUpgrade complete. ${restart}`);
+}
+
 function cmdSetup(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--force"], valued: ["--dir", "--attach", "--auto-attach"] });
   rejectUnknownFlags("setup", parsed, "--dir, --attach, --auto-attach, --force");
@@ -1972,8 +2039,8 @@ function cmdSetup(argv: string[]): void {
   console.log("");
   for (const line of durabilityLines(node)) console.log(line);
 
-  console.log("\nA rebuild does not re-pin anything on its own. After every update:");
-  console.log("  npm install && npm run build && hive setup");
+  console.log("\nFor future updates, run hive upgrade. It re-pins after installing;");
+  console.log("checkouts print the recipe and run it only with --run.");
   console.log(`\nPATH: ${pathAdvice(dir, file).join("\n")}`);
   reportSetupRegistrations(node);
 }
@@ -1990,7 +2057,13 @@ function reportSetupRegistrations(pinned: string): void {
       console.log(`  mcp registration (${r.scope} scope): ${lines[0]}`);
       for (const line of lines.slice(1)) console.log(`  ${line}`);
     }
-    return;
+  }
+
+  for (const r of codexHiveRegistrations()) {
+    const lines = codexRegistrationProblem(r, pinned);
+    if (!lines) continue;
+    console.log(`\n  mcp registration (codex): ${lines[0]}`);
+    for (const line of lines.slice(1)) console.log(`  ${line}`);
   }
 
   const offer = registrationOffer(pinned, found);
@@ -2145,6 +2218,8 @@ function reportMcpRegistrations(project: Project | null): void {
   }
   for (const r of codexRegistrations) {
     info("mcp registration (codex)", [r.command, ...r.args].join(" "));
+    const problem = codexRegistrationProblem(r, process.execPath);
+    if (problem) gatingWarn("mcp registration (codex)", ...problem);
   }
 }
 
@@ -3655,7 +3730,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "setup", "doctor",
+  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -3671,7 +3746,7 @@ if (!COMMANDS.includes(command)) {
     usage();
   }
 }
-migrate();
+if (command !== "upgrade") migrate();
 
 try {
   switch (command) {
@@ -3704,6 +3779,9 @@ try {
       break;
     case "setup":
       cmdSetup(rest);
+      break;
+    case "upgrade":
+      cmdUpgrade(rest);
       break;
     case "doctor":
       cmdDoctor(rest);

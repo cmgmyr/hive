@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -140,7 +140,7 @@ describe("hive doctor --strict promotes only the warns that mean this install is
   });
 
   it("promotes a gating warn, and says how many on the summary line", async () => {
-
+    writeCodexRegistration("");
     writeRegistration({ mcpServers: { hive: { type: "stdio", command: "node", args: [SERVER] } } });
     const gatingPlain = await runCli(["doctor"], isolated);
     const gatingStrict = await runCli(["doctor", "--strict"], isolated);
@@ -161,6 +161,30 @@ describe("hive doctor --strict promotes only the warns that mean this install is
   it("leaves a bare doctor's exit code alone whatever the warns are", () => {
     if (failureCount(plain.stdout) === 0) assert.equal(plain.code, 0, plain.stdout);
     assert.doesNotMatch(summaryLine(plain.stdout), /--strict/);
+  });
+
+  it("promotes Codex server drift and shares setup's exact repair without editing TOML", async () => {
+    writeRegistration({ mcpServers: {} });
+    writeCodexRegistration(`[mcp_servers.hive]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(SERVER)}]\n`);
+    const matching = await runCli(["doctor", "--strict"], isolated);
+    assert.doesNotMatch(matching.stdout, /warn {2}mcp registration \(codex\)/);
+    const old = join(dirs.tmp, "old-index.js");
+    writeFileSync(old, "");
+    for (const args of [[], [join(dirs.tmp, "missing-index.js")], [old]]) {
+      writeCodexRegistration(`[mcp_servers.hive]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify(args)}\n`);
+      const file = join(codexHome, "config.toml");
+      const before = readFileSync(file, "utf8");
+      const strictDrift = await runCli(["doctor", "--strict"], isolated);
+      assert.equal(promotedCount(strictDrift.stdout), promotedCount(matching.stdout) + 1, strictDrift.stdout);
+      const setup = await runCli(["setup", "--force"], { ...isolated, env: { ...isolated.env, HIVE_BIN_DIR: join(dirs.tmp, "setup-drift-bin") } });
+      assert.equal(setup.code, 0, setup.stdout + setup.stderr);
+      for (const r of [strictDrift, setup]) {
+        assert.ok(r.stdout.includes("codex mcp remove hive"));
+        assert.ok(r.stdout.includes(`codex mcp add hive -- "${process.execPath}" "${SERVER}"`));
+      }
+      assert.equal(readFileSync(file, "utf8"), before);
+    }
+    writeCodexRegistration("");
   });
 
   it("still says All good. only when there is genuinely nothing to report", () => {

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,14 +14,24 @@ export type McpRegistration = {
 
 export type CodexMcpRegistration = Omit<McpRegistration, "scope">;
 
-const serverPath = (): string => fileURLToPath(new URL("./index.js", import.meta.url));
+export const serverPath = (): string => fileURLToPath(new URL("./index.js", import.meta.url));
+
+function serverProblem(args: string[], expected: string): string | null {
+  const server = args[0];
+  if (!server) return "has no server path.";
+  if (!existsSync(server)) return `points at a missing server: ${server}`;
+  try {
+    if (realpathSync(server) === realpathSync(expected)) return null;
+  } catch {}
+  return `points at a different server: ${server} (expected ${expected})`;
+}
 
 function addCommand(scope: string, name: string, pinned: string, args: string[]): string {
   return `  claude mcp add --scope ${scope} ${name} -- ${[pinned, ...args].map((a) => `"${a}"`).join(" ")}`;
 }
 
-export function registrationProblem(r: McpRegistration, pinned: string): string[] | null {
-  const reRegister = [addCommand(r.scope, r.name, pinned, r.args)];
+export function registrationProblem(r: McpRegistration, pinned: string, expectedServer = serverPath()): string[] | null {
+  const reRegister = [addCommand(r.scope, r.name, pinned, [expectedServer])];
   if (!r.command.includes("/")) {
     return [
       `runs "${r.command}", which a Node version manager re-resolves per`,
@@ -38,7 +48,23 @@ export function registrationProblem(r: McpRegistration, pinned: string): string[
       ...reRegister,
     ];
   }
-  return null;
+  const problem = serverProblem(r.args, expectedServer);
+  return problem ? [problem, `Re-register in ${r.source}:`, ...reRegister] : null;
+}
+
+export function codexRegistrationProblem(r: CodexMcpRegistration, pinned: string, expectedServer = serverPath()): string[] | null {
+  const problem = !r.command.includes("/")
+    ? `runs "${r.command}", which a Node version manager re-resolves per directory.`
+    : r.command !== pinned
+      ? `pins a different interpreter than this CLI runs (${pinned}).`
+      : serverProblem(r.args, expectedServer);
+  if (!problem) return null;
+  return [
+    problem,
+    `Re-register in ${r.source}:`,
+    `  codex mcp remove ${r.name}`,
+    `  codex mcp add ${r.name} -- "${pinned}" "${expectedServer}"`,
+  ];
 }
 
 function readJson(file: string): Record<string, any> | null {
