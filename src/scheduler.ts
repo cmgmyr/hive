@@ -1,3 +1,4 @@
+import { runningBuildChange, runningBuildNotice } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
@@ -305,6 +306,32 @@ function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): vo
   }
 }
 
+const reportedBuilds = new Set<string>();
+
+export function reportRunningBuildChange(snapshot: AliveSnapshot): void {
+  try {
+    const change = runningBuildChange();
+    const actor = process.env.HIVE_AGENT_ID;
+    if (!change || !actor || reportedBuilds.has(change.disk.build_id)) return;
+    const lead = stmt(
+      `SELECT project_id, actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents
+       WHERE actor_id = ? AND kind = ? AND status = 'running'`,
+    ).get(actor, LEAD_KIND) as
+      | { project_id: number; actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string; command: string }
+      | undefined;
+    if (!lead?.tmux_target || !screenClassifiable(lead.command) ||
+        rowAlive(lead.tmux_socket, lead.tmux_target, snapshot) !== true ||
+        paneReissued(lead.pane_pid, rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot))) return;
+    insertNotice(
+      { project_id: lead.project_id, owner: lead.actor_id },
+      lead.actor_id, lead.tmux_target, runningBuildNotice(change), null,
+    );
+    reportedBuilds.add(change.disk.build_id);
+  } catch {
+
+  }
+}
+
 const deadProcessBody = (name: string): string =>
   `[hive] process "${name}" exited on its own; its pane is gone. Restart it with: hive start "${name}"`;
 
@@ -561,6 +588,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     if (snapshot === undefined) snapshot = liveTargets();
     janitor(snapshot);
+    if (snapshot) reportRunningBuildChange(snapshot);
 
     checkConfirmations();
     pruneStateLog();
