@@ -56,7 +56,7 @@ describe(
       assert.equal(
         noticesAbout(wakeId).length,
         1,
-        "one notification per hold condition: a per-tick version inserts one every three seconds",
+        "one notification per hold condition: a per-tick version inserts one on every scheduler tick",
       );
 
       await fx.restartServer();
