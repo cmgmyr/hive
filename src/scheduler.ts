@@ -135,7 +135,7 @@ function bestEffortRun(sql: string, ...params: unknown[]): void {
 let ticking = false;
 let schedulerInterval: NodeJS.Timeout | undefined;
 
-export function startScheduler(intervalMs = 3000): void {
+export function startScheduler(intervalMs = DEFAULT_SCHEDULER_INTERVAL_MS): void {
 
   schedulerInterval = setInterval(() => {
     void tick();
@@ -2334,4 +2334,14 @@ async function deliver(
   }
 
   if (!strandedTextWouldHold) recordTyped();
+}
+
+export const DEFAULT_SCHEDULER_INTERVAL_MS = 3000;
+const MIN_SCHEDULER_INTERVAL_MS = 100;
+
+export function schedulerIntervalMs(raw = process.env.HIVE_SCHEDULER_INTERVAL_MS): number {
+  const parsed = Number(raw);
+  return raw && Number.isSafeInteger(parsed) && parsed >= MIN_SCHEDULER_INTERVAL_MS
+    ? parsed
+    : DEFAULT_SCHEDULER_INTERVAL_MS;
 }
