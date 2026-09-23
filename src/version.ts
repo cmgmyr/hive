@@ -1,15 +1,16 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const checkoutRoot = join(moduleDir, "..");
 
-interface BuildInfo {
+export interface BuildInfo {
   version: string;
   sha: string | null;
   dirty: boolean;
+  build_id: string;
 }
 
 interface GitState {
@@ -24,6 +25,47 @@ function readBuildInfo(): BuildInfo | null {
   } catch {
     return null;
   }
+}
+
+function readRunningBuild(): BuildInfo | null {
+  const info = readBuildInfo();
+  return info && typeof info.build_id === "string" && info.build_id.trim() !== "" &&
+    (info.sha === null || typeof info.sha === "string") && typeof info.dirty === "boolean"
+    ? info : null;
+}
+
+const loadedBuild = readRunningBuild();
+let diskSignature: string | undefined;
+let diskBuild: BuildInfo | null = null;
+
+export interface RunningBuildChange {
+  loaded: BuildInfo;
+  disk: BuildInfo;
+}
+
+export function runningBuildChange(): RunningBuildChange | null {
+  try {
+    if (!loadedBuild) return null;
+    const stat = statSync(join(moduleDir, "build-info.json"));
+    const signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    if (signature !== diskSignature) {
+      diskBuild = readRunningBuild();
+      diskSignature = signature;
+    }
+    return diskBuild && diskBuild.build_id !== loadedBuild.build_id
+      ? { loaded: loadedBuild, disk: diskBuild } : null;
+  } catch {
+    diskSignature = undefined;
+    diskBuild = null;
+    return null;
+  }
+}
+
+export function runningBuildNotice(change: RunningBuildChange, session?: string): string {
+  const subject = session ? `session ${JSON.stringify(session)}'s` : "this session's";
+  return `hive: ${subject} hive server loaded build ${change.loaded.build_id}; ` +
+    `the build on disk changed to ${change.disk.build_id}. ` +
+    "Restart this session, or reconnect hive in /mcp, to pick it up.";
 }
 
 function packageVersion(): string {
