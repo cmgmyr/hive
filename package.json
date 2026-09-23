@@ -9,7 +9,6 @@
   },
   "scripts": {
     "build": "tsc && node scripts/gen-version.mjs",
-    "check:demo": "node scripts/check-demo.mjs",
     "check:mermaid": "node scripts/check-mermaid.mjs",
     "prepublishOnly": "npm run build",
     "watch": "tsc --watch",
