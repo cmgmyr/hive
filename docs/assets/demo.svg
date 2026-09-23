@@ -120,14 +120,14 @@
 .c56{animation:k60 30s linear infinite}
 @keyframes k61{0%{opacity:0;transform:translateX(26px)}10.6666933333%{opacity:0;transform:translateX(26px);animation-timing-function:cubic-bezier(.23,1,.32,1)}12.3333466667%{opacity:1;transform:translateX(0)}93.3333333333%{opacity:1;transform:translateX(0)}}
 .c57{animation:k61 30s linear infinite}
-@keyframes k62{0%{opacity:1}1.5%{opacity:0;animation-timing-function:cubic-bezier(.23,1,.32,1)}92%{opacity:0;animation-timing-function:cubic-bezier(.23,1,.32,1)}94%{opacity:1}100%{opacity:1}}
+@keyframes k62{0%{opacity:1}1.5%{opacity:0;animation-timing-function:cubic-bezier(.23,1,.32,1)}94%{opacity:0;animation-timing-function:cubic-bezier(.23,1,.32,1)}96%{opacity:1}100%{opacity:1}}
 @keyframes k63{0%{opacity:0;transform:translateX(0px)}87%{opacity:0;transform:translateX(0px);animation-timing-function:steps(36)}89.6667%{opacity:1;transform:translateX(218px);animation-timing-function:steps(1,end)}100%{opacity:1;transform:translateX(218px)}}
 @keyframes k64{0%{opacity:0;transform:translateX(0px)}89.6667%{opacity:0;transform:translateX(0px);animation-timing-function:steps(28)}91.3333%{opacity:1;transform:translateX(218px);animation-timing-function:steps(1,end)}100%{opacity:1;transform:translateX(218px)}}
 @keyframes k65{0%{opacity:0;transform:translateX(0px)}91.3333%{opacity:0;transform:translateX(0px);animation-timing-function:steps(2)}91.6667%{opacity:1;transform:translateX(218px);animation-timing-function:steps(1,end)}100%{opacity:1;transform:translateX(218px)}}
 @keyframes k66{0%{opacity:0;transform:translate(0,0)}87%{opacity:0;transform:translate(0,0);animation-timing-function:cubic-bezier(.23,1,.32,1)}87.6667%{opacity:1;transform:translate(0,0)}100%{opacity:1;transform:translate(0,0)}}
-@keyframes k67{0%{opacity:0}81.2%{opacity:0}83.68892%{opacity:1}93.3333333333%{opacity:1}}
-@keyframes k68{0%{opacity:0}83.68892%{opacity:0}85.2444133333%{opacity:1}93.3333333333%{opacity:1}}
-@keyframes k69{0%{opacity:0}85.2444133333%{opacity:0}85.5555866667%{opacity:1}93.3333333333%{opacity:1}}
+@keyframes k67{0%{opacity:0}87.6667%{opacity:0}89.6666%{opacity:0}89.6667%{opacity:1}100%{opacity:1}}
+@keyframes k68{0%{opacity:0}90.3333%{opacity:0}91.3332%{opacity:0}91.3333%{opacity:1}100%{opacity:1}}
+@keyframes k69{0%{opacity:0}91.3333%{opacity:0}91.9999%{opacity:0}92%{opacity:1}100%{opacity:1}}
 @keyframes k70{0%{display:none}87%{display:none}87.6667%{display:block}100%{display:block}}
 @keyframes k71{0%{transform:translate(0,0)}87%{transform:translate(0,0)}87.6667%{transform:translate(0,-18px)}89.6667%{transform:translate(0,-18px)}90.3333%{transform:translate(0,-36px)}91.3333%{transform:translate(0,-36px)}92%{transform:translate(0,-54px)}100%{transform:translate(0,-54px)}}
 @keyframes k72{0%{fill:#F5A524}60%{fill:#F5A524}61%{fill:#8B949E}100%{fill:#8B949E}}
