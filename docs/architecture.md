@@ -8,7 +8,7 @@ Every mechanical claim here cites `file:line`. A diagram is a claim that reads a
 
 ## 1. Process topology
 
-The thing newcomers get wrong first: hive has no daemon and nothing leaves the machine. Every Claude Code session runs its own `hive` MCP server (`McpServer`/`StdioServerTransport`, `src/index.ts:2-11`) as a plain child process talking JSON-RPC over stdio, and every one of those processes, plus the `hive` CLI, opens the same WAL-mode SQLite file directly (`new Database`, `src/db.ts:4-5,9,16,18,42`; `src/cli.ts:56` imports `db`, `dataDir`, and `migrate` from that same module, a different door onto the same store). Coordination beyond the database goes through one shared tmux server: one session per store, one window per project inside it (`.claude/rules/tmux-and-panes.md`).
+The thing newcomers get wrong first: hive has no daemon. Every Claude Code session runs its own `hive` MCP server (`McpServer`/`StdioServerTransport`, `src/index.ts:2-11`) as a plain child process talking JSON-RPC over stdio, and every one of those processes, plus ordinary CLI commands, opens the same WAL-mode SQLite file directly (`new Database`, `src/db.ts:19-20,10,17`; `src/cli.ts:56` imports `db`, `dataDir`, and `migrate` from that same module, a different door onto the same store). The version CLI path is the exception: it uses an in-memory initialization database and only writes its npm cache. The CLI makes one npm registry request only for `hive --version --check`, or an interactive doctor refresh; the MCP server, hooks, and scheduler never do, and `HIVE_NO_UPDATE_CHECK=1` disables it. Coordination beyond the database goes through one shared tmux server: one session per store, one window per project inside it (`.claude/rules/tmux-and-panes.md`).
 
 ```mermaid
 flowchart TB
@@ -33,7 +33,7 @@ flowchart TB
 
 ## 2. Module layering
 
-`abi` and `dataDir` sit under `db`, because opening the database needs both an addon that loads and a directory it is allowed to open: `src/db.ts:4` imports `guardAbi`, called at `:16` immediately before `new Database(...)` at `:18`, and `src/db.ts:5` imports `guardStoreDir`, called at `:9` first to determine where that database lives. `context` and every tool in `src/tools/*.ts` import `db` directly and sit above it. `src/cli.ts:56` imports `dataDir`, `db`, and `migrate` directly from the same module the MCP entry point uses; it is the store's second door, not a caller of the tool layer.
+`abi` and `dataDir` sit under `db`, because opening the database needs both an addon that loads and a directory it is allowed to open: `src/db.ts:4` imports `guardAbi`, called at `:17` immediately before `new Database(...)` at `:19`, and `src/db.ts:5` imports `guardStoreDir`, called at `:10` first to determine where that database lives. `context` and every tool in `src/tools/*.ts` import `db` directly and sit above it. `src/cli.ts:56` imports `dataDir`, `db`, and `migrate` directly from the same module the MCP entry point uses; it is the store's second door, not a caller of the tool layer.
 
 ```mermaid
 flowchart BT
