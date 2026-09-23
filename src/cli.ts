@@ -86,7 +86,6 @@ import {
   transcriptStaleness,
   wasHeldForPaneReissue,
 } from "./scheduler.js";
-import { transcriptPath } from "./transcript.js";
 import { readTurnCount } from "./turnCount.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
@@ -3161,8 +3160,8 @@ function cmdStatusline(): void {
     const actorId = process.env.HIVE_AGENT_ID;
     if (actorId) {
       const lead = db.prepare(
-        "SELECT cwd, session_id, transcript_path FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
-      ).get(project.id, actorId) as { cwd: string; session_id: string; transcript_path: string } | undefined;
+        "SELECT 1 AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
+      ).get(project.id, actorId) as { lead: number } | undefined;
       if (lead) {
         let inputPath = "";
         if (!process.stdin.isTTY) {
@@ -3172,7 +3171,7 @@ function cmdStatusline(): void {
             inputPath = typeof input?.transcript_path === "string" ? input.transcript_path : "";
           } catch {}
         }
-        turns = readTurnCount(transcriptPath(lead.cwd, lead.session_id, inputPath || lead.transcript_path));
+        turns = readTurnCount(inputPath);
         budget = loadProjectYml(project.path).config?.lead_turn_budget ?? null;
       }
     }
