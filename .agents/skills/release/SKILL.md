@@ -48,7 +48,7 @@ Write the `CHANGELOG.md` section `## <version> - <date>` and commit it before `n
 
 ```bash
 git add CHANGELOG.md
-git commit --no-gpg-sign -m "document <version> release"
+git commit -m "document <version> release"
 ```
 
 The changelog commit must land before the version bump, tag, and push. Write for a stranger. Include the user-visible changes and keep internal workflow details out of the section.
