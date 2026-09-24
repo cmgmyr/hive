@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { DIST, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
@@ -213,6 +213,26 @@ describe("running build identity", () => {
     assert.equal(f.runningBuildChange().loaded.build_id, "first");
     assert.equal(f.runningBuildChange().disk.build_id, "third");
     assert.match(f.runningBuildNotice(f.runningBuildChange()), /the build on disk changed.*Restart this session/);
+  });
+
+  it("a stamp repaired by chmod is re-read without a rewrite", async (t) => {
+    const f = await fixture();
+    const disk = { ...stamp, build_id: "second" };
+    f.swap(disk);
+    const mode = statSync(f.path).mode & 0o777;
+    chmodSync(f.path, 0);
+    try {
+      try {
+        readFileSync(f.path);
+        t.skip("the current user can read mode-000 files, so chmod cannot simulate an unreadable stamp");
+        return;
+      } catch {
+        assert.equal(f.runningBuildChange(), null);
+      }
+    } finally {
+      chmodSync(f.path, mode);
+    }
+    assert.deepEqual(f.runningBuildChange(), { loaded: stamp, disk });
   });
 
   it("missing, malformed, legacy and invalid disk identities are silent and recover after replacement", async () => {
