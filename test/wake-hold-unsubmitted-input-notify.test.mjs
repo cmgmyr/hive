@@ -16,10 +16,11 @@ const FIXTURES = join(REPO, "test", "fixtures", "panes");
 const fixturePath = (file) => join(FIXTURES, file);
 const replayFixture = (file) => `cat '${fixturePath(file)}'; sleep 600`;
 
+const TICK_MS = 500;
 let mcp;
 
 before(async () => {
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000", HIVE_SCHEDULER_INTERVAL_MS: String(TICK_MS) } });
   await mcp.start();
   if (!hasTmux) return;
   execFileSync("tmux", [
@@ -145,7 +146,7 @@ describe(
 
         await until(async () => timerRow(wakeId).held_at != null, 15000);
         assert.match(timerRow(wakeId).held_reason, /unsubmitted/, "held for the input-box reason, not lost silently");
-        await until(async () => noticesAbout(wakeId).length > 0, 9000);
+        await until(async () => noticesAbout(wakeId).length > 0, 6 * TICK_MS);
         assert.equal(noticesAbout(wakeId).length, 0, "nobody to tell: the owner IS the blocked pane");
         assert.equal(timerRow(wakeId).fired_at, null, "and it must not have fired either");
       },

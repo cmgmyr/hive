@@ -29,7 +29,7 @@ const positionalArgs = passthrough.filter((arg) => !arg.startsWith("-"));
 
 const named = positionalArgs.length > 0;
 
-const LONGEST_FILE_HOIST = "wake-hold-notify.test.mjs";
+const LONGEST_FILE_HOIST = "typing-guards.test.mjs";
 const files = named
   ? []
   : readdirSync(testDir)

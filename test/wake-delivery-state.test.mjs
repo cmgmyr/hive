@@ -31,7 +31,7 @@ let mcp;
 let projectId;
 
 before(async () => {
-  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
+  mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000", HIVE_SCHEDULER_INTERVAL_MS: "500" } });
   await mcp.start();
   projectId = (await mcp.call("whoami")).project.id;
   if (!hasTmux) return;

@@ -10,7 +10,7 @@ import { registerKv } from "./tools/kv.js";
 import { registerLeases } from "./tools/leases.js";
 import { registerWakes } from "./tools/wakes.js";
 import { registerPrompts } from "./prompts.js";
-import { startScheduler } from "./scheduler.js";
+import { schedulerIntervalMs, startScheduler } from "./scheduler.js";
 import { enforceStrictInput } from "./strictInput.js";
 
 const server = enforceStrictInput(
@@ -37,6 +37,6 @@ registerKv(server);
 registerLeases(server);
 registerWakes(server);
 registerPrompts(server);
-startScheduler();
+startScheduler(schedulerIntervalMs());
 
 await server.connect(new StdioServerTransport());
