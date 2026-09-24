@@ -47,7 +47,7 @@ export function runningBuildChange(): RunningBuildChange | null {
   try {
     if (!loadedBuild) return null;
     const stat = statSync(join(moduleDir, "build-info.json"));
-    const signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    const signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     if (signature !== diskSignature) {
       diskBuild = readRunningBuild();
       diskSignature = signature;
