@@ -62,7 +62,9 @@ describe("outputSchema on write tools", () => {
     });
     assert.equal(resp.result.isError, undefined);
     assert.ok(resp.result.structuredContent, "expected structuredContent alongside text content");
-    assert.deepEqual(resp.result.structuredContent, JSON.parse(resp.result.content[0].text));
+    const { hive_notice, ...receipt } = resp.result.structuredContent;
+    assert.match(hive_notice, /no registered project matched this session's working directory/);
+    assert.deepEqual(receipt, JSON.parse(resp.result.content[0].text));
   });
 
   it("a tool with no outputSchema never carries structuredContent, however large its payload", async () => {

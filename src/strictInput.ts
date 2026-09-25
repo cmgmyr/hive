@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { noticeFor, releaseNotice } from "./result.js";
+
 function isBuiltSchema(value: unknown): boolean {
   return typeof value === "object" && value !== null && ("_zod" in value || "_def" in value);
 }
@@ -22,10 +24,13 @@ type ToolCallback = (...args: unknown[]) => unknown;
 
 // The SDK requires structuredContent whenever outputSchema is declared but never populates it itself,
 // so this stays scoped to declaring tools rather than attached blanket in src/result.ts's ok().
+// Claude Code shows the model structuredContent and drops content for these tools, so a notice
+// appended to content reaches it only as structuredContent.hive_notice.
 function withStructuredContent(name: string, cb: ToolCallback): ToolCallback {
   return async (...args: unknown[]) => {
     const result = (await cb(...args)) as CallToolResult;
-    if (result.isError || result.structuredContent) return result;
+    if (result.isError) return result;
+    if (result.structuredContent) return withNotice(result);
     const first = result.content[0];
     const text = first?.type === "text" ? first.text : undefined;
     let parsed: unknown;
@@ -36,8 +41,9 @@ function withStructuredContent(name: string, cb: ToolCallback): ToolCallback {
     }
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
       result.structuredContent = parsed as Record<string, unknown>;
-      return result;
+      return withNotice(result);
     }
+    releaseNotice(result);
     return {
       content: [
         {
@@ -53,12 +59,28 @@ function withStructuredContent(name: string, cb: ToolCallback): ToolCallback {
   };
 }
 
+function withNotice(result: CallToolResult): CallToolResult {
+  const notice = noticeFor(result);
+  if (notice && result.structuredContent) result.structuredContent = { ...result.structuredContent, hive_notice: notice };
+  return result;
+}
+
+function withNoticeField(outputSchema: unknown): unknown {
+  return outputSchema === undefined || isBuiltSchema(outputSchema)
+    ? outputSchema
+    : { ...(outputSchema as z.ZodRawShape), hive_notice: z.string().optional() };
+}
+
 export function enforceStrictInput(server: McpServer): McpServer {
   const register = server.registerTool.bind(server);
   server.registerTool = ((name, config, cb) =>
     register(
       name,
-      { ...config, inputSchema: strictSchemaFor(name, config.inputSchema) as never },
+      {
+        ...config,
+        inputSchema: strictSchemaFor(name, config.inputSchema) as never,
+        outputSchema: withNoticeField(config.outputSchema) as never,
+      },
       (config.outputSchema ? withStructuredContent(name, cb as ToolCallback) : cb) as never,
     )) as McpServer["registerTool"];
   return server;
