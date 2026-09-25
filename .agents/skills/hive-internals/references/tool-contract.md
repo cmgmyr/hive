@@ -234,6 +234,8 @@ wrapped to parse `structuredContent` out of the already-computed text
 content after the handler returns - every other tool's `ok()` output is
 untouched.
 
+That same wrapper adds an optional `hive_notice` string to every declared `outputSchema` and sets it on the first result after a rebuild or a project registration (todo 1409). Claude Code 2.1.282 shows the model only `structuredContent` for a tool with `outputSchema` and drops `content`, so a notice appended as a second text item was spent unseen; a tool that used the key itself would collide with it.
+
 **The wrapper fails loudly, not silently, when a declaring tool's result
 cannot be parsed as a JSON object** - a named, diagnosable `isError` result
 instead of falling through to the SDK's own opaque "no structured content

@@ -291,3 +291,26 @@ it("a kind=agent actor gets no hive_notice on an outputSchema tool after a rebui
     assert.equal(result.content.length, 1);
   } finally { await mcp.close(); f.db.close(); }
 });
+
+it("a result the wrapper replaces with its non-object error releases the build so the next outputSchema call carries the notice", async () => {
+  const f = await fixture("lead");
+  process.env.HIVE_AGENT_ID = f.actor;
+  const { run } = await import(join(f.root, "dist", "result.js"));
+  const { enforceStrictInput } = await import(join(f.root, "dist", "strictInput.js"));
+  const { z } = await import(join(REPO, "node_modules", "zod", "index.js"));
+  const handlers = {};
+  const server = { registerTool: (name, _config, cb) => { handlers[name] = cb; } };
+  enforceStrictInput(server);
+  server.registerTool("bad", { inputSchema: {}, outputSchema: { y: z.number() } }, () => run(() => "not json"));
+  server.registerTool("good", { inputSchema: {}, outputSchema: { y: z.number() } }, () => run(() => ({ y: 1 })));
+  try {
+    f.swap(changed("second"));
+    const bad = await handlers.bad({}, {});
+    assert.equal(bad.isError, true);
+    assert.equal(bad.structuredContent, undefined);
+    assert.equal(bad.content.length, 1);
+    const good = await handlers.good({}, {});
+    assert.match(good.structuredContent.hive_notice, BUILD_NOTICE);
+    assert.equal((await handlers.good({}, {})).structuredContent.hive_notice, undefined);
+  } finally { f.db.close(); }
+});
