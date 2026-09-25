@@ -214,3 +214,80 @@ it("a store-replaced refusal remains primary and does not consume or lose the bu
     assert.equal((await run(() => null)).content.length, 1);
   } finally { f.db.close(); }
 });
+
+const BUILD_NOTICE = /the build on disk changed to hive 1\.2\.3 \(abc-dirty, build second\)/;
+
+it("an outputSchema tool carries the restart notice in structuredContent.hive_notice on the first result only", async () => {
+  const f = await fixture("lead");
+  const mcp = f.client();
+  await mcp.start();
+  try {
+    const listed = (await mcp.request("tools/list", {})).result.tools.find((t) => t.name === "kv_set");
+    assert.equal(listed.outputSchema.properties.hive_notice.type, "string");
+    assert.ok(!listed.outputSchema.required?.includes("hive_notice"));
+    const set = (key) => call(mcp, "kv_set", { key, value: 1 });
+    const quiet = await set("a");
+    assert.equal(quiet.structuredContent.hive_notice, undefined);
+    f.swap(changed("second"));
+    const first = await set("b");
+    assert.match(first.structuredContent.hive_notice, BUILD_NOTICE);
+    assert.equal(first.structuredContent.key, "b");
+    assert.match(first.content[1].text, BUILD_NOTICE);
+    const second = await set("c");
+    assert.equal(second.structuredContent.hive_notice, undefined);
+    assert.equal(second.content.length, 1);
+  } finally { await mcp.close(); f.db.close(); }
+});
+
+it("the registration notice and the restart notice share one hive_notice string, then neither repeats", async () => {
+  const f = await fixture();
+  const mcp = new McpClient({ cwd: f.tmp, dataDir: f.dataDir, server: join(f.root, "dist", "index.js") });
+  await mcp.start();
+  try {
+    f.swap(changed("second"));
+    const first = await call(mcp, "kv_set", { key: "a", value: 1 });
+    const notice = first.structuredContent.hive_notice;
+    assert.match(notice, /no registered project matched this session's working directory/);
+    assert.match(notice, BUILD_NOTICE);
+    const again = await call(mcp, "kv_set", { key: "b", value: 1 });
+    assert.equal(again.structuredContent.hive_notice, undefined);
+  } finally { await mcp.close(); f.db.close(); }
+});
+
+it("an error result on an outputSchema tool keeps the restart notice in content and never sets structuredContent", async () => {
+  const f = await fixture("lead");
+  const mcp = f.client();
+  await mcp.start();
+  try {
+    f.swap(changed("second"));
+    const failed = await call(mcp, "todo_comment", { todo_id: 999, body: "x" });
+    assert.equal(failed.isError, true);
+    assert.equal(failed.structuredContent, undefined);
+    assert.match(failed.content[1].text, BUILD_NOTICE);
+    assert.equal((await call(mcp, "kv_set", { key: "a", value: 1 })).structuredContent.hive_notice, undefined);
+  } finally { await mcp.close(); f.db.close(); }
+});
+
+it("a tool without outputSchema keeps the restart notice as a second content item", async () => {
+  const f = await fixture("lead");
+  const mcp = f.client();
+  await mcp.start();
+  try {
+    f.swap(changed("second"));
+    const result = await call(mcp, "pad_list");
+    assert.equal(result.structuredContent, undefined);
+    assert.match(result.content[1].text, BUILD_NOTICE);
+  } finally { await mcp.close(); f.db.close(); }
+});
+
+it("a kind=agent actor gets no hive_notice on an outputSchema tool after a rebuild", async () => {
+  const f = await fixture("agent");
+  const mcp = f.client();
+  await mcp.start();
+  try {
+    f.swap(changed("second"));
+    const result = await call(mcp, "kv_set", { key: "a", value: 1 });
+    assert.equal(result.structuredContent.hive_notice, undefined);
+    assert.equal(result.content.length, 1);
+  } finally { await mcp.close(); f.db.close(); }
+});

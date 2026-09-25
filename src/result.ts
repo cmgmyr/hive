@@ -28,6 +28,26 @@ export function registrationNoticeText(notice: Pick<Project, "id" | "path">): st
 
 const reportedBuilds = new Set<string>();
 
+type PendingNotices = { texts: string[]; build?: string };
+const pendingNotices = new WeakMap<object, PendingNotices>();
+
+function addNotice(result: CallToolResult, text: string, build?: string): void {
+  result.content.push({ type: "text", text });
+  const pending = pendingNotices.get(result) ?? { texts: [] };
+  pending.texts.push(text);
+  if (build) pending.build = build;
+  pendingNotices.set(result, pending);
+}
+
+export function noticeFor(result: CallToolResult): string | undefined {
+  return pendingNotices.get(result)?.texts.join("\n");
+}
+
+export function releaseNotice(result: CallToolResult): void {
+  const build = pendingNotices.get(result)?.build;
+  if (build) reportedBuilds.delete(build);
+}
+
 export async function appendRunningBuildNotice(result: CallToolResult, session?: string): Promise<CallToolResult> {
   try {
     const change = runningBuildChange();
@@ -40,8 +60,8 @@ export async function appendRunningBuildNotice(result: CallToolResult, session?:
       if (row?.kind === "agent") return result;
     }
     if (reportedBuilds.has(change.disk.build_id)) return result;
-    result.content.push({ type: "text", text: runningBuildNotice(change, session) });
     reportedBuilds.add(change.disk.build_id);
+    addNotice(result, runningBuildNotice(change, session), change.disk.build_id);
   } catch {
 
   }
@@ -64,7 +84,7 @@ export async function run(fn: () => unknown): Promise<CallToolResult> {
   }
   const notice = takeRegistrationNotice();
   if (notice) {
-    result.content.push({ type: "text", text: registrationNoticeText(notice) });
+    addNotice(result, registrationNoticeText(notice));
   }
   return appendRunningBuildNotice(result);
 }
