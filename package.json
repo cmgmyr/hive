@@ -1,6 +1,6 @@
 {
   "name": "@cmgmyr/hive",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Run a crew of Claude Code and Codex workers from one lead session: visible tmux panes, exact state from hooks, one local SQLite store.",
   "type": "module",
   "bin": {
