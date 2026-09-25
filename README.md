@@ -1,7 +1,7 @@
 <p align="center"><img src="https://raw.githubusercontent.com/cmgmyr/hive/main/docs/assets/logo-card.svg" alt="hive" height="112"></p>
 <p align="center"><a href="https://www.npmjs.com/package/@cmgmyr/hive"><img src="https://img.shields.io/npm/v/%40cmgmyr%2Fhive?label=npm" alt="npm"></a> <a href="https://github.com/cmgmyr/hive/actions/workflows/ci.yml"><img src="https://github.com/cmgmyr/hive/actions/workflows/ci.yml/badge.svg" alt="CI"></a></p>
 
-Shared, persistent memory and a visible crew of tmux workers for Claude Code and Codex sessions on one project.
+Run a crew of Claude Code and Codex workers from one lead session: visible tmux panes, exact state from hooks, one local SQLite store.
 
 - Visible workers: each one is a real tmux pane you can read and type into.
 - Exact state: workers report it through their own CLI's hooks, so nothing polls.

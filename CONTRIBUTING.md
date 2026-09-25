@@ -2,6 +2,10 @@
 
 hive is a personal daily-driver tool, released low-key. Issues and small pull requests are welcome.
 
+## Supported harnesses
+
+hive supports two harnesses: Claude Code and Codex. That is deliberate. hive drives each harness through its own hooks and its terminal, and every other harness (OpenCode, Pi, Amp and the rest) does those differently. The maintainer can only test the harnesses they use every day, so a pull request adding another harness will be declined, however well it is written. Bug fixes and improvements for Claude Code and Codex are welcome.
+
 ## Before a large change
 
 Open an issue or a discussion first. hive is single-user by design, and a change that widens that is easier to talk through before you write it.
