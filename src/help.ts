@@ -1,5 +1,5 @@
 export function helpOverview(): string {
-  return `HIVE — shared memory and coordination across Claude Code sessions
+  return `HIVE — a lead session and a crew of Claude Code and Codex workers, sharing one local store
 
 Many workers, one shared memory. Multiple Claude sessions (and humans) share
 one project-scoped state store: pads, todos, kv, leases.
