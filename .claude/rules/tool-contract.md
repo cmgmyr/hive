@@ -44,7 +44,8 @@ against a RUNNING server: it used to be ignored by a session on older
 
 Never a bare string or anything else - every call to that tool fails
 otherwise, not just an odd one. `src/strictInput.ts`'s wrapper fails loudly
-and by name when this happens, not silently.
+and by name when this happens, not silently. That wrapper also declares an optional `hive_notice` on every outputSchema; a tool must not
+use that key, because the restart and registration notices ride there.
 
 ## The CLI and MCP split
 
