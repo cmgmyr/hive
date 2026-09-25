@@ -253,7 +253,7 @@ import {
 } from "./tools/pads.js";
 
 function usage(): never {
-  console.log(`hive — shared memory and coordination for Claude Code sessions
+  console.log(`hive — run a crew of Claude Code and Codex workers from one lead session
 
 Usage:
   hive --version              version, short sha, and dirty marker for this build
