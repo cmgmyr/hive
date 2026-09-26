@@ -64,7 +64,7 @@ export function registerKv(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: { key: z.string(), project_id: projectIdParam },
@@ -98,7 +98,7 @@ export function registerKv(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: { prefix: z.string().optional(), project_id: projectIdParam },

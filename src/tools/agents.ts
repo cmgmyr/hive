@@ -1171,7 +1171,7 @@ export function registerAgents(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {
@@ -1264,7 +1264,7 @@ export function registerAgents(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {
@@ -1539,7 +1539,7 @@ export function registerAgents(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {
@@ -1574,7 +1574,7 @@ export function registerAgents(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {

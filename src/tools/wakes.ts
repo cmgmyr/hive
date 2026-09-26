@@ -475,7 +475,7 @@ export function registerWakes(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
@@ -655,7 +655,7 @@ export function registerWakes(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: { project_id: projectIdParam },

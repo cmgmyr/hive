@@ -185,7 +185,7 @@
   "agent_list": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -225,7 +225,7 @@
   "agent_message_get": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -258,7 +258,7 @@
   "agent_output": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -768,7 +768,7 @@
   "agent_status": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -886,7 +886,7 @@
   "kv_get": {
     "annotations": {
       "destructiveHint": true,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -917,7 +917,7 @@
   "kv_list": {
     "annotations": {
       "destructiveHint": true,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -1398,7 +1398,7 @@
   "pad_list": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -1445,7 +1445,7 @@
   "pad_read": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -1609,7 +1609,7 @@
   "project_list": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -1950,7 +1950,7 @@
   },
   "todo_complete": {
     "annotations": {
-      "destructiveHint": false,
+      "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false
@@ -2111,7 +2111,7 @@
   "todo_get": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -2147,7 +2147,7 @@
   "todo_list": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -2439,7 +2439,7 @@
   "wake_get": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },
@@ -2472,7 +2472,7 @@
   "wake_list": {
     "annotations": {
       "destructiveHint": false,
-      "idempotentHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false
     },

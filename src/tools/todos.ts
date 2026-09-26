@@ -395,7 +395,7 @@ export function registerTodos(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {
@@ -438,7 +438,7 @@ export function registerTodos(server: McpServer): void {
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
-        idempotentHint: false,
+        idempotentHint: true,
         openWorldHint: false,
       },
       inputSchema: {
@@ -524,7 +524,7 @@ export function registerTodos(server: McpServer): void {
         "Mark a todo complete (or reopen with completed=false). Returns todo ids that this completion newly unblocked.",
       annotations: {
         readOnlyHint: false,
-        destructiveHint: false,
+        destructiveHint: true,
         idempotentHint: false,
         openWorldHint: false,
       },
