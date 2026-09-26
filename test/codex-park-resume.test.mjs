@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { parse as parseToml } from "smol-toml";
 import { isolateTmux, liveAgentRow, McpClient, scratchDirs, scratchGit, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the codex park/resume tests");
@@ -111,6 +112,30 @@ describe(
       const match = env.match(/^CODEX_HOME=(.*)$/m);
       assert.ok(match, "CODEX_HOME must be set on resume too");
       assert.equal(match[1], receipt.codex_home, "resume must reuse the ORIGINAL home, not mint a new one");
+
+      await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    });
+
+    it("resume rewrites a pre-existing home's MCP server env to match the resumed pane's own HIVE_* values (todo 1404)", async () => {
+      const receipt = await spawnCodex("codex-resume-env");
+      const configPath = join(receipt.codex_home, "config.toml");
+      const legacy = readFileSync(configPath, "utf8").replace(/\[mcp_servers\.hive\.env\]\n(?:.*\n)*?\n/, "");
+      assert.ok(!legacy.includes("mcp_servers.hive.env"), "fixture must start from a home with no env table");
+      writeFileSync(configPath, legacy);
+      await mcp.call("agent_park", { agent_id: receipt.agent_id });
+
+      clearArgvEnv();
+      await mcp.call("agent_resume", { agent_id: receipt.agent_id });
+      await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+
+      const paneEnv = Object.fromEntries(
+        readFileSync(envFile, "utf8").split("\n").filter((l) => l.startsWith("HIVE_") && !l.endsWith("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+      );
+      const serverEnv = parseToml(readFileSync(configPath, "utf8")).mcp_servers.hive.env;
+      for (const key of ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH", "HIVE_DATA_DIR"]) {
+        assert.ok(paneEnv[key], `setup bug: the resumed pane must carry ${key}`);
+        assert.equal(serverEnv[key], paneEnv[key], `${key} must reach the MCP server exactly as the pane has it`);
+      }
 
       await mcp.call("agent_close", { agent_id: receipt.agent_id });
     });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -100,6 +101,75 @@ describe("agent_spawn: codex worker gets a real per-worker CODEX_HOME", () => {
     const row = await liveAgentRow(mcp, "codex-worker-1");
     assert.equal(row.agent_id, agentId);
     assert.equal(row.tmux_target, target);
+  });
+});
+
+// Launches the MCP server the way codex documents doing it for a stdio server: the command and args
+// from config.toml, an environment of only codex's small default set plus the config's own env
+// table. The pane's environment is deliberately NOT passed, which is the property under test.
+const asCodexLaunchesIt = (configPath, cwd) => {
+  const { command, args, env } = parseToml(readFileSync(configPath, "utf8")).mcp_servers.hive;
+  const child = spawn(command, args, {
+    cwd,
+    env: { PATH: process.env.PATH, HOME: fakeHome, ...env },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  const pending = new Map();
+  let buffer = "";
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    for (let nl = buffer.indexOf("\n"); nl >= 0; nl = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      pending.get(msg.id)?.(msg);
+    }
+  });
+  let nextId = 1;
+  const request = (method, params) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => reject(new Error(`timed out waiting for ${method}`)), 15000);
+      pending.set(id, (msg) => {
+        clearTimeout(timer);
+        resolve(msg);
+      });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+    });
+  return {
+    async whoami() {
+      await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "codex", version: "0" } });
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+      const msg = await request("tools/call", { name: "whoami", arguments: {} });
+      return JSON.parse(msg.result.content[0].text);
+    },
+    close: () => child.kill(),
+  };
+};
+
+describe("agent_spawn: a codex worker's own MCP server resolves the spawning project and store (todo 1404)", () => {
+  it("scopes a worker whose cwd is outside any project by its agents row, under the same name, without registering the cwd or touching the default store", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const outside = join(dirs.tmp, "outside-any-project");
+    mkdirSync(outside, { recursive: true });
+    scratchGit(outside, "init", "-q");
+    scratchGit(outside, "commit", "-q", "--allow-empty", "-m", "root");
+    const projectId = (await mcp.call("whoami")).project.id;
+
+    const receipt = await mcp.call("agent_spawn", { name: "codex-outside-cwd", command: fakeCodexBin, cwd: outside, project_id: projectId });
+    const server = asCodexLaunchesIt(join(receipt.codex_home, "config.toml"), outside);
+    try {
+      const who = await server.whoami();
+      assert.equal(who.project.id, projectId);
+      assert.equal(who.project.path, dirs.projectDir);
+      assert.equal(who.actor_name, "codex-outside-cwd");
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects WHERE path = ?").get(outside).n, 0);
+      assert.equal(existsSync(join(fakeHome, ".hive")), false, "the server must open HIVE_DATA_DIR's store, not <HOME>/.hive");
+    } finally {
+      server.close();
+      await mcp.call("agent_close", { name: "codex-outside-cwd" });
+    }
   });
 });
 

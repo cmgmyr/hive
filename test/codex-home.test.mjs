@@ -21,7 +21,7 @@ const scratch = mkdtempSync(join(tmpdir(), "hive-codex-home-"));
 process.env.HIVE_DATA_DIR = join(scratch, "data");
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-const { codexHomeDir, codexRolloutsDir, ensureCodexHome, preserveCodexRollouts, reapCodexHome } = await import(
+const { codexHomeDir, codexRolloutsDir, ensureCodexHome, preserveCodexRollouts, reapCodexHome, refreshCodexMcpEnv } = await import(
   "../dist/codexHome.js"
 );
 const { hookEntry } = await import("../dist/hooks.js");
@@ -229,14 +229,67 @@ describe("the generated config.toml is real, parseable TOML (the H7 ordering tra
     assert.deepEqual(parsed.projects[repoReal], { trust_level: "trusted" });
   });
 
-  it("registers hive's own MCP server with HIVE_AGENT_ID baked into its env, the same mechanism a claude worker already uses", () => {
+  it("registers hive's own MCP server with the pane's whole HIVE_* identity env baked in, since codex forwards nothing else to it", () => {
     const key = `worker-${counter}`;
-    build({ key, actorId: "agent:777" });
+    const serverEnv = {
+      HIVE_AGENT_ID: "agent:777",
+      HIVE_AGENT_NAME: "worker-seven",
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_PROJECT_PATH: "/some/project",
+      HIVE_DATA_DIR: "/some/store",
+    };
+    build({ key, actorId: "agent:777", serverEnv });
     const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
     assert.equal(parsed.mcp_servers.hive.command, process.execPath);
     assert.equal(parsed.mcp_servers.hive.args.length, 1);
     assert.ok(parsed.mcp_servers.hive.args[0].endsWith("index.js"));
-    assert.equal(parsed.mcp_servers.hive.env.HIVE_AGENT_ID, "agent:777");
+    assert.deepEqual(parsed.mcp_servers.hive.env, serverEnv);
+  });
+
+  it("writes only non-empty HIVE_ variables into the server env, and always the actor id it was given", () => {
+    const key = `worker-${counter}`;
+    build({ key, actorId: "agent:5", serverEnv: { HIVE_LEAD: "", HIVE_PROJECT_LOCK: "", PATH: "/x", HIVE_DATA_DIR: "/store" } });
+    const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+    assert.deepEqual(parsed.mcp_servers.hive.env, { HIVE_AGENT_ID: "agent:5", HIVE_DATA_DIR: "/store" });
+  });
+});
+
+describe("refreshCodexMcpEnv rewrites an existing home's server env in place", () => {
+  it("replaces only the env table, leaving the brief, trust, MCP command and tui untouched", () => {
+    const key = `worker-${counter}`;
+    build({ key, actorId: "agent:9", serverEnv: { HIVE_AGENT_NAME: "old-name" } });
+    const path = join(codexHomeDir(key), "config.toml");
+    const before = parseToml(readFileSync(path, "utf8"));
+    refreshCodexMcpEnv(key, { HIVE_AGENT_ID: "agent:9", HIVE_AGENT_NAME: "new-name", HIVE_PROJECT_LOCK: "1", HIVE_DATA_DIR: "/store" });
+    const after = parseToml(readFileSync(path, "utf8"));
+    assert.deepEqual(after.mcp_servers.hive.env, {
+      HIVE_AGENT_ID: "agent:9",
+      HIVE_AGENT_NAME: "new-name",
+      HIVE_PROJECT_LOCK: "1",
+      HIVE_DATA_DIR: "/store",
+    });
+    assert.deepEqual({ ...after, mcp_servers: null }, { ...before, mcp_servers: null });
+    assert.equal(after.mcp_servers.hive.command, before.mcp_servers.hive.command);
+    assert.deepEqual(after.mcp_servers.hive.args, before.mcp_servers.hive.args);
+  });
+
+  it("adds the env table to a home written before it carried one, without disturbing what follows", () => {
+    const key = `worker-${counter}`;
+    build({ key });
+    const path = join(codexHomeDir(key), "config.toml");
+    const legacy = readFileSync(path, "utf8").replace(/\[mcp_servers\.hive\.env\]\n(?:.*\n)*?\n/, "");
+    assert.ok(!legacy.includes("mcp_servers.hive.env"), "fixture must have no env table to start from");
+    writeFileSync(path, legacy);
+    const before = parseToml(legacy);
+    refreshCodexMcpEnv(key, { HIVE_AGENT_ID: "agent:42", HIVE_PROJECT_LOCK: "1" });
+    const parsed = parseToml(readFileSync(path, "utf8"));
+    assert.deepEqual(parsed.mcp_servers.hive.env, { HIVE_AGENT_ID: "agent:42", HIVE_PROJECT_LOCK: "1" });
+    assert.deepEqual(parsed.tui, before.tui);
+    assert.equal(parsed.developer_instructions, before.developer_instructions);
+  });
+
+  it("does nothing for a home with no config.toml", () => {
+    assert.doesNotThrow(() => refreshCodexMcpEnv("no-such-home", { HIVE_AGENT_ID: "agent:1" }));
   });
 });
 
