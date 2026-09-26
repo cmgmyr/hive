@@ -142,6 +142,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "Create a pad, or fully overwrite one by passing pad_id plus expected_revision. Pad names are unique per project. Prefer pad_append/pad_edit for targeted changes.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         name: z.string(),
         content: z.string(),
@@ -182,6 +188,12 @@ export function registerPads(server: McpServer): void {
     "pad_read",
     {
       description: "Read a pad's content, revision, and metadata by pad_id or name.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         pad_id: idParam.optional(),
         name: z.string().optional(),
@@ -220,6 +232,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "Append content to the end of a pad. Optional expected_revision guards against concurrent writes.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         pad_id: idParam,
         content: z.string(),
@@ -245,6 +263,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "Replace one literal occurrence of old_text with new_text in a pad. old_text must match exactly once; include surrounding context to disambiguate.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         pad_id: idParam,
         old_text: z.string(),
@@ -280,6 +304,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "Archive a pad (or unarchive with archived=false). Archiving frees the name for a new active pad; the old content stays readable by pad_id.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         pad_id: idParam,
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
@@ -316,6 +346,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "Permanently delete a pad. Irreversible; prefer pad_archive. Optional expected_revision guards against deleting a pad someone just updated.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         pad_id: idParam,
         expected_revision: idParam.optional(),
@@ -340,6 +376,12 @@ export function registerPads(server: McpServer): void {
     {
       description:
         "List pads without full content. query matches names and content (returns a snippet); tags matches any listed tag.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         query: z.string().optional(),
         tags: z.array(z.string()).optional(),

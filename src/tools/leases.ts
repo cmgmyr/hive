@@ -41,6 +41,12 @@ export function registerLeases(server: McpServer): void {
     {
       description:
         "Try to take a named lease on a shared work area (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         key: z.string().describe('Stable and specific, like "file:src/api/routes.ts".'),
         ttl_seconds: z.number().int().positive(),
@@ -109,6 +115,12 @@ export function registerLeases(server: McpServer): void {
     "lease_release",
     {
       description: "Release a lease you own.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: { key: z.string(), project_id: projectIdParam },
       outputSchema: { project_id: idParam, key: z.string(), released: z.boolean() },
     },

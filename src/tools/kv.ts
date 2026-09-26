@@ -17,6 +17,12 @@ export function registerKv(server: McpServer): void {
     {
       description:
         "Set a small shared JSON value other sessions can discover. Optional TTL in seconds.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         key: z.string(),
 
@@ -55,6 +61,12 @@ export function registerKv(server: McpServer): void {
     "kv_get",
     {
       description: "Get a shared JSON value by key.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: { key: z.string(), project_id: projectIdParam },
     },
     (args) =>
@@ -83,6 +95,12 @@ export function registerKv(server: McpServer): void {
     "kv_list",
     {
       description: "List shared values, optionally filtered by key prefix.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: { prefix: z.string().optional(), project_id: projectIdParam },
     },
     (args) =>
@@ -120,6 +138,12 @@ export function registerKv(server: McpServer): void {
     "kv_delete",
     {
       description: "Delete a shared value by key.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: { key: z.string(), project_id: projectIdParam },
       outputSchema: { project_id: idParam, key: z.string(), deleted: z.boolean() },
     },
