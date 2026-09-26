@@ -22,6 +22,9 @@ import { shellQuote } from "./tmux.js";
 export interface CodexHomeInput {
   key: string;
   actorId: string;
+  // The HIVE_* values the pane gets (spawn.ts's agentIdentityEnv, the lead's own): codex hands a stdio
+  // MCP server only its default env plus what config.toml names, so the pane env never reaches it.
+  serverEnv?: Record<string, string>;
   cwd: string;
   brief: string;
 
@@ -212,6 +215,22 @@ export function codexInstructionsPhrase(layers: string[]): string | undefined {
   return layers.length ? `instructions: ${layers.join(", ")}` : undefined;
 }
 
+// Empty values are dropped: an unset variable and an empty one read the same to the server.
+function mcpEnvTable(env: Record<string, string>): string[] {
+  const entries = Object.entries(env).filter(([k, v]) => k.startsWith("HIVE_") && v !== "");
+  return [`[mcp_servers.hive.env]`, ...entries.map(([k, v]) => `${k} = ${tomlString(v)}`), ""];
+}
+
+// Resume reuses a home written at spawn, so its env table can predate a rename or this fix itself.
+export function refreshCodexMcpEnv(key: string, env: Record<string, string>): void {
+  const path = join(codexHomeDir(key), "config.toml");
+  if (!existsSync(path)) return;
+  const table = mcpEnvTable(env).join("\n") + "\n";
+  const current = readFileSync(path, "utf8");
+  const existing = /^\[mcp_servers\.hive\.env\]\n(?:(?!\[).*\n)*/m;
+  writeFileSync(path, existing.test(current) ? current.replace(existing, table) : current + "\n" + table);
+}
+
 // Must be written before any [section] header, or TOML nests it inside whichever table precedes it -
 // accepted silently, delivered to nobody. See tmux-and-panes.md, "the brief-delivery TOML trap".
 function configToml(input: {
@@ -219,7 +238,7 @@ function configToml(input: {
   projectRoot: string;
   nodeBin: string;
   indexJs: string;
-  actorId: string;
+  serverEnv: Record<string, string>;
   statusLine: string[];
   modelContextWindow: number | null;
   modelAutoCompactTokenLimit: number | null;
@@ -243,9 +262,7 @@ function configToml(input: {
       `command = ${tomlString(input.nodeBin)}`,
       `args = [${tomlString(input.indexJs)}]`,
       "",
-      `[mcp_servers.hive.env]`,
-      `HIVE_AGENT_ID = ${tomlString(input.actorId)}`,
-      "",
+      ...mcpEnvTable(input.serverEnv),
       // Only accepted under [tui]; a top-level status_line is an unknown field to --strict-config.
       `[tui]`,
       `status_line = ${tomlStringArray(input.statusLine)}`,
@@ -358,7 +375,7 @@ export function ensureCodexHome(
       projectRoot,
       nodeBin: process.execPath,
       indexJs,
-      actorId: input.actorId,
+      serverEnv: { ...input.serverEnv, HIVE_AGENT_ID: input.actorId },
       statusLine,
       modelContextWindow,
       modelAutoCompactTokenLimit,

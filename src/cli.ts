@@ -691,6 +691,14 @@ async function cmdLead(argv: string[]): Promise<void> {
     // actually starts under it) and correct regardless of whether this invocation ends up creating
     // a pane or adopting one. Which home ends up orphaned - this one, or the previous invocation's -
     // is decided after createdPane is known, below.
+    const leadEnv = {
+      HIVE_AGENT_ID: leadActorId,
+      HIVE_AGENT_NAME: LEAD_NAME,
+      HIVE_LEAD: "1",
+      HIVE_DATA_DIR: dataDir,
+      HIVE_PROJECT_LOCK: "",
+      HIVE_PROJECT_PATH: "",
+    };
     let newCodexHomeKey: string | undefined;
     if (leadHarness.needsHome) {
       newCodexHomeKey = randomUUID();
@@ -705,6 +713,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         const home = ensureCodexHome({
           key: newCodexHomeKey,
           actorId: leadActorId,
+          serverEnv: leadEnv,
           cwd: project.path,
           brief: renderedPosture ?? "",
           lead: true,
@@ -731,12 +740,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     }
 
     const envFlags = buildEnvFlags({
-      HIVE_AGENT_ID: leadActorId,
-      HIVE_AGENT_NAME: LEAD_NAME,
-      HIVE_LEAD: "1",
-      HIVE_DATA_DIR: dataDir,
-      HIVE_PROJECT_LOCK: "",
-      HIVE_PROJECT_PATH: "",
+      ...leadEnv,
       ...(newCodexHomeKey ? { CODEX_HOME: codexHomeDir(newCodexHomeKey) } : {}),
     });
 

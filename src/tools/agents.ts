@@ -11,7 +11,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile } from "../codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile, refreshCodexMcpEnv } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import {
   commandHead,
@@ -37,6 +37,7 @@ import {
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
+  agentIdentityEnv,
   branchAt,
   closeAgentRow,
   discardOrphanedPane,
@@ -617,7 +618,7 @@ export function registerAgents(server: McpServer): void {
           const briefPath = harness.briefDelivery ? writeAgentBrief(agentId, brief!) : undefined;
           let homeArgs: string[] = [];
           if (codexHomeKey) {
-            const home = ensureCodexHome({ key: codexHomeKey, actorId, cwd, brief: brief!, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+            const home = ensureCodexHome({ key: codexHomeKey, actorId, serverEnv: agentIdentityEnv(actorId, name, project.path), cwd, brief: brief!, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
             homeArgs = home.extraArgs;
             codexInstructionLayers = home.instructionLayers;
           }
@@ -887,6 +888,7 @@ export function registerAgents(server: McpServer): void {
           });
           resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home) };
           ensureCodexHooksFile(agent.codex_home, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+          refreshCodexMcpEnv(agent.codex_home, agentIdentityEnv(agent.actor_id, agent.name, project.path));
         } else {
           const claudeBinary = resolvedCommandPrefix(agent.command) || "claude";
           commandString = workerCommandString({

@@ -97,7 +97,7 @@ export function buildEnvFlags(env: Record<string, string>): string[] {
   return Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
 }
 
-function agentIdentityEnv(actorId: string, name: string, projectPath: string): Record<string, string> {
+export function agentIdentityEnv(actorId: string, name: string, projectPath: string): Record<string, string> {
   return {
     HIVE_AGENT_ID: actorId,
     HIVE_AGENT_NAME: name,
