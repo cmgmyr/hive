@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { parse } from "yaml";
 
 import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
@@ -17,6 +18,7 @@ describe("hive setup --attach", () => {
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /attach mode {2}auto/);
     assert.throws(() => readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+    assert.throws(() => readFileSync(join(dirs.dataDir, "hive.yml"), "utf8"));
   });
 
   it("writes and echoes the requested mode", async () => {
@@ -31,17 +33,40 @@ describe("hive setup --attach", () => {
     for (const line of block) {
       assert.equal(result.stdout.split(line).length - 1, 1, `${line} should be printed once`);
     }
-    const config = JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+    const config = parse(readFileSync(join(dirs.dataDir, "hive.yml"), "utf8"));
     assert.equal(config.attach, "raw");
   });
 
   it("rejects an unknown value before writing anything", async () => {
     const dirs = scratchDirs();
     const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const legacy = '{"attach":"control"}\n';
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "config.json"), legacy);
     const result = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "bogus"], opts);
     assert.notEqual(result.code, 0);
     assert.match(result.stdout, /--attach must be one of: auto, raw, control/);
-    assert.throws(() => readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+    assert.equal(readFileSync(join(dirs.dataDir, "config.json"), "utf8"), legacy);
+    assert.throws(() => readFileSync(join(dirs.dataDir, "config.json.migrated"), "utf8"));
+    assert.throws(() => readFileSync(join(dirs.dataDir, "hive.yml"), "utf8"));
+  });
+
+  it("refuses a foreign dispatcher before migrating legacy config", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const bin = join(dirs.tmp, "bin");
+    const legacy = '{"attach":"raw"}\n';
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(bin, "hive"), "#!/bin/sh\necho user-owned\n");
+    writeFileSync(join(dirs.dataDir, "config.json"), legacy);
+
+    const result = await runCli(["setup", "--dir", bin, "--attach", "control"], opts);
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stdout, /was not written by hive setup; refusing to overwrite it/);
+    assert.equal(readFileSync(join(dirs.dataDir, "config.json"), "utf8"), legacy);
+    assert.throws(() => readFileSync(join(dirs.dataDir, "config.json.migrated"), "utf8"));
   });
 
   it("a later bare setup preserves an earlier --attach", async () => {
@@ -52,7 +77,7 @@ describe("hive setup --attach", () => {
     const bare = await runCli(["setup", "--dir", bin, "--force"], opts);
     assert.equal(bare.code, 0, bare.stderr);
     assert.match(bare.stdout, /attach mode {2}control/);
-    const config = JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+    const config = parse(readFileSync(join(dirs.dataDir, "hive.yml"), "utf8"));
     assert.equal(config.attach, "control");
   });
 });
@@ -67,19 +92,24 @@ describe("hive setup --auto-attach", () => {
     assert.match(setup.stdout, /auto-attach {2}off/);
     const bare = await runCli(["setup", "--dir", bin, "--force"], opts);
     assert.match(bare.stdout, /auto-attach {2}off/);
-    assert.equal(JSON.parse(readFileSync(join(dirs.dataDir, "config.json"), "utf8")).autoAttach, "off");
+    assert.equal(parse(readFileSync(join(dirs.dataDir, "hive.yml"), "utf8")).autoAttach, "off");
   });
 
   it("rejects a missing or unknown value before writing", async () => {
     for (const value of [undefined, "bogus"]) {
       const dirs = scratchDirs();
       const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+      const legacy = '{"autoAttach":"on"}\n';
+      mkdirSync(dirs.dataDir, { recursive: true });
+      writeFileSync(join(dirs.dataDir, "config.json"), legacy);
       const args = ["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach"];
       if (value) args.push(value);
       const result = await runCli(args, opts);
       assert.notEqual(result.code, 0);
       assert.match(result.stdout, /--auto-attach must be one of: auto, on, off/);
-      assert.throws(() => readFileSync(join(dirs.dataDir, "config.json"), "utf8"));
+      assert.equal(readFileSync(join(dirs.dataDir, "config.json"), "utf8"), legacy);
+      assert.throws(() => readFileSync(join(dirs.dataDir, "config.json.migrated"), "utf8"));
+      assert.throws(() => readFileSync(join(dirs.dataDir, "hive.yml"), "utf8"));
     }
   });
 });

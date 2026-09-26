@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { parse } from "yaml";
 
 import { scratchDirs } from "./helpers.mjs";
 
 process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
-const { attachMode, resolvedAutoAttach, setAttachMode, setAutoAttach } = await import("../dist/config.js");
+const { attachMode, resolvedAttachMode, resolvedAutoAttach, setAttachMode, setAutoAttach } = await import("../dist/config.js");
 
 const withAutoAttach = (value, fn) => {
   const saved = process.env.HIVE_AUTO_ATTACH;
@@ -48,14 +49,16 @@ describe("auto-attach config", () => {
     );
   });
 
-  it("preserves attach and unrelated keys when written", () => {
+  it("writes the global value and leaves the unmigrated legacy file intact", () => {
     const dir = scratchDirs().dataDir;
     process.env.HIVE_DATA_DIR = dir;
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "config.json"), JSON.stringify({ attach: "raw", future: "kept" }));
+    const legacy = JSON.stringify({ attach: "raw", future: "kept" });
+    writeFileSync(join(dir, "config.json"), legacy);
     setAutoAttach("off");
-    const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8"));
-    assert.deepEqual(config, { attach: "raw", future: "kept", autoAttach: "off" });
+    assert.deepEqual(parse(readFileSync(join(dir, "hive.yml"), "utf8")), { autoAttach: "off" });
+    assert.equal(readFileSync(join(dir, "config.json"), "utf8"), legacy);
+    assert.deepEqual(resolvedAttachMode(), { mode: "raw", source: "global" });
   });
 });
 
@@ -81,18 +84,16 @@ describe("attach mode config", () => {
     assert.equal(attachMode(), "control");
   });
 
-  it("preserves an unrelated key across a write", () => {
+  it("preserves an unrelated global YAML key across a write", () => {
     const dir = scratchDirs().dataDir;
     process.env.HIVE_DATA_DIR = dir;
-    setAttachMode("raw");
-    const path = join(dir, "config.json");
-    const before = JSON.parse(readFileSync(path, "utf8"));
-    before.future = "kept";
-    writeFileSync(path, JSON.stringify(before));
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "hive.yml");
+    writeFileSync(path, "attach: raw\nfuture: kept\n");
 
     setAttachMode("control");
 
-    const after = JSON.parse(readFileSync(path, "utf8"));
+    const after = parse(readFileSync(path, "utf8"));
     assert.equal(after.attach, "control");
     assert.equal(after.future, "kept");
   });

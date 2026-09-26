@@ -28,6 +28,7 @@ import {
   AutoAttach,
   isAttachMode,
   isAutoAttach,
+  migrateLegacyConfig,
   resolvedAttachMode,
   resolvedAutoAttach,
   setAttachMode,
@@ -602,6 +603,11 @@ function ensureLeadRow(
   };
 }
 
+function reportMigrationResult(result: ReturnType<typeof migrateLegacyConfig>): void {
+  if (result.notice) console.error(result.notice);
+  for (const warning of result.warnings) console.error(`! ${warning}`);
+}
+
 async function cmdLead(argv: string[]): Promise<void> {
 
   const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard");
@@ -617,6 +623,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProject(path, (text) => {
       registrationNotice = text;
     });
+    reportMigrationResult(migrateLegacyConfig());
     const session = sessionName();
     const hooksPath = ensureHooksFile();
 
@@ -2015,6 +2022,8 @@ function cmdSetup(argv: string[]): void {
     process.exit(1);
   }
 
+  reportMigrationResult(migrateLegacyConfig());
+
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, dispatcherScript(node, cli));
   chmodSync(file, 0o755);
@@ -2614,6 +2623,7 @@ function cmdDoctor(argv: string[]): void {
     console.error(`hive doctor: unknown argument "${unknown}". Flags are --strict and --verbose.`);
     process.exit(1);
   }
+  reportMigrationResult(migrateLegacyConfig());
   let failures = 0;
 
   const fail = (label: string, ...lines: string[]) => {

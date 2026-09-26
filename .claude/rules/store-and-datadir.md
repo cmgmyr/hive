@@ -7,6 +7,7 @@ paths:
   - "src/result.ts"
   - "src/scheduler.ts"
   - "src/config.ts"
+  - "src/globalConfig.ts"
 ---
 
 # The store, the data dir, and what keeps tests off it
