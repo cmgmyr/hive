@@ -39,13 +39,19 @@ describe(
 
       const script = `
 import { execFileSync, spawn } from "node:child_process";
-import { resolveAttachTarget } from ${JSON.stringify(join(DIST, "tmux.js"))};
+import { renderAttachCommand, resolveAttachTarget } from ${JSON.stringify(join(DIST, "tmux.js"))};
 
 const [session, projectId] = process.argv.slice(2);
 const argv = resolveAttachTarget(session, Number(projectId), false);
-// -C, never the product's own -CC: a headless -CC client dies with "tcgetattr failed" and
-// attaches nothing. This process must stay alive or the client detaches and ends the state.
-const client = spawn("tmux", ["-C", ...argv], { stdio: ["pipe", "pipe", "pipe"] });
+// An ordinary client on a pty from script(1). Never -C or -CC: control-mode clients receive
+// %sessions-changed, which segfaults tmux 3.4/3.5a. This process must stay alive or the client detaches.
+const client = spawn(
+  "script",
+  process.platform === "darwin"
+    ? ["-q", "/dev/null", "tmux", ...argv]
+    : ["-qfec", "tmux " + renderAttachCommand(argv), "/dev/null"],
+  { stdio: ["ignore", "ignore", "inherit"], env: { ...process.env, TERM: "xterm-256color" } },
+);
 const q = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).trim();
 // Read out of the argv under test, never rebuilt here: check what the product asked for.
 const myView = argv[argv.indexOf("-s") + 1];
@@ -85,7 +91,11 @@ const observed = {
     ?.slice(2),
 };
 console.log(JSON.stringify(observed));
-client.kill("SIGTERM");
+await new Promise((resolve) => {
+  client.once("exit", resolve);
+  client.kill("SIGTERM");
+  setTimeout(resolve, 3000).unref();
+});
 `;
       results = await raceProcesses(
         script,
