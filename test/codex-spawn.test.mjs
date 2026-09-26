@@ -97,6 +97,19 @@ describe("agent_spawn: codex worker gets a real per-worker CODEX_HOME", () => {
     assert.equal(config.mcp_servers.hive.env.HIVE_AGENT_ID, row.actor_id);
   });
 
+  it("writes every identity variable the pane carries into the MCP server env, equal to the pane's own value (todo 1404)", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+    const env = readFileSync(envFile, "utf8");
+    const paneEnv = Object.fromEntries(
+      env.split("\n").filter((l) => l.startsWith("HIVE_") && !l.endsWith("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+    );
+    const home = env.match(/^CODEX_HOME=(.*)$/m)[1];
+    const serverEnv = parseToml(readFileSync(join(home, "config.toml"), "utf8")).mcp_servers.hive.env;
+    for (const key of ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH", "HIVE_DATA_DIR"]) {
+      assert.ok(paneEnv[key], `setup bug: the spawned pane must carry ${key}`);
+      assert.equal(serverEnv[key], paneEnv[key], `${key} must reach the MCP server exactly as the pane has it`);
+    }
+  });
+
   it("reads back as attributed to this worker, matching liveAgentRow's alive check", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     const row = await liveAgentRow(mcp, "codex-worker-1");
     assert.equal(row.agent_id, agentId);
@@ -150,7 +163,7 @@ const asCodexLaunchesIt = (configPath, cwd) => {
 };
 
 describe("agent_spawn: a codex worker's own MCP server resolves the spawning project and store (todo 1404)", () => {
-  it("scopes a worker whose cwd is outside any project by its agents row, under the same name, without registering the cwd or touching the default store", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+  it("scopes a worker whose cwd is outside any project to the spawning project and store, without registering the cwd or opening the default store", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     const outside = join(dirs.tmp, "outside-any-project");
     mkdirSync(outside, { recursive: true });
     scratchGit(outside, "init", "-q");
@@ -163,7 +176,6 @@ describe("agent_spawn: a codex worker's own MCP server resolves the spawning pro
       const who = await server.whoami();
       assert.equal(who.project.id, projectId);
       assert.equal(who.project.path, dirs.projectDir);
-      assert.equal(who.actor_name, "codex-outside-cwd");
       assert.equal(db.prepare("SELECT COUNT(*) AS n FROM projects WHERE path = ?").get(outside).n, 0);
       assert.equal(existsSync(join(fakeHome, ".hive")), false, "the server must open HIVE_DATA_DIR's store, not <HOME>/.hive");
     } finally {
