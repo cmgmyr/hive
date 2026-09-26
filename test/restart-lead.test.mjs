@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
@@ -36,6 +36,8 @@ const project = db
   .get("restart-lead-test", projectDir);
 const session = sessionName();
 const restartLog = join(dirs.tmp, "restart-lead.log");
+const globalYml = join(dirs.dataDir, "hive.yml");
+const { configHash } = await import("../dist/projectYml.js");
 
 function runDryRun() {
   const env = {
@@ -489,6 +491,68 @@ describe(
       assert.match(result.stderr, /lead: command is not trusted for its current config/);
       const contents = readFileSync(log, "utf8");
       assert.doesNotMatch(contents, /dry run: would kill/, "must refuse before reaching the dry-run line");
+    });
+  },
+);
+
+describe(
+  "restart-lead.sh checks a global-only lead against the project's trust hash",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    const command = "sleep 600";
+    function globalProject(name, globalCommand = command) {
+      const dir = mkdtempSync(join(dirs.tmp, `${name}-`));
+      const proj = insertProject(name, dir);
+      mkdirSync(dirs.dataDir, { recursive: true });
+      writeFileSync(globalYml, `lead: ${globalCommand}\n`);
+      return { dir, proj };
+    }
+
+    it("global-only untrusted lead refuses before the unattended restart dry-run", () => {
+      const { dir } = globalProject("restart-lead-global-untrusted");
+      const log = join(dirs.tmp, "restart-lead-global-untrusted.log");
+      try {
+        const result = runScript(["--dry-run"], { HIVE_REPO: dir }, log);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /lead: command is not trusted for its current config/);
+        assert.doesNotMatch(readFileSync(log, "utf8"), /dry run:/);
+      } finally {
+        unlinkSync(globalYml);
+      }
+    });
+
+    it("global-only trusted lead passes the unattended restart trust check", () => {
+      const { dir, proj } = globalProject("restart-lead-global-trusted");
+      const log = join(dirs.tmp, "restart-lead-global-trusted.log");
+      db.prepare("INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, 'lead', ?)").run(
+        proj.id,
+        configHash("lead", command, null, {}),
+      );
+      try {
+        const result = runScript(["--dry-run"], { HIVE_REPO: dir }, log);
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(readFileSync(log, "utf8"), /dry run: no live lead pane/);
+      } finally {
+        unlinkSync(globalYml);
+      }
+    });
+
+    it("global lead changes invalidate the previous restart trust hash", () => {
+      const { dir, proj } = globalProject("restart-lead-global-changed");
+      const log = join(dirs.tmp, "restart-lead-global-changed.log");
+      db.prepare("INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, 'lead', ?)").run(
+        proj.id,
+        configHash("lead", command, null, {}),
+      );
+      writeFileSync(globalYml, "lead: sleep 601\n");
+      try {
+        const result = runScript(["--dry-run"], { HIVE_REPO: dir }, log);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /lead: command is not trusted for its current config/);
+        assert.doesNotMatch(readFileSync(log, "utf8"), /dry run:/);
+      } finally {
+        unlinkSync(globalYml);
+      }
     });
   },
 );

@@ -902,7 +902,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # Commands defined here run only after a one-time interactive approval,
 # and re-require it whenever they change.
 
-placement: split                # placement for workers and visible processes: split (panes) or
+# placement: split              # placement for workers and visible processes: split (panes) or
                                 # window (tabs)
 
 # layout: main-vertical         # pane arrangement for placement: split.
@@ -1081,6 +1081,7 @@ async function cmdInit(argv: string[]): Promise<void> {
   requireFlagValues("init", parsed);
 
   const noProfile = parsed.flags.has("--no-profile");
+  const profileFlag = noProfile || parsed.values.has("--profile");
   const path = parsed.positional[0];
   let chosen: string | null = noProfile ? NO_PROFILE : null;
   if (parsed.values.has("--profile")) {
@@ -1145,21 +1146,30 @@ async function cmdInit(argv: string[]): Promise<void> {
   if (path == null && newlyRegistered) console.error(registrationNoticeText(project));
 
   const ymlPath = join(project.path, "hive.yml");
-  const already = existsSync(ymlPath) ? loadProjectYml(project.path).config?.profile ?? null : null;
+  const ymlExists = existsSync(ymlPath);
+  const loaded = loadProjectYml(project.path);
+  const projectProfileSet = ymlExists && loaded.sources.profile === "project";
+  const already = projectProfileSet ? loaded.config?.profile ?? null : null;
+  let inheritedProfile = false;
 
   if (already != null) {
     if (chosen != null && chosen !== already) {
       console.log(`- hive.yml: already set to "profile: ${already}"; edit it by hand to change it`);
     }
     chosen = already;
+  } else if (projectProfileSet && !profileFlag) {
+    chosen = null;
+  } else if (!projectProfileSet && !profileFlag && loaded.config?.profile != null) {
+    chosen = loaded.config.profile;
+    inheritedProfile = loaded.sources.profile === "global";
   } else if (chosen == null && process.stdin.isTTY && process.stdout.isTTY) {
     chosen = await askForProfile();
   }
 
-  if (!existsSync(ymlPath)) {
-    writeFileSync(ymlPath, HIVE_YML_TEMPLATE + (chosen ? `\nprofile: ${chosen}\n` : ""));
+  if (!ymlExists) {
+    writeFileSync(ymlPath, HIVE_YML_TEMPLATE + (chosen && !inheritedProfile ? `\nprofile: ${chosen}\n` : ""));
     console.log(`- hive.yml: created${chosen ? ` with profile: ${chosen}` : ""}`);
-  } else if (already == null && chosen != null) {
+  } else if (already == null && chosen != null && !inheritedProfile) {
     writeProfileKey(ymlPath, chosen);
     console.log(`- hive.yml: added profile: ${chosen}`);
   } else {
@@ -3072,7 +3082,7 @@ function cmdDoctor(argv: string[]): void {
       "auto-attach",
       source === "env"
         ? `${value} (HIVE_AUTO_ATTACH override; testing only)`
-        : source === "config"
+        : source === "global"
           ? `${value} (set with \`hive setup --auto-attach\`)`
           : `${value} (default; set with \`hive setup --auto-attach\`)`,
     );
@@ -3083,7 +3093,7 @@ function cmdDoctor(argv: string[]): void {
       "attach mode",
       source === "env"
         ? `${mode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach)`
-        : source === "config"
+        : source === "global"
           ? `${mode} (set with \`hive setup --attach\`)`
           : `${mode} (default; set with \`hive setup --attach\`)`,
     );

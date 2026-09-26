@@ -21,14 +21,14 @@ const withAutoAttach = (value, fn) => {
 };
 
 describe("auto-attach config", () => {
-  it("resolves env over config over the default, including legacy 0", () => {
+  it("resolves env over global config over the built-in default, including legacy 0", () => {
     process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
     withAutoAttach(undefined, () =>
-      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "detection" }),
+      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "built-in" }),
     );
     setAutoAttach("on");
     withAutoAttach(undefined, () =>
-      assert.deepEqual(resolvedAutoAttach(), { value: "on", source: "config" }),
+      assert.deepEqual(resolvedAutoAttach(), { value: "on", source: "global" }),
     );
     withAutoAttach("off", () =>
       assert.deepEqual(resolvedAutoAttach(), { value: "off", source: "env" }),
@@ -38,13 +38,13 @@ describe("auto-attach config", () => {
     );
   });
 
-  it("treats unknown env and config values as absent", () => {
+  it("treats unknown env and legacy config values as absent", () => {
     const dir = scratchDirs().dataDir;
     process.env.HIVE_DATA_DIR = dir;
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "config.json"), JSON.stringify({ autoAttach: "sometimes" }));
     withAutoAttach("also-invalid", () =>
-      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "detection" }),
+      assert.deepEqual(resolvedAutoAttach(), { value: "auto", source: "built-in" }),
     );
   });
 

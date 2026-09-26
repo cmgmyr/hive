@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -63,6 +63,29 @@ describe("kickoff.mjs re-execs under the dispatcher's pinned interpreter", () =>
     });
     assert.equal(code, 0, stderr);
     assert.match(fired(stdout).additionalContext, /\[hive\] Project/);
+  });
+
+  it("global-only profile re-execs through the pinned interpreter before kickoff", { skip: SKIP }, async () => {
+    await pinDispatcher(process.execPath);
+    const projectYml = join(dirs.projectDir, "hive.yml");
+    const globalYml = join(dirs.dataDir, "hive.yml");
+    const localBytes = readFileSync(projectYml);
+    mkdirSync(dirs.dataDir, { recursive: true });
+    unlinkSync(projectYml);
+    writeFileSync(globalYml, "profile: orchestration\n");
+    try {
+      const result = await runNode(scratch.kickoffMjs, [], {
+        ...opts,
+        node: alt.path,
+        env: { HIVE_BIN_DIR: binDir },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(fired(result.stdout).additionalContext, /\[hive\] Project/);
+      assert.doesNotMatch(result.stderr, ABI_FAILURE);
+    } finally {
+      writeFileSync(projectYml, localBytes);
+      unlinkSync(globalYml);
+    }
   });
 
   it("falls through to the unchanged failure when there is no dispatcher to re-exec under", { skip: SKIP }, async () => {

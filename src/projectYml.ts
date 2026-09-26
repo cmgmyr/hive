@@ -1,11 +1,22 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
+import {
+  isAttachMode,
+  isAutoAttach,
+  globalConfigPath,
+  readGlobalConfig,
+  type AttachMode,
+  type AutoAttach,
+  type ConfigSource,
+} from "./globalConfig.js";
+
+export { type ConfigSource } from "./globalConfig.js";
 
 export interface YmlProcess {
   command: string;
@@ -70,213 +81,316 @@ export function mergedProjectVars(config: ProjectYml | null): Record<string, str
   return { ...safe, ...agentVars(config) };
 }
 
-export function loadProjectYml(projectPath: string): {
+export interface ResolvedHiveConfig {
   config: ProjectYml | null;
   warnings: string[];
-} {
-  const warnings: string[] = [];
-  const file = join(projectPath, "hive.yml");
-  if (!existsSync(file)) return { config: null, warnings };
+  sources: Record<string, ConfigSource>;
+  attach: { mode: AttachMode; source: ConfigSource };
+  autoAttach: { value: AutoAttach; source: ConfigSource };
+}
 
-  let raw: unknown;
+type NullableField = "lead" | "placement" | "layout" | "profile" | "context_checkpoint_percent";
+
+function isMapping(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function parseFile(path: string, warnings: string[]): Record<string, unknown> | null {
+  let text: string;
   try {
-    raw = parse(readFileSync(file, "utf8"));
-  } catch (e) {
-    warnings.push(`hive.yml is not valid YAML: ${errorMessage(e)}`);
-    return { config: null, warnings };
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      warnings.push(`${path}: could not read hive.yml: ${errorMessage(error)}`);
+    }
+    return null;
   }
-  if (raw == null || typeof raw !== "object") {
-    warnings.push("hive.yml must be a YAML mapping.");
-    return { config: null, warnings };
+  try {
+    const raw: unknown = parse(text);
+    if (!isMapping(raw)) {
+      warnings.push(`${path}: hive.yml must be a YAML mapping.`);
+      return null;
+    }
+    return raw;
+  } catch (error) {
+    warnings.push(`${path}: hive.yml is not valid YAML: ${errorMessage(error)}`);
+    return null;
+  }
+}
+
+function parseProcesses(value: unknown, path: string, warnings: string[]): Record<string, YmlProcess> | null {
+  if (!isMapping(value)) {
+    warnings.push(`${path}: hive.yml \`processes\` must be a mapping of name to command.`);
+    return null;
+  }
+  const processes: Record<string, YmlProcess> = {};
+  for (const [name, item] of Object.entries(value)) {
+    if (typeof item === "string" && item.trim() !== "") {
+      processes[name] = { command: item.trim(), dir: null, auto_start: true, visible: true, env: {} };
+      continue;
+    }
+    if (!isMapping(item)) {
+      warnings.push(`${path}: Process "${name}" needs a command string; skipped.`);
+      continue;
+    }
+    if (typeof item.command !== "string" || item.command.trim() === "") {
+      warnings.push(`${path}: Process "${name}" has no command; skipped.`);
+      continue;
+    }
+    const dirValue = item.dir ?? item.working_dir;
+    let visible = true;
+    if (item.visible != null) {
+      if (typeof item.visible === "boolean") visible = item.visible;
+      else warnings.push(`${path}: Process "${name}": visible must be true or false; ignoring "${String(item.visible)}".`);
+    }
+    const env: Record<string, string> = {};
+    if (isMapping(item.env)) {
+      for (const [key, envValue] of Object.entries(item.env)) env[key] = String(envValue);
+    }
+    processes[name] = {
+      command: item.command.trim(),
+      dir: typeof dirValue === "string" && dirValue.trim() !== "" ? dirValue.trim() : null,
+      auto_start: item.auto_start !== false,
+      visible,
+      env,
+    };
+  }
+  return processes;
+}
+
+function envAttachMode(): AttachMode | null {
+  return isAttachMode(process.env.HIVE_ATTACH_MODE) ? process.env.HIVE_ATTACH_MODE : null;
+}
+
+function envAutoAttach(): AutoAttach | null {
+  const value = process.env.HIVE_AUTO_ATTACH;
+  if (value === "0") return "off";
+  return isAutoAttach(value) ? value : null;
+}
+
+function resolvedAttach(
+  key: "attach" | "autoAttach",
+  global: Record<string, unknown> | null,
+  legacy: Record<string, unknown>,
+  warnings: string[],
+): { mode: AttachMode; source: ConfigSource } | { value: AutoAttach; source: ConfigSource } {
+  const mode = key === "attach";
+  const env = mode ? envAttachMode() : envAutoAttach();
+  if (env != null) return mode ? { mode: env as AttachMode, source: "env" } : { value: env as AutoAttach, source: "env" };
+
+  const path = globalConfigPath();
+  if (global && Object.hasOwn(global, key)) {
+    const value = global[key];
+    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
+    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
+      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
+    }
+    warnings.push(`${path}: ${key} must be one of ${(mode ? ["auto", "raw", "control"] : ["auto", "on", "off"]).join(", ")}; ignoring "${String(value)}".`);
+    return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
   }
 
-  const root = raw as Record<string, unknown>;
-  let context_checkpoint_percent: number | null = null;
-  if (root.context_checkpoint_percent != null) {
-    const value = root.context_checkpoint_percent;
-    if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100) {
-      context_checkpoint_percent = value;
-    } else {
-      warnings.push("context_checkpoint_percent must be an integer from 1 through 100; ignoring it.");
+  if (Object.hasOwn(legacy, key)) {
+    const value = legacy[key];
+    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
+    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
+      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
     }
+    warnings.push(`${globalConfigPath().replace(/hive\.yml$/, "config.json")}: ${key} has an invalid value; ignoring it.`);
   }
-  let lead_turn_budget: { warn: number; stop: number } | null = null;
-  if (root.lead_turn_budget != null) {
+  return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
+}
+
+function applyLayer(
+  root: Record<string, unknown>,
+  path: string,
+  source: "global" | "project",
+  config: ProjectYml,
+  sources: Record<string, ConfigSource>,
+  warnings: string[],
+): void {
+  const has = (key: string) => Object.hasOwn(root, key);
+  const warn = (message: string) => warnings.push(`${path}: ${message}`);
+  const assignNullable = (key: NullableField, valid: (value: unknown) => unknown, message: (value: unknown) => string) => {
+    if (!has(key)) return;
+    const value = root[key];
+    if (value == null) {
+      (config as unknown as Record<string, unknown>)[key] = null;
+      sources[key] = source;
+    } else {
+      const normalized = valid(value);
+      if (normalized === undefined) warn(message(value));
+      else {
+        (config as unknown as Record<string, unknown>)[key] = normalized;
+        sources[key] = source;
+      }
+    }
+  };
+
+  assignNullable("lead", (value) => typeof value === "string" && value.trim() ? value.trim() : undefined,
+    (value) => `lead must be a non-empty command string; ignoring "${String(value)}".`);
+  assignNullable("placement", (value) => value === "split" || value === "window" ? value : undefined,
+    (value) => `placement must be "split" or "window"; ignoring "${String(value)}".`);
+  assignNullable("layout", (value) => isWindowLayout(value) ? value : undefined,
+    (value) => `layout must be one of ${WINDOW_LAYOUTS.join(", ")}; ignoring "${String(value)}".`);
+  assignNullable("profile", (value) => {
+    const name = String(value).trim();
+    return name !== "" && (name === NO_PROFILE || isValidProfileName(name)) ? name : undefined;
+  }, (value) => typeof value === "string" && value.trim() === ""
+    ? "profile is empty; ignoring it."
+    : `profile "${String(value).trim()}" is not a valid profile name (letters, digits, dot, dash, underscore); ignoring it.`);
+  assignNullable("context_checkpoint_percent", (value) =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : undefined,
+  () => "context_checkpoint_percent must be an integer from 1 through 100; ignoring it.");
+
+  if (has("lead_turn_budget")) {
     const value = root.lead_turn_budget;
-    const budget = typeof value === "object" && value !== null && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : null;
-    const warn = budget?.warn;
-    const stop = budget?.stop;
-    if (
-      typeof warn === "number" && Number.isInteger(warn) && warn > 0 &&
-      typeof stop === "number" && Number.isInteger(stop) && stop > warn
-    ) {
-      lead_turn_budget = { warn, stop };
+    if (value == null) {
+      config.lead_turn_budget = null;
+      sources.lead_turn_budget = source;
+    } else if (isMapping(value) && typeof value.warn === "number" && Number.isInteger(value.warn) && value.warn > 0 &&
+      typeof value.stop === "number" && Number.isInteger(value.stop) && value.stop > value.warn) {
+      config.lead_turn_budget = { warn: value.warn, stop: value.stop };
+      sources.lead_turn_budget = source;
     } else {
-      warnings.push("lead_turn_budget must contain positive integer warn and stop values, with stop greater than warn; ignoring it.");
-    }
-  }
-  const lead = typeof root.lead === "string" && root.lead.trim() !== "" ? root.lead.trim() : null;
-  let placement: "split" | "window" | null = null;
-  if (root.placement != null) {
-    if (root.placement === "split" || root.placement === "window") {
-      placement = root.placement;
-    } else {
-      warnings.push(`placement must be "split" or "window"; ignoring "${String(root.placement)}".`);
-    }
-  }
-  let layout: WindowLayout | null = null;
-  if (root.layout != null) {
-    if (isWindowLayout(root.layout)) {
-      layout = root.layout;
-    } else {
-      warnings.push(
-        `layout must be one of ${WINDOW_LAYOUTS.join(", ")}; ignoring "${String(root.layout)}".`,
-      );
-    }
-  }
-  let profile: string | null = null;
-  if (root.profile != null) {
-    const value = String(root.profile).trim();
-    if (value === "") {
-      warnings.push("profile is empty; ignoring it.");
-    } else if (value !== NO_PROFILE && !isValidProfileName(value)) {
-      warnings.push(
-        `profile "${value}" is not a valid profile name (letters, digits, dot, dash, underscore); ignoring it.`,
-      );
-    } else {
-      profile = value;
+      warn("lead_turn_budget must contain positive integer warn and stop values, with stop greater than warn; ignoring it.");
     }
   }
 
-  let agents: string[] | null = null;
-  if (root.agents != null) {
-    if (!Array.isArray(root.agents)) {
-      warnings.push("agents must be a list of harness names; ignoring it.");
-    } else {
+  if (has("dashboard")) {
+    const value = root.dashboard;
+    if (value == null) {
+      config.dashboard = false;
+      sources.dashboard = source;
+    } else if (typeof value === "boolean") {
+      config.dashboard = value;
+      sources.dashboard = source;
+    } else warn(`dashboard must be true or false; ignoring "${String(value)}".`);
+  }
+
+  if (has("agents")) {
+    const value = root.agents;
+    if (value == null) {
+      config.agents = null;
+      sources.agents = source;
+    } else if (Array.isArray(value)) {
       const known = harnessNames();
       const valid: string[] = [];
-      for (const entry of root.agents) {
-        const value = typeof entry === "string" ? entry.trim() : "";
-        if (value === "") {
-          warnings.push("agents entry must be a non-empty harness name; skipped.");
-        } else if (!known.includes(value)) {
-          warnings.push(`agents: "${value}" is not a known harness (${known.join(", ")}); ignoring it.`);
+      for (const entry of value) {
+        const name = typeof entry === "string" ? entry.trim() : "";
+        if (!name) warn("agents entry must be a non-empty harness name; skipped.");
+        else if (!known.includes(name)) warn(`agents: "${name}" is not a known harness (${known.join(", ")}); ignoring it.`);
+        else valid.push(name);
+      }
+      config.agents = valid.length ? valid : null;
+      sources.agents = source;
+    } else warn("agents must be a list of harness names; ignoring it.");
+  }
+
+  if (has("lead_branches")) {
+    const value = root.lead_branches;
+    if (value == null) {
+      config.lead_branches = null;
+      sources.lead_branches = source;
+    } else if (Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim() !== "")) {
+      config.lead_branches = value.map((item) => (item as string).trim());
+      sources.lead_branches = source;
+    } else warn("lead_branches must be a list of branch names; ignoring it.");
+  }
+
+  if (has("vars")) {
+    const value = root.vars;
+    if (value == null) {
+      for (const key of Object.keys(config.vars)) sources[`vars.${key}`] = source;
+      config.vars = {};
+      sources.vars = source;
+    } else if (isMapping(value)) {
+      for (const [key, item] of Object.entries(value)) {
+        if (item == null) {
+          delete config.vars[key];
+          sources[`vars.${key}`] = source;
+          sources.vars = source;
+        } else if (typeof item === "object") {
+          warn(`var "${key}" must be a scalar; skipped.`);
         } else {
-          valid.push(value);
+          config.vars[key] = String(item);
+          sources[`vars.${key}`] = source;
+          sources.vars = source;
         }
       }
-      agents = valid.length > 0 ? valid : null;
-    }
+    } else warn("vars must be a mapping of name to value; ignoring it.");
   }
 
-  if (Object.hasOwn(root, "review_tags")) {
-    warnings.push("review_tags is no longer used by hive; remove it from hive.yml.");
-  }
-
-  let lead_branches: string[] | null = null;
-  if (root.lead_branches != null) {
-    const raw = Array.isArray(root.lead_branches) ? root.lead_branches : null;
-    const branches = raw
-      ?.filter((b) => typeof b === "string" && b.trim() !== "")
-      .map((b) => (b as string).trim());
-    if (branches && branches.length === raw!.length) {
-      lead_branches = branches;
-    } else {
-      warnings.push("lead_branches must be a list of branch names; ignoring it.");
-    }
-  }
-
-  let dashboard = false;
-  if (root.dashboard != null) {
-    if (typeof root.dashboard === "boolean") {
-      dashboard = root.dashboard;
-    } else {
-      warnings.push(`dashboard must be true or false; ignoring "${String(root.dashboard)}".`);
-    }
-  }
-
-  const vars: Record<string, string> = {};
-  if (root.vars != null) {
-    if (typeof root.vars !== "object" || Array.isArray(root.vars)) {
-      warnings.push("vars must be a mapping of name to value; ignoring it.");
-    } else {
-      for (const [key, value] of Object.entries(root.vars as Record<string, unknown>)) {
-        if (value == null || typeof value === "object") {
-          warnings.push(`var "${key}" must be a scalar; skipped.`);
-          continue;
-        }
-        vars[key] = String(value);
+  if (has("processes")) {
+    if (source === "global") warn("global hive.yml cannot define `processes`; only project commands can be trusted.");
+    else if (root.processes != null) {
+      const processes = parseProcesses(root.processes, path, warnings);
+      if (processes != null) {
+        config.processes = processes;
+        sources.processes = source;
       }
     }
   }
 
-  const processes: Record<string, YmlProcess> = {};
+  for (const key of ["attach", "autoAttach"] as const) {
+    if (source === "project" && has(key)) warn(`${key} is global-only; ignoring it in project hive.yml.`);
+  }
+  if (has("review_tags")) warn("review_tags is no longer used by hive; remove it from hive.yml.");
+}
 
-  const rawProcesses = root.processes;
-  if (rawProcesses != null) {
-    if (typeof rawProcesses !== "object") {
-      warnings.push("hive.yml `processes` must be a mapping of name to command.");
-    } else {
-      for (const [name, value] of Object.entries(rawProcesses as Record<string, unknown>)) {
-        if (typeof value === "string" && value.trim() !== "") {
-          processes[name] = { command: value.trim(), dir: null, auto_start: true, visible: true, env: {} };
-          continue;
-        }
-        if (value == null || typeof value !== "object") {
-          warnings.push(`Process "${name}" needs a command string; skipped.`);
-          continue;
-        }
-        const p = value as Record<string, unknown>;
-        if (typeof p.command !== "string" || p.command.trim() === "") {
-          warnings.push(`Process "${name}" has no command; skipped.`);
-          continue;
-        }
-        const dirValue = p.dir ?? p.working_dir;
-        let visible = true;
-        if (p.visible != null) {
-          if (typeof p.visible === "boolean") {
-            visible = p.visible;
-          } else {
-            warnings.push(
-              `Process "${name}": visible must be true or false; ignoring "${String(p.visible)}".`,
-            );
-          }
-        }
-        const env: Record<string, string> = {};
-        if (p.env != null && typeof p.env === "object") {
-          for (const [k, v] of Object.entries(p.env as Record<string, unknown>)) {
-            env[k] = String(v);
-          }
-        }
-        processes[name] = {
-          command: p.command.trim(),
-          dir: typeof dirValue === "string" && dirValue.trim() !== "" ? dirValue.trim() : null,
-          auto_start: p.auto_start !== false,
-          visible,
-          env,
-        };
-      }
+export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
+  const global = readGlobalConfig();
+  const warnings = [...global.warnings];
+  const config: ProjectYml = {
+    lead: null,
+    placement: null,
+    layout: null,
+    profile: null,
+    agents: null,
+    lead_branches: null,
+    context_checkpoint_percent: null,
+    lead_turn_budget: null,
+    dashboard: false,
+    vars: {},
+    processes: {},
+  };
+  const sources: Record<string, ConfigSource> = {
+    lead: "built-in", placement: "built-in", layout: "built-in", profile: "built-in",
+    agents: "built-in", lead_branches: "built-in", context_checkpoint_percent: "built-in",
+    lead_turn_budget: "built-in", dashboard: "built-in", vars: "built-in", processes: "built-in",
+  };
+
+  if (global.root) applyLayer(global.root, globalConfigPath(), "global", config, sources, warnings);
+
+  let projectValid = false;
+  if (projectPath != null) {
+    const file = resolve(projectPath, "hive.yml");
+    const project = parseFile(file, warnings);
+    if (project) {
+      projectValid = true;
+      applyLayer(project, file, "project", config, sources, warnings);
     }
   }
+
+  const attachResult = resolvedAttach("attach", global.root, global.legacy, warnings) as {
+    mode: AttachMode; source: ConfigSource;
+  };
+  const autoAttachResult = resolvedAttach("autoAttach", global.root, global.legacy, warnings) as {
+    value: AutoAttach; source: ConfigSource;
+  };
 
   return {
-    config: {
-      lead,
-      placement,
-      layout,
-      profile,
-      agents,
-      lead_branches,
-      context_checkpoint_percent,
-      lead_turn_budget,
-      dashboard,
-      vars,
-      processes,
-    },
+    config: global.root || projectValid ? config : null,
     warnings,
+    sources,
+    attach: attachResult,
+    autoAttach: autoAttachResult,
   };
+}
+
+export function loadProjectYml(projectPath: string): ResolvedHiveConfig {
+  return resolveHiveConfig(projectPath);
 }
 
 export function configHash(name: string, command: string, dir: string | null, env: Record<string, string>): string {

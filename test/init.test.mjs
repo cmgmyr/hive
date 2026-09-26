@@ -141,6 +141,35 @@ describe("hive init profile selection", () => {
     assert.match(stdout, /runbook pad: seeded/);
   });
 
+  it("init inherits global profile and placement without materializing them", async () => {
+    const { dirs, cli } = optsFor();
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "hive.yml"), "profile: simple\nplacement: window\n");
+    const { code, stdout } = await runCli(["init"], cli);
+    assert.equal(code, 0);
+    assert.match(stdout, /runbook: from profile "simple"/);
+    assert.doesNotMatch(ymlOf(dirs), /^profile:/m);
+    assert.doesNotMatch(ymlOf(dirs), /^placement:/m);
+  });
+
+  it("init no-profile overrides a global profile", async () => {
+    const { dirs, cli } = optsFor();
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "hive.yml"), "profile: simple\n");
+    const { code } = await runCli(["init", "--no-profile"], cli);
+    assert.equal(code, 0);
+    assert.match(ymlOf(dirs), /^profile: none$/m);
+  });
+
+  it("init explicit profile overrides an inherited global profile", async () => {
+    const { dirs, cli } = optsFor();
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "hive.yml"), "profile: simple\n");
+    const { code } = await runCli(["init", "--profile", "orchestration"], cli);
+    assert.equal(code, 0);
+    assert.match(ymlOf(dirs), /^profile: orchestration$/m);
+  });
+
   it("prints the generated .hive/ note without a TTY and never changes an existing gitignore", async () => {
     const { dirs, cli } = optsFor();
     const original = "node_modules/\n";

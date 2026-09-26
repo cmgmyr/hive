@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import Database from "better-sqlite3";
@@ -402,7 +402,7 @@ describe("hive kickoff hive.yml warnings", () => {
 
   it("puts them in the digest, above the board", async () => {
     const { additionalContext } = fired((await runNode(KICKOFF, [], warnedOpts)).stdout);
-    assert.match(additionalContext, /^! hive\.yml: layout must be one of/m);
+    assert.match(additionalContext, /^! hive\.yml: .*layout must be one of/m);
     assert.ok(
       additionalContext.indexOf("! hive.yml:") < additionalContext.indexOf("BOARD"),
       "a warning below the board is the first thing a long board truncates away",
@@ -427,7 +427,7 @@ describe("hive kickoff hive.yml warnings", () => {
     const { stdout } = await runNode(KICKOFF, [], warnedOpts);
     const { additionalContext } = fired(stdout);
     assert.match(additionalContext, /\[truncated\]/, "the board must actually be hitting the cap");
-    assert.match(additionalContext, /! hive\.yml: layout must be one of/);
+    assert.match(additionalContext, /! hive\.yml: .*layout must be one of/);
   });
 
   it("still says the store is empty when a warning sits above it", async () => {
@@ -441,7 +441,7 @@ describe("hive kickoff hive.yml warnings", () => {
     await mcp.close();
 
     const { additionalContext } = fired((await runNode(KICKOFF, [], emptyOpts)).stdout);
-    assert.match(additionalContext, /! hive\.yml: layout must be one of/);
+    assert.match(additionalContext, /! hive\.yml: .*layout must be one of/);
     assert.match(additionalContext, /The store is empty for this project/);
   });
 
@@ -450,7 +450,7 @@ describe("hive kickoff hive.yml warnings", () => {
     warnedYml("layout: main-verticle\n");
     const { code, stdout } = await runNode(KICKOFF, ["--explain"], warnedOpts);
     assert.equal(code, 0);
-    assert.match(stdout, /! hive\.yml: layout must be one of/);
+    assert.match(stdout, /! hive\.yml: .*layout must be one of/);
     assert.match(stdout, /silent \(no profile in hive\.yml\)/);
   });
 
@@ -492,5 +492,41 @@ describe("hive kickoff branch gate", () => {
     git(repo.projectDir, "checkout", "-b", "trunk");
     const { stdout } = await runNode(KICKOFF, [], repoOpts);
     assert.match(fired(stdout).additionalContext, /\[hive\] Project/);
+  });
+});
+
+describe("global profile kickoff scope", () => {
+  it("global profile enables kickoff at a registered root without local YAML", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const init = await runCli(["init", "--no-profile"], opts);
+    assert.equal(init.code, 0, init.stderr);
+    unlinkSync(join(dirs.projectDir, "hive.yml"));
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "hive.yml"), "profile: simple\n");
+
+    const result = await kickoff([], opts);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(fired(result.stdout).additionalContext, /\[hive\] Project/);
+  });
+
+  it("global profile does not enable kickoff below or outside a registered root", async () => {
+    const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
+    const init = await runCli(["init", "--no-profile"], opts);
+    assert.equal(init.code, 0, init.stderr);
+    unlinkSync(join(dirs.projectDir, "hive.yml"));
+    mkdirSync(dirs.dataDir, { recursive: true });
+    writeFileSync(join(dirs.dataDir, "hive.yml"), "profile: simple\n");
+    const child = join(dirs.projectDir, "child");
+    const outside = join(dirs.tmp, "outside");
+    mkdirSync(child);
+    mkdirSync(outside);
+
+    for (const cwd of [child, outside]) {
+      const result = await kickoff(["--explain"], { ...opts, cwd });
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /silent \(not a registered hive project root\)/);
+    }
   });
 });

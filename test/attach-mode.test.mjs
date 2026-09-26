@@ -71,7 +71,7 @@ describe("controlModeFor", () => {
 });
 
 describe("HIVE_ATTACH_MODE precedence", () => {
-  it("beats a stored config value", () => {
+  it("beats a stored global value", () => {
     process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
     setAttachMode("raw");
     withEnvAttachMode("control", () => {
@@ -80,15 +80,15 @@ describe("HIVE_ATTACH_MODE precedence", () => {
       assert.equal(controlModeFor(false), true);
     });
 
-    assert.deepEqual(resolvedAttachMode(), { mode: "raw", source: "config" });
+    assert.deepEqual(resolvedAttachMode(), { mode: "raw", source: "global" });
   });
 
-  it("falls through to config, then detection, when unset or unknown", () => {
+  it("falls through to the global value, then the built-in, when unset or unknown", () => {
     process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
-    assert.deepEqual(resolvedAttachMode(), { mode: "auto", source: "detection" });
+    assert.deepEqual(resolvedAttachMode(), { mode: "auto", source: "built-in" });
     withEnvAttachMode("not-a-real-mode", () => {
 
-      assert.deepEqual(resolvedAttachMode(), { mode: "auto", source: "detection" });
+      assert.deepEqual(resolvedAttachMode(), { mode: "auto", source: "built-in" });
     });
   });
 });

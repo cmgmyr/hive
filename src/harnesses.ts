@@ -143,7 +143,11 @@ const claudeHarness: HarnessCapabilities = {
   supportsRename: true,
 
   classifiesPaneScreen: true,
-  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox },
+  paneClassifier: {
+    choiceCheck: (target) => paneChoiceCheck(target),
+    inputBoxState: (target) => inputBoxState(target),
+    hasInputBox: (target) => paneHasInputBox(target),
+  },
 
   hasScopes: true,
 
@@ -179,9 +183,9 @@ export const codexHarness: HarnessCapabilities = {
 
   classifiesPaneScreen: true,
   paneClassifier: {
-    choiceCheck: codexPaneChoiceCheck,
-    inputBoxState: codexInputBoxState,
-    hasInputBox: codexPaneHasInputBox,
+    choiceCheck: (target) => codexPaneChoiceCheck(target),
+    inputBoxState: (target) => codexInputBoxState(target),
+    hasInputBox: (target) => codexPaneHasInputBox(target),
   },
 
   hasScopes: false,
