@@ -204,6 +204,11 @@ describe("global and project hive.yml resolution", () => {
   });
 
   it("empty and malformed layer roots preserve built-in defaults", () => {
+    const commentsOnly = fixture({ global: "# user defaults\n", project: "# project defaults\n" });
+    const emptyResult = loadProjectYml(commentsOnly.projectDir);
+    assert.equal(emptyResult.config, null);
+    assert.deepEqual(emptyResult.warnings, []);
+
     const dirs = fixture({ global: "[]\n", project: "lead: [broken\n" });
     const loaded = loadProjectYml(dirs.projectDir);
     assert.equal(loaded.config, null);

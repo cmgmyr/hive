@@ -8,6 +8,7 @@ import { errorMessage } from "./result.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
   globalConfigPath,
+  isEmptyYamlDocument,
   readGlobalConfig,
   resolveAttachSetting,
   type AttachMode,
@@ -108,6 +109,7 @@ function parseFile(path: string, warnings: string[]): Record<string, unknown> | 
   }
   try {
     const raw: unknown = parse(text);
+    if (raw == null && isEmptyYamlDocument(text)) return null;
     if (!isMapping(raw)) {
       warnings.push(`${path}: hive.yml must be a YAML mapping.`);
       return null;

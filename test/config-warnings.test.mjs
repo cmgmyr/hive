@@ -95,7 +95,7 @@ describe("hive doctor config warnings", () => {
   });
 
   it("reports a malformed hive.yml", () => {
-    assert.match(broken.stdout, /warn {2}hive\.yml: layout must be one of/);
+    assert.match(broken.stdout, /warn {2}hive\.yml: .*: layout must be one of/);
   });
 
   it("does not count a warning as a failed check", () => {

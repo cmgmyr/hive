@@ -30,6 +30,10 @@ function isMapping(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+export function isEmptyYamlDocument(text: string): boolean {
+  return text.split(/\r?\n/).every((line) => /^\s*(?:#.*)?$/.test(line));
+}
+
 function readLayer(path: string, kind: "yaml" | "json", warnings: string[]): Record<string, unknown> | null {
   let text: string;
   try {
@@ -48,6 +52,7 @@ function readLayer(path: string, kind: "yaml" | "json", warnings: string[]): Rec
     warnings.push(`${path}: ${kind === "yaml" ? "hive.yml is not valid YAML" : "config.json is not valid JSON"}: ${errorMessage(error)}`);
     return null;
   }
+  if (kind === "yaml" && value == null && isEmptyYamlDocument(text)) return null;
   if (!isMapping(value)) {
     warnings.push(`${path}: ${kind === "yaml" ? "configuration must be a YAML mapping." : "config.json must be a JSON object."}`);
     return null;

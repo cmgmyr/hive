@@ -64,7 +64,7 @@ describe("hive doctor --strict promotes only the warns that mean this install is
       warningCount(plain.stdout) >= 1,
       `this file needs a warning to reason about; got:\n${plain.stdout}`,
     );
-    assert.match(plain.stdout, /warn {2}hive\.yml: layout must be one of/);
+    assert.match(plain.stdout, /warn {2}hive\.yml: .*: layout must be one of/);
     assert.equal(
       warningCount(strict.stdout),
       warningCount(plain.stdout),
