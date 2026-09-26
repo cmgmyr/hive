@@ -73,7 +73,7 @@ import {
   type Project,
 } from "./context.js";
 import { ensureHooksFile } from "./hooks.js";
-import { errorMessage, parseTags, registrationNoticeText, withTrailingNewline } from "./result.js";
+import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
   ACTIVE_TIMER_WHERE,
   dashboardFileContained,
@@ -238,7 +238,6 @@ import {
   type ProfileFileStatus,
 } from "./profiles.js";
 import {
-  COMMENT_COUNT_SQL,
   getTodoDetail,
   listTodoSummaries,
   OPEN_BLOCKERS_SQL,
@@ -918,11 +917,6 @@ placement: split                # placement for workers and visible processes: s
 # lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
-
-# review_tags: [from-review]    # todo tags \`hive doctor\` counts as review findings and
-                                # reports as triaged (has a comment, completed, or archived)
-                                # or untriaged. A tag also matches its own suffixed rounds.
-                                # Absent means it tracks none.
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}
@@ -1889,9 +1883,6 @@ type VerboseOnlyCheck = "worker live state";
 const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]) => {
   if (doctorVerbose) report("info", label, lines);
 };
-
-const isReviewFindingTag = (bases: string[], tag: string): boolean =>
-  bases.some((base) => tag === base || tag.startsWith(`${base}-`));
 
 function cmdUpgrade(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--check", "--run"] });
@@ -3128,44 +3119,6 @@ function cmdDoctor(argv: string[]): void {
       const { running, hidden, unlocated, notStarted } = processCounts(procs);
       const located = unlocated > 0 ? `${hidden} hidden, ${unlocated} hive cannot locate` : `${hidden} hidden`;
       info("processes", `${running} running (${located}), ${notStarted} defined not running`);
-    }
-  }
-
-  const reviewTags = config?.review_tags ?? [];
-  // Never name hive.yml here: doctor stays silent about that file when nothing is wrong with it
-  // (test/config-warnings.test.mjs), and this line prints on every ordinary run.
-  if (here && reviewTags.length === 0) {
-    info("review findings", "no review_tags configured; nothing to track.");
-  } else if (here) {
-    const findings = (
-      db
-        .prepare(
-          `SELECT id, tags, status, archived_at, ${COMMENT_COUNT_SQL} AS comment_count
-           FROM todos t WHERE t.project_id = ?`,
-        )
-        .all(here.id) as {
-        id: number;
-        tags: string;
-        status: string;
-        archived_at: string | null;
-        comment_count: number;
-      }[]
-    ).filter((t) => parseTags(t.tags).some((tag) => isReviewFindingTag(reviewTags, tag)));
-    const untriaged = findings.filter(
-      (t) => t.comment_count === 0 && t.status !== "completed" && t.archived_at == null,
-    );
-    info(
-      "review findings",
-      `${findings.length} tracked (tagged ${reviewTags.join(", ")}): ` +
-        `${findings.length - untriaged.length} triaged, ${untriaged.length} untriaged.`,
-    );
-    if (untriaged.length > 0) {
-      warn(
-        "review findings",
-        `${untriaged.length} untriaged: ${untriaged.map((t) => `todo ${t.id}`).join(", ")}.`,
-        "Triage means a comment recording a decision, or completed/archived - comment with the outcome " +
-          "(dispatched, rejected and why, etc.) on each before closing this wave.",
-      );
     }
   }
 

@@ -10,7 +10,6 @@ const KEYS = [
   "layout",
   "profile",
   "agents",
-  "review_tags",
   "lead_branches",
   "context_checkpoint_percent",
   "lead_turn_budget",

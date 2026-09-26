@@ -31,11 +31,6 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
 lead_branches: [main, master] # branches where a session gets hive's kickoff
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
-review_tags: [from-review]    # optional todo tags `hive doctor` counts as review findings and
-                              # reports as triaged (a comment, completed, or archived) or
-                              # untriaged. A tag also matches its own suffixed rounds, so
-                              # from-review covers from-review-3. Absent means doctor tracks
-                              # none and says so; hive ships no tag names of its own.
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .hive/dashboard.html on every tick (see [the dashboard guide](dashboard.md)):
                               # the board pad, open todos, running agents, pending wakes, and
@@ -129,14 +124,6 @@ Re-running `hive lead` while the lead is alive adopts that pane and stops nothin
 A process that dies on its own tells the lead so, once, naming the command that restarts it. A process you stopped says nothing. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
 
 A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
-
-### Choosing `review_tags`
-
-`review_tags` names todo tags that already mean something in your project. hive applies none of them: a finding becomes a review finding because whoever filed it tagged the todo, by hand or from whatever review step your process runs. So pick the names your process already uses, and if it does not tag findings at all, leave the key out - hive ships no tag names of its own, and an absent `review_tags` is the honest state for a project with no review pipeline rather than a gap to fill.
-
-What the check does with them: `hive doctor` counts every todo carrying one of those tags, or a suffixed round of one (`from-review` covers `from-review-3`), and splits them into triaged and untriaged. Triaged means the todo has at least one comment, or is completed, or is archived - any comment counts, on the theory that a decision you wrote down is a decision you made. Untriaged findings get a warning naming each todo by id.
-
-It is a reminder, never a gate. That warning is non-gating, so `hive doctor --strict` does not fail on it. What it catches is a finding that was filed and then never answered, which happens quietly and is cheap to fix once someone sees the id.
 
 
 ## Automatic backups

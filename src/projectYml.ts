@@ -24,8 +24,6 @@ export interface ProjectYml {
 
   agents: string[] | null;
 
-  review_tags: string[];
-
   lead_branches: string[] | null;
 
   context_checkpoint_percent: number | null;
@@ -173,20 +171,8 @@ export function loadProjectYml(projectPath: string): {
     }
   }
 
-  const review_tags: string[] = [];
-  if (root.review_tags != null) {
-    if (!Array.isArray(root.review_tags)) {
-      warnings.push("review_tags must be a list of todo tags; ignoring it.");
-    } else {
-      for (const entry of root.review_tags) {
-        const value = typeof entry === "string" ? entry.trim() : "";
-        if (value === "") {
-          warnings.push("review_tags entry must be a non-empty tag; skipped.");
-        } else if (!review_tags.includes(value)) {
-          review_tags.push(value);
-        }
-      }
-    }
+  if (Object.hasOwn(root, "review_tags")) {
+    warnings.push("review_tags is no longer used by hive; remove it from hive.yml.");
   }
 
   let lead_branches: string[] | null = null;
@@ -282,7 +268,6 @@ export function loadProjectYml(projectPath: string): {
       layout,
       profile,
       agents,
-      review_tags,
       lead_branches,
       context_checkpoint_percent,
       lead_turn_budget,
