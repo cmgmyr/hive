@@ -44,7 +44,7 @@ import { renderAttachCommand, resolveAttachTarget } from ${JSON.stringify(join(D
 const [session, projectId] = process.argv.slice(2);
 const argv = resolveAttachTarget(session, Number(projectId), false);
 // An ordinary client on a pty from script(1). Never -C or -CC: control-mode clients receive
-// %sessions-changed, which segfaults tmux 3.4/3.5a. This process must stay alive or the client detaches.
+// %sessions-changed, which segfaults tmux 3.4/3.5a. The client lives as long as script does.
 const client = spawn(
   "script",
   process.platform === "darwin"
@@ -52,7 +52,8 @@ const client = spawn(
     : ["-qfec", "tmux " + renderAttachCommand(argv), "/dev/null"],
   { stdio: ["ignore", "ignore", "inherit"], env: { ...process.env, TERM: "xterm-256color" } },
 );
-const q = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).trim();
+process.on("exit", () => client.kill("SIGTERM"));
+const q = (...args) => execFileSync("tmux", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 // Read out of the argv under test, never rebuilt here: check what the product asked for.
 const myView = argv[argv.indexOf("-s") + 1];
 const clientsOn = (target) => {
@@ -91,11 +92,13 @@ const observed = {
     ?.slice(2),
 };
 console.log(JSON.stringify(observed));
-await new Promise((resolve) => {
-  client.once("exit", resolve);
-  client.kill("SIGTERM");
-  setTimeout(resolve, 3000).unref();
-});
+if (client.exitCode === null && client.signalCode === null) {
+  await new Promise((resolve) => {
+    client.once("exit", resolve);
+    client.kill("SIGTERM");
+    setTimeout(resolve, 3000).unref();
+  });
+}
 `;
       results = await raceProcesses(
         script,
