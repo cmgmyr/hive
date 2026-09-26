@@ -23,10 +23,6 @@ profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
 
-review_tags: [from-review]      # todo tags `hive doctor` counts as review findings and reports as
-                                # triaged (a comment, completed, or archived) or untriaged. A tag
-                                # also matches its own suffixed rounds. Absent means it tracks none.
-
 vars:
   shot: phone-dark, 390px wide # optional profile var; the lead opens this screenshot on UI lanes
   repo: your-org/your-repo
