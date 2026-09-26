@@ -346,6 +346,12 @@ export function registerTodos(server: McpServer): void {
     {
       description:
         "Create a project-scoped todo. Pass a short slug to have it render beside the id wherever this todo is listed; left unset, those surfaces fall back to the title instead (truncated in the dashboard). Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         title: z.string(),
         body: z.string().optional().describe("Objective, owned files, acceptance criteria."),
@@ -386,6 +392,12 @@ export function registerTodos(server: McpServer): void {
     {
       description:
         "List todo summaries. is_blocked=false finds dispatchable work. query matches title, body, and slug. Archived todos are excluded by default; include_archived=true retrieves them too.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         status: statusParam.optional(),
         is_blocked: z.boolean().optional(),
@@ -423,6 +435,12 @@ export function registerTodos(server: McpServer): void {
     "todo_get",
     {
       description: "Read one todo in full: body, blockers, what it blocks, and optionally comments.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         include_comments: z.boolean().optional(),
@@ -440,6 +458,12 @@ export function registerTodos(server: McpServer): void {
     "todo_update",
     {
       description: "Update todo fields. Omitted fields are preserved. Returns a slim receipt.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         title: z.string().optional(),
@@ -472,6 +496,12 @@ export function registerTodos(server: McpServer): void {
     {
       description:
         "Archive a todo (or unarchive with archived=false), mirroring pad_archive. Archived todos are excluded from todo_list by default; todo_get always reaches them by id. Refuses when this todo still blocks another todo that is not completed.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         archived: z.boolean().optional().describe("Default true. Pass false to unarchive."),
@@ -492,6 +522,12 @@ export function registerTodos(server: McpServer): void {
     {
       description:
         "Mark a todo complete (or reopen with completed=false). Returns todo ids that this completion newly unblocked.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         completed: z.boolean().optional().describe("Defaults to true."),
@@ -517,6 +553,12 @@ export function registerTodos(server: McpServer): void {
     {
       description:
         "Add a comment to a todo. Use for handoffs: changed files, tests run, decisions, remaining risk.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         body: z.string(),
@@ -540,6 +582,12 @@ export function registerTodos(server: McpServer): void {
     "todo_block",
     {
       description: "Add a blocker: todo_id cannot start until blocker_id completes. Cycles are rejected.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         blocker_id: idParam,
@@ -560,6 +608,12 @@ export function registerTodos(server: McpServer): void {
     "todo_unblock",
     {
       description: "Remove one blocker relationship from a todo.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         todo_id: idParam,
         blocker_id: idParam,

@@ -261,6 +261,12 @@ export function registerWakes(server: McpServer): void {
         "instead of polling. Write the body self-contained: ids, context, next action - it may arrive in " +
         "a session that has none of this conversation. Delivering to your OWN lead pane, where the " +
         "context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         delay_seconds: z.number().int().positive(),
         body: z.string(),
@@ -309,6 +315,12 @@ export function registerWakes(server: McpServer): void {
     {
       description:
         "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         agents: z
           .array(agentRefParam)
@@ -460,6 +472,12 @@ export function registerWakes(server: McpServer): void {
         "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
         "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
         "wake_update just changed.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
     },
     (args) =>
@@ -497,6 +515,12 @@ export function registerWakes(server: McpServer): void {
         "delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle " +
         "wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so " +
         "only body can be edited on one.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
       inputSchema: {
         wake_id: idParam,
         delay_seconds: z.number().int().positive().optional(),
@@ -574,6 +598,12 @@ export function registerWakes(server: McpServer): void {
         "per-worker block notice (a crew member stopped on a dialog): that carries no parent link, so one " +
         "already filed still delivers, and it may still be true - the worker is probably still on that " +
         "dialog - but it no longer claims anything about the watch's own liveness, deliberately.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: { wake_id: idParam, project_id: projectIdParam },
       outputSchema: {
         wake_id: idParam,
@@ -622,6 +652,12 @@ export function registerWakes(server: McpServer): void {
         "state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the " +
         "pending list the moment it fires; recently_delivered is where to check whether it " +
         "was actually typed and, if its target has a confirmation channel, acknowledged.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: { project_id: projectIdParam },
     },
     (args) =>

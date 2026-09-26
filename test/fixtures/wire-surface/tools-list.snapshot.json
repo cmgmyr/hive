@@ -1,5 +1,11 @@
 {
   "actor_prune": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Delete every actor that owns no rows anywhere in the store and has not been active in the last minute: agents.actor_id, agents.parent_actor_id, todos.locked_by, todo_comments.author, kv.updated_by, leases.owner, pads.updated_by, wakes.owner, wakes.deliver_actor, agent_state_log.actor_id. The scan is global across every project, never scoped to the caller's: actors carry no project_id, so an actor can own rows in a project the caller cannot see, and a project-scoped scan would misread that actor as inert and delete it. Never prunes the caller's own actor. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep. Run this after project_prune when sweeping the store: an empty project owns no agents rows either, so today the order cannot orphan an actor, but that stops being true the day project deletion ever covers a non-empty project, and this ordering is the one that stays safe if it does. Immediate, permanent: no dry-run mode.",
     "execution": {
       "taskSupport": "forbidden"
@@ -104,6 +110,12 @@
     }
   },
   "agent_close": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead.",
     "execution": {
       "taskSupport": "forbidden"
@@ -171,6 +183,12 @@
     }
   },
   "agent_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List this project's agents with live status. Without include_closed, this is every running agent, in full. With include_closed, it is every agent (running and closed/parked), newest first, bounded by limit (default 20, max 100); when the receipt carries next_before_id, page through the rest by passing it back as before_id.",
     "execution": {
       "taskSupport": "forbidden"
@@ -205,6 +223,12 @@
     }
   },
   "agent_message_get": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
     "execution": {
       "taskSupport": "forbidden"
@@ -232,6 +256,12 @@
     }
   },
   "agent_output": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Read the rendered terminal of an agent (default 50 lines, max 200), addressed by name or agent_id. Read REAL output before declaring a worker done.",
     "execution": {
       "taskSupport": "forbidden"
@@ -266,6 +296,12 @@
     }
   },
   "agent_park": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
     "execution": {
       "taskSupport": "forbidden"
@@ -356,6 +392,12 @@
     }
   },
   "agent_rename": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Change a worker's display name. Its actor_id (agent:N) does not change, so every pad write, todo comment and lease it has already made stays attributable. A live claude worker is also told to retitle its own session, which shows up in its pane; that arrives as a user turn, so rename between assignments rather than mid-task. Refuses a lead target outright.",
     "execution": {
       "taskSupport": "forbidden"
@@ -432,6 +474,12 @@
     }
   },
   "agent_resume": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
     "execution": {
       "taskSupport": "forbidden"
@@ -517,6 +565,12 @@
     }
   },
   "agent_send": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
     "execution": {
       "taskSupport": "forbidden"
@@ -565,6 +619,12 @@
     }
   },
   "agent_spawn": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
     "execution": {
       "taskSupport": "forbidden"
@@ -706,6 +766,12 @@
     }
   },
   "agent_status": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Detailed status for one agent, addressed by name (or agent_id), including a short tail of its terminal. include_brief=true returns the exact brief this worker was given; hive keeps that copy because an appended system prompt appears in no transcript.",
     "execution": {
       "taskSupport": "forbidden"
@@ -739,6 +805,12 @@
     }
   },
   "help": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Hive usage guidance. Omit topic for an overview, or pass one of: workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, leases.",
     "execution": {
       "taskSupport": "forbidden"
@@ -755,6 +827,12 @@
     }
   },
   "kv_delete": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Delete a shared value by key.",
     "execution": {
       "taskSupport": "forbidden"
@@ -806,6 +884,12 @@
     }
   },
   "kv_get": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Get a shared JSON value by key.",
     "execution": {
       "taskSupport": "forbidden"
@@ -831,6 +915,12 @@
     }
   },
   "kv_list": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List shared values, optionally filtered by key prefix.",
     "execution": {
       "taskSupport": "forbidden"
@@ -853,6 +943,12 @@
     }
   },
   "kv_set": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Set a small shared JSON value other sessions can discover. Optional TTL in seconds.",
     "execution": {
       "taskSupport": "forbidden"
@@ -909,6 +1005,12 @@
     }
   },
   "lease_acquire": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Try to take a named lease on a shared work area (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
@@ -976,6 +1078,12 @@
     }
   },
   "lease_release": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Release a lease you own.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1027,6 +1135,12 @@
     }
   },
   "pad_append": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Append content to the end of a pad. Optional expected_revision guards against concurrent writes.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1087,6 +1201,12 @@
     }
   },
   "pad_archive": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Archive a pad (or unarchive with archived=false). Archiving frees the name for a new active pad; the old content stays readable by pad_id.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1146,6 +1266,12 @@
     }
   },
   "pad_delete": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Permanently delete a pad. Irreversible; prefer pad_archive. Optional expected_revision guards against deleting a pad someone just updated.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1200,6 +1326,12 @@
     }
   },
   "pad_edit": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Replace one literal occurrence of old_text with new_text in a pad. old_text must match exactly once; include surrounding context to disambiguate.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1264,6 +1396,12 @@
     }
   },
   "pad_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List pads without full content. query matches names and content (returns a snippet); tags matches any listed tag.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1305,6 +1443,12 @@
     }
   },
   "pad_read": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Read a pad's content, revision, and metadata by pad_id or name.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1332,6 +1476,12 @@
     }
   },
   "pad_write": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Create a pad, or fully overwrite one by passing pad_id plus expected_revision. Pad names are unique per project. Prefer pad_append/pad_edit for targeted changes.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1402,6 +1552,12 @@
     }
   },
   "project_add": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Register a directory as a project. Defaults to the current working directory. Returns the existing project if the path is already registered.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1451,6 +1607,12 @@
     }
   },
   "project_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List registered projects and the currently selected one.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1463,6 +1625,12 @@
     }
   },
   "project_prune": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1553,6 +1721,12 @@
     }
   },
   "project_select": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Set which project later tools act on in this session.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1574,6 +1748,12 @@
     }
   },
   "todo_archive": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Archive a todo (or unarchive with archived=false), mirroring pad_archive. Archived todos are excluded from todo_list by default; todo_get always reaches them by id. Refuses when this todo still blocks another todo that is not completed.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1633,6 +1813,12 @@
     }
   },
   "todo_block": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Add a blocker: todo_id cannot start until blocker_id completes. Cycles are rejected.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1696,6 +1882,12 @@
     }
   },
   "todo_comment": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Add a comment to a todo. Use for handoffs: changed files, tests run, decisions, remaining risk.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1757,6 +1949,12 @@
     }
   },
   "todo_complete": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Mark a todo complete (or reopen with completed=false). Returns todo ids that this completion newly unblocked.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1825,6 +2023,12 @@
     }
   },
   "todo_create": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Create a project-scoped todo. Pass a short slug to have it render beside the id wherever this todo is listed; left unset, those surfaces fall back to the title instead (truncated in the dashboard). Optionally pass blocked_by todo ids to encode ordering. Returns a slim receipt.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1905,6 +2109,12 @@
     }
   },
   "todo_get": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Read one todo in full: body, blockers, what it blocks, and optionally comments.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1935,6 +2145,12 @@
     }
   },
   "todo_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List todo summaries. is_blocked=false finds dispatchable work. query matches title, body, and slug. Archived todos are excluded by default; include_archived=true retrieves them too.",
     "execution": {
       "taskSupport": "forbidden"
@@ -1996,6 +2212,12 @@
     }
   },
   "todo_unblock": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Remove one blocker relationship from a todo.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2063,6 +2285,12 @@
     }
   },
   "todo_update": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Update todo fields. Omitted fields are preserved. Returns a slim receipt.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2148,6 +2376,12 @@
     }
   },
   "wake_cancel": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Cancel a pending wake-up you own, or - if you are a running lead - any pending wake-up in this project. Cancelling any wake also cancels the hold notices already filed about IT (modal-hold, unsubmitted-input, and one-shot block), since a notice about a wake that no longer exists has nothing left to say; unlike a finish notice these never expire on their own, since the thing they report may well still be true an hour later. Cancelling a standing watch also cancels the FINISH notices it has already filed but not yet delivered. It does NOT cancel a standing watch's own per-worker block notice (a crew member stopped on a dialog): that carries no parent link, so one already filed still delivers, and it may still be true - the worker is probably still on that dialog - but it no longer claims anything about the watch's own liveness, deliberately.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2203,6 +2437,12 @@
     }
   },
   "wake_get": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates body at 120 chars; use this to see exactly what a wake will say, or to confirm what wake_update just changed.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2230,6 +2470,12 @@
     }
   },
   "wake_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "List pending wake-ups in this project, plus recently_delivered: the last 10 one-shot wakes that have already fired, with their delivery state (typed_at, held_at/held_reason, confirmation). A one-shot wake leaves the pending list the moment it fires; recently_delivered is where to check whether it was actually typed and, if its target has a confirmation channel, acknowledged.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2249,6 +2495,12 @@
     }
   },
   "wake_set": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use instead of polling. Write the body self-contained: ids, context, next action - it may arrive in a session that has none of this conversation. Delivering to your OWN lead pane, where the context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2328,6 +2580,12 @@
     }
   },
   "wake_update": {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so only body can be edited on one.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2397,6 +2655,12 @@
     }
   },
   "wake_when_idle": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
     "execution": {
       "taskSupport": "forbidden"
@@ -2558,6 +2822,12 @@
     }
   },
   "whoami": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Show this session's actor identity and effective project scope. Call this first in a new session.",
     "execution": {
       "taskSupport": "forbidden"
