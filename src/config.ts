@@ -1,7 +1,7 @@
-import { resolveHiveConfig } from "./projectYml.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { storeDir } from "./dataDir.js";
+import { readGlobalConfig, resolveAttachSetting } from "./globalConfig.js";
 
 export {
   ATTACH_MODES,
@@ -16,7 +16,10 @@ export {
 import type { AttachMode, AutoAttach, ConfigSource } from "./globalConfig.js";
 
 export function resolvedAttachMode(): { mode: AttachMode; source: ConfigSource } {
-  return resolveHiveConfig().attach;
+  const global = readGlobalConfig();
+  return resolveAttachSetting("attach", global.root, global.legacy, global.warnings) as {
+    mode: AttachMode; source: ConfigSource;
+  };
 }
 
 export function attachMode(): AttachMode {
@@ -24,7 +27,10 @@ export function attachMode(): AttachMode {
 }
 
 export function resolvedAutoAttach(): { value: AutoAttach; source: ConfigSource } {
-  return resolveHiveConfig().autoAttach;
+  const global = readGlobalConfig();
+  return resolveAttachSetting("autoAttach", global.root, global.legacy, global.warnings) as {
+    value: AutoAttach; source: ConfigSource;
+  };
 }
 
 export function setAttachMode(mode: AttachMode): void {

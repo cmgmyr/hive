@@ -66,3 +66,39 @@ export function readGlobalConfig(): {
   const legacy = readLayer(join(dir, "config.json"), "json", warnings) ?? {};
   return { root, legacy, warnings };
 }
+
+export function resolveAttachSetting(
+  key: "attach" | "autoAttach",
+  global: Record<string, unknown> | null,
+  legacy: Record<string, unknown>,
+  warnings: string[],
+): { mode: AttachMode; source: ConfigSource } | { value: AutoAttach; source: ConfigSource } {
+  const mode = key === "attach";
+  const env = mode
+    ? isAttachMode(process.env.HIVE_ATTACH_MODE) ? process.env.HIVE_ATTACH_MODE : null
+    : process.env.HIVE_AUTO_ATTACH === "0"
+      ? "off"
+      : isAutoAttach(process.env.HIVE_AUTO_ATTACH) ? process.env.HIVE_AUTO_ATTACH : null;
+  if (env != null) return mode ? { mode: env as AttachMode, source: "env" } : { value: env as AutoAttach, source: "env" };
+
+  const path = globalConfigPath();
+  if (global && Object.hasOwn(global, key)) {
+    const value = global[key];
+    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
+    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
+      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
+    }
+    warnings.push(`${path}: ${key} must be one of ${(mode ? ["auto", "raw", "control"] : ["auto", "on", "off"]).join(", ")}; ignoring "${String(value)}".`);
+    return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
+  }
+
+  if (Object.hasOwn(legacy, key)) {
+    const value = legacy[key];
+    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
+    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
+      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
+    }
+    warnings.push(`${path.replace(/hive\.yml$/, "config.json")}: ${key} has an invalid value; ignoring it.`);
+  }
+  return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
+}

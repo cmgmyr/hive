@@ -173,7 +173,11 @@ describe("global and project hive.yml resolution", () => {
 
   it("both module import entry orders resolve without opening SQLite", () => {
     const dirs = fixture({ global: "lead: sleep 300\n" });
-    for (const order of [["config", "projectYml"], ["projectYml", "config"], ["config", "tmux"], ["tmux", "config"]]) {
+    for (const order of [
+      ["config", "projectYml"], ["projectYml", "config"],
+      ["config", "tmux"], ["tmux", "config"],
+      ["config", "harnesses"], ["harnesses", "config"],
+    ]) {
       const imports = order.map((name) => `await import(${JSON.stringify(new URL(`../dist/${name}.js`, import.meta.url).pathname)});`).join("\n");
       const script = `${imports}\nconst { resolveHiveConfig } = await import(${JSON.stringify(new URL("../dist/projectYml.js", import.meta.url).pathname)});\nif (resolveHiveConfig(${JSON.stringify(dirs.projectDir)}).config.lead !== "sleep 300") process.exit(9);`;
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], {

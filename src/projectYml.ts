@@ -7,10 +7,9 @@ import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
-  isAttachMode,
-  isAutoAttach,
   globalConfigPath,
   readGlobalConfig,
+  resolveAttachSetting,
   type AttachMode,
   type AutoAttach,
   type ConfigSource,
@@ -158,48 +157,6 @@ function parseProcesses(value: unknown, path: string, warnings: string[]): Recor
     };
   }
   return processes;
-}
-
-function envAttachMode(): AttachMode | null {
-  return isAttachMode(process.env.HIVE_ATTACH_MODE) ? process.env.HIVE_ATTACH_MODE : null;
-}
-
-function envAutoAttach(): AutoAttach | null {
-  const value = process.env.HIVE_AUTO_ATTACH;
-  if (value === "0") return "off";
-  return isAutoAttach(value) ? value : null;
-}
-
-function resolvedAttach(
-  key: "attach" | "autoAttach",
-  global: Record<string, unknown> | null,
-  legacy: Record<string, unknown>,
-  warnings: string[],
-): { mode: AttachMode; source: ConfigSource } | { value: AutoAttach; source: ConfigSource } {
-  const mode = key === "attach";
-  const env = mode ? envAttachMode() : envAutoAttach();
-  if (env != null) return mode ? { mode: env as AttachMode, source: "env" } : { value: env as AutoAttach, source: "env" };
-
-  const path = globalConfigPath();
-  if (global && Object.hasOwn(global, key)) {
-    const value = global[key];
-    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
-    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
-      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
-    }
-    warnings.push(`${path}: ${key} must be one of ${(mode ? ["auto", "raw", "control"] : ["auto", "on", "off"]).join(", ")}; ignoring "${String(value)}".`);
-    return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
-  }
-
-  if (Object.hasOwn(legacy, key)) {
-    const value = legacy[key];
-    if (value == null) return mode ? { mode: "auto", source: "global" } : { value: "auto", source: "global" };
-    if (mode ? isAttachMode(value) : isAutoAttach(value)) {
-      return mode ? { mode: value as AttachMode, source: "global" } : { value: value as AutoAttach, source: "global" };
-    }
-    warnings.push(`${globalConfigPath().replace(/hive\.yml$/, "config.json")}: ${key} has an invalid value; ignoring it.`);
-  }
-  return mode ? { mode: "auto", source: "built-in" } : { value: "auto", source: "built-in" };
 }
 
 function applyLayer(
@@ -373,10 +330,10 @@ export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
     }
   }
 
-  const attachResult = resolvedAttach("attach", global.root, global.legacy, warnings) as {
+  const attachResult = resolveAttachSetting("attach", global.root, global.legacy, warnings) as {
     mode: AttachMode; source: ConfigSource;
   };
-  const autoAttachResult = resolvedAttach("autoAttach", global.root, global.legacy, warnings) as {
+  const autoAttachResult = resolveAttachSetting("autoAttach", global.root, global.legacy, warnings) as {
     value: AutoAttach; source: ConfigSource;
   };
 
