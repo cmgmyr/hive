@@ -34,9 +34,10 @@ writeFileSync(join(fakeHome, ".codex", "auth.json"), JSON.stringify({ tokens: "n
 const binDir = join(dirs.tmp, "codex-lead-bin");
 mkdirSync(binDir, { recursive: true });
 const argvFile = join(dirs.tmp, "codex-lead-argv.txt");
+const envFile = join(dirs.tmp, "codex-lead-env.txt");
 writeFileSync(
   join(binDir, "codex"),
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nsleep 600\n`,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nenv > ${JSON.stringify(envFile)}\nsleep 600\n`,
 );
 chmodSync(join(binDir, "codex"), 0o755);
 
@@ -125,6 +126,22 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
       const { parse: parseToml } = await import("smol-toml");
       const parsed = parseToml(readFileSync(join(codexHomeDir(row.codex_home), "config.toml"), "utf8"));
       assert.match(parsed.developer_instructions, /CODEX LEAD POSTURE SENTINEL/);
+    });
+
+    it("the generated home's MCP server env carries the lead pane's own HIVE_LEAD, HIVE_DATA_DIR, HIVE_AGENT_ID and HIVE_AGENT_NAME (todo 1404)", async () => {
+      const row = leadRow(db, project.id);
+      await until(() => existsSync(envFile), 5000);
+      const paneEnv = Object.fromEntries(
+        readFileSync(envFile, "utf8").split("\n").filter((l) => l.startsWith("HIVE_")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+      );
+      const { parse: parseToml } = await import("smol-toml");
+      const serverEnv = parseToml(readFileSync(join(codexHomeDir(row.codex_home), "config.toml"), "utf8")).mcp_servers.hive.env;
+      assert.equal(paneEnv.HIVE_LEAD, "1", "setup bug: the lead pane must carry HIVE_LEAD=1");
+      assert.equal(paneEnv.HIVE_DATA_DIR, dirs.dataDir, "setup bug: the lead pane must carry the scratch store");
+      for (const key of ["HIVE_LEAD", "HIVE_DATA_DIR", "HIVE_AGENT_ID", "HIVE_AGENT_NAME"]) {
+        assert.ok(paneEnv[key], `setup bug: the lead pane must carry ${key}`);
+        assert.equal(serverEnv[key], paneEnv[key], `${key} must reach the lead's MCP server exactly as the pane has it`);
+      }
     });
 
     it("the generated home's hooks.json wires SessionStart to kickoff --codex, alongside the worker-state events", async () => {
