@@ -48,6 +48,16 @@ export function withWindowClaim<T>(claim: () => T): T {
   return db.transaction(claim).immediate();
 }
 
+export function storedLaunchOptions(value: string | null): { args: string[]; readOnly: boolean } {
+  if (value == null) return { args: [], readOnly: false };
+  const stored = JSON.parse(value);
+  if (Array.isArray(stored)) return { args: stored, readOnly: false };
+  if (stored?.read_only === true && Array.isArray(stored.args)) {
+    return { args: stored.args, readOnly: true };
+  }
+  throw new Error("Invalid stored worker launch options");
+}
+
 export interface LaunchSpec {
   projectId: number;
   projectName: string;
@@ -70,6 +80,7 @@ export interface LaunchSpec {
 
   model?: string;
   extraArgs?: string[];
+  readOnly?: boolean;
 
   // The codexHome.ts key, if this worker needs a per-worker CODEX_HOME (harness.needsHome). Written
   // into the SAME INSERT that creates the row, before ensureCodexHome's mkdirSync ever runs - see
@@ -305,7 +316,9 @@ export function launchAgent(spec: LaunchSpec): {
         spec.sessionId ?? "",
         spec.codexHome ?? "",
         spec.model ?? null,
-        spec.extraArgs ? JSON.stringify(spec.extraArgs) : null,
+        spec.readOnly
+          ? JSON.stringify({ args: spec.extraArgs ?? [], read_only: true })
+          : spec.extraArgs ? JSON.stringify(spec.extraArgs) : null,
       );
   } catch (e) {
 

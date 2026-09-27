@@ -66,6 +66,14 @@ Conventions borrowed from tools that got this right:
 - Leases and kv TTLs expire on their own, so a dead session never wedges the team.
 - Todo blockers form a dependency graph; cycles are rejected.
 
+## Read-only workers
+
+Use `agent_spawn(name: "reader", harness: "claude", read_only: true)` to keep a worker from editing local files or running shell commands that write files. It can still write Hive pads and todo comments through MCP. The spawn receipt reports `read_only: true`; `agent_status` and `agent_list` show the stored mode. `agent_resume` preserves it.
+
+Claude workers disable Edit, Write and NotebookEdit and use Claude Code's filesystem sandbox with writes denied at the filesystem root and unsandboxed retries disabled. If the sandbox is unavailable, the worker fails to start. Codex workers use `--sandbox read-only` with approvals disabled and a generated approval override for the Hive MCP server only. Other MCP servers receive no override.
+
+Read-only mode accepts a bare Claude or Codex executable, including an absolute path, and a separate `model` value. It allows effort-setting `extra_args`: Codex accepts `-c model_reasoning_effort=<low|medium|high|xhigh>`, and Claude accepts `--effort <low|medium|high|xhigh|max>`. It refuses command strings containing flags or shell syntax and every other extra argument, which could override the restrictions. Omit `read_only` for ordinary workers. Restart Hive MCP servers after updating to use the new argument and resume behavior.
+
 ## Worker context fields
 
 `agent_list` and `agent_status` include `context_fill: { used_tokens, window_tokens, used_percent }` for Claude and Codex workers. It describes the latest request's input tokens against the recorded model window, with `used_percent` rounded to the nearest whole percentage. The field is `null` before usable evidence is available and is omitted for unknown commands and non-worker rows. Claude workers need a statusline window record as well as transcript usage; Codex rollouts carry both values.

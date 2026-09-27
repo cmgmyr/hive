@@ -39,6 +39,7 @@ export interface CodexHomeInput {
   // wiring it there would fire and do nothing every turn.
   lead?: boolean;
   includePostToolUse?: boolean;
+  readOnly?: boolean;
 }
 
 export function codexHomeDir(key: string): string {
@@ -240,6 +241,7 @@ function configToml(input: {
   indexJs: string;
   serverEnv: Record<string, string>;
   statusLine: string[];
+  readOnly?: boolean;
   modelContextWindow: number | null;
   modelAutoCompactTokenLimit: number | null;
 }): string {
@@ -259,6 +261,7 @@ function configToml(input: {
       `trust_level = "trusted"`,
       "",
       `[mcp_servers.hive]`,
+      ...(input.readOnly ? [`default_tools_approval_mode = "approve"`] : []),
       `command = ${tomlString(input.nodeBin)}`,
       `args = [${tomlString(input.indexJs)}]`,
       "",
@@ -271,16 +274,16 @@ function configToml(input: {
 }
 
 // Pure on purpose: agent_resume reuses it against an EXISTING home, so it must not write.
-export function codexLaunchArgs(cwd: string): string[] {
+export function codexLaunchArgs(cwd: string, readOnly = false): string[] {
   const root = gitPrimaryRoot(cwd);
   const commonDir = root ? join(root, ".git") : null;
   return [
     // Declining review of hive's OWN generated hooks.json, not a stranger's - see the reference.
     "--dangerously-bypass-hook-trust",
     // NOT parity with claude's posture, and --add-dir is NOT containment - see the reference.
-    "--dangerously-bypass-approvals-and-sandbox",
+    ...(readOnly ? ["--sandbox", "read-only", "-c", 'approval_policy="never"'] : ["--dangerously-bypass-approvals-and-sandbox"]),
     // Inert alongside the flag above, kept because its value seeds [projects.<root>] trust.
-    ...(commonDir ? ["--add-dir", commonDir] : []),
+    ...(commonDir && !readOnly ? ["--add-dir", commonDir] : []),
   ];
 }
 
@@ -377,6 +380,7 @@ export function ensureCodexHome(
       indexJs,
       serverEnv: { ...input.serverEnv, HIVE_AGENT_ID: input.actorId },
       statusLine,
+      readOnly: input.readOnly,
       modelContextWindow,
       modelAutoCompactTokenLimit,
     }),
@@ -384,5 +388,5 @@ export function ensureCodexHome(
 
   const instructionLayers = [...(hasGlobal ? ["global"] : []), ...(localOverride ? ["local"] : [])];
 
-  return { extraArgs: codexLaunchArgs(input.cwd), hooksWired, instructionLayers };
+  return { extraArgs: codexLaunchArgs(input.cwd, input.readOnly), hooksWired, instructionLayers };
 }

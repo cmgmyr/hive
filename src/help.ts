@@ -129,7 +129,7 @@ runbook (fork it first), not a pad write.`,
 
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
-  agent_spawn(name?, model?, command?, extra_args?, cwd?, placement?, layout?) —
+  agent_spawn(name?, model?, command?, extra_args?, read_only?, cwd?, placement?, layout?) —
     start a worker (default command: claude) in session hive-main.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
