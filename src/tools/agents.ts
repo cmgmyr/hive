@@ -114,6 +114,8 @@ export interface AgentRow {
   resumed_at: string;
   codex_home: string;
   exit_tail: string;
+  model: string | null;
+  extra_args: string | null;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -659,6 +661,8 @@ export function registerAgents(server: McpServer): void {
             parentActor: parent,
             sessionId,
             codexHome: codexHomeKey,
+            model: args.model,
+            extraArgs: args.extra_args,
             retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {

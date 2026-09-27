@@ -354,6 +354,11 @@ ALTER TABLE agents ADD COLUMN codex_home TEXT NOT NULL DEFAULT '';
 `,
 
   `
+ALTER TABLE agents ADD COLUMN model TEXT;
+ALTER TABLE agents ADD COLUMN extra_args TEXT;
+`,
+
+  `
 ALTER TABLE agents ADD COLUMN exit_tail TEXT NOT NULL DEFAULT '';
 `,
 
