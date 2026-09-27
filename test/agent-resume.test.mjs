@@ -31,7 +31,15 @@ const fakeClaude = makeFakeClaude(dirs.tmp);
 
 describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   it("resumes a closed claude worker onto a fresh pane, reusing the row and actor_id (D2)", async () => {
-    await mcp.call("agent_spawn", { name: "resume-me", command: fakeClaude() });
+    await mcp.call("agent_spawn", {
+      name: "resume-me",
+      command: fakeClaude(),
+      model: "opus[1m]",
+      extra_args: ["--effort", "high"],
+    });
+    const launchArgs = db.prepare("SELECT model, extra_args FROM agents WHERE name = ?").get("resume-me");
+    assert.equal(launchArgs.model, "opus[1m]");
+    assert.deepEqual(JSON.parse(launchArgs.extra_args), ["--effort", "high"]);
     const beforeStatus = await mcp.call("agent_status", { name: "resume-me" });
     assert.ok(beforeStatus.session_id, "setup bug: spawned claude worker must carry a session id");
     const beforeRow = await liveAgentRow(mcp, "resume-me");
@@ -60,6 +68,8 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
       row.command.includes(`--resume ${beforeStatus.session_id}`),
       `command should carry --resume: ${row.command}`,
     );
+    assert.match(row.command, /--model ['"]?opus\[1m\]['"]?/);
+    assert.match(row.command, /--effort high/);
 
     await mcp.call("agent_close", { name: "resume-me" });
   });

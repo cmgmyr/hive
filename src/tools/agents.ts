@@ -114,6 +114,8 @@ export interface AgentRow {
   resumed_at: string;
   codex_home: string;
   exit_tail: string;
+  model: string | null;
+  extra_args: string | null;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -326,15 +328,56 @@ function requireNameFree(projectId: number, name: string, exceptAgentId?: number
   }
 }
 
-// Recovers a flag's value from a row's own recorded command string - the only place agent_resume
-// can read it back from, since ResumeSpec is built fresh and does not carry agent_spawn's original
-// args. Model ids are shell-safe by construction (gpt-5.6-luna, sonnet), so shellQuote never quotes
-// this token and a plain whitespace split is enough - no quote-stripping to get wrong.
+function commandTokens(command: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (const char of command) {
+    if (escaped) {
+      token += char;
+      escaped = false;
+    } else if (char === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote) {
+      if (char === quote) quote = null;
+      else token += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (/\s/.test(char)) {
+      if (token) {
+        tokens.push(token);
+        token = "";
+      }
+    } else {
+      token += char;
+    }
+  }
+  if (escaped) token += "\\";
+  if (token) tokens.push(token);
+  return tokens;
+}
+
 function extractCommandFlag(command: string, flag: string): string | undefined {
-  const tokens = command.split(/\s+/);
+  const tokens = commandTokens(command);
   const i = tokens.indexOf(flag);
   if (i === -1 || i + 1 >= tokens.length) return undefined;
   return tokens[i + 1];
+}
+
+function stripSessionArgs(args: string[]): string[] {
+  const stripped: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--resume" || arg === "--session-id" || arg === "-r") {
+      i++;
+    } else if (arg === "--last" || arg === "--fork-session" || arg.startsWith("--resume=") || arg.startsWith("--session-id=")) {
+      continue;
+    } else {
+      stripped.push(arg);
+    }
+  }
+  return stripped;
 }
 
 function requestsExistingSession(extraArgs: string[] | undefined): boolean {
@@ -659,6 +702,8 @@ export function registerAgents(server: McpServer): void {
             parentActor: parent,
             sessionId,
             codexHome: codexHomeKey,
+            model: args.model,
+            extraArgs: args.extra_args,
             retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {
@@ -879,12 +924,17 @@ export function registerAgents(server: McpServer): void {
             // Recovered from the row's own recorded command: every codex worker hive spawns
             // carries a pinned model (codex has no bare alias), so dropping this would silently
             // resume on codex's default model instead of the one the lane actually chose.
-            model: extractCommandFlag(agent.command, "--model"),
+            model: agent.model ?? extractCommandFlag(agent.command, "--model"),
             displayName: agent.name,
             // Subcommand positional, not a flag - live-verified on v0.149.0 (`codex resume --help`:
             // "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]"). No --settings/hooks file: a
             // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
-            extraArgs: [...codexLaunchArgs(agent.cwd), "resume", agent.session_id],
+            extraArgs: [
+              ...codexLaunchArgs(agent.cwd),
+              ...stripSessionArgs(agent.extra_args ? JSON.parse(agent.extra_args) : []),
+              "resume",
+              agent.session_id,
+            ],
           });
           resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home) };
           ensureCodexHooksFile(agent.codex_home, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
@@ -894,7 +944,12 @@ export function registerAgents(server: McpServer): void {
           commandString = workerCommandString({
             command: claudeBinary,
             displayName: agent.name,
-            extraArgs: ["--resume", agent.session_id],
+            model: agent.model ?? undefined,
+            extraArgs: [
+              ...stripSessionArgs(agent.extra_args ? JSON.parse(agent.extra_args) : []),
+              "--resume",
+              agent.session_id,
+            ],
             settingsPath: ensureWorkerHooksFile(agent.id, { includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
           });
         }
