@@ -266,6 +266,15 @@ model name, an effort flag, a reserved identity var, or an `agents_*` /
 `harness_*` var - those are hive's own, computed at spawn time, and a
 project-defined one is stripped before it ever reaches a template.
 
+## 5. Recipes
+
+`recipes/index.md` links a small library of optional patterns, each tied to
+one or more dimensions above: verification (15, 17, 22), a shared test
+resource (16, 15), a review decision (18-21), session continuity (33, 40,
+35), and a worker context checkpoint (30, 28, orchestration only). Read the
+matching recipe when its dimension's signal shows up in discovery; it is
+never a required stop on the way to a first profile.
+
 ## Known traps
 
 - Reading a *rendered* profile file drops unset-var sections; never use it

@@ -98,6 +98,12 @@ validates what it wrote with `hive doctor` and `hive profile read` before
 telling you it's done, and reminds you to restart the affected session
 afterward.
 
+It also carries a small library of optional recipes (verification, a
+shared test-resource rule, a review-decision habit, session continuity, a
+worker context checkpoint) - patterns it offers only when your answers
+actually point at the problem each one solves, never as a required
+checklist.
+
 ## Session-start kickoff (optional plugin)
 
 Symlink the plugin once per machine (not per project) and a session opened in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, pending wake-ups, and an instruction to run triage.

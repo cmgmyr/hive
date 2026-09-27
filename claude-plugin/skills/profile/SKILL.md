@@ -116,6 +116,16 @@ one profile serve several projects. `references/interview.md` lists the
 existing shipped vars (`check`, `repo`, `install`, `ticket_prefix`,
 `start_command`) to reuse before introducing a new one.
 
+## Offer a recipe only on its own signal
+
+`references/recipes/index.md` links a small library of optional patterns -
+a verification step, a shared-resource rule, a review-decision habit, and
+so on - each written to solve one problem an interview signal points to.
+Read a recipe only after discovery actually surfaces its signal; propose
+its benefit and cost, and apply it only if the user accepts. A recipe with
+no signal in this interview does not get offered, and accepting one is
+never required to finish a profile.
+
 ## Validate before you tell them it's done
 
 After writing, run `hive doctor` and `hive profile read <file>
