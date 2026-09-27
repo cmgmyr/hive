@@ -2086,6 +2086,13 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
   });
 }
 
+function idleConditionMet(timer: TimerRow, snapshot: AliveSnapshot): boolean {
+  const states = watchedStates(timer, snapshot);
+  return timer.kind === "idle_any"
+    ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
+    : states.length > 0 && states.every((s) => s.idle);
+}
+
 async function maybeFireIdle(
   timer: TimerRow,
   snapshot: AliveSnapshot | null,
@@ -2109,24 +2116,22 @@ async function maybeFireIdle(
     return;
   }
   let ready = false;
+  let idleMet = false;
   if (timedOut) {
     ready = true;
+    if (snapshot !== null) idleMet = idleConditionMet(timer, snapshot);
   } else {
 
     if (snapshot === null) return;
-    const states = watchedStates(timer, snapshot);
-
-    ready =
-      timer.kind === "idle_any"
-        ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
-        : states.length > 0 && states.every((s) => s.idle);
+    idleMet = idleConditionMet(timer, snapshot);
+    ready = idleMet;
 
     if (!ready) noteBlockedWatched(timer, snapshot, choices);
   }
   if (ready) {
     const decision = deliverable(timer, snapshot, choices);
     if (decision.ok && claimOneShot(timer)) {
-      await deliver(timer, timedOut ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
+      await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
     }
   }
 }
