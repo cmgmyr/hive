@@ -210,28 +210,31 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
       execFileSync("tmux", [
         "new-session", "-d", "-s", soloSession, "-x", "220", "-y", "50", "-c", soloDirs.projectDir,
       ]);
-      const dedicated = new McpClient({
+      const setup = new McpClient({
         cwd: soloDirs.projectDir,
         dataDir: soloDirs.dataDir,
-        env: {
-          PATH: `${fakeDir}:${process.env.PATH}`,
-          HIVE_TMUX_TIMEOUT_MS: "300",
-          HIVE_SPAWN_READY_MS: "500",
-        },
+        env: { HIVE_SPAWN_READY_MS: "500", HIVE_SCHEDULER_INTERVAL_MS: "2147483647" },
       });
+      let prober;
       try {
-        await dedicated.start();
-        const spawned = await spawnShowing("typed-seen-probe-fails", replayFixture("ready-idle.txt"), dedicated);
+        await setup.start();
+        const spawned = await spawnShowing("typed-seen-probe-fails", replayFixture("ready-idle.txt"), setup);
 
-        const wake = await dedicated.call("wake_set", {
+        const wake = await setup.call("wake_set", {
           delay_seconds: 1,
           body: "INTEGRATION typed_seen probe-failure check",
           deliver_to: spawned.agent_id,
         });
+        prober = new McpClient({
+          cwd: soloDirs.projectDir,
+          dataDir: soloDirs.dataDir,
+          env: { PATH: `${fakeDir}:${process.env.PATH}`, HIVE_TMUX_TIMEOUT_MS: "300" },
+        });
+        await prober.start();
 
         let delivered;
         await until(async () => {
-          const list = await dedicated.call("wake_list");
+          const list = await setup.call("wake_list");
           delivered = findWake(list.recently_delivered, wake.wake_id);
           return delivered?.typed_at != null;
         }, 15000);
@@ -242,7 +245,8 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
           "a failing tmux probe must read dialog=unknown - the guard could not check, which is not the same claim as checking and finding no dialog",
         );
       } finally {
-        await dedicated.close();
+        await prober?.close();
+        await setup.close();
         cleanup(soloSession);
         rmSync(fakeDir, { recursive: true, force: true });
       }
