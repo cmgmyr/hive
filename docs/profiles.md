@@ -79,6 +79,10 @@ Editing preserves anything you did not ask to change: unrelated sections, extra 
 
 It also carries a small library of optional recipes (verification, a shared test-resource rule, a review-decision habit, session continuity, a worker context checkpoint) - patterns it offers only when your answers actually point at the problem each one solves, never as a required checklist.
 
+Once you confirm the workflow, it can draft a Mermaid flowchart of it - who does what, in what order, where you decide - and iterate with you until it matches; accepted, it saves as `flows.md`, an ordinary optional extra `.md` a profile can carry. Mermaid renders on GitHub or in an editor preview, not in a terminal.
+
+For an established project, it can also ask permission to read a bounded, recent sample of your own past Claude Code and Codex sessions in that project - to see how you actually brief work, what you correct repeatedly, and where things stall - and show you what it found, with one quoted example each, before proposing a workflow from it. That first sample is a starting point, not a cap: if it's too thin to act on, the skill says what's missing and asks before reading any more. It never writes transcript content into the profile, and it falls back to ordinary discovery on a decline or when nothing useful turns up.
+
 ## Session-start kickoff (optional plugin)
 
 Symlink the plugin once per machine (not per project) and a session opened in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, pending wake-ups, and an instruction to run triage.

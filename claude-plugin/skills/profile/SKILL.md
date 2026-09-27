@@ -33,6 +33,20 @@ A first profile carries only what this interview actually surfaced. A new simple
 
 Stop discovery when you can state: the current task flow, at least one pain or wanted change, one habit to keep, who owns which actions, how they'll know work is done, and who the profile is for (this project only, or every project on this machine). Summarise that back, offer at most three improvements each tied to something they said, and let them accept, decline, or edit each one. Before writing anything, show: profile name(s), the base each starts from, the target(s) you are about to write to (see below), and - for an edit - a concrete diff. Confirm once. Do not keep discovering after the user asks to proceed.
 
+## Offer a flows diagram before writing
+
+After the summary is confirmed and before any write, offer to draft a Mermaid flowchart of the proposed workflow - who does what, in what order, and where the human decides. Draw it only from the confirmed answers and the files you are about to write; never invent a step the profile itself does not contain. Iterate on it with the user until it matches what they actually agreed to. Once accepted, save it as `flows.md`, an ordinary optional extra `.md` in the profile - resolved and reported by `hive profile list`/`hive doctor` the same as any other fork-local file, never required. Tell the user plainly that Mermaid renders on GitHub or in an editor preview, not in a terminal, so they know where to look at it. On a later edit that changes the workflow, update `flows.md` in the same change, or say explicitly that it is now stale if you cannot update it in this pass - never leave it silently wrong.
+
+## Read past sessions as evidence, with permission
+
+For an established project - one that already has prior Claude Code or Codex sessions - ask permission before reading any of them: "Can I look at your recent sessions in this project to see how you actually work?" On a decline, or when nothing usable turns up, fall back to the ordinary discovery questions; this is a supplement to discovery, never a replacement for it.
+
+On acceptance, read a bounded, recent first batch (for example, the ten most recent) from each harness's standard transcript location, filtered to this project. Claude Code groups its transcripts by project directory already (`~/.claude/projects/<encoded-cwd>/*.jsonl`); Codex's rollout files are not grouped by project (`~/.codex/sessions/<date>/rollout-*.jsonl`), so filter by the working directory recorded inside each session instead. Do this reading in a subagent when the harness offers one, so raw transcript content never enters this interview's own context - only the findings below do.
+
+That first batch is a starting sample, not a cap. If it leaves the evidence too thin to act on - no repeated pattern, or every session from just one kind of task - say plainly what is missing and ask the user whether to read another batch. Read more only on a yes, and you may ask again after each further batch; never extend the sample on your own judgment without asking first.
+
+Surface what you found as observations, each with one short quoted example, covering how the user briefs work, what they correct repeatedly, and where work stalls or gets redone. Use those observations to propose a workflow, then ask "what didn't work for you here?" so the user can correct a wrong reading before you act on it. Never write transcript content - a quote, a session id, a path - into the profile itself; only the resulting workflow decisions belong there. Naming a specific harness's transcript convention here is fine (it is a documented fact about how that tool stores its own history), but do not name a skill hive does not ship as part of how you read or process them.
+
 ## Know which file you are about to write
 
 There are two possible write targets, and they behave differently:

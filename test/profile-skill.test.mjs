@@ -165,6 +165,26 @@ describe("hive's loader accepts the profiles the skill would produce", () => {
     assert.match(rendered.stdout, /A team habit: keep it small\./);
   });
 
+  it("a generated profile with an accepted flows.md diagram is still accepted", async () => {
+    const target = join(dirs.dataDir, "profiles", "my-simple");
+    writeFileSync(
+      target + "/flows.md",
+      ["FLOWS", "", "```mermaid", "flowchart TD", "  A[You ask for a check] --> B[Session runs it]", "  B --> C{Passed?}", "  C -->|yes| D[Report done]", "  C -->|no| E[Fix and re-run]", "```", ""].join("\n"),
+    );
+
+    const list = await runCli(["profile", "list"], cliOpts);
+    assert.equal(list.code, 0, list.stderr);
+    assert.match(list.stdout, /flows\.md\s+user/);
+
+    const doctor = await runCli(["doctor"], cliOpts);
+    assert.doesNotMatch(doctor.stdout, /FAIL {2}profile/, "flows.md must never become a required file");
+
+    const rendered = await runCli(["profile", "read", "flows.md", "--profile", "my-simple"], cliOpts);
+    assert.equal(rendered.code, 0, rendered.stderr);
+    assert.match(rendered.stdout, /flowchart TD/);
+    assert.match(rendered.stdout, /C -->\|yes\| D\[Report done\]/);
+  });
+
   it("refuses a proposed profile name that could escape the profile directory, through the existing CLI", async () => {
     const created = await runCli(["profile", "create", "../evil"], cliOpts);
     assert.equal(created.code, 1);
