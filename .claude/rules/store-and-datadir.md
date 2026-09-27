@@ -95,7 +95,7 @@ and the worker's cwd.
 
 ## Migrations are append-only
 
-Never edit an existing entry in `MIGRATIONS`; add a new one.
+Never edit an existing entry in `MIGRATIONS`; add a new one. Pinned by `test/migrations-append-only.test.mjs` (per-index hashes) and `test/migrations-forward.test.mjs` (a real v30 store migrates to head).
 
 **A trigger migration adds a standing constraint on every migration after it.** Any future migration that rewrites `pads.content`, `todos.title`/`body`, or `kv.value` for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration.
 

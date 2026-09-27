@@ -354,11 +354,6 @@ ALTER TABLE agents ADD COLUMN codex_home TEXT NOT NULL DEFAULT '';
 `,
 
   `
-ALTER TABLE agents ADD COLUMN model TEXT;
-ALTER TABLE agents ADD COLUMN extra_args TEXT;
-`,
-
-  `
 ALTER TABLE agents ADD COLUMN exit_tail TEXT NOT NULL DEFAULT '';
 `,
 
@@ -402,6 +397,11 @@ ALTER TABLE wake_block_notices RENAME COLUMN timer_id TO wake_id;
 CREATE INDEX idx_wakes_active ON wakes(project_id, kind)
   WHERE cancelled_at IS NULL;
 CREATE INDEX idx_wakes_parent ON wakes(parent_wake_id) WHERE parent_wake_id IS NOT NULL;
+`,
+
+  `
+ALTER TABLE agents ADD COLUMN model TEXT;
+ALTER TABLE agents ADD COLUMN extra_args TEXT;
 `,
 ];
 
