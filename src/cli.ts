@@ -29,7 +29,6 @@ import {
   isAttachMode,
   isAutoAttach,
   migrateLegacyConfig,
-  resolvedAttachMode,
   resolvedAutoAttach,
   setAttachMode,
   setAutoAttach,
@@ -197,6 +196,7 @@ import {
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
+  type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
   type YmlProcess,
@@ -2613,6 +2613,55 @@ function reportStalledWorkers(projectId: number): void {
   }
 }
 
+function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
+  const config: ProjectYml = loaded.config ?? {
+    lead: null,
+    placement: null,
+    layout: null,
+    profile: null,
+    agents: null,
+    lead_branches: null,
+    context_checkpoint_percent: null,
+    lead_turn_budget: null,
+    dashboard: false,
+    vars: {},
+    processes: {},
+  };
+  const keys: (keyof ProjectYml)[] = [
+    "lead", "placement", "layout", "profile", "agents", "lead_branches",
+    "context_checkpoint_percent", "lead_turn_budget", "dashboard", "vars", "processes",
+  ];
+  for (const key of keys) {
+    info(`config ${key}`, `${JSON.stringify(config[key])} (source: ${loaded.sources[key] ?? "built-in"})`);
+  }
+  const varKeys = new Set(Object.keys(config.vars));
+  for (const key of Object.keys(loaded.sources)) {
+    if (key.startsWith("vars.")) varKeys.add(key.slice("vars.".length));
+  }
+  for (const key of [...varKeys].sort()) {
+    const value = Object.hasOwn(config.vars, key) ? config.vars[key] : null;
+    info(`config vars.${key}`, `${JSON.stringify(value)} (source: ${loaded.sources[`vars.${key}`] ?? "built-in"})`);
+  }
+  const { mode: attachMode, source: attachSource } = loaded.attach;
+  info(
+    "attach mode",
+    attachSource === "env"
+      ? `${attachMode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach; source: env)`
+      : attachSource === "global"
+        ? `${attachMode} (set with \`hive setup --attach\`; source: global)`
+      : `${attachMode} (default; set with \`hive setup --attach\`; source: built-in)`,
+  );
+  const { value: autoAttach, source: autoAttachSource } = loaded.autoAttach;
+  info(
+    "auto-attach",
+    autoAttachSource === "env"
+      ? `${autoAttach} (HIVE_AUTO_ATTACH override; testing only; source: env)`
+      : autoAttachSource === "global"
+        ? `${autoAttach} (set with \`hive setup --auto-attach\`; source: global)`
+        : `${autoAttach} (default; set with \`hive setup --auto-attach\`; source: built-in)`,
+  );
+}
+
 function cmdDoctor(argv: string[]): void {
   const strict = argv.includes("--strict");
   doctorVerbose = argv.includes("--verbose");
@@ -2688,8 +2737,13 @@ function cmdDoctor(argv: string[]): void {
 
   const loaded = loadProjectYml(here?.path ?? process.cwd());
 
-  for (const w of loaded.warnings) warn("hive.yml", w);
+  for (const w of loaded.warnings) {
+    const qualified = /^([^:]+): ([\s\S]*)$/.exec(w);
+    if (qualified) warn(qualified[1]!, qualified[2]!);
+    else warn("hive.yml", w);
+  }
   const config = loaded.config;
+  reportEffectiveConfig(loaded);
   const profile = activeProfile(config);
   if (here && existsSync(join(here.path, ".claude", "dashboard", "index.html"))) {
     info(
@@ -3087,28 +3141,8 @@ function cmdDoctor(argv: string[]): void {
     return health.message;
   });
   {
-    const { value, source } = resolvedAutoAttach();
-    info(
-      "auto-attach",
-      source === "env"
-        ? `${value} (HIVE_AUTO_ATTACH override; testing only)`
-        : source === "global"
-          ? `${value} (set with \`hive setup --auto-attach\`)`
-          : `${value} (default; set with \`hive setup --auto-attach\`)`,
-    );
-  }
-  {
-    const { mode, source } = resolvedAttachMode();
-    info(
-      "attach mode",
-      source === "env"
-        ? `${mode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach)`
-        : source === "global"
-          ? `${mode} (set with \`hive setup --attach\`)`
-          : `${mode} (default; set with \`hive setup --attach\`)`,
-    );
+    const { mode } = loaded.attach;
     if (mode === "raw") {
-
       try {
         const owned = tmux("list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{@hive-owned}")
           .trim()
@@ -3131,9 +3165,7 @@ function cmdDoctor(argv: string[]): void {
               `monitor-bell ${option("-w", "monitor-bell")}`,
           );
         }
-      } catch {
-
-      }
+      } catch {}
     }
   }
 

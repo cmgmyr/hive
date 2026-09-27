@@ -122,9 +122,9 @@ describe("hive doctor's attach mode line", () => {
     await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--auto-attach", "on", "--force"], opts);
 
     const configured = await runCli(["doctor"], { ...opts, env: { HIVE_AUTO_ATTACH: "not-a-mode" } });
-    assert.match(configured.stdout, /auto-attach: on \(set with `hive setup --auto-attach`\)/);
+    assert.match(configured.stdout, /auto-attach: on \(set with `hive setup --auto-attach`; source: global\)/);
     const overridden = await runCli(["doctor"], { ...opts, env: { HIVE_AUTO_ATTACH: "0" } });
-    assert.match(overridden.stdout, /auto-attach: off \(HIVE_AUTO_ATTACH override; testing only\)/);
+    assert.match(overridden.stdout, /auto-attach: off \(HIVE_AUTO_ATTACH override; testing only; source: env\)/);
   });
 
   it("reports the default and says it came from detection", async () => {
@@ -133,7 +133,7 @@ describe("hive doctor's attach mode line", () => {
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
     const doctor = await runCli(["doctor"], opts);
-    assert.match(doctor.stdout, /attach mode: auto \(default; set with `hive setup --attach`\)/);
+    assert.match(doctor.stdout, /attach mode: auto \(default; set with `hive setup --attach`; source: built-in\)/);
 
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });
@@ -146,7 +146,7 @@ describe("hive doctor's attach mode line", () => {
     const setup = await runCli(["setup", "--dir", join(dirs.tmp, "bin"), "--attach", "control", "--force"], opts);
     assert.equal(setup.code, 0, setup.stderr);
     const doctor = await runCli(["doctor"], opts);
-    assert.match(doctor.stdout, /attach mode: control \(set with `hive setup --attach`\)/);
+    assert.match(doctor.stdout, /attach mode: control \(set with `hive setup --attach`; source: global\)/);
 
     assert.doesNotMatch(doctor.stdout, /allow-passthrough|pane-border-status/);
   });

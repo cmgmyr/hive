@@ -89,13 +89,15 @@ describe("hive doctor config warnings", () => {
     broken = await runCli(["doctor"], doctorOpts);
   });
 
-  it("says nothing about hive.yml when there is none", () => {
-
-    assert.doesNotMatch(noYml.stdout, /hive\.yml/);
+  it("reports built-in config sources without warning about absent files", () => {
+    assert.match(noYml.stdout, /info {2}config lead: null \(source: built-in\)/);
+    assert.doesNotMatch(noYml.stdout, /warn {2}[^\n]*hive\.yml:/);
   });
 
   it("reports a malformed hive.yml", () => {
-    assert.match(broken.stdout, /warn {2}hive\.yml: .*: layout must be one of/);
+    const warning = broken.stdout.split("\n").find((line) => line.includes("layout must be one of"));
+    assert.match(warning, /warn {2}.*\/hive\.yml: layout must be one of/);
+    assert.equal(warning.split(doctorYml).length - 1, 1, warning);
   });
 
   it("does not count a warning as a failed check", () => {
@@ -109,6 +111,6 @@ describe("hive doctor config warnings", () => {
     writeFileSync(doctorYml, "layout: main-vertical\n");
     const { stdout } = await runCli(["doctor"], doctorOpts);
 
-    assert.doesNotMatch(stdout, /warn {2}hive\.yml/);
+    assert.doesNotMatch(stdout, /warn {2}[^\n]*hive\.yml:/);
   });
 });
