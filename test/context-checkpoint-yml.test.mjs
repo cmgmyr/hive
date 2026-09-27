@@ -42,7 +42,8 @@ describe("context_checkpoint_percent config", () => {
   });
   it("keeps the parser, starter, project docs and tracked example in agreement with no source default", () => {
     const source = readFileSync(join(REPO, "src/projectYml.ts"), "utf8");
-    assert.match(source, /context_checkpoint_percent: number \| null = null/);
+    assert.match(source, /context_checkpoint_percent: null,\s+lead_turn_budget:/);
+    assert.match(source, /assignNullable\("context_checkpoint_percent"/);
     for (const file of ["src/cli.ts", "docs/projects.md", "hive.example.yml"]) {
       const text = readFileSync(join(REPO, file), "utf8");
       assert.match(text, /context_checkpoint_percent:.*unset means off/);

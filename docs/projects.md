@@ -16,6 +16,8 @@ The board holds today's lanes, what's waiting on you, and what's next up. The ru
 
 ## Project commands (hive.yml)
 
+Project settings can inherit machine-wide defaults from `$HIVE_DATA_DIR/hive.yml`; see [global defaults](configuration.md#global-defaults) for precedence, null behavior, and the full merge rules.
+
 Define a project's dev processes and lead in a `hive.yml` at the project root; `hive` starts them with the session:
 
 ```yaml

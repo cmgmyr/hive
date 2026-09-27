@@ -8,7 +8,8 @@ async function reexecUnderPinnedInterpreter() {
   if (process.env.HIVE_KICKOFF_REEXEC) return;
 
   if (process.env.HIVE_AGENT_ID && process.env.HIVE_LEAD !== "1") return;
-  if (!existsSync(join(process.cwd(), "hive.yml"))) return;
+  const { storeDir } = await import("../dist/dataDir.js");
+  if (!existsSync(join(process.cwd(), "hive.yml")) && !existsSync(join(storeDir(), "hive.yml"))) return;
 
   const { checkAbi } = await import("../dist/abi.js");
   if (checkAbi().ok) return;

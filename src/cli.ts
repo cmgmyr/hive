@@ -28,7 +28,7 @@ import {
   AutoAttach,
   isAttachMode,
   isAutoAttach,
-  resolvedAttachMode,
+  migrateLegacyConfig,
   resolvedAutoAttach,
   setAttachMode,
   setAutoAttach,
@@ -192,10 +192,13 @@ import {
 import {
   activeProfile,
   agentVarKeys,
+  BUILT_IN_PROJECT_YML,
   configHash,
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
+  PROJECT_YML_KEYS,
+  type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
   type YmlProcess,
@@ -602,6 +605,11 @@ function ensureLeadRow(
   };
 }
 
+function reportMigrationResult(result: ReturnType<typeof migrateLegacyConfig>): void {
+  if (result.notice) console.error(result.notice);
+  for (const warning of result.warnings) console.error(`! ${warning}`);
+}
+
 async function cmdLead(argv: string[]): Promise<void> {
 
   const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard");
@@ -617,6 +625,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProject(path, (text) => {
       registrationNotice = text;
     });
+    reportMigrationResult(migrateLegacyConfig());
     const session = sessionName();
     const hooksPath = ensureHooksFile();
 
@@ -902,7 +911,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # Commands defined here run only after a one-time interactive approval,
 # and re-require it whenever they change.
 
-placement: split                # placement for workers and visible processes: split (panes) or
+# placement: split              # placement for workers and visible processes: split (panes) or
                                 # window (tabs)
 
 # layout: main-vertical         # pane arrangement for placement: split.
@@ -1081,6 +1090,7 @@ async function cmdInit(argv: string[]): Promise<void> {
   requireFlagValues("init", parsed);
 
   const noProfile = parsed.flags.has("--no-profile");
+  const profileFlag = noProfile || parsed.values.has("--profile");
   const path = parsed.positional[0];
   let chosen: string | null = noProfile ? NO_PROFILE : null;
   if (parsed.values.has("--profile")) {
@@ -1145,21 +1155,30 @@ async function cmdInit(argv: string[]): Promise<void> {
   if (path == null && newlyRegistered) console.error(registrationNoticeText(project));
 
   const ymlPath = join(project.path, "hive.yml");
-  const already = existsSync(ymlPath) ? loadProjectYml(project.path).config?.profile ?? null : null;
+  const ymlExists = existsSync(ymlPath);
+  const loaded = loadProjectYml(project.path);
+  const projectProfileSet = ymlExists && loaded.sources.profile === "project";
+  const already = projectProfileSet ? loaded.config?.profile ?? null : null;
+  let inheritedProfile = false;
 
   if (already != null) {
     if (chosen != null && chosen !== already) {
       console.log(`- hive.yml: already set to "profile: ${already}"; edit it by hand to change it`);
     }
     chosen = already;
+  } else if (projectProfileSet && !profileFlag) {
+    chosen = null;
+  } else if (!projectProfileSet && !profileFlag && loaded.config?.profile != null) {
+    chosen = loaded.config.profile;
+    inheritedProfile = loaded.sources.profile === "global";
   } else if (chosen == null && process.stdin.isTTY && process.stdout.isTTY) {
     chosen = await askForProfile();
   }
 
-  if (!existsSync(ymlPath)) {
-    writeFileSync(ymlPath, HIVE_YML_TEMPLATE + (chosen ? `\nprofile: ${chosen}\n` : ""));
+  if (!ymlExists) {
+    writeFileSync(ymlPath, HIVE_YML_TEMPLATE + (chosen && !inheritedProfile ? `\nprofile: ${chosen}\n` : ""));
     console.log(`- hive.yml: created${chosen ? ` with profile: ${chosen}` : ""}`);
-  } else if (already == null && chosen != null) {
+  } else if (already == null && chosen != null && !inheritedProfile) {
     writeProfileKey(ymlPath, chosen);
     console.log(`- hive.yml: added profile: ${chosen}`);
   } else {
@@ -2005,6 +2024,8 @@ function cmdSetup(argv: string[]): void {
     process.exit(1);
   }
 
+  reportMigrationResult(migrateLegacyConfig());
+
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, dispatcherScript(node, cli));
   chmodSync(file, 0o755);
@@ -2594,6 +2615,39 @@ function reportStalledWorkers(projectId: number): void {
   }
 }
 
+function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
+  const config = loaded.config ?? BUILT_IN_PROJECT_YML;
+  for (const key of PROJECT_YML_KEYS) {
+    info(`config ${key}`, `${JSON.stringify(config[key])} (source: ${loaded.sources[key] ?? "built-in"})`);
+  }
+  const varKeys = new Set(Object.keys(config.vars));
+  for (const key of Object.keys(loaded.sources)) {
+    if (key.startsWith("vars.")) varKeys.add(key.slice("vars.".length));
+  }
+  for (const key of [...varKeys].sort()) {
+    const value = Object.hasOwn(config.vars, key) ? config.vars[key] : null;
+    info(`config vars.${key}`, `${JSON.stringify(value)} (source: ${loaded.sources[`vars.${key}`] ?? "built-in"})`);
+  }
+  const { mode: attachMode, source: attachSource } = loaded.attach;
+  info(
+    "attach mode",
+    attachSource === "env"
+      ? `${attachMode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach; source: env)`
+      : attachSource === "global"
+        ? `${attachMode} (set with \`hive setup --attach\`; source: global)`
+      : `${attachMode} (default; set with \`hive setup --attach\`; source: built-in)`,
+  );
+  const { value: autoAttach, source: autoAttachSource } = loaded.autoAttach;
+  info(
+    "auto-attach",
+    autoAttachSource === "env"
+      ? `${autoAttach} (HIVE_AUTO_ATTACH override; testing only; source: env)`
+      : autoAttachSource === "global"
+        ? `${autoAttach} (set with \`hive setup --auto-attach\`; source: global)`
+        : `${autoAttach} (default; set with \`hive setup --auto-attach\`; source: built-in)`,
+  );
+}
+
 function cmdDoctor(argv: string[]): void {
   const strict = argv.includes("--strict");
   doctorVerbose = argv.includes("--verbose");
@@ -2604,6 +2658,7 @@ function cmdDoctor(argv: string[]): void {
     console.error(`hive doctor: unknown argument "${unknown}". Flags are --strict and --verbose.`);
     process.exit(1);
   }
+  reportMigrationResult(migrateLegacyConfig());
   let failures = 0;
 
   const fail = (label: string, ...lines: string[]) => {
@@ -2668,8 +2723,13 @@ function cmdDoctor(argv: string[]): void {
 
   const loaded = loadProjectYml(here?.path ?? process.cwd());
 
-  for (const w of loaded.warnings) warn("hive.yml", w);
+  for (const w of loaded.warnings) {
+    const qualified = /^([^:]+): ([\s\S]*)$/.exec(w);
+    if (qualified) warn(qualified[1]!, qualified[2]!);
+    else warn("hive.yml", w);
+  }
   const config = loaded.config;
+  reportEffectiveConfig(loaded);
   const profile = activeProfile(config);
   if (here && existsSync(join(here.path, ".claude", "dashboard", "index.html"))) {
     info(
@@ -3067,28 +3127,8 @@ function cmdDoctor(argv: string[]): void {
     return health.message;
   });
   {
-    const { value, source } = resolvedAutoAttach();
-    info(
-      "auto-attach",
-      source === "env"
-        ? `${value} (HIVE_AUTO_ATTACH override; testing only)`
-        : source === "config"
-          ? `${value} (set with \`hive setup --auto-attach\`)`
-          : `${value} (default; set with \`hive setup --auto-attach\`)`,
-    );
-  }
-  {
-    const { mode, source } = resolvedAttachMode();
-    info(
-      "attach mode",
-      source === "env"
-        ? `${mode} (HIVE_ATTACH_MODE override; testing only, does not reach auto-attach)`
-        : source === "config"
-          ? `${mode} (set with \`hive setup --attach\`)`
-          : `${mode} (default; set with \`hive setup --attach\`)`,
-    );
+    const { mode } = loaded.attach;
     if (mode === "raw") {
-
       try {
         const owned = tmux("list-windows", "-a", "-F", "#{session_name}:#{window_id}\t#{@hive-owned}")
           .trim()
@@ -3111,9 +3151,7 @@ function cmdDoctor(argv: string[]): void {
               `monitor-bell ${option("-w", "monitor-bell")}`,
           );
         }
-      } catch {
-
-      }
+      } catch {}
     }
   }
 

@@ -24,6 +24,7 @@ case "$DATA_DIR" in
   *) DATA_DIR="$(pwd)/$DATA_DIR" ;;
 esac
 DB="$DATA_DIR/hive.db"
+GLOBAL_YML="$DATA_DIR/hive.yml"
 LOG="${HIVE_RESTART_LOG:-$HOME/.hive/restart-lead.log}"
 
 READY_TIMEOUT="${HIVE_RESTART_READY_TIMEOUT:-45}"
@@ -161,10 +162,10 @@ if [ -n "$PANE" ] && awaiting_choice "$PANE"; then
 fi
 
 DIST_PROJECTYML="$SCRIPT_DIR/../dist/projectYml.js"
-if [ -f "$PROJECT_PATH/hive.yml" ]; then
-  command -v node >/dev/null || refuse "hive.yml exists but node is not on PATH to check whether its lead: command is trusted; put node on PATH, or run 'hive lead' interactively once, before restarting unattended"
-  [ -f "$DIST_PROJECTYML" ] || refuse "cannot verify hive.yml's trust: $DIST_PROJECTYML is missing (dist/ not built, or a build is in progress) - run 'npm run build', or wait for the current one to finish, before restarting unattended"
-  TRUST_CHECK=$(RL_PROJECT_PATH="$PROJECT_PATH" RL_DIST_PROJECTYML="$DIST_PROJECTYML" node -e '
+if [ -f "$PROJECT_PATH/hive.yml" ] || [ -f "$GLOBAL_YML" ]; then
+  command -v node >/dev/null || refuse "hive.yml configuration exists but node is not on PATH to check whether its lead: command is trusted; put node on PATH, or run 'hive lead' interactively once, before restarting unattended"
+  [ -f "$DIST_PROJECTYML" ] || refuse "cannot verify hive.yml configuration trust: $DIST_PROJECTYML is missing (dist/ not built, or a build is in progress) - run 'npm run build', or wait for the current one to finish, before restarting unattended"
+  TRUST_CHECK=$(HIVE_DATA_DIR="$DATA_DIR" RL_PROJECT_PATH="$PROJECT_PATH" RL_DIST_PROJECTYML="$DIST_PROJECTYML" node -e '
     const { loadProjectYml, configHash } = require(process.env.RL_DIST_PROJECTYML);
     const { config } = loadProjectYml(process.env.RL_PROJECT_PATH);
     if (!config) { process.stdout.write("PARSE_ERROR"); process.exit(0); }
@@ -172,11 +173,11 @@ if [ -f "$PROJECT_PATH/hive.yml" ]; then
     process.stdout.write("LEAD:" + configHash("lead", config.lead, null, {}));
   ' 2>&1)
   NODE_STATUS=$?
-  [ "$NODE_STATUS" = "0" ] || refuse "could not verify hive.yml's trust (node exited $NODE_STATUS: $TRUST_CHECK); run 'hive lead' interactively once to check it by hand before restarting unattended"
+  [ "$NODE_STATUS" = "0" ] || refuse "could not verify hive.yml configuration trust (node exited $NODE_STATUS: $TRUST_CHECK); run 'hive lead' interactively once to check it by hand before restarting unattended"
   case "$TRUST_CHECK" in
     NO_LEAD) ;;
     PARSE_ERROR)
-      refuse "hive.yml exists but failed to parse; hive lead would silently fall back to plain claude on this exact file - fix hive.yml, or run 'hive lead' interactively once to see the real error, before restarting unattended"
+      refuse "hive.yml configuration failed to parse; hive lead would silently fall back to plain claude - fix the configuration, or run 'hive lead' interactively once to see the real error, before restarting unattended"
       ;;
     LEAD:*)
       LEAD_HASH="${TRUST_CHECK#LEAD:}"

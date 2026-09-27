@@ -15,6 +15,18 @@ const { createWindow, ensureSession, sessionName } = await import("../dist/tmux.
 
 const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 
+function withoutConfigSourceRows(stdout) {
+  return stdout.split("\n").filter((line) => !/^\s*info\s+config /.test(line)).join("\n");
+}
+
+function assertNoProcessSurface(stdout) {
+  assert.doesNotMatch(withoutConfigSourceRows(stdout), /processes:/);
+  assert.throws(
+    () => assert.doesNotMatch(withoutConfigSourceRows(`${stdout}\n  info  processes: 1 running`), /processes:/),
+    assert.AssertionError,
+  );
+}
+
 let projectId;
 let projectName;
 let session;
@@ -71,7 +83,8 @@ describe("status, doctor and the dashboard report where each process is (todo 76
 
     const { stdout } = await runCli(["doctor"], otherOpts);
 
-    assert.doesNotMatch(stdout, /processes:/);
+    assert.match(stdout, /info {2}config processes: {} \(source: built-in\)/);
+    assertNoProcessSurface(stdout);
   });
 
   it("puts the same counts on the dashboard's processes card and section", needsTmux, () => {

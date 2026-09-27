@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -159,13 +159,12 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
     return { fired: false, reason: "cwd does not exist" };
   }
 
-  if (!existsSync(join(dir, "hive.yml"))) return { fired: false, reason: "no hive.yml here" };
-
   const { activeProfile, DEFAULT_LEAD_BRANCHES, loadProjectYml } = await import("./projectYml.js");
   const { profileExists } = await import("./profiles.js");
   const { config, warnings } = loadProjectYml(dir);
 
   const silent = (reason: string): KickoffResult => ({ fired: false, reason, warnings });
+  if (config == null) return silent("no hive.yml here");
   const profile = activeProfile(config);
 
   if (!profile) return silent("no profile in hive.yml");

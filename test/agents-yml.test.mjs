@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { agentVarKeys, agentVars, allowedAgents, loadProjectYml, mergedProjectVars } from "../dist/projectYml.js";
+import { scratchDirs } from "./helpers.mjs";
+
+process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
+const { agentVarKeys, agentVars, allowedAgents, loadProjectYml, mergedProjectVars } = await import("../dist/projectYml.js");
 
 function ymlProject(body) {
   const dir = mkdtempSync(join(tmpdir(), "hive-yml-agents-"));

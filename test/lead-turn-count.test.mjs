@@ -9,6 +9,7 @@ import { runCli, scratchDirs, isolateTmux } from "./helpers.mjs";
 const { cleanup: cleanupTmux } = isolateTmux("lead turn count tests");
 after(() => cleanupTmux());
 
+process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
 const { readTurnCount } = await import("../dist/turnCount.js");
 const { loadProjectYml } = await import("../dist/projectYml.js");
 

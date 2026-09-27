@@ -45,6 +45,8 @@ Workers spawn as panes inside the lead's window by default, tiled evenly. Two kn
 - **Placement**: `placement: split` (default, panes) or `placement: window` (a tab per worker). `HIVE_SPAWN_PLACEMENT=window` sets it machine-wide.
 - **Layout**: `layout: tiled` (default), `main-vertical`, `main-horizontal`, `even-horizontal`, or `even-vertical`. The `main-*` layouts give the lead a bigger pane and stack workers on the side.
 
+The global file can supply either setting; project values take precedence. See [global defaults](configuration.md#global-defaults).
+
 hive re-applies the layout whenever a worker spawns or closes, so it holds up as the crew changes size. `agent_spawn`'s receipt names the layout it applied, so you can tell what hive chose without checking the panes by eye.
 
 ## Workers

@@ -73,6 +73,7 @@ describe("claude-plugin shim", () => {
     after(() => rmSync(elsewhere, { recursive: true, force: true }));
 
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("HIVE_")));
+    env.HIVE_DATA_DIR = join(elsewhere, "data");
     const out = execFileSync("node", [join(link, "kickoff.mjs"), "--explain"], {
       cwd: elsewhere,
       encoding: "utf8",
