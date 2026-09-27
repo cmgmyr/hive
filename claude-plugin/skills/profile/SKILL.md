@@ -9,7 +9,7 @@ You are interviewing someone to produce, or change, a hive profile: the standing
 
 ## Read before you ask anything
 
-Run `hive profile list` and `hive doctor` (or read this project's `hive.yml` directly) before the first question. If this is an edit, also read the named profile's current files with `hive profile read <file> --profile <name>` for each of `posture.md`, `runbook.md`, `worker.md`, and any other `.md` it carries - never the raw path, which shows unrendered `{{vars}}` and nothing that says so. Do not ask the user to repeat anything already answered by what you just read.
+Run `hive profile list` and `hive doctor` (or read this project's `hive.yml` directly) before the first question. If this is an edit, also read the named profile's current, rendered behavior with `hive profile read <file> --profile <name>` for each of `posture.md`, `runbook.md`, `worker.md`, and any other `.md` it carries, so you understand what this profile actually does today. Do not ask the user to repeat anything already answered by what you just read. This rendered read is for understanding only - `references/interview.md` covers the raw template (via `hive profile path`) you must read from, and write onto, when you actually apply an edit; a rendered copy drops any conditional section whose var is unset, so it is never a safe edit source.
 
 ## Discovery first, not a checklist
 
