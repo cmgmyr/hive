@@ -98,8 +98,11 @@ describe("claude-plugin skills", () => {
 
   it("keeps the profile skill's reference and recipe directories free of stray files npm pack would skip silently", () => {
     const refsDir = join(pluginDir, "skills", "profile", "references");
-    const files = readdirSync(refsDir, { withFileTypes: true }).filter((e) => e.isFile());
-    for (const f of files) assert.match(f.name, /\.md$/, `${f.name} is not a .md reference file`);
+    for (const dir of [refsDir, join(refsDir, "recipes")]) {
+      const files = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile());
+      assert.ok(files.length > 0, `${dir} should not be empty`);
+      for (const f of files) assert.match(f.name, /\.md$/, `${join(dir, f.name)} is not a .md reference file`);
+    }
   });
 });
 

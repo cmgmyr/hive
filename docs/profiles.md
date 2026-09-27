@@ -69,40 +69,15 @@ Your forks are never overwritten. hive records the hash of what it shipped at fo
 
 ### Creating or editing a profile by interview
 
-The `profile` skill (`claude-plugin/skills/profile`, invoked as
-`/hive:profile` once the plugin is installed) interviews you about how you
-work with agents today, then creates a new profile or edits an existing
-one from your answers, the way Claude's own skill-creator builds a skill
-from a conversation.
+The `profile` skill (`claude-plugin/skills/profile`, invoked as `/hive:profile` once the plugin is installed) interviews you about how you work with agents today, then creates a new profile or edits an existing one from your answers.
 
-Discovery comes first: it asks about a recent task, follows up on what
-already works and where you repeat yourself, and only then proposes a
-profile - it does not walk you through a fixed list of questions. Both
-`orchestration` and `simple` are equally valid outcomes; it recommends one
-from what you said and offers the other. It can build more than one
-profile in a session, and a first profile stays small: it carries only what
-the interview surfaced, and later edit runs are how it grows.
+Discovery comes first: it asks about a recent task, follows up on what already works and where you repeat yourself, and only then proposes a profile - it does not walk you through a fixed list of questions. Both `orchestration` and `simple` are equally valid outcomes; it recommends one from what you said and offers the other. It can build more than one profile in a session, and a first profile stays small: it carries only what the interview surfaced, and later edit runs are how it grows.
 
-It can write to your own override (`~/.hive/profiles/<name>/` or wherever
-`HIVE_DATA_DIR` points) or, when you are working inside a hive source
-checkout, to that checkout's own `profiles/<name>/`; it shows you which one
-before writing and says so if your override is already hiding the shipped
-source it is about to change. "This project only" picks a distinct named
-profile selected in this project's `hive.yml`; "every project on this
-machine" sets `profile:` in your `~/.hive/hive.yml` instead - there is no
-way to make a profile live as files inside a project's own repository.
+It can write to your own override (`~/.hive/profiles/<name>/` or wherever `HIVE_DATA_DIR` points) or, when you are working inside a hive source checkout, to that checkout's own `profiles/<name>/`; it shows you which one before writing and says so if your override is already hiding the shipped source it is about to change. "This project only" picks a distinct named profile selected in this project's `hive.yml`; "every project on this machine" sets `profile:` in your `~/.hive/hive.yml` instead - there is no way to make a profile live as files inside a project's own repository.
 
-Editing preserves anything you did not ask to change: unrelated sections,
-extra `.md` files a profile carries, `hive.yml`'s own keys and comments. It
-validates what it wrote with `hive doctor` and `hive profile read` before
-telling you it's done, and reminds you to restart the affected session
-afterward.
+Editing preserves anything you did not ask to change: unrelated sections, extra `.md` files a profile carries, `hive.yml`'s own keys and comments. It validates what it wrote with `hive doctor` and `hive profile read` before telling you it's done, and reminds you to restart the affected session afterward.
 
-It also carries a small library of optional recipes (verification, a
-shared test-resource rule, a review-decision habit, session continuity, a
-worker context checkpoint) - patterns it offers only when your answers
-actually point at the problem each one solves, never as a required
-checklist.
+It also carries a small library of optional recipes (verification, a shared test-resource rule, a review-decision habit, session continuity, a worker context checkpoint) - patterns it offers only when your answers actually point at the problem each one solves, never as a required checklist.
 
 ## Session-start kickoff (optional plugin)
 

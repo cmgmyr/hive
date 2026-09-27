@@ -34,7 +34,7 @@ describe("recipe index links five real, well-formed recipes", () => {
     assert.equal(rows.length, 5);
   });
 
-  for (const { label, link, route } of indexRows()) {
+  for (const { label, link, route } of rows) {
     it(`"${label}" links a recipe file that exists, relative to the index`, () => {
       assert.equal(existsSync(join(recipesDir, link)), true, `${link} does not exist next to index.md`);
     });
