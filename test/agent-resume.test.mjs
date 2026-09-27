@@ -68,6 +68,8 @@ describe("agent_resume", { skip: hasTmux ? false : "tmux is not installed" }, ()
       row.command.includes(`--resume ${beforeStatus.session_id}`),
       `command should carry --resume: ${row.command}`,
     );
+    assert.match(row.command, /--model ['"]?opus\[1m\]['"]?/);
+    assert.match(row.command, /--effort high/);
 
     await mcp.call("agent_close", { name: "resume-me" });
   });

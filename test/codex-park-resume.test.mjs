@@ -146,6 +146,7 @@ describe(
         name: "codex-resume-model",
         command: fakeCodexBin,
         model: "gpt-5-codex",
+        extra_args: ["-c", "model_reasoning_effort=low", "--resume", "stale-session"],
       });
       await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
       db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("fake-codex-resume-model-session", receipt.agent_id);
@@ -165,6 +166,8 @@ describe(
         modelIndex < resumeIndex,
         `--model must sit at the root, before the resume subcommand: ${argv.join(" ")}`,
       );
+      assert.equal(argv[argv.indexOf("-c") + 1], "model_reasoning_effort=low");
+      assert.equal(argv.includes("stale-session"), false, "resume must not retain the old session id");
     });
 
     it("refuses to resume a codex worker whose CODEX_HOME was already reaped by agent_close", async () => {
