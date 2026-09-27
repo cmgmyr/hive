@@ -192,6 +192,20 @@ describe("the cleanup skill ships with a lead home (todo 575 requirement 3)", ()
 });
 
 describe("the generated config.toml is real, parseable TOML (the H7 ordering trap, as an outcome assertion)", () => {
+  it("pre-approves hive tools in worker, read-only worker, and lead homes without copying the user's MCP config", () => {
+    const realConfig = join(scratch, "real-codex-config.toml");
+    writeFileSync(realConfig, '[mcp_servers.hive]\ndefault_tools_approval_mode = "never"\n');
+
+    for (const options of [{}, { readOnly: true }, { lead: true }]) {
+      const key = `worker-${counter++}`;
+      build({ key, realConfigSource: realConfig, ...options });
+      const parsed = parseToml(readFileSync(join(codexHomeDir(key), "config.toml"), "utf8"));
+      assert.equal(parsed.mcp_servers.hive.default_tools_approval_mode, "approve");
+      assert.equal("approval_policy" in parsed, false);
+      assert.equal(Object.keys(parsed.mcp_servers.hive).sort().join(","), "args,command,default_tools_approval_mode,env");
+    }
+  });
+
   it("resolves developer_instructions at the TOP LEVEL, not nested under any table", () => {
     const key = `worker-${counter}`;
     build({ key, brief: "line one\nline two" });
