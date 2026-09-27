@@ -52,6 +52,7 @@ for (const harness of ["claude", "codex"]) {
       if (harness === "codex") {
         assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
         assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+        assert.equal(args.includes("--add-dir"), false);
         assert.equal(args[args.indexOf("-c") + 1], 'approval_policy="never"');
         assert.equal(parseToml(readFileSync(join(receipt.codex_home, "config.toml"), "utf8")).mcp_servers.hive.default_tools_approval_mode, "approve");
       } else {
@@ -84,6 +85,7 @@ for (const harness of ["claude", "codex"]) {
         assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
         assert.ok(args.includes('approval_policy="never"'));
         assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+        assert.equal(args.includes("--add-dir"), false);
       } else {
         const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
         assert.deepEqual(settings.sandbox.filesystem.denyWrite, ["//"]);
@@ -143,4 +145,11 @@ it("read-only refuses unknown harnesses, permission overrides and unknown input 
 
 it("codex's default launch argv remains byte-identical when readOnly is false", () => {
   assert.deepEqual(codexLaunchArgs(dirs.projectDir), codexLaunchArgs(dirs.projectDir, false));
+});
+
+it("read-only codex launch omits additional writable roots that the TUI refuses", () => {
+  const args = codexLaunchArgs(dirs.projectDir, true);
+  assert.equal(args.includes("--add-dir"), false);
+  assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+  assert.ok(codexLaunchArgs(dirs.projectDir).includes("--add-dir"));
 });

@@ -283,7 +283,7 @@ export function codexLaunchArgs(cwd: string, readOnly = false): string[] {
     // NOT parity with claude's posture, and --add-dir is NOT containment - see the reference.
     ...(readOnly ? ["--sandbox", "read-only", "-c", 'approval_policy="never"'] : ["--dangerously-bypass-approvals-and-sandbox"]),
     // Inert alongside the flag above, kept because its value seeds [projects.<root>] trust.
-    ...(commonDir ? ["--add-dir", commonDir] : []),
+    ...(commonDir && !readOnly ? ["--add-dir", commonDir] : []),
   ];
 }
 
