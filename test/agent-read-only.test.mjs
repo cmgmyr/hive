@@ -113,7 +113,7 @@ for (const harness of ["claude", "codex"]) {
     assert.equal((await mcp.call("agent_status", { agent_id: receipt.agent_id })).read_only, false);
     if (harness === "codex") {
       assert.deepEqual(args, ["--model", "test-model", "--dangerously-bypass-hook-trust", "--dangerously-bypass-approvals-and-sandbox", "--add-dir", join(dirs.projectDir, ".git"), "--example"]);
-      assert.equal(parseToml(readFileSync(join(receipt.codex_home, "config.toml"), "utf8")).mcp_servers.hive.default_tools_approval_mode, undefined);
+      assert.equal(parseToml(readFileSync(join(receipt.codex_home, "config.toml"), "utf8")).mcp_servers.hive.default_tools_approval_mode, "approve");
     } else {
       assert.deepEqual(args, ["--model", "test-model", "--name", "ordinary-claude", "--settings", join(dirs.dataDir, `worker-${receipt.agent_id}-hooks.json`), "--append-system-prompt-file", join(dirs.dataDir, "briefs", `agent-${receipt.agent_id}.md`), "--session-id", row.session_id, "--example"]);
       const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));

@@ -261,7 +261,7 @@ function configToml(input: {
       `trust_level = "trusted"`,
       "",
       `[mcp_servers.hive]`,
-      ...(input.readOnly ? [`default_tools_approval_mode = "approve"`] : []),
+      `default_tools_approval_mode = "approve"`,
       `command = ${tomlString(input.nodeBin)}`,
       `args = [${tomlString(input.indexJs)}]`,
       "",
