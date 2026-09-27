@@ -13,6 +13,18 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { sessionName } = await import("../dist/tmux.js");
 
+function withoutConfigSourceRows(stdout) {
+  return stdout.split("\n").filter((line) => !/^\s*info\s+config /.test(line)).join("\n");
+}
+
+function assertNoLeadLiveness(stdout, message) {
+  assert.doesNotMatch(withoutConfigSourceRows(stdout), /lead:/, message);
+  assert.throws(
+    () => assert.doesNotMatch(withoutConfigSourceRows(`${stdout}\n  warn  lead: fixture liveness warning`), /lead:/),
+    assert.AssertionError,
+  );
+}
+
 let projectId;
 let session;
 let baseline;
@@ -31,7 +43,7 @@ after(() => cleanup(session));
 describe("hive doctor reports a lead row whose pane is not live", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   it("the no-lead-row baseline itself stays quiet about the lead", () => {
 
-    assert.doesNotMatch(baseline.stdout, /lead:/, "nothing to report without a lead row");
+    assertNoLeadLiveness(baseline.stdout, "nothing to report without a lead row");
   });
 
   it("warns when a running lead row's pane is not live", async () => {
@@ -87,7 +99,7 @@ describe("hive doctor reports a lead row whose pane is not live", { skip: hasTmu
 
     const out = await runCli(["doctor"], opts);
 
-    assert.doesNotMatch(out.stdout, /lead:/, "a genuinely live lead must not be reported as dead");
+    assertNoLeadLiveness(out.stdout, "a genuinely live lead must not be reported as dead");
     assert.equal(failureCount(out.stdout), failureCount(baseline.stdout));
 
     const lead = db.prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND kind = 'lead'").get(projectId);
