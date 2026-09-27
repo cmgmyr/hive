@@ -43,13 +43,14 @@ function stateHookSettings(): { hooks: Record<string, HookEntry[]> } {
   };
 }
 
-export function ensureWorkerHooksFile(agentId: number, options: { includePostToolUse: boolean }): string {
+export function ensureWorkerHooksFile(agentId: number, options: { includePostToolUse: boolean; readOnly?: boolean }): string {
   const worker = db.prepare("SELECT cwd FROM agents WHERE id = ? AND kind = 'agent'").get(agentId) as { cwd: string } | undefined;
   if (!worker) throw new Error(`hive: worker ${agentId} does not exist`);
   const settings = {
     ...stateHookSettings(),
     statusLine: statusLineEntry(effectiveClaudeStatusLine(worker.cwd)),
-    permissions: { deny: ["SendMessage", "ListAgents"] },
+    permissions: { deny: ["SendMessage", "ListAgents", ...(options.readOnly ? ["Edit", "Write", "NotebookEdit"] : [])] },
+    ...(options.readOnly ? { sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, filesystem: { denyWrite: ["//"] } } } : {}),
     crossSessionInbound: "refuse",
   };
   if (options.includePostToolUse) settings.hooks.PostToolUse = [hookEntry("post_tool_use", "claude")];

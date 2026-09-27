@@ -51,6 +51,7 @@ import {
   releaseParkRow,
   renameAgent,
   resumeAgent,
+  storedLaunchOptions,
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
@@ -490,6 +491,7 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
 
     ...lastLogEventField(row),
     ...permissionModeField(row),
+    read_only: storedLaunchOptions(row.extra_args).readOnly,
     ...contextFillField(row),
 
     ...(row.parked_at ? { parked_at: row.parked_at, parked_branch: row.parked_branch || null } : {}),
@@ -545,6 +547,7 @@ export function registerAgents(server: McpServer): void {
             "Spawn a known harness by name (e.g. \"codex\") instead of a raw command. Ignored when command is also given. Must be in the project's hive.yml agents: list (default: claude only).",
           ),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
+        read_only: z.boolean().optional().describe("Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only claude/codex; command must be a bare executable and extra_args must be empty."),
         cwd: z
           .string()
           .optional()
@@ -574,6 +577,7 @@ export function registerAgents(server: McpServer): void {
         worktree_install: z.string().optional(),
         brief_path: z.string().optional(),
         codex_home: z.string().optional(),
+        read_only: z.boolean().optional(),
         codex_instructions: z.string().optional(),
         ready: z.boolean().optional(),
         exited: z.boolean().optional(),
@@ -636,6 +640,13 @@ export function registerAgents(server: McpServer): void {
               `agents: list (${allowed.join(", ")}). Add it to agents: to allow spawning it.`,
           );
         }
+        if (args.read_only && (
+          !["claude", "codex"].includes(harness.name) ||
+          !/^[A-Za-z0-9_./-]+$/.test(baseCommand) ||
+          (args.extra_args?.length ?? 0) > 0
+        )) {
+          throw new Error("read_only requires a bare claude or codex executable and no extra_args; launch overrides can bypass its restrictions.");
+        }
         const mintsSession = harness.mintsSessionId;
 
         const sessionId = mintsSession && !requestsExistingSession(args.extra_args) ? randomUUID() : "";
@@ -661,7 +672,7 @@ export function registerAgents(server: McpServer): void {
           const briefPath = harness.briefDelivery ? writeAgentBrief(agentId, brief!) : undefined;
           let homeArgs: string[] = [];
           if (codexHomeKey) {
-            const home = ensureCodexHome({ key: codexHomeKey, actorId, serverEnv: agentIdentityEnv(actorId, name, project.path), cwd, brief: brief!, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+            const home = ensureCodexHome({ key: codexHomeKey, actorId, serverEnv: agentIdentityEnv(actorId, name, project.path), cwd, brief: brief!, readOnly: args.read_only, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
             homeArgs = home.extraArgs;
             codexInstructionLayers = home.instructionLayers;
           }
@@ -676,7 +687,7 @@ export function registerAgents(server: McpServer): void {
                 ? [...(sessionId ? ["--session-id", sessionId] : []), ...(args.extra_args ?? [])]
                 : (args.extra_args ?? [])),
             ],
-            settingsPath: harness.briefDelivery ? ensureWorkerHooksFile(agentId, { includePostToolUse: projectConfig?.context_checkpoint_percent != null }) : undefined,
+            settingsPath: harness.briefDelivery ? ensureWorkerHooksFile(agentId, { readOnly: args.read_only, includePostToolUse: projectConfig?.context_checkpoint_percent != null }) : undefined,
             briefPath,
           });
         };
@@ -704,6 +715,7 @@ export function registerAgents(server: McpServer): void {
             codexHome: codexHomeKey,
             model: args.model,
             extraArgs: args.extra_args,
+            readOnly: args.read_only,
             retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {
@@ -760,6 +772,7 @@ export function registerAgents(server: McpServer): void {
 
         return {
           agent_id: agentId,
+          ...(args.read_only ? { read_only: true } : {}),
           actor_id: actorId,
           name,
           tmux_target: target,
@@ -916,6 +929,7 @@ export function registerAgents(server: McpServer): void {
           projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
         const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
 
+        const launchOptions = storedLaunchOptions(agent.extra_args);
         let commandString: string;
         let resumeEnv: Record<string, string> = contextCheckpointEnv(projectConfig);
         if (resumeHarness.name === "codex") {
@@ -930,8 +944,8 @@ export function registerAgents(server: McpServer): void {
             // "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]"). No --settings/hooks file: a
             // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
             extraArgs: [
-              ...codexLaunchArgs(agent.cwd),
-              ...stripSessionArgs(agent.extra_args ? JSON.parse(agent.extra_args) : []),
+              ...codexLaunchArgs(agent.cwd, launchOptions.readOnly),
+              ...stripSessionArgs(launchOptions.args),
               "resume",
               agent.session_id,
             ],
@@ -946,11 +960,11 @@ export function registerAgents(server: McpServer): void {
             displayName: agent.name,
             model: agent.model ?? undefined,
             extraArgs: [
-              ...stripSessionArgs(agent.extra_args ? JSON.parse(agent.extra_args) : []),
+              ...stripSessionArgs(launchOptions.args),
               "--resume",
               agent.session_id,
             ],
-            settingsPath: ensureWorkerHooksFile(agent.id, { includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
+            settingsPath: ensureWorkerHooksFile(agent.id, { readOnly: launchOptions.readOnly, includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
           });
         }
 
