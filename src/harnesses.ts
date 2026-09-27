@@ -301,3 +301,14 @@ export function transcriptDirFor(command: string): boolean {
 export function hasTranscriptSignal(row: { command: string; transcript_path: string }): boolean {
   return transcriptDirFor(row.command) || row.transcript_path !== "";
 }
+
+export function readOnlyExtraArgsAllowed(harness: string, args: string[] = []): boolean {
+  const allowlist: Record<string, { flag: string; value: RegExp }> = {
+    codex: { flag: "-c", value: /^model_reasoning_effort=(low|medium|high|xhigh)$/ },
+    claude: { flag: "--effort", value: /^(low|medium|high|xhigh|max)$/ },
+  };
+  const allowed = allowlist[harness];
+  return allowed != null && args.length % 2 === 0 && args.every((arg, index) =>
+    index % 2 === 0 ? arg === allowed.flag : allowed.value.test(arg),
+  );
+}

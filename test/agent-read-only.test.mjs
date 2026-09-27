@@ -71,6 +71,37 @@ for (const harness of ["claude", "codex"]) {
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
   });
 
+  it(`${harness} read-only planning seat accepts effort arguments and preserves them on resume`, gate, async () => {
+    rmSync(argvFile, { force: true });
+    const effortArgs = harness === "codex" ? ["-c", "model_reasoning_effort=medium"] : ["--effort", "medium"];
+    const receipt = await mcp.call("agent_spawn", { name: `planner-${harness}`, command: join(bin, harness), model: harness === "codex" ? "gpt-6-sol" : "sonnet", read_only: true, extra_args: effortArgs });
+    let args = await argv();
+    const check = () => {
+      const valueIndex = args.indexOf(effortArgs[1]);
+      assert.ok(valueIndex > 0);
+      assert.equal(args[valueIndex - 1], effortArgs[0]);
+      if (harness === "codex") {
+        assert.equal(args[args.indexOf("--sandbox") + 1], "read-only");
+        assert.ok(args.includes('approval_policy="never"'));
+        assert.equal(args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+      } else {
+        const settings = JSON.parse(readFileSync(args[args.indexOf("--settings") + 1], "utf8"));
+        assert.deepEqual(settings.sandbox.filesystem.denyWrite, ["//"]);
+        assert.equal(settings.sandbox.allowUnsandboxedCommands, false);
+      }
+    };
+    check();
+    await liveAgentRow(mcp, `planner-${harness}`);
+    if (harness === "codex") db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("planner-session", receipt.agent_id);
+    await mcp.call("agent_park", { agent_id: receipt.agent_id });
+    rmSync(argvFile, { force: true });
+    await mcp.call("agent_resume", { agent_id: receipt.agent_id });
+    args = await argv();
+    check();
+    assert.equal((await mcp.call("agent_status", { agent_id: receipt.agent_id })).read_only, true);
+    await mcp.call("agent_close", { agent_id: receipt.agent_id });
+  });
+
   it(`${harness} ordinary spawn keeps the existing argv and config permissions`, gate, async () => {
     rmSync(argvFile, { force: true });
     const receipt = await mcp.call("agent_spawn", { name: `ordinary-${harness}`, command: join(bin, harness), model: "test-model", extra_args: ["--example"] });
@@ -96,6 +127,14 @@ it("read-only refuses unknown harnesses, permission overrides and unknown input 
     { command: "/bin/sh" },
     { command: "claude --dangerously-skip-permissions" },
     { command: join(bin, "codex"), extra_args: ["--sandbox", "danger-full-access"] },
+    { command: join(bin, "codex"), extra_args: ["-c", "sandbox_mode=\"danger-full-access\""] },
+    { command: join(bin, "codex"), extra_args: ["-c", "approval_policy=\"never\""] },
+    { command: join(bin, "codex"), extra_args: ["--dangerously-bypass-approvals-and-sandbox"] },
+    { command: join(bin, "codex"), extra_args: ["-c", "model_reasoning_effort=medium", "--dangerously-bypass-approvals-and-sandbox"] },
+    { command: join(bin, "codex"), extra_args: ["-c", "model_reasoning_effort=max"] },
+    { command: join(bin, "claude"), extra_args: ["--dangerously-skip-permissions"] },
+    { command: join(bin, "claude"), extra_args: ["--effort"] },
+    { command: join(bin, "claude"), extra_args: ["--effort", "medium", "--settings", "override.json"] },
   ]) {
     await assert.rejects(mcp.call("agent_spawn", { ...input, read_only: true }), /read_only requires/);
   }

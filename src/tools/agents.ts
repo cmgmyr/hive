@@ -16,7 +16,7 @@ import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot,
 import {
   commandHead,
   harnessFor,
-  harnessNames,
+  harnessNames, readOnlyExtraArgsAllowed,
   paneClassifierFor,
   resolvedCommandPrefix,
   screenClassifiable,
@@ -521,7 +521,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with no extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -547,7 +547,7 @@ export function registerAgents(server: McpServer): void {
             "Spawn a known harness by name (e.g. \"codex\") instead of a raw command. Ignored when command is also given. Must be in the project's hive.yml agents: list (default: claude only).",
           ),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
-        read_only: z.boolean().optional().describe("Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only claude/codex; command must be a bare executable and extra_args must be empty."),
+        read_only: z.boolean().optional().describe("Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only bare claude/codex executables. Extra args allow codex -c model_reasoning_effort=low|medium|high|xhigh, or claude --effort low|medium|high|xhigh|max; all other arguments are refused."),
         cwd: z
           .string()
           .optional()
@@ -643,7 +643,7 @@ export function registerAgents(server: McpServer): void {
         if (args.read_only && (
           !["claude", "codex"].includes(harness.name) ||
           !/^[A-Za-z0-9_./-]+$/.test(baseCommand) ||
-          (args.extra_args?.length ?? 0) > 0
+          !readOnlyExtraArgsAllowed(harness.name, args.extra_args)
         )) {
           throw new Error("read_only requires a bare claude or codex executable and no extra_args; launch overrides can bypass its restrictions.");
         }
