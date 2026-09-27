@@ -22,6 +22,9 @@ in place rather than copied, so `git pull && npm run build` upgrades the hook
 along with the rest of hive. `rm ~/.claude/skills/hive` uninstalls it.
 
 The hook lives here, and so does a skill (`skills/cleanup`, `/hive:cleanup`).
+A second skill, `skills/profile` (`/hive:profile`), interviews you about how
+you work and creates or edits a hive profile from the answers - see
+[docs/profiles.md](../docs/profiles.md).
 hive's posture and worker briefs still travel as command-line flags from
 `hive lead` and `agent_spawn`, because a plugin has no way to ship always-on
 instructions: plugin `CLAUDE.md` is not loaded as context, and the one

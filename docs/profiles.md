@@ -23,7 +23,7 @@ Resolution is per file, not per profile, so a file you never forked keeps tracki
 
 `hive doctor` fails a profile with no readable `runbook.md`, on the grounds that a lead using it then has no standing process; `posture.md` and `worker.md` have no such gate.
 
-Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only). Neither carries anything beyond the three.
+Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only). Neither carries anything beyond the three. A profile the `profile` skill (below) generates for you is not bound by that: it starts from whichever base you picked, but only carries what your interview actually surfaced, so a generated `simple` profile also gets a short `runbook.md` written from your own answers, even though the shipped `simple` base ships posture only.
 
 ```bash
 hive profile list                      # what exists, where each file resolves, what drifted
@@ -66,6 +66,37 @@ The three named files, and any fork-local extra, take `{{repo}}` and friends fro
 `vars` are repo-controlled and land in system prompts, with no approval step. Commands in `hive.yml` do have one, because hive executes them; `vars` are only quoted into a prompt, and Claude Code's own workspace trust already governs the wider version of that channel by loading a repo's `CLAUDE.md`. The practical consequence: a `hive.yml` you did not write reaches your workers' system prompts as soon as you run hive in that checkout, so read one the way you would read that repo's `CLAUDE.md`. hive is not a defense against opening a checkout you do not trust and does not pretend to be.
 
 Your forks are never overwritten. hive records the hash of what it shipped at fork time, so `hive profile list` and `hive doctor` can tell you when upstream moved and leave the decision to you.
+
+### Creating or editing a profile by interview
+
+The `profile` skill (`claude-plugin/skills/profile`, invoked as
+`/hive:profile` once the plugin is installed) interviews you about how you
+work with agents today, then creates a new profile or edits an existing
+one from your answers, the way Claude's own skill-creator builds a skill
+from a conversation.
+
+Discovery comes first: it asks about a recent task, follows up on what
+already works and where you repeat yourself, and only then proposes a
+profile - it does not walk you through a fixed list of questions. Both
+`orchestration` and `simple` are equally valid outcomes; it recommends one
+from what you said and offers the other. It can build more than one
+profile in a session, and a first profile stays small: it carries only what
+the interview surfaced, and later edit runs are how it grows.
+
+It can write to your own override (`~/.hive/profiles/<name>/` or wherever
+`HIVE_DATA_DIR` points) or, when you are working inside a hive source
+checkout, to that checkout's own `profiles/<name>/`; it shows you which one
+before writing and says so if your override is already hiding the shipped
+source it is about to change. "This project only" picks a distinct named
+profile selected in this project's `hive.yml`; "every project on this
+machine" sets `profile:` in your `~/.hive/hive.yml` instead - there is no
+way to make a profile live as files inside a project's own repository.
+
+Editing preserves anything you did not ask to change: unrelated sections,
+extra `.md` files a profile carries, `hive.yml`'s own keys and comments. It
+validates what it wrote with `hive doctor` and `hive profile read` before
+telling you it's done, and reminds you to restart the affected session
+afterward.
 
 ## Session-start kickoff (optional plugin)
 
