@@ -78,8 +78,8 @@ function writeRaceWorker(path, holdMs) {
       `});\n` +
       `const acquiredAt = Date.now();\n` +
       `await new Promise((r) => setTimeout(r, ${holdMs}));\n` +
-      `lock.release();\n` +
       `const releasedAt = Date.now();\n` +
+      `lock.release();\n` +
       `writeFileSync(resultPath, JSON.stringify({ pid: process.pid, acquiredAt, releasedAt }));\n`,
   );
 }
