@@ -433,15 +433,17 @@ function retryOnBusy<T>(fn: () => T, label: string): T {
     } catch (e) {
       const busy =
         e instanceof Error && ((e as NodeJS.ErrnoException).code === "SQLITE_BUSY" || /database is locked/.test(e.message));
-      if (!busy || attempt >= MIGRATE_LOCK_MAX_ATTEMPTS) {
+      if (busy && attempt < MIGRATE_LOCK_MAX_ATTEMPTS) continue;
+      if (busy) {
         console.error(
           `hive: ${label} did not complete after ${attempt} attempt(s): the store's write lock never freed ` +
             "up. Another hive process is likely still applying a migration (or is stuck); check for a " +
             `wedged hive process and try again. Underlying error: ${errorMessage(e)}`,
         );
-        process.exit(1);
+      } else {
+        console.error(`hive: ${label} failed: ${errorMessage(e)}`);
       }
-
+      process.exit(1);
     }
   }
 }
@@ -472,7 +474,13 @@ export function migrate(): void {
     MIGRATIONS.forEach((sql, i) => {
       const version = i + 1;
       if (applied.has(version)) return;
-      db.exec(sql);
+      try {
+        db.exec(sql);
+      } catch (e) {
+        const wrapped = new Error(`migration ${version}: ${errorMessage(e)}`);
+        if (e instanceof Error) (wrapped as NodeJS.ErrnoException).code = (e as NodeJS.ErrnoException).code;
+        throw wrapped;
+      }
       db.prepare("INSERT INTO migrations (version) VALUES (?)").run(version);
     });
   });
