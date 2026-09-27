@@ -192,10 +192,12 @@ import {
 import {
   activeProfile,
   agentVarKeys,
+  BUILT_IN_PROJECT_YML,
   configHash,
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
+  PROJECT_YML_KEYS,
   type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
@@ -2614,24 +2616,8 @@ function reportStalledWorkers(projectId: number): void {
 }
 
 function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
-  const config: ProjectYml = loaded.config ?? {
-    lead: null,
-    placement: null,
-    layout: null,
-    profile: null,
-    agents: null,
-    lead_branches: null,
-    context_checkpoint_percent: null,
-    lead_turn_budget: null,
-    dashboard: false,
-    vars: {},
-    processes: {},
-  };
-  const keys: (keyof ProjectYml)[] = [
-    "lead", "placement", "layout", "profile", "agents", "lead_branches",
-    "context_checkpoint_percent", "lead_turn_budget", "dashboard", "vars", "processes",
-  ];
-  for (const key of keys) {
+  const config = loaded.config ?? BUILT_IN_PROJECT_YML;
+  for (const key of PROJECT_YML_KEYS) {
     info(`config ${key}`, `${JSON.stringify(config[key])} (source: ${loaded.sources[key] ?? "built-in"})`);
   }
   const varKeys = new Set(Object.keys(config.vars));

@@ -44,6 +44,26 @@ export interface ProjectYml {
   processes: Record<string, YmlProcess>;
 }
 
+export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
+  lead: null,
+  placement: null,
+  layout: null,
+  profile: null,
+  agents: null,
+  lead_branches: null,
+  context_checkpoint_percent: null,
+  lead_turn_budget: null,
+  dashboard: false,
+  vars: Object.freeze({}),
+  processes: Object.freeze({}),
+});
+
+export const PROJECT_YML_KEYS = Object.freeze(Object.keys(BUILT_IN_PROJECT_YML) as (keyof ProjectYml)[]);
+
+export function createBuiltInProjectYml(): ProjectYml {
+  return structuredClone(BUILT_IN_PROJECT_YML) as ProjectYml;
+}
+
 export const DEFAULT_LEAD_BRANCHES = ["main", "master"];
 export const NO_PROFILE = "none";
 
@@ -301,24 +321,10 @@ function applyLayer(
 export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
   const global = readGlobalConfig();
   const warnings = [...global.warnings];
-  const config: ProjectYml = {
-    lead: null,
-    placement: null,
-    layout: null,
-    profile: null,
-    agents: null,
-    lead_branches: null,
-    context_checkpoint_percent: null,
-    lead_turn_budget: null,
-    dashboard: false,
-    vars: {},
-    processes: {},
-  };
-  const sources: Record<string, ConfigSource> = {
-    lead: "built-in", placement: "built-in", layout: "built-in", profile: "built-in",
-    agents: "built-in", lead_branches: "built-in", context_checkpoint_percent: "built-in",
-    lead_turn_budget: "built-in", dashboard: "built-in", vars: "built-in", processes: "built-in",
-  };
+  const config = createBuiltInProjectYml();
+  const sources: Record<string, ConfigSource> = Object.fromEntries(
+    PROJECT_YML_KEYS.map((key) => [key, "built-in"] as const),
+  );
 
   if (global.root) applyLayer(global.root, globalConfigPath(), "global", config, sources, warnings);
 

@@ -41,7 +41,21 @@ vars:
 
 The project lead, dashboard setting, and agents list replace their global values. The `vars` map merges by key, so the project replaces `repo`, keeps the global `check`, and adds `ticket`. `hive doctor` shows each effective value and its source, for example `config lead: "claude --model opus" (source: project)`, `config dashboard: false (source: project)`, and `config vars.check: "npm run lint && npm run build" (source: global)`. It lists each `vars.<key>` separately; a removed inherited var appears as `null` with the source that removed it.
 
-For scalar and list keys, an absent project key inherits the global value and an explicit project value replaces it. An explicit `null` clears nullable values such as `lead`, `placement`, `layout`, `profile`, `context_checkpoint_percent`, and `lead_branches` back to their built-in behavior. An empty `agents` list or `agents: null` restores Claude-only spawning; `lead_branches: []` disables kickoff, while `lead_branches: null` restores `main` and `master`. For `dashboard`, `null` resets to `false`. In `vars`, a null leaf removes only that inherited key; `vars: null` resets the map to empty, while `vars: {}` adds nothing and keeps inherited values. `lead_turn_budget` is one pair: a project pair replaces the whole global pair, and `null` clears both thresholds. The pair must use positive integer `warn` and `stop` values, with `stop` greater than `warn`.
+For scalar and list keys, an absent project key inherits the global value and an explicit project value replaces it. An explicit `null` clears nullable values such as `lead`, `placement`, `layout`, `profile`, `context_checkpoint_percent`, and `lead_branches` back to their built-in behavior. `hive doctor` prints the null sentinel and its source; it does not print the consumer's fallback value:
+
+| Key | Doctor prints | Runtime meaning |
+|---|---|---|
+| `lead` | `null` | Run the default `claude` command. |
+| `placement` | `null` | Use `window` when `HIVE_SPAWN_PLACEMENT=window`; otherwise use `split`. A project or global `placement` value takes precedence over this environment variable. |
+| `layout` | `null` | Use `tiled`. |
+| `profile` | `null` | No profile is active. |
+| `context_checkpoint_percent` | `null` | Context checkpoint notices are disabled. |
+| `lead_turn_budget` | `null` | No lead turn budget thresholds are active. |
+| `agents` | `null` | Allow Claude only. An empty list has the same effect. |
+| `lead_branches` | `null` | Use `main` and `master`. An empty list disables kickoff. |
+| `dashboard` | `false` | Dashboard generation is disabled; a YAML `null` also resets it to `false`. |
+
+In `vars`, a null leaf removes only that inherited key; `vars: null` resets the map to empty, while `vars: {}` adds nothing and keeps inherited values. A project `lead_turn_budget` pair replaces the whole global pair, and `null` clears both thresholds. The pair must use positive integer `warn` and `stop` values, with `stop` greater than `warn`.
 
 The keys shared between the two YAML files are `lead`, `placement`, `layout`, `profile`, `agents`, `lead_branches`, `context_checkpoint_percent`, `lead_turn_budget`, `dashboard`, and `vars`. `processes` is project-only because each command needs the project's trust approval. If the global file contains `processes`, including `processes: null`, doctor warns with the global file path and ignores it. `attach` and `autoAttach` are global-only; project occurrences warn and are ignored. Set them with `hive setup --attach <mode>` and `hive setup --auto-attach <mode>`, which preserve YAML comments and ordering. Doctor shows their source too. `HIVE_ATTACH_MODE` overrides global `attach`, and `HIVE_AUTO_ATTACH` overrides global `autoAttach`; `HIVE_SPAWN_PLACEMENT` remains below project and global `placement` values.
 
