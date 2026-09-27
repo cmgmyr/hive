@@ -58,6 +58,8 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 - The `codex` CLI installed and logged in (`codex login`). A codex worker's per-worker home symlinks its credentials from `~/.codex/auth.json`, so hive needs that file to already exist.
 - The project's `hive.yml` opting in: `agents: [claude, codex]` (see [docs/projects.md](projects.md#project-commands-hiveyml)). With no `agents:` key, a project allows `claude` only, and spawning codex, whether through `agent_spawn`'s `harness` parameter or a `command` that resolves to it, refuses with `[agent_spawn:harness-not-allowed]`. Add `codex` to `agents:` and spawn again.
 
+`agents` can also be set as a machine-wide default in `$HIVE_DATA_DIR/hive.yml`. A project list replaces that value. See [global defaults](configuration.md#global-defaults).
+
 A codex worker is not at parity with a claude one, and hive does not pretend otherwise:
 
 - It cannot be parked or resumed (`agent_park`, `agent_resume`); closing one ends that session for good.

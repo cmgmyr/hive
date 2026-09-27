@@ -15,6 +15,40 @@ Environment variables, mostly for advanced or automated setups. Everyday use nee
 | `HIVE_NO_UPDATE_CHECK` | Set to `1` to disable npm update checks from `hive --version --check`, `hive doctor`, and `hive upgrade` (upgrade then refuses to install) |
 | `HIVE_BACKUP_KEEP_LAST`, `HIVE_BACKUP_KEEP_DAILY_DAYS`, `HIVE_BACKUP_STALE_DAYS` | Snapshot retention and staleness tuning |
 
+## Global defaults
+
+`<HIVE_DATA_DIR>/hive.yml` holds machine-wide defaults for project configuration. `HIVE_DATA_DIR` defaults to `~/.hive`, and hive resolves this path when it reads or writes the configuration. A project `hive.yml` still belongs at the checkout root. Effective values come from built-in defaults, then the global file, then the project file.
+
+```yaml
+# ~/.hive/hive.yml, or $HIVE_DATA_DIR/hive.yml
+lead: claude --model sonnet
+dashboard: true
+agents: [claude, codex]
+vars:
+  repo: acme/service
+  check: npm run lint && npm run build
+```
+
+```yaml
+# project hive.yml
+lead: claude --model opus
+dashboard: false
+agents: [claude]
+vars:
+  repo: acme/checkout
+  ticket: OPS
+```
+
+The project lead, dashboard setting, and agents list replace their global values. The `vars` map merges by key, so the project replaces `repo`, keeps the global `check`, and adds `ticket`. `hive doctor` shows each effective value and its source, for example `config lead: "claude --model opus" (source: project)`, `config dashboard: false (source: project)`, and `config vars.check: "npm run lint && npm run build" (source: global)`. It lists each `vars.<key>` separately; a removed inherited var appears as `null` with the source that removed it.
+
+For scalar and list keys, an absent project key inherits the global value and an explicit project value replaces it. An explicit `null` clears nullable values such as `lead`, `placement`, `layout`, `profile`, `context_checkpoint_percent`, and `lead_branches` back to their built-in behavior. An empty `agents` list or `agents: null` restores Claude-only spawning; `lead_branches: []` disables kickoff, while `lead_branches: null` restores `main` and `master`. For `dashboard`, `null` resets to `false`. In `vars`, a null leaf removes only that inherited key; `vars: null` resets the map to empty, while `vars: {}` adds nothing and keeps inherited values. `lead_turn_budget` is one pair: a project pair replaces the whole global pair, and `null` clears both thresholds. The pair must use positive integer `warn` and `stop` values, with `stop` greater than `warn`.
+
+The keys shared between the two YAML files are `lead`, `placement`, `layout`, `profile`, `agents`, `lead_branches`, `context_checkpoint_percent`, `lead_turn_budget`, `dashboard`, and `vars`. `processes` is project-only because each command needs the project's trust approval. If the global file contains `processes`, including `processes: null`, doctor warns with the global file path and ignores it. `attach` and `autoAttach` are global-only; project occurrences warn and are ignored. Set them with `hive setup --attach <mode>` and `hive setup --auto-attach <mode>`, which preserve YAML comments and ordering. Doctor shows their source too. `HIVE_ATTACH_MODE` overrides global `attach`, and `HIVE_AUTO_ATTACH` overrides global `autoAttach`; `HIVE_SPAWN_PLACEMENT` remains below project and global `placement` values.
+
+When a key is absent from global `hive.yml`, legacy `config.json` can still supply `attach` or `autoAttach` until migration runs. `hive lead`, `hive setup`, and `hive doctor` migrate those settings once into global `hive.yml`; MCP reads never migrate or write files. Existing YAML keys, including null, win. Hive renames the original bytes to `config.json.migrated`. To reverse the migrated attach settings, remove their keys from global `hive.yml` and rename the archive back to `config.json` in the same data directory. A changed global lead command still needs approval for each project that uses it.
+
+See [project configuration](projects.md#project-commands-hiveyml), [profiles](profiles.md#profiles-standing-instructions-across-projects), and [dashboard settings](dashboard.md#enable-it) for the project-specific examples.
+
 ## Set by hive or for tests
 
 | Variable | Purpose |

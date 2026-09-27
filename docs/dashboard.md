@@ -6,6 +6,8 @@ hive can generate a read-only, self-contained HTML dashboard for each project. I
 
 Set `dashboard: true` in your project's committed `hive.yml`:
 
+This project value overrides the machine-wide `dashboard` default. See [global defaults](configuration.md#global-defaults).
+
 ```yaml
 dashboard: true
 ```

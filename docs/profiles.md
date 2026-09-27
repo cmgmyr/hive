@@ -4,6 +4,8 @@ Standing instructions shared across projects, and the optional plugin that loads
 
 ## Profiles (standing instructions across projects)
 
+Profiles and their `vars` can come from machine-wide defaults while a project still overrides its own values. See [global defaults](configuration.md#global-defaults).
+
 A profile is a named set of standing instructions shared across projects. It is how a lead knows how you work before you tell it anything.
 
 ```
