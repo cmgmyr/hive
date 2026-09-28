@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.3.0 - 2026-09-27
+
+- Set hive defaults once in `~/.hive/hive.yml`. Any key you put there applies to every project, and a project's own `hive.yml` overrides it key by key. `hive doctor` shows where each setting came from (global or project). `hive lead`, `hive setup` and `hive doctor` fold an existing `~/.hive/config.json` into the new file and keep a copy of the original.
+- A new `/hive:profile` skill in the Claude Code plugin interviews you about how you work with agents, then creates a hive profile or edits one you already have. It recommends the simple or orchestration profile from your answers, can draw your flows as a Mermaid diagram, and offers recipes for common problems such as two test runs sharing one database.
+- `agent_spawn` takes `read_only: true`. The worker cannot write files or run mutating shell commands, but it can still use hive's tools, so it can write a plan to a pad. It suits planning or review workers. Only an effort flag may be passed alongside it, and `agent_resume` keeps the mode.
+- `agent_resume` restores the model and extra arguments a worker was spawned with, instead of starting it on the defaults.
+- A codex worker's hive MCP server now receives the worker's hive identity and data directory. Before this, a codex worker in a directory outside its project could register a new project, or write to the default store when you ran hive with a different one.
+- Nested codex runs inside a hive codex worker, such as `codex exec`, can call hive's tools. Every codex home hive generates now pre-approves hive's own MCP tools, so the call no longer fails with "approval policy is never".
+- Every hive tool declares MCP tool annotations (read-only, destructive, idempotent, open-world), so clients can see what a tool does before calling it.
+- A migration that fails for a reason other than a busy store now names the failing migration and the SQL error. It no longer tells you to look for a stuck hive process.
+- An idle wake that was ready when its worker went idle, but was held past its max wait (for example while your pane showed a dialog), is no longer labelled "max wait reached".
+- `review_tags` is retired. A `hive.yml` that still sets it gets a warning asking you to remove it, and nothing else changes.
+
 ## 1.2.2 - 2026-09-24
 
 - The build-changed notice now reaches Claude Code. Claude Code shows the model only the structured part of a tool result for tools that declare an output schema, so the notice that 1.2.0 added as extra text was hidden, and the lead wake was the only place it appeared. The notice now also rides in the result as an optional `hive_notice` string. The same fix applies to the notice hive gives when it registers a new project for your working directory.
