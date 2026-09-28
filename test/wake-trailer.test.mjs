@@ -70,7 +70,7 @@ async function trailerFor(fixture, command = "claude") {
 }
 
 function withAbove(rows) {
-  const src = readFileSync(join(FIXTURES, "real-input.txt"), "utf8").trimEnd().split("\n").slice(-3).join("\n");
+  const src = readFileSync(join(FIXTURES, "real-input.txt"), "utf8").trimEnd().split("\n").slice(-5, -2).join("\n");
   const path = join(dirs.tmp, `above-${Math.random().toString(36).slice(2)}.txt`);
   writeFileSync(path, `${rows.join("\n")}\n${src}`);
   return path;
