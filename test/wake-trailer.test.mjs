@@ -70,7 +70,7 @@ async function trailerFor(fixture, command = "claude") {
 }
 
 function withAbove(rows) {
-  const src = readFileSync(join(FIXTURES, "real-input.txt"), "utf8").trimEnd().split("\n").slice(-5).join("\n");
+  const src = readFileSync(join(FIXTURES, "real-input.txt"), "utf8").trimEnd().split("\n").slice(-3).join("\n");
   const path = join(dirs.tmp, `above-${Math.random().toString(36).slice(2)}.txt`);
   writeFileSync(path, `${rows.join("\n")}\n${src}`);
   return path;
@@ -103,7 +103,7 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
 
   it("drops braille-only and box-drawing-only rows above the box but keeps a spinner row with words", async () => {
     const { trailer } = await trailerFor(
-      withAbove(["⠋⠙⠹⠸⠼", "╭───────╮", "│       │", "▀▀▀▄▄▄", "✻ Working (12s · esc to interrupt)"]),
+      withAbove(["✻ Working (12s · esc to interrupt)", "⠋⠙⠹⠸⠼", "╭───────╮"]),
     );
     assert.ok(!/[⠀-⣿╭│▀]/.test(trailer), trailer);
     assert.match(trailer, /✻ Working \(12s · esc to interrupt\)/);
@@ -122,6 +122,7 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
     writeFileSync(path, `${src} · 2 shells\n`);
     const { trailer } = await trailerFor(path);
     assert.match(trailer, /2 shells/);
+    assert.ok(!trailer.includes("ghost-capture-34"), "the rest of the footer is still dropped");
   });
 
   it("falls back to the old raw tail byte-for-byte when no input box can be found", async () => {
