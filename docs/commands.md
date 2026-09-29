@@ -15,6 +15,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive hide <name>` | Move it back into the project's `processes` window |
 | `hive status` | Every project's agents, commands, todos, and wake-ups, in one shot |
 | `hive portfolio [--json]` | One row per registered project: lane (waiting on you, stuck, moving, quiet) with its reasons, lead and worker state, todo and wake counts, and the todos tagged `needs-human`. Read-only; `--json` prints the same data as one object |
+| `hive next [--print]` | Attach to the lead of the one project that needs you most: waiting on you first, then stuck, never the queen's own project. Ties break on needs-human count, then oldest activity, then project id. A dead or missing lead is started detached first. `--print` prints the choice as one JSON line and starts and attaches nothing; with nothing waiting it prints one line saying so and exits 0 |
 | `hive upgrade` | Update a global npm install and re-pin; in a checkout, print the recipe only |
 | `hive upgrade --check` | Preview the commands without changing your install or update cache |
 | `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
