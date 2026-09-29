@@ -14,7 +14,8 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 migrate();
 const { addProject } = await import("../dist/context.js");
-const { collectPortfolio } = await import("../dist/portfolio.js");
+const { collectPortfolio, ACTIVE_WAKE_WHERE } = await import("../dist/portfolio.js");
+const { ACTIVE_TIMER_WHERE } = await import("../dist/scheduler.js");
 
 after(() => {
   for (const name of sessions) {
@@ -51,24 +52,30 @@ function todo(p, { title = "t", status = "open", priority = "medium", tags = [],
 const block = (todoId, blockerId) =>
   db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(todoId, blockerId);
 
-function agent(p, { kind = "agent", state = "working", target = "%nope", socket = "", status = "running" } = {}) {
+function agent(
+  p,
+  { kind = "agent", state = "working", target = "%nope", socket = "", status = "running", created = OLD, changed = OLD } = {},
+) {
   return db
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status,
                            agent_state, created_at, state_changed_at)
        VALUES (?, ?, ?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .get(p.id, `${kind}:${++seq}`, `${kind}-${seq}`, target, socket, p.path, kind, status, state, OLD, OLD).id;
+    .get(p.id, `${kind}:${++seq}`, `${kind}-${seq}`, target, socket, p.path, kind, status, state, created, changed).id;
 }
 
-function wake(p, { due = null, repeat = null, fired = null, cancelled = null } = {}) {
+function wake(
+  p,
+  { due = null, repeat = null, fired = null, cancelled = null, kind = "delay", maxWait = null, created = OLD } = {},
+) {
   return db
     .prepare(
       `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms,
-                          fired_at, cancelled_at, created_at)
-       VALUES (?, 'lead:1', 'b', 'delay', 'lead:1', '%x', ?, ?, ?, ?, ?) RETURNING id`,
+                          fired_at, cancelled_at, created_at, max_wait_at)
+       VALUES (?, 'lead:1', 'b', ?, 'lead:1', '%x', ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .get(p.id, due, repeat, fired, cancelled, OLD).id;
+    .get(p.id, kind, due, repeat, fired, cancelled, created, maxWait).id;
 }
 
 const sessions = [];
@@ -164,15 +171,16 @@ describe("portfolio todo counts", () => {
 
   it("blocks on an open blocker, even an archived one, but not on a completed one; counts todos, not edges", () => {
     const p = project();
-    const target = todo(p);
+    const onArchivedOnly = todo(p);
+    const onTwo = todo(p);
+    const onDoneOnly = todo(p);
     const archivedOpen = todo(p, { archived: true });
     const done = todo(p, { status: "completed" });
-    const target2 = todo(p);
-    block(target, archivedOpen);
-    block(target, todo(p));
-    block(target2, done);
-    const r = row(p);
-    assert.equal(r.todos.blocked, 1);
+    block(onArchivedOnly, archivedOpen);
+    block(onTwo, todo(p));
+    block(onTwo, todo(p));
+    block(onDoneOnly, done);
+    assert.equal(row(p).todos.blocked, 2);
   });
 
   it("lands in stuck when every active todo is blocked", () => {
@@ -260,6 +268,26 @@ describe("portfolio wakes", () => {
   });
 });
 
+describe("portfolio idle-watch wakes", () => {
+  it("measures an idle-watch wake (due_at NULL, max_wait_at set) against max_wait_at", () => {
+    const expired = project();
+    wake(expired, { kind: "idle_any", maxWait: at("-1 day") });
+    const r = row(expired);
+    assert.deepEqual(r.wakes, { pending: 1, overdue: 1 });
+    assert.equal(r.lane, "stuck");
+    assert.deepEqual(r.reasons, ["wake_overdue_5m"]);
+
+    const upcoming = project();
+    wake(upcoming, { kind: "idle_all", maxWait: at("+2 hours") });
+    assert.deepEqual(row(upcoming).wakes, { pending: 1, overdue: 0 });
+    assert.equal(row(upcoming).lane, "moving");
+  });
+
+  it("keeps the local active-wake clause identical to the scheduler's", () => {
+    assert.equal(ACTIVE_WAKE_WHERE, ACTIVE_TIMER_WHERE);
+  });
+});
+
 describe("portfolio staleness", () => {
   it("calls in_progress work stuck at exactly 48 hours of silence, not one second sooner", () => {
     const stale = project();
@@ -288,6 +316,80 @@ describe("portfolio missing root", () => {
     assert.equal(b.root_exists, false);
     assert.equal(b.lane, "stuck");
     assert.deepEqual(b.reasons, ["missing_root_with_work"]);
+  });
+
+  it("is stuck when the only work is a pending wake", () => {
+    const p = project("gone-wake", { rootMissing: true });
+    wake(p, { due: at("+2 days") });
+    const r = row(p);
+    assert.equal(r.lane, "stuck");
+    assert.deepEqual(r.reasons, ["missing_root_with_work"]);
+  });
+});
+
+describe("portfolio last_activity_at", () => {
+  const T = "2026-09-20 10:00:00";
+  const sources = {
+    "todos.updated_at": (p) => todo(p, { updated: T }),
+    "todo_comments.created_at": (p) => {
+      const id = todo(p);
+      db.prepare("INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, 'a', 'b', ?)").run(id, T);
+    },
+    "pads.updated_at": (p) =>
+      db.prepare("INSERT INTO pads (project_id, name, content, updated_at) VALUES (?, 'n', 'c', ?)").run(p.id, T),
+    "agents.created_at": (p) => agent(p, { created: T }),
+    "agents.state_changed_at": (p) => agent(p, { changed: T }),
+    "agent_state_log.created_at (milliseconds)": (p) => {
+      const id = agent(p);
+      const actor = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(id).actor_id;
+      db.prepare("INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES (?, 'e', 'idle', ?)").run(
+        actor,
+        `${T}.500`,
+      );
+    },
+    "wakes.created_at": (p) => wake(p, { created: T }),
+    "wakes.fired_at": (p) => wake(p, { fired: T }),
+  };
+
+  for (const [name, seed] of Object.entries(sources)) {
+    it(`moves when only ${name} is newer`, () => {
+      const p = project();
+      seed(p);
+      assert.equal(row(p).last_activity_at, T);
+    });
+  }
+
+  it("ignores another project's agent_state_log rows", () => {
+    const other = project();
+    const mine = project();
+    const id = agent(other);
+    const actor = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(id).actor_id;
+    db.prepare("INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES (?, 'e', 'idle', ?)").run(
+      actor,
+      "2026-09-25 00:00:00.250",
+    );
+    assert.equal(row(mine).last_activity_at, OLD);
+  });
+
+  it("treats a millisecond log row exactly at the 48h edge as stale and one second newer as fresh", () => {
+    const stuck = project();
+    todo(stuck, { status: "in_progress", updated: OLD });
+    const stuckAgent = agent(stuck);
+    const fresh = project();
+    todo(fresh, { status: "in_progress", updated: OLD });
+    const freshAgent = agent(fresh);
+    const log = (agentId, ts) => {
+      const actor = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(agentId).actor_id;
+      db.prepare("INSERT INTO agent_state_log (actor_id, event, state, created_at) VALUES (?, 'e', 'idle', ?)").run(
+        actor,
+        ts,
+      );
+    };
+    log(stuckAgent, `${at("-48 hours")}.500`);
+    log(freshAgent, `${at("-172799 seconds")}.500`);
+    assert.equal(row(stuck).last_activity_at, at("-48 hours"));
+    assert.equal(row(stuck).lane, "stuck");
+    assert.equal(row(fresh).lane, "moving");
   });
 });
 
@@ -339,6 +441,25 @@ describe("portfolio panes", () => {
     assert.deepEqual(r.reasons, ["worker_needs_input", "worker_working"]);
   });
 
+  it("does not call in_progress work stale while a live worker is working on it", { skip }, () => {
+    const p = project();
+    db.prepare("UPDATE projects SET created_at = ? WHERE id = ?").run(at("-72 hours"), p.id);
+    todo(p, { status: "in_progress", updated: at("-72 hours") });
+    agent(p, { state: "working", target: livePane(), created: at("-72 hours"), changed: at("-72 hours") });
+    const r = row(p);
+    assert.equal(r.lane, "moving");
+    assert.deepEqual(r.reasons, ["worker_working", "todo_in_progress"]);
+  });
+
+  it("ignores running non-agent rows when counting workers", { skip }, () => {
+    const p = project();
+    agent(p, { kind: "command", state: "working", target: livePane() });
+    const r = row(p);
+    assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 });
+    assert.deepEqual(r.lead, { state: "none", agent_id: null });
+    assert.equal(r.lane, "quiet");
+  });
+
   it("puts a live working worker in moving", { skip }, () => {
     const p = project();
     agent(p, { state: "working", target: livePane() });
@@ -350,8 +471,10 @@ describe("portfolio panes", () => {
 describe("portfolio is read-only", () => {
   it("leaves every store row untouched", () => {
     const snapshot = () =>
-      ["projects", "todos", "todo_blockers", "todo_comments", "agents", "wakes", "pads", "agent_state_log"]
-        .map((t) => JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all()))
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all()
+        .map(({ name }) => `${name}: ${JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all())}`)
         .join("\n");
     const before = snapshot();
     collectPortfolio(NOW);

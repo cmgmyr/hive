@@ -29,7 +29,7 @@ const WAKE_OVERDUE_GRACE = "-5 minutes";
 const STALE_IN_PROGRESS = "-48 hours";
 const WAKE_UPCOMING = "+24 hours";
 
-const ACTIVE_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
+export const ACTIVE_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 export interface PortfolioProject {
   id: number;
@@ -173,9 +173,9 @@ function projectRow(
   const wakeCounts = db
     .prepare(
       `SELECT COUNT(*) AS pending,
-              COALESCE(SUM(due_at IS NOT NULL AND due_at < ?), 0) AS overdue,
-              COALESCE(SUM(due_at IS NOT NULL AND due_at <= ?), 0) AS overdue_grace,
-              COALESCE(SUM(due_at IS NOT NULL AND due_at > ? AND due_at <= ?), 0) AS upcoming
+              COALESCE(SUM(COALESCE(due_at, max_wait_at) < ?), 0) AS overdue,
+              COALESCE(SUM(COALESCE(due_at, max_wait_at) <= ?), 0) AS overdue_grace,
+              COALESCE(SUM(COALESCE(due_at, max_wait_at) > ? AND COALESCE(due_at, max_wait_at) <= ?), 0) AS upcoming
          FROM wakes WHERE project_id = ? AND ${ACTIVE_WAKE_WHERE}`,
     )
     .get(now, overdueBefore, overdueBefore, upcomingUntil, project.id) as {

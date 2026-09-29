@@ -3309,13 +3309,11 @@ function findPadExports(projectId: number, name: string): string[] {
 }
 
 function cmdPortfolio(argv: string[]): void {
-  const unknown = argv.find((a) => a !== "--json");
-  if (unknown !== undefined) {
-    console.error(`hive portfolio: unknown argument "${unknown}". The only flag is --json.`);
-    process.exit(1);
-  }
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("portfolio", parsed, "--json");
   const report = collectPortfolio();
-  if (argv.includes("--json")) {
+  if (parsed.flags.has("--json")) {
     console.log(JSON.stringify(report));
     return;
   }
