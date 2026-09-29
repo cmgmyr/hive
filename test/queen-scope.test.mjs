@@ -165,6 +165,18 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:.*deliver_to must name that project's running lead`));
   });
 
+  it("refuses a standing watch in another project, even one delivered to its lead", async () => {
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(alpha.id).n;
+    const text = await refusal(queenMcp, "wake_when_idle", {
+      scope: "project",
+      deliver_to: "lead",
+      body: "crew update",
+      project_id: alpha.id,
+    });
+    assert.match(text, new RegExp(`^${QUEEN_REFUSAL}:.*a standing watch in another project belongs to its lead`));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(alpha.id).n, before);
+  });
+
   it("refuses to cancel or edit another project's wake that the queen does not own, and leaves it pending", async () => {
     const wakeId = db
       .prepare(
