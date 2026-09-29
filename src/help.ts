@@ -267,7 +267,14 @@ Cross-project access is intentional-only. An empty result means there is
 nothing in this project; report that and stop. Reach into another project
 (project_select or a project_id override) only when the user explicitly
 names it. Set HIVE_PROJECT_LOCK=1 in a session's environment to reject
-cross-project access entirely; use it for worker sessions.`,
+cross-project access entirely; use it for worker sessions.
+
+The one standing exception is the queen: the running lead of <data dir>/queen,
+started by \`hive queen\`. It may read any registered project by project_id.
+Into another project it may write only todo_create and todo_comment, plus
+wake_set, wake_when_idle, wake_update, wake_cancel and agent_send text
+addressed to that project's running lead. Every other write there refuses
+with QUEEN_CROSS_PROJECT_WRITE_REFUSED. Workers the queen spawns stay locked.`,
 
   identity: `IDENTITY — who is writing
 

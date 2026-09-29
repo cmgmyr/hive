@@ -2,6 +2,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { migrate } from "./db.js";
+import { assertQueenToolCall, isQueenLead } from "./context.js";
 import { registerAgents } from "./tools/agents.js";
 import { registerMeta } from "./tools/meta.js";
 import { registerPads } from "./tools/pads.js";
@@ -13,6 +14,12 @@ import { registerPrompts } from "./prompts.js";
 import { schedulerIntervalMs, startScheduler } from "./scheduler.js";
 import { enforceStrictInput } from "./strictInput.js";
 
+migrate();
+
+const SCOPE_DISCIPLINE = isQueenLead()
+  ? "Scope discipline: you are the queen, the lead of hive's queen home. Your own project is the working directory's. You may read any registered project by passing its project_id. Into another project you may write only todo_create and todo_comment, plus wakes and agent_send text addressed to that project's running lead; every other write there refuses with QUEEN_CROSS_PROJECT_WRITE_REFUSED. See help(topic=\"projects\")."
+  : "Scope discipline: all state is project-scoped, and the current project is the working directory's. An empty result means there is nothing IN THIS PROJECT; report that and stop. Never browse other projects' state (project_id overrides, project_select) unless the user explicitly names another project and asks for it.";
+
 const server = enforceStrictInput(
   new McpServer(
     { name: "hive", version: "0.1.0" },
@@ -23,12 +30,12 @@ Getting started:
 2. Call help for an overview, or help(topic="workflow") for the lead/worker playbook.
 3. Pads hold shared plans and findings. Todos coordinate work with blockers and comments. KV holds small shared values; leases claim shared work areas and expire on their own.
 4. Before triaging or orchestrating work, read the standing process: run \`hive runbook\` in a shell. It prints the project's profile runbook, or its runbook pad when the project has no profile. Do not read the pad first; most projects with a profile have no runbook pad at all.
-Scope discipline: all state is project-scoped, and the current project is the working directory's. An empty result means there is nothing IN THIS PROJECT; report that and stop. Never browse other projects' state (project_id overrides, project_select) unless the user explicitly names another project and asks for it.`,
+${SCOPE_DISCIPLINE}`,
     },
   ),
+  assertQueenToolCall,
 );
 
-migrate();
 registerMeta(server);
 registerAgents(server);
 registerPads(server);
