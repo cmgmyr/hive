@@ -808,7 +808,7 @@ async function cmdLead(argv: string[]): Promise<void> {
           createdPane = false;
         } else if (!foundWindow) {
 
-          const fresh = createWindow(session, windowName, project.path, envFlags, leadCommand, project.id);
+          const fresh = createWindow(session, windowName, project.path, envFlags, leadCommand, project.id, detach);
           leadPane = fresh.pane;
           leadWindow = fresh.window;
           createdPane = true;
@@ -816,6 +816,7 @@ async function cmdLead(argv: string[]): Promise<void> {
 
           leadPane = tmux(
             "split-window",
+            ...(detach ? ["-d"] : []),
             "-P",
             "-F",
             "#{pane_id}",

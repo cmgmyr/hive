@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, tmuxSocketUnder } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, tmux, tmuxSocketUnder } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("detached lead start");
 clearHiveEnv();
@@ -25,6 +25,40 @@ const cliOpts = (projectDir) => ({
   tmp: dirs.tmp,
   env: { PATH: `${dirname(claudePath)}:${process.env.PATH}` },
 });
+
+function callerLocation(clientName) {
+  return tmux("list-clients", "-F", "#{client_name}\t#{client_session}:#{window_index}")
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .find(([name]) => name === clientName)?.[1];
+}
+
+function activePane(window) {
+  return tmux("list-panes", "-t", window, "-F", "#{pane_id}\t#{pane_active}")
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .find(([, active]) => active === "1")?.[0];
+}
+
+async function startControlClient() {
+  const socket = tmuxSocketUnder(process.env.TMUX_TMPDIR);
+  const child = spawn("tmux", ["-S", socket, "-C", "attach-session", "-t", `=${session}`], {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const client = tmux("list-clients", "-F", "#{client_name}\t#{client_session}:#{window_index}")
+      .split("\n")
+      .map((line) => line.split("\t"))
+      .find(([, location]) => location?.startsWith(`${session}:`));
+    if (client) return { child, clientName: client[0], location: client[1] };
+    if (child.exitCode !== null) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  child.kill("SIGTERM");
+  throw new Error(`tmux control client did not attach: ${stderr}`);
+}
 
 function project(name) {
   const path = realpathSync(mkdtempSync(join(tmpdir(), `hive-detach-${name}-`)));
@@ -147,6 +181,59 @@ describe("hive lead --detach", { skip: hasTmux ? false : "tmux is not installed"
     row = leadRow(db, p.id);
     assert.notEqual(row.tmux_target, firstPane);
     assert.equal(restarted.stdout.trimEnd().split("\n").slice(-2)[0], `LEAD_PANE=${row.tmux_target}`);
+  });
+
+  it("keeps the caller client and the target window's active pane in place", async () => {
+    const p = project("caller location");
+    const callerPane = tmux(
+      "new-window", "-d", "-P", "-F", "#{pane_id}", "-t", `=${session}`, "-n", "caller-location", "-c",
+      dirs.projectDir, "sleep", "600",
+    );
+    const callerWindow = tmux("display-message", "-p", "-t", callerPane, "#{window_id}");
+    tmux("select-window", "-t", callerWindow);
+    const client = await startControlClient();
+    const callerEnv = {
+      ...cliOpts(p.path).env,
+      TMUX: `${tmuxSocketUnder(process.env.TMUX_TMPDIR)},1,0`,
+      TMUX_PANE: callerPane,
+    };
+    const opts = { ...cliOpts(dirs.projectDir), env: callerEnv };
+    try {
+      const originalLocation = callerLocation(client.clientName);
+      assert.equal(originalLocation, client.location);
+
+      writeFileSync(join(p.path, "hive.yml"), "dashboard: true\n");
+      const first = await runCli(["lead", p.path, "--detach"], opts);
+      assert.equal(first.code, 0, first.stderr);
+      assert.equal(callerLocation(client.clientName), originalLocation, "first start must not select its new window");
+      let row = leadRow(db, p.id);
+      const pane = row.tmux_target;
+      const window = tmux("display-message", "-p", "-t", pane, "#{window_id}");
+      const panesBeforeAdopt = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split("\n");
+
+      const adopted = await runCli(["lead", p.path, "--detach"], opts);
+      assert.equal(adopted.code, 0, adopted.stderr);
+      assert.equal(callerLocation(client.clientName), originalLocation, "adoption must leave the caller selected");
+      const panesAfterAdopt = tmux("list-panes", "-t", window, "-F", "#{pane_id}").split("\n");
+      assert.deepEqual(panesAfterAdopt, panesBeforeAdopt, "adopting the live lead must not add a pane");
+      assert.equal(leadRow(db, p.id).tmux_target, pane);
+
+      const keeper = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", window, "sleep", "600");
+      tmux("select-pane", "-t", keeper);
+      assert.equal(activePane(window), keeper);
+      execFileSync("tmux", ["kill-pane", "-t", pane], { stdio: "ignore" });
+      const restarted = await runCli(["lead", p.path, "--detach"], opts);
+      assert.equal(restarted.code, 0, restarted.stderr);
+      row = leadRow(db, p.id);
+      assert.notEqual(row.tmux_target, pane);
+      assert.equal(callerLocation(client.clientName), originalLocation, "restart must not select the target window");
+      assert.equal(activePane(window), keeper, "split-window must leave the existing active pane selected");
+    } finally {
+      if (client.child.exitCode === null) {
+        client.child.kill("SIGTERM");
+        await new Promise((resolve) => client.child.once("exit", resolve));
+      }
+    }
   });
 
   it("keeps both supported flags and refuses unknown flags", async () => {
