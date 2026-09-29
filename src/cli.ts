@@ -3407,7 +3407,7 @@ async function cmdNext(argv: string[]): Promise<void> {
   if (parsed.flags.has("--print")) return;
 
   if (!chosen.root_exists) {
-    console.error(`hive next: project ${chosen.id} ("${chosen.name}") root is missing: ${chosen.root}`);
+    console.error(`hive next: project ${chosen.id} ("${chosen.name}") root is missing: ${chosen.root}. Remove the stale project with the project_prune tool, or restore the directory.`);
     process.exit(1);
   }
   let state = collectProjectById(chosen.id)?.lead.state ?? "none";
@@ -3417,13 +3417,11 @@ async function cmdNext(argv: string[]): Promise<void> {
     );
     process.exit(1);
   }
-  if (state !== "alive") {
-    await cmdLead([chosen.root, "--detach"]);
-    state = collectProjectById(chosen.id)?.lead.state ?? "none";
-    if (state !== "alive") {
-      console.error(`hive next: the lead for project ${chosen.id} ("${chosen.name}") is not alive after the detached start (${state}). Not attaching.`);
-      process.exit(1);
-    }
+  await cmdLead([chosen.root, "--detach"]);
+  state = collectProjectById(chosen.id)?.lead.state ?? "none";
+  if (state !== "alive" || (process.exitCode !== undefined && process.exitCode !== 0)) {
+    console.error(`hive next: the lead for project ${chosen.id} ("${chosen.name}") did not start cleanly (${state}). Not attaching.`);
+    process.exit(1);
   }
   cmdAttach([chosen.root]);
 }

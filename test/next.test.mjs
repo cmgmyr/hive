@@ -23,7 +23,14 @@ const opts = (extra = {}) => ({
   env: { PATH: `${dirname(claudePath)}:${process.env.PATH}`, ...extra },
 });
 
-after(() => cleanup(session));
+after(() => {
+  for (const name of waitingPanes) {
+    try {
+      tmux("kill-session", "-t", `=${name}`);
+    } catch {}
+  }
+  cleanup(session);
+});
 
 const OLD = "2026-01-02 00:00:00";
 let seq = 0;
@@ -63,6 +70,17 @@ function overdueWakes(p, n) {
   }
 }
 
+const waitingPanes = [];
+function waitingWorker(p) {
+  const name = `nx${++seq}`;
+  const pane = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "sleep 300");
+  waitingPanes.push(name);
+  db.prepare(
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, agent_state)
+     VALUES (?, ?, ?, ?, 'claude', ?, 'agent', 'running', 'waiting')`,
+  ).run(p.id, `agent:${++seq}`, name, pane, p.path);
+}
+
 function leadAgent(p, { target = "%not-a-real-pane", socket = "" } = {}) {
   db.prepare(
     `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status)
@@ -78,6 +96,15 @@ function resetStore() {
 
 const print = async (extra) => runCli(["next", "--print"], opts(extra));
 const picked = (stdout) => JSON.parse(stdout.trim().split("\n")[0]);
+
+function liveSessions() {
+  if (!existsSync(tmuxSocketUnder(process.env.TMUX_TMPDIR))) return "";
+  try {
+    return tmux("list-sessions", "-F", "#{session_id}:#{session_windows}");
+  } catch {
+    return "";
+  }
+}
 
 function storeFingerprint() {
   return JSON.stringify(
@@ -131,6 +158,32 @@ describe("hive next --print: selection", () => {
     assert.equal(picked(r.stdout).project_id, a.id, "equal blocked count falls to overdue wakes");
   });
 
+  it("ranks stuck ties by workers needing input, then oldest activity, then id", async () => {
+    resetStore();
+    const mk = (name, waiting) => {
+      const p = project(name);
+      blockedInProgress(p, 1);
+      for (let i = 0; i < waiting; i++) waitingWorker(p);
+      return p;
+    };
+    const quiet = mk("stuck-0", 0);
+    const twin = mk("stuck-1a", 1);
+    const twin2 = mk("stuck-1b", 1);
+    const ageProject = (p, when) => {
+      db.prepare("UPDATE todos SET updated_at = ? WHERE project_id = ?").run(when, p.id);
+      db.prepare("UPDATE projects SET created_at = ? WHERE id = ?").run(when, p.id);
+      db.prepare("UPDATE agents SET created_at = ?, state_changed_at = ? WHERE project_id = ?").run(when, when, p.id);
+    };
+    for (const p of [quiet, twin, twin2]) ageProject(p, OLD);
+
+    let r = await print();
+    assert.equal(picked(r.stdout).project_id, twin.id, "more waiting workers beats none; lower id wins the full tie");
+
+    ageProject(twin2, "2025-01-01 00:00:00");
+    r = await print();
+    assert.equal(picked(r.stdout).project_id, twin2.id, "older activity wins when needs_input ties");
+  });
+
   it("emits one JSON line with the fixed key order, reasons unchanged, and escaped name", async () => {
     resetStore();
     const p = project('odd "name" \\ é');
@@ -178,12 +231,13 @@ describe("hive next --print: selection", () => {
     const p = project("untouched");
     needsHuman(p, 1);
     const before = storeFingerprint();
+    const sessionsBefore = liveSessions();
 
     const r = await print();
     assert.equal(r.code, 0, r.stderr);
     assert.equal(storeFingerprint(), before);
+    assert.equal(liveSessions(), sessionsBefore, "--print must not start tmux");
     assert.equal(leadRow(db, p.id), undefined);
-    assert.equal(existsSync(tmuxSocketUnder(process.env.TMUX_TMPDIR)), false, "--print must not start tmux");
   });
 
   it("rejects an unknown flag and a positional argument, naming --print", async () => {
@@ -227,7 +281,8 @@ describe("hive next: start or attach", () => {
     const row = leadRow(db, p.id);
     assert.ok(row, `${r.stdout}\n${r.stderr}`);
     assert.match(r.stdout, /LEAD_PANE=%\d+/);
-    assert.equal(tmux("list-panes", "-a", "-F", "#{pane_id}").split("\n").includes(row.tmux_target), true);
+    assert.match(r.stdout, /is ready for project "no-lead"/);
+    assert.equal(tmux("list-panes", "-s", "-t", `=${session}`, "-F", "#{pane_id}").split("\n").includes(row.tmux_target), true);
   });
 
   tmuxIt("restarts a dead lead pane", async () => {
@@ -244,7 +299,8 @@ describe("hive next: start or attach", () => {
     assert.equal(r.code, 0, r.stderr);
     const now = leadRow(db, p.id).tmux_target;
     assert.notEqual(now, dead);
-    assert.equal(tmux("list-panes", "-a", "-F", "#{pane_id}").split("\n").includes(now), true);
+    assert.match(r.stdout, /is ready for project "dead-lead"/);
+    assert.equal(tmux("list-panes", "-s", "-t", `=${session}`, "-F", "#{pane_id}").split("\n").includes(now), true);
   });
 
   tmuxIt("attaches to a live lead without starting another", async () => {
@@ -259,7 +315,23 @@ describe("hive next: start or attach", () => {
     const r = await runCli(["next"], opts());
     assert.equal(r.code, 0, r.stderr);
     assert.equal(leadRow(db, p.id).tmux_target, pane);
-    assert.doesNotMatch(r.stdout, /LEAD_PANE=/);
+    assert.match(r.stdout, /is ready for project "live-lead"/);
+  });
+
+  tmuxIt("starts a fresh lead when the recorded pane id is live but its pid does not match", async () => {
+    resetStore();
+    const p = project("reissued");
+    needsHuman(p, 1);
+    const first = await runCli(["lead", p.path, "--detach"], opts());
+    assert.equal(first.code, 0, first.stderr);
+    const stale = leadRow(db, p.id).tmux_target;
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE project_id = ? AND kind = 'lead'").run(p.id);
+    assert.equal(picked((await print()).stdout).lead_state, "alive");
+
+    const r = await runCli(["next"], opts());
+    assert.equal(r.code, 0, r.stderr);
+    assert.notEqual(leadRow(db, p.id).tmux_target, stale);
+    assert.match(r.stdout, /is ready for project "reissued"/);
   });
 
   tmuxIt("refuses an untrusted lead without a TTY and never attaches", async () => {
@@ -272,7 +344,7 @@ describe("hive next: start or attach", () => {
     assert.equal(r.code, 1);
     assert.match(r.stderr, /"lead" is not trusted; run hive lead <path> interactively once/);
     assert.equal(leadRow(db, p.id), undefined);
-    assert.doesNotMatch(r.stdout, /LEAD_PANE=/);
+    assert.doesNotMatch(r.stdout, /LEAD_PANE=|is ready for project/);
   });
 
   tmuxIt("starts nothing when the lead's liveness is unknown", async () => {
@@ -300,7 +372,7 @@ describe("hive next: start or attach", () => {
     const r = await runCli(["next"], opts());
     assert.equal(r.code, 1);
     assert.equal(picked(r.stdout).project_id, gone.id);
-    assert.match(r.stderr, /root is missing/);
+    assert.match(r.stderr, /root is missing.*project_prune/);
     assert.equal(leadRow(db, runnerUp.id), undefined);
   });
 });
