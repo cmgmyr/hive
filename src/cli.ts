@@ -53,7 +53,7 @@ import {
   registrationProblem,
   type McpRegistration,
 } from "./mcpConfig.js";
-import { DEFAULT_DATA_DIR } from "./dataDir.js";
+import { DEFAULT_DATA_DIR, storeDir } from "./dataDir.js";
 import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
 import { cacheIsStale, queryUpdate, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
 import { checkoutUpgradeSteps, detectInstallShape, globalUpgradeSteps, type UpgradeStep } from "./upgrade.js";
@@ -90,7 +90,7 @@ import {
   wasHeldForPaneReissue,
 } from "./scheduler.js";
 import { readTurnCount } from "./turnCount.js";
-import { collectPortfolio } from "./portfolio.js";
+import { collectPortfolio, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
   probeSessionInterpreter,
@@ -277,6 +277,9 @@ Usage:
   hive status                overview of agents, todos, and wake-ups everywhere
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
+  hive next [--print]        attach to the lead of the project that needs you most
+                             (waiting on you, then stuck), starting a dead or
+                             missing lead first; --print only names the choice
   hive upgrade [--check]    upgrade a global npm install; preview with --check
   hive upgrade --run        run the printed pull/install/build/setup checkout recipe
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
@@ -3340,6 +3343,89 @@ function findPadExports(projectId: number, name: string): string[] {
     .map((f) => join(tmpdir(), f));
 }
 
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function nextCandidates(): PortfolioProject[] {
+  const queenRoot = canonicalPath(join(storeDir(), "queen"));
+  const byCount = (a: number, b: number) => b - a;
+  return collectPortfolio()
+    .projects.filter((p) => (p.lane === "waiting_on_you" || p.lane === "stuck") && canonicalPath(p.root) !== queenRoot)
+    .sort((a, b) => {
+      if (a.lane !== b.lane) return a.lane === "waiting_on_you" ? -1 : 1;
+      if (a.lane === "waiting_on_you") {
+        return (
+          byCount(a.needs_human, b.needs_human) ||
+          a.last_activity_at.localeCompare(b.last_activity_at) ||
+          a.id - b.id
+        );
+      }
+      return (
+        byCount(a.todos.blocked_in_progress, b.todos.blocked_in_progress) ||
+        byCount(a.wakes.overdue, b.wakes.overdue) ||
+        byCount(a.workers.needs_input, b.workers.needs_input) ||
+        a.last_activity_at.localeCompare(b.last_activity_at) ||
+        a.id - b.id
+      );
+    });
+}
+
+function collectProjectById(id: number): PortfolioProject | undefined {
+  return collectPortfolio().projects.find((p) => p.id === id);
+}
+
+async function cmdNext(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, { flags: ["--print"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("next", parsed, "--print");
+  if (process.env.HIVE_PROJECT_LOCK === "1") {
+    console.error(
+      "hive next: this session is locked to one project (HIVE_PROJECT_LOCK=1) and cannot jump to another. Run it from a pane outside a worker session.",
+    );
+    process.exit(1);
+  }
+  const chosen = nextCandidates()[0];
+  if (!chosen) {
+    console.log("No project is waiting on you or stuck.");
+    return;
+  }
+  console.log(
+    JSON.stringify({
+      project_id: chosen.id,
+      name: chosen.name,
+      root: chosen.root,
+      lane: chosen.lane,
+      reasons: chosen.reasons,
+      lead_state: chosen.lead.state,
+    }),
+  );
+  if (parsed.flags.has("--print")) return;
+
+  if (!chosen.root_exists) {
+    console.error(`hive next: project ${chosen.id} ("${chosen.name}") root is missing: ${chosen.root}. Remove the stale project with the project_prune tool, or restore the directory.`);
+    process.exit(1);
+  }
+  let state = collectProjectById(chosen.id)?.lead.state ?? "none";
+  if (state === "unknown") {
+    console.error(
+      `hive next: cannot tell whether the lead for project ${chosen.id} ("${chosen.name}") is alive (tmux did not answer for its socket). Starting nothing.`,
+    );
+    process.exit(1);
+  }
+  await cmdLead([chosen.root, "--detach"]);
+  state = collectProjectById(chosen.id)?.lead.state ?? "none";
+  if (state !== "alive" || (process.exitCode !== undefined && process.exitCode !== 0)) {
+    console.error(`hive next: the lead for project ${chosen.id} ("${chosen.name}") did not start cleanly (${state}). Not attaching.`);
+    process.exit(1);
+  }
+  cmdAttach([chosen.root]);
+}
+
 function cmdPortfolio(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--json"] });
   if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
@@ -3797,7 +3883,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "setup", "upgrade", "doctor",
+  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -3846,6 +3932,9 @@ try {
       break;
     case "portfolio":
       cmdPortfolio(rest);
+      break;
+    case "next":
+      await cmdNext(rest);
       break;
     case "setup":
       cmdSetup(rest);
