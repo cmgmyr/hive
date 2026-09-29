@@ -100,6 +100,26 @@ describe("the queen's CLI reach into another project", { skip: hasTmux ? false :
     assert.deepEqual(storeState(), before);
   });
 
+  for (const [op, argv] of [
+    ["hive attach", (dir) => ({ args: ["attach", dir] })],
+    ["hive start", (dir) => ({ args: ["start", "web", dir] })],
+    ["hive stop", (dir) => ({ args: ["stop", "web", dir] })],
+    ["hive stop", (dir) => ({ args: ["stop", "--all", dir] })],
+    ["hive show", (dir) => ({ args: ["show", "web", dir] })],
+    ["hive hide", (dir) => ({ args: ["hide", "web", dir] })],
+    ["hive pad --save", (dir) => ({ args: ["pad", "board", "--save", "/nonexistent-export.md"], cwd: dir })],
+  ]) {
+    it(`refuses ${argv("<dir>").args.slice(0, 2).join(" ")} on an unregistered directory without registering it`, async () => {
+      const fresh = realpathSync(mkdtempSync(join(dirs.tmp, "unregistered-")));
+      const { args, cwd = queen.path } = argv(fresh);
+      const before = storeState();
+      const run = await runCli(args, as(queenActor, cwd));
+      assert.notEqual(run.code, 0, run.stdout);
+      assert.match(run.stdout, new RegExp(`${QUEEN_REFUSAL}: the queen cannot run ${op} outside the queen's own project`));
+      assert.deepEqual(storeState(), before);
+    });
+  }
+
   it("refuses hive init on an unregistered directory, registering and writing nothing", async () => {
     const fresh = realpathSync(mkdtempSync(join(dirs.tmp, "fresh-")));
     const before = storeState();

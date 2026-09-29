@@ -66,6 +66,7 @@ import {
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
+  findProjectForDir,
   getProjectByPath,
   gitPrimaryRoot,
   getProject,
@@ -354,6 +355,11 @@ function resolveProject(path?: string, onNotice?: (text: string) => void): Proje
       target ? `project ${target.id} ("${target.name}")` : "no registered project"
     }. An explicit path argument cannot escape HIVE_PROJECT_LOCK=1. Unset HIVE_AGENT_ID and HIVE_PROJECT_LOCK in this pane, or open a new one, to act on a different project.`,
   );
+}
+
+function resolveProjectForWrite(verb: string, path?: string, onNotice?: (text: string) => void): Project {
+  assertQueenCrossProjectWrite(verb, findProjectForDir(path ?? process.cwd())?.id ?? null, {});
+  return resolveProject(path, onNotice);
 }
 
 function pinnedOrCwdProject(): Project | null {
@@ -648,10 +654,9 @@ async function cmdLead(argv: string[]): Promise<void> {
 
   let registrationNotice: string | null = null;
   try {
-    const project = resolveProject(path, (text) => {
+    const project = resolveProjectForWrite("hive lead", path, (text) => {
       registrationNotice = text;
     });
-    assertQueenCrossProjectWrite("hive lead", project.id, {});
     const { config, warnings } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -1598,8 +1603,7 @@ function cmdAttach(argv: string[]): void {
     process.exit(1);
   }
   const path = argv.find((a) => !a.startsWith("--"));
-  const project = resolveProject(path);
-  assertQueenCrossProjectWrite("hive attach", project.id, {});
+  const project = resolveProjectForWrite("hive attach", path);
   maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
 
@@ -1633,8 +1637,7 @@ async function cmdStart(argv: string[]): Promise<void> {
     console.log("Usage: hive start <process> [path]");
     process.exit(1);
   }
-  const project = resolveProject(path);
-  assertQueenCrossProjectWrite("hive start", project.id, {});
+  const project = resolveProjectForWrite("hive start", path);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   const proc = config?.processes[name];
@@ -1669,8 +1672,7 @@ function resolveNamedProcess(
     console.log(`Usage: hive ${verb} <process> [path]`);
     process.exit(1);
   }
-  const project = resolveProject(parsed.positional[1]);
-  assertQueenCrossProjectWrite(`hive ${verb}`, project.id, {});
+  const project = resolveProjectForWrite(`hive ${verb}`, parsed.positional[1]);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   if (!config?.processes[name]) {
@@ -1802,8 +1804,7 @@ function cmdStop(argv: string[]): void {
   rejectUnknownFlags("stop", parsed, "--all");
 
   if (parsed.flags.has("--all")) {
-    const project = resolveProject(parsed.positional[0]);
-    assertQueenCrossProjectWrite("hive stop", project.id, {});
+    const project = resolveProjectForWrite("hive stop", parsed.positional[0]);
     const stopped = stopAllProcesses(project.id, STOP_REASONS.byHand);
     console.log(stopped.length === 0 ? "No processes are running." : stopped.map(stopLine).join("\n"));
     return;
@@ -1814,8 +1815,7 @@ function cmdStop(argv: string[]): void {
     console.log("Usage: hive stop <process> [path] | hive stop --all [path]");
     process.exit(1);
   }
-  const project = resolveProject(parsed.positional[1]);
-  assertQueenCrossProjectWrite("hive stop", project.id, {});
+  const project = resolveProjectForWrite("hive stop", parsed.positional[1]);
   const row = runningCommandRow(project.id, name);
   if (!row) {
     const { config, warnings } = loadProjectYml(project.path);
@@ -3854,7 +3854,7 @@ function cmdPad(argv: string[]): void {
     console.log("Usage: hive pad <name> [--edit | --save [file]]  (run inside the project)");
     process.exit(1);
   }
-  const project = resolveProject();
+  const project = parsed.flags.has("--save") ? resolveProjectForWrite("hive pad --save") : resolveProject();
   const pad = getActivePadByName(project.id, name);
   if (!pad) {
     console.log(`No pad named "${name}" in project "${project.name}". List them with: hive pads`);
@@ -3890,7 +3890,6 @@ function cmdPad(argv: string[]): void {
   }
 
   if (parsed.flags.has("--save")) {
-    assertQueenCrossProjectWrite("hive pad --save", project.id, {});
     let file = parsed.positional[1];
     if (!file) {
       const matches = findPadExports(project.id, name);
