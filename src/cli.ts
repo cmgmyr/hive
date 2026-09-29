@@ -90,6 +90,7 @@ import {
   wasHeldForPaneReissue,
 } from "./scheduler.js";
 import { readTurnCount } from "./turnCount.js";
+import { collectPortfolio } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
   probeSessionInterpreter,
@@ -273,6 +274,8 @@ Usage:
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
   hive status                overview of agents, todos, and wake-ups everywhere
+  hive portfolio [--json]    one row per registered project: lane, lead, workers,
+                             todos, needs-human count, wakes; read-only
   hive upgrade [--check]    upgrade a global npm install; preview with --check
   hive upgrade --run        run the printed pull/install/build/setup checkout recipe
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
@@ -3305,6 +3308,38 @@ function findPadExports(projectId: number, name: string): string[] {
     .map((f) => join(tmpdir(), f));
 }
 
+function cmdPortfolio(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("portfolio", parsed, "--json");
+  const report = collectPortfolio();
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify(report));
+    return;
+  }
+  if (report.projects.length === 0) {
+    console.log("No registered projects.");
+    return;
+  }
+  for (const p of report.projects) {
+    const w = p.workers;
+    const t = p.todos;
+    console.log(
+      `${p.lane.padEnd(14)} ${p.name} (#${p.id})${p.root_exists ? "" : "  [root missing]"}\n` +
+        `  why: ${p.reasons.join(", ")}\n` +
+        `  lead ${p.lead.state}; workers ${w.working} working, ${w.idle} idle, ${w.needs_input} needs input, ` +
+        `${w.other} other, ${w.unreachable} unreachable, ${w.unconfirmed} unconfirmed\n` +
+        `  todos ${t.open} open, ${t.in_progress} in progress, ${t.blocked} blocked, ${t.high} high; ` +
+        `needs human ${p.needs_human}; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
+        `  last activity ${p.last_activity_at} UTC`,
+    );
+  }
+  const l = report.totals.lanes;
+  console.log(
+    `\n${report.totals.projects} project(s): ${l.waiting_on_you} waiting on you, ${l.stuck} stuck, ${l.moving} moving, ${l.quiet} quiet`,
+  );
+}
+
 function cmdBackups(): void {
   const snapshots = listSnapshots(dataDir);
   if (snapshots.length === 0) {
@@ -3730,7 +3765,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "setup", "upgrade", "doctor",
+  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -3776,6 +3811,9 @@ try {
       break;
     case "status":
       cmdStatus();
+      break;
+    case "portfolio":
+      cmdPortfolio(rest);
       break;
     case "setup":
       cmdSetup(rest);
