@@ -1103,7 +1103,9 @@ export function inputBoxState(target: string): InputBoxState | null {
 }
 
 const NOISE_ROW = /^[\s\u2500-\u257F\u2580-\u259F\u2800-\u28FF]*$/;
-const FOOTER_KEEP = /esc to interrupt|\d+ (?:shell|background|task|monitor)s?\b/i;
+const FOOTER_KEEP =
+  /esc to interrupt|\d+ (?:shell|background|task|monitor|local agent|team)s?\b|remote dynamic workflow|cloud session|ultraplan needs your input/i;
+const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
 export interface TrailerView {
   above: string[];
@@ -1111,7 +1113,7 @@ export interface TrailerView {
   below: string[];
 }
 
-const cleanRow = (row: string): string => stripControlBytes(stripSgr(row)).trimEnd();
+const cleanRow = (row: string): string => stripControlBytes(stripSgr(row.replace(OSC_SEQUENCE, ""))).trimEnd();
 
 function trailerRows(rows: string[], from: number, to: number, keep: RegExp | null): string[] {
   const out: string[] = [];
@@ -1144,6 +1146,7 @@ export function claudeTrailerView(target: string): TrailerView | null {
     if (anchor === null) return null;
     const box =
       anchor.prompt === null ? { state: "unknown" as const, text: "" } : classifyInputBox(rows, anchor.prompt, anchor.bottom);
+    if (box.state === "unknown") return null;
     return {
       above: trailerRows(rows, 0, anchor.top, null),
       box,
@@ -1329,9 +1332,11 @@ export function codexTrailerView(target: string): TrailerView | null {
     const rows = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`).split("\n");
     const anchor = findCodexPromptBox(rows);
     if (anchor === null) return null;
+    const box = classifyCodexInputBox(rows, anchor.prompt, anchor.footer);
+    if (box.state === "unknown") return null;
     return {
       above: trailerRows(rows, 0, anchor.prompt, null),
-      box: classifyCodexInputBox(rows, anchor.prompt, anchor.footer),
+      box,
       below: trailerRows(rows, anchor.footer, rows.length, FOOTER_KEEP),
     };
   } catch {

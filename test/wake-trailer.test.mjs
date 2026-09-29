@@ -125,6 +125,38 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
     assert.ok(!trailer.includes("ghost-capture-34"), "the rest of the footer is still dropped");
   });
 
+  it("keeps a below-box row that reports a running local agent", async () => {
+    const src = readFileSync(join(FIXTURES, "real-input.txt"), "utf8").trimEnd();
+    const path = join(dirs.tmp, "local-agent-footer.txt");
+    writeFileSync(path, `${src} · 1 local agent · ↓ to manage\n`);
+    const { trailer } = await trailerFor(path);
+    assert.match(trailer, /1 local agent · ↓ to manage/);
+  });
+
+  it("falls back to the raw tail, dialog text included, when the box has borders but no prompt row", async () => {
+    const { trailer } = await trailerFor("dialog-under-two-rules.txt");
+    assert.match(trailer, /Do you want to run this command again\?/);
+    assert.ok(!trailer.includes("could not be classified"), trailer);
+  });
+
+  it("falls back to the raw tail when the prompt glyph has drifted", async () => {
+    const { trailer } = await trailerFor("drifted-prompt-glyph.txt");
+    assert.ok(!trailer.includes("could not be classified"), trailer);
+  });
+
+  it("masks a choice-dialog marker in the rows above the box on the view path", async () => {
+    const { trailer } = await trailerFor(withAbove(["please note Esc to cancel and ctrl+g to edit in vim"]));
+    assert.match(trailer, /\[dialog marker masked\]/);
+    assert.ok(!/Esc to cancel|ctrl\+g to edit in/.test(trailer), trailer);
+    assert.match(trailer, /input box: UNSUBMITTED TEXT/, "the view path, not the fallback, produced this");
+  });
+
+  it("strips OSC 8 hyperlink bytes from the rows it shows", async () => {
+    const { trailer } = await trailerFor("codex-idle-ghost-e.txt", "codex");
+    assert.ok(!trailer.includes("]8;;"), trailer);
+    assert.match(trailer, /input box: empty \(a model suggestion is showing/);
+  });
+
   it("falls back to the old raw tail byte-for-byte when no input box can be found", async () => {
     const { trailer } = await trailerFor("model-picker-dialog.txt");
     const expected = sanitizeTail(capturePane(watchedPane, tailCaptureLines()));
