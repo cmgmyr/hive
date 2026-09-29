@@ -40,6 +40,7 @@ import {
   rowAliveProbe,
   rowLive,
   rowLiveProbe,
+  renderTrailerView,
   sanitizeTail,
   sendText,
   tailCaptureLines,
@@ -2214,7 +2215,10 @@ function watchedTail(timer: TimerRow): string {
       let tail = "";
       try {
 
-        tail = maskChoiceMarker(sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines())));
+        const view = paneClassifierFor(agent.command)?.trailerView(agent.tmux_target) ?? null;
+        tail = maskChoiceMarker(
+          view !== null ? renderTrailerView(view) : sanitizeTail(capturePane(agent.tmux_target, tailCaptureLines())),
+        );
       } catch {
 
       }

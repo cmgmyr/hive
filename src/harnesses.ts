@@ -1,12 +1,15 @@
 import type { ContextRecordKind } from "./transcript.js";
 import {
+  claudeTrailerView,
   codexInputBoxState,
+  codexTrailerView,
   codexPaneChoiceCheck,
   codexPaneHasInputBox,
   inputBoxState,
   paneChoiceCheck,
   paneHasInputBox,
   type InputBoxState,
+  type TrailerView,
 } from "./tmux.js";
 
 export interface WorkerArgsInput {
@@ -29,6 +32,7 @@ export interface PaneClassifier {
   choiceCheck(target: string): PaneChoiceCheck;
   inputBoxState(target: string): InputBoxState | null;
   hasInputBox(target: string): boolean | null;
+  trailerView(target: string): TrailerView | null;
 }
 
 export interface HarnessCapabilities {
@@ -143,7 +147,7 @@ const claudeHarness: HarnessCapabilities = {
   supportsRename: true,
 
   classifiesPaneScreen: true,
-  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox },
+  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
 
   hasScopes: true,
 
@@ -182,6 +186,7 @@ export const codexHarness: HarnessCapabilities = {
     choiceCheck: codexPaneChoiceCheck,
     inputBoxState: codexInputBoxState,
     hasInputBox: codexPaneHasInputBox,
+    trailerView: codexTrailerView,
   },
 
   hasScopes: false,

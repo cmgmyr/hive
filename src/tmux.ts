@@ -1102,6 +1102,61 @@ export function inputBoxState(target: string): InputBoxState | null {
   }
 }
 
+const NOISE_ROW = /^[\s\u2500-\u257F\u2580-\u259F\u2800-\u28FF]*$/;
+const FOOTER_KEEP =
+  /esc to interrupt|\d+ (?:shell|background|task|monitor|local agent|team)s?\b|remote dynamic workflow|cloud session|ultraplan needs your input/i;
+const OSC_SEQUENCE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+export interface TrailerView {
+  above: string[];
+  box: InputBoxState;
+  below: string[];
+}
+
+const cleanRow = (row: string): string => stripControlBytes(stripSgr(row.replace(OSC_SEQUENCE, ""))).trimEnd();
+
+function trailerRows(rows: string[], from: number, to: number, keep: RegExp | null): string[] {
+  const out: string[] = [];
+  for (let i = from; i < to; i++) {
+    const row = cleanRow(rows[i]);
+    if (NOISE_ROW.test(row)) continue;
+    if (keep !== null && !keep.test(row)) continue;
+    out.push(row.slice(0, TAIL_LINE_CHARS));
+  }
+  return out;
+}
+
+export function renderTrailerView(view: TrailerView): string {
+  const { box } = view;
+  const boxLine =
+    box.state === "empty"
+      ? "input box: empty"
+      : box.state === "ghost"
+        ? "input box: empty (a model suggestion is showing; nobody typed it)"
+        : box.state === "pending"
+          ? `input box: UNSUBMITTED TEXT, not sent: "${box.text}"`
+          : "input box: could not be classified";
+  return [...view.above.slice(-TAIL_LINES), boxLine, ...view.below].join("\n");
+}
+
+export function claudeTrailerView(target: string): TrailerView | null {
+  try {
+    const rows = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`).split("\n");
+    const anchor = findInputBox(rows);
+    if (anchor === null) return null;
+    const box =
+      anchor.prompt === null ? { state: "unknown" as const, text: "" } : classifyInputBox(rows, anchor.prompt, anchor.bottom);
+    if (box.state === "unknown") return null;
+    return {
+      above: trailerRows(rows, 0, anchor.top, null),
+      box,
+      below: trailerRows(rows, anchor.bottom + 1, rows.length, FOOTER_KEEP),
+    };
+  } catch {
+    return null;
+  }
+}
+
 const CHOICE_DIALOG = /Esc to cancel|ctrl\+g to edit in/;
 
 const isAwaitingChoiceScreen = (tail: string, wide: string): boolean =>
@@ -1267,6 +1322,23 @@ export function codexInputBoxState(target: string): InputBoxState | null {
     const rows = raw.split("\n");
     const box = findCodexPromptBox(rows);
     return box === null ? null : classifyCodexInputBox(rows, box.prompt, box.footer);
+  } catch {
+    return null;
+  }
+}
+
+export function codexTrailerView(target: string): TrailerView | null {
+  try {
+    const rows = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`).split("\n");
+    const anchor = findCodexPromptBox(rows);
+    if (anchor === null) return null;
+    const box = classifyCodexInputBox(rows, anchor.prompt, anchor.footer);
+    if (box.state === "unknown") return null;
+    return {
+      above: trailerRows(rows, 0, anchor.prompt, null),
+      box,
+      below: trailerRows(rows, anchor.footer, rows.length, FOOTER_KEEP),
+    };
   } catch {
     return null;
   }
