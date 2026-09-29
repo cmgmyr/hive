@@ -3,7 +3,7 @@ import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
-import { liveTargets, rowAlive, type AliveSnapshot } from "./tmux.js";
+import { liveTargets, paneReissued, rowAlive, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
 
@@ -78,6 +78,7 @@ interface AgentRow {
   agent_state: string;
   tmux_target: string;
   tmux_socket: string;
+  pane_pid: string;
 }
 
 const ONE = (sql: string, ...params: unknown[]): unknown => db.prepare(sql).get(...params);
@@ -137,7 +138,7 @@ function projectRow(
 
   const agents = db
     .prepare(
-      "SELECT id, kind, agent_state, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
+      "SELECT id, kind, agent_state, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
     )
     .all(project.id) as AgentRow[];
 
@@ -150,7 +151,7 @@ function projectRow(
   let lead: PortfolioProject["lead"] = { state: "none", agent_id: null };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = liveness(a);
+      const live = snapshot && paneReissued(a.pane_pid, rowAliveProbe(a.tmux_socket, a.tmux_target, snapshot)) ? false : liveness(a);
       lead = { state: live === true ? "alive" : live === false ? "dead_pane" : "unknown", agent_id: a.id };
       continue;
     }
