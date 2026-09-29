@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { basename, dirname, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
 
 export interface Project {
@@ -27,7 +28,6 @@ export const TOUCH_INTERVAL_MS = 30_000;
 
 export function currentActor(): string {
   if (cachedActorId) {
-
     if (Date.now() - lastTouchMs > TOUCH_INTERVAL_MS) {
       db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(cachedActorId);
       lastTouchMs = Date.now();
@@ -298,4 +298,10 @@ export function trySelectedProject(): Project | null {
   } catch {
     return null;
   }
+}
+
+export const QUEEN_PROFILE = "queen";
+
+export function queenHomeDir(): string {
+  return join(storeDir(), "queen");
 }

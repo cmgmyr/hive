@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -68,6 +69,8 @@ import {
   gitPrimaryRoot,
   getProject,
   listProjects,
+  QUEEN_PROFILE,
+  queenHomeDir,
   registeredAncestor,
   takeRegistrationNotice,
   type Project,
@@ -267,6 +270,10 @@ Usage:
                              scripts/restart-lead.sh passes it; a human rarely
                              needs it. --detach starts or adopts the lead and
                              prints its pane and attach command without attaching
+  hive queen [--no-dashboard]
+                             start, or reattach to, the lead that reads across
+                             every registered project; its home is
+                             <data dir>/queen, created on first run
   hive init [path] [--profile <name>|--no-profile]
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
@@ -943,6 +950,54 @@ async function cmdLead(argv: string[]): Promise<void> {
     if (registrationNotice) console.error(registrationNotice);
     throw e;
   }
+}
+
+function publishQueenYml(home: string): void {
+  const yml = join(home, "hive.yml");
+  const staged = join(home, `.hive.yml.${process.pid}.${randomUUID()}`);
+  writeFileSync(staged, `profile: ${QUEEN_PROFILE}\n`, { flag: "wx" });
+  try {
+    linkSync(staged, yml);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  } finally {
+    unlinkSync(staged);
+  }
+  if (lstatSync(yml).isSymbolicLink()) {
+    throw new Error(`hive queen: ${yml} is a symlink. The queen's config must be a real file; remove the link and run hive queen again.`);
+  }
+  const { config } = loadProjectYml(home);
+  if (activeProfile(config) !== QUEEN_PROFILE) {
+    throw new Error(
+      `hive queen: ${yml} already exists and does not select "profile: ${QUEEN_PROFILE}". hive will not ` +
+        "overwrite it. Add that line yourself, or move the file away and run hive queen again.",
+    );
+  }
+}
+
+async function cmdQueen(argv: string[]): Promise<void> {
+  const positional = argv.find((a) => !a.startsWith("--"));
+  if (positional !== undefined) {
+    console.error(`hive queen: takes no path. The queen lives in the data dir (${queenHomeDir()}).`);
+    process.exit(1);
+  }
+  const home = queenHomeDir();
+  let existing: ReturnType<typeof lstatSync> | null = null;
+  try {
+    existing = lstatSync(home);
+  } catch {
+    existing = null;
+  }
+  if (existing?.isSymbolicLink() || (existing && !existing.isDirectory())) {
+    throw new Error(
+      `hive queen: ${home} exists and is not a plain directory. The queen's home must be a real directory ` +
+        "inside the data dir; move it away and run hive queen again.",
+    );
+  }
+  mkdirSync(home, { recursive: true });
+  publishQueenYml(home);
+  addProject(home, "queen");
+  await cmdLead([home, ...argv]);
 }
 
 const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the project root.
@@ -3883,7 +3938,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -3905,6 +3960,9 @@ try {
   switch (command) {
     case "lead":
       await cmdLead(rest);
+      break;
+    case "queen":
+      await cmdQueen(rest);
       break;
     case "init":
       await cmdInit(rest);
