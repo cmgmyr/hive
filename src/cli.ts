@@ -261,11 +261,12 @@ function usage(): never {
 Usage:
   hive --version              version, short sha, and dirty marker for this build
   hive [path]                open the project's session with a lead window
-  hive lead [path] [--no-dashboard]
+  hive lead [path] [--no-dashboard] [--detach]
                              same; lead is the default command. --no-dashboard
                              skips this run's dashboard auto-open -
                              scripts/restart-lead.sh passes it; a human rarely
-                             needs to
+                             needs it. --detach starts or adopts the lead and
+                             prints its pane and attach command without attaching
   hive init [path] [--profile <name>|--no-profile]
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
@@ -365,11 +366,8 @@ async function ensureTrusted(
   dir: string | null,
   env: Record<string, string>,
 ): Promise<boolean> {
+  if (isTrusted(projectId, name, command, dir, env)) return true;
   const hash = configHash(name, command, dir, env);
-  const trusted = db
-    .prepare("SELECT 1 FROM command_trust WHERE project_id = ? AND name = ? AND config_hash = ?")
-    .get(projectId, name, hash);
-  if (trusted) return true;
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     console.log(`! "${name}" is not trusted yet; run hive interactively to review it.`);
     return false;
@@ -386,6 +384,19 @@ async function ensureTrusted(
     "INSERT OR IGNORE INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)",
   ).run(projectId, name, hash);
   return true;
+}
+
+function isTrusted(
+  projectId: number,
+  name: string,
+  command: string,
+  dir: string | null,
+  env: Record<string, string>,
+): boolean {
+  const hash = configHash(name, command, dir, env);
+  return !!db
+    .prepare("SELECT 1 FROM command_trust WHERE project_id = ? AND name = ? AND config_hash = ?")
+    .get(projectId, name, hash);
 }
 
 function startYmlCommand(project: Project, name: string, proc: YmlProcess, config: ProjectYml): string {
@@ -615,12 +626,13 @@ function reportMigrationResult(result: ReturnType<typeof migrateLegacyConfig>): 
 
 async function cmdLead(argv: string[]): Promise<void> {
 
-  const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard");
+  const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard" && a !== "--detach");
   if (unknownFlag !== undefined) {
-    console.error(`hive lead: unknown flag "${unknownFlag}". The only flag is --no-dashboard.`);
+    console.error(`hive lead: unknown flag "${unknownFlag}". Flags are --no-dashboard and --detach.`);
     process.exit(1);
   }
   const noDashboard = argv.includes("--no-dashboard");
+  const detach = argv.includes("--detach");
   const path = argv.find((a) => !a.startsWith("--"));
 
   let registrationNotice: string | null = null;
@@ -628,12 +640,26 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProject(path, (text) => {
       registrationNotice = text;
     });
+    const { config, warnings } = loadProjectYml(project.path);
+    if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+      let untrusted: string | undefined;
+      if (config?.lead && !isTrusted(project.id, "lead", config.lead, null, {})) untrusted = "lead";
+      if (!untrusted && config) {
+        untrusted = Object.entries(config.processes).find(
+          ([name, proc]) =>
+            proc.auto_start !== false && !isTrusted(project.id, name, proc.command, proc.dir, proc.env),
+        )?.[0];
+      }
+      if (untrusted) {
+        console.error(`hive lead: "${untrusted}" is not trusted; run hive lead <path> interactively once`);
+        process.exitCode = 1;
+        return;
+      }
+    }
     reportMigrationResult(migrateLegacyConfig());
+    for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
     const hooksPath = ensureHooksFile();
-
-    const { config, warnings } = loadProjectYml(project.path);
-    for (const w of warnings) console.log(`! ${w}`);
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -901,6 +927,11 @@ async function cmdLead(argv: string[]): Promise<void> {
       registrationNotice = null;
     }
 
+    if (detach) {
+      console.log(`LEAD_PANE=${leadPane}`);
+      console.log(`ATTACH_COMMAND=hive attach ${shellQuote(project.path)}`);
+      return;
+    }
     if (!noDashboard) maybeOpenDashboard(project, !!config?.dashboard);
     attach(session, project, leadWindow);
   } catch (e) {
