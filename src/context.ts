@@ -4,6 +4,7 @@ import { userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
+import { LEAD_KIND } from "./spawn.js";
 
 export interface Project {
   id: number;
@@ -15,7 +16,6 @@ export interface Project {
 let selectedId: number | null = null;
 let cachedActorId: string | null = null;
 let lastTouchMs = 0;
-
 let pendingRegistrationNotice: Project | null = null;
 
 export function takeRegistrationNotice(): Project | null {
@@ -323,8 +323,8 @@ function queenProjectId(): number | null {
   const home = queenHomeProject();
   if (!home) return null;
   const row = db
-    .prepare("SELECT 1 FROM agents WHERE actor_id = ? AND project_id = ? AND kind = 'lead' AND status = 'running'")
-    .get(actorId, home.id);
+    .prepare("SELECT 1 FROM agents WHERE actor_id = ? AND project_id = ? AND kind = ? AND status = 'running'")
+    .get(actorId, home.id, LEAD_KIND);
   return row ? home.id : null;
 }
 
@@ -397,9 +397,9 @@ export const QUEEN_REFUSAL = "QUEEN_CROSS_PROJECT_WRITE_REFUSED";
 function runningLead(projectId: number): { id: number; actor_id: string; name: string } | undefined {
   return db
     .prepare(
-      "SELECT id, actor_id, name FROM agents WHERE project_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id LIMIT 1",
+      "SELECT id, actor_id, name FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id LIMIT 1",
     )
-    .get(projectId) as { id: number; actor_id: string; name: string } | undefined;
+    .get(projectId, LEAD_KIND) as { id: number; actor_id: string; name: string } | undefined;
 }
 
 function namesLead(ref: unknown, lead: { id: number; name: string }): boolean {
@@ -407,12 +407,11 @@ function namesLead(ref: unknown, lead: { id: number; name: string }): boolean {
 }
 
 function foreignWriteProblem(
-  reach: Exclude<QueenReach, "global">,
+  reach: Exclude<QueenReach, "read" | "global">,
   targetProjectId: number,
   args: Record<string, unknown>,
 ): string | null {
   switch (reach) {
-    case "read":
     case "spin_up":
     case "todo":
       return null;
