@@ -983,10 +983,17 @@ function publishQueenYml(home: string): void {
 }
 
 async function cmdQueen(argv: string[]): Promise<void> {
-  const positional = argv.find((a) => !a.startsWith("--"));
-  if (positional !== undefined) {
+  const parsed = parseArgs(argv, { flags: ["--no-dashboard"] });
+  rejectUnknownFlags("queen", parsed, "--no-dashboard");
+  if (parsed.positional.length > 0) {
     console.error(`hive queen: takes no path. The queen lives in the data dir (${queenHomeDir()}).`);
     process.exit(1);
+  }
+  if (process.env.HIVE_PROJECT_LOCK === "1" || agentProjectPin() != null) {
+    throw new Error(
+      "hive queen: this session is locked to its own project (HIVE_PROJECT_LOCK=1), so it cannot create or " +
+        "start the queen. Run hive queen from your own terminal.",
+    );
   }
   const home = queenHomeDir();
   let existing: ReturnType<typeof lstatSync> | null = null;
@@ -1004,7 +1011,7 @@ async function cmdQueen(argv: string[]): Promise<void> {
   mkdirSync(home, { recursive: true });
   publishQueenYml(home);
   addProject(home, "queen");
-  await cmdLead([home, ...argv]);
+  await cmdLead([home, ...parsed.flags]);
 }
 
 const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the project root.

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, makeFakeClaude, panesIn, runCli, scratchDirs, tmux, windowFor } from "./helpers.mjs";
+import { clearHiveEnv, DIST, isolateTmux, makeFakeClaude, panesIn, runCli, runNode, scratchDirs, tmux, windowFor } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the hive queen command tests");
 
@@ -122,6 +122,39 @@ describe("hive queen", { skip: hasTmux ? false : "tmux is not installed" }, () =
     assert.notEqual(run.code, 0);
     assert.match(run.stdout, /is not a plain directory/);
     assert.equal(existsSync(join(elsewhere, "hive.yml")), false);
+  });
+
+  it("refuses a locked worker before creating the queen's home or registering it", async () => {
+    const dataDir = join(mkdtempSync(join(dirname(dirs.dataDir), "locked-")), "data");
+    const project = realpathSync(mkdtempSync(join(dirname(dirs.dataDir), "worker-project-")));
+    const init = await runCli(["init", project, "--no-profile"], cliOpts(dataDir, project));
+    assert.equal(init.code, 0, init.stderr + init.stdout);
+    const seed = await runNode("--input-type=module", [
+      "-e",
+      [
+        `process.env.HIVE_DATA_DIR = ${JSON.stringify(dataDir)};`,
+        `const { db } = await import(${JSON.stringify(join(DIST, "db.js"))});`,
+        `const p = db.prepare("SELECT id FROM projects WHERE path = ?").get(${JSON.stringify(project)});`,
+        `db.prepare("INSERT INTO agents (project_id, actor_id, name, command, cwd, kind) VALUES (?, 'agent:w1', 'w1', 'claude', '/', 'agent')").run(p.id);`,
+      ].join("\n"),
+    ], { cwd: project, dataDir, tmp: dirs.tmp });
+    assert.equal(seed.code, 0, seed.stderr);
+
+    const locked = await runCli(["queen", "--no-dashboard"], {
+      ...cliOpts(dataDir, project),
+      env: { ...cliOpts(dataDir, project).env, HIVE_AGENT_ID: "agent:w1", HIVE_PROJECT_LOCK: "1", HIVE_PROJECT_PATH: project },
+    });
+    assert.notEqual(locked.code, 0);
+    assert.match(locked.stdout, /hive queen: this session is locked to its own project/);
+    assert.equal(existsSync(join(dataDir, "queen")), false, "a locked worker must not create the queen's home");
+    const portfolio = await runCli(["portfolio", "--json"], cliOpts(dataDir, project));
+    assert.deepEqual(JSON.parse(portfolio.stdout).projects.map((p) => p.root), [project]);
+  });
+
+  it("names itself when it rejects an unknown flag", async () => {
+    const run = await runCli(["queen", "--bogus"], cliOpts(dirs.dataDir));
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /^hive queen: unknown argument "--bogus"/);
   });
 
   it("takes no path argument", async () => {
