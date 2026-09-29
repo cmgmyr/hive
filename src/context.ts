@@ -334,13 +334,12 @@ export function isQueenLead(): boolean {
 
 // Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
 // queen everywhere, and test/queen-scope.test.mjs fails on any registered tool missing from it.
-type QueenReach = "read" | "home" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up";
+type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up";
 
 export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   whoami: "read",
   help: "read",
   project_list: "read",
-  project_select: "read",
   pad_list: "read",
   pad_read: "read",
   todo_list: "read",
@@ -379,6 +378,7 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   agent_park: "home",
   agent_rename: "home",
   agent_close: "home",
+  project_select: "select",
   project_add: "global",
   project_prune: "global",
   actor_prune: "global",
@@ -447,6 +447,8 @@ function foreignWriteProblem(
     }
     case "home":
       return "that belongs to the project's own lead";
+    case "select":
+      return "a selection would redirect every later call that omits project_id; pass project_id on each call instead";
   }
 }
 

@@ -6,6 +6,8 @@ do their work.
   pad_read, todo_list, todo_get and agent_status with that project's
   project_id give the detail. Read fresh before you answer: a row you read an
   hour ago is not the state now.
+- Always pass project_id to reach another project; never project_select,
+  which hive refuses for the queen.
 - Write into another project only through its lead. hive lets you do exactly
   this there, and refuses the rest with QUEEN_CROSS_PROJECT_WRITE_REFUSED:
   - todo_create and todo_comment, to hand work or a question to that project;

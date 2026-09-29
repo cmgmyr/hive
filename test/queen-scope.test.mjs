@@ -256,15 +256,15 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     assert.deepEqual(alphaState(), before);
   });
 
-  it("refuses a write with project_id omitted once project_select points at another project", async () => {
+  it("refuses project_select of another project, so an implicit write stays in the queen's own project", async () => {
     const mcp = clientAs(queenLead.actorId, queen.path);
     await mcp.start();
     try {
-      await mcp.call("project_select", { project_id: alpha.id });
-      const result = await rawCall(mcp, "pad_write", { name: "board", content: "x" });
-      assert.equal(result.isError, true);
-      assert.match(result.content[0].text, new RegExp(`^${QUEEN_REFUSAL}:.*project ${alpha.id}`));
-      assert.equal(db.prepare("SELECT content FROM pads WHERE id = ?").get(seedPad).content, "seed");
+      const text = await refusal(mcp, "project_select", { project_id: alpha.id });
+      assert.match(text, new RegExp(`^${QUEEN_REFUSAL}: the queen cannot run project_select in project ${alpha.id}`));
+      const pad = await mcp.call("pad_write", { name: "implicit", content: "x" });
+      assert.equal(db.prepare("SELECT project_id FROM pads WHERE id = ?").get(pad.pad_id).project_id, queen.id);
+      await mcp.call("project_select", { project_id: queen.id });
     } finally {
       await mcp.close();
     }
