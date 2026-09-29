@@ -7,6 +7,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive --version` | Print the version, short sha, and dirty marker this build was stamped with. It reads a cached npm update result when one is fresh. |
 | `hive --version --check` | Ask npm for the latest published version, cache the result for 24 hours, and print whether this build is current |
 | `hive` / `hive lead [path] [--no-dashboard] [--detach]` | Start, or reattach to, this project's lead session; `--detach` starts or adopts the lead and prints its pane and attach command without attaching |
+| `hive queen` | Start, or reattach to, the queen: one lead per data dir that reads every registered project and writes into another one only through its lead (todos, comments, and text or wakes addressed to that lead). The first run creates `<data dir>/queen` with a `hive.yml` selecting the shipped `queen` profile |
 | `hive init [path]` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad, and registers the checkout it is pointed at even under a registered parent |
 | `hive attach` | Attach to the project's tmux session without opening a lead |
 | `hive start <name>` | Start a `hive.yml` process by hand |

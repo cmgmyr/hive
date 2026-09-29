@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { noticeFor, releaseNotice } from "./result.js";
+import { noticeFor, releaseNotice, run } from "./result.js";
 
 function isBuiltSchema(value: unknown): boolean {
   return typeof value === "object" && value !== null && ("_zod" in value || "_def" in value);
@@ -59,6 +59,22 @@ function withStructuredContent(name: string, cb: ToolCallback): ToolCallback {
   };
 }
 
+export type CallGuard = (tool: string, args: Record<string, unknown>) => void;
+
+function withCallGuard(name: string, cb: ToolCallback, guard: CallGuard): ToolCallback {
+  return async (...args: unknown[]) => {
+    const input = (typeof args[0] === "object" && args[0] !== null ? args[0] : {}) as Record<string, unknown>;
+    try {
+      guard(name, input);
+    } catch (e) {
+      return run(() => {
+        throw e;
+      });
+    }
+    return cb(...args);
+  };
+}
+
 function withNotice(result: CallToolResult): CallToolResult {
   const notice = noticeFor(result);
   if (notice && result.structuredContent) result.structuredContent = { ...result.structuredContent, hive_notice: notice };
@@ -71,17 +87,19 @@ function withNoticeField(outputSchema: unknown): unknown {
     : { ...(outputSchema as z.ZodRawShape), hive_notice: z.string().optional() };
 }
 
-export function enforceStrictInput(server: McpServer): McpServer {
+export function enforceStrictInput(server: McpServer, guard?: CallGuard): McpServer {
   const register = server.registerTool.bind(server);
-  server.registerTool = ((name, config, cb) =>
-    register(
+  server.registerTool = ((name, config, cb) => {
+    const guarded = guard ? withCallGuard(name, cb as ToolCallback, guard) : (cb as ToolCallback);
+    return register(
       name,
       {
         ...config,
         inputSchema: strictSchemaFor(name, config.inputSchema) as never,
         outputSchema: withNoticeField(config.outputSchema) as never,
       },
-      (config.outputSchema ? withStructuredContent(name, cb as ToolCallback) : cb) as never,
-    )) as McpServer["registerTool"];
+      (config.outputSchema ? withStructuredContent(name, guarded) : guarded) as never,
+    );
+  }) as McpServer["registerTool"];
   return server;
 }

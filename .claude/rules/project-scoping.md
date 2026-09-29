@@ -23,6 +23,8 @@ What would change the answer: the first worktree of something other than hive.
 
 `HIVE_PROJECT_LOCK=1` disables cross-project access entirely, and every spawned worker gets it.
 
+**The queen's writes into another project go only through `assertQueenCrossProjectWrite` and `QUEEN_REACH` (`src/context.ts`).** Nothing else may widen them.
+
 **A codex worker's MCP server does not inherit its pane's environment.** Every `HIVE_*` variable the server reads at runtime (`src/context.ts`, `src/dataDir.ts`) must be written into `[mcp_servers.hive.env]` by `ensureCodexHome`, from the same `agentIdentityEnv` values the pane gets, and `agent_resume` must refresh it. A variable that reaches only the pane is the defect.
 
 See `.claude/skills/hive-internals` for the mechanics, examples, and measurements behind these.

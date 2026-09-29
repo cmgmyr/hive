@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { basename, dirname, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
+import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
+import { LEAD_KIND } from "./spawn.js";
 
 export interface Project {
   id: number;
@@ -14,7 +16,6 @@ export interface Project {
 let selectedId: number | null = null;
 let cachedActorId: string | null = null;
 let lastTouchMs = 0;
-
 let pendingRegistrationNotice: Project | null = null;
 
 export function takeRegistrationNotice(): Project | null {
@@ -27,7 +28,6 @@ export const TOUCH_INTERVAL_MS = 30_000;
 
 export function currentActor(): string {
   if (cachedActorId) {
-
     if (Date.now() - lastTouchMs > TOUCH_INTERVAL_MS) {
       db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(cachedActorId);
       lastTouchMs = Date.now();
@@ -298,4 +298,198 @@ export function trySelectedProject(): Project | null {
   } catch {
     return null;
   }
+}
+
+export const QUEEN_PROFILE = "queen";
+
+export function queenHomeDir(): string {
+  return join(storeDir(), "queen");
+}
+
+function queenHomeProject(): Project | null {
+  const home = queenHomeDir();
+  try {
+    if (lstatSync(home).isSymbolicLink()) return null;
+    return getProjectByPath(realpathSync(home)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function queenProjectId(): number | null {
+  if (projectLock) return null;
+  const actorId = process.env.HIVE_AGENT_ID;
+  if (!actorId) return null;
+  const home = queenHomeProject();
+  if (!home) return null;
+  const row = db
+    .prepare("SELECT 1 FROM agents WHERE actor_id = ? AND project_id = ? AND kind = ? AND status = 'running'")
+    .get(actorId, home.id, LEAD_KIND);
+  return row ? home.id : null;
+}
+
+export function isQueenLead(): boolean {
+  return queenProjectId() !== null;
+}
+
+// Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
+// queen everywhere, and test/queen-scope.test.mjs fails on any registered tool missing from it.
+type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up";
+
+export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
+  whoami: "read",
+  help: "read",
+  project_list: "read",
+  pad_list: "read",
+  pad_read: "read",
+  todo_list: "read",
+  todo_get: "read",
+  kv_get: "read",
+  kv_list: "read",
+  wake_get: "read",
+  wake_list: "read",
+  agent_list: "read",
+  agent_status: "read",
+  agent_output: "read",
+  agent_message_get: "read",
+  todo_create: "todo",
+  todo_comment: "todo",
+  wake_set: "lead_wake",
+  wake_when_idle: "lead_wake",
+  wake_update: "owned_lead_wake",
+  wake_cancel: "owned_lead_wake",
+  agent_send: "lead_text",
+  pad_write: "home",
+  pad_append: "home",
+  pad_edit: "home",
+  pad_archive: "home",
+  pad_delete: "home",
+  todo_update: "home",
+  todo_archive: "home",
+  todo_complete: "home",
+  todo_block: "home",
+  todo_unblock: "home",
+  kv_set: "home",
+  kv_delete: "home",
+  lease_acquire: "home",
+  lease_release: "home",
+  agent_spawn: "home",
+  agent_resume: "home",
+  agent_park: "home",
+  agent_rename: "home",
+  agent_close: "home",
+  project_select: "select",
+  project_add: "global",
+  project_prune: "global",
+  actor_prune: "global",
+  "hive lead": "spin_up",
+  "hive init": "home",
+  "hive attach": "home",
+  "hive next": "home",
+  "hive start": "home",
+  "hive stop": "home",
+  "hive show": "home",
+  "hive hide": "home",
+  "hive pad --save": "home",
+};
+
+export const QUEEN_REFUSAL = "QUEEN_CROSS_PROJECT_WRITE_REFUSED";
+
+function runningLead(projectId: number): { id: number; actor_id: string; name: string } | undefined {
+  return db
+    .prepare(
+      "SELECT id, actor_id, name FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id LIMIT 1",
+    )
+    .get(projectId, LEAD_KIND) as { id: number; actor_id: string; name: string } | undefined;
+}
+
+function namesLead(ref: unknown, lead: { id: number; name: string }): boolean {
+  return typeof ref === "number" ? ref === lead.id : ref === lead.name;
+}
+
+function foreignWriteProblem(
+  reach: Exclude<QueenReach, "read" | "global">,
+  targetProjectId: number,
+  args: Record<string, unknown>,
+): string | null {
+  switch (reach) {
+    case "spin_up":
+    case "todo":
+      return null;
+    case "lead_wake": {
+      if (args.scope !== undefined) return "a standing watch in another project belongs to its lead";
+      const lead = runningLead(targetProjectId);
+      if (!lead) return "that project has no running lead to address";
+      if (!namesLead(args.deliver_to, lead)) {
+        return `deliver_to must name that project's running lead ("${lead.name}" or agent id ${lead.id})`;
+      }
+      return null;
+    }
+    case "owned_lead_wake": {
+      const lead = runningLead(targetProjectId);
+      if (!lead) return "that project has no running lead, so no wake of yours there is still addressed to one";
+      const wake = db
+        .prepare("SELECT owner, deliver_actor FROM wakes WHERE id = ? AND project_id = ?")
+        .get(args.wake_id, targetProjectId) as { owner: string; deliver_actor: string } | undefined;
+      if (!wake || wake.owner !== process.env.HIVE_AGENT_ID || wake.deliver_actor !== lead.actor_id) {
+        return "only a wake you set there, addressed to that project's current running lead, can be changed";
+      }
+      return null;
+    }
+    case "lead_text": {
+      if (args.keys !== undefined) return "keys can interrupt a lead mid-turn; send text instead";
+      const lead = runningLead(targetProjectId);
+      if (!lead) return "that project has no running lead to address";
+      if (!namesLead(args.agent_id ?? args.name, lead)) {
+        return `the recipient must be that project's running lead ("${lead.name}" or agent id ${lead.id})`;
+      }
+      return null;
+    }
+    case "home":
+      return "that belongs to the project's own lead";
+    case "select":
+      return "a selection would redirect every later call that omits project_id; pass project_id on each call instead";
+  }
+}
+
+// targetProjectId null means the operation has no single project (a store-wide sweep, an unregistered path).
+export function assertQueenCrossProjectWrite(
+  operation: string,
+  targetProjectId: number | null,
+  args: Record<string, unknown>,
+): void {
+  const home = queenProjectId();
+  if (home === null) return;
+  const reach = QUEEN_REACH[operation];
+  if (reach === "read") return;
+  const problem =
+    reach === undefined
+      ? "hive has not classified this operation for the queen, so it refuses by default"
+      : reach === "global"
+        ? "it changes the whole store, not one project"
+        : targetProjectId === home
+          ? null
+          : targetProjectId === null
+            ? "it names no registered project"
+            : foreignWriteProblem(reach, targetProjectId, args);
+  if (problem) throw queenRefusal(operation, targetProjectId, problem);
+}
+
+export function assertQueenToolCall(tool: string, args: Record<string, unknown>): void {
+  if (!isQueenLead()) return;
+  const reach = QUEEN_REACH[tool];
+  if (reach === "read") return;
+  const override = typeof args.project_id === "number" ? args.project_id : undefined;
+  const target = reach === undefined || reach === "global" ? null : effectiveProjectId(override);
+  assertQueenCrossProjectWrite(tool, target, args);
+}
+
+function queenRefusal(operation: string, targetProjectId: number | null, problem: string): Error {
+  const target = targetProjectId === null ? null : getProject(targetProjectId);
+  const where = target ? `in project ${target.id} ("${target.name}")` : "outside the queen's own project";
+  return new Error(
+    `${QUEEN_REFUSAL}: the queen cannot run ${operation} ${where}: ${problem}. Into another project the ` +
+      "queen may only todo_create, todo_comment, send text or wakes to its running lead, and start its lead " +
+      "with `hive lead <path>`. Everything else there is its lead's to do.",
+  );
 }

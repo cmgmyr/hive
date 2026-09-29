@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
@@ -61,13 +62,17 @@ import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   addProject,
   agentProjectPin,
+  assertQueenCrossProjectWrite,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
+  findProjectForDir,
   getProjectByPath,
   gitPrimaryRoot,
   getProject,
   listProjects,
+  QUEEN_PROFILE,
+  queenHomeDir,
   registeredAncestor,
   takeRegistrationNotice,
   type Project,
@@ -267,6 +272,10 @@ Usage:
                              scripts/restart-lead.sh passes it; a human rarely
                              needs it. --detach starts or adopts the lead and
                              prints its pane and attach command without attaching
+  hive queen [--no-dashboard]
+                             start, or reattach to, the lead that reads across
+                             every registered project; its home is
+                             <data dir>/queen, created on first run
   hive init [path] [--profile <name>|--no-profile]
                              set the project up: hive.yml, profile, starter pads
   hive attach [path]         attach without adding windows
@@ -346,6 +355,11 @@ function resolveProject(path?: string, onNotice?: (text: string) => void): Proje
       target ? `project ${target.id} ("${target.name}")` : "no registered project"
     }. An explicit path argument cannot escape HIVE_PROJECT_LOCK=1. Unset HIVE_AGENT_ID and HIVE_PROJECT_LOCK in this pane, or open a new one, to act on a different project.`,
   );
+}
+
+function resolveProjectForWrite(verb: string, path?: string, onNotice?: (text: string) => void): Project {
+  assertQueenCrossProjectWrite(verb, findProjectForDir(path ?? process.cwd())?.id ?? null, {});
+  return resolveProject(path, onNotice);
 }
 
 function pinnedOrCwdProject(): Project | null {
@@ -640,7 +654,7 @@ async function cmdLead(argv: string[]): Promise<void> {
 
   let registrationNotice: string | null = null;
   try {
-    const project = resolveProject(path, (text) => {
+    const project = resolveProjectForWrite("hive lead", path, (text) => {
       registrationNotice = text;
     });
     const { config, warnings } = loadProjectYml(project.path);
@@ -945,6 +959,61 @@ async function cmdLead(argv: string[]): Promise<void> {
   }
 }
 
+function publishQueenYml(home: string): void {
+  const yml = join(home, "hive.yml");
+  const staged = join(home, `.hive.yml.${process.pid}.${randomUUID()}`);
+  writeFileSync(staged, `profile: ${QUEEN_PROFILE}\n`, { flag: "wx" });
+  try {
+    linkSync(staged, yml);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+  } finally {
+    unlinkSync(staged);
+  }
+  if (lstatSync(yml).isSymbolicLink()) {
+    throw new Error(`hive queen: ${yml} is a symlink. The queen's config must be a real file; remove the link and run hive queen again.`);
+  }
+  const { config } = loadProjectYml(home);
+  if (activeProfile(config) !== QUEEN_PROFILE) {
+    throw new Error(
+      `hive queen: ${yml} already exists and does not select "profile: ${QUEEN_PROFILE}". hive will not ` +
+        "overwrite it. Add that line yourself, or move the file away and run hive queen again.",
+    );
+  }
+}
+
+async function cmdQueen(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, { flags: ["--no-dashboard"] });
+  rejectUnknownFlags("queen", parsed, "--no-dashboard");
+  if (parsed.positional.length > 0) {
+    console.error(`hive queen: takes no path. The queen lives in the data dir (${queenHomeDir()}).`);
+    process.exit(1);
+  }
+  if (process.env.HIVE_PROJECT_LOCK === "1" || agentProjectPin() != null) {
+    throw new Error(
+      "hive queen: this session is locked to its own project (HIVE_PROJECT_LOCK=1), so it cannot create or " +
+        "start the queen. Run hive queen from your own terminal.",
+    );
+  }
+  const home = queenHomeDir();
+  let existing: ReturnType<typeof lstatSync> | null = null;
+  try {
+    existing = lstatSync(home);
+  } catch {
+    existing = null;
+  }
+  if (existing?.isSymbolicLink() || (existing && !existing.isDirectory())) {
+    throw new Error(
+      `hive queen: ${home} exists and is not a plain directory. The queen's home must be a real directory ` +
+        "inside the data dir; move it away and run hive queen again.",
+    );
+  }
+  mkdirSync(home, { recursive: true });
+  publishQueenYml(home);
+  addProject(home, "queen");
+  await cmdLead([home, ...parsed.flags]);
+}
+
 const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the project root.
 # Commands defined here run only after a one-time interactive approval,
 # and re-require it whenever they change.
@@ -1171,6 +1240,7 @@ async function cmdInit(argv: string[]): Promise<void> {
       process.exit(1);
     }
     const existing = getProjectByPath(registration);
+    assertQueenCrossProjectWrite("hive init", existing?.id ?? null, {});
     project = existing ?? addProject(registration);
     newlyRegistered = existing == null;
   }
@@ -1540,7 +1610,7 @@ function cmdAttach(argv: string[]): void {
     process.exit(1);
   }
   const path = argv.find((a) => !a.startsWith("--"));
-  const project = resolveProject(path);
+  const project = resolveProjectForWrite("hive attach", path);
   maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
 
@@ -1574,7 +1644,7 @@ async function cmdStart(argv: string[]): Promise<void> {
     console.log("Usage: hive start <process> [path]");
     process.exit(1);
   }
-  const project = resolveProject(path);
+  const project = resolveProjectForWrite("hive start", path);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   const proc = config?.processes[name];
@@ -1609,7 +1679,7 @@ function resolveNamedProcess(
     console.log(`Usage: hive ${verb} <process> [path]`);
     process.exit(1);
   }
-  const project = resolveProject(parsed.positional[1]);
+  const project = resolveProjectForWrite(`hive ${verb}`, parsed.positional[1]);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   if (!config?.processes[name]) {
@@ -1741,7 +1811,7 @@ function cmdStop(argv: string[]): void {
   rejectUnknownFlags("stop", parsed, "--all");
 
   if (parsed.flags.has("--all")) {
-    const project = resolveProject(parsed.positional[0]);
+    const project = resolveProjectForWrite("hive stop", parsed.positional[0]);
     const stopped = stopAllProcesses(project.id, STOP_REASONS.byHand);
     console.log(stopped.length === 0 ? "No processes are running." : stopped.map(stopLine).join("\n"));
     return;
@@ -1752,7 +1822,7 @@ function cmdStop(argv: string[]): void {
     console.log("Usage: hive stop <process> [path] | hive stop --all [path]");
     process.exit(1);
   }
-  const project = resolveProject(parsed.positional[1]);
+  const project = resolveProjectForWrite("hive stop", parsed.positional[1]);
   const row = runningCommandRow(project.id, name);
   if (!row) {
     const { config, warnings } = loadProjectYml(project.path);
@@ -3405,6 +3475,7 @@ async function cmdNext(argv: string[]): Promise<void> {
     }),
   );
   if (parsed.flags.has("--print")) return;
+  assertQueenCrossProjectWrite("hive next", chosen.id, {});
 
   if (!chosen.root_exists) {
     console.error(`hive next: project ${chosen.id} ("${chosen.name}") root is missing: ${chosen.root}. Remove the stale project with the project_prune tool, or restore the directory.`);
@@ -3791,7 +3862,7 @@ function cmdPad(argv: string[]): void {
     console.log("Usage: hive pad <name> [--edit | --save [file]]  (run inside the project)");
     process.exit(1);
   }
-  const project = resolveProject();
+  const project = parsed.flags.has("--save") ? resolveProjectForWrite("hive pad --save") : resolveProject();
   const pad = getActivePadByName(project.id, name);
   if (!pad) {
     console.log(`No pad named "${name}" in project "${project.name}". List them with: hive pads`);
@@ -3883,7 +3954,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -3905,6 +3976,9 @@ try {
   switch (command) {
     case "lead":
       await cmdLead(rest);
+      break;
+    case "queen":
+      await cmdQueen(rest);
       break;
     case "init":
       await cmdInit(rest);
