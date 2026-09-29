@@ -484,9 +484,9 @@ export function assertQueenToolCall(tool: string, args: Record<string, unknown>)
 
 function queenRefusal(operation: string, targetProjectId: number | null, problem: string): Error {
   const target = targetProjectId === null ? null : getProject(targetProjectId);
-  const where = target ? `project ${target.id} ("${target.name}")` : "outside the queen's own project";
+  const where = target ? `in project ${target.id} ("${target.name}")` : "outside the queen's own project";
   return new Error(
-    `${QUEEN_REFUSAL}: the queen cannot run ${operation} in ${where}: ${problem}. Into another project the ` +
+    `${QUEEN_REFUSAL}: the queen cannot run ${operation} ${where}: ${problem}. Into another project the ` +
       "queen may only todo_create, todo_comment, send text or wakes to its running lead, and start its lead " +
       "with `hive lead <path>`. Everything else there is its lead's to do.",
   );

@@ -62,6 +62,7 @@ import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
 import {
   addProject,
   agentProjectPin,
+  assertQueenCrossProjectWrite,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
@@ -650,6 +651,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProject(path, (text) => {
       registrationNotice = text;
     });
+    assertQueenCrossProjectWrite("hive lead", project.id, {});
     const { config, warnings } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -1226,6 +1228,7 @@ async function cmdInit(argv: string[]): Promise<void> {
       process.exit(1);
     }
     const existing = getProjectByPath(registration);
+    assertQueenCrossProjectWrite("hive init", existing?.id ?? null, {});
     project = existing ?? addProject(registration);
     newlyRegistered = existing == null;
   }
@@ -1596,6 +1599,7 @@ function cmdAttach(argv: string[]): void {
   }
   const path = argv.find((a) => !a.startsWith("--"));
   const project = resolveProject(path);
+  assertQueenCrossProjectWrite("hive attach", project.id, {});
   maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
 
@@ -1630,6 +1634,7 @@ async function cmdStart(argv: string[]): Promise<void> {
     process.exit(1);
   }
   const project = resolveProject(path);
+  assertQueenCrossProjectWrite("hive start", project.id, {});
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   const proc = config?.processes[name];
@@ -1665,6 +1670,7 @@ function resolveNamedProcess(
     process.exit(1);
   }
   const project = resolveProject(parsed.positional[1]);
+  assertQueenCrossProjectWrite(`hive ${verb}`, project.id, {});
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   if (!config?.processes[name]) {
@@ -1797,6 +1803,7 @@ function cmdStop(argv: string[]): void {
 
   if (parsed.flags.has("--all")) {
     const project = resolveProject(parsed.positional[0]);
+    assertQueenCrossProjectWrite("hive stop", project.id, {});
     const stopped = stopAllProcesses(project.id, STOP_REASONS.byHand);
     console.log(stopped.length === 0 ? "No processes are running." : stopped.map(stopLine).join("\n"));
     return;
@@ -1808,6 +1815,7 @@ function cmdStop(argv: string[]): void {
     process.exit(1);
   }
   const project = resolveProject(parsed.positional[1]);
+  assertQueenCrossProjectWrite("hive stop", project.id, {});
   const row = runningCommandRow(project.id, name);
   if (!row) {
     const { config, warnings } = loadProjectYml(project.path);
@@ -3882,6 +3890,7 @@ function cmdPad(argv: string[]): void {
   }
 
   if (parsed.flags.has("--save")) {
+    assertQueenCrossProjectWrite("hive pad --save", project.id, {});
     let file = parsed.positional[1];
     if (!file) {
       const matches = findPadExports(project.id, name);
