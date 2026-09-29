@@ -141,6 +141,34 @@ describe("the queen's CLI reach into another project", { skip: hasTmux ? false :
     assert.equal(run.code, 0, run.stdout + run.stderr);
   });
 
+  it("refuses hive next from the queen when the project it picks is another one, before starting its lead", async () => {
+    const todo = db
+      .prepare("INSERT INTO todos (project_id, title, tags) VALUES (?, 'needs you', '[\"needs-human\"]') RETURNING id")
+      .get(alpha.id).id;
+    try {
+      const printed = await runCli(["next", "--print"], as(queenActor, queen.path));
+      assert.equal(printed.code, 0, printed.stdout + printed.stderr);
+      assert.equal(JSON.parse(printed.stdout.trim().split("\n")[0]).project_id, alpha.id);
+
+      const before = storeState();
+      const run = await runCli(["next"], as(queenActor, queen.path));
+      assert.notEqual(run.code, 0, run.stdout);
+      assert.match(run.stdout, new RegExp(`${QUEEN_REFUSAL}: the queen cannot run hive next in project ${alpha.id}`));
+      assert.deepEqual(storeState(), before);
+    } finally {
+      db.prepare("DELETE FROM todos WHERE id = ?").run(todo);
+    }
+  });
+
+  it("lets the queen start another project's lead with hive lead <path> --detach", async () => {
+    const run = await runCli(["lead", alpha.path, "--detach"], as(queenActor, queen.path));
+    assert.equal(run.code, 0, run.stdout + run.stderr);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ? AND kind = 'lead' AND status = 'running'").get(alpha.id).n,
+      1,
+    );
+  });
+
   it("lets the queen start another project's lead with hive lead <path>, and a retry adopts it", async () => {
     const runningLeads = () =>
       db.prepare("SELECT id, tmux_target FROM agents WHERE project_id = ? AND kind = 'lead' AND status = 'running'").all(alpha.id);

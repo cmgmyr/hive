@@ -385,6 +385,7 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   "hive lead": "spin_up",
   "hive init": "home",
   "hive attach": "home",
+  "hive next": "home",
   "hive start": "home",
   "hive stop": "home",
   "hive show": "home",

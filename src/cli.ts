@@ -3475,6 +3475,7 @@ async function cmdNext(argv: string[]): Promise<void> {
     }),
   );
   if (parsed.flags.has("--print")) return;
+  assertQueenCrossProjectWrite("hive next", chosen.id, {});
 
   if (!chosen.root_exists) {
     console.error(`hive next: project ${chosen.id} ("${chosen.name}") root is missing: ${chosen.root}. Remove the stale project with the project_prune tool, or restore the directory.`);
