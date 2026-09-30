@@ -20,9 +20,10 @@ writeFileSync(join(fakeHome, ".codex/auth.json"), "{}");
 const bin = join(dirs.tmp, "bin");
 mkdirSync(bin);
 const argvFile = join(dirs.tmp, "argv");
+const argvTemp = join(dirs.tmp, "argv.tmp");
 for (const harness of ["claude", "codex"]) {
   const path = join(bin, harness);
-  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argvFile}'\nsleep 60\n`);
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nsleep 60\n`);
   chmodSync(path, 0o755);
 }
 let mcp;
@@ -36,7 +37,7 @@ after(async () => {
 });
 const gate = { skip: hasTmux ? false : "tmux is not installed" };
 const argv = async () => {
-  await until(() => existsSync(argvFile), 5000);
+  assert.ok(await until(() => existsSync(argvFile), 5000), "argv snapshot never appeared");
   return readFileSync(argvFile, "utf8").trim().split("\n");
 };
 

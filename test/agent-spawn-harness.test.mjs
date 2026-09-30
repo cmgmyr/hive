@@ -28,7 +28,8 @@ writeFileSync(join(fakeHome, ".codex", "auth.json"), JSON.stringify({ tokens: "n
 const binDir = join(dirs.tmp, "harness-bin");
 mkdirSync(binDir, { recursive: true });
 const argvFile = join(dirs.tmp, "harness-argv.txt");
-writeFileSync(join(binDir, "codex"), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nsleep 30\n`);
+const argvTemp = join(dirs.tmp, "harness-argv.tmp");
+writeFileSync(join(binDir, "codex"), `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nsleep 30\n`);
 chmodSync(join(binDir, "codex"), 0o755);
 
 let mcp;
@@ -64,7 +65,7 @@ describe("agent_spawn: harness parameter", () => {
         receipt.codex_home,
         "harness: codex must run the codex spawn path (CODEX_HOME et al), not an unknown-harness fallback",
       );
-      await until(() => existsSync(argvFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile), 5000), "codex argv snapshot never appeared");
       const argv = readFileSync(argvFile, "utf8").split("\n");
       assert.ok(
         argv.includes("--dangerously-bypass-hook-trust"),
