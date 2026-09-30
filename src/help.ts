@@ -377,8 +377,8 @@ a phase flag. Use pads for anything longer than a line or two.`,
   lease_release(key)
 
 Keys are project-scoped and free-form; keep them stable and specific, like
-"checkout:main", "db:dev", "port:3000" or "todo:42". A lease keeps two
-sessions out of the same live state; it cannot prevent a merge conflict
-between two branches. Leases expire on their own, so a crashed session never
-wedges the team.`,
+"checkout:main", "db:dev", "port:3000" or "todo:42". A lease tells other
+sessions the state is in use; it enforces nothing, and it cannot prevent a
+merge conflict between two branches. Leases expire on their own, so a crashed
+session never wedges the team.`,
 };
