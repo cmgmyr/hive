@@ -120,13 +120,13 @@ function positiveInteger(value: number, name: string): void {
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
 }
 
-export function listQueenAudit(options: { project_id?: number; limit?: number } = {}): { entries: QueenAuditRow[]; limit: number; project_id: number | null } {
+export function listQueenAudit(options: { project_id?: number; limit?: number } = {}, homeProjectId?: number): { entries: QueenAuditRow[]; limit: number; project_id: number | null } {
   const requestedLimit = options.limit ?? QUEEN_AUDIT_DEFAULT_LIMIT;
   positiveInteger(requestedLimit, "limit");
   if (options.project_id !== undefined) positiveInteger(options.project_id, "project_id");
   const target = options.project_id === undefined ? null : effectiveProjectId(options.project_id);
   const queen = isQueenLead();
-  const home = queen ? null : effectiveProjectId();
+  const home = queen ? null : homeProjectId ?? effectiveProjectId();
   if (!queen && target !== null && target !== home) throw new Error("Queen audit access is limited to your own project");
   const projectId = target ?? home;
   const limit = Math.min(requestedLimit, QUEEN_AUDIT_MAX_LIMIT);

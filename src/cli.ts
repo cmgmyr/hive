@@ -292,9 +292,6 @@ Usage:
   hive queen-audit           confirmed queen writes, newest first; 30-day history
     [--project-id <id>]      filter the target project (queen only across projects)
     [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
-  hive queen-audit           confirmed queen writes, newest first; 30-day history
-    [--project-id <id>]      filter the target project (queen only across projects)
-    [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
   hive next [--print]        attach to the lead of the project that needs you most
                              (waiting on you, then stuck), starting a dead or
                              missing lead first; --print only names the choice
@@ -3543,17 +3540,17 @@ function cmdQueenAudit(argv: string[]): void {
   requireFlagValues("queen-audit", parsed);
   let report: ReturnType<typeof listQueenAudit>;
   try {
+    const project = pinnedOrCwdProject();
+    if (!project) throw new Error("hive queen-audit: the cwd is not a registered project. Run this command from a registered project.");
     report = listQueenAudit({
       project_id: parsed.values.has("--project-id") ? Number(parsed.values.get("--project-id")) : undefined,
       limit: parsed.values.has("--limit") ? Number(parsed.values.get("--limit")) : undefined,
-    });
+    }, project.id);
   } catch (e) {
     console.error(errorMessage(e));
     process.exitCode = 1;
     return;
   }
-  const notice = takeRegistrationNotice();
-  if (notice) console.error(registrationNoticeText(notice));
   if (parsed.flags.has("--json")) {
     console.log(JSON.stringify(report));
     return;

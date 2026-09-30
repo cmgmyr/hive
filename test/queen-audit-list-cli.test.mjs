@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { it } from "node:test";
-import { assertScratchStore, clearHiveEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
 
 isolateTmux("queen audit CLI reader");
 clearHiveEnv();
@@ -37,6 +38,29 @@ for (let i = 0; i < 130; i++) {
   }
 }
 const run = (p, args = [], env = {}) => runCli(["queen-audit", ...args], { cwd: p.path, dataDir: dirs.dataDir, env });
+it("CLI help prints the queen-audit usage block exactly once", async () => {
+  const result = await runCli(["--help"], { cwd: queen.path, dataDir: dirs.dataDir });
+  assert.match(result.stdout, /^Usage:/m);
+  assert.equal((result.stdout.match(/^  hive queen-audit\b/gm) ?? []).length, 1);
+});
+it("CLI refuses an unregistered cwd in text and JSON modes without registering a project", async () => {
+  for (const args of [[], ["--json"]]) {
+    const scratch = scratchDirs();
+    const result = await runCli(["queen-audit", ...args], { cwd: scratch.projectDir, dataDir: scratch.dataDir });
+    assert.notEqual(result.code, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /hive queen-audit:.*cwd is not a registered project/);
+    const projects = runFixture(scratch.tmp, "project-list", `import { listProjects } from ${JSON.stringify(pathToFileURL(join(REPO, "dist/context.js")).href)}; console.log(JSON.stringify(listProjects()));`, { ...process.env, HIVE_DATA_DIR: scratch.dataDir });
+    assert.deepEqual(projects, []);
+    const mcp = new McpClient({ cwd: scratch.projectDir, dataDir: scratch.dataDir });
+    try {
+      await mcp.start();
+      assert.deepEqual((await mcp.call("project_list")).projects, []);
+    } finally {
+      await mcp.close();
+    }
+  }
+});
 it("CLI JSON is exactly one object with global, filtered and capped id-desc results", async () => {
   const report = await run(queen, ["--json"], { HIVE_AGENT_ID: q });
   assert.equal(report.code, 0, report.stderr);
