@@ -141,6 +141,27 @@ describe("hive next --print: selection", () => {
     assert.equal(picked(r.stdout).project_id, many.id, "lower id wins a full tie");
   });
 
+  it("picks a moving project with needs_human over a stuck one without, and never a moving one without", async () => {
+    resetStore();
+    const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+    const stuck = project("stuck-no-ask");
+    blockedInProgress(stuck, 5);
+    const busyAsk = project("busy-with-ask");
+    needsHuman(busyAsk, 1);
+    todo(busyAsk, { status: "in_progress", updated: now });
+    const busyPlain = project("busy-plain");
+    todo(busyPlain, { status: "in_progress", updated: now });
+
+    let r = await print();
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(picked(r.stdout).project_id, busyAsk.id);
+    assert.equal(picked(r.stdout).lane, "moving");
+
+    db.prepare("DELETE FROM todos WHERE project_id = ?").run(busyAsk.id);
+    r = await print();
+    assert.equal(picked(r.stdout).project_id, stuck.id, "a moving project with no ask is not a candidate");
+  });
+
   it("ranks stuck by blocked_in_progress, then overdue wakes, then oldest activity", async () => {
     resetStore();
     const a = project("stuck-a");
@@ -367,6 +388,7 @@ describe("hive next: start or attach", () => {
     needsHuman(gone, 3);
     const runnerUp = project("runner-up");
     needsHuman(runnerUp, 1);
+    todo(runnerUp, { status: "in_progress", updated: new Date().toISOString().slice(0, 19).replace("T", " ") });
     rmSync(gone.path, { recursive: true });
 
     const r = await runCli(["next"], opts());

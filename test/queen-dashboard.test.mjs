@@ -321,9 +321,29 @@ describe("renderQueenDashboard", () => {
     assert.match(renderQueenDashboard(report(oneEach()), ready(brief()), noLinks, [], 1), /proj-1/, "the home project still shows in the lanes");
   });
 
+  it("gives the four lanes four distinct colors, waiting_on_you amber and moving blue", () => {
+    const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
+    const color = Object.fromEntries([...html.matchAll(/data-lane="([a-z_]+)" style="--lane:([^"]+)"/g)].map((m) => [m[1], m[2]]));
+    assert.equal(new Set(Object.values(color)).size, 4, JSON.stringify(color));
+    assert.equal(color.waiting_on_you, "var(--warn)");
+    assert.equal(color.moving, "var(--live)");
+  });
+
+  it("badges a moving card with 2 need you and its blocked count, and no other lane's card", () => {
+    const moving = proj(7, "moving", { needs_human: 2, todos: { open: 3, in_progress: 2, blocked: 1, blocked_in_progress: 1, high: 0 } });
+    const waiting = proj(8, "waiting_on_you", { needs_human: 2 });
+    const html = renderQueenDashboard(report([moving, waiting]), { kind: "missing" }, noLinks);
+    const cardOf = (id) => html.match(new RegExp(`<article class="card pc"[^>]*data-project="${id}">.*?</article>`))[0];
+    assert.match(cardOf(7), /<span class="n-need">2 need you<\/span>/);
+    assert.match(cardOf(7), /<span class="n-muted">1 blocked<\/span>/);
+    assert.doesNotMatch(cardOf(8), /need you/);
+  });
+
   it("names every portfolio STUCK reason in the stuck lane caption", () => {
     const source = readFileSync(new URL("../dist/portfolio.js", import.meta.url), "utf8");
-    const stuck = [...source.match(/const STUCK = \[([^\]]*)\]/)[1].matchAll(/"([a-z_0-9]+)"/g)].map((m) => m[1]);
+    const stuck = [...source.matchAll(/const (?:HARD_STALL|TODO_GRAPH) = \[([^\]]*)\]/g)].flatMap((l) =>
+      [...l[1].matchAll(/"([a-z_0-9]+)"/g)].map((m) => m[1]),
+    );
     assert.ok(stuck.length >= 6, `parsed STUCK list: ${stuck}`);
     const phrase = {
       dead_lead_pane: "dead lead",
