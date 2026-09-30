@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { commitQueenStateWrite } from "../queenAudit.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
 import { findUnsafeControlChar } from "../tmux.js";
@@ -367,23 +368,25 @@ export function registerTodos(server: McpServer): void {
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
         currentActor();
-        const info = db
-          .prepare(
-            "INSERT INTO todos (project_id, title, body, priority, tags, slug) VALUES (?, ?, ?, ?, ?, ?)",
-          )
-          .run(
-            projectId,
-            args.title,
-            args.body ?? "",
-            args.priority ?? "medium",
-            JSON.stringify(args.tags ?? []),
-            args.slug ?? "",
-          );
-        const todoId = Number(info.lastInsertRowid);
-        for (const blockerId of args.blocked_by ?? []) {
-          addBlocker.immediate(projectId, todoId, blockerId);
-        }
-        return { project_id: projectId, todo_id: todoId };
+        return commitQueenStateWrite("todo_create", projectId, args, () => {
+          const info = db
+            .prepare(
+              "INSERT INTO todos (project_id, title, body, priority, tags, slug) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .run(
+              projectId,
+              args.title,
+              args.body ?? "",
+              args.priority ?? "medium",
+              JSON.stringify(args.tags ?? []),
+              args.slug ?? "",
+            );
+          const todoId = Number(info.lastInsertRowid);
+          for (const blockerId of args.blocked_by ?? []) {
+            addBlocker.immediate(projectId, todoId, blockerId);
+          }
+          return { project_id: projectId, todo_id: todoId };
+        });
       }),
   );
 
@@ -570,11 +573,13 @@ export function registerTodos(server: McpServer): void {
       run(() => {
         const projectId = effectiveProjectId(args.project_id);
         const todo = getTodo(projectId, args.todo_id);
-        const info = db
-          .prepare("INSERT INTO todo_comments (todo_id, author, body) VALUES (?, ?, ?)")
-          .run(todo.id, currentActor(), args.body);
-        touch(todo.id);
-        return { project_id: projectId, todo_id: todo.id, comment_id: Number(info.lastInsertRowid) };
+        return commitQueenStateWrite("todo_comment", projectId, args, () => {
+          const info = db
+            .prepare("INSERT INTO todo_comments (todo_id, author, body) VALUES (?, ?, ?)")
+            .run(todo.id, currentActor(), args.body);
+          touch(todo.id);
+          return { project_id: projectId, todo_id: todo.id, comment_id: Number(info.lastInsertRowid) };
+        });
       }),
   );
 

@@ -1,3 +1,4 @@
+import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS } from "./queenAudit.js";
 import { runningBuildChange, runningBuildNotice } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -428,6 +429,21 @@ export const LOG_RETENTION = "-7 days";
 const LOG_MAX_ROWS = 20_000;
 
 function pruneStateLog(): void {
+  try {
+    const staleAudit = stmt(
+      "SELECT 1 AS hit FROM queen_audit WHERE created_at < datetime('now', ?) LIMIT 1",
+    ).get(QUEEN_AUDIT_RETENTION);
+    if (staleAudit) {
+      stmt("DELETE FROM queen_audit WHERE created_at < datetime('now', ?)").run(QUEEN_AUDIT_RETENTION);
+    }
+    const hi = (stmt("SELECT MAX(id) AS v FROM queen_audit").get() as { v: number | null }).v;
+    const lo = (stmt("SELECT MIN(id) AS v FROM queen_audit").get() as { v: number | null }).v;
+    if (hi != null && lo != null && hi - lo >= QUEEN_AUDIT_MAX_ROWS) {
+      stmt("DELETE FROM queen_audit WHERE id <= ?").run(hi - QUEEN_AUDIT_MAX_ROWS);
+    }
+  } catch {
+
+  }
   try {
     const stale = stmt(
       "SELECT 1 AS hit FROM agent_state_log WHERE created_at < datetime('now', ?) LIMIT 1",

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { commitQueenStateWrite } from "../queenAudit.js";
 import { currentActor, effectiveProjectId, getProject, isQueenLead } from "../context.js";
 import { run } from "../result.js";
 import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
@@ -426,27 +427,29 @@ export function registerWakes(server: McpServer): void {
         rejectUnsafeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
         const delivery = resolveDelivery(projectId, args.deliver_to);
-        const row = db
-          .prepare(
-            `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms)
-             VALUES (?, ?, ?, 'delay', ?, ?, datetime('now', printf('+%d seconds', ?)), ?)
-             RETURNING id, due_at`,
-          )
-          .get(
-            projectId,
-            currentActor(),
-            args.body,
-            delivery.actor,
-            delivery.pane,
-            args.delay_seconds,
-            args.repeat_every_seconds != null ? args.repeat_every_seconds * 1000 : null,
-          ) as { id: number; due_at: string };
-        return {
-          wake_id: row.id,
-          due_at: row.due_at,
-          deliver_to: delivery.actor,
-          repeating: args.repeat_every_seconds != null,
-        };
+        return commitQueenStateWrite("wake_set", projectId, args, () => {
+          const row = db
+            .prepare(
+              `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms)
+               VALUES (?, ?, ?, 'delay', ?, ?, datetime('now', printf('+%d seconds', ?)), ?)
+               RETURNING id, due_at`,
+            )
+            .get(
+              projectId,
+              currentActor(),
+              args.body,
+              delivery.actor,
+              delivery.pane,
+              args.delay_seconds,
+              args.repeat_every_seconds != null ? args.repeat_every_seconds * 1000 : null,
+            ) as { id: number; due_at: string };
+          return {
+            wake_id: row.id,
+            due_at: row.due_at,
+            deliver_to: delivery.actor,
+            repeating: args.repeat_every_seconds != null,
+          };
+        });
       }),
   );
 
@@ -585,38 +588,40 @@ export function registerWakes(server: McpServer): void {
         }
 
         const maxWait = args.max_wait_seconds ?? 900;
-        const info = db
-          .prepare(
-            `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
-               max_wait_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))`,
-          )
-          .run(
-            projectId,
-            currentActor(),
-            args.body,
-            `idle_${mode}`,
-            JSON.stringify(watched.map((a) => a.id)),
-            delivery.actor,
-            delivery.pane,
-            maxWait,
-          );
-        return {
-          wake_id: Number(info.lastInsertRowid),
-          mode,
+        return commitQueenStateWrite("wake_when_idle", projectId, args, () => {
+          const info = db
+            .prepare(
+              `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
+                 max_wait_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))`,
+            )
+            .run(
+              projectId,
+              currentActor(),
+              args.body,
+              `idle_${mode}`,
+              JSON.stringify(watched.map((a) => a.id)),
+              delivery.actor,
+              delivery.pane,
+              maxWait,
+            );
+          return {
+            wake_id: Number(info.lastInsertRowid),
+            mode,
 
-          watching: watched.map((a) => {
+            watching: watched.map((a) => {
 
-            const { state, ...provenance } = deriveProvenance(a, summaryLiveness(a, snapshot));
-            return { agent_id: a.id, name: a.name, state, provenance };
-          }),
-          max_wait_seconds: maxWait,
-          deliver_to: delivery.actor,
-          note:
-            mode === "any"
-              ? "Fires on the next fresh idle transition; agents already idle now do not count."
-              : "Fires when all watched agents are idle.",
-        };
+              const { state, ...provenance } = deriveProvenance(a, summaryLiveness(a, snapshot));
+              return { agent_id: a.id, name: a.name, state, provenance };
+            }),
+            max_wait_seconds: maxWait,
+            deliver_to: delivery.actor,
+            note:
+              mode === "any"
+                ? "Fires on the next fresh idle transition; agents already idle now do not count."
+                : "Fires when all watched agents are idle.",
+          };
+        });
       }),
   );
 
@@ -729,14 +734,16 @@ export function registerWakes(server: McpServer): void {
         }
         params.push(args.wake_id, projectId, currentActor());
 
-        const row = db
-          .prepare(
-            `UPDATE wakes SET ${sets.join(", ")}
-             WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL AND ${ACTIVE_TIMER_WHERE}
-             RETURNING due_at`,
-          )
-          .get(...params) as { due_at: string } | undefined;
-        return { wake_id: args.wake_id, updated: row !== undefined, due_at: row?.due_at ?? null };
+        return commitQueenStateWrite("wake_update", projectId, args, () => {
+          const row = db
+            .prepare(
+              `UPDATE wakes SET ${sets.join(", ")}
+               WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL AND ${ACTIVE_TIMER_WHERE}
+               RETURNING due_at`,
+            )
+            .get(...params) as { due_at: string } | undefined;
+          return { wake_id: args.wake_id, updated: row !== undefined, due_at: row?.due_at ?? null };
+        });
       }),
   );
 
@@ -771,30 +778,32 @@ export function registerWakes(server: McpServer): void {
         const projectId = effectiveProjectId(args.project_id);
 
         const isLead = isRunningLeadActor(currentActor());
-        const info = isLead
-          ? db
-              .prepare(
-                `UPDATE wakes SET cancelled_at = datetime('now')
-                 WHERE id = ? AND project_id = ? AND cancelled_at IS NULL`,
-              )
-              .run(args.wake_id, projectId)
-          : db
-              .prepare(
-                `UPDATE wakes SET cancelled_at = datetime('now')
-                 WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
-              )
-              .run(args.wake_id, projectId, currentActor());
-
-        const notices =
-          info.changes > 0
+        return commitQueenStateWrite("wake_cancel", projectId, args, () => {
+          const info = isLead
             ? db
                 .prepare(
                   `UPDATE wakes SET cancelled_at = datetime('now')
-                   WHERE parent_wake_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                   WHERE id = ? AND project_id = ? AND cancelled_at IS NULL`,
                 )
-                .run(args.wake_id).changes
-            : 0;
-        return { wake_id: args.wake_id, cancelled: info.changes > 0, cancelled_notices: notices };
+                .run(args.wake_id, projectId)
+            : db
+                .prepare(
+                  `UPDATE wakes SET cancelled_at = datetime('now')
+                   WHERE id = ? AND project_id = ? AND owner = ? AND cancelled_at IS NULL`,
+                )
+                .run(args.wake_id, projectId, currentActor());
+
+          const notices =
+            info.changes > 0
+              ? db
+                  .prepare(
+                    `UPDATE wakes SET cancelled_at = datetime('now')
+                     WHERE parent_wake_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                  )
+                  .run(args.wake_id).changes
+              : 0;
+          return { wake_id: args.wake_id, cancelled: info.changes > 0, cancelled_notices: notices };
+        });
       }),
   );
 

@@ -63,6 +63,7 @@ import {
   addProject,
   agentProjectPin,
   assertQueenCrossProjectWrite,
+  captureQueenWriteIdentity,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
@@ -77,6 +78,7 @@ import {
   takeRegistrationNotice,
   type Project,
 } from "./context.js";
+import { confirmQueenWrite } from "./queenAudit.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
@@ -658,6 +660,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProjectForWrite("hive lead", path, (text) => {
       registrationNotice = text;
     });
+    const auditIdentity = captureQueenWriteIdentity(project.id);
     const { config, warnings } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -871,31 +874,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     // codex, since createdPane's branch does not require leadHarness.needsHome to fire.
     const recordedCodexHome = createdPane ? (newCodexHomeKey ?? "") : previousCodexHome;
 
-    const wonRace = db.transaction(() => {
-
-      const updated = db
-        .prepare(
-          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
-        )
-        .run(
-          leadPane,
-          tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
-          panePid(leadPane),
-          recordedCommand,
-          recordedCodexHome,
-          leadAgentId,
-          casExpected,
-        ).changes;
-      if (updated === 0) return false;
-      db.prepare(
-        `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-         WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
-           AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
-      ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
-      return true;
-    })();
-    if (!wonRace) {
-
+    const abandonClaim = () => {
       if (createdPane) {
         try {
           waitForPaneEstablished(leadPane);
@@ -905,6 +884,42 @@ async function cmdLead(argv: string[]): Promise<void> {
         }
       }
       if (newCodexHomeKey) reapCodexHome(newCodexHomeKey);
+    };
+    let wonRace: boolean;
+    try {
+      wonRace = db.transaction(() => {
+
+        const updated = db
+          .prepare(
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+          )
+          .run(
+            leadPane,
+            tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+            panePid(leadPane),
+            recordedCommand,
+            recordedCodexHome,
+            leadAgentId,
+            casExpected,
+          ).changes;
+        if (updated === 0) return false;
+        db.prepare(
+          `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+           WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
+             AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
+        ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
+        confirmQueenWrite("hive lead", project.id, { detach }, {
+          agent_id: leadAgentId,
+          disposition: createdPane ? "started" : "adopted",
+        }, auditIdentity);
+        return true;
+      })();
+    } catch (e) {
+      abandonClaim();
+      throw e;
+    }
+    if (!wonRace) {
+      abandonClaim();
       throw new Error(
         "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
           "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +

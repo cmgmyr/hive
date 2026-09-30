@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { confirmQueenWrite } from "../queenAudit.js";
+import { captureQueenWriteIdentity } from "../context.js";
 import {
   agentBriefPath,
   mergedBriefVars,
@@ -1401,6 +1403,7 @@ export function registerAgents(server: McpServer): void {
         const agent = findAgent(project.id, args);
         requireLive(agent);
         const target = agent.tmux_target;
+        const auditIdentity = captureQueenWriteIdentity(project.id);
         let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
         const withShortened = <T extends Record<string, unknown> & { note?: string }>(receipt: T) =>
@@ -1573,6 +1576,7 @@ export function registerAgents(server: McpServer): void {
               { cause: err },
             );
           }
+          confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
         } else {
           throw new Error("Pass text or keys.");
         }
