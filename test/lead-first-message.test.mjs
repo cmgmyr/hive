@@ -11,7 +11,6 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { TRIAGE_MESSAGE } = await import("../dist/kickoff.js");
 const { firstMessageDigest } = await import("../dist/triageMessage.js");
 const { sessionName } = await import("../dist/tmux.js");
 migrate();
@@ -73,9 +72,11 @@ describe("hive lead passes the resolved first message on claude's command line",
     assert.equal(positional(argv), "global says hi");
   });
 
-  it("passes the shipped triage message when nothing sets one", async () => {
-    const { argv } = await startLead(withProfile("dashboard: false\n"));
-    assert.equal(positional(argv), TRIAGE_MESSAGE);
+  it("passes no prompt and sets no marker when nothing sets first_message", async () => {
+    const { argv, env } = await startLead(withProfile("dashboard: false\n"));
+    assert.equal(positional(argv), null);
+    assert.equal(argv.includes("--"), false);
+    assert.equal(env.HIVE_LEAD_FIRST_MESSAGE_SHA ?? "", "");
   });
 
   it("passes no prompt and sets no marker for an empty string, even over a global message", async () => {
