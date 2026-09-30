@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
+import { TRIAGE_MESSAGE } from "./triageMessage.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
   globalConfigPath,
@@ -37,6 +38,8 @@ export interface ProjectYml {
 
   lead_branches: string[] | null;
 
+  first_message: string | null;
+
   context_checkpoint_percent: number | null;
   lead_turn_budget: { warn: number; stop: number } | null;
   dashboard: boolean;
@@ -51,6 +54,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   profile: null,
   agents: null,
   lead_branches: null,
+  first_message: null,
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
@@ -99,6 +103,24 @@ export function mergedProjectVars(config: ProjectYml | null): Record<string, str
   const safe = { ...(config?.vars ?? {}) };
   for (const key of agentVarKeys()) delete safe[key];
   return { ...safe, ...agentVars(config) };
+}
+
+export type FirstMessageSource = "project" | "global" | "shipped" | "empty";
+
+export interface ResolvedFirstMessage {
+  message: string;
+  source: FirstMessageSource;
+}
+
+// "" (or whitespace only) is deliberate: it sends no first message at all, it does not fall back.
+export function resolveFirstMessage(
+  config: ProjectYml | null,
+  sources: Record<string, ConfigSource> = {},
+): ResolvedFirstMessage {
+  const value = config?.first_message;
+  if (value == null) return { message: TRIAGE_MESSAGE, source: "shipped" };
+  if (value.trim() === "") return { message: "", source: "empty" };
+  return { message: value, source: sources.first_message === "global" ? "global" : "project" };
 }
 
 export interface ResolvedHiveConfig {
@@ -276,6 +298,17 @@ function applyLayer(
       config.lead_branches = value.map((item) => (item as string).trim());
       sources.lead_branches = source;
     } else warn("lead_branches must be a list of branch names; ignoring it.");
+  }
+
+  if (has("first_message")) {
+    const value = root.first_message;
+    if (value == null) {
+      config.first_message = null;
+      sources.first_message = source;
+    } else if (typeof value === "string") {
+      config.first_message = value;
+      sources.first_message = source;
+    } else warn("first_message must be a string; ignoring it.");
   }
 
   if (has("vars")) {

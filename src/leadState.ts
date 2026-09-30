@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { TRIAGE_MESSAGE } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest, TRIAGE_MESSAGE } from "./triageMessage.js";
 
 export type LeadTurn = "unknown" | "working" | "idle";
 
@@ -23,7 +23,10 @@ export function readLeadTurnState(agentId: number): LeadTurnState | null {
 }
 
 function isHiveTriage(payload: LeadHookPayload): boolean {
-  return typeof payload.prompt === "string" && payload.prompt.trim() === TRIAGE_MESSAGE;
+  if (typeof payload.prompt !== "string") return false;
+  const prompt = payload.prompt.trim();
+  const launched = process.env[FIRST_MESSAGE_SHA_ENV];
+  return prompt === TRIAGE_MESSAGE || (!!launched && firstMessageDigest(prompt) === launched);
 }
 
 // "idle" means the lead's turn ended after a prompt hive did not type itself, in this pane launch

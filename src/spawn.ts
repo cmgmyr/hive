@@ -4,6 +4,7 @@ import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
 import { dataDir, db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
+import { FIRST_MESSAGE_SHA_ENV } from "./triageMessage.js";
 import {
   applyLayout,
   claimInitialWindow,
@@ -120,6 +121,7 @@ export function agentIdentityEnv(actorId: string, name: string, projectPath: str
     HIVE_DATA_DIR: dataDir,
 
     HIVE_LEAD: "",
+    [FIRST_MESSAGE_SHA_ENV]: "",
   };
 }
 

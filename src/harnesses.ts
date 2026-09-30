@@ -153,7 +153,8 @@ const claudeHarness: HarnessCapabilities = {
 
   needsHome: false,
 
-  initialPromptArgs: null,
+  // "--" so a message that starts with a dash is never read as a flag.
+  initialPromptArgs: (message) => ["--", message],
 
   // clear, other, and an unobserved value all stop nothing (todo 765; test/fixtures/hook-payloads/
   // README.md). Only these two are what Claude Code documents as the session being over for good.

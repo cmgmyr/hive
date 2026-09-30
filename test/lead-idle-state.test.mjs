@@ -14,6 +14,7 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { TRIAGE_MESSAGE } = await import("../dist/kickoff.js");
+const { firstMessageDigest } = await import("../dist/triageMessage.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -43,10 +44,10 @@ function seedAgent(kind, name, panePid = "4242", state = "unknown") {
 
 const turn = (id) => db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(id);
 
-async function hook(event, payload, actor, lead = true) {
+async function hook(event, payload, actor, lead = true, extraEnv = {}) {
   const { code } = await runNode(HOOK, [event], {
     dataDir,
-    env: { HIVE_AGENT_ID: actor, HIVE_LEAD: lead ? "1" : "" },
+    env: { HIVE_AGENT_ID: actor, HIVE_LEAD: lead ? "1" : "", ...extraEnv },
     stdin: payload,
   });
   assert.equal(code, 0);
@@ -98,6 +99,26 @@ describe("a lead's turn state comes from its own hooks", () => {
 
     await hook("prompt", PROMPT, lead.actor);
     assert.equal(turn(lead.id).state, "working", "a human prompt after triage still starts a turn");
+  });
+
+  it("a custom first message hive put on the command line does not start a turn, and a human prompt still does", async () => {
+    const lead = seedAgent("lead", "l3b");
+    const custom = "Check the queue and wait for me.";
+    const marker = { HIVE_LEAD_FIRST_MESSAGE_SHA: firstMessageDigest(custom) };
+
+    await hook("prompt", withField(PROMPT, "prompt", custom), lead.actor, true, marker);
+    await hook("stop", STOP, lead.actor, true, marker);
+    assert.equal(turn(lead.id).state, "unknown");
+    assert.equal(turn(lead.id).idle_seq, 0);
+
+    await hook("prompt", PROMPT, lead.actor, true, marker);
+    assert.equal(turn(lead.id).state, "working");
+  });
+
+  it("the same text without hive's launch marker is a real prompt", async () => {
+    const lead = seedAgent("lead", "l3c");
+    await hook("prompt", withField(PROMPT, "prompt", "Check the queue and wait for me."), lead.actor);
+    assert.equal(turn(lead.id).state, "working");
   });
 
   it("/clear resets the turn and the next session's own prompt and Stop count under the new session", async () => {

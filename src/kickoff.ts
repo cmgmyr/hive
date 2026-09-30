@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ProvenanceRow } from "./stateProvenance.js";
 
 import { cutToUnitBudget } from "./slug.js";
-import { TRIAGE_MESSAGE } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV, TRIAGE_MESSAGE } from "./triageMessage.js";
 
 export const OUTPUT_BUDGET = 10_000;
 const CONTEXT_BUDGET = 6_000;
@@ -19,6 +19,8 @@ export interface KickoffResult {
   payload?: string;
 
   warnings?: string[];
+
+  firstMessage?: { message: string; source: string };
 }
 
 function currentBranch(dir: string): string | null {
@@ -156,9 +158,9 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
     return { fired: false, reason: "cwd does not exist" };
   }
 
-  const { activeProfile, DEFAULT_LEAD_BRANCHES, loadProjectYml } = await import("./projectYml.js");
+  const { activeProfile, DEFAULT_LEAD_BRANCHES, loadProjectYml, resolveFirstMessage } = await import("./projectYml.js");
   const { profileExists } = await import("./profiles.js");
-  const { config, warnings } = loadProjectYml(dir);
+  const { config, warnings, sources } = loadProjectYml(dir);
 
   const silent = (reason: string): KickoffResult => ({ fired: false, reason, warnings });
   if (config == null) return silent("no hive.yml here");
@@ -179,12 +181,15 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
   // Codex's SessionStartHookSpecificOutputWire is additionalProperties:false and permits only
   // hookEventName/additionalContext - initialUserMessage inside it fails the whole payload
   // ("SessionStart Failed"), silently dropping the board too. Measured, todo 567 comment 1864.
+  const first = resolveFirstMessage(config, sources);
+  const onCommandLine = process.env.HIVE_LEAD === "1" && !!process.env[FIRST_MESSAGE_SHA_ENV];
+  const hookMessage = opts.forCodex || onCommandLine || first.message === "" ? null : first.message;
   const build = (text: string) =>
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: text,
-        ...(opts.forCodex ? {} : { initialUserMessage: TRIAGE_MESSAGE }),
+        ...(hookMessage === null ? {} : { initialUserMessage: hookMessage }),
       },
     });
   let payload = build(context);
@@ -193,7 +198,7 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
     const overflow = payload.length - OUTPUT_BUDGET;
     payload = build(truncate(context, Math.max(0, context.length - overflow - 32)));
   }
-  return { fired: true, payload, warnings };
+  return { fired: true, payload, warnings, firstMessage: first };
 }
 
 export async function runKickoff(argv: string[] = []): Promise<void> {
@@ -210,6 +215,12 @@ export async function runKickoff(argv: string[] = []): Promise<void> {
 
   if (explain) for (const w of result.warnings ?? []) console.log(`! hive.yml: ${w}`);
   if (result.fired && result.payload) {
+    if (explain && result.firstMessage) {
+      const { message, source } = result.firstMessage;
+      console.log(
+        source === "empty" ? "first message: none (empty string in hive.yml)" : `first message (${source}): ${message}`,
+      );
+    }
     process.stdout.write(result.payload);
     if (explain) process.stdout.write("\n");
     return;
