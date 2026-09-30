@@ -8,6 +8,8 @@ paths:
   - "src/firstPrompt.ts"
   - "src/dashboard.ts"
   - "src/processes.ts"
+  - "src/leadState.ts"
+  - "src/leadWatch.ts"
 ---
 
 # Worker state, and why it has an append-only log
@@ -61,6 +63,18 @@ which means the cancel must file its own short replacement naming who was droppe
 (`ageOutNotice`). Do not make the age-out silent again, do not release the episode claim so the
 notice re-queues (it loops and ages out again), and keep the replacement parentless, which is what
 exempts it from the same bound.
+
+## A lead's turn state is its own record
+
+`lead_turn_state` (`src/leadState.ts`) is the only place a lead's working/idle lives. Never write a lead's turn into `agents.agent_state`, and never let a lead row reach a worker reader (`firstPrompt`, `stateFor`, `watchedStates`, the standing watch); the scheduler branches on `lead_idle_subscriptions` before any of them.
+
+- **Idle means the turn ended, never that the lead finished its work.** Every surface that reports it says "turn ended".
+- **A new pane pid or a new session resets the turn to unknown.** The first Stop after a restart, `/clear` or `/resume` is not a turn ending, and hive's own `TRIAGE_MESSAGE` never starts one.
+- **The watched lead's screen may hold a wake, never produce one.** A dialog or unsubmitted text vetoes; nothing on screen can make a lead read idle.
+- **A dead, reissued or restarted lead ends a watch with its named reason, never as a turn ending.**
+- **Only the queen watches a lead, and the watch lives in the queen's own project.** Do not widen `QUEEN_REACH` to store it in the watched project.
+
+A `/goal` or Stop-hook continuation on a lead reads idle until its next prompt, and a late Stop is ordered by arrival: both are accepted residuals, and the reference says why.
 
 ## Never set a /goal on a worker
 

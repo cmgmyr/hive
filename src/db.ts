@@ -403,6 +403,28 @@ CREATE INDEX idx_wakes_parent ON wakes(parent_wake_id) WHERE parent_wake_id IS N
 ALTER TABLE agents ADD COLUMN model TEXT;
 ALTER TABLE agents ADD COLUMN extra_args TEXT;
 `,
+
+  `
+CREATE TABLE lead_turn_state (
+  agent_id INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  pane_pid TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'unknown' CHECK (state IN ('unknown', 'working', 'idle')),
+  idle_seq INTEGER NOT NULL DEFAULT 0,
+  last_event TEXT NOT NULL DEFAULT '',
+  changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+
+CREATE TABLE lead_idle_subscriptions (
+  wake_id INTEGER PRIMARY KEY REFERENCES wakes(id) ON DELETE CASCADE,
+  target_project_id INTEGER NOT NULL,
+  agent_id INTEGER NOT NULL,
+  pane_pid TEXT NOT NULL,
+  session_id TEXT NOT NULL DEFAULT '',
+  baseline_idle_seq INTEGER NOT NULL DEFAULT 0,
+  terminal_reason TEXT
+);
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

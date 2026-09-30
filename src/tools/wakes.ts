@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
-import { currentActor, effectiveProjectId } from "../context.js";
+import { currentActor, effectiveProjectId, getProject, isQueenLead } from "../context.js";
 import { run } from "../result.js";
 import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
 import {
@@ -16,7 +16,15 @@ import { idParam, projectIdParam } from "./params.js";
 import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";
 import { deriveProvenance } from "../stateProvenance.js";
-import { findUnsafeControlChar, liveTargets, TEXT_ALLOWED_CONTROL_CHARS } from "../tmux.js";
+import {
+  findUnsafeControlChar,
+  liveTargets,
+  paneReissued,
+  rowAliveProbe,
+  TEXT_ALLOWED_CONTROL_CHARS,
+} from "../tmux.js";
+import { readLeadTurnState } from "../leadState.js";
+import { LEAD_TARGET_GONE, LEAD_TARGET_REISSUED, leadSubscription, paneVeto, runningLeadOf } from "../leadWatch.js";
 import { isRunningLeadActor, LEAD_KIND } from "../spawn.js";
 import { commandHead, screenClassifiable } from "../harnesses.js";
 
@@ -168,6 +176,7 @@ const baseWakeFields = (t: TimerRow, { truncate = true } = {}) => ({
   deliver_to: t.deliver_actor,
   ...(t.watch_scope ? { scope: t.watch_scope, standing: true } : {}),
   ...(t.parent_wake_id != null ? { parent_wake_id: t.parent_wake_id } : {}),
+  ...leadWatchFields(t),
 });
 
 const STANDING_WATCH_LIFETIME_SECONDS = 4 * 60 * 60;
@@ -251,6 +260,137 @@ function createStandingWatch(
   };
 }
 
+export const LEAD_WATCH_QUEEN_ONLY = "LEAD_WATCH_QUEEN_ONLY";
+
+const openLeadWatch = db.transaction(
+  (
+    homeProjectId: number,
+    body: string,
+    mode: "any" | "all",
+    delivery: { actor: string; pane: string },
+    maxWait: number,
+    target: { projectId: number; agentId: number; panePid: string },
+  ): { id: number; session_id: string; baseline_idle_seq: number } => {
+    const state = readLeadTurnState(target.agentId);
+    const sameLaunch = state !== null && state.pane_pid === target.panePid;
+    const sessionId = sameLaunch && state.state !== "unknown" ? state.session_id : "";
+    const baseline = state?.idle_seq ?? 0;
+    const row = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at)
+         VALUES (?, ?, ?, ?, '[]', ?, ?, datetime('now', printf('+%d seconds', ?)))
+         RETURNING id`,
+      )
+      .get(homeProjectId, currentActor(), body, `idle_${mode}`, delivery.actor, delivery.pane, maxWait) as { id: number };
+    db.prepare(
+      `INSERT INTO lead_idle_subscriptions (wake_id, target_project_id, agent_id, pane_pid, session_id, baseline_idle_seq)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(row.id, target.projectId, target.agentId, target.panePid, sessionId, baseline);
+    return { id: row.id, session_id: sessionId, baseline_idle_seq: baseline };
+  },
+);
+
+function createLeadWatch(
+  leadProjectId: number,
+  args: { body: string; mode?: "any" | "all"; max_wait_seconds?: number; deliver_to?: number | string; project_id?: number },
+): Record<string, unknown> {
+  if (!isQueenLead()) {
+    throw new Error(
+      `${LEAD_WATCH_QUEEN_ONLY}: lead_project_id is the queen's alone. Only the running queen lead, in its own ` +
+        "project and without HIVE_PROJECT_LOCK, may wait on another project's lead; a project's own lead and " +
+        "every worker are refused. A worker is watched with agents=[...] or scope=\"project\" instead.",
+    );
+  }
+  if (args.project_id != null || args.deliver_to != null) {
+    throw new Error(
+      "lead_project_id refuses project_id and deliver_to: the wake is always stored in the queen's own project " +
+        "and delivered to the queen's own pane, so neither has anything to choose. Name the watched project " +
+        "with lead_project_id alone.",
+    );
+  }
+  const home = effectiveProjectId();
+  if (leadProjectId === home) {
+    throw new Error("lead_project_id names the queen's own project, and the queen cannot wait on itself.");
+  }
+  const project = getProject(leadProjectId);
+  if (!project) throw new Error(`Unknown project_id ${leadProjectId}. Call project_list to see options.`);
+  const lead = runningLeadOf(leadProjectId);
+  if (!lead) throw new Error(`${LEAD_TARGET_GONE}: project ${leadProjectId} ("${project.name}") has no running lead to watch.`);
+  if (!screenClassifiable(lead.command)) {
+    throw new Error(
+      `Project ${leadProjectId}'s lead runs ${JSON.stringify(commandHead(lead.command))}, whose screen hive cannot ` +
+        "classify, so a turn ending while a human is typing to it could not be told apart from one nobody is at.",
+    );
+  }
+  if (lead.pane_pid === "") {
+    throw new Error(
+      `${LEAD_TARGET_REISSUED}: project ${leadProjectId}'s lead has no recorded pane pid, so a reused pane id ` +
+        "could not be told from this lead. Restart it with hive lead to record one.",
+    );
+  }
+  const snapshot = liveTargets();
+  if (snapshot === null) throw new Error("tmux did not answer, so the watched lead's pane cannot be verified. Try again.");
+  const probe = rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot);
+  if (probe.live === null) {
+    throw new Error(`Project ${leadProjectId}'s lead lives on a tmux socket this process cannot probe.`);
+  }
+  if (!probe.live) throw new Error(`${LEAD_TARGET_GONE}: project ${leadProjectId}'s lead pane is gone.`);
+  if (paneReissued(lead.pane_pid, probe)) {
+    throw new Error(`${LEAD_TARGET_REISSUED}: project ${leadProjectId}'s lead pane id now belongs to another process.`);
+  }
+
+  const mode = args.mode ?? "any";
+  const state = readLeadTurnState(lead.id);
+  const idleNow = state !== null && state.pane_pid === lead.pane_pid && state.state === "idle";
+  if (mode === "all" && idleNow && paneVeto(lead) === null) {
+    return {
+      status: "already_satisfied",
+      note: `Project ${leadProjectId}'s lead has already ended its turn; nothing was scheduled. Read it now.`,
+    };
+  }
+  const delivery = resolveDelivery(home);
+  const maxWait = args.max_wait_seconds ?? 900;
+  const row = openLeadWatch.immediate(home, args.body, mode, delivery, maxWait, {
+    projectId: leadProjectId,
+    agentId: lead.id,
+    panePid: lead.pane_pid,
+  });
+  return {
+    wake_id: row.id,
+    mode,
+    lead_watch: {
+      project_id: leadProjectId,
+      agent_id: lead.id,
+      name: lead.name,
+      state: state !== null && state.pane_pid === lead.pane_pid ? state.state : "unknown",
+      baseline_idle_seq: row.baseline_idle_seq,
+    },
+    max_wait_seconds: maxWait,
+    deliver_to: delivery.actor,
+    note:
+      (mode === "any"
+        ? "Fires on the lead's NEXT turn ending; a turn that already ended does not count. "
+        : "Fires once the lead's turn has ended. ") +
+      "A turn ending is not the lead finishing its work: read it before acting. A dead, restarted or reissued " +
+      "lead pane ends the watch with that reason instead.",
+  };
+}
+
+function leadWatchFields(t: TimerRow): Record<string, unknown> {
+  const sub = leadSubscription(t.id);
+  if (sub === null) return {};
+  return {
+    lead_watch: {
+      project_id: sub.target_project_id,
+      agent_id: sub.agent_id,
+      pane_pid: sub.pane_pid,
+      session_id: sub.session_id,
+      baseline_idle_seq: sub.baseline_idle_seq,
+      ...(sub.terminal_reason !== null ? { terminal_reason: sub.terminal_reason } : {}),
+    },
+  };
+}
+
 export function registerWakes(server: McpServer): void {
   server.registerTool(
     "wake_set",
@@ -314,7 +454,7 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes for workers, plus one for the queen, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. agents=[...] refuses a lead: it watches worker state, which a lead does not write. lead_project_id is the QUEEN's alone: a one-shot that fires when another registered project's running lead ENDS A TURN (never 'finished its work'), stored in and delivered to the queen's own project, and ended with a named reason if that lead's pane dies, is reissued, or restarts.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -348,11 +488,19 @@ export function registerWakes(server: McpServer): void {
               "last wake saying it has expired and stops watching. Not a hard deadline either way: delivery " +
               "holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
           ),
+        lead_project_id: idParam
+          .optional()
+          .describe(
+            "QUEEN ONLY: wake when the running lead of this OTHER registered project ends a turn. The wake is " +
+              "stored in the queen's own project and delivered only to the queen; the watched lead is read, never " +
+              "typed into. Mutually exclusive with agents and scope; refuses project_id and deliver_to.",
+          ),
         deliver_to: agentRefParam.optional().describe("Deliver to a spawned agent instead of this session."),
         project_id: projectIdParam,
       },
       outputSchema: {
         status: z.literal("already_satisfied").optional(),
+        lead_watch: z.record(z.string(), z.unknown()).optional(),
         wake_id: idParam.optional(),
         scope: z.literal("project").optional(),
         standing: z.boolean().optional(),
@@ -379,14 +527,19 @@ export function registerWakes(server: McpServer): void {
         rejectUnsafeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
 
-        if ((args.agents == null) === (args.scope == null)) {
+        const selectors = [
+          args.agents != null && "agents",
+          args.scope != null && "scope",
+          args.lead_project_id != null && "lead_project_id",
+        ].filter((x): x is string => x !== false);
+        if (selectors.length !== 1) {
           throw new Error(
-            "wake_when_idle needs exactly one of agents=[...] (a one-shot over a named list) or " +
-              'scope="project" (a standing watch over this project\'s crew). ' +
-              (args.agents == null
-                ? "You passed neither."
-                : "You passed both, and they mean different things: a standing watch computes its own " +
-                  "membership every tick, so the list would be ignored."),
+            "wake_when_idle needs exactly one of agents=[...] (a one-shot over a named list), " +
+              'scope="project" (a standing watch over this project\'s crew), or lead_project_id (the queen ' +
+              "waiting on another project's lead). " +
+              (selectors.length === 0
+                ? "You passed none."
+                : `You passed ${selectors.length === 2 ? "both" : "all of"} ${selectors.join(" and ")}, and they mean different things.`),
           );
         }
         if (args.scope != null && args.mode != null) {
@@ -397,16 +550,18 @@ export function registerWakes(server: McpServer): void {
           );
         }
         if (args.scope != null) return createStandingWatch(projectId, args);
+        if (args.lead_project_id != null) return createLeadWatch(args.lead_project_id, args);
         const mode = args.mode ?? "any";
         const watched = (args.agents ?? []).map((ref) => resolveAgentRef(projectId, ref));
 
         const leadWatched = watched.find((a) => a.kind === LEAD_KIND);
         if (leadWatched) {
           throw new Error(
-            `Agent ${leadWatched.id} ("${leadWatched.name}") is this project's lead session, which has no ` +
-              "idle/working state channel: its hook writes only agent_state_log, never agent_state. " +
-              "wake_when_idle refuses a lead target; it could only ever fire at max_wait_seconds, reported " +
-              "as a timeout instead of the failure it actually is.",
+            `Agent ${leadWatched.id} ("${leadWatched.name}") is this project's lead session, and agents=[...] ` +
+              "watches worker state, which a lead does not write: its hook never moves agent_state. " +
+              "wake_when_idle refuses a lead target in agents=[...]; it could only ever fire at max_wait_seconds, " +
+              "reported as a timeout instead of the failure it actually is. A lead's turn has its own channel, " +
+              "which only the queen may watch, with lead_project_id=<that lead's project id>.",
           );
         }
         const delivery = resolveDelivery(projectId, args.deliver_to);

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ProvenanceRow } from "./stateProvenance.js";
 
 import { cutToUnitBudget } from "./slug.js";
+import { TRIAGE_MESSAGE } from "./triageMessage.js";
 
 export const OUTPUT_BUDGET = 10_000;
 const CONTEXT_BUDGET = 6_000;
@@ -140,11 +141,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
 // codex's SessionStart hook rejects the whole payload if this rides inside hookSpecificOutput
 // (see the `forCodex` branch below), so a codex lead gets it a different way, not a different
 // message. Keep the two in sync by construction rather than by two literals staying equal.
-export const TRIAGE_MESSAGE =
-  "Start with morning triage. Run `hive runbook` for this project's standing process, then " +
-  "reconcile the state hive just injected against what is really there (agent_list, todo_list, " +
-  "wake_list) and report it in a few lines. Propose today's lanes and confirm them with me before " +
-  "dispatching anything.";
+export { TRIAGE_MESSAGE };
 
 export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): Promise<KickoffResult> {
 

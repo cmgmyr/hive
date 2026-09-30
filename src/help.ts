@@ -199,8 +199,9 @@ its turn), waiting (needs permission or input). Non-claude commands show
 
   wake_set(delay_seconds, body, deliver_to?, repeat_every_seconds?) —
     one-shot or repeating wake-up
-  wake_when_idle(agents | scope, body, mode?, max_wait_seconds?,
-    deliver_to?) — fire when workers go idle. Pass exactly one of:
+  wake_when_idle(agents | scope | lead_project_id, body, mode?,
+    max_wait_seconds?, deliver_to?) — fire when workers go idle. Pass
+    exactly one of:
       scope="project" — a STANDING watch over the crew you spawn in this project.
         It reports EACH worker as it finishes or its window dies, covers
         workers spawned after you set it, and keeps watching until
@@ -213,6 +214,11 @@ its turn), waiting (needs permission or input). Non-claude commands show
         others; mode=all fires when every watched agent is idle and returns
         already_satisfied instead of scheduling if they already are.
         Agents already idle when it was set do not count.
+      lead_project_id=<id> — QUEEN ONLY: a ONE-SHOT on another project's
+        running lead ENDING A TURN (not finishing its work). Stored in and
+        delivered to the queen's own project; refuses project_id and
+        deliver_to. A dead, reissued or restarted lead ends it with that
+        reason instead.
   wake_get(wake_id) — read one wake-up by id, with its untruncated body
     (wake_list truncates at 120 chars)
   wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?) — edit

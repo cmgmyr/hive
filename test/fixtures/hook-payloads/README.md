@@ -96,6 +96,19 @@ beyond identity is still a re-capture.
   the reason (todo 782 S1). A codex lead is gone, so its project's hive.yml
   processes are stopped, the same as claude's `prompt_input_exit`/`logout`.
 
+- `lead-claude-prompt.json`, `lead-claude-stop.json`,
+  `lead-claude-session-end-clear.json`, `lead-claude-prompt-after-clear.json`,
+  `lead-claude-stop-after-clear.json` - one real claude LEAD started with
+  `hive lead --detach` on a scratch store and private tmux socket, Claude Code
+  2.1.285, 2026-09-29, source rows 1-5 of that store in order: a human prompt,
+  its Stop, `/clear`, a second human prompt, its Stop. They pin what the lead
+  turn channel (`src/leadState.ts`, todo 1558) reads: a lead's prompt and
+  Stop carry `session_id`, the prompt and the Stop that ends it share one
+  `prompt_id`, `/clear` fires SessionEnd `clear` under the OLD session and
+  no prompt of its own, and the next prompt arrives under a NEW session. No
+  Stop fired at startup before the first prompt. Identity scrubbed as above,
+  with `orchard` for the project and the assistant's greeting line removed.
+
 `src/hook.ts` resolves each harness's own terminal-reason allowlist
 (`HarnessCapabilities.terminalSessionEndReasons`, `src/harnesses.ts`) from the
 ending lead's own row rather than sharing one set. Claude acts on exactly two
