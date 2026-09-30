@@ -464,7 +464,7 @@ function readAppliedVersions(): Set<number> {
 }
 
 const MIGRATE_LOCK_MAX_ATTEMPTS = 24;
-function retryOnBusy<T>(fn: () => T, label: string): T {
+function retryOnBusy<T>(fn: () => T, label: string, pending?: string): T {
   for (let attempt = 1; ; attempt++) {
     try {
       return fn();
@@ -479,33 +479,49 @@ function retryOnBusy<T>(fn: () => T, label: string): T {
             `wedged hive process and try again. Underlying error: ${errorMessage(e)}`,
         );
       } else {
-        console.error(`hive: ${label} failed: ${errorMessage(e)}`);
+        console.error(`hive: ${label} failed: ${errorMessage(e)}${pending ? ` (${pending})` : ""}`);
       }
       process.exit(1);
     }
   }
 }
 
-export function migrate(): void {
-  retryOnBusy(() => {
-    db.exec(`CREATE TABLE IF NOT EXISTS migrations (
-      version INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )`);
+function bookkeepingMissing(): boolean {
+  const names = (
+    db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('migrations', 'backup_meta')").all() as {
+      name: string;
+    }[]
+  ).length;
+  return names < 2 || db.prepare("SELECT 1 FROM backup_meta WHERE id = 1").get() === undefined;
+}
 
-    db.exec(`CREATE TABLE IF NOT EXISTS backup_meta (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      last_attempt_at TEXT,
-      last_success_at TEXT,
-      last_error TEXT,
-      last_error_at TEXT
-    )`);
-    db.prepare("INSERT OR IGNORE INTO backup_meta (id) VALUES (1)").run();
-  }, "preparing the store's bookkeeping tables");
+export function migrate(): void {
+  if (bookkeepingMissing()) {
+    retryOnBusy(
+      () => {
+        db.exec(`CREATE TABLE IF NOT EXISTS migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )`);
+
+        db.exec(`CREATE TABLE IF NOT EXISTS backup_meta (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          last_attempt_at TEXT,
+          last_success_at TEXT,
+          last_error TEXT,
+          last_error_at TEXT
+        )`);
+        db.prepare("INSERT OR IGNORE INTO backup_meta (id) VALUES (1)").run();
+      },
+      "preparing the store's bookkeeping tables",
+      "bookkeeping missing",
+    );
+  }
 
   const before = readAppliedVersions();
+  const pendingCount = MIGRATIONS.length - before.size;
 
-  maybeBackupBeforeMigrations(db, dataDir, MIGRATIONS.length - before.size);
+  maybeBackupBeforeMigrations(db, dataDir, pendingCount);
 
   const applyPending = db.transaction(() => {
     const applied = readAppliedVersions();
@@ -523,5 +539,9 @@ export function migrate(): void {
     });
   });
 
-  retryOnBusy(() => applyPending.immediate(), "applying pending migrations");
+  retryOnBusy(
+    () => applyPending.immediate(),
+    "applying pending migrations",
+    pendingCount > 0 ? `${pendingCount} migration${pendingCount === 1 ? "" : "s"} pending` : undefined,
+  );
 }

@@ -73,7 +73,7 @@ Use `agent_spawn(name: "reader", harness: "claude", read_only: true)` to keep a 
 
 Claude workers disable Edit, Write and NotebookEdit and use Claude Code's filesystem sandbox with writes denied at the filesystem root and unsandboxed retries disabled. If the sandbox is unavailable, the worker fails to start. Codex workers use `--sandbox read-only` with approvals disabled and a generated approval override for the Hive MCP server only. Other MCP servers receive no override.
 
-Read-only mode accepts a bare Claude or Codex executable, including an absolute path, and a separate `model` value. It allows effort-setting `extra_args`: Codex accepts `-c model_reasoning_effort=<low|medium|high|xhigh>`, and Claude accepts `--effort <low|medium|high|xhigh|max>`. It refuses command strings containing flags or shell syntax and every other extra argument, which could override the restrictions. Omit `read_only` for ordinary workers. Restart Hive MCP servers after updating to use the new argument and resume behavior.
+Read-only mode accepts a bare Claude or Codex executable, including an absolute path, and a separate `model` value. It allows effort-setting `extra_args`: Codex accepts `-c model_reasoning_effort=<low|medium|high|xhigh>`, and Claude accepts `--effort <low|medium|high|xhigh|max>`. It refuses command strings containing flags or shell syntax and every other extra argument, which could override the restrictions. Omit `read_only` for ordinary workers. From a read-only worker, hive's read verbs (`hive profile read`, `hive profile list`, `hive runbook`, `hive todo <id>`) work while the session's hive server is running, and write verbs do not. Restart Hive MCP servers after updating to use the new argument and resume behavior.
 
 ## Worker context fields
 
