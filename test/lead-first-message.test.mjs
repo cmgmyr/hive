@@ -20,10 +20,12 @@ after(() => cleanup(sessionName()));
 const binDir = join(dirs.tmp, "first-message-bin");
 mkdirSync(binDir, { recursive: true });
 const argvFile = join(dirs.tmp, "claude-argv.bin");
+const argvTemp = join(dirs.tmp, "claude-argv.tmp");
 const envFile = join(dirs.tmp, "claude-env.txt");
+const envTemp = join(dirs.tmp, "claude-env.tmp");
 writeFileSync(
   join(binDir, "claude"),
-  `#!/bin/sh\nprintf '%s\\0' "$@" > ${JSON.stringify(argvFile)}\nenv > ${JSON.stringify(envFile)}\nsleep 600\n`,
+  `#!/bin/sh\nprintf '%s\\0' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 600\n`,
 );
 chmodSync(join(binDir, "claude"), 0o755);
 
