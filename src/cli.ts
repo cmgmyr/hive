@@ -216,7 +216,7 @@ import {
 import { writeProjectPosture } from "./brief.js";
 import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
-import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import {
   ageSecondsSince,
   deriveProvenance,
@@ -1084,7 +1084,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # agents: [claude, codex]       # crew harness pool; the first entry is the default
 
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
-# first_message: ""            # a lead's first turn; "" sends none, absent sends morning triage
+# first_message: "..."         # a lead's first turn; absent or "" sends none
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 

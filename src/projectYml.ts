@@ -5,7 +5,6 @@ import { parse } from "yaml";
 import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
 import { errorMessage } from "./result.js";
-import { TRIAGE_MESSAGE } from "./triageMessage.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
   globalConfigPath,
@@ -105,20 +104,20 @@ export function mergedProjectVars(config: ProjectYml | null): Record<string, str
   return { ...safe, ...agentVars(config) };
 }
 
-export type FirstMessageSource = "project" | "global" | "shipped" | "empty";
+export type FirstMessageSource = "project" | "global" | "unset" | "empty";
 
 export interface ResolvedFirstMessage {
   message: string;
   source: FirstMessageSource;
 }
 
-// "" (or whitespace only) is deliberate: it sends no first message at all, it does not fall back.
+// Absent sends nothing; "" (or whitespace only) also sends nothing, and a project one beats a global message.
 export function resolveFirstMessage(
   config: ProjectYml | null,
   sources: Record<string, ConfigSource> = {},
 ): ResolvedFirstMessage {
   const value = config?.first_message;
-  if (value == null) return { message: TRIAGE_MESSAGE, source: "shipped" };
+  if (value == null) return { message: "", source: "unset" };
   if (value.trim() === "") return { message: "", source: "empty" };
   return { message: value, source: sources.first_message === "global" ? "global" : "project" };
 }

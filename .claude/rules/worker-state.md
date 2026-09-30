@@ -69,7 +69,7 @@ exempts it from the same bound.
 `lead_turn_state` (`src/leadState.ts`) is the only place a lead's working/idle lives. Never write a lead's turn into `agents.agent_state`, and never let a lead row reach a worker reader (`firstPrompt`, `stateFor`, `watchedStates`, the standing watch); the scheduler branches on `lead_idle_subscriptions` before any of them.
 
 - **Idle means the turn ended, never that the lead finished its work.** Every surface that reports it says "turn ended".
-- **A new pane pid or a new session resets the turn to unknown.** The first Stop after a restart, `/clear` or `/resume` is not a turn ending, and hive's own `TRIAGE_MESSAGE` never starts one.
+- **A new pane pid or a new session resets the turn to unknown.** The first Stop after a restart, `/clear` or `/resume` is not a turn ending, and hive's own configured first message never starts one.
 - **The watched lead's screen may hold a wake, never produce one.** A dialog or unsubmitted text vetoes; nothing on screen can make a lead read idle.
 - **A dead, reissued or restarted lead ends a watch with its named reason, never as a turn ending.**
 - **Only the queen watches a lead, and the watch lives in the queen's own project.** Do not widen `QUEEN_REACH` to store it in the watched project.

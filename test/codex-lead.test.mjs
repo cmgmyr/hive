@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { isolateTmux, leadRow, runCli, scratchDirs, until } from "./helpers.mjs";
@@ -18,7 +18,6 @@ migrate();
 const { sessionName, shellQuote } = await import("../dist/tmux.js");
 const { configHash } = await import("../dist/projectYml.js");
 const { codexHomeDir } = await import("../dist/codexHome.js");
-const { TRIAGE_MESSAGE } = await import("../dist/kickoff.js");
 
 // A fake HOME so ensureCodexHome's auth.json lookup resolves to a fake credential rather than the
 // real ~/.codex (the same reason agent-spawn-harness.test.mjs and codex-home.test.mjs need one).
@@ -47,10 +46,12 @@ const postureText = "CODEX LEAD POSTURE SENTINEL {{repo}}";
 mkdirSync(join(dirs.dataDir, "profiles", "orchestration"), { recursive: true });
 writeFileSync(join(dirs.dataDir, "profiles", "orchestration", "posture.md"), postureText);
 
-function newProjectDir(name) {
+const CODEX_FIRST_MESSAGE = "codex first message sentinel";
+
+function newProjectDir(name, extra = `first_message: ${CODEX_FIRST_MESSAGE}\n`) {
   const dir = join(dirs.tmp, name);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "hive.yml"), "lead: codex\nprofile: orchestration\n");
+  writeFileSync(join(dir, "hive.yml"), `lead: codex\nprofile: orchestration\n${extra}`);
   return dir;
 }
 
@@ -107,16 +108,16 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
       const row = leadRow(db, project.id);
       assert.match(row.command, /--dangerously-bypass-hook-trust/);
       assert.match(row.command, /--dangerously-bypass-approvals-and-sandbox/);
-      assert.equal(row.command.includes(TRIAGE_MESSAGE), false);
+      assert.equal(row.command.includes(CODEX_FIRST_MESSAGE), false);
     });
 
-    it("the pane actually received the triage message as its argv, not just the stored command string", async () => {
+    it("the pane actually received the configured first message as its argv, not just the stored command string", async () => {
       assert.ok(await until(() => existsSync(argvFile), 5000), "codex argv snapshot never appeared");
       const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
       assert.equal(argv.at(-2), "--", "the message follows -- so a leading dash is never a flag");
       assert.ok(
-        argv.includes(TRIAGE_MESSAGE),
-        `expected TRIAGE_MESSAGE among the codex process's real argv, got: ${JSON.stringify(argv)}`,
+        argv.includes(CODEX_FIRST_MESSAGE),
+        `expected the first message among the codex process's real argv, got: ${JSON.stringify(argv)}`,
       );
     });
 
@@ -149,6 +150,22 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
       assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /kickoff\.js.*--codex/);
       assert.ok(hooks.hooks.Stop, "lead state tracking needs Stop too, same as a worker's home");
       assert.ok(hooks.hooks.UserPromptSubmit);
+    });
+  });
+
+  describe("with first_message unset", () => {
+    const projectDir = newProjectDir("codex-lead-no-first-message", "");
+    seedProject("codex-lead-no-first-message", projectDir);
+    const session = sessionName();
+    after(() => cleanup(session));
+
+    it("the codex process gets no prompt argument", async () => {
+      rmSync(argvFile, { force: true });
+      const result = await runCli(["lead"], cliOpts(projectDir));
+      assert.equal(result.code, 0, result.stderr);
+      assert.ok(await until(() => existsSync(argvFile), 5000), "codex argv snapshot never appeared");
+      const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+      assert.equal(argv.includes("--"), false, `expected no prompt argument, got: ${JSON.stringify(argv)}`);
     });
   });
 

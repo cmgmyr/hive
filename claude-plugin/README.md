@@ -3,7 +3,7 @@
 Registers one SessionStart hook. When you open a session in a hive project's
 root, on a lead branch, with a profile hive can resolve, it injects the
 project's live state (board pad, in-flight and dispatchable todos, running
-workers, pending wake-ups) and asks the lead to run triage. Everywhere else it
+workers, pending wake-ups); a lead gets a first message only when first_message is set. Everywhere else it
 prints nothing.
 
 The gates live in `hive kickoff`, not here, so they upgrade with the binary

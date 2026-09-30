@@ -8,7 +8,7 @@ import type { ProjectYml } from "./projectYml.js";
 import type { ProvenanceRow } from "./stateProvenance.js";
 
 import { cutToUnitBudget } from "./slug.js";
-import { FIRST_MESSAGE_SHA_ENV, TRIAGE_MESSAGE } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV } from "./firstMessage.js";
 
 export const OUTPUT_BUDGET = 10_000;
 const CONTEXT_BUDGET = 6_000;
@@ -141,12 +141,6 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   return truncate(lines.join("\n"), CONTEXT_BUDGET);
 }
 
-// Exported so src/cli.ts can hand the identical text to a codex lead as its initial CLI prompt -
-// codex's SessionStart hook rejects the whole payload if this rides inside hookSpecificOutput
-// (see the `forCodex` branch below), so a codex lead gets it a different way, not a different
-// message. Keep the two in sync by construction rather than by two literals staying equal.
-export { TRIAGE_MESSAGE };
-
 export type KickoffGate =
   | { ok: true; config: ProjectYml; warnings: string[]; sources: Record<string, ConfigSource>; profile: string }
   | { ok: false; reason: string; warnings: string[] };
@@ -232,9 +226,9 @@ export async function runKickoff(argv: string[] = []): Promise<void> {
   if (result.fired && result.payload) {
     if (explain && result.firstMessage) {
       const { message, source } = result.firstMessage;
-      console.log(
-        source === "empty" ? "first message: none (empty string in hive.yml)" : `first message (${source}): ${message}`,
-      );
+      if (source === "unset") console.log("first message: none (first_message is not set)");
+      else if (source === "empty") console.log("first message: none (empty string in hive.yml)");
+      else console.log(`first message (${source}): ${message}`);
     }
     process.stdout.write(result.payload);
     if (explain) process.stdout.write("\n");

@@ -13,8 +13,7 @@ process.env.HIVE_DATA_DIR = dataDir;
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
-const { TRIAGE_MESSAGE } = await import("../dist/kickoff.js");
-const { firstMessageDigest } = await import("../dist/triageMessage.js");
+const { firstMessageDigest } = await import("../dist/firstMessage.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -88,17 +87,18 @@ describe("a lead's turn state comes from its own hooks", () => {
     assert.equal(row.idle_seq, 0);
   });
 
-  it("hive's own triage prompt does not start a turn, so the triage Stop is not a turn ending", async () => {
+  it("the retired shipped triage text with no launch marker is a real prompt, not hive's own", async () => {
     const lead = seedAgent("lead", "l3");
+    const retired =
+      "Start with morning triage. Run `hive runbook` for this project's standing process, then " +
+      "reconcile the state hive just injected against what is really there (agent_list, todo_list, " +
+      "wake_list) and report it in a few lines. Propose today's lanes and confirm them with me before " +
+      "dispatching anything.";
 
-    await hook("prompt", withField(PROMPT, "prompt", TRIAGE_MESSAGE), lead.actor);
+    await hook("prompt", withField(PROMPT, "prompt", retired), lead.actor);
+    assert.equal(turn(lead.id).state, "working");
     await hook("stop", STOP, lead.actor);
-
-    assert.equal(turn(lead.id).state, "unknown");
-    assert.equal(turn(lead.id).idle_seq, 0);
-
-    await hook("prompt", PROMPT, lead.actor);
-    assert.equal(turn(lead.id).state, "working", "a human prompt after triage still starts a turn");
+    assert.equal(turn(lead.id).state, "idle");
   });
 
   it("a custom first message hive put on the command line does not start a turn, and a human prompt still does", async () => {

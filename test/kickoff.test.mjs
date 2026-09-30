@@ -102,18 +102,18 @@ describe("hive kickoff gates", () => {
     assert.match(out.additionalContext, /profile: orchestration/);
     assert.match(out.additionalContext, /BOARD/);
     assert.match(out.additionalContext, /hive runbook/);
-    assert.match(out.initialUserMessage, /triage/i);
+    assert.equal(Object.hasOwn(out, "initialUserMessage"), false, "no first_message is set, so none is sent");
   });
 
   it("omits initialUserMessage for --codex, unlike the claude payload, because codex's SessionStart schema rejects the whole hook payload when that key is present (todo 567 comment 1864)", async () => {
-    yml("profile: orchestration\n");
+    yml("profile: orchestration\nfirst_message: project says hi\n");
 
     const claudePayload = fired((await kickoff()).stdout);
     assert.ok(
       Object.hasOwn(claudePayload, "initialUserMessage"),
       "the claude payload must still carry initialUserMessage",
     );
-    assert.match(claudePayload.initialUserMessage, /triage/i);
+    assert.equal(claudePayload.initialUserMessage, "project says hi");
 
     const { code, stdout } = await kickoff(["--codex"]);
     assert.equal(code, 0);
@@ -138,7 +138,7 @@ describe("hive kickoff gates", () => {
     const out = fired(stdout);
     assert.match(out.additionalContext, /\[hive\] Project/);
     assert.match(out.additionalContext, /BOARD/);
-    assert.match(out.initialUserMessage, /triage/i);
+    assert.equal(Object.hasOwn(out, "initialUserMessage"), false);
   });
 
   it("still says nothing for a worker whose HIVE_LEAD is set but not \"1\"", async () => {
@@ -541,10 +541,13 @@ describe("the SessionStart first message is configurable", () => {
     } catch {}
   });
 
-  it("uses the shipped message when neither file sets first_message", async () => {
+  it("sends no initialUserMessage when neither file sets first_message, and --explain says so", async () => {
     try { unlinkSync(globalYml); } catch {}
     yml("profile: orchestration\n");
-    assert.match(message((await kickoff()).stdout), /morning triage/);
+    const out = fired((await kickoff()).stdout);
+    assert.equal(Object.hasOwn(out, "initialUserMessage"), false);
+    assert.match(out.additionalContext, /\[hive\] Project/, "the board still arrives");
+    assert.match((await kickoff(["--explain"])).stdout, /first message: none \(first_message is not set\)/);
   });
 
   it("uses the global message when the project is silent", async () => {
@@ -578,7 +581,7 @@ describe("the SessionStart first message is configurable", () => {
     yml("profile: orchestration\nfirst_message: 42\n");
     const { stdout } = await kickoff(["--explain"]);
     assert.match(stdout, /first_message must be a string/);
-    assert.match(stdout, /first message \(shipped\)/);
+    assert.match(stdout, /first message: none \(first_message is not set\)/);
   });
 
   it("omits initialUserMessage when hive lead put the message on the command line", async () => {
@@ -599,7 +602,7 @@ describe("the SessionStart first message is configurable", () => {
     yml("profile: orchestration\n");
     assert.match((await kickoff(["--explain"])).stdout, /first message \(global\): global says hi/);
     yml("profile: orchestration\nfirst_message: ''\n");
-    assert.match((await kickoff(["--explain"])).stdout, /first message: none/);
+    assert.match((await kickoff(["--explain"])).stdout, /first message: none \(empty string in hive.yml\)/);
     yml("profile: orchestration\nfirst_message: mine\n");
     assert.match((await kickoff(["--explain"])).stdout, /first message \(project\): mine/);
   });
