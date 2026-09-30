@@ -240,7 +240,7 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /<span class="brief-stamp" title="written 2026-09-29 09:00:00 UTC">written 3h ago<\/span>/);
     assert.doesNotMatch(html, /status-warn">written/);
     assert.match(html, /No project changed lanes since the brief\./);
-    assert.match(html, /pick 1/);
+    assert.match(html, />brief pick 1</);
   });
 
   it("reports only lane, new and removed changes, in lane then id order", () => {

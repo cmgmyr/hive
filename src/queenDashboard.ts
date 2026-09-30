@@ -256,7 +256,7 @@ function card(
     `<article class="card pc" style="--lane:${LANE_COLOR[p.lane]}" data-project="${p.id}">` +
     `<div class="pc-top">${projectLink(p, href)}` +
     (rank
-      ? `<span class="pc-pick">pick ${rank}</span>`
+      ? `<span class="pc-pick">brief pick ${rank}</span>`
       : `<span class="age">${esc(age(p.last_activity_at, asOf))}</span>`) +
     "</div>" +
     `<div class="pc-badges">${leadPill(p)}${workersCell(p)}</div>` +
