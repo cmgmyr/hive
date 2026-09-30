@@ -196,8 +196,8 @@ function projectRow(
   const wakeCounts = db
     .prepare(
       `SELECT COUNT(*) AS pending,
-              COALESCE(SUM(COALESCE(due_at, max_wait_at) < ?), 0) AS overdue,
-              COALESCE(SUM(COALESCE(due_at, max_wait_at) <= ?), 0) AS overdue_grace,
+              COALESCE(SUM(held_at IS NULL AND COALESCE(due_at, max_wait_at) < ?), 0) AS overdue,
+              COALESCE(SUM(held_at IS NULL AND COALESCE(due_at, max_wait_at) <= ?), 0) AS overdue_grace,
               COALESCE(SUM(COALESCE(due_at, max_wait_at) > ? AND COALESCE(due_at, max_wait_at) <= ?), 0) AS upcoming
          FROM wakes WHERE project_id = ? AND ${ACTIVE_WAKE_WHERE}`,
     )
@@ -225,20 +225,20 @@ function projectRow(
   if (todos.in_progress > 0) found.add("todo_in_progress");
   if (wakeCounts.upcoming > 0) found.add("wake_due_24h");
 
-  const STUCK: PortfolioReason[] = [
+  const HARD_STALL: PortfolioReason[] = [
     "dead_lead_pane",
     "missing_root_with_work",
     "worker_needs_input",
     "wake_overdue_5m",
-    "in_progress_blocked",
-    "all_active_todos_blocked",
-    "stale_in_progress_48h",
   ];
-  const MOVING: PortfolioReason[] = ["worker_working", "todo_in_progress", "wake_due_24h"];
+  const TODO_GRAPH: PortfolioReason[] = ["in_progress_blocked", "all_active_todos_blocked", "stale_in_progress_48h"];
+  const freshInProgress = todos.in_progress > todos.blocked_in_progress && !found.has("stale_in_progress_48h");
+  const movingSignal = liveWorking > 0 || lead.turn === "working" || freshInProgress;
   let lane: PortfolioLane;
-  if (found.has("needs_human")) lane = "waiting_on_you";
-  else if (STUCK.some((r) => found.has(r))) lane = "stuck";
-  else if (MOVING.some((r) => found.has(r))) lane = "moving";
+  if (HARD_STALL.some((r) => found.has(r))) lane = "stuck";
+  else if (movingSignal) lane = "moving";
+  else if (found.has("needs_human")) lane = "waiting_on_you";
+  else if (TODO_GRAPH.some((r) => found.has(r))) lane = "stuck";
   else {
     lane = "quiet";
     found.add("quiet");
