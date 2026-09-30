@@ -13,8 +13,17 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseRawToml } from "smol-toml";
 import { scratchGit } from "./helpers.mjs";
+
+const parseToml = (text) => plainTomlTables(parseRawToml(text));
+const plainTomlTables = (value) => {
+  if (Array.isArray(value)) return value.map(plainTomlTables);
+  if (value && typeof value === "object" && [null, Object.prototype].includes(Object.getPrototypeOf(value))) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, plainTomlTables(item)]));
+  }
+  return value;
+};
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const scratch = mkdtempSync(join(tmpdir(), "hive-codex-home-"));
