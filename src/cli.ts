@@ -4041,6 +4041,11 @@ function cmdPad(argv: string[]): void {
   process.stdout.write(withTrailingNewline(pad.content));
 }
 
+process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EPIPE") process.exit(0);
+  throw error;
+});
+
 const args = process.argv.slice(2);
 let command = args[0] ?? "lead";
 let rest = args.slice(1);
