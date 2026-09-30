@@ -289,7 +289,10 @@ gets built for whichever is asked for first, and the other side is a
 separate, deliberate addition with its own review, never assumed to come
 free because the first half shipped. No CLI command reaches leases or wakes
 today, and no MCP tool reaches backups, restore, profiles, posture, runbook,
-or doctor; both are the split working as intended, not omissions to close.
+or doctor, with one deliberate exception: `project_prune` with `confirm_name`
+takes a snapshot before it deletes a project (both surfaces were asked for;
+the snapshot is what makes an irreversible delete recoverable).
+The rest are the split working as intended, not omissions to close.
 
 **Narrowed since, for kv specifically.** `cmdAttach`/`cmdLead`'s
 `maybeOpenDashboard` (`src/cli.ts`) reads and writes one kv row directly, via

@@ -148,7 +148,9 @@ The argument is a registered project id or the exact registered path. A subdirec
 
 From a session, `project_prune` does the same for one project when you pass both `project_id` and `confirm_name` set to the project's exact name. A wrong name removes nothing. The no-argument `project_prune` still sweeps only projects that own no rows, and there is no forced sweep. The queen can run both forms, and each removal writes one `queen_audit` row that stays after the project is gone.
 
-Undo it with `hive restore <name>` using the snapshot the command named. A removal leaves these behind: the project's checkout and everything in it (`hive.yml`, `.hive`, worktrees), `postures/project-<id>.md`, `briefs/agent-<id>.md` and `worker-<id>-hooks.json` for its agents, any `codex-homes` and `codex-rollouts` directories its agents used, and the actors that worked in it (`actor_prune` removes inert ones). Delete those by hand if you want them gone.
+A path matches only after symlinks are resolved, so a symlink to a registered path selects that project, and a subdirectory of one still matches nothing.
+
+Undo it with `hive restore <name>`, where the name is the last part of the snapshot path the command printed. A restore replaces the whole store, so every other project's writes since that snapshot are lost too, and it refuses while any agent is running, so it needs `--force` from a live session. Restore only when the removal itself was the mistake. A removal leaves these behind: the project's checkout and everything in it (`hive.yml`, `.hive`, worktrees), `postures/project-<id>.md`, `briefs/agent-<id>.md` and `worker-<id>-hooks.json` for its agents, any `codex-homes` and `codex-rollouts` directories its agents used, and the actors that worked in it (`actor_prune` removes inert ones). Delete those by hand if you want them gone.
 
 ## Pads and todos from the shell
 

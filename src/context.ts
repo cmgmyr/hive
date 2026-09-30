@@ -504,7 +504,7 @@ function queenRefusal(operation: string, targetProjectId: number | null, problem
   const where = target ? `in project ${target.id} ("${target.name}")` : "outside the queen's own project";
   return new Error(
     `${QUEEN_REFUSAL}: the queen cannot run ${operation} ${where}: ${problem}. Into another project the ` +
-      "queen may only todo_create, todo_comment, send text or wakes to its running lead, and start its lead " +
-      "with `hive lead <path>`. Everything else there is its lead's to do.",
+      "queen may only todo_create, todo_comment, send text or wakes to its running lead, start its lead " +
+      "with `hive lead <path>`, and run project_prune or `hive project rm` on it. Everything else there is its lead's to do.",
   );
 }
