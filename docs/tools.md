@@ -12,7 +12,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `project_list` | Lists registered projects and which one is selected | To check what this machine knows about |
 | `project_add` | Registers a directory as its own project | To split a worktree or subdirectory off from its parent repo's state |
 | `project_select` | Points this session at another project | Cross-project work you asked for by name; workers with `HIVE_PROJECT_LOCK=1` can't |
-| `project_prune` | Deletes every registered project that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray projects a scratch spawn or a cwd change registered on its own |
+| `project_prune` | Deletes every registered project that owns no rows anywhere in the store, after checking each individually; never your own. With `project_id`, removes only that one project, and only if it owns no rows | Sweeping stray projects a scratch spawn or a cwd change registered on its own |
 | **agents** | | |
 | `agent_spawn` | Starts a worker in a tmux pane or window, locked to the project; `harness` picks the CLI, default the project's `agents:` first entry | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |

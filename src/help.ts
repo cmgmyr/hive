@@ -257,7 +257,8 @@ Every pad, todo, kv entry, and lease belongs to one project (a directory).
   project_select(project_id) — set this session's default scope
   project_prune() — delete every registered project that owns no rows
     anywhere in the store, verified individually; never your own; refuses
-    under HIVE_PROJECT_LOCK=1 since it sweeps every project, not just yours
+    under HIVE_PROJECT_LOCK=1 since it sweeps every project, not just yours.
+    With project_id, removes only that project, and only if it owns no rows
 
 Resolution order: explicit project_id argument, then session selection, then
 working-directory auto-detection. When the working directory matches no

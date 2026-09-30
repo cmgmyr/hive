@@ -182,6 +182,27 @@ describe("project_prune", () => {
     }
   });
 
+  it("project_id removes exactly that empty project, refuses a non-empty one naming its rows, and refuses the caller's own", async () => {
+    const ownerActorId = (await mcp.call("whoami")).actor_id;
+    const home = (await mcp.call("whoami")).project.id;
+    const targetEmpty = await mcp.call("project_add", { path: scratchDirs().projectDir });
+    const bystanderEmpty = await mcp.call("project_add", { path: scratchDirs().projectDir });
+    const full = await mcp.call("project_add", { path: scratchDirs().projectDir });
+    seedProjectOwnerRow("todos", full.id, ownerActorId);
+    seedProjectOwnerRow("kv", full.id, ownerActorId);
+
+    const result = await mcp.call("project_prune", { project_id: targetEmpty.id });
+    assert.deepEqual(result.deleted, [{ id: targetEmpty.id, name: targetEmpty.name }]);
+    assert.ok(!db.prepare("SELECT id FROM projects WHERE id = ?").get(targetEmpty.id));
+    assert.ok(db.prepare("SELECT id FROM projects WHERE id = ?").get(bystanderEmpty.id), "another empty project must not be swept");
+
+    await assert.rejects(mcp.call("project_prune", { project_id: full.id }), /not empty.*todos: 1, kv: 1/);
+    assert.ok(db.prepare("SELECT id FROM projects WHERE id = ?").get(full.id));
+    await assert.rejects(mcp.call("project_prune", { project_id: home }), /caller's own project/);
+    await assert.rejects(mcp.call("project_prune", { project_id: 999999 }), /no project 999999/);
+    await assert.rejects(mcp.call("project_prune", { project_id: 1, bogus: 1 }), /bogus|Unrecognized/i);
+  });
+
   it("refuses under HIVE_PROJECT_LOCK=1, since it sweeps the whole store", async () => {
     const locked = new McpClient({
       cwd: scratchDirs().projectDir,

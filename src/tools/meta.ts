@@ -40,6 +40,13 @@ function projectOwnsRows(projectId: number): boolean {
   return PROJECT_OWNER_TABLES.some((table) => existsWhere(table, "project_id", projectId));
 }
 
+function ownedRowCounts(projectId: number): string[] {
+  return PROJECT_OWNER_TABLES.flatMap((table) => {
+    const n = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).get(projectId) as { n: number }).n;
+    return n > 0 ? [`${table}: ${n}`] : [];
+  });
+}
+
 const pruneProjectIfEmpty = db.transaction((projectId: number): boolean => {
   if (projectOwnsRows(projectId)) return false;
   return db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes > 0;
@@ -202,25 +209,39 @@ export function registerMeta(server: McpServer): void {
     "project_prune",
     {
       description:
-        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
+        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: true,
         openWorldHint: false,
       },
-      inputSchema: {},
+      inputSchema: { project_id: idParam.optional() },
       outputSchema: {
         deleted: z.array(z.object({ id: idParam, name: z.string() })),
         held_back: z.object({ project_id: idParam, reason: z.string() }),
         errors: z.array(z.object({ id: idParam, name: z.string(), error: z.string() })).optional(),
       },
     },
-    () =>
+    ({ project_id }) =>
       run(() => {
         refuseIfLocked("project_prune");
 
         const homeId = resolveProject().id;
+        if (project_id !== undefined) {
+          if (project_id === homeId) throw new Error(`project_prune: project ${project_id} is the caller's own project and is never pruned.`);
+          const target = listProjects().find((p) => p.id === project_id);
+          if (!target) throw new Error(`project_prune: no project ${project_id}. List them with project_list.`);
+          if (!pruneProjectIfEmpty.immediate(project_id)) {
+            throw new Error(
+              `project_prune: project ${project_id} ("${target.name}") is not empty, nothing deleted. It owns ${ownedRowCounts(project_id).join(", ")}.`,
+            );
+          }
+          return {
+            deleted: [{ id: target.id, name: target.name }],
+            held_back: { project_id: homeId, reason: "caller's own project" },
+          };
+        }
         const deleted: { id: number; name: string }[] = [];
         const errors: { id: number; name: string; error: string }[] = [];
         for (const project of listProjects()) {
