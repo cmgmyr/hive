@@ -37,7 +37,7 @@ TODOS — shared task tracking with dependencies
 KV — small shared status values (with optional TTL)
   kv_set, kv_get, kv_list, kv_delete
 
-LEASES — advisory expiring claims on shared work areas
+LEASES — advisory expiring claims on shared state
   lease_acquire, lease_release
 
 PROJECTS — scope management
@@ -98,8 +98,10 @@ Rules that keep this sane:
   - Keep worker prompts self-contained: include pad and todo ids.
   - Record every decision in the pad or a todo comment. Sessions die;
     the store survives.
-  - Take a lease (lease_acquire) before editing a shared file area; leases
-    expire so a dead session never wedges anyone.`,
+  - Take a lease (lease_acquire) before changing state another session can
+    also change: a checkout two sessions share, a dev database, a port. Files
+    in a directory only you work in, such as your own git worktree, need
+    none. Leases expire so a dead session never wedges anyone.`,
 
   profiles: `PROFILES — standing instructions shared across projects
 
@@ -368,13 +370,15 @@ todo_list without marking anything done.`,
 Use kv for values another session needs to discover: current branch, a port,
 a phase flag. Use pads for anything longer than a line or two.`,
 
-  leases: `LEASES — advisory expiring claims on shared work areas
+  leases: `LEASES — advisory expiring claims on shared state
 
   lease_acquire(key, ttl_seconds) — non-blocking; returns the holder if
     already taken; re-taking your own lease extends it
   lease_release(key)
 
 Keys are project-scoped and free-form; keep them stable and specific, like
-"file:src/api/routes.ts" or "todo:42". Leases expire on their own, so a
-crashed session never wedges the team.`,
+"checkout:main", "db:dev", "port:3000" or "todo:42". A lease tells other
+sessions the state is in use; it enforces nothing, and it cannot prevent a
+merge conflict between two branches. Leases expire on their own, so a crashed
+session never wedges the team.`,
 };

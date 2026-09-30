@@ -83,7 +83,7 @@ Coordinate through the hive MCP tools:
 - pad_list / pad_read for the shared plan and findings. Record decisions there.
 - todo_list(is_blocked=false, status="open") for dispatchable work; set status to in_progress while working.
 - todo_comment for handoffs (changed files, tests run, remaining risk), then todo_complete.
-- lease_acquire before editing shared file areas; leases expire on their own.
+- lease_acquire before changing state another session can also change (a shared checkout, a dev database, a port); files in a directory only you work in need none. Leases expire on their own.
 If the hive MCP tools are unavailable in this session, write progress and results to stdout; the orchestrator will read your terminal.
 ${WAIT_FOR_ASSIGNMENT}
 [END HIVE CONTEXT]`;

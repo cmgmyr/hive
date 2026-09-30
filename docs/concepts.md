@@ -53,4 +53,4 @@ Four primitives hold all coordination state. Each is project-scoped, lives in SQ
 
 **KV** is a small shared JSON scratch space for values other sessions should discover on their own: a dev server port, a feature flag, a shared setting. Values can carry a TTL and expire without cleanup.
 
-**Leases** are soft claims on shared work areas, keyed by convention (`file:src/api/routes.ts`). A lease does not lock anything; it tells other sessions "someone is working here, pick a different lane." Leases expire on their own TTL, so a crashed worker never wedges the team, and re-acquiring your own lease extends it, which doubles as a heartbeat for long work.
+**Leases** are soft claims on state more than one session can change, such as a shared checkout, a dev database or a port, keyed by convention (`db:dev`). A lease does not lock anything; it tells other sessions "someone is using this, pick something else." It cannot prevent a merge conflict between two branches. Leases expire on their own TTL, so a crashed worker never wedges the team, and re-acquiring your own lease extends it, which doubles as a heartbeat for long work.
