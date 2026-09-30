@@ -13,6 +13,9 @@ The vocabulary, identity model, workflow, and shared store behind hive.
 | runbook | The pad holding your standing instructions for a project's lead. |
 | board | The pad holding today's live state; archived and rewritten each day. |
 | lane | One independent stream of work: typically one worker plus one or more todos. |
+| queen | The one lead per data dir that reads every registered project and writes into another only through its lead. See [the queen guide](queen.md). |
+| portfolio | `hive portfolio`: one row per project, sorted into waiting on you, stuck, moving and quiet. |
+| needs-human | A todo tag that puts its project in the portfolio's waiting-on-you lane. |
 
 ## Why not subagents?
 
@@ -40,6 +43,8 @@ Ask any session for `help(topic="workflow")`. Short version: the lead interviews
 ## Project scope
 
 State is scoped to a project (a directory). The scope resolves in this order: an explicit `project_id` argument, the session's `project_select` choice, then auto-detection from the working directory. A working directory that matches no registered project becomes a new project automatically; sessions never silently attach to an unrelated one. Use `project_select` or `project_id` to reach another project's state on purpose.
+
+The queen is the one exception to project scoping: it may read any registered project and write into one only through that project's lead. See [what it can read and write](queen.md#what-it-can-read-and-write).
 
 Git worktrees and subdirectories resolve to the primary checkout's project, so a worker in a worktree shares the main repo's pads and todos. To treat a worktree as its own project instead, register its path explicitly with `project_add`.
 

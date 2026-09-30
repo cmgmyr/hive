@@ -125,3 +125,7 @@ A hold of any kind that lasts more than an hour is the one case where a finish n
 So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking.
 
 Under a `/goal` the lead takes its own turns without anyone prompting it, so nothing refreshes the window and the hold stays out of the way. Human conversation still refreshes it, while tagged worker reports do not, so an unattended run's crew can report without delaying each wake.
+
+## Running several projects
+
+With more than one project registered, `hive queen` starts a lead that reads all of them, `hive portfolio` shows which need you, and `hive next` attaches you to the lead that needs you most. See [the queen guide](queen.md).

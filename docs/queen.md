@@ -16,7 +16,7 @@ If you run one project, you do not need it. It earns its place when you have sev
 hive queen
 ```
 
-The first run creates `<data dir>/queen`, writes a `hive.yml` there that selects the shipped `queen` profile, registers the directory as a project, writes its dashboard, and starts a lead in it. The default data dir is `~/.hive`, so the queen home is `~/.hive/queen` unless you set `HIVE_DATA_DIR`.
+The first run creates `<data dir>/queen`, writes a `hive.yml` there that selects the shipped `queen` profile, registers the directory as a project, writes its dashboard, and starts a lead in it. The default data dir is `~/.hive`, so the queen home is `~/.hive/queen` when `HIVE_DATA_DIR` is not set.
 
 A second run finds the home already there and reattaches, or starts a fresh lead if the old one is gone. It never overwrites the `hive.yml`. If that file exists and does not select the `queen` profile, `hive queen` stops and tells you to fix it. It also refuses a path argument, a symlinked home, and a session locked to one project (`HIVE_PROJECT_LOCK=1`), so run it from your own terminal.
 
