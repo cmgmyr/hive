@@ -577,7 +577,7 @@ function queenHome(): { id: number; path: string } | null {
 
 function renderQueenPage(queenId: number): { html: string; hash: string } {
   const report = collectPortfolio();
-  const html = renderQueenDashboard(report, readQueenBrief(queenId, report.as_of), undefined, recentQueenAudit(10));
+  const html = renderQueenDashboard(report, readQueenBrief(queenId, report.as_of), undefined, recentQueenAudit(10), queenId);
   const stable = html.replace(new RegExp(`<p class="generated" ${QUEEN_GENERATED_MARKER}>[^<]*</p>`), "");
   return { html, hash: createHash("sha256").update(stable).digest("hex") };
 }

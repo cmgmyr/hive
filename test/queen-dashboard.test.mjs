@@ -300,6 +300,18 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /proj-1 moved from quiet to waiting on you\.<\/p>/);
   });
 
+  it("leaves the queen's own home project out of the drift line whether the brief lists it or not", () => {
+    const drift = (lanes, home) => renderQueenDashboard(report(oneEach()), ready(brief({ lanes_at_brief: lanes })), noLinks, [], home).match(/<p class="drift">.*?<\/p>/)[0];
+    const listed = drift({ 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet", 99: "moving" }, 1);
+    const omitted = drift({ 2: "stuck", 3: "moving", 4: "quiet" }, 1);
+    const gone = drift({ 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet", 99: "moving" }, 99);
+    assert.doesNotMatch(listed, /proj-1/);
+    assert.match(listed, /#99 is no longer registered/, "another vanished project is still reported");
+    assert.doesNotMatch(omitted, /proj-1/);
+    assert.doesNotMatch(gone, /#99/);
+    assert.match(renderQueenDashboard(report(oneEach()), ready(brief()), noLinks, [], 1), /proj-1/, "the home project still shows in the lanes");
+  });
+
   it("names every portfolio STUCK reason in the stuck lane caption", () => {
     const source = readFileSync(new URL("../dist/portfolio.js", import.meta.url), "utf8");
     const stuck = [...source.match(/const STUCK = \[([^\]]*)\]/)[1].matchAll(/"([a-z_0-9]+)"/g)].map((m) => m[1]);

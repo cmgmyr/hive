@@ -319,11 +319,12 @@ function laneName(lane: PortfolioLane): string {
   return LANE_TITLE[lane].toLowerCase();
 }
 
-function driftLine(brief: QueenBrief, report: PortfolioReport): string {
+function driftLine(brief: QueenBrief, report: PortfolioReport, queenHomeId: number | null): string {
   const then = brief.lanes_at_brief;
   const live = new Map(report.projects.map((p) => [String(p.id), p]));
   const changes: { rank: number; id: number; text: string }[] = [];
   for (const p of report.projects) {
+    if (p.id === queenHomeId) continue;
     const before = then[String(p.id)];
     if (before === undefined) {
       changes.push({ rank: LANE_RANK[p.lane], id: p.id, text: `${esc(p.name)} is new since the brief` });
@@ -336,7 +337,7 @@ function driftLine(brief: QueenBrief, report: PortfolioReport): string {
     }
   }
   for (const [key, before] of Object.entries(then)) {
-    if (live.has(key)) continue;
+    if (live.has(key) || key === String(queenHomeId)) continue;
     changes.push({
       rank: LANE_RANK[before] + LANE_ORDER.length,
       id: Number(key),
@@ -352,6 +353,7 @@ function briefSection(
   state: QueenBriefState,
   report: PortfolioReport,
   href: (p: PortfolioProject) => string | null,
+  queenHomeId: number | null,
 ): string {
   const head = (stamp: string): string => `<div><h2>Picks today</h2>${stamp}</div>`;
   if (state.kind === "missing") {
@@ -380,7 +382,7 @@ function briefSection(
     `<section class="card c-brief">${head(stamp)}` +
     `<p class="brief-summary">${esc(brief.summary)}</p>` +
     (picks ? `<ol>${picks}</ol>` : "") +
-    `${driftLine(brief, report)}</section>`
+    `${driftLine(brief, report, queenHomeId)}</section>`
   );
 }
 
@@ -586,6 +588,7 @@ export function renderQueenDashboard(
   briefState: QueenBriefState,
   href: (p: PortfolioProject) => string | null = (p) => dashboardHref(p.root),
   audit: QueenAuditRow[] = [],
+  queenHomeId: number | null = null,
 ): string {
   const asOf = report.as_of;
   const byLane = new Map<PortfolioLane, PortfolioProject[]>(LANE_ORDER.map((l) => [l, []]));
@@ -617,8 +620,8 @@ export function renderQueenDashboard(
 
   const main =
     n === 0
-      ? `${briefSection(briefState, report, href)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
-      : `${briefSection(briefState, report, href)}<div class="lanes">${lanes}</div>` +
+      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
+      : `${briefSection(briefState, report, href, queenHomeId)}<div class="lanes">${lanes}</div>` +
         `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
         '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +
