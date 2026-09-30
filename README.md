@@ -69,7 +69,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Dashboard](docs/dashboard.md) | The generated dashboard: enabling it, where it lives, what it shows |
 | [Install details](docs/install.md) | The interpreter pin, iTerm settings, the status line, MCP scope, codex workers, updating, uninstalling |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
-| [Tools](docs/tools.md) | The 45 MCP tools: what each does and when to use it |
+| [Tools](docs/tools.md) | The MCP tools: what each does and when to use it |
 | [tmux settings](docs/tmux.md) | Attach modes, pane options, and what to put in `~/.tmux.conf` |
 | [Development](docs/development.md) | Building and testing hive itself |
 

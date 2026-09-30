@@ -8,6 +8,8 @@ Each project in hive has a lead, and that lead works one project. The queen is t
 
 It reads every registered project: pads, todos, workers, wakes. It does not do a project's work. When it finds something, it hands it to that project's lead as a todo, a comment, a message or a wake, and the lead decides what happens next.
 
+A project is registered when you run `hive init` in it or start its lead there; see [Projects](projects.md#runbook-and-board-hive-init).
+
 If you run one project, you do not need it. It earns its place when you have several projects, each with its own lead, and you want one place to ask "what needs me?"
 
 ## Start it
@@ -26,7 +28,7 @@ Pass `--no-dashboard` to skip opening the [queen dashboard](#the-queen-dashboard
 
 Reading is open. The queen reads any registered project by passing that project's `project_id` to `pad_read`, `todo_list`, `todo_get`, `agent_status` and the other read tools, and `hive portfolio` gives it one row per project. It never uses `project_select`, which hive refuses for it.
 
-Writing into another project is narrow. The queen may do exactly these things there, and only through that project's lead:
+Writing into another project is narrow. The queen may do exactly these things there. Todos and comments land in that project's store for its lead to pick up, text and wakes go only to its running lead, and the queen never edits what the lead owns:
 
 | Allowed | Detail |
 |---|---|
@@ -54,11 +56,19 @@ It is deterministic and read-only. Each project lands in one of four lanes:
 | Lane | Meaning |
 |---|---|
 | waiting on you | A todo is tagged `needs-human` and nothing else is moving |
-| stuck | The lead's pane is dead while work is open, the project folder is missing while work is open, a worker is at a prompt, or a wake is more than five minutes overdue. Also blocked or stale (48 hours) in-progress work when nothing is moving |
-| moving | A worker is working, or an unblocked todo is in progress |
+| stuck | A hard stall, or stuck work on the todo graph when nothing is moving and nothing is tagged `needs-human` (the exact checks are below) |
+| moving | A worker is working, or an in-progress todo is not blocked and has not gone stale |
 | quiet | Nothing asked, nothing broken |
 
-The order of the checks matters. A hard stall wins over everything, so a project with a dead lead pane is stuck even if a worker is running. Movement comes next, so a project with live work stays moving and keeps its `needs-human` count. Only after that does a `needs-human` todo make a project wait on you. A pending wake never counts as movement, and a held wake is never overdue.
+hive decides the lane in this order, and the first step that applies wins:
+
+1. Stuck on a hard stall: the lead's pane is dead while a todo is in progress or a wake is pending; the project folder is missing while a todo is open or in progress or a wake is pending; a worker is waiting on input; or a wake is more than five minutes overdue.
+2. Otherwise moving, if a worker is working or an in-progress todo is neither blocked nor stale.
+3. Otherwise waiting on you, if a todo is tagged `needs-human`.
+4. Otherwise stuck on the todo graph: an in-progress todo is blocked, every open or in-progress todo is blocked, or in-progress work has had no activity for 48 hours.
+5. Otherwise quiet.
+
+So a project with live work stays moving and keeps its `needs-human` count, and a dead lead pane makes a project stuck even when a worker is running. A pending wake never counts as movement, and a held wake is never overdue.
 
 To put a project in front of yourself, tag a todo `needs-human`. A lead or worker sets it with `tags` on `todo_create` or `todo_update`; `todo_update` replaces the whole tag list, so include the tags the todo already has.
 
@@ -88,13 +98,19 @@ hive next --print  # name the choice, start and attach nothing
 
 `hive next` picks one project from the portfolio. Projects waiting on you come first, ranked by `needs-human` count, then oldest activity, then project id. Stuck projects come next, and so do moving projects holding a `needs-human` item, ranked by `needs-human` count, then blocked in-progress todos, overdue wakes, workers needing input, oldest activity, then project id. It skips the queen home.
 
-`--print` prints the choice as one JSON line and exits, so you can check the ranking without moving your terminal. With nothing to pick it says so and exits 0:
+`--print` prints the choice as one JSON line and exits, so you can check the ranking without moving your terminal:
 
 ```text
-{"project_id":1,"name":"api","root":"~/Code/api","lane":"waiting_on_you","reasons":["needs_human"],"lead_state":"none"}
+{"project_id":1,"name":"api","root":"/home/you/code/api","lane":"waiting_on_you","reasons":["needs_human"],"lead_state":"none"}
 ```
 
-Without `--print`, it starts that project's lead detached first, then attaches. A dead or reissued lead is restarted, and a live one is adopted. If hive cannot tell whether the lead is alive because tmux did not answer, it starts nothing. It refuses in a session locked to one project.
+With nothing to pick, it prints this line and exits 0:
+
+```text
+No project needs you: none is waiting, stuck, or holding a needs-human item.
+```
+
+Without `--print`, it starts that project's lead detached first, then attaches. A dead or reissued lead is restarted, and a live one is adopted. If hive cannot tell whether the lead is alive because tmux did not answer, it starts nothing. It exits 1 when the chosen project's folder is missing, and it refuses in a session locked to one project.
 
 ## Start a lead without attaching
 
@@ -109,7 +125,7 @@ LEAD_PANE=<pane id>
 ATTACH_COMMAND=hive attach '<project path>'
 ```
 
-The queen uses this to spin up a lead in a project that has none. From a script or a queen pane (no terminal on stdin and stdout) it also has a trust rule. If the project's `hive.yml` has a `lead` command, or an auto-starting process, that you have not approved, `--detach` stops with `hive lead: "<name>" is not trusted; run hive lead <path> interactively once` and exits 1. Run `hive lead <path>` once in your own terminal, approve the commands, and detached starts work after that. Untrusted commands never run.
+The queen uses this to spin up a lead in a project that has none. From a script or a queen pane (stdin or stdout is not a terminal) it also has a trust rule. If the project's `hive.yml` has a `lead` command, or an auto-starting process, that you have not approved, `--detach` stops with `hive lead: "<name>" is not trusted; run hive lead <path> interactively once` and exits 1. Run `hive lead <path>` once in your own terminal, approve the commands, and detached starts work after that. Untrusted commands never run.
 
 ## The queen dashboard
 
@@ -138,7 +154,7 @@ The brief is the one piece of content the queen writes for the page. It is a JSO
 }
 ```
 
-Those five keys are the whole shape: no extras are allowed, `written_at` is a UTC `YYYY-MM-DD HH:MM:SS` string, `todo_id` may be `null`, and `lanes_at_brief` maps project ids to lane names. A brief older than 24 hours is marked stale. hive ships no schedule for writing one. What the queen writes, and when, is your profile's business (see [Make it yours](#make-it-yours)).
+Those five keys are the whole shape: no extras are allowed, `written_at` is a UTC `YYYY-MM-DD HH:MM:SS` string, `todo_id` may be `null`, and `lanes_at_brief` maps project ids to lane names. Each pick has exactly `project_id`, `todo_id`, `action` and `reason`; `summary`, `action` and `reason` cannot be blank; `written_at` uses a space, not a `T`; and the value is a JSON object, not a JSON-encoded string. A brief older than 24 hours is marked stale. hive ships no schedule for writing one. What the queen writes, and when, is your profile's business (see [Make it yours](#make-it-yours)).
 
 ## Know when a lead ends a turn
 
@@ -150,7 +166,7 @@ wake_when_idle(lead_project_id=<project id>, body="...", mode="any", max_wait_se
 
 `lead_project_id` belongs to the queen alone. Any other caller gets `LEAD_WATCH_QUEEN_ONLY`. The wake is stored in the queen's own project and delivered to the queen's pane, so `project_id` and `deliver_to` are refused with it. The project must have a running lead, and it cannot be the queen home.
 
-With `mode="any"` it fires on the lead's next turn ending; a turn that had already ended does not count. With `mode="all"` it fires once the lead's turn has ended. If the lead's pane holds a dialog or unsubmitted text, the wake waits rather than pasting into it.
+With `mode="any"` it fires on the lead's next turn ending; a turn that had already ended does not count. With `mode="all"` it fires once the lead's turn has ended; if the turn has already ended, the call returns `already_satisfied` and schedules nothing. `max_wait_seconds` defaults to 900. If the lead's pane holds a dialog or unsubmitted text, the wake waits rather than pasting into it.
 
 A turn ending is not the lead finishing its work. Read what the lead did before you act on the wake.
 
@@ -168,13 +184,15 @@ The watch ends with a named reason instead of firing when the lead goes away:
 
 ```bash
 hive queen-audit                     # newest first, default 20
-hive queen-audit --project-id 1      # one target project
 hive queen-audit --limit 100 --json  # up to 100 rows as one JSON object
+hive queen-audit --project-id 1      # the queen's pane only, see below
 ```
 
-The queen's `queen_audit_list` tool returns the same rows. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send` and `hive lead`, each with the target project, the resource, and a summary of at most 160 characters.
+Run it from a terminal inside a registered project and it lists the queen writes into that project. Outside a registered project it prints `hive queen-audit: the cwd is not a registered project. Run this command from a registered project.` and exits 1. `--project-id` for another project belongs to the queen alone; anyone else gets `Queen audit access is limited to your own project` and exit 1.
 
-Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100. The queen can filter any target. Any other caller sees only its own project's rows.
+The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send` and `hive lead`, each with the target project, the resource, and a summary of at most 160 characters.
+
+Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100. 
 
 One gap is stated on purpose. A crash after a terminal send but before its audit insert can leave that send unrecorded.
 
@@ -192,7 +210,7 @@ The shipped `queen` profile is a skeleton on purpose. Its posture tells the quee
 hive profile fork queen runbook.md
 ```
 
-That copies the file to `~/.hive/profiles/queen/` and it stays yours; the files you never forked keep tracking hive's defaults. Replace each `<...>` slot: what you bring to the queen, when it should start a lead, and what it should do on a schedule. A schedule is built from `wake_set` on the queen's own pane, so a morning check-in looks like a wake you set once from the runbook:
+That copies the file to `<data dir>/profiles/queen/` and it stays yours; the files you never forked keep tracking hive's defaults. Replace each `<...>` slot: what you bring to the queen, when it should start a lead, and what it should do on a schedule. A schedule is built from `wake_set` on the queen's own pane, so a morning check-in looks like a wake you set once from the runbook:
 
 ```text
 wake_set(delay_seconds=..., repeat_every_seconds=86400, body="Read hive portfolio and write the brief")
