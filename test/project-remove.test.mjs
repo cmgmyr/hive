@@ -73,6 +73,36 @@ describe("removeProject", () => {
     assert.equal(naming("agent_messages", "project_id", p), 1);
   });
 
+  it("re-checks running agents inside the delete transaction after the snapshot", () => {
+    const p = seedProject("raced-agent");
+    assert.throws(
+      () => removeProject(p, { snapshot: true, afterSnapshot: () => db.prepare("INSERT INTO agents (project_id, name, command, cwd, status) VALUES (?, 'late', 'sleep', '/tmp', 'running')").run(p) }),
+      /running agents: late/,
+    );
+    assert.equal(naming("projects", "id", p), 1);
+    assert.equal(naming("pads", "project_id", p), 1);
+  });
+
+  it("aborts when the project's rows changed while the snapshot was taken", () => {
+    const p = seedProject("raced-rows");
+    assert.throws(
+      () => removeProject(p, { snapshot: true, afterSnapshot: () => db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'late')").run(p) }),
+      /changed while the snapshot was taken; nothing removed, run it again/,
+    );
+    assert.equal(naming("projects", "id", p), 1);
+    assert.equal(naming("todos", "project_id", p), 2);
+  });
+
+  it("treats a project deleted by someone else mid-removal as no project, with no receipt and no callback", () => {
+    const p = db.prepare("INSERT INTO projects (name, path) VALUES ('vanishing', '/nowhere/vanishing') RETURNING id").get().id;
+    let called = false;
+    assert.throws(
+      () => removeProject(p, { snapshot: false, afterSnapshot: () => db.prepare("DELETE FROM projects WHERE id = ?").run(p), onRemoved: () => { called = true; } }),
+      new RegExp(`no project ${p}`),
+    );
+    assert.equal(called, false);
+  });
+
   it("refuses an unknown project id", () => {
     assert.throws(() => removeProject(999999, { snapshot: false }), /no project 999999/);
   });

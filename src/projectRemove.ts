@@ -39,31 +39,41 @@ export interface RemovedProject {
   snapshot: string | null;
 }
 
-const deleteProjectRows = db.transaction((projectId: number, after: () => void): void => {
-  db.prepare("DELETE FROM agent_messages WHERE project_id = ?").run(projectId);
-  db.prepare("DELETE FROM lead_idle_subscriptions WHERE target_project_id = ?").run(projectId);
-  db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
-  after();
-});
+function assertNoRunningAgents(projectId: number, name: string): void {
+  const running = db
+    .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+    .all(projectId) as { id: number; name: string }[];
+  if (running.length === 0) return;
+  const names = running.map((a) => `${a.name} (agent ${a.id})`).join(", ");
+  throw new Error(
+    `project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. Run hive doctor to close rows whose panes are gone, or agent_close them.`,
+  );
+}
+
+const deleteProjectRows = db.transaction(
+  (projectId: number, name: string, expected: Record<string, number>, after: () => void): void => {
+    assertNoRunningAgents(projectId, name);
+    if (JSON.stringify(projectRowCounts(projectId)) !== JSON.stringify(expected)) {
+      throw new Error(`project ${projectId} ("${name}") changed while the snapshot was taken; nothing removed, run it again.`);
+    }
+    db.prepare("DELETE FROM agent_messages WHERE project_id = ?").run(projectId);
+    db.prepare("DELETE FROM lead_idle_subscriptions WHERE target_project_id = ?").run(projectId);
+    if (db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes === 0) {
+      throw new Error(`no project ${projectId}.`);
+    }
+    after();
+  },
+);
 
 export function removeProject(
   projectId: number,
-  opts: { snapshot: boolean; onRemoved?: (removed: RemovedProject) => void },
+  opts: { snapshot: boolean; afterSnapshot?: () => void; onRemoved?: (removed: RemovedProject) => void },
 ): RemovedProject {
   const target = db.prepare("SELECT id, name, path FROM projects WHERE id = ?").get(projectId) as
     | { id: number; name: string; path: string }
     | undefined;
   if (!target) throw new Error(`no project ${projectId}.`);
-
-  const running = db
-    .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-    .all(projectId) as { id: number; name: string }[];
-  if (running.length > 0) {
-    const names = running.map((a) => `${a.name} (agent ${a.id})`).join(", ");
-    throw new Error(
-      `project ${projectId} ("${target.name}") has running agents: ${names}. Nothing deleted. Run hive doctor to close rows whose panes are gone, or agent_close them.`,
-    );
-  }
+  assertNoRunningAgents(projectId, target.name);
 
   const counts = projectRowCounts(projectId);
   let snapshot: string | null = null;
@@ -72,7 +82,8 @@ export function removeProject(
     if (!result.ok) throw new Error(`could not snapshot the store first, nothing deleted: ${result.error ?? "unknown error"}`);
     snapshot = result.path ?? null;
   }
+  opts.afterSnapshot?.();
   const removed = { deleted: { id: target.id, name: target.name, path: target.path }, counts, snapshot };
-  deleteProjectRows.immediate(projectId, () => opts.onRemoved?.(removed));
+  deleteProjectRows.immediate(projectId, target.name, counts, () => opts.onRemoved?.(removed));
   return removed;
 }
