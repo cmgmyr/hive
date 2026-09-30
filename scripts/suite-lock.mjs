@@ -111,7 +111,44 @@ function removeLockFile(lockPath) {
   }
 }
 
+const GATE_TIMEOUT_MS = 5000;
+const gateWait = new Int32Array(new SharedArrayBuffer(4));
+
+function withMutationGate(lockPath, mutate) {
+  const gatePath = `${lockPath}.mutation`;
+  const deadline = Date.now() + GATE_TIMEOUT_MS;
+  for (;;) {
+    try {
+      writeLockFile(gatePath, { pid: process.pid });
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+    }
+    const found = readHolder(gatePath);
+    if (found === null) continue;
+    if (found.record.corrupt) throw new Error(`suite lock mutation gate is invalid: ${gatePath}`);
+    if (!isAlive(found.record.pid) && readHolder(gatePath)?.raw === found.raw) {
+      removeLockFile(gatePath);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`suite lock mutation gate held by pid ${found.record.pid} for over ${GATE_TIMEOUT_MS}ms: ${gatePath}`);
+    }
+    Atomics.wait(gateWait, 0, 0, 5);
+  }
+  try {
+    return mutate();
+  } finally {
+    removeLockFile(gatePath);
+  }
+}
+
 export function takeover(lockPath, reason, expectedRaw) {
+  return withMutationGate(lockPath, () => takeoverUnderGate(lockPath, reason, expectedRaw));
+}
+
+function takeoverUnderGate(lockPath, reason, expectedRaw) {
+  if (readHolder(lockPath)?.raw !== expectedRaw) return;
   const parkedPath = `${lockPath}.stale-${process.pid}`;
   try {
     renameSync(lockPath, parkedPath);
@@ -156,14 +193,16 @@ export async function acquireSuiteLock({
   for (;;) {
     try {
       const startedAtIso = new Date(now()).toISOString();
-      writeLockFile(lockPath, { ...holder, startedAt: startedAtIso });
+      withMutationGate(lockPath, () => writeLockFile(lockPath, { ...holder, startedAt: startedAtIso }));
       let ownerPid = holder.pid;
       return {
         release: () => releaseSuiteLock(lockPath, ownerPid),
 
         updateHolderPid: (pid) => {
-          ownerPid = pid;
-          overwriteLockFile(lockPath, { ...holder, pid, startedAt: startedAtIso });
+          withMutationGate(lockPath, () => {
+            overwriteLockFile(lockPath, { ...holder, pid, startedAt: startedAtIso });
+            ownerPid = pid;
+          });
         },
       };
     } catch (err) {
@@ -208,6 +247,10 @@ export async function acquireSuiteLock({
 }
 
 export function releaseSuiteLock(lockPath, ownerPid) {
+  return withMutationGate(lockPath, () => releaseUnderGate(lockPath, ownerPid));
+}
+
+function releaseUnderGate(lockPath, ownerPid) {
   const found = readHolder(lockPath);
   const existing = found?.record;
 

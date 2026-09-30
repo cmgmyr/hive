@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -311,6 +313,100 @@ describe("acquireSuiteLock: updateHolderPid", () => {
   });
 });
 
+describe("suite lock mutation gate", () => {
+  it("recovers after a real process dies immediately after publishing its gate", async () => {
+    const lockPath = scratchLockDir();
+    const dead = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import { acquireSuiteLock } from ${JSON.stringify(suiteLockUrl)};
+      const link = fs.linkSync;
+      fs.linkSync = (from, to) => {
+        link(from, to);
+        if (to === ${JSON.stringify(`${lockPath}.mutation`)}) process.exit(0);
+      };
+      syncBuiltinESMExports();
+      await acquireSuiteLock({ lockPath: ${JSON.stringify(lockPath)}, holder: { pid: process.pid } });
+    `], { encoding: "utf8", timeout: 5000 });
+    assert.equal(dead.status, 0, dead.stderr);
+    assert.equal(JSON.parse(readFileSync(`${lockPath}.mutation`, "utf8")).pid, dead.pid);
+    const lock = await acquireSuiteLock({ lockPath, holder: holder() });
+    assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).pid, process.pid);
+    assert.equal(existsSync(`${lockPath}.mutation`), false, "gate recovery must release its own gate");
+    lock.release();
+  });
+
+  it("recovers when a real takeover process dies after parking a verified dead suite holder", async () => {
+    const lockPath = scratchLockDir();
+    const deadHolder = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    writeFileSync(lockPath, JSON.stringify({ pid: deadHolder.pid, startedAt: new Date().toISOString() }));
+    const dead = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import { acquireSuiteLock } from ${JSON.stringify(suiteLockUrl)};
+      const rename = fs.renameSync;
+      fs.renameSync = (from, to) => {
+        rename(from, to);
+        if (from === ${JSON.stringify(lockPath)}) process.exit(0);
+      };
+      syncBuiltinESMExports();
+      await acquireSuiteLock({ lockPath: ${JSON.stringify(lockPath)}, holder: { pid: process.pid } });
+    `], { encoding: "utf8", timeout: 5000 });
+    assert.equal(dead.status, 0, dead.stderr);
+    assert.equal(existsSync(lockPath), false, "takeover process must die in the parked interval");
+    assert.equal(JSON.parse(readFileSync(`${lockPath}.mutation`, "utf8")).pid, dead.pid);
+    const lock = await acquireSuiteLock({ lockPath, holder: holder() });
+    assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).pid, process.pid);
+    lock.release();
+  });
+
+  it("holds a gate owned by the actual process during acquire, pid transfer, takeover and release", async () => {
+    const lockPath = scratchLockDir();
+    const originals = { linkSync: fs.linkSync, renameSync: fs.renameSync, unlinkSync: fs.unlinkSync };
+    const mutations = [];
+    const checkGate = (operation) => {
+      const gate = JSON.parse(readFileSync(`${lockPath}.mutation`, "utf8"));
+      assert.equal(gate.pid, process.pid, "gate ownership must not follow a transferred suite pid");
+      mutations.push(operation);
+    };
+    fs.linkSync = (from, to) => {
+      if (to === lockPath) checkGate("create");
+      return originals.linkSync(from, to);
+    };
+    fs.renameSync = (from, to) => {
+      if (from === lockPath || to === lockPath) checkGate("rename");
+      return originals.renameSync(from, to);
+    };
+    fs.unlinkSync = (path) => {
+      if (path === lockPath) checkGate("remove");
+      return originals.unlinkSync(path);
+    };
+    syncBuiltinESMExports();
+    try {
+      const lock = await acquireSuiteLock({ lockPath, holder: holder() });
+      lock.updateHolderPid(424242);
+      lock.release();
+      const stale = JSON.stringify({ pid: 999999999, startedAt: new Date().toISOString() });
+      writeFileSync(lockPath, stale);
+      takeover(lockPath, "test: verified stale holder", stale);
+      assert.deepEqual(mutations, ["create", "rename", "remove", "rename"]);
+    } finally {
+      Object.assign(fs, originals);
+      syncBuiltinESMExports();
+    }
+  });
+
+  it("refuses an empty or half-written gate without removing an unproven owner", async () => {
+    const lockPath = scratchLockDir();
+    for (const raw of ["", '{"pid":']) {
+      writeFileSync(`${lockPath}.mutation`, raw);
+      await assert.rejects(acquireSuiteLock({ lockPath, holder: holder() }), /mutation gate is invalid/);
+      assert.equal(readFileSync(`${lockPath}.mutation`, "utf8"), raw);
+      assert.equal(existsSync(lockPath), false);
+    }
+  });
+});
+
 describe("takeover: content verification (deterministic, not raced)", () => {
 
   it("restores a live lock it accidentally stole, unchanged, when the content no longer matches what was read", () => {
@@ -321,6 +417,63 @@ describe("takeover: content verification (deterministic, not raced)", () => {
     takeover(lockPath, "test: forced stale decision", "content that no longer matches what is on disk");
 
     assert.equal(readFileSync(lockPath, "utf8"), liveContent, "the live lock must be restored byte-for-byte");
+  });
+
+  it("keeps a third process from acquiring through a delayed takeover of a live owner's lock", async () => {
+    const lockPath = scratchLockDir();
+    const lock = await acquireSuiteLock({ lockPath, holder: holder() });
+    const attemptPath = `${lockPath}.attempt`;
+    const acquiredPath = `${lockPath}.acquired`;
+    const workerPath = `${lockPath}.worker.mjs`;
+    writeFileSync(workerPath, `
+      import { acquireSuiteLock } from ${JSON.stringify(suiteLockUrl)};
+      import { writeFileSync } from "node:fs";
+      writeFileSync(${JSON.stringify(attemptPath)}, "attempting");
+      const lock = await acquireSuiteLock({
+        lockPath: ${JSON.stringify(lockPath)},
+        holder: { pid: process.pid, branch: "third-contender", worktree: "/scratch" },
+        pollIntervalMs: 5,
+      });
+      writeFileSync(${JSON.stringify(acquiredPath)}, "acquired");
+      lock.release();
+    `);
+    const originalRename = fs.renameSync;
+    let child;
+    let exited;
+    const startContender = () => {
+      child = spawn(process.execPath, [workerPath], { stdio: "ignore" });
+      exited = new Promise((resolve, reject) => {
+        child.on("error", reject);
+        child.on("exit", (code, signal) => resolve({ code, signal }));
+      });
+      const deadline = Date.now() + 5000;
+      while (!existsSync(attemptPath) && Date.now() < deadline) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+      assert.ok(existsSync(attemptPath), "third process must reach acquisition during the parked interval");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+    };
+    fs.renameSync = (from, to) => {
+      originalRename(from, to);
+      if (from === lockPath) startContender();
+    };
+    syncBuiltinESMExports();
+    try {
+      takeover(lockPath, "test: delayed stale decision", "previous dead holder");
+      if (!child) startContender();
+      assert.equal(existsSync(acquiredPath), false, "third process must not acquire while the original owner holds");
+      assert.equal(JSON.parse(readFileSync(lockPath, "utf8")).pid, process.pid);
+      lock.release();
+      const result = await exited;
+      assert.equal(result.code, 0, JSON.stringify(result));
+      assert.ok(existsSync(acquiredPath), "third process must acquire after the original owner releases");
+    } finally {
+      fs.renameSync = originalRename;
+      syncBuiltinESMExports();
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (exited) await exited;
+      lock.release();
+    }
   });
 
   it("takes over cleanly when the content still matches exactly what was read", () => {
