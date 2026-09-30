@@ -237,9 +237,10 @@ describe("renderQueenDashboard", () => {
     const html = renderQueenDashboard(report(oneEach()), ready(brief()), noLinks);
     assert.match(html, /Answer the todo/);
     assert.match(html, /It waited two days/);
-    assert.match(html, /written 2026-09-29 09:00:00 UTC, 3h ago/);
+    assert.match(html, /<span class="brief-stamp" title="written 2026-09-29 09:00:00 UTC">written 3h ago<\/span>/);
+    assert.doesNotMatch(html, /status-warn">written/);
     assert.match(html, /No project changed lanes since the brief\./);
-    assert.match(html, /pick 1/);
+    assert.match(html, />brief pick 1</);
   });
 
   it("reports only lane, new and removed changes, in lane then id order", () => {
@@ -288,9 +289,17 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /sessionStorage\.setItem\(KEY/);
   });
 
+  it("marks a brief older than 24 hours stale in the warn colour and leaves a 23 hour one muted", () => {
+    const old = renderQueenDashboard(report(oneEach()), ready(brief({ written_at: "2026-09-28 11:00:00" })), noLinks);
+    assert.match(old, /class="brief-stamp brief-stale" title="written 2026-09-28 11:00:00 UTC">written 1d 1h ago</);
+    const recent = renderQueenDashboard(report(oneEach()), ready(brief({ written_at: "2026-09-28 13:00:00" })), noLinks);
+    assert.match(recent, /class="brief-stamp" title/);
+    assert.doesNotMatch(recent, /brief-stale"/);
+  });
+
   it("says just now, with no ago, for a brief written under a minute before as_of", () => {
     const html = renderQueenDashboard(report(oneEach()), ready(brief({ written_at: "2026-09-29 11:59:40" })), noLinks);
-    assert.match(html, /written 2026-09-29 11:59:40 UTC, just now</);
+    assert.match(html, /title="written 2026-09-29 11:59:40 UTC">written just now</);
     assert.doesNotMatch(html, /now ago/);
   });
 
@@ -298,6 +307,18 @@ describe("renderQueenDashboard", () => {
     const html = renderQueenDashboard(report(oneEach()), ready(brief({ lanes_at_brief: { 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet" } })), noLinks);
     assert.doesNotMatch(html, /do not know that/);
     assert.match(html, /proj-1 moved from quiet to waiting on you\.<\/p>/);
+  });
+
+  it("leaves the queen's own home project out of the drift line whether the brief lists it or not", () => {
+    const drift = (lanes, home) => renderQueenDashboard(report(oneEach()), ready(brief({ lanes_at_brief: lanes })), noLinks, [], home).match(/<p class="drift">.*?<\/p>/)[0];
+    const listed = drift({ 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet", 99: "moving" }, 1);
+    const omitted = drift({ 2: "stuck", 3: "moving", 4: "quiet" }, 1);
+    const gone = drift({ 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet", 99: "moving" }, 99);
+    assert.doesNotMatch(listed, /proj-1/);
+    assert.match(listed, /#99 is no longer registered/, "another vanished project is still reported");
+    assert.doesNotMatch(omitted, /proj-1/);
+    assert.doesNotMatch(gone, /#99/);
+    assert.match(renderQueenDashboard(report(oneEach()), ready(brief()), noLinks, [], 1), /proj-1/, "the home project still shows in the lanes");
   });
 
   it("names every portfolio STUCK reason in the stuck lane caption", () => {

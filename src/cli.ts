@@ -210,12 +210,13 @@ import {
   type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
+  resolveFirstMessage,
   type YmlProcess,
 } from "./projectYml.js";
 import { writeProjectPosture } from "./brief.js";
 import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
-import { TRIAGE_MESSAGE } from "./kickoff.js";
+import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./triageMessage.js";
 import {
   ageSecondsSince,
   deriveProvenance,
@@ -687,7 +688,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       registrationNotice = text;
     });
     const auditIdentity = captureQueenWriteIdentity(project.id);
-    const { config, warnings } = loadProjectYml(project.path);
+    const { config, warnings, sources } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
       if (config?.lead && !isTrusted(project.id, "lead", config.lead, null, {})) untrusted = "lead";
@@ -721,6 +722,9 @@ async function cmdLead(argv: string[]): Promise<void> {
     }
 
     const leadHarness = harnessFor(leadCommand);
+    let firstMessage = resolveFirstMessage(config, sources).message;
+    if (firstMessage !== "" && !(await (await import("./kickoff.js")).kickoffGate(project.path)).ok) firstMessage = "";
+    let promptSuffix = "";
 
     // Posture is rendered once, then delivered through whichever channel this harness has: a
     // claude lead gets it as --append-system-prompt-file below; a codex lead gets the identical
@@ -756,6 +760,9 @@ async function cmdLead(argv: string[]): Promise<void> {
         const posturePath = writeProjectPosture(project.id, renderedPosture);
         leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(posturePath).map(shellQuote).join(" ")}`;
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
+      }
+      if (leadHarness.initialPromptArgs && firstMessage !== "") {
+        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
     }
 
@@ -811,8 +818,8 @@ async function cmdLead(argv: string[]): Promise<void> {
         throw e;
       }
       leadCommand += ` ${homeArgs.map(shellQuote).join(" ")}`;
-      if (leadHarness.initialPromptArgs) {
-        leadCommand += ` ${leadHarness.initialPromptArgs(TRIAGE_MESSAGE).map(shellQuote).join(" ")}`;
+      if (leadHarness.initialPromptArgs && firstMessage !== "") {
+        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
       if (renderedPosture !== null) {
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
@@ -826,14 +833,16 @@ async function cmdLead(argv: string[]): Promise<void> {
 
     const envFlags = buildEnvFlags({
       ...leadEnv,
+      [FIRST_MESSAGE_SHA_ENV]: promptSuffix !== "" ? firstMessageDigest(firstMessage) : "",
       ...(newCodexHomeKey ? { CODEX_HOME: codexHomeDir(newCodexHomeKey) } : {}),
     });
 
+    const launchCommand = leadCommand + promptSuffix;
     const { leadPane, leadWindow, createdPane } = withWindowClaim(() => {
       let leadPane: string;
       let leadWindow: string;
       let createdPane: boolean;
-      const started = ensureSession(session, project.path, { envFlags, command: leadCommand });
+      const started = ensureSession(session, project.path, { envFlags, command: launchCommand });
       if (started.created) {
         const claimed = claimInitialWindow(started, windowName, project.id);
         leadPane = claimed.pane;
@@ -855,7 +864,7 @@ async function cmdLead(argv: string[]): Promise<void> {
           createdPane = false;
         } else if (!foundWindow) {
 
-          const fresh = createWindow(session, windowName, project.path, envFlags, leadCommand, project.id, detach);
+          const fresh = createWindow(session, windowName, project.path, envFlags, launchCommand, project.id, detach);
           leadPane = fresh.pane;
           leadWindow = fresh.window;
           createdPane = true;
@@ -872,7 +881,7 @@ async function cmdLead(argv: string[]): Promise<void> {
             "-c",
             project.path,
             ...envFlags,
-            leadCommand,
+            launchCommand,
           );
           leadWindow = foundWindow;
           createdPane = true;
@@ -1075,6 +1084,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # agents: [claude, codex]       # crew harness pool; the first entry is the default
 
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
+# first_message: ""            # a lead's first turn; "" sends none, absent sends morning triage
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 
@@ -1783,7 +1793,7 @@ function leadPaneExitedHookCommand(): string {
   // started from inside a worker's pane hands them to every run-shell it ever runs, where a stale
   // HIVE_AGENT_ID is a hard refusal before the verb is reached at all. The same clearing
   // scripts/restart-lead.sh does around its own `hive lead`, plus the two project vars.
-  const clear = ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_LEAD", "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH"]
+  const clear = ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_LEAD", FIRST_MESSAGE_SHA_ENV, "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH"]
     .flatMap((name) => ["-u", name]);
 
   // Redirected because tmux prints a run-shell's output into the pane it fires from, which is a

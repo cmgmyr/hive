@@ -31,6 +31,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
                               # REFUSES a harness or command outside this list. lead: above is a
                               # separate key and stays reachable regardless of this list.
 lead_branches: [main, master] # branches where a session gets hive's kickoff
+first_message: ""            # a lead's first turn; "" sends none, absent sends morning triage
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing

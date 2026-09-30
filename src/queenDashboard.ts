@@ -256,7 +256,7 @@ function card(
     `<article class="card pc" style="--lane:${LANE_COLOR[p.lane]}" data-project="${p.id}">` +
     `<div class="pc-top">${projectLink(p, href)}` +
     (rank
-      ? `<span class="pc-pick">pick ${rank}</span>`
+      ? `<span class="pc-pick">brief pick ${rank}</span>`
       : `<span class="age">${esc(age(p.last_activity_at, asOf))}</span>`) +
     "</div>" +
     `<div class="pc-badges">${leadPill(p)}${workersCell(p)}</div>` +
@@ -319,11 +319,12 @@ function laneName(lane: PortfolioLane): string {
   return LANE_TITLE[lane].toLowerCase();
 }
 
-function driftLine(brief: QueenBrief, report: PortfolioReport): string {
+function driftLine(brief: QueenBrief, report: PortfolioReport, queenHomeId: number | null): string {
   const then = brief.lanes_at_brief;
   const live = new Map(report.projects.map((p) => [String(p.id), p]));
   const changes: { rank: number; id: number; text: string }[] = [];
   for (const p of report.projects) {
+    if (p.id === queenHomeId) continue;
     const before = then[String(p.id)];
     if (before === undefined) {
       changes.push({ rank: LANE_RANK[p.lane], id: p.id, text: `${esc(p.name)} is new since the brief` });
@@ -336,7 +337,7 @@ function driftLine(brief: QueenBrief, report: PortfolioReport): string {
     }
   }
   for (const [key, before] of Object.entries(then)) {
-    if (live.has(key)) continue;
+    if (live.has(key) || key === String(queenHomeId)) continue;
     changes.push({
       rank: LANE_RANK[before] + LANE_ORDER.length,
       id: Number(key),
@@ -352,6 +353,7 @@ function briefSection(
   state: QueenBriefState,
   report: PortfolioReport,
   href: (p: PortfolioProject) => string | null,
+  queenHomeId: number | null,
 ): string {
   const head = (stamp: string): string => `<div><h2>Picks today</h2>${stamp}</div>`;
   if (state.kind === "missing") {
@@ -365,9 +367,10 @@ function briefSection(
   const byId = new Map(report.projects.map((p) => [p.id, p]));
   const written = age(brief.written_at, report.as_of);
   const briefAge = written === "now" ? "just now" : `${written} ago`;
+  const stale = (parseUtc(report.as_of) - parseUtc(brief.written_at)) / 1000 > 86400;
   const stamp =
-    `<span class="brief-stamp"><span class="status status-warn">written ${esc(brief.written_at)} UTC, ` +
-    `${esc(briefAge)}</span></span>`;
+    `<span class="brief-stamp${stale ? " brief-stale" : ""}" title="written ${esc(brief.written_at)} UTC">` +
+    `written ${esc(briefAge)}</span>`;
   const picks = brief.picks
     .map((k) => {
       const p = byId.get(k.project_id);
@@ -380,7 +383,7 @@ function briefSection(
     `<section class="card c-brief">${head(stamp)}` +
     `<p class="brief-summary">${esc(brief.summary)}</p>` +
     (picks ? `<ol>${picks}</ol>` : "") +
-    `${driftLine(brief, report)}</section>`
+    `${driftLine(brief, report, queenHomeId)}</section>`
   );
 }
 
@@ -447,8 +450,8 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .age { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--fg-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .age-hot { color: var(--warn); font-weight: 600; }
 .age-fail { color: var(--fail); font-weight: 600; }
-.brief-stamp .status { white-space: normal; }
-.brief-stamp { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 0.78125rem; color: var(--fg-muted); }
+.brief-stamp { font-size: 0.78125rem; font-weight: 400; color: var(--fg-muted); }
+.brief-stamp.brief-stale { color: var(--warn); }
 .drift { margin: 0.5rem 0 0; grid-column: 1 / -1; padding: 0.55rem 0.75rem; border-radius: var(--r-ctl); background: var(--warn-bg); color: var(--fg); font-size: 0.8125rem; }
 .drift strong { color: var(--warn); font-weight: 650; }
 .grid { display: grid; }
@@ -586,6 +589,7 @@ export function renderQueenDashboard(
   briefState: QueenBriefState,
   href: (p: PortfolioProject) => string | null = (p) => dashboardHref(p.root),
   audit: QueenAuditRow[] = [],
+  queenHomeId: number | null = null,
 ): string {
   const asOf = report.as_of;
   const byLane = new Map<PortfolioLane, PortfolioProject[]>(LANE_ORDER.map((l) => [l, []]));
@@ -617,8 +621,8 @@ export function renderQueenDashboard(
 
   const main =
     n === 0
-      ? `${briefSection(briefState, report, href)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
-      : `${briefSection(briefState, report, href)}<div class="lanes">${lanes}</div>` +
+      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
+      : `${briefSection(briefState, report, href, queenHomeId)}<div class="lanes">${lanes}</div>` +
         `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
         '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +

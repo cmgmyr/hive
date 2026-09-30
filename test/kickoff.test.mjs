@@ -530,3 +530,77 @@ describe("global profile kickoff scope", () => {
     }
   });
 });
+
+describe("the SessionStart first message is configurable", () => {
+  const globalYml = join(dirs.dataDir, "hive.yml");
+  const message = (payload) => fired(payload).initialUserMessage;
+  const marker = { HIVE_AGENT_ID: "lead:1", HIVE_LEAD: "1", HIVE_LEAD_FIRST_MESSAGE_SHA: "abc123" };
+  after(() => {
+    try {
+      unlinkSync(globalYml);
+    } catch {}
+  });
+
+  it("uses the shipped message when neither file sets first_message", async () => {
+    try { unlinkSync(globalYml); } catch {}
+    yml("profile: orchestration\n");
+    assert.match(message((await kickoff()).stdout), /morning triage/);
+  });
+
+  it("uses the global message when the project is silent", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\n");
+    assert.equal(message((await kickoff()).stdout), "global says hi");
+  });
+
+  it("lets a project message beat the global one", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\nfirst_message: project says hi\n");
+    assert.equal(message((await kickoff()).stdout), "project says hi");
+  });
+
+  it("sends nothing for an empty project string even when global sets one", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\nfirst_message: ''\n");
+    const out = fired((await kickoff()).stdout);
+    assert.equal(Object.hasOwn(out, "initialUserMessage"), false);
+    assert.match(out.additionalContext, /\[hive\] Project/, "the board still arrives");
+  });
+
+  it("sends nothing for a blank first_message (YAML null), even when global sets one", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\nfirst_message:\n");
+    assert.equal(Object.hasOwn(fired((await kickoff()).stdout), "initialUserMessage"), false);
+  });
+
+  it("warns and falls back when first_message is not a string", async () => {
+    try { unlinkSync(globalYml); } catch {}
+    yml("profile: orchestration\nfirst_message: 42\n");
+    const { stdout } = await kickoff(["--explain"]);
+    assert.match(stdout, /first_message must be a string/);
+    assert.match(stdout, /first message \(shipped\)/);
+  });
+
+  it("omits initialUserMessage when hive lead put the message on the command line", async () => {
+    yml("profile: orchestration\nfirst_message: project says hi\n");
+    const out = fired((await kickoff([], { ...opts, env: marker })).stdout);
+    assert.equal(Object.hasOwn(out, "initialUserMessage"), false);
+    assert.match(out.additionalContext, /\[hive\] Project/);
+  });
+
+  it("keeps initialUserMessage for a lead session that carries no marker", async () => {
+    yml("profile: orchestration\nfirst_message: project says hi\n");
+    const out = fired((await kickoff([], { ...opts, env: { HIVE_AGENT_ID: "lead:1", HIVE_LEAD: "1" } })).stdout);
+    assert.equal(out.initialUserMessage, "project says hi");
+  });
+
+  it("--explain names where the message resolved from", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\n");
+    assert.match((await kickoff(["--explain"])).stdout, /first message \(global\): global says hi/);
+    yml("profile: orchestration\nfirst_message: ''\n");
+    assert.match((await kickoff(["--explain"])).stdout, /first message: none/);
+    yml("profile: orchestration\nfirst_message: mine\n");
+    assert.match((await kickoff(["--explain"])).stdout, /first message \(project\): mine/);
+  });
+});

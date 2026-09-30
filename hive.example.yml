@@ -21,6 +21,7 @@ lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
+# first_message: ""             # a lead's first turn; "" sends none, absent sends morning triage
 dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
 
 vars:
