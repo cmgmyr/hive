@@ -33,6 +33,11 @@ function resource(type: string, value: unknown): { type: string; id: number } | 
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? { type, id: value } : null;
 }
 
+function removalSummary(r: Receipt): string {
+  const counts = Object.entries((r.counts ?? {}) as Record<string, number>).map(([t, n]) => `${t} ${n}`);
+  return `removed project "${r.name}"${counts.length > 0 ? ` with ${counts.join(", ")}` : ""}`;
+}
+
 export const QUEEN_AUDIT_OPERATIONS: Readonly<Record<string, QueenAuditOperation>> = {
   todo_create: {
     mode: "database",
@@ -68,6 +73,16 @@ export const QUEEN_AUDIT_OPERATIONS: Readonly<Record<string, QueenAuditOperation
     mode: "external",
     resource: (r) => r.sent === true ? resource("agent", r.agent_id) : null,
     summary: (a, r) => `agent #${r.agent_id} ${a.submit === false ? "pasted without submit" : "submitted"}: ${a.text}`,
+  },
+  project_prune: {
+    mode: "database",
+    resource: (r) => resource("project", r.project_id),
+    summary: (_a, r) => removalSummary(r),
+  },
+  "hive project rm": {
+    mode: "database",
+    resource: (r) => resource("project", r.project_id),
+    summary: (_a, r) => removalSummary(r),
   },
   "hive lead": {
     mode: "external",

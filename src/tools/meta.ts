@@ -10,6 +10,7 @@ import {
   TOUCH_INTERVAL_MS,
   trySelectedProject,
 } from "../context.js";
+import { confirmQueenWrite } from "../queenAudit.js";
 import { errorMessage, run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
 import { idParam } from "./params.js";
@@ -33,9 +34,11 @@ function projectOwnsRows(projectId: number): boolean {
   return PROJECT_OWNER_TABLES.some((table) => existsWhere(table, "project_id", projectId));
 }
 
-const pruneProjectIfEmpty = db.transaction((projectId: number): boolean => {
-  if (projectOwnsRows(projectId)) return false;
-  return db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes > 0;
+const pruneProjectIfEmpty = db.transaction((project: { id: number; name: string }): boolean => {
+  if (projectOwnsRows(project.id)) return false;
+  if (db.prepare("DELETE FROM projects WHERE id = ?").run(project.id).changes === 0) return false;
+  confirmQueenWrite("project_prune", project.id, {}, { project_id: project.id, name: project.name });
+  return true;
 });
 
 export const ACTOR_OWNER_COLUMNS: readonly [string, string][] = [
@@ -229,7 +232,11 @@ export function registerMeta(server: McpServer): void {
                 `project_prune: confirm_name does not match project ${project_id}, whose name is "${target.name}". Nothing deleted.`,
               );
             }
-            const removed = removeProject(project_id, { snapshot: true });
+            const removed = removeProject(project_id, {
+              snapshot: true,
+              onRemoved: (r) =>
+                confirmQueenWrite("project_prune", project_id, {}, { project_id, name: r.deleted.name, counts: r.counts }),
+            });
             return {
               deleted: [{ id: removed.deleted.id, name: removed.deleted.name }],
               held_back: { project_id: homeId, reason: "caller's own project" },
@@ -237,7 +244,7 @@ export function registerMeta(server: McpServer): void {
               snapshot: removed.snapshot,
             };
           }
-          if (!pruneProjectIfEmpty.immediate(project_id)) {
+          if (!pruneProjectIfEmpty.immediate(target)) {
             throw new Error(
               `project_prune: project ${project_id} ("${target.name}") is not empty, nothing deleted. It owns ${formatRowCounts(projectRowCounts(project_id))}. To remove it with everything it owns, pass confirm_name with its exact name.`,
             );
@@ -253,7 +260,7 @@ export function registerMeta(server: McpServer): void {
           if (project.id === homeId) continue;
 
           try {
-            if (pruneProjectIfEmpty.immediate(project.id)) {
+            if (pruneProjectIfEmpty.immediate(project)) {
               deleted.push({ id: project.id, name: project.name });
             }
           } catch (e) {

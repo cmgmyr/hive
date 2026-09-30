@@ -247,7 +247,6 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     const before = alphaState();
     for (const [tool, args] of [
       ["project_add", { path: dirs.projectDir }],
-      ["project_prune", {}],
       ["actor_prune", {}],
     ]) {
       const text = await refusal(queenMcp, tool, args);
@@ -335,5 +334,46 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     } finally {
       await mcp.close();
     }
+  });
+
+  describe("project_prune", () => {
+    const exists = (id) => db.prepare("SELECT id FROM projects WHERE id = ?").get(id) !== undefined;
+    function stray(name) {
+      const p = project(name, join(dirs.tmp, name));
+      db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(p.id);
+      return { ...p, name };
+    }
+
+    it("removes a foreign non-empty project with the name echo", async () => {
+      const gone = stray("stray-ok");
+      const receipt = await queenMcp.call("project_prune", { project_id: gone.id, confirm_name: "stray-ok" });
+      assert.deepEqual(receipt.counts, { todos: 1 });
+      assert.ok(!exists(gone.id));
+    });
+
+    it("refuses a wrong name and the queen's own project, deleting nothing", async () => {
+      const kept = stray("stray-kept");
+      const wrong = await refusal(queenMcp, "project_prune", { project_id: kept.id, confirm_name: "nope" });
+      assert.match(wrong, /confirm_name does not match/);
+      const own = await refusal(queenMcp, "project_prune", { project_id: queen.id, confirm_name: "queen" });
+      assert.match(own, /caller's own project/);
+      assert.ok(exists(kept.id) && exists(queen.id));
+    });
+
+    it("refuses confirm_name without project_id, so there is no forced sweep", async () => {
+      const kept = stray("stray-nosweep");
+      const text = await refusal(queenMcp, "project_prune", { confirm_name: "stray-nosweep" });
+      assert.match(text, /confirm_name needs project_id/);
+      assert.ok(exists(kept.id));
+    });
+
+    it("runs the empty-only sweep without touching a non-empty project", async () => {
+      const empty = project("stray-empty", join(dirs.tmp, "stray-empty"));
+      const kept = stray("stray-nonempty");
+      const receipt = await queenMcp.call("project_prune", {});
+      assert.ok(receipt.deleted.some((p) => p.id === empty.id));
+      assert.ok(!exists(empty.id));
+      assert.ok(exists(kept.id));
+    });
   });
 });

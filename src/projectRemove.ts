@@ -39,13 +39,17 @@ export interface RemovedProject {
   snapshot: string | null;
 }
 
-const deleteProjectRows = db.transaction((projectId: number): void => {
+const deleteProjectRows = db.transaction((projectId: number, after: () => void): void => {
   db.prepare("DELETE FROM agent_messages WHERE project_id = ?").run(projectId);
   db.prepare("DELETE FROM lead_idle_subscriptions WHERE target_project_id = ?").run(projectId);
   db.prepare("DELETE FROM projects WHERE id = ?").run(projectId);
+  after();
 });
 
-export function removeProject(projectId: number, opts: { snapshot: boolean }): RemovedProject {
+export function removeProject(
+  projectId: number,
+  opts: { snapshot: boolean; onRemoved?: (removed: RemovedProject) => void },
+): RemovedProject {
   const target = db.prepare("SELECT id, name, path FROM projects WHERE id = ?").get(projectId) as
     | { id: number; name: string; path: string }
     | undefined;
@@ -68,6 +72,7 @@ export function removeProject(projectId: number, opts: { snapshot: boolean }): R
     if (!result.ok) throw new Error(`could not snapshot the store first, nothing deleted: ${result.error ?? "unknown error"}`);
     snapshot = result.path ?? null;
   }
-  deleteProjectRows.immediate(projectId);
-  return { deleted: { id: target.id, name: target.name, path: target.path }, counts, snapshot };
+  const removed = { deleted: { id: target.id, name: target.name, path: target.path }, counts, snapshot };
+  deleteProjectRows.immediate(projectId, () => opts.onRemoved?.(removed));
+  return removed;
 }

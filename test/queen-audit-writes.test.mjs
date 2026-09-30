@@ -59,6 +59,7 @@ after(async () => {
 });
 let todo;
 let wake;
+let removedTarget;
 const fixture = {
   todo_create: async () => { const r = await client.call("todo_create", { title: "foreign todo", project_id: alpha.id }); todo = r.todo_id; return [r.todo_id, "todo"]; },
   todo_comment: async () => { const r = await client.call("todo_comment", { todo_id: todo, body: "foreign context", project_id: alpha.id }); return [r.comment_id, "todo_comment"]; },
@@ -72,6 +73,22 @@ const fixture = {
     assert.equal(r.sent, true);
     assert.equal(await until(() => execFileSync("tmux", ["capture-pane", "-t", target, "-p"], { encoding: "utf8" }).includes("unique audit delivery")), true);
     return [r.agent_id, "agent"];
+  },
+  project_prune: async () => {
+    const gone = project("gone-mcp", join(dirs.tmp, "gone-mcp"));
+    db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(gone.id);
+    const r = await client.call("project_prune", { project_id: gone.id, confirm_name: "gone-mcp" });
+    assert.equal(r.deleted[0].id, gone.id);
+    removedTarget = gone.id;
+    return [gone.id, "project"];
+  },
+  "hive project rm": async () => {
+    const gone = project("gone-cli", join(dirs.tmp, "gone-cli"));
+    db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(gone.id);
+    const r = await runCli(["project", "rm", String(gone.id), "--yes"], { cwd: queen.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: q.actor_id } });
+    assert.equal(r.code, 0, r.stdout + r.stderr);
+    removedTarget = gone.id;
+    return [gone.id, "project"];
   },
   "hive lead": async () => {
     const r = await runCli(["lead", beta.path, "--detach", "--no-dashboard"], { cwd: queen.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: q.actor_id } });
@@ -100,11 +117,22 @@ for (const [operation, perform] of Object.entries(fixture)) {
     const rows = trail();
     assert.equal(rows.length, before + 1);
     const row = rows.at(-1);
-    assert.deepEqual([row.operation, row.resource_type, row.resource_id, row.actor_id, row.home_project_id, row.target_project_id], [operation, type, id, q.actor_id, queen.id, operation === "hive lead" ? beta.id : alpha.id]);
+    assert.deepEqual([row.operation, row.resource_type, row.resource_id, row.actor_id, row.home_project_id, row.target_project_id], [operation, type, id, q.actor_id, queen.id, operation === "hive lead" ? beta.id : removedTarget !== undefined && type === "project" ? removedTarget : alpha.id]);
     assert.ok(row.summary.length <= 160);
     assert.match(row.created_at, /^\d{4}-\d\d-\d\d /);
   });
 }
+it("a sweep that removes several projects writes one audit row each, and the rows outlive the projects", needsTmux, async () => {
+  const ids = ["sweep-a", "sweep-b", "sweep-c"].map((n) => project(n, join(dirs.tmp, n)).id);
+  const before = trail().length;
+  const r = await client.call("project_prune", {});
+  const removed = r.deleted.map((p) => p.id);
+  for (const id of ids) assert.ok(removed.includes(id));
+  const rows = trail().slice(before);
+  assert.equal(rows.length, removed.length);
+  assert.deepEqual(rows.map((row) => row.target_project_id).sort(), [...removed].sort());
+  for (const row of rows) assert.equal(db.prepare("SELECT id FROM projects WHERE id = ?").get(row.target_project_id), undefined);
+});
 it("refused, invalid, cancelled and already-satisfied calls append no completed rows", needsTmux, async () => {
   const before = trail().length;
   const calls = [

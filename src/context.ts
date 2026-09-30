@@ -345,7 +345,7 @@ export function captureQueenWriteIdentity(targetProjectId: number): QueenWriteId
 
 // Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
 // queen everywhere, and test/queen-scope.test.mjs fails on any registered tool missing from it.
-type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up";
+type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up" | "prune";
 
 export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   whoami: "read",
@@ -392,10 +392,11 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   agent_close: "home",
   project_select: "select",
   project_add: "global",
-  project_prune: "global",
+  project_prune: "prune",
   actor_prune: "global",
   "hive lead": "spin_up",
   "hive queen-audit": "read",
+  "hive project rm": "prune",
   "hive init": "home",
   "hive attach": "home",
   "hive next": "home",
@@ -428,6 +429,7 @@ function foreignWriteProblem(
   switch (reach) {
     case "spin_up":
     case "todo":
+    case "prune":
       return null;
     case "lead_wake": {
       if (args.scope !== undefined) return "a standing watch in another project belongs to its lead";

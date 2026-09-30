@@ -3692,7 +3692,11 @@ async function cmdProject(argv: string[]): Promise<void> {
     }
   }
 
-  const removed = removeProject(target.id, { snapshot: true });
+  const removed = removeProject(target.id, {
+    snapshot: true,
+    onRemoved: (r) =>
+      confirmQueenWrite("hive project rm", r.deleted.id, {}, { project_id: r.deleted.id, name: r.deleted.name, counts: r.counts }),
+  });
   console.log(`Removed project ${removed.deleted.id} ("${removed.deleted.name}").`);
   if (Object.keys(removed.counts).length > 0) console.log(`Deleted ${formatRowCounts(removed.counts)}.`);
   console.log(`Snapshot: ${removed.snapshot}`);
