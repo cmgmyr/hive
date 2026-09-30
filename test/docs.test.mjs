@@ -607,7 +607,7 @@ it("documents the restart remedy and the lead-only generated notice without weak
 });
 
 describe("docs/queen.md names every operation the queen may write into another project", () => {
-  const WRITE_KINDS = ["todo", "lead_wake", "owned_lead_wake", "lead_text", "spin_up"];
+  const WRITE_KINDS = ["todo", "lead_wake", "owned_lead_wake", "lead_text", "spin_up", "prune"];
   const NON_WRITE_KINDS = ["read", "home", "select", "global"];
   const source = readFileSync(join(REPO, "dist/context.js"), "utf8");
   const decl = /QUEEN_REACH = \{([\s\S]*?)\n\};/.exec(source);

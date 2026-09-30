@@ -79,6 +79,7 @@ import {
   type Project,
 } from "./context.js";
 import { confirmQueenWrite, listQueenAudit } from "./queenAudit.js";
+import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemove.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
@@ -317,6 +318,9 @@ Usage:
   hive todo <id>             print one todo in full, comments included
   hive backups               list automatic store snapshots
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
+  hive project rm <id|path> [--yes]
+                             remove another project and everything it owns,
+                             after a snapshot; never the one you are in
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
@@ -2372,7 +2376,7 @@ function reportProjectScope(here: Project | null): void {
     if (project.path === homePath || project.path === "/") {
       warn(
         "project scope",
-        `"${project.name}" (${project.path}) is a home directory; every unregistered directory under it resolves to this project. The project_prune tool with this project's id (from any hive session) removes it once it holds nothing.`,
+        `"${project.name}" (${project.path}) is a home directory; every unregistered directory under it resolves to this project. The project_prune tool with this project's id (from an unlocked session in another project) removes it once it holds nothing.`,
       );
     }
   }
@@ -3636,6 +3640,60 @@ function cmdPortfolio(argv: string[]): void {
   );
 }
 
+async function cmdProject(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, { flags: ["--yes", "-y"] });
+  rejectUnknownFlags("project", parsed, "--yes/-y");
+  const [verb, ref] = parsed.positional;
+  if (verb !== "rm" || !ref || parsed.positional.length > 2) {
+    console.log("Usage: hive project rm <id|path> [--yes]");
+    process.exit(1);
+  }
+  if (process.env.HIVE_PROJECT_LOCK === "1" || agentProjectPin() != null) {
+    console.log("hive project rm: this session is locked to one project (HIVE_PROJECT_LOCK=1) and cannot remove projects.");
+    process.exit(1);
+  }
+
+  let target: Project | undefined;
+  if (/^\d+$/.test(ref)) target = getProject(Number(ref));
+  else target = getProjectByPath(ref) ?? getProjectByPath(canonicalPath(ref));
+  if (!target) {
+    console.log(`hive project rm: "${ref}" is not a registered project id or exact registered path. List them with the project_list tool.`);
+    process.exit(1);
+  }
+  if (findProjectForCwd()?.id === target.id) {
+    console.log(`hive project rm: project ${target.id} ("${target.name}") is the one this directory belongs to and is never removed from itself. Run it from another project.`);
+    process.exit(1);
+  }
+  assertQueenCrossProjectWrite("hive project rm", target.id, {});
+
+  const counts = projectRowCounts(target.id);
+  console.log(`Project ${target.id}: "${target.name}" (${target.path})`);
+  console.log(Object.keys(counts).length > 0 ? `It owns ${formatRowCounts(counts)}.` : "It owns no rows.");
+  console.log("A snapshot of the store is taken first. Restore it with: hive restore <name>");
+
+  if (!parsed.flags.has("--yes") && !parsed.flags.has("-y")) {
+    const confirmed = await confirmYesNo("Remove this project and everything it owns? [y/N] ");
+    if (confirmed === null) {
+      console.log("Not removed: run hive interactively to confirm, or pass --yes.");
+      process.exit(1);
+    }
+    if (!confirmed) {
+      console.log("Not removed.");
+      process.exit(1);
+    }
+  }
+
+  const removed = removeProject(target.id, {
+    snapshot: true,
+    onRemoved: (r) =>
+      confirmQueenWrite("hive project rm", r.deleted.id, {}, { project_id: r.deleted.id, name: r.deleted.name, counts: r.counts }),
+  });
+  console.log(`Removed project ${removed.deleted.id} ("${removed.deleted.name}").`);
+  if (Object.keys(removed.counts).length > 0) console.log(`Deleted ${formatRowCounts(removed.counts)}.`);
+  console.log(`Snapshot: ${removed.snapshot}`);
+  console.log("Its actors and any files it left on disk are untouched; actor_prune removes inert actors.");
+}
+
 function cmdBackups(): void {
   const snapshots = listSnapshots(dataDir);
   if (snapshots.length === 0) {
@@ -4066,7 +4124,7 @@ if (command === "--version" || command === "-v") {
 const COMMANDS = [
   "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
-  "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
+  "pads", "pad", "todos", "todo", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
 
@@ -4149,6 +4207,9 @@ try {
       break;
     case "restore":
       await cmdRestore(rest);
+      break;
+    case "project":
+      await cmdProject(rest);
       break;
     case "runbook":
       cmdRunbook(rest[0]);

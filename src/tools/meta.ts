@@ -5,14 +5,17 @@ import {
   addProject,
   currentActor,
   listProjects,
+  findProjectForCwd,
   resolveProject,
   selectProjectById,
   TOUCH_INTERVAL_MS,
   trySelectedProject,
 } from "../context.js";
+import { confirmQueenWrite } from "../queenAudit.js";
 import { errorMessage, run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
 import { idParam } from "./params.js";
+import { formatRowCounts, PROJECT_OWNER_TABLES, projectRowCounts, removeProject } from "../projectRemove.js";
 
 function refuseIfLocked(tool: string): void {
   if (process.env.HIVE_PROJECT_LOCK === "1") {
@@ -22,16 +25,6 @@ function refuseIfLocked(tool: string): void {
   }
 }
 
-export const PROJECT_OWNER_TABLES = [
-  "pads",
-  "todos",
-  "kv",
-  "leases",
-  "agents",
-  "wakes",
-  "command_trust",
-] as const;
-
 function existsWhere(table: string, column: string, value: string | number): boolean {
   return db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(value) !== undefined;
 }
@@ -40,16 +33,11 @@ function projectOwnsRows(projectId: number): boolean {
   return PROJECT_OWNER_TABLES.some((table) => existsWhere(table, "project_id", projectId));
 }
 
-function ownedRowCounts(projectId: number): string[] {
-  return PROJECT_OWNER_TABLES.flatMap((table) => {
-    const n = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id = ?`).get(projectId) as { n: number }).n;
-    return n > 0 ? [`${table}: ${n}`] : [];
-  });
-}
-
-const pruneProjectIfEmpty = db.transaction((projectId: number): boolean => {
-  if (projectOwnsRows(projectId)) return false;
-  return db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes > 0;
+const pruneProjectIfEmpty = db.transaction((project: { id: number; name: string }): boolean => {
+  if (projectOwnsRows(project.id)) return false;
+  if (db.prepare("DELETE FROM projects WHERE id = ?").run(project.id).changes === 0) return false;
+  confirmQueenWrite("project_prune", project.id, {}, { project_id: project.id, name: project.name });
+  return true;
 });
 
 export const ACTOR_OWNER_COLUMNS: readonly [string, string][] = [
@@ -209,32 +197,57 @@ export function registerMeta(server: McpServer): void {
     "project_prune",
     {
       description:
-        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
+        "Delete every registered project that owns no rows anywhere in the store (pads, todos, kv, leases, agents, wakes, command_trust), verified individually before each delete. Never prunes the caller's own project. With project_id, removes exactly that one project instead of sweeping, and only if it owns no rows; otherwise refuses and names what it owns. With project_id AND confirm_name (the project's exact name), removes that one project even when it owns rows: it takes a snapshot first, refuses while the project has a running agent, then deletes the project with everything it owns (todos, comments, pads, kv, leases, agents, wakes, trust, agent messages) in one transaction and reports per-table counts and the snapshot path. queen_audit rows naming it are kept, and so are other projects' lead-idle subscriptions that target it, so a watch on its lead ends with a named reason. confirm_name without project_id is refused, and there is no forced sweep. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep, and a project-locked session may only touch its own project. Immediate, permanent: no dry-run mode.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
         idempotentHint: true,
         openWorldHint: false,
       },
-      inputSchema: { project_id: idParam.optional() },
+      inputSchema: { project_id: idParam.optional(), confirm_name: z.string().optional() },
       outputSchema: {
         deleted: z.array(z.object({ id: idParam, name: z.string() })),
         held_back: z.object({ project_id: idParam, reason: z.string() }),
         errors: z.array(z.object({ id: idParam, name: z.string(), error: z.string() })).optional(),
+        counts: z.record(z.string(), z.number()).optional(),
+        snapshot: z.string().nullable().optional(),
       },
     },
-    ({ project_id }) =>
+    ({ project_id, confirm_name }) =>
       run(() => {
         refuseIfLocked("project_prune");
 
         const homeId = resolveProject().id;
+        const cwdId = findProjectForCwd()?.id;
+        const isOwn = (id: number) => id === homeId || id === cwdId;
+        if (confirm_name !== undefined && project_id === undefined) {
+          throw new Error("project_prune: confirm_name needs project_id; there is no forced sweep.");
+        }
         if (project_id !== undefined) {
-          if (project_id === homeId) throw new Error(`project_prune: project ${project_id} is the caller's own project and is never pruned.`);
+          if (isOwn(project_id)) throw new Error(`project_prune: project ${project_id} is the caller's own project and is never pruned.`);
           const target = listProjects().find((p) => p.id === project_id);
           if (!target) throw new Error(`project_prune: no project ${project_id}. List them with project_list.`);
-          if (!pruneProjectIfEmpty.immediate(project_id)) {
+          if (confirm_name !== undefined) {
+            if (confirm_name !== target.name) {
+              throw new Error(
+                `project_prune: confirm_name does not match project ${project_id}, whose name is "${target.name}". Nothing deleted.`,
+              );
+            }
+            const removed = removeProject(project_id, {
+              snapshot: true,
+              onRemoved: (r) =>
+                confirmQueenWrite("project_prune", project_id, {}, { project_id, name: r.deleted.name, counts: r.counts }),
+            });
+            return {
+              deleted: [{ id: removed.deleted.id, name: removed.deleted.name }],
+              held_back: { project_id: homeId, reason: "caller's own project" },
+              counts: removed.counts,
+              snapshot: removed.snapshot,
+            };
+          }
+          if (!pruneProjectIfEmpty.immediate(target)) {
             throw new Error(
-              `project_prune: project ${project_id} ("${target.name}") is not empty, nothing deleted. It owns ${ownedRowCounts(project_id).join(", ")}.`,
+              `project_prune: project ${project_id} ("${target.name}") is not empty, nothing deleted. It owns ${formatRowCounts(projectRowCounts(project_id))}. To remove it with everything it owns, pass confirm_name with its exact name.`,
             );
           }
           return {
@@ -245,10 +258,10 @@ export function registerMeta(server: McpServer): void {
         const deleted: { id: number; name: string }[] = [];
         const errors: { id: number; name: string; error: string }[] = [];
         for (const project of listProjects()) {
-          if (project.id === homeId) continue;
+          if (isOwn(project.id)) continue;
 
           try {
-            if (pruneProjectIfEmpty.immediate(project.id)) {
+            if (pruneProjectIfEmpty.immediate(project)) {
               deleted.push({ id: project.id, name: project.name });
             }
           } catch (e) {
@@ -267,7 +280,7 @@ export function registerMeta(server: McpServer): void {
     "actor_prune",
     {
       description:
-        "Delete every actor that owns no rows anywhere in the store and has not been active in the last minute: agents.actor_id, agents.parent_actor_id, todos.locked_by, todo_comments.author, kv.updated_by, leases.owner, pads.updated_by, wakes.owner, wakes.deliver_actor, agent_state_log.actor_id. The scan is global across every project, never scoped to the caller's: actors carry no project_id, so an actor can own rows in a project the caller cannot see, and a project-scoped scan would misread that actor as inert and delete it. Never prunes the caller's own actor. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep. Run this after project_prune when sweeping the store: an empty project owns no agents rows either, so today the order cannot orphan an actor, but that stops being true the day project deletion ever covers a non-empty project, and this ordering is the one that stays safe if it does. Immediate, permanent: no dry-run mode.",
+        "Delete every actor that owns no rows anywhere in the store and has not been active in the last minute: agents.actor_id, agents.parent_actor_id, todos.locked_by, todo_comments.author, kv.updated_by, leases.owner, pads.updated_by, wakes.owner, wakes.deliver_actor, agent_state_log.actor_id. The scan is global across every project, never scoped to the caller's: actors carry no project_id, so an actor can own rows in a project the caller cannot see, and a project-scoped scan would misread that actor as inert and delete it. Never prunes the caller's own actor. Refuses under HIVE_PROJECT_LOCK=1: this is a whole-store sweep. Run this after project_prune when sweeping the store: project_prune with confirm_name removes a non-empty project together with its agents rows, so run this afterwards to clear that project's actors that own nothing else. Actors with agent_state_log rows stay, because that log is append-only and has no project, which means every actor that ever ran a lead or worker stays. Immediate, permanent: no dry-run mode.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,

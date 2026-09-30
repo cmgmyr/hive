@@ -135,6 +135,23 @@ The store backs itself up automatically: a snapshot before any pending schema mi
 
 `hive backups` lists them with size and age. `hive restore <name>` overwrites the live store from one, prints exactly what it is about to replace, takes one more snapshot of the current store first, and refuses without an explicit `[y/N]` confirmation or `--yes`. It also refuses while any agent is recorded as running or a hive tmux session is still up, since replacing the database out from under an open connection is undefined behavior in SQLite; pass `--force` if you are certain nothing is using the store. Retention keeps the last 10 snapshots plus one per day for a week by default (`HIVE_BACKUP_KEEP_LAST`, `HIVE_BACKUP_KEEP_DAILY_DAYS`, both floored so a backup can never prune itself away), and `hive doctor` reports the count, total size, and whether the last attempt failed or the last success is more than `HIVE_BACKUP_STALE_DAYS` (default 7) old.
 
+## Removing a project
+
+A project that owns rows cannot be emptied through the tools: nothing deletes a todo or an agent row. Two commands remove one with everything it owns, always from a different project than the one being removed.
+
+```bash
+hive project rm 14            # by id, with a [y/N] prompt
+hive project rm /path/to/old --yes
+```
+
+The argument is a registered project id or the exact registered path. A subdirectory of a registered project is refused, not resolved to its parent. The command prints the name, path and per-table row counts, takes a snapshot of the store first, then deletes the project and every row it owns in one transaction. It refuses the project your working directory belongs to, a project with a running agent (run `hive doctor` to close rows whose panes are gone, or use `agent_close`), and any session locked with `HIVE_PROJECT_LOCK=1`.
+
+From a session, `project_prune` does the same for one project when you pass both `project_id` and `confirm_name` set to the project's exact name. A wrong name removes nothing. The no-argument `project_prune` still sweeps only projects that own no rows, and there is no forced sweep. The queen can run both forms, and each removal writes one `queen_audit` row that stays after the project is gone.
+
+A path matches only after symlinks are resolved, so a symlink to a registered path selects that project, and a subdirectory of one still matches nothing.
+
+Undo it with `hive restore <name>`, where the name is the last part of the snapshot path the command printed. A restore replaces the whole store, so every other project's writes since that snapshot are lost too, and it refuses while any agent is running, so it needs `--force` from a live session. Restore only when the removal itself was the mistake. A removal leaves these behind: the project's checkout and everything in it (`hive.yml`, `.hive`, worktrees), `postures/project-<id>.md`, `briefs/agent-<id>.md` and `worker-<id>-hooks.json` for its agents, any `codex-homes` and `codex-rollouts` directories its agents used, and the actors that worked in it. `actor_prune` clears the ones that own nothing else, but an actor with `agent_state_log` rows stays, because that log is append-only, so every lead and worker that ever ran remains. Delete the files by hand if you want them gone.
+
 ## Pads and todos from the shell
 
 Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --edit` exports it to a temp markdown file and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit, save, then `hive pad <name> --save` writes it back. The export encodes the pad revision, so if a session changed the pad while you edited, the save fails with merge instructions instead of clobbering; your edits stay in the temp file. Temp exports live in the system temp dir and clean themselves up on save (macOS purges strays automatically).

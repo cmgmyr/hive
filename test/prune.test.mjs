@@ -11,7 +11,8 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
 const { db } = await import("../dist/db.js");
 
-const { PROJECT_OWNER_TABLES, ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
+const { ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
+const { PROJECT_OWNER_TABLES } = await import("../dist/projectRemove.js");
 
 const BACKDATE_PAST_LIVENESS = "-150 seconds";
 
@@ -253,6 +254,108 @@ describe("project_prune", () => {
         await lockMcp.close();
       }
     });
+  });
+});
+
+describe("project_prune confirm_name", () => {
+  const projectExists = (id) => db.prepare("SELECT id FROM projects WHERE id = ?").get(id) !== undefined;
+  async function nonEmptyProject() {
+    const owner = (await mcp.call("whoami")).actor_id;
+    const project = await mcp.call("project_add", { path: scratchDirs().projectDir });
+    seedProjectOwnerRow("todos", project.id, owner);
+    seedProjectOwnerRow("kv", project.id, owner);
+    return project;
+  }
+
+  it("removes a non-empty project when confirm_name equals its name, reporting counts and a snapshot", async () => {
+    const target = await nonEmptyProject();
+    const result = await mcp.call("project_prune", { project_id: target.id, confirm_name: target.name });
+    assert.deepEqual(result.deleted, [{ id: target.id, name: target.name }]);
+    assert.deepEqual(result.counts, { todos: 1, kv: 1 });
+    assert.match(result.snapshot, /backups/);
+    assert.ok(!projectExists(target.id));
+  });
+
+  it("refuses a mismatched confirm_name, names the real name, and deletes nothing", async () => {
+    const target = await nonEmptyProject();
+    await assert.rejects(
+      mcp.call("project_prune", { project_id: target.id, confirm_name: target.name + "x" }),
+      new RegExp(`whose name is "${target.name}"`),
+    );
+    assert.ok(projectExists(target.id));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM todos WHERE project_id = ?").get(target.id).n, 1);
+  });
+
+  it("refuses confirm_name without project_id and deletes nothing", async () => {
+    const target = await nonEmptyProject();
+    await assert.rejects(mcp.call("project_prune", { confirm_name: target.name }), /confirm_name needs project_id/);
+    assert.ok(projectExists(target.id));
+  });
+
+  it("refuses both the cwd project and the selected project, even after project_select moves away from the cwd one", async () => {
+    const solo = new McpClient({ cwd: scratchDirs().projectDir, dataDir: dirs.dataDir });
+    try {
+      await solo.start();
+      const cwdProject = (await solo.call("whoami")).project;
+      db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(cwdProject.id);
+      const other = await solo.call("project_add", { path: scratchDirs().projectDir });
+      await solo.call("project_select", { project_id: other.id });
+      await assert.rejects(solo.call("project_prune", { project_id: cwdProject.id, confirm_name: cwdProject.name }), /caller's own project/);
+      await assert.rejects(solo.call("project_prune", { project_id: other.id, confirm_name: other.name }), /caller's own project/);
+      assert.ok(projectExists(cwdProject.id) && projectExists(other.id));
+      const swept = await solo.call("project_prune", {});
+      assert.ok(!swept.deleted.some((p) => p.id === other.id));
+      assert.ok(projectExists(other.id));
+    } finally {
+      await solo.close();
+    }
+  });
+
+  it("refuses the caller's own project even with the right name", async () => {
+    const who = await mcp.call("whoami");
+    await assert.rejects(
+      mcp.call("project_prune", { project_id: who.project.id, confirm_name: who.project.name }),
+      /caller's own project/,
+    );
+    assert.ok(projectExists(who.project.id));
+  });
+
+  it("without confirm_name, project_id on a non-empty project still refuses and now names confirm_name", async () => {
+    const target = await nonEmptyProject();
+    await assert.rejects(mcp.call("project_prune", { project_id: target.id }), /not empty.*todos: 1, kv: 1.*confirm_name/s);
+    assert.ok(projectExists(target.id));
+  });
+
+  it("the no-argument sweep still skips a non-empty project", async () => {
+    const target = await nonEmptyProject();
+    const result = await mcp.call("project_prune");
+    assert.ok(!result.deleted.some((p) => p.id === target.id));
+    assert.ok(projectExists(target.id));
+  });
+
+  it("refuses under HIVE_PROJECT_LOCK=1 and deletes nothing", async () => {
+    const target = await nonEmptyProject();
+    const locked = new McpClient({ cwd: scratchDirs().projectDir, dataDir: dirs.dataDir, env: { HIVE_PROJECT_LOCK: "1" } });
+    try {
+      await locked.start();
+      await assert.rejects(
+        locked.call("project_prune", { project_id: target.id, confirm_name: target.name }),
+        /HIVE_PROJECT_LOCK/,
+      );
+    } finally {
+      await locked.close();
+    }
+    assert.ok(projectExists(target.id));
+  });
+
+  it("refuses a target with a running agent and deletes nothing", async () => {
+    const target = await nonEmptyProject();
+    db.prepare("INSERT INTO agents (project_id, name, command, cwd, status) VALUES (?, 'busy', 'sleep', '/tmp', 'running')").run(target.id);
+    await assert.rejects(
+      mcp.call("project_prune", { project_id: target.id, confirm_name: target.name }),
+      /running agents: busy.*hive doctor/s,
+    );
+    assert.ok(projectExists(target.id));
   });
 });
 

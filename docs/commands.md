@@ -26,6 +26,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
 | `hive todos` / `hive todo <id>` | List todos, or print one in full |
 | `hive backups` / `hive restore <name>` | List store snapshots, or restore one |
+| `hive project rm <id\|path> [--yes]` | Remove another registered project and everything it owns, after a snapshot. Takes an id or an exact registered path, never the project you are in. See [removing a project](projects.md#removing-a-project) |
 | `hive runbook` | Print this project's standing process |
 | `hive posture` | Print the posture your lead is running with |
 | `hive profile list` | Show the profiles hive can see |
