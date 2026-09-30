@@ -1,4 +1,4 @@
-import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS } from "./queenAudit.js";
+import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
 import { runningBuildChange, runningBuildNotice } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -577,7 +577,7 @@ function queenHome(): { id: number; path: string } | null {
 
 function renderQueenPage(queenId: number): { html: string; hash: string } {
   const report = collectPortfolio();
-  const html = renderQueenDashboard(report, readQueenBrief(queenId, report.as_of));
+  const html = renderQueenDashboard(report, readQueenBrief(queenId, report.as_of), undefined, recentQueenAudit(10));
   const stable = html.replace(new RegExp(`<p class="generated" ${QUEEN_GENERATED_MARKER}>[^<]*</p>`), "");
   return { html, hash: createHash("sha256").update(stable).digest("hex") };
 }

@@ -120,6 +120,10 @@ function positiveInteger(value: number, name: string): void {
   if (!Number.isInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
 }
 
+export function recentQueenAudit(limit: number): QueenAuditRow[] {
+  return db.prepare("SELECT * FROM queen_audit ORDER BY id DESC LIMIT ?").all(limit) as QueenAuditRow[];
+}
+
 export function listQueenAudit(options: { project_id?: number; limit?: number } = {}, homeProjectId?: number): { entries: QueenAuditRow[]; limit: number; project_id: number | null } {
   const requestedLimit = options.limit ?? QUEEN_AUDIT_DEFAULT_LIMIT;
   positiveInteger(requestedLimit, "limit");

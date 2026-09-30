@@ -98,7 +98,7 @@ import {
   wasHeldForPaneReissue,
 } from "./scheduler.js";
 import { readTurnCount } from "./turnCount.js";
-import { collectPortfolio, type PortfolioProject } from "./portfolio.js";
+import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
   probeSessionInterpreter,
@@ -3607,7 +3607,7 @@ function cmdPortfolio(argv: string[]): void {
     console.log(
       `${p.lane.padEnd(14)} ${p.name} (#${p.id})${p.root_exists ? "" : "  [root missing]"}\n` +
         `  why: ${p.reasons.join(", ")}\n` +
-        `  lead ${p.lead.state}; workers ${w.working} working, ${w.idle} idle, ${w.needs_input} needs input, ` +
+        `  lead ${leadText(p)}; workers ${w.working} working, ${w.idle} idle, ${w.needs_input} needs input, ` +
         `${w.other} other, ${w.unreachable} unreachable, ${w.unconfirmed} unconfirmed\n` +
         `  todos ${t.open} open, ${t.in_progress} in progress, ${t.blocked} blocked, ${t.high} high; ` +
         `needs human ${p.needs_human}; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
