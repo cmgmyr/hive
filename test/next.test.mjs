@@ -326,7 +326,7 @@ describe("hive next: start or attach", () => {
     assert.equal(first.code, 0, first.stderr);
     const stale = leadRow(db, p.id).tmux_target;
     db.prepare("UPDATE agents SET pane_pid = '1' WHERE project_id = ? AND kind = 'lead'").run(p.id);
-    assert.equal(picked((await print()).stdout).lead_state, "alive");
+    assert.equal(picked((await print()).stdout).lead_state, "dead_pane");
 
     const r = await runCli(["next"], opts());
     assert.equal(r.code, 0, r.stderr);
