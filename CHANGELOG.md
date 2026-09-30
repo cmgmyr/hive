@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0 - 2026-09-30
+
+- `hive queen` starts the queen: one lead per data dir that reads every registered project and tells you which one needs you. It writes into another project only by handing things to that project's lead: todos, comments, and text or wakes addressed to the running lead. Anything else there is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`. The first run creates `<data dir>/queen` with a `hive.yml` that selects a new shipped `queen` profile, a skeleton you fork and fill in. The new queen guide, `docs/queen.md`, covers all of it.
+- `hive portfolio [--json]` prints one block per registered project, sorted into four lanes: waiting on you, stuck, moving and quiet. Tag a todo `needs-human` to put its project in front of you. A project with live work stays moving, and a held wake is never overdue.
+- `hive next` attaches you to the lead of the project that needs you most, starting or adopting that lead first. `hive next --print` names the choice and starts nothing.
+- `hive lead <path> --detach` starts or adopts a project's lead without attaching your terminal, and prints its pane and an attach command. From a script it stops at a `hive.yml` command you have not approved yet.
+- The queen has its own dashboard at `<data dir>/queen/dashboard.html`: the queen's picks, one section per lane, a grid of every project, each lead's turn state, and the queen's recent actions.
+- `wake_when_idle` takes `lead_project_id`, for the queen only, and wakes it when another project's lead ends a turn. The watch ends with a named reason if that lead goes away, restarts, or its pane is reissued.
+- Every queen write into another project is recorded. `hive queen-audit` and the `queen_audit_list` tool list them, newest first, for 30 days.
+- A lead's first message is now set with `first_message` in the global or a project `hive.yml`, and hive ships no default text. Before this release a lead opened with a built-in morning-triage message. After upgrading it waits for you until you set `first_message`. `hive lead` passes the message on the command line, because Claude Code 2.1.285 drops the message the session-start hook used to send.
+- The trailer under an idle wake now shows the worker's last output rows and one line about its input box (empty, a model suggestion, or unsubmitted text), in place of box borders, the status line and the mode line. A screen hive cannot classify, such as a dialog, still arrives as the raw tail.
+- Two wakes delivered to the same pane by two hive servers at the same moment no longer arrive as one merged message.
+- The read-only CLI commands (`hive pads`, `hive pad`, `hive todos`, `hive todo`, `hive runbook`, `hive posture`, `hive profile read`) no longer register the current directory as a project. Outside a registered project they exit 1 and name `hive init`. `project_prune` takes a `project_id` to remove one empty project.
+- hive's read commands no longer fail at startup when the process cannot write to the store, which is the case for a `read_only` worker. One case remains: when no other hive process has the store open, the read still fails.
+- Piping a hive command into `head` no longer prints an EPIPE stack trace.
+- Help and tool text now say a lease guards shared state, not any file edit.
+- Dependencies: MCP SDK 1.30.1 and smol-toml 1.9.0, with patched `ip-address` and `fast-uri`.
+- After upgrading, restart every hive session. A session still running the old build keeps rewriting the dashboards with its old text.
+
 ## 1.3.0 - 2026-09-27
 
 - Set hive defaults once in `~/.hive/hive.yml`. Any key you put there applies to every project, and a project's own `hive.yml` overrides it key by key. `hive doctor` shows where each setting came from (global or project). `hive lead`, `hive setup` and `hive doctor` fold an existing `~/.hive/config.json` into the new file and keep a copy of the original.
