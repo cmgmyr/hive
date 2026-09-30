@@ -5,6 +5,7 @@ import {
   addProject,
   currentActor,
   listProjects,
+  findProjectForCwd,
   resolveProject,
   selectProjectById,
   TOUCH_INTERVAL_MS,
@@ -219,11 +220,13 @@ export function registerMeta(server: McpServer): void {
         refuseIfLocked("project_prune");
 
         const homeId = resolveProject().id;
+        const cwdId = findProjectForCwd()?.id;
+        const isOwn = (id: number) => id === homeId || id === cwdId;
         if (confirm_name !== undefined && project_id === undefined) {
           throw new Error("project_prune: confirm_name needs project_id; there is no forced sweep.");
         }
         if (project_id !== undefined) {
-          if (project_id === homeId) throw new Error(`project_prune: project ${project_id} is the caller's own project and is never pruned.`);
+          if (isOwn(project_id)) throw new Error(`project_prune: project ${project_id} is the caller's own project and is never pruned.`);
           const target = listProjects().find((p) => p.id === project_id);
           if (!target) throw new Error(`project_prune: no project ${project_id}. List them with project_list.`);
           if (confirm_name !== undefined) {
@@ -257,7 +260,7 @@ export function registerMeta(server: McpServer): void {
         const deleted: { id: number; name: string }[] = [];
         const errors: { id: number; name: string; error: string }[] = [];
         for (const project of listProjects()) {
-          if (project.id === homeId) continue;
+          if (isOwn(project.id)) continue;
 
           try {
             if (pruneProjectIfEmpty.immediate(project)) {

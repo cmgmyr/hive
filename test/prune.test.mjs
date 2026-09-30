@@ -291,6 +291,25 @@ describe("project_prune confirm_name", () => {
     assert.ok(projectExists(target.id));
   });
 
+  it("refuses both the cwd project and the selected project, even after project_select moves away from the cwd one", async () => {
+    const solo = new McpClient({ cwd: scratchDirs().projectDir, dataDir: dirs.dataDir });
+    try {
+      await solo.start();
+      const cwdProject = (await solo.call("whoami")).project;
+      db.prepare("INSERT INTO todos (project_id, title) VALUES (?, 'x')").run(cwdProject.id);
+      const other = await solo.call("project_add", { path: scratchDirs().projectDir });
+      await solo.call("project_select", { project_id: other.id });
+      await assert.rejects(solo.call("project_prune", { project_id: cwdProject.id, confirm_name: cwdProject.name }), /caller's own project/);
+      await assert.rejects(solo.call("project_prune", { project_id: other.id, confirm_name: other.name }), /caller's own project/);
+      assert.ok(projectExists(cwdProject.id) && projectExists(other.id));
+      const swept = await solo.call("project_prune", {});
+      assert.ok(!swept.deleted.some((p) => p.id === other.id));
+      assert.ok(projectExists(other.id));
+    } finally {
+      await solo.close();
+    }
+  });
+
   it("refuses the caller's own project even with the right name", async () => {
     const who = await mcp.call("whoami");
     await assert.rejects(
