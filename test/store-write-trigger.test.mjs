@@ -30,6 +30,21 @@ function padRow(id) {
   return db.prepare("SELECT * FROM pads WHERE id = ?").get(id);
 }
 
+function inOneWallClockSecond(attempt) {
+  for (let attemptNumber = 1; attemptNumber <= 5; attemptNumber++) {
+    const secondBefore = db.prepare("SELECT strftime('%s', 'now') AS second").get().second;
+    let result;
+    try {
+      result = { value: attempt(attemptNumber) };
+    } catch (error) {
+      result = { error };
+    }
+    const secondAfter = db.prepare("SELECT strftime('%s', 'now') AS second").get().second;
+    if (secondBefore === secondAfter) return { ...result, attemptCount: attemptNumber };
+  }
+  assert.fail("could not run the attempt within one SQLite wall-clock second after 5 tries");
+}
+
 describe("the pads content-vs-updated_at trigger", () => {
   it("aborts the exact incident shape: a name-addressed UPDATE across two projects, changing content, leaving updated_at alone", () => {
 
@@ -72,32 +87,40 @@ describe("the pads content-vs-updated_at trigger", () => {
   });
 
   it("does not fire on two legitimate content-changing writes to the same row inside one wall-clock second", () => {
-
-    const projectId = seedProject("/scratch/same-second");
-    const padId = db
-      .prepare("INSERT INTO pads (project_id, name, content) VALUES (?, 'board', 'v1') RETURNING id")
-      .get(projectId).id;
-    assert.doesNotThrow(() =>
+    const result = inOneWallClockSecond((attemptNumber) => {
+      const projectId = seedProject(`/scratch/same-second-${attemptNumber}`);
+      const padId = db
+        .prepare("INSERT INTO pads (project_id, name, content) VALUES (?, 'board', 'v1') RETURNING id")
+        .get(projectId).id;
       db
         .prepare("UPDATE pads SET content = ?, revision = revision + 1, updated_at = datetime('now') WHERE id = ?")
-        .run("v2", padId),
-    );
-    assert.equal(padRow(padId).content, "v2");
+        .run("v2", padId);
+      return padRow(padId).content;
+    });
+    assert.doesNotThrow(() => {
+      if (result.error !== undefined) throw result.error;
+    });
+    assert.equal(result.value, "v2");
   });
 
   it("KNOWN RESIDUAL: does not catch a bypass landing in the same second as the row's own last legitimate write", () => {
-
-    const projectId = seedProject("/scratch/seed-then-rewrite");
-    const padId = db
-      .prepare(
-        "INSERT INTO pads (project_id, name, content, updated_at) VALUES (?, 'board', 'seeded', datetime('now')) RETURNING id",
-      )
-      .get(projectId).id;
+    const result = inOneWallClockSecond((attemptNumber) => {
+      const projectId = seedProject(`/scratch/seed-then-rewrite-${attemptNumber}`);
+      const padId = db
+        .prepare(
+          "INSERT INTO pads (project_id, name, content, updated_at) VALUES (?, 'board', 'seeded', datetime('now')) RETURNING id",
+        )
+        .get(projectId).id;
+      db.prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE id = ?").run("BYPASSED", padId);
+      return padRow(padId).content;
+    });
     assert.doesNotThrow(
-      () => db.prepare("UPDATE pads SET content = ?, revision = revision + 1 WHERE id = ?").run("BYPASSED", padId),
+      () => {
+        if (result.error !== undefined) throw result.error;
+      },
       "if this throws, the same-second gap has closed - update the migration comment too, do not just delete this test",
     );
-    assert.equal(padRow(padId).content, "BYPASSED");
+    assert.equal(result.value, "BYPASSED");
   });
 
   it("does not fire when content is unchanged, however updated_at moves", () => {
