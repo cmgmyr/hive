@@ -367,9 +367,10 @@ function briefSection(
   const byId = new Map(report.projects.map((p) => [p.id, p]));
   const written = age(brief.written_at, report.as_of);
   const briefAge = written === "now" ? "just now" : `${written} ago`;
+  const stale = (parseUtc(report.as_of) - parseUtc(brief.written_at)) / 1000 > 86400;
   const stamp =
-    `<span class="brief-stamp"><span class="status status-warn">written ${esc(brief.written_at)} UTC, ` +
-    `${esc(briefAge)}</span></span>`;
+    `<span class="brief-stamp${stale ? " brief-stale" : ""}" title="written ${esc(brief.written_at)} UTC">` +
+    `written ${esc(briefAge)}</span>`;
   const picks = brief.picks
     .map((k) => {
       const p = byId.get(k.project_id);
@@ -449,8 +450,8 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .age { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--fg-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .age-hot { color: var(--warn); font-weight: 600; }
 .age-fail { color: var(--fail); font-weight: 600; }
-.brief-stamp .status { white-space: normal; }
-.brief-stamp { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 0.78125rem; color: var(--fg-muted); }
+.brief-stamp { font-size: 0.78125rem; font-weight: 400; color: var(--fg-muted); }
+.brief-stamp.brief-stale { color: var(--warn); }
 .drift { margin: 0.5rem 0 0; grid-column: 1 / -1; padding: 0.55rem 0.75rem; border-radius: var(--r-ctl); background: var(--warn-bg); color: var(--fg); font-size: 0.8125rem; }
 .drift strong { color: var(--warn); font-weight: 650; }
 .grid { display: grid; }
