@@ -514,13 +514,12 @@ export function migrate(): void {
         db.prepare("INSERT OR IGNORE INTO backup_meta (id) VALUES (1)").run();
       },
       "preparing the store's bookkeeping tables",
-      "bookkeeping tables missing",
+      "bookkeeping missing",
     );
   }
 
   const before = readAppliedVersions();
   const pendingCount = MIGRATIONS.length - before.size;
-  if (pendingCount <= 0) return;
 
   maybeBackupBeforeMigrations(db, dataDir, pendingCount);
 
@@ -543,6 +542,6 @@ export function migrate(): void {
   retryOnBusy(
     () => applyPending.immediate(),
     "applying pending migrations",
-    `${pendingCount} migration${pendingCount === 1 ? "" : "s"} pending`,
+    pendingCount > 0 ? `${pendingCount} migration${pendingCount === 1 ? "" : "s"} pending` : undefined,
   );
 }

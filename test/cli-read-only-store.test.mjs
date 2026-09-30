@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -48,7 +48,7 @@ function digest(dataDir) {
 const BOOKKEEPING = `CREATE TABLE backup_meta (id INTEGER PRIMARY KEY CHECK (id = 1), last_attempt_at TEXT, last_success_at TEXT, last_error TEXT, last_error_at TEXT);
 INSERT INTO backup_meta (id) VALUES (1);`;
 
-async function holdStore(dirs, { v30 = false, v30Bookkeeping = false } = {}) {
+async function holdStore(dirs, { v30 = false, v30Bookkeeping = false, dropRow = false } = {}) {
   mkdirSync(dirs.dataDir, { recursive: true });
   const script = join(dirs.tmp, "holder.mjs");
   writeFileSync(
@@ -57,6 +57,7 @@ async function holdStore(dirs, { v30 = false, v30Bookkeeping = false } = {}) {
 import { db, migrate, MIGRATIONS } from ${JSON.stringify(DB_JS)};
 ${v30 ? `db.exec(readFileSync(${JSON.stringify(join(REPO, "test", "fixtures", "store-v30.sql"))}, "utf8"));` : "migrate();"}
 ${v30Bookkeeping ? `db.exec(${JSON.stringify(BOOKKEEPING)});` : ""}
+${dropRow ? 'db.prepare("DELETE FROM backup_meta").run();' : ""}
 const pid = db.prepare("INSERT INTO projects (name, path) VALUES ('ro', ?) RETURNING id").get(process.env.HOLD_PROJECT).id;
 db.prepare("INSERT INTO todos (project_id, title, body) VALUES (?, 'a todo to read', 'its body')").run(pid);
 console.log("READY " + MIGRATIONS.length);
@@ -85,7 +86,7 @@ setInterval(() => {}, 1000);
 const VERBS = [["profile", "read", "posture.md"], ["profile", "list"], ["runbook"], ["todo", "1"]];
 const run = (args, dirs) => runCli(args, { cwd: dirs.projectDir, dataDir: dirs.dataDir });
 
-describe("hive CLI reads against a store the process cannot write", () => {
+describe("hive CLI reads against a read-only store while another hive process holds it open", () => {
   const dirs = scratchDirs();
   const writable = {};
   let before;
@@ -124,33 +125,45 @@ describe("a read-only store that needs a write", () => {
     assert.match(r.stderr, new RegExp(`applying pending migrations failed: .*readonly database \\(${total - 30} migrations pending\\)`));
   });
 
-  it("with the bookkeeping tables missing exits non-zero and says so", { skip: isRoot && "root ignores file modes" }, async () => {
+  it("with the bookkeeping missing exits non-zero and says so", { skip: isRoot && "root ignores file modes" }, async () => {
     const dirs = scratchDirs();
     await holdStore(dirs, { v30: true });
     lock(dirs.dataDir);
     const r = await run(["profile", "list"], dirs);
     assert.equal(r.code, 1, r.stdout + r.stderr);
     assert.equal(r.stdout, "");
-    assert.match(r.stderr, /preparing the store's bookkeeping tables failed: .*readonly database \(bookkeeping tables missing\)/);
+    assert.match(r.stderr, /preparing the store's bookkeeping tables failed: .*readonly database \(bookkeeping missing\)/);
   });
 });
 
-describe("a fresh writable store", () => {
-  it("ends up with both bookkeeping tables, the backup_meta row and every migration applied", async () => {
-    const dirs = scratchDirs();
-    const total = await holdStore(dirs);
-    const probe = join(dirs.tmp, "probe.mjs");
-    writeFileSync(
-      probe,
-      `import { db } from ${JSON.stringify(DB_JS)};
+function storeState(dirs) {
+  const probe = join(dirs.tmp, "probe.mjs");
+  writeFileSync(
+    probe,
+    `import { db } from ${JSON.stringify(DB_JS)};
 const tables = db.prepare("SELECT name FROM sqlite_master WHERE name IN ('migrations','backup_meta') ORDER BY name").all().map((r) => r.name);
 const meta = db.prepare("SELECT id FROM backup_meta").all().map((r) => r.id);
 const applied = db.prepare("SELECT COUNT(*) AS n FROM migrations").get().n;
 console.log(JSON.stringify({ tables, meta, applied }));
 `,
-    );
-    const { spawnSync } = await import("node:child_process");
-    const r = spawnSync(process.execPath, [probe], { encoding: "utf8", env: { ...baseEnv(), HIVE_DATA_DIR: dirs.dataDir } });
-    assert.deepEqual(JSON.parse(r.stdout), { tables: ["backup_meta", "migrations"], meta: [1], applied: total });
+  );
+  const r = spawnSync(process.execPath, [probe], { encoding: "utf8", env: { ...baseEnv(), HIVE_DATA_DIR: dirs.dataDir } });
+  return JSON.parse(r.stdout);
+}
+
+describe("a writable store", () => {
+  it("a fresh one ends up with both bookkeeping tables, the backup_meta row and every migration applied", async () => {
+    const dirs = scratchDirs();
+    const total = await holdStore(dirs);
+    assert.deepEqual(storeState(dirs), { tables: ["backup_meta", "migrations"], meta: [1], applied: total });
+  });
+
+  it("a current one whose backup_meta row was deleted has the row back after the next start", async () => {
+    const dirs = scratchDirs();
+    const total = await holdStore(dirs, { dropRow: true });
+    assert.deepEqual(storeState(dirs).meta, []);
+    const r = await run(["profile", "list"], dirs);
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(storeState(dirs), { tables: ["backup_meta", "migrations"], meta: [1], applied: total });
   });
 });
