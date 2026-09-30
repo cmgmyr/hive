@@ -45,7 +45,7 @@ describe("hive restore refuses while the store looks active (PR #36, S1)", () =>
     const dirs = scratchDirs();
     const cli = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 
-    await runCli(["pads"], cli);
+    await runCli(["init", "--no-profile"], cli);
     const listed = await runCli(["backups"], cli);
     const name = listed.stdout.match(/^(\S+)\s+migration/m)?.[1];
     assert.ok(name, `expected a snapshot name in:\n${listed.stdout}`);
@@ -124,7 +124,7 @@ describe("hive restore refuses on any running lead row with no tmux server reach
   it("refuses the reboot case and names the remedy", async () => {
     const dirs = scratchDirs();
     const cli = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
-    await runCli(["pads"], cli);
+    await runCli(["init", "--no-profile"], cli);
     const listed = await runCli(["backups"], cli);
     const name = listed.stdout.match(/^(\S+)\s+migration/m)?.[1];
     assert.ok(name, `expected a snapshot name in:\n${listed.stdout}`);
@@ -154,7 +154,7 @@ describe("hive restore and a tmux that does not answer (todo 375)", () => {
   const setup = async () => {
     const dirs = scratchDirs();
     const cli = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
-    await runCli(["pads"], cli);
+    await runCli(["init", "--no-profile"], cli);
     const listed = await runCli(["backups"], cli);
     const name = listed.stdout.match(/^(\S+)\s+migration/m)?.[1];
     assert.ok(name, `expected a snapshot name in:\n${listed.stdout}`);
@@ -239,7 +239,7 @@ describe(
     it("refuses - the pre-R9 code this replaced would have allowed this exact case through", async () => {
       const dirs = scratchDirs();
       const cli = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
-      await runCli(["pads"], cli);
+      await runCli(["init", "--no-profile"], cli);
       const listed = await runCli(["backups"], cli);
       const name = listed.stdout.match(/^(\S+)\s+migration/m)?.[1];
       assert.ok(name, `expected a snapshot name in:\n${listed.stdout}`);

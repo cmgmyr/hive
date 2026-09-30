@@ -157,13 +157,13 @@ describe("hive todos", () => {
     assert.doesNotMatch(blockerLine, /\[/, "a todo with no stored slug must not print a bracketed label");
   });
 
-  it("prints nothing and exits clean in a directory with no hive project (D5)", async () => {
+  it("refuses on stderr and exits 1 in a directory with no hive project (D5)", async () => {
     const dirs = scratchDirs();
 
     const { code, stdout, stderr } = await runCli(["todos"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
-    assert.equal(code, 0);
+    assert.equal(code, 1);
     assert.equal(stdout, "");
-    assert.equal(stderr, "");
+    assert.match(stderr, /^hive todos: this directory is not a registered hive project/);
   });
 
   it("names what it did not show rather than truncating silently past the default limit", async () => {
@@ -210,7 +210,7 @@ describe("hive todos", () => {
 
   it("says so, cleanly, in a project with no todos", async () => {
     const dirs = scratchDirs();
-    await runCli(["pads"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await runCli(["init", "--no-profile"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     const { code, stdout } = await runCli(["todos"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     assert.equal(code, 0);
     assert.match(stdout, /No open todos in project/);
@@ -248,7 +248,7 @@ describe("hive todos", () => {
 
   it("describes --all correctly in the empty message even when --status is also passed", async () => {
     const dirs = scratchDirs();
-    await runCli(["pads"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await runCli(["init", "--no-profile"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     const { code, stdout } = await runCli(["todos", "--status", "completed", "--all"], {
       cwd: dirs.projectDir,
       dataDir: dirs.dataDir,
@@ -354,17 +354,17 @@ describe("hive todo <id>", () => {
 
   it("exits 1 with a usage line when no id is given", async () => {
     const dirs = scratchDirs();
-    await runCli(["pads"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await runCli(["init", "--no-profile"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     const { code, stdout } = await runCli(["todo"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     assert.equal(code, 1);
     assert.match(stdout, /Usage: hive todo/);
   });
 
-  it("prints nothing and exits clean in a directory with no hive project (D5)", async () => {
+  it("refuses on stderr and exits 1 in a directory with no hive project (D5)", async () => {
     const dirs = scratchDirs();
     const { code, stdout, stderr } = await runCli(["todo", "1"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
-    assert.equal(code, 0);
+    assert.equal(code, 1);
     assert.equal(stdout, "");
-    assert.equal(stderr, "");
+    assert.match(stderr, /^hive todo: this directory is not a registered hive project/);
   });
 });
