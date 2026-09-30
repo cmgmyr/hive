@@ -257,10 +257,13 @@ Every pad, todo, kv entry, and lease belongs to one project (a directory).
   project_list — all registered projects plus the current selection
   project_add(path?, name?) — register a directory (defaults to cwd)
   project_select(project_id) — set this session's default scope
-  project_prune() — delete every registered project that owns no rows
+  project_prune(project_id?, confirm_name?) — delete every registered project that owns no rows
     anywhere in the store, verified individually; never your own; refuses
     under HIVE_PROJECT_LOCK=1 since it sweeps every project, not just yours.
-    With project_id, removes only that project, and only if it owns no rows
+    With project_id, removes only that project, and only if it owns no rows.
+    With project_id and confirm_name (its exact name), removes it with every
+    row it owns after a snapshot; refuses while it has a running agent. From a
+    terminal: hive project rm <id|path> [--yes].
 
 Resolution order: explicit project_id argument, then session selection, then
 working-directory auto-detection. When the working directory matches no
