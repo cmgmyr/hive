@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 
 export type LeadTurn = "unknown" | "working" | "idle";
 

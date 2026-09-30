@@ -11,7 +11,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { firstMessageDigest } = await import("../dist/triageMessage.js");
+const { firstMessageDigest } = await import("../dist/firstMessage.js");
 const { sessionName } = await import("../dist/tmux.js");
 migrate();
 after(() => cleanup(sessionName()));

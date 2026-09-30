@@ -8,7 +8,7 @@ import type { ProjectYml } from "./projectYml.js";
 import type { ProvenanceRow } from "./stateProvenance.js";
 
 import { cutToUnitBudget } from "./slug.js";
-import { FIRST_MESSAGE_SHA_ENV } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV } from "./firstMessage.js";
 
 export const OUTPUT_BUDGET = 10_000;
 const CONTEXT_BUDGET = 6_000;

@@ -216,7 +216,7 @@ import {
 import { writeProjectPosture } from "./brief.js";
 import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
-import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./triageMessage.js";
+import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import {
   ageSecondsSince,
   deriveProvenance,

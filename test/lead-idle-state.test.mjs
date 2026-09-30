@@ -13,7 +13,7 @@ process.env.HIVE_DATA_DIR = dataDir;
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
-const { firstMessageDigest } = await import("../dist/triageMessage.js");
+const { firstMessageDigest } = await import("../dist/firstMessage.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
