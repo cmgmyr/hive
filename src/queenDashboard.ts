@@ -93,7 +93,7 @@ const LANE_TITLE: Record<PortfolioLane, string> = {
 };
 const LANE_RULE: Record<PortfolioLane, string> = {
   waiting_on_you: "a needs-human todo",
-  stuck: "dead lead, late wake, blocked or stale work, or a worker at a prompt",
+  stuck: "dead lead, missing folder, late wake, blocked or stale work, or a worker at a prompt",
   moving: "a worker or todo in progress, or a wake due soon",
   quiet: "nothing asked, nothing broken",
 };
@@ -335,9 +335,7 @@ function driftLine(brief: QueenBrief, report: PortfolioReport): string {
   }
   changes.sort((a, b) => a.rank - b.rank || a.id - b.id);
   const body = changes.length ? `${changes.map((c) => c.text).join("; ")}.` : "No project changed lanes since the brief.";
-  return `<p class="drift"><strong>Since the brief:</strong> ${body}${
-    changes.length ? " The picks above do not know that." : ""
-  }</p>`;
+  return `<p class="drift"><strong>Since the brief:</strong> ${body}</p>`;
 }
 
 function briefSection(
@@ -355,9 +353,11 @@ function briefSection(
   }
   const { brief } = state;
   const byId = new Map(report.projects.map((p) => [p.id, p]));
+  const written = age(brief.written_at, report.as_of);
+  const briefAge = written === "now" ? "just now" : `${written} ago`;
   const stamp =
     `<span class="brief-stamp"><span class="status status-warn">written ${esc(brief.written_at)} UTC, ` +
-    `${esc(age(brief.written_at, report.as_of))} ago</span></span>`;
+    `${esc(briefAge)}</span></span>`;
   const picks = brief.picks
     .map((k) => {
       const p = byId.get(k.project_id);
@@ -522,7 +522,8 @@ a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-o
 const SCRIPT = `(function () {
   var KEY = "queen-autoreload", box = document.getElementById("autoreload"), timer = null;
   function arm() { clearTimeout(timer); timer = box.checked ? setTimeout(function () { location.reload(); }, 60000) : null; }
-  try { box.checked = sessionStorage.getItem(KEY) === "1"; } catch (e) {}
+  box.checked = true;
+  try { box.checked = sessionStorage.getItem(KEY) !== "0"; } catch (e) {}
   box.addEventListener("change", function () { try { sessionStorage.setItem(KEY, box.checked ? "1" : "0"); } catch (e) {} arm(); });
   arm();
   document.addEventListener("click", function (e) {

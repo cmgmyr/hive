@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import vm from "node:vm";
 import { after, before, describe, it } from "node:test";
 
 import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
@@ -249,6 +250,69 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /clearTimeout\(timer\)/);
     assert.match(html, /box\.checked \? setTimeout\(function \(\) \{ location\.reload\(\); \}, 60000\)/);
     assert.match(html, /sessionStorage\.setItem\(KEY/);
+  });
+
+  it("says just now, with no ago, for a brief written under a minute before as_of", () => {
+    const html = renderQueenDashboard(report(oneEach()), ready(brief({ written_at: "2026-09-29 11:59:40" })), noLinks);
+    assert.match(html, /written 2026-09-29 11:59:40 UTC, just now</);
+    assert.doesNotMatch(html, /now ago/);
+  });
+
+  it("drops the drift line's claim about the picks, leaving lane changes only", () => {
+    const html = renderQueenDashboard(report(oneEach()), ready(brief({ lanes_at_brief: { 1: "quiet", 2: "stuck", 3: "moving", 4: "quiet" } })), noLinks);
+    assert.doesNotMatch(html, /do not know that/);
+    assert.match(html, /proj-1 moved from quiet to waiting on you\.<\/p>/);
+  });
+
+  it("names every portfolio STUCK reason in the stuck lane caption", () => {
+    const source = readFileSync(new URL("../dist/portfolio.js", import.meta.url), "utf8");
+    const stuck = [...source.match(/const STUCK = \[([^\]]*)\]/)[1].matchAll(/"([a-z_0-9]+)"/g)].map((m) => m[1]);
+    assert.ok(stuck.length >= 6, `parsed STUCK list: ${stuck}`);
+    const phrase = {
+      dead_lead_pane: "dead lead",
+      missing_root_with_work: "missing folder",
+      worker_needs_input: "prompt",
+      wake_overdue_5m: "late wake",
+      in_progress_blocked: "blocked",
+      all_active_todos_blocked: "blocked",
+      stale_in_progress_48h: "stale",
+    };
+    const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
+    const caption = html.match(/data-lane="stuck"[^>]*>.*?<p class="lane-rule">([^<]*)<\/p>/)[1];
+    for (const reason of stuck) {
+      assert.ok(phrase[reason], `caption phrase needed for new STUCK reason ${reason}`);
+      assert.ok(caption.includes(phrase[reason]), `${reason} missing from caption: ${caption}`);
+    }
+  });
+
+  it("starts the reload timer by default, stops it when stored off, and re-arms on toggle", () => {
+    const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
+    const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+    const run = (stored) => {
+      const timers = [];
+      const listeners = {};
+      const box = { checked: false, addEventListener: (e, f) => (listeners[e] = f) };
+      const store = new Map(stored === null ? [] : [["queen-autoreload", stored]]);
+      vm.runInNewContext(script, {
+        document: { getElementById: () => box, addEventListener() {} },
+        sessionStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+        setTimeout: (f, ms) => (timers.push(ms), timers.length),
+        clearTimeout() {},
+        location: { reload() {} },
+        window: {},
+      });
+      return { box, timers, listeners, store };
+    };
+    const fresh = run(null);
+    assert.equal(fresh.box.checked, true);
+    assert.deepEqual(fresh.timers, [60000]);
+    const off = run("0");
+    assert.equal(off.box.checked, false);
+    assert.deepEqual(off.timers, []);
+    off.box.checked = true;
+    off.listeners.change();
+    assert.deepEqual(off.timers, [60000]);
+    assert.equal(off.store.get("queen-autoreload"), "1");
   });
 
   it("links a project name to its own dashboard only when that file exists inside the project", () => {
