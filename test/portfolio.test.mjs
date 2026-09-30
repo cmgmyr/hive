@@ -739,4 +739,15 @@ describe("portfolio busy is moving", () => {
     ).run(id, livePid, OLD);
     assert.equal(row(p).lane, "moving");
   });
+
+  it("does not let a fired repeating wake keep an untouched in-progress todo fresh", () => {
+    const p = project();
+    needsHuman(p);
+    todo(p, { status: "in_progress", updated: at("-72 hours") });
+    wake(p, { due: at("+1 day"), repeat: 86400000, fired: at("-1 hour") });
+    const r = row(p);
+    assert.equal(r.lane, "waiting_on_you");
+    assert.ok(r.reasons.includes("stale_in_progress_48h"));
+    assert.ok(r.last_activity_at >= at("-1 hour"), "the wake fire still shows as last activity");
+  });
 });

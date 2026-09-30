@@ -102,7 +102,7 @@ function shiftedClock(now: string, modifier: string): string {
   return (ONE("SELECT datetime(?, ?) AS t", now, modifier) as { t: string }).t;
 }
 
-function lastActivity(projectId: number): string {
+function lastActivity(projectId: number, countWakeFires = true): string {
   const row = ONE(
     `SELECT MAX(t) AS t FROM (
        SELECT created_at AS t FROM projects WHERE id = :pid
@@ -114,7 +114,7 @@ function lastActivity(projectId: number): string {
        UNION ALL SELECT substr(l.created_at, 1, 19) FROM agent_state_log l
          WHERE l.actor_id IN (SELECT actor_id FROM agents WHERE project_id = :pid)
        UNION ALL SELECT created_at FROM wakes WHERE project_id = :pid
-       UNION ALL SELECT fired_at FROM wakes WHERE project_id = :pid
+       ${countWakeFires ? "UNION ALL SELECT fired_at FROM wakes WHERE project_id = :pid" : ""}
      )`,
     { pid: projectId },
   ) as { t: string };
@@ -209,6 +209,7 @@ function projectRow(
   };
 
   const lastActivityAt = lastActivity(project.id);
+  const staleClock = lastActivity(project.id, false);
   const staleBefore = shiftedClock(now, STALE_IN_PROGRESS);
   const activeTodos = todos.open + todos.in_progress;
 
@@ -220,7 +221,7 @@ function projectRow(
   if (wakeCounts.overdue_grace > 0) found.add("wake_overdue_5m");
   if (todos.blocked_in_progress > 0) found.add("in_progress_blocked");
   if (activeTodos > 0 && todos.blocked === activeTodos) found.add("all_active_todos_blocked");
-  if (todos.in_progress > 0 && liveWorking === 0 && lastActivityAt <= staleBefore) found.add("stale_in_progress_48h");
+  if (todos.in_progress > 0 && liveWorking === 0 && staleClock <= staleBefore) found.add("stale_in_progress_48h");
   if (liveWorking > 0) found.add("worker_working");
   if (todos.in_progress > 0) found.add("todo_in_progress");
   if (wakeCounts.upcoming > 0) found.add("wake_due_24h");
