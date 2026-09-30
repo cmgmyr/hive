@@ -605,3 +605,24 @@ it("documents the restart remedy and the lead-only generated notice without weak
   assert.match(rule, /Authored wake bodies stay verbatim/);
   assert.match(rule, /worker's server files no restart notice/);
 });
+
+describe("docs/queen.md names every operation the queen may write into another project", () => {
+  const source = readFileSync(join(REPO, "dist/context.js"), "utf8");
+  const decl = /QUEEN_REACH = \{([\s\S]*?)\n\};/.exec(source);
+  const WRITES = decl
+    ? [...decl[1].matchAll(/^\s*"?([\w ]+?)"?: "(todo|lead_wake|owned_lead_wake|lead_text|spin_up)",?$/gm)].map((m) => m[1])
+    : [];
+
+  it("parsed a real set of cross-project writes, so a silent parse failure cannot pass this block", () => {
+    assert.ok(decl, "QUEEN_REACH not found in dist/context.js");
+    assert.ok(WRITES.length >= 8, `parsed ${WRITES.length} cross-project writes; the regex has drifted`);
+    assert.ok(WRITES.includes("todo_create") && WRITES.includes("hive lead"));
+  });
+
+  it("carries each of them in backticks", () => {
+    const doc = readRepo("docs/queen.md");
+    for (const op of WRITES) {
+      assert.ok(doc.includes(`\`${op}`), `docs/queen.md does not name the queen write \`${op}\``);
+    }
+  });
+});
