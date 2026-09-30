@@ -33,7 +33,15 @@ export type LeadWatchResult =
   | { kind: "pending"; reason: string }
   | { kind: "invalid"; reason: string };
 
-export type PaneVeto = (lead: WatchedLead) => string | null;
+export interface PaneReaders {
+  awaitingChoice: (pane: string, command: string) => boolean | null;
+  holdsInput: (pane: string, command: string) => boolean;
+}
+
+const directPaneReaders: PaneReaders = {
+  awaitingChoice: (pane, command) => paneClassifierFor(command)?.choiceCheck(pane).awaitingChoice ?? null,
+  holdsInput: (pane, command) => holdsHumanInput(paneClassifierFor(command)?.inputBoxState(pane) ?? null),
+};
 
 export function leadSubscription(wakeId: number): LeadIdleSubscription | null {
   return (
@@ -54,13 +62,11 @@ export function runningLeadOf(projectId: number): WatchedLead | null {
 }
 
 // Reads the watched lead's screen only to stay quiet; it can never make a lead read idle.
-export function paneVeto(lead: WatchedLead): string | null {
-  const classifier = paneClassifierFor(lead.command);
-  if (!classifier) return "its screen cannot be classified";
-  const choice = classifier.choiceCheck(lead.tmux_target).awaitingChoice;
+export function paneVeto(lead: WatchedLead, readers: PaneReaders = directPaneReaders): string | null {
+  const choice = readers.awaitingChoice(lead.tmux_target, lead.command);
   if (choice === true) return "it is on a dialog";
   if (choice === null) return "its screen could not be read";
-  if (holdsHumanInput(classifier.inputBoxState(lead.tmux_target))) return "it has unsubmitted text in its input box";
+  if (readers.holdsInput(lead.tmux_target, lead.command)) return "it has unsubmitted text in its input box";
   return null;
 }
 
@@ -68,7 +74,7 @@ export function evaluateLeadWatch(
   sub: LeadIdleSubscription,
   mode: "any" | "all",
   snapshot: AliveSnapshot | null,
-  veto: PaneVeto,
+  readers: PaneReaders,
 ): LeadWatchResult {
   const lead = db
     .prepare("SELECT id, name, status, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE id = ? AND kind = ?")
@@ -83,10 +89,19 @@ export function evaluateLeadWatch(
 
   const state = readLeadTurnState(lead.id);
   if (state === null || state.pane_pid !== sub.pane_pid) return { kind: "pending", reason: "no turn recorded yet" };
-  if (sub.session_id !== "" && state.session_id !== sub.session_id) return { kind: "invalid", reason: LEAD_TARGET_RESTARTED };
+  let session = sub.session_id;
+  if (session === "" && state.state !== "unknown") {
+    session = state.session_id;
+    try {
+      db.prepare("UPDATE lead_idle_subscriptions SET session_id = ? WHERE wake_id = ? AND session_id = ''").run(session, sub.wake_id);
+    } catch {
+      // Unbound for another tick; the in-memory binding still judges this one.
+    }
+  }
+  if (session !== "" && state.session_id !== session) return { kind: "invalid", reason: LEAD_TARGET_RESTARTED };
   const ended = mode === "any" ? state.idle_seq > sub.baseline_idle_seq : state.state === "idle";
   if (!ended) return { kind: "pending", reason: `its turn state is ${state.state}` };
-  const vetoed = veto(lead);
+  const vetoed = paneVeto(lead, readers);
   if (vetoed !== null) return { kind: "pending", reason: `its turn ended, but ${vetoed}` };
   return { kind: "idle", idle_seq: state.idle_seq };
 }

@@ -197,4 +197,15 @@ describe("a lead's turn state comes from its own hooks", () => {
     }
     assert.equal(turn(lead.id).state, "working");
   });
+
+  it("a late SessionEnd from a superseded session does not reset the new session's turn", async () => {
+    const lead = seedAgent("lead", "l13");
+
+    await hook("prompt", PROMPT, lead.actor);
+    await hook("prompt", PROMPT_AFTER_CLEAR, lead.actor);
+    await hook("session_end", CLEAR, lead.actor);
+
+    assert.equal(turn(lead.id).state, "working");
+    assert.equal(turn(lead.id).session_id, SESSION_AFTER_CLEAR);
+  });
 });

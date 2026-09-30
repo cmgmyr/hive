@@ -273,7 +273,7 @@ const openLeadWatch = db.transaction(
   ): { id: number; session_id: string; baseline_idle_seq: number } => {
     const state = readLeadTurnState(target.agentId);
     const sameLaunch = state !== null && state.pane_pid === target.panePid;
-    const sessionId = sameLaunch ? state.session_id : "";
+    const sessionId = sameLaunch && state.state !== "unknown" ? state.session_id : "";
     const baseline = state?.idle_seq ?? 0;
     const row = db
       .prepare(

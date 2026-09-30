@@ -14,7 +14,7 @@ import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
-import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneVeto } from "./leadWatch.js";
+import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
   describeLiveTasks,
   describeOneTask,
@@ -2209,16 +2209,14 @@ async function maybeFireLeadWatch(
   choices: ChoiceCache,
 ): Promise<void> {
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
-  const veto: PaneVeto = (lead) => {
-    const dialog = awaitingChoice(lead.tmux_target, lead.command, choices);
-    if (dialog === true) return "it is on a dialog";
-    if (dialog === null) return "its screen could not be read";
-    return inputBoxHoldsWake(lead.tmux_target, lead.command, choices) ? "it has unsubmitted text in its input box" : null;
+  const readers: PaneReaders = {
+    awaitingChoice: (pane, command) => awaitingChoice(pane, command, choices),
+    holdsInput: (pane, command) => inputBoxHoldsWake(pane, command, choices),
   };
-  const result = evaluateLeadWatch(sub, timer.kind === "idle_all" ? "all" : "any", snapshot, veto);
+  const result = evaluateLeadWatch(sub, timer.kind === "idle_all" ? "all" : "any", snapshot, readers);
   const note =
     result.kind === "idle"
-      ? "watched lead's turn ended"
+      ? "watched lead's turn ended (not necessarily finished; read it before acting)"
       : result.kind === "invalid"
         ? `lead watch ended: ${result.reason}`
         : timedOut

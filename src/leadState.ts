@@ -48,7 +48,8 @@ export function nextLeadTurn(
       if (base.state !== "working" || subagentsLive()) return base;
       return { ...base, state: "idle", idle_seq: base.idle_seq + 1 };
     case "session_end":
-      return { ...base, state: "unknown" };
+      if (cur === null || cur.session_id !== sessionId) return null;
+      return { pane_pid: cur.pane_pid, session_id: sessionId, state: "unknown", idle_seq: cur.idle_seq };
     default:
       return null;
   }
