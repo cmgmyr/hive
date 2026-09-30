@@ -49,6 +49,7 @@ import {
   sanitizeTail,
   sendText,
   tailCaptureLines,
+  sleep,
   tmuxSocketPath,
   type AliveSnapshot,
   type InputBoxState,
@@ -2097,6 +2098,43 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   };
 }
 
+const PANE_CLAIM_TTL_SECONDS = 6;
+const PANE_CLAIM_SETTLE_MS = 500;
+
+const PANE_CLAIM_OWNER = "hive:scheduler";
+
+function acquirePaneClaim(projectId: number, key: string): string | null {
+  try {
+    stmt("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, 'hive scheduler', 'scheduler')").run(PANE_CLAIM_OWNER);
+    stmt("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')").run(projectId, key);
+    const row = stmt(
+      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
+       VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
+       ON CONFLICT(project_id, lock_key) DO NOTHING
+       RETURNING expires_at`,
+    ).get(projectId, key, PANE_CLAIM_OWNER, PANE_CLAIM_TTL_SECONDS) as { expires_at: string } | undefined;
+    return row?.expires_at ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Serializes check-then-type per pane ACROSS scheduler instances: the per-wake claim is atomic but two
+// instances claiming different wakes for one pane would otherwise both paste before either submits.
+// A loser skips this tick and its wake stays unclaimed.
+async function withPaneClaim(timer: TimerRow, fn: () => Promise<boolean>): Promise<void> {
+  const key = `wake-pane:${timer.deliver_socket}:${timer.deliver_pane}`;
+  const held = timer.deliver_pane ? acquirePaneClaim(timer.project_id, key) : null;
+  if (held === null) return;
+  try {
+    // Settle: a slow TUI still showing the pasted text would make the next instance hold instead of type.
+    if (await fn()) await sleep(PANE_CLAIM_SETTLE_MS);
+  } finally {
+    // Match this acquire's expires_at: after a TTL takeover the owner is shared, so owner alone would delete the taker's row.
+    bestEffortRun("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at = ?", timer.project_id, key, held);
+  }
+}
+
 async function fireDelay(
   timer: TimerRow,
   snapshot: AliveSnapshot | null,
@@ -2120,8 +2158,16 @@ async function fireDelay(
     );
     return;
   }
+  await withPaneClaim(timer, () => fireDelayClaimed(timer, snapshot, choices));
+}
+
+async function fireDelayClaimed(
+  timer: TimerRow,
+  snapshot: AliveSnapshot | null,
+  choices: ChoiceCache,
+): Promise<boolean> {
   const decision = deliverable(timer, snapshot, choices);
-  if (!decision.ok) return;
+  if (!decision.ok) return false;
   let claimed: boolean;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
@@ -2137,7 +2183,9 @@ async function fireDelay(
   } else {
     claimed = claimOneShot(timer);
   }
-  if (claimed) await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt);
+  if (!claimed) return false;
+  await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt);
+  return true;
 }
 
 function claimOneShot(timer: TimerRow): boolean {
@@ -2210,10 +2258,12 @@ async function maybeFireIdle(
 
     if (snapshot !== null && !timedOut) noteBlockedWatched(timer, snapshot, choices);
     if (timedOut) {
-      const decision = deliverable(timer, snapshot, choices);
-      if (decision.ok && claimOneShot(timer)) {
+      await withPaneClaim(timer, async () => {
+        const decision = deliverable(timer, snapshot, choices);
+        if (!decision.ok || !claimOneShot(timer)) return false;
         await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt);
-      }
+        return true;
+      });
     }
     return;
   }
@@ -2231,10 +2281,12 @@ async function maybeFireIdle(
     if (!ready) noteBlockedWatched(timer, snapshot, choices);
   }
   if (ready) {
-    const decision = deliverable(timer, snapshot, choices);
-    if (decision.ok && claimOneShot(timer)) {
+    await withPaneClaim(timer, async () => {
+      const decision = deliverable(timer, snapshot, choices);
+      if (!decision.ok || !claimOneShot(timer)) return false;
       await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
-    }
+      return true;
+    });
   }
 }
 
@@ -2262,12 +2314,15 @@ async function maybeFireLeadWatch(
           ? "max wait reached"
           : null;
   if (note === null) return;
-  const decision = deliverable(timer, snapshot, choices);
-  if (!decision.ok || !claimOneShot(timer)) return;
-  if (result.kind === "invalid") {
-    bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
-  }
-  await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt);
+  await withPaneClaim(timer, async () => {
+    const decision = deliverable(timer, snapshot, choices);
+    if (!decision.ok || !claimOneShot(timer)) return false;
+    if (result.kind === "invalid") {
+      bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
+    }
+    await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt);
+    return true;
+  });
 }
 
 const TAIL_AGENTS = 3;
