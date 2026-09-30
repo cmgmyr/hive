@@ -505,7 +505,7 @@ describe(
       pinProject = addProject(pinProjectDir, "pinproj63");
       const envDumpDir = mkdtempSync(join(unitRoot, "envdump63-"));
       envFile = join(envDumpDir, "out.env");
-      const commandString = `sh -c "env > ${envFile}; sleep 30"`;
+      const commandString = `sh -c "env > ${envFile}.tmp; mv ${envFile}.tmp ${envFile}; sleep 30"`;
       const { agentId: id } = launchAgent({
         projectId: pinProject.id,
         projectName: pinProject.name,
@@ -529,11 +529,11 @@ describe(
 
     it("delivers the real project path and lock to the spawned process, not the caller-supplied override", async () => {
       let content;
-      await until(() => {
+      assert.ok(await until(() => {
         if (!existsSync(envFile)) return false;
         content = readFileSync(envFile, "utf8");
         return content.includes("HIVE_PROJECT_PATH=");
-      }, 5000);
+      }, 5000), "env dump never appeared");
       assert.ok(content, `env dump never appeared at ${envFile}`);
       assert.match(content, new RegExp(`HIVE_PROJECT_PATH=${escapeRegex(pinProject.path)}$`, "m"));
       assert.match(content, /^HIVE_PROJECT_LOCK=1$/m);

@@ -34,10 +34,12 @@ writeFileSync(join(fakeHome, ".codex", "auth.json"), JSON.stringify({ tokens: "n
 const binDir = join(dirs.tmp, "codex-lead-bin");
 mkdirSync(binDir, { recursive: true });
 const argvFile = join(dirs.tmp, "codex-lead-argv.txt");
+const argvTemp = join(dirs.tmp, "codex-lead-argv.tmp");
 const envFile = join(dirs.tmp, "codex-lead-env.txt");
+const envTemp = join(dirs.tmp, "codex-lead-env.tmp");
 writeFileSync(
   join(binDir, "codex"),
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nenv > ${JSON.stringify(envFile)}\nsleep 600\n`,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 600\n`,
 );
 chmodSync(join(binDir, "codex"), 0o755);
 
@@ -109,7 +111,7 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
     });
 
     it("the pane actually received the triage message as its argv, not just the stored command string", async () => {
-      await until(() => existsSync(argvFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile), 5000), "codex argv snapshot never appeared");
       const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
       assert.equal(argv.at(-2), "--", "the message follows -- so a leading dash is never a flag");
       assert.ok(
@@ -127,7 +129,7 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
 
     it("the generated home's MCP server env carries the lead pane's own HIVE_LEAD, HIVE_DATA_DIR, HIVE_AGENT_ID and HIVE_AGENT_NAME (todo 1404)", async () => {
       const row = leadRow(db, project.id);
-      await until(() => existsSync(envFile), 5000);
+      assert.ok(await until(() => existsSync(envFile), 5000), "codex env snapshot never appeared");
       const paneEnv = Object.fromEntries(
         readFileSync(envFile, "utf8").split("\n").filter((l) => l.startsWith("HIVE_")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
       );
