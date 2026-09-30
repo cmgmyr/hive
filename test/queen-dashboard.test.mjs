@@ -38,7 +38,7 @@ function proj(id, lane, over = {}) {
     root_exists: true,
     lane,
     reasons: [lane === "quiet" ? "quiet" : lane === "stuck" ? "dead_lead_pane" : lane === "moving" ? "worker_working" : "needs_human"],
-    lead: { state: "alive", agent_id: id },
+    lead: { state: "alive", agent_id: id, turn: "unknown" },
     workers: { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 },
     todos: { open: 3, in_progress: 1, blocked: 0, blocked_in_progress: 0, high: 0 },
     needs_human: 0,
@@ -161,13 +161,36 @@ describe("renderQueenDashboard", () => {
   it("lists needs-human titles with +N more, and labels reasons from the collector's codes", () => {
     const items = [1, 2].map((i) => ({ todo_id: i, title: `Title ${i}`, slug: null, updated_at: "2026-09-29 11:30:00" }));
     const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, reasons: ["needs_human", "worker_needs_input"] });
-    const html = renderQueenDashboard(report([p, proj(2, "stuck", { reasons: ["dead_lead_pane", "wake_overdue_5m"], lead: { state: "dead_pane", agent_id: 2 } })]), { kind: "missing" }, noLinks);
+    const html = renderQueenDashboard(report([p, proj(2, "stuck", { reasons: ["dead_lead_pane", "wake_overdue_5m"], lead: { state: "dead_pane", agent_id: 2, turn: "unknown" } })]), { kind: "missing" }, noLinks);
     assert.match(html, /Title 1/);
     assert.match(html, /\+5 more/);
     assert.match(html, /A worker is waiting for input/);
     assert.match(html, /Lead pane is dead/);
     assert.match(html, /A wake is overdue/);
     assert.match(html, /lead dead/);
+  });
+
+  it("shows the report's turn beside lead up on a card and a grid row, and nothing when unknown", () => {
+    const ended = renderQueenDashboard(report([proj(1, "moving", { lead: { state: "alive", agent_id: 1, turn: "turn_ended" } })]), { kind: "missing" }, noLinks);
+    assert.equal((ended.match(/<span class="turn turn-end">turn ended<\/span>/g) ?? []).length, 2);
+    const working = renderQueenDashboard(report([proj(1, "moving", { lead: { state: "alive", agent_id: 1, turn: "working" } })]), { kind: "missing" }, noLinks);
+    assert.match(working, /<span class="turn turn-work">working<\/span>/);
+    const unknown = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.doesNotMatch(unknown, /class="turn /);
+  });
+
+  it("lists recent queen actions with the project name, escaping every audit string", () => {
+    const row = { id: 1, actor_id: "<b>a</b>", home_project_id: 9, target_project_id: 1, operation: "todo_comment<i>", resource_type: "todo", resource_id: 42, summary: "<script>alert(1)</script>", created_at: "2026-09-29 11:00:00" };
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks, [row]);
+    assert.match(html, /Recent queen actions/);
+    assert.match(html, /proj-1<\/span><span class="audit-op">todo_comment&lt;i&gt;<\/span><span class="ref">todo #42<\/span>/);
+    assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /<script>alert/);
+  });
+
+  it("shows an empty state line when there are no queen actions", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.match(html, /No queen actions recorded yet/);
   });
 
   it("names a missing project folder in the grid and renders the name as text without a link", () => {

@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { db } from "./db.js";
+import type { QueenAuditRow } from "./queenAudit.js";
 import type { PortfolioLane, PortfolioProject, PortfolioReason, PortfolioReport } from "./portfolio.js";
 
 export const QUEEN_BRIEF_KEY = "queen:brief";
@@ -165,10 +166,19 @@ function projectLink(p: PortfolioProject, href: (p: PortfolioProject) => string 
     : `<a class="proj" href="${esc(url)}" title="Open ${esc(p.name)}’s dashboard">${esc(p.name)}</a>`;
 }
 
+function turnText(p: PortfolioProject): string {
+  return p.lead.turn === "working" ? "working" : p.lead.turn === "turn_ended" ? "turn ended" : "";
+}
+
+function turnPill(p: PortfolioProject): string {
+  const t = turnText(p);
+  return t === "" ? "" : ` <span class="turn turn-${p.lead.turn === "working" ? "work" : "end"}">${esc(t)}</span>`;
+}
+
 function leadPill(p: PortfolioProject): string {
   switch (p.lead.state) {
     case "alive":
-      return '<span class="status status-ok">lead up</span>';
+      return `<span class="status status-ok">lead up</span>${turnPill(p)}`;
     case "dead_pane":
       return '<span class="status status-fail">lead dead</span>';
     case "unknown":
@@ -265,7 +275,7 @@ function quietList(
     '<section class="card"><ul class="quiet-list">' +
     list
       .map((p) => {
-        const sub = `${p.lead.state === "alive" ? "lead up" : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
+        const sub = `${p.lead.state === "alive" ? (turnText(p) ? `lead up, ${turnText(p)}` : "lead up") : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
         return (
           `<li data-project="${p.id}"><span>${projectLink(p, href)}` +
           `<a class="sub" href="#row-${p.id}" data-jump="${p.id}">${esc(sub)}</a></span>` +
@@ -442,7 +452,7 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .drift { margin: 0.5rem 0 0; grid-column: 1 / -1; padding: 0.55rem 0.75rem; border-radius: var(--r-ctl); background: var(--warn-bg); color: var(--fg); font-size: 0.8125rem; }
 .drift strong { color: var(--warn); font-weight: 650; }
 .grid { display: grid; }
-.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 6.2rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
+.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 10.5rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
 .g-row:hover:not(.g-head) { background: var(--hover); }
 .g-head { font-size: 0.75rem; color: var(--fg-subtle); font-weight: 550; border-top: 0; padding-block: 0.2rem 0.4rem; }
 .g-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
@@ -511,6 +521,14 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .quiet-list li:first-child { border-top: 0; }
 .quiet-list .sub { display: block; color: var(--fg-subtle); font-size: 0.75rem; text-decoration: none; }
 a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.turn { font-size: 0.75rem; color: var(--fg-muted); }
+.turn-work { color: var(--live); }
+.c-audit { margin-top: 1.5rem; padding-bottom: 0.85rem; }
+.c-audit .audit-list, .c-audit .brief-empty { padding: 0 1.1rem; }
+.audit-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.8125rem; }
+.audit-list li { display: flex; flex-wrap: wrap; gap: 0.15rem 0.75rem; align-items: baseline; }
+.audit-op { font-weight: 600; }
+.audit-sum { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
 .d-grid { margin-top: 1.5rem; }
 .d-grid .g-row:not(.g-head) { box-shadow: inset 3px 0 0 var(--lane, transparent); }
 .d-grid .g-row { scroll-margin-top: 6rem; transition: background-color 600ms ease; }
@@ -544,10 +562,30 @@ const MARK =
 
 export const QUEEN_GENERATED_MARKER = "data-generated";
 
+function auditSection(audit: QueenAuditRow[], report: PortfolioReport): string {
+  const names = new Map(report.projects.map((p) => [p.id, p.name]));
+  const body = audit.length
+    ? '<ul class="audit-list">' +
+      audit
+        .map(
+          (a) =>
+            `<li><span class="age">${esc(a.created_at)} UTC</span>` +
+            `<span class="proj">${esc(names.get(a.target_project_id) ?? `project #${a.target_project_id}`)}</span>` +
+            `<span class="audit-op">${esc(a.operation)}</span>` +
+            `<span class="ref">${esc(a.resource_type)} #${a.resource_id}</span>` +
+            `<span class="audit-sum">${esc(a.summary)}</span></li>`,
+        )
+        .join("") +
+      "</ul>"
+    : '<p class="brief-empty">No queen actions recorded yet.</p>';
+  return `<section class="card c-audit"><div class="card-head"><h2>Recent queen actions</h2><span class="card-sub">the newest writes the queen made into other projects</span></div>${body}</section>`;
+}
+
 export function renderQueenDashboard(
   report: PortfolioReport,
   briefState: QueenBriefState,
   href: (p: PortfolioProject) => string | null = (p) => dashboardHref(p.root),
+  audit: QueenAuditRow[] = [],
 ): string {
   const asOf = report.as_of;
   const byLane = new Map<PortfolioLane, PortfolioProject[]>(LANE_ORDER.map((l) => [l, []]));
@@ -584,7 +622,8 @@ export function renderQueenDashboard(
         `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
         '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +
-        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></section>';
+        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></section>' +
+        auditSection(audit, report);
 
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
