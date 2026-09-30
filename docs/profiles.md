@@ -85,7 +85,7 @@ For an established project, it can also ask permission to read a bounded, recent
 
 ## Session-start kickoff (optional plugin)
 
-Symlink the plugin once per machine (not per project) and a session opened in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, pending wake-ups, and an instruction to run triage.
+Symlink the plugin once per machine (not per project) and a session opened in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, and pending wake-ups. A lead gets a first message only when `first_message` is set.
 
 ```bash
 ln -s <checkout>/claude-plugin ~/.claude/skills/hive

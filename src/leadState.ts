@@ -22,7 +22,7 @@ export function readLeadTurnState(agentId: number): LeadTurnState | null {
   return (db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(agentId) as LeadTurnState | undefined) ?? null;
 }
 
-function isHiveTriage(payload: LeadHookPayload): boolean {
+function isHiveFirstMessage(payload: LeadHookPayload): boolean {
   if (typeof payload.prompt !== "string") return false;
   const prompt = payload.prompt.trim();
   const launched = process.env[FIRST_MESSAGE_SHA_ENV];
@@ -46,7 +46,7 @@ export function nextLeadTurn(
     : { pane_pid: panePid, session_id: sessionId, state: "unknown" as LeadTurn, idle_seq: cur?.idle_seq ?? 0 };
   switch (event) {
     case "prompt":
-      return isHiveTriage(payload) ? base : { ...base, state: "working" };
+      return isHiveFirstMessage(payload) ? base : { ...base, state: "working" };
     case "stop":
       if (base.state !== "working" || subagentsLive()) return base;
       return { ...base, state: "idle", idle_seq: base.idle_seq + 1 };

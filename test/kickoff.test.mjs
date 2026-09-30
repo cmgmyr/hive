@@ -602,7 +602,7 @@ describe("the SessionStart first message is configurable", () => {
     yml("profile: orchestration\n");
     assert.match((await kickoff(["--explain"])).stdout, /first message \(global\): global says hi/);
     yml("profile: orchestration\nfirst_message: ''\n");
-    assert.match((await kickoff(["--explain"])).stdout, /first message: none/);
+    assert.match((await kickoff(["--explain"])).stdout, /first message: none \(empty string in hive.yml\)/);
     yml("profile: orchestration\nfirst_message: mine\n");
     assert.match((await kickoff(["--explain"])).stdout, /first message \(project\): mine/);
   });
