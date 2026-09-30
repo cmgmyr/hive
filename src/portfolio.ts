@@ -234,7 +234,7 @@ function projectRow(
   ];
   const TODO_GRAPH: PortfolioReason[] = ["in_progress_blocked", "all_active_todos_blocked", "stale_in_progress_48h"];
   const freshInProgress = todos.in_progress > todos.blocked_in_progress && !found.has("stale_in_progress_48h");
-  const movingSignal = liveWorking > 0 || lead.turn === "working" || freshInProgress;
+  const movingSignal = liveWorking > 0 || freshInProgress;
   let lane: PortfolioLane;
   if (HARD_STALL.some((r) => found.has(r))) lane = "stuck";
   else if (movingSignal) lane = "moving";

@@ -728,7 +728,7 @@ describe("portfolio busy is moving", () => {
     assert.equal(row(p).lane, "stuck");
   });
 
-  it("puts a working lead turn with nothing else in moving", { skip }, () => {
+  it("does not let a working lead turn alone make a project moving, and keeps needs-human in waiting_on_you", { skip }, () => {
     const p = project();
     const id = agent(p, { kind: "lead", state: "idle", target: livePane() });
     const target = db.prepare("SELECT tmux_target FROM agents WHERE id = ?").get(id).tmux_target;
@@ -737,7 +737,10 @@ describe("portfolio busy is moving", () => {
     db.prepare(
       "INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at) VALUES (?, ?, 's', 'working', 1, 'stop', ?)",
     ).run(id, livePid, OLD);
-    assert.equal(row(p).lane, "moving");
+    needsHuman(p);
+    const r = row(p);
+    assert.equal(r.lead.turn, "working");
+    assert.equal(r.lane, "waiting_on_you");
   });
 
   it("does not let a fired repeating wake keep an untouched in-progress todo fresh", () => {
