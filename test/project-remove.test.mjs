@@ -43,8 +43,10 @@ describe("removeProject", () => {
       "INSERT INTO queen_audit (actor_id, home_project_id, target_project_id, operation, resource_type, resource_id, summary) VALUES ('q', ?, ?, 'todo_create', 'todo', 1, 's')",
     ).run(keep, gone);
 
+    const watcherWake = db.prepare("INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'q', 'x', 'q', 'q') RETURNING id").get(keep).id;
+    db.prepare("INSERT INTO lead_idle_subscriptions (wake_id, target_project_id, agent_id, pane_pid) VALUES (?, ?, 1, '1')").run(watcherWake, gone);
     const counts = projectRowCounts(gone);
-    for (const t of [...PROJECT_OWNER_TABLES, "todo_comments", "agent_messages", "lead_idle_subscriptions"]) {
+    for (const t of [...PROJECT_OWNER_TABLES, "todo_comments", "agent_messages"]) {
       assert.equal(counts[t], 1, `${t} counted`);
     }
 
@@ -55,7 +57,7 @@ describe("removeProject", () => {
 
     for (const t of PROJECT_OWNER_TABLES) assert.equal(naming(t, "project_id", gone), 0, t);
     assert.equal(naming("agent_messages", "project_id", gone), 0);
-    assert.equal(naming("lead_idle_subscriptions", "target_project_id", gone), 0);
+    assert.equal(naming("lead_idle_subscriptions", "target_project_id", gone), 1, "a watcher in another project keeps its subscription");
     assert.equal(naming("dashboard_meta", "project_id", gone), 0);
     assert.equal(naming("projects", "id", gone), 0);
     assert.equal(naming("queen_audit", "target_project_id", gone), 1);

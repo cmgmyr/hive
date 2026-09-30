@@ -15,7 +15,6 @@ const COUNTED_TABLES: readonly [string, string][] = [
   ...PROJECT_OWNER_TABLES.map((t): [string, string] => [t, `SELECT COUNT(*) AS n FROM ${t} WHERE project_id = ?`]),
   ["todo_comments", "SELECT COUNT(*) AS n FROM todo_comments WHERE todo_id IN (SELECT id FROM todos WHERE project_id = ?)"],
   ["agent_messages", "SELECT COUNT(*) AS n FROM agent_messages WHERE project_id = ?"],
-  ["lead_idle_subscriptions", "SELECT COUNT(*) AS n FROM lead_idle_subscriptions WHERE target_project_id = ?"],
 ];
 
 export function projectRowCounts(projectId: number): Record<string, number> {
@@ -57,7 +56,6 @@ const deleteProjectRows = db.transaction(
       throw new Error(`project ${projectId} ("${name}") changed while the snapshot was taken; nothing removed, run it again.`);
     }
     db.prepare("DELETE FROM agent_messages WHERE project_id = ?").run(projectId);
-    db.prepare("DELETE FROM lead_idle_subscriptions WHERE target_project_id = ?").run(projectId);
     if (db.prepare("DELETE FROM projects WHERE id = ?").run(projectId).changes === 0) {
       throw new Error(`no project ${projectId}.`);
     }

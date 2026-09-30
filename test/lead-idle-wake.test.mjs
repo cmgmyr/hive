@@ -387,4 +387,18 @@ describe("the queen waits on another project's lead ending a turn", () => {
     await until(() => markers(queenPane, armed.wake_id) === 1);
     assert.equal(subRow(armed.wake_id).terminal_reason, "LEAD_TARGET_RESTARTED");
   });
+
+  it("removing the watched project keeps the subscription, so the queen's watch ends as LEAD_TARGET_GONE, not max wait reached", SKIP, async () => {
+    const { removeProject } = await import("../dist/projectRemove.js");
+    const armed = await queenMcp.call("wake_when_idle", { lead_project_id: beta.id, body: "removed body" });
+    db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(betaLead.id);
+
+    removeProject(beta.id, { snapshot: false });
+    assert.ok(subRow(armed.wake_id), "the subscription row survives the removal");
+    await tickOnce();
+
+    await until(() => markers(queenPane, armed.wake_id) === 1);
+    assert.equal(subRow(armed.wake_id).terminal_reason, "LEAD_TARGET_GONE");
+    assert.doesNotMatch(screen(queenPane), /max wait reached/);
+  });
 });
