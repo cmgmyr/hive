@@ -394,7 +394,7 @@ describe("queen dashboard generation", () => {
     forceClaim();
     await tick(null);
     const first = readFileSync(page(), "utf8");
-    db.prepare("UPDATE kv SET value = ? WHERE project_id = ? AND key = ?").run("{}", queen.id, QUEEN_BRIEF_KEY);
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run("{}", queen.id, QUEEN_BRIEF_KEY);
     await tick(null);
     assert.equal(readFileSync(page(), "utf8"), first);
   });
