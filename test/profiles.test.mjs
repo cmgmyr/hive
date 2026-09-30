@@ -323,6 +323,7 @@ describe("hive runbook and hive profile", () => {
   const cliOpts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 
   it("prints the profile runbook with the project's vars resolved", async () => {
+    await runCli(["init", "--no-profile"], cliOpts);
     writeFileSync(
       join(dirs.projectDir, "hive.yml"),
       "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n  ticket_prefix: DEVX\n",

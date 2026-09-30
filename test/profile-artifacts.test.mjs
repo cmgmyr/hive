@@ -69,12 +69,10 @@ describe("todo 339/454: a fork-local .md that is not one of the three named file
   it("`hive profile read` defaults to the current project's profile and vars", async () => {
     writeExtra("orchestration", "extra.md", "Repo under review: {{repo}}\n");
     const dirs = scratchDirs();
+    const opts = { cwd: dirs.projectDir, dataDir: scratch, tmp: dirs.tmp };
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n");
-    const { code, stdout } = await runCli(["profile", "read", "extra.md"], {
-      cwd: dirs.projectDir,
-      dataDir: scratch,
-      tmp: dirs.tmp,
-    });
+    const { code, stdout } = await runCli(["profile", "read", "extra.md"], opts);
     assert.equal(code, 0, stdout);
     assert.match(stdout, /Repo under review: cmgmyr\/hive/);
   });
@@ -212,6 +210,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "posture.md"), "Lead for {{repo}}.\n");
     writeFileSync(join(dir, "extra.md"), "unrelated extra\n");
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: orchestration\nvars:\n  repo: cmgmyr/hive\n");
 
     const { code, stdout } = await runCli(["posture"], opts);

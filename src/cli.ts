@@ -368,6 +368,29 @@ function resolveProjectForWrite(verb: string, path?: string, onNotice?: (text: s
   return resolveProject(path, onNotice);
 }
 
+function resolveProjectForRead(verb: string, path?: string): Project {
+  if (path) {
+    process.chdir(path);
+    const pinned = agentProjectPin();
+    if (pinned != null) {
+      const target = findProjectForCwd();
+      if (target == null || target.id !== pinned) {
+        throw new Error(
+          `This session is locked to project ${pinned} ("${getProject(pinned)!.name}") but "${path}" resolves to ${
+            target ? `project ${target.id} ("${target.name}")` : "no registered project"
+          }. An explicit path argument cannot escape HIVE_PROJECT_LOCK=1. Unset HIVE_AGENT_ID and HIVE_PROJECT_LOCK in this pane, or open a new one, to act on a different project.`,
+        );
+      }
+    }
+  }
+  const project = pinnedOrCwdProject();
+  if (project) return project;
+  console.error(
+    `hive ${verb}: this directory is not a registered hive project. cd to a registered checkout, or run \`hive init\` here to register it.`,
+  );
+  process.exit(1);
+}
+
 function pinnedOrCwdProject(): Project | null {
   const pinned = agentProjectPin();
   if (pinned != null) return getProject(pinned) ?? null;
@@ -1385,7 +1408,7 @@ itself to this project before any real work runs.`);
 const NO_RUNBOOK_PAD_MESSAGE = `is on "profile: none" but has no runbook pad. Create one with: hive init`;
 
 function cmdRunbook(path?: string): void {
-  const project = resolveProject(path);
+  const project = resolveProjectForRead("runbook", path);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   const profile = activeProfile(config);
@@ -1414,7 +1437,7 @@ function cmdRunbook(path?: string): void {
 }
 
 function cmdPosture(path?: string): void {
-  const project = resolveProject(path);
+  const project = resolveProjectForRead("posture", path);
   const { config, warnings } = loadProjectYml(project.path);
   for (const w of warnings) console.log(`! ${w}`);
   const profile = activeProfile(config);
@@ -1551,7 +1574,7 @@ function cmdProfile(argv: string[]): void {
           const here = findProjectForCwd();
           vars = mergedProjectVars(here ? loadProjectYml(here.path).config : null);
         } else {
-          const project = resolveProject();
+          const project = resolveProjectForRead("profile read");
           const { config, warnings } = loadProjectYml(project.path);
           for (const w of warnings) console.log(`! ${w}`);
           const active = activeProfile(config);
@@ -3797,8 +3820,7 @@ function requireFlagValues(command: string, parsed: ParsedArgs): void {
 }
 
 function cmdTodos(argv: string[]): void {
-  const project = pinnedOrCwdProject();
-  if (!project) return;
+  const project = resolveProjectForRead("todos");
 
   const all = argv.includes("--all");
   const statusIdx = argv.indexOf("--status");
@@ -3861,8 +3883,7 @@ function cmdTodos(argv: string[]): void {
 }
 
 function cmdTodo(argv: string[]): void {
-  const project = pinnedOrCwdProject();
-  if (!project) return;
+  const project = resolveProjectForRead("todo");
 
   const id = Number(argv.find((a) => !a.startsWith("--")));
   if (!Number.isInteger(id)) {
@@ -3907,7 +3928,7 @@ function cmdTodo(argv: string[]): void {
 }
 
 function cmdPads(): void {
-  const project = resolveProject();
+  const project = resolveProjectForRead("pads");
   const pads = listActivePads(project.id);
   if (pads.length === 0) {
     console.log(`No pads in project "${project.name}".`);
@@ -3930,7 +3951,7 @@ function cmdPad(argv: string[]): void {
     console.log("Usage: hive pad <name> [--edit | --save [file]]  (run inside the project)");
     process.exit(1);
   }
-  const project = parsed.flags.has("--save") ? resolveProjectForWrite("hive pad --save") : resolveProject();
+  const project = parsed.flags.has("--save") ? resolveProjectForWrite("hive pad --save") : resolveProjectForRead("pad");
   const pad = getActivePadByName(project.id, name);
   if (!pad) {
     console.log(`No pad named "${name}" in project "${project.name}". List them with: hive pads`);

@@ -94,7 +94,7 @@ describe(
         dataDir: dirs.dataDir,
         env: {},
       });
-      assert.equal(code, 0);
+      assert.equal(code, 1);
       assert.equal(stdout.trim(), "");
       const after = (await mcp.call("project_list")).projects.length;
       assert.equal(after, before);
@@ -156,19 +156,19 @@ describe(
       assert.equal(after, before);
     });
 
-    it("(finding 2c) control: an UNLOCKED session with a path argument is unaffected - it still registers an unregistered path exactly as before", async () => {
+    it("(finding 2c) an UNLOCKED read verb given a path to an unregistered dir refuses and registers nothing", async () => {
 
       const before = (await mcp.call("project_list")).projects.length;
       const fresh = unregisteredDir("finding2c");
-      const { code, stdout } = await runCli(["runbook", fresh], {
+      const { code, stderr } = await runCli(["runbook", fresh], {
         cwd: unregisteredDir("finding2c-cwd"),
         dataDir: dirs.dataDir,
         env: {},
       });
       assert.equal(code, 1);
-      assert.match(stdout, /This project has no profile/);
+      assert.match(stderr, /not a registered hive project/);
       const after = (await mcp.call("project_list")).projects.length;
-      assert.equal(after, before + 1);
+      assert.equal(after, before);
     });
   },
 );

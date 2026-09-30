@@ -26,6 +26,7 @@ describe("todo 597: agents_* conditional vars render through the real profile re
       "posture.md": "posture\n",
       "runbook.md": CONDITIONAL,
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\nagents:\n  - claude\n  - codex\n");
 
     const out = await runCli(["runbook"], opts);
@@ -40,6 +41,7 @@ describe("todo 597: agents_* conditional vars render through the real profile re
       "posture.md": "posture\n",
       "runbook.md": CONDITIONAL,
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\n");
 
     const out = await runCli(["runbook"], opts);
@@ -54,6 +56,7 @@ describe("todo 597: agents_* conditional vars render through the real profile re
       "posture.md": CONDITIONAL,
       "runbook.md": "runbook\n",
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\nagents:\n  - codex\n");
 
     const out = await runCli(["posture"], opts);
@@ -69,6 +72,7 @@ describe("todo 597: agents_* conditional vars render through the real profile re
       "runbook.md": "runbook\n",
       "extra.md": CONDITIONAL,
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\nagents:\n  - codex\n");
 
     const out = await runCli(["profile", "read", "extra.md"], opts);
@@ -85,6 +89,7 @@ describe("todo 597: hive doctor stays quiet about derived agents_* vars", () => 
       "posture.md": "posture\n",
       "runbook.md": CONDITIONAL,
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\nagents:\n  - claude\n  - codex\n");
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
@@ -101,6 +106,7 @@ describe("todo 597: hive doctor stays quiet about derived agents_* vars", () => 
       "posture.md": "posture\n",
       "runbook.md": CONDITIONAL,
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\n");
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
@@ -140,6 +146,7 @@ describe("todo 597: hive doctor warns when a hive.yml var collides with a derive
       "posture.md": "posture\n",
       "runbook.md": "runbook\n",
     });
+    await runCli(["init", "--no-profile"], opts);
     writeFileSync(join(dirs.projectDir, "hive.yml"), "profile: agents-repro\nvars:\n  foo: bar\n");
     const init = await runCli(["init"], opts);
     assert.equal(init.code, 0, init.stderr);
