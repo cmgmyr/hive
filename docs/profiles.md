@@ -23,7 +23,7 @@ Resolution is per file, not per profile, so a file you never forked keeps tracki
 
 `hive doctor` fails a profile with no readable `runbook.md`, on the grounds that a lead using it then has no standing process; `posture.md` and `worker.md` have no such gate.
 
-Two profiles ship: `orchestration` (a lead delegating to workers) and `simple` (one session doing the work itself, posture only). Neither carries anything beyond the three. A profile the `profile` skill (below) generates for you is not bound by that: it starts from whichever base you picked, but only carries what your interview actually surfaced, so a generated `simple` profile also gets a short `runbook.md` written from your own answers, even though the shipped `simple` base ships posture only.
+Three profiles ship: `orchestration` (a lead delegating to workers), `simple` (one session doing the work itself, posture only), and `queen` (the lead of `hive queen`, which reads every registered project; posture and a skeleton runbook only, see [the queen guide](queen.md#make-it-yours)). None carries anything beyond the files it needs. A profile the `profile` skill (below) generates for you is not bound by that: it starts from whichever base you picked, but only carries what your interview actually surfaced, so a generated `simple` profile also gets a short `runbook.md` written from your own answers, even though the shipped `simple` base ships posture only.
 
 ```bash
 hive profile list                      # what exists, where each file resolves, what drifted

@@ -27,3 +27,7 @@ The dashboard is read-only. It escapes displayed project data and includes no fo
 `hive` and `hive lead` open the dashboard in a browser at most once every eight hours. Pass `--no-dashboard` to skip that browser open for one invocation. If an older `.claude/dashboard/index.html` is still present, `hive doctor` reports it so you can remove it yourself.
 
 The Live toggle controls a script timer that reloads the `file://` page every ten seconds. A timer can be stopped by the toggle, unlike a meta refresh scheduled while the page parses. Turning Live off stops the page reload, but it does not stop the scheduler from regenerating the file because a file page has no channel back to hive.
+
+## The queen's dashboard
+
+The queen has its own page, separate from the per-project ones: `<data dir>/queen/dashboard.html`, opened by `hive queen`. It lists every project by lane. See [The queen dashboard](queen.md#the-queen-dashboard).

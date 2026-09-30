@@ -45,6 +45,10 @@ Each Claude Code session runs its own `hive` MCP server over stdio, and every in
 
 Hive workers can still use subagents. See [Why not subagents?](docs/concepts.md#why-not-subagents) for the longer answer.
 
+## Running several projects
+
+If you keep more than one project registered, `hive queen` starts a single lead that reads all of them. `hive portfolio` sorts them into waiting on you, stuck, moving and quiet, and `hive next` attaches you to the lead that needs you most. The queen writes into another project only through that project's lead, and hive records each write. [The queen guide](docs/queen.md) covers setup and limits.
+
 ## Status
 
 hive is a personal daily-driver tool, released low-key. It is single-user by design and dogfooded daily by its author on macOS. The test suite also runs on Linux in CI, but nobody drives hive there yet. Issues are welcome; for bigger changes, open a discussion first. See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
@@ -57,6 +61,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Patterns](docs/patterns.md) | Standing trades, refused approaches, evidence standards, and guard shapes distilled from the project's own decisions and dead-ends |
 | [Concepts](docs/concepts.md) | Vocabulary, why not subagents, identity, the workflow, project scope, the shared store |
 | [Daily driver](docs/daily-driver.md) | A day with hive, starting a session, watching workers, wake-ups |
+| [The queen](docs/queen.md) | One lead across every project: `hive queen`, the portfolio, `hive next`, its reach and audit trail |
 | [Commands](docs/commands.md) | Every `hive` subcommand and what it does |
 | [Configuration](docs/configuration.md) | The `HIVE_*` environment variables |
 | [Profiles](docs/profiles.md) | Standing instructions across projects, the session-start plugin |
@@ -64,7 +69,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 | [Dashboard](docs/dashboard.md) | The generated dashboard: enabling it, where it lives, what it shows |
 | [Install details](docs/install.md) | The interpreter pin, iTerm settings, the status line, MCP scope, codex workers, updating, uninstalling |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and their fixes |
-| [Tools](docs/tools.md) | The 45 MCP tools: what each does and when to use it |
+| [Tools](docs/tools.md) | The MCP tools: what each does and when to use it |
 | [tmux settings](docs/tmux.md) | Attach modes, pane options, and what to put in `~/.tmux.conf` |
 | [Development](docs/development.md) | Building and testing hive itself |
 

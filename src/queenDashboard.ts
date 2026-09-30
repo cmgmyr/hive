@@ -94,7 +94,7 @@ const LANE_TITLE: Record<PortfolioLane, string> = {
 };
 const LANE_RULE: Record<PortfolioLane, string> = {
   waiting_on_you: "a needs-human todo and nothing else moving",
-  stuck: "dead lead, missing folder, late wake, or a worker at a prompt; blocked or stale work when nothing is moving",
+  stuck: "dead lead, missing folder, late wake, or a worker at a prompt; blocked or stale work when nothing is moving and nothing needs you",
   moving: "a worker or an unblocked todo in progress",
   quiet: "nothing asked, nothing broken",
 };

@@ -605,3 +605,45 @@ it("documents the restart remedy and the lead-only generated notice without weak
   assert.match(rule, /Authored wake bodies stay verbatim/);
   assert.match(rule, /worker's server files no restart notice/);
 });
+
+describe("docs/queen.md names every operation the queen may write into another project", () => {
+  const WRITE_KINDS = ["todo", "lead_wake", "owned_lead_wake", "lead_text", "spin_up"];
+  const NON_WRITE_KINDS = ["read", "home", "select", "global"];
+  const source = readFileSync(join(REPO, "dist/context.js"), "utf8");
+  const decl = /QUEEN_REACH = \{([\s\S]*?)\n\};/.exec(source);
+  const ENTRIES = decl
+    ? [...decl[1].matchAll(/^\s*(?:"([^"]+)"|(\w+)): "(\w+)",?$/gm)].map((m) => ({ op: m[1] ?? m[2], kind: m[3] }))
+    : [];
+  const WRITES = ENTRIES.filter((e) => WRITE_KINDS.includes(e.kind)).map((e) => e.op);
+
+  it("parsed a real set of cross-project writes, so a silent parse failure cannot pass this block", () => {
+    assert.ok(decl, "QUEEN_REACH not found in dist/context.js");
+    assert.ok(WRITES.length >= 8, `parsed ${WRITES.length} cross-project writes; the regex has drifted`);
+    assert.ok(WRITES.includes("todo_create") && WRITES.includes("hive lead"));
+  });
+
+  it("classifies every QUEEN_REACH kind as a write or a non-write, so a new reach class cannot drop out", () => {
+    const declared = (decl?.[1].match(/^\s*(?:"[^"]+"|\w+): "/gm) ?? []).length;
+    assert.equal(ENTRIES.length, declared, "an entry of QUEEN_REACH did not parse");
+    for (const { op, kind } of ENTRIES) {
+      assert.ok(
+        [...WRITE_KINDS, ...NON_WRITE_KINDS].includes(kind),
+        `${op} has reach kind "${kind}", which neither list classifies; decide whether docs/queen.md must name it`,
+      );
+    }
+  });
+
+  it("names each of them, closed by a backtick or a space, inside the read-and-write section", () => {
+    const doc = readRepo("docs/queen.md");
+    const start = doc.indexOf("## What it can read and write");
+    assert.ok(start >= 0, "docs/queen.md lost its 'What it can read and write' section");
+    const end = doc.indexOf("\n## ", start + 1);
+    const section = doc.slice(start, end === -1 ? undefined : end);
+    for (const op of WRITES) {
+      assert.ok(
+        section.includes(`\`${op}\``) || section.includes(`\`${op} `),
+        `the read-and-write section of docs/queen.md does not name the queen write \`${op}\``,
+      );
+    }
+  });
+});
