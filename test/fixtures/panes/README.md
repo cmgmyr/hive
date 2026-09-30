@@ -581,3 +581,8 @@ substring, and the anchor never matched.
 - `codex-two-row-footer-two-warnings-e.txt`: RECONSTRUCTED from the real
   capture above, not captured. It adds the `Worked for ...` row above the
   prompt and reads `2 warnings`, matching a trailer seen in the field.
+- `codex-two-row-footer-pending-e.txt`: RECONSTRUCTED from
+  `codex-two-row-footer-e.txt`, not captured. The placeholder in the prompt
+  row is replaced by undimmed typed text, in the byte shape
+  `codex-idle-pending-e.txt` records for typed text. Pins that a two-row
+  footer no longer hides a human's unsubmitted text from `codexInputBoxState`.
