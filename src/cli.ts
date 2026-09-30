@@ -3494,9 +3494,14 @@ function nextCandidates(): PortfolioProject[] {
   const queenRoot = canonicalPath(join(storeDir(), "queen"));
   const byCount = (a: number, b: number) => b - a;
   return collectPortfolio()
-    .projects.filter((p) => (p.lane === "waiting_on_you" || p.lane === "stuck") && canonicalPath(p.root) !== queenRoot)
+    .projects.filter(
+      (p) =>
+        (p.lane === "waiting_on_you" || p.lane === "stuck" || (p.lane === "moving" && p.needs_human > 0)) &&
+        canonicalPath(p.root) !== queenRoot,
+    )
     .sort((a, b) => {
-      if (a.lane !== b.lane) return a.lane === "waiting_on_you" ? -1 : 1;
+      const tier = (p: PortfolioProject) => (p.lane === "waiting_on_you" ? 0 : p.needs_human > 0 ? 1 : 2);
+      if (tier(a) !== tier(b)) return tier(a) - tier(b);
       if (a.lane === "waiting_on_you") {
         return (
           byCount(a.needs_human, b.needs_human) ||
@@ -3505,6 +3510,7 @@ function nextCandidates(): PortfolioProject[] {
         );
       }
       return (
+        byCount(a.needs_human, b.needs_human) ||
         byCount(a.todos.blocked_in_progress, b.todos.blocked_in_progress) ||
         byCount(a.wakes.overdue, b.wakes.overdue) ||
         byCount(a.workers.needs_input, b.workers.needs_input) ||
@@ -3530,7 +3536,7 @@ async function cmdNext(argv: string[]): Promise<void> {
   }
   const chosen = nextCandidates()[0];
   if (!chosen) {
-    console.log("No project is waiting on you or stuck.");
+    console.log("No project needs you: none is waiting, stuck, or holding a needs-human item.");
     return;
   }
   console.log(

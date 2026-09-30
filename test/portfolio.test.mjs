@@ -67,15 +67,15 @@ function agent(
 
 function wake(
   p,
-  { due = null, repeat = null, fired = null, cancelled = null, kind = "delay", maxWait = null, created = OLD } = {},
+  { due = null, repeat = null, fired = null, cancelled = null, kind = "delay", maxWait = null, created = OLD, heldReason = null } = {},
 ) {
   return db
     .prepare(
       `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, repeat_every_ms,
-                          fired_at, cancelled_at, created_at, max_wait_at)
-       VALUES (?, 'lead:1', 'b', ?, 'lead:1', '%x', ?, ?, ?, ?, ?, ?) RETURNING id`,
+                          fired_at, cancelled_at, created_at, max_wait_at, held_at, held_reason)
+       VALUES (?, 'lead:1', 'b', ?, 'lead:1', '%x', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .get(p.id, kind, due, repeat, fired, cancelled, created, maxWait).id;
+    .get(p.id, kind, due, repeat, fired, cancelled, created, maxWait, heldReason === null ? null : at("-1 hour"), heldReason).id;
 }
 
 const sessions = [];
@@ -141,7 +141,7 @@ describe("portfolio lanes", () => {
     todo(p, { status: "in_progress", tags: ["needs-human"], updated: at("-1 hour") });
     wake(p, { due: at("-10 minutes") });
     const r = row(p);
-    assert.equal(r.lane, "waiting_on_you");
+    assert.equal(r.lane, "stuck");
     assert.deepEqual(r.reasons, ["needs_human", "wake_overdue_5m", "todo_in_progress"]);
   });
 
@@ -232,15 +232,15 @@ describe("portfolio wakes", () => {
     wake(p, { due: NOW });
     const r = row(p);
     assert.deepEqual(r.wakes, { pending: 1, overdue: 0 });
-    assert.equal(r.lane, "moving");
-    assert.deepEqual(r.reasons, ["wake_due_24h"]);
+    assert.equal(r.lane, "quiet");
+    assert.deepEqual(r.reasons, ["wake_due_24h", "quiet"]);
   });
 
   it("gives a wake five minutes of grace, then calls the project stuck at exactly five", () => {
     const grace = project();
     wake(grace, { due: at("-299 seconds") });
     assert.equal(row(grace).wakes.overdue, 1);
-    assert.equal(row(grace).lane, "moving");
+    assert.equal(row(grace).lane, "quiet");
     const past = project();
     wake(past, { due: at("-5 minutes") });
     assert.equal(row(past).lane, "stuck");
@@ -258,13 +258,15 @@ describe("portfolio wakes", () => {
     assert.equal(r.lane, "quiet");
   });
 
-  it("keeps a wake due in exactly 24 hours moving and one past that quiet", () => {
+  it("reports a wake due in exactly 24 hours as a reason and one past that not, and neither moves the project", () => {
     const edge = project();
     wake(edge, { due: at("+24 hours") });
-    assert.equal(row(edge).lane, "moving");
+    assert.equal(row(edge).lane, "quiet");
+    assert.ok(row(edge).reasons.includes("wake_due_24h"));
     const far = project();
     wake(far, { due: at("+86401 seconds") });
     assert.equal(row(far).lane, "quiet");
+    assert.ok(!row(far).reasons.includes("wake_due_24h"));
   });
 });
 
@@ -280,7 +282,7 @@ describe("portfolio idle-watch wakes", () => {
     const upcoming = project();
     wake(upcoming, { kind: "idle_all", maxWait: at("+2 hours") });
     assert.deepEqual(row(upcoming).wakes, { pending: 1, overdue: 0 });
-    assert.equal(row(upcoming).lane, "moving");
+    assert.equal(row(upcoming).lane, "quiet");
   });
 
   it("keeps the local active-wake clause identical to the scheduler's", () => {
@@ -619,5 +621,138 @@ describe("hive portfolio CLI", () => {
     const { code, stdout } = await runCli(["portfolio"], { cwd: fresh.projectDir, dataDir: fresh.dataDir });
     assert.equal(code, 0);
     assert.equal(stdout.trim(), "No registered projects.");
+  });
+});
+
+describe("portfolio busy is moving", () => {
+  const skip = !hasTmux && "tmux is not installed";
+  const needsHuman = (p) => todo(p, { tags: ["needs-human"] });
+  const working = (p) => agent(p, { state: "working", target: livePane() });
+  const blockedInProgress = (p) => {
+    const a = todo(p, { status: "in_progress", updated: at("-1 hour") });
+    block(a, todo(p));
+  };
+
+  it("keeps needs-human with a working worker in moving, with the count and item kept", { skip }, () => {
+    const p = project();
+    needsHuman(p);
+    working(p);
+    const r = row(p);
+    assert.equal(r.lane, "moving");
+    assert.equal(r.needs_human, 1);
+    assert.equal(r.needs_human_items.length, 1);
+    assert.ok(r.reasons.includes("needs_human"));
+  });
+
+  it("puts needs-human with nothing moving in waiting_on_you", () => {
+    const p = project();
+    needsHuman(p);
+    assert.equal(row(p).lane, "waiting_on_you");
+  });
+
+  it("puts needs-human with a dead lead and open work in stuck", { skip }, () => {
+    const p = project();
+    needsHuman(p);
+    agent(p, { kind: "lead", target: "%dead" });
+    todo(p, { status: "in_progress", updated: at("-1 hour") });
+    const r = row(p);
+    assert.equal(r.lane, "stuck");
+    assert.ok(r.reasons.includes("dead_lead_pane"));
+  });
+
+  it("keeps a blocked in-progress todo in moving while a worker is working, reason kept", { skip }, () => {
+    const p = project();
+    blockedInProgress(p);
+    working(p);
+    const r = row(p);
+    assert.equal(r.lane, "moving");
+    assert.ok(r.reasons.includes("in_progress_blocked"));
+    assert.equal(r.todos.blocked_in_progress, 1);
+  });
+
+  it("puts a blocked in-progress todo with nothing moving in stuck", () => {
+    const p = project();
+    blockedInProgress(p);
+    assert.equal(row(p).lane, "stuck");
+  });
+
+  it("pin, unchanged from main: a working worker keeps a stale in-progress todo in moving, and without one it is stuck", { skip }, () => {
+    const p = project();
+    todo(p, { status: "in_progress", updated: OLD });
+    working(p);
+    assert.equal(row(p).lane, "moving");
+    const idle = project();
+    todo(idle, { status: "in_progress", updated: OLD });
+    assert.equal(row(idle).lane, "stuck");
+  });
+
+  it("puts a dead lead with a working worker in stuck", { skip }, () => {
+    const p = project();
+    agent(p, { kind: "lead", target: "%dead" });
+    todo(p, { status: "in_progress", updated: at("-1 hour") });
+    working(p);
+    assert.equal(row(p).lane, "stuck");
+  });
+
+  it("puts a worker at a prompt in stuck even with another worker working", { skip }, () => {
+    const p = project();
+    working(p);
+    agent(p, { state: "waiting", target: livePane() });
+    assert.equal(row(p).lane, "stuck");
+  });
+
+  it("puts a project whose only activity is a wake due in an hour in quiet", () => {
+    const p = project();
+    wake(p, { due: at("+1 hour") });
+    const r = row(p);
+    assert.equal(r.lane, "quiet");
+    assert.deepEqual(r.wakes, { pending: 1, overdue: 0 });
+  });
+
+  for (const [name, reason] of [
+    ["unsubmitted input", "the pane's input box has unsubmitted human text; delivering now would paste"],
+    ["a dialog", "pane is awaiting a modal choice (folder-trust or /model picker)"],
+    ["a conversation hold", "a human talked to this lead more recently than the conversation-hold window"],
+    ["copy mode", "the pane is in copy mode"],
+  ]) {
+    it(`does not call an overdue wake held for ${name} stuck`, () => {
+      const p = project();
+      wake(p, { due: at("-10 minutes"), heldReason: reason });
+      const r = row(p);
+      assert.notEqual(r.lane, "stuck");
+      assert.equal(r.wakes.overdue, 0);
+    });
+  }
+
+  it("still calls an overdue wake with no hold stuck", () => {
+    const p = project();
+    wake(p, { due: at("-10 minutes") });
+    assert.equal(row(p).lane, "stuck");
+  });
+
+  it("does not let a working lead turn alone make a project moving, and keeps needs-human in waiting_on_you", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", state: "idle", target: livePane() });
+    const target = db.prepare("SELECT tmux_target FROM agents WHERE id = ?").get(id).tmux_target;
+    const livePid = tmux("display-message", "-p", "-t", target, "#{pane_pid}");
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(livePid, id);
+    db.prepare(
+      "INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at) VALUES (?, ?, 's', 'working', 1, 'stop', ?)",
+    ).run(id, livePid, OLD);
+    needsHuman(p);
+    const r = row(p);
+    assert.equal(r.lead.turn, "working");
+    assert.equal(r.lane, "waiting_on_you");
+  });
+
+  it("does not let a fired repeating wake keep an untouched in-progress todo fresh", () => {
+    const p = project();
+    needsHuman(p);
+    todo(p, { status: "in_progress", updated: at("-72 hours") });
+    wake(p, { due: at("+1 day"), repeat: 86400000, fired: at("-1 hour") });
+    const r = row(p);
+    assert.equal(r.lane, "waiting_on_you");
+    assert.ok(r.reasons.includes("stale_in_progress_48h"));
+    assert.ok(r.last_activity_at >= at("-1 hour"), "the wake fire still shows as last activity");
   });
 });

@@ -93,13 +93,13 @@ const LANE_TITLE: Record<PortfolioLane, string> = {
   quiet: "Quiet",
 };
 const LANE_RULE: Record<PortfolioLane, string> = {
-  waiting_on_you: "a needs-human todo",
-  stuck: "dead lead, missing folder, late wake, blocked or stale work, or a worker at a prompt",
-  moving: "a worker or todo in progress, or a wake due soon",
+  waiting_on_you: "a needs-human todo and nothing else moving",
+  stuck: "dead lead, missing folder, late wake, or a worker at a prompt; blocked or stale work when nothing is moving",
+  moving: "a worker or an unblocked todo in progress",
   quiet: "nothing asked, nothing broken",
 };
 const LANE_COLOR: Record<PortfolioLane, string> = {
-  waiting_on_you: "var(--accent)",
+  waiting_on_you: "var(--warn)",
   stuck: "var(--fail)",
   moving: "var(--live)",
   quiet: "var(--border-strong)",
@@ -230,6 +230,14 @@ function footCounts(p: PortfolioProject, asOf: string, rank: number): string {
   );
 }
 
+function movingBadges(p: PortfolioProject): string {
+  if (p.lane !== "moving") return "";
+  return (
+    (p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
+    (p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
+  );
+}
+
 function card(
   p: PortfolioProject,
   report: PortfolioReport,
@@ -259,7 +267,7 @@ function card(
       ? `<span class="pc-pick">brief pick ${rank}</span>`
       : `<span class="age">${esc(age(p.last_activity_at, asOf))}</span>`) +
     "</div>" +
-    `<div class="pc-badges">${leadPill(p)}${workersCell(p)}</div>` +
+    `<div class="pc-badges">${leadPill(p)}${workersCell(p)}${movingBadges(p)}</div>` +
     (items.length ? `<ul class="pc-items">${items.join("")}</ul>` : "") +
     `<a class="pc-foot" href="#row-${p.id}" data-jump="${p.id}" title="Show ${esc(p.name)}’s row in the grid below">` +
     `${footCounts(p, asOf, rank)}</a></article>`
@@ -462,8 +470,9 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .g-head .g-num { font-family: var(--font-sans); }
 .zero { color: var(--fg-subtle); opacity: 0.55; }
 .n-high { color: var(--fail); font-weight: 650; }
+.n-muted { color: var(--fg-muted); }
 .n-blocked { color: var(--warn); font-weight: 650; }
-.n-needs { color: var(--accent); font-weight: 700; }
+.n-needs { color: var(--warn); font-weight: 700; }
 .workers { display: flex; gap: 0.45rem; flex-wrap: wrap; font-size: 0.8125rem; color: var(--fg-muted); }
 .w { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 .w::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
