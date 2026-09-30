@@ -582,9 +582,36 @@ function renderQueenPage(queenId: number): { html: string; hash: string } {
   return { html, hash: createHash("sha256").update(stable).digest("hex") };
 }
 
+const QUEEN_PAGE_CLAIM_KEY = "hive:queen-page-claim";
+const QUEEN_PAGE_MARK_KEY = "hive:queen-page-mark";
+
+function claimQueenPageAttempt(queenId: number): boolean {
+  bestEffortRun("INSERT OR IGNORE INTO kv (project_id, key, value, updated_at) VALUES (?, ?, '', '1970-01-01 00:00:00')", queenId, QUEEN_PAGE_CLAIM_KEY);
+  return (
+    stmt(
+      `UPDATE kv SET updated_at = datetime('now')
+       WHERE project_id = ? AND key = ?
+         AND updated_at <= datetime('now', '-${DASHBOARD_MIN_INTERVAL_SECONDS} seconds')`,
+    ).run(queenId, QUEEN_PAGE_CLAIM_KEY).changes === 1
+  );
+}
+
+function readQueenPageMark(queenId: number): string | null {
+  const row = stmt("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queenId, QUEEN_PAGE_MARK_KEY) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
 function publishQueenPage(queenId: number, target: string, page: { html: string; hash: string }): void {
   writeDashboardAtomically(target, page.html);
-  bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", page.hash, queenId);
+  bestEffortRun(
+    `INSERT INTO kv (project_id, key, value) VALUES (?, ?, ?)
+     ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+    queenId,
+    QUEEN_PAGE_MARK_KEY,
+    page.hash,
+  );
 }
 
 export function generateQueenDashboardNow(): string | null {
@@ -592,7 +619,6 @@ export function generateQueenDashboardNow(): string | null {
     const home = queenHome();
     if (home === null) return null;
     const target = join(home.path, "dashboard.html");
-    bestEffortRun("INSERT OR IGNORE INTO dashboard_meta (project_id) VALUES (?)", home.id);
     publishQueenPage(home.id, target, renderQueenPage(home.id));
     return target;
   } catch {
@@ -602,13 +628,10 @@ export function generateQueenDashboardNow(): string | null {
 
 function maybeGenerateQueenDashboard(queen: { id: number; path: string }): void {
   try {
-    if (!claimDashboardAttempt(queen.id)) return;
+    if (!claimQueenPageAttempt(queen.id)) return;
     const target = join(queen.path, "dashboard.html");
     const page = renderQueenPage(queen.id);
-    const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(queen.id) as {
-      last_mark: string | null;
-    };
-    if (known.last_mark === page.hash && existsSync(target)) return;
+    if (readQueenPageMark(queen.id) === page.hash && existsSync(target)) return;
     publishQueenPage(queen.id, target, page);
   } catch {
 
