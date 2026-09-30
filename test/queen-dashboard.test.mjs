@@ -345,7 +345,8 @@ describe("queen dashboard generation", () => {
     db.prepare("DELETE FROM dashboard_meta WHERE project_id = ?").run(queen.id);
   });
 
-  const forceClaim = () => db.prepare("UPDATE dashboard_meta SET last_attempt_at = datetime('now', '-1 minute') WHERE project_id = ?").run(queen.id);
+  const forceClaim = () =>
+    db.prepare("UPDATE kv SET updated_at = datetime('now', '-1 minute') WHERE project_id = ? AND key = 'hive:queen-page-claim'").run(queen.id);
 
   it("a scheduler tick writes queen/dashboard.html and no queen/.hive/dashboard.html", async () => {
     await tick(null);
@@ -393,9 +394,22 @@ describe("queen dashboard generation", () => {
     forceClaim();
     await tick(null);
     const first = readFileSync(page(), "utf8");
-    db.prepare("UPDATE kv SET value = ? WHERE project_id = ? AND key = ?").run("{}", queen.id, QUEEN_BRIEF_KEY);
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run("{}", queen.id, QUEEN_BRIEF_KEY);
     await tick(null);
     assert.equal(readFileSync(page(), "utf8"), first);
+  });
+
+  it("an ordinary-dashboard claim and mark on the queen project's dashboard_meta row never starve the queen page", async () => {
+    db.prepare("INSERT OR IGNORE INTO dashboard_meta (project_id) VALUES (?)").run(queen.id);
+    db.prepare("UPDATE dashboard_meta SET last_attempt_at = datetime('now'), last_mark = 'old-server-mark' WHERE project_id = ?").run(queen.id);
+    db.prepare("INSERT OR REPLACE INTO kv (project_id, key, value) VALUES (?, ?, ?)").run(
+      queen.id,
+      QUEEN_BRIEF_KEY,
+      JSON.stringify(brief({ summary: "Written past an old server", picks: [], lanes_at_brief: {} })),
+    );
+    forceClaim();
+    await tick(null);
+    assert.match(readFileSync(page(), "utf8"), /Written past an old server/);
   });
 
   it("a failed write keeps the prior page, leaves no temp file, and the tick resolves", async () => {
@@ -406,7 +420,7 @@ describe("queen dashboard generation", () => {
     try {
       await tick(null);
     } finally {
-      db.prepare("DELETE FROM dashboard_meta WHERE project_id = ?").run(queen.id);
+      db.prepare("DELETE FROM kv WHERE project_id = ? AND key LIKE 'hive:queen-page-%'").run(queen.id);
     }
     assert.equal(readFileSync(page(), "utf8"), before);
     assert.equal(generateQueenDashboardNow(), null);
