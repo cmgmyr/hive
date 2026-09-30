@@ -1018,7 +1018,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Try to take a named lease on a shared work area (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1027,7 +1027,7 @@
       "additionalProperties": false,
       "properties": {
         "key": {
-          "description": "Stable and specific, like \"file:src/api/routes.ts\".",
+          "description": "Stable and specific, like \"db:dev\".",
           "type": "string"
         },
         "project_id": {
