@@ -55,7 +55,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `kv_list` | Lists values, optional key prefix | |
 | `kv_delete` | Removes a key | |
 | **leases** | | |
-| `lease_acquire` | Claims a named work area with a TTL; re-taking your own lease extends it | Before editing shared file areas; expired leases free themselves |
+| `lease_acquire` | Claims a named piece of shared state with a TTL; re-taking your own lease extends it | Before changing state another session can also change; expired leases free themselves |
 | `lease_release` | Releases a lease you own | When done early; otherwise TTL handles it |
 | **actors** | | |
 | `actor_prune` | Deletes every actor that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray or one-off actors; unlike every other tool here, the scan is store-wide, not scoped to the current project, since actors carry no `project_id` |

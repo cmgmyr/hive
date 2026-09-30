@@ -40,7 +40,7 @@ export function registerLeases(server: McpServer): void {
     "lease_acquire",
     {
       description:
-        "Try to take a named lease on a shared work area (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+        "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -48,7 +48,7 @@ export function registerLeases(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        key: z.string().describe('Stable and specific, like "file:src/api/routes.ts".'),
+        key: z.string().describe('Stable and specific, like "db:dev".'),
         ttl_seconds: z.number().int().positive(),
         project_id: projectIdParam,
       },
