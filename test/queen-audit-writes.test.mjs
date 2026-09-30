@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, it } from "node:test";
 import { assertScratchStore, clearHiveEnv, isolateTmux, makeFakeClaude, McpClient, paneField, REPO, resolvedTmuxSocket, runCli, scratchDirs, until } from "./helpers.mjs";
@@ -86,7 +86,10 @@ it("every foreign QUEEN_REACH category has a descriptor and an actual path fixtu
   const writes = Object.entries(QUEEN_REACH).filter(([, reach]) => !nonforeign.has(reach)).map(([name]) => name).sort();
   assert.deepEqual(Object.keys(QUEEN_AUDIT_OPERATIONS).sort(), writes);
   assert.deepEqual(Object.keys(fixture).sort(), writes);
-  const files = execFileSync("rg", ["-l", "INSERT INTO queen_audit", join(REPO, "src")], { encoding: "utf8" }).trim().split("\n");
+  const files = readdirSync(join(REPO, "src"), { recursive: true })
+    .filter((path) => path.endsWith(".ts"))
+    .map((path) => join(REPO, "src", path))
+    .filter((path) => readFileSync(path, "utf8").includes("INSERT INTO queen_audit"));
   assert.deepEqual(files, [join(REPO, "src/queenAudit.ts")]);
   assert.equal((readFileSync(files[0], "utf8").match(/INSERT INTO queen_audit/g) ?? []).length, 1);
 });
