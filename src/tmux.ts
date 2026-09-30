@@ -1240,7 +1240,8 @@ export function paneChoiceCheck(target: string): { awaitingChoice: boolean | nul
 // codex has no box border to anchor on, so the box's bottom edge used to be inferred from the literal
 // text of its footer status line - but that text is not stable (todo 524: two different compositions
 // seen on one codex version, one with no shared substring at all). The anchor below reads structure
-// instead of content: the pane's own last non-blank row IS the bottom edge, whatever it says.
+// instead of content: the pane's own last non-blank row IS the bottom edge, whatever it says, except that a
+// "? for shortcuts" row pulls the edge up to the status row above it (todo 1604).
 
 // codex's own choice-menu shape (see hive-internals), not claude's CHOICE_DIALOG wording. Declared
 // above findCodexPromptBox because the box search itself now needs it to reject a choice row rather
@@ -1259,12 +1260,17 @@ function codexPromptContentStart(promptRow: string): number {
   return i;
 }
 
+const CODEX_SHORTCUTS_ROW = /^\?\s+for shortcuts/;
+
 function findCodexPromptBox(rows: string[]): { footer: number; prompt: number } | null {
   const text = rows.map((row) => stripControlBytes(stripSgr(row)).trim());
 
   let footer = text.length - 1;
   while (footer >= 0 && text[footer] === "") footer -= 1;
   if (footer < 0) return null;
+
+  // The row directly above "? for shortcuts" starts one footer block if it has codex's " · " status separator.
+  if (CODEX_SHORTCUTS_ROW.test(text[footer]) && footer > 0 && text[footer - 1].includes(" · ")) footer -= 1;
 
   let prompt = -1;
   for (let i = footer - 1; i >= 0 && footer - i <= BOX_MAX_ROWS; i--) {

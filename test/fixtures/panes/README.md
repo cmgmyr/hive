@@ -571,3 +571,18 @@ substring, and the anchor never matched.
   nearest › above it" without the "nothing but blank/continuation between
   them" guard. Pins that a stale prompt in scrollback is never mistaken for
   a live box.
+
+- `codex-two-row-footer-e.txt`: a REAL capture, 2026-09-30, codex-cli 0.159.2
+  on a scratch tmux socket, taken after one trivial turn. The footer is two
+  rows: a status row (`Context N% used ...`) directly above a `? for
+  shortcuts` row, with one blank row between the prompt and the status row.
+  `findCodexPromptBox` used to take the shortcuts row alone as the footer and
+  returned null, so the wake trailer fell back to the raw pane tail.
+- `codex-two-row-footer-two-warnings-e.txt`: RECONSTRUCTED from the real
+  capture above, not captured. It adds the `Worked for ...` row above the
+  prompt and reads `2 warnings`, matching a trailer seen in the field.
+- `codex-two-row-footer-pending-e.txt`: RECONSTRUCTED from
+  `codex-two-row-footer-e.txt`, not captured. The placeholder in the prompt
+  row is replaced by undimmed typed text, in the byte shape
+  `codex-idle-pending-e.txt` records for typed text. Pins that a two-row
+  footer no longer hides a human's unsubmitted text from `codexInputBoxState`.

@@ -101,6 +101,36 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
     assert.match(trailer, /input box: UNSUBMITTED TEXT, not sent: "check the current git status"/);
   });
 
+  it("ends a real codex two-row-footer pane's trailer in an input box line with no placeholder text", async () => {
+    const { trailer } = await trailerFor("codex-two-row-footer-e.txt", "codex");
+    assert.ok(!trailer.includes("Ask Codex to do anything"), trailer);
+    assert.match(trailer.trimEnd().split("\n").at(-1), /^input box: empty/, trailer);
+  });
+
+  it("ends a reconstructed codex two-warnings pane's trailer in an input box line with no placeholder text", async () => {
+    const { trailer } = await trailerFor("codex-two-row-footer-two-warnings-e.txt", "codex");
+    assert.ok(!trailer.includes("Ask Codex to do anything"), trailer);
+    assert.match(trailer, /Worked for 8m 34s/);
+    assert.match(trailer.trimEnd().split("\n").at(-1), /^input box: empty/, trailer);
+  });
+
+  it("shows a reconstructed codex two-row-footer pane's human text labelled UNSUBMITTED", async () => {
+    const { trailer } = await trailerFor("codex-two-row-footer-pending-e.txt", "codex");
+    assert.match(trailer, /input box: UNSUBMITTED TEXT, not sent: "check the current git status"/);
+  });
+
+  it("keeps the raw tail when one agent output row sits between the prompt and a shortcuts row", async () => {
+    const path = join(dirs.tmp, "codex-output-row-above-shortcuts.txt");
+    writeFileSync(path, "› say hi\n\n• Working\n  ? for shortcuts\n");
+    const { trailer } = await trailerFor(path, "codex");
+    assert.ok(!/^input box:/m.test(trailer), trailer);
+  });
+
+  it("keeps the raw tail for a codex approval dialog", async () => {
+    const { trailer } = await trailerFor("codex-sandbox-approval-dialog.txt", "codex");
+    assert.ok(!/^input box:/m.test(trailer), trailer);
+  });
+
   it("drops braille-only and box-drawing-only rows above the box but keeps a spinner row with words", async () => {
     const { trailer } = await trailerFor(
       withAbove(["✻ Working (12s · esc to interrupt)", "⠋⠙⠹⠸⠼", "╭───────╮"]),

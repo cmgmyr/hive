@@ -130,6 +130,12 @@ const STATE_CASES = [
     expect: { state: "pending", text: "check the current git statusline one line two line three" },
   },
   {
+    file: "codex-two-row-footer-pending-e.txt",
+    name: "two-row-pending",
+    marker: "check the current git status",
+    expect: { state: "pending", text: "check the current git status" },
+  },
+  {
     file: "codex-production-idle-ghost-e.txt",
     name: "production-idle",
     marker: "Write tests for @filename",
