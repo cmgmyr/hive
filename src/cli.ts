@@ -722,8 +722,9 @@ async function cmdLead(argv: string[]): Promise<void> {
     }
 
     const leadHarness = harnessFor(leadCommand);
-    const firstMessage = resolveFirstMessage(config, sources).message;
-    let firstMessageOnCommandLine = false;
+    let firstMessage = resolveFirstMessage(config, sources).message;
+    if (firstMessage !== "" && !(await (await import("./kickoff.js")).kickoffGate(project.path)).ok) firstMessage = "";
+    let promptSuffix = "";
 
     // Posture is rendered once, then delivered through whichever channel this harness has: a
     // claude lead gets it as --append-system-prompt-file below; a codex lead gets the identical
@@ -761,8 +762,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
       }
       if (leadHarness.initialPromptArgs && firstMessage !== "") {
-        leadCommand += ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
-        firstMessageOnCommandLine = true;
+        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
     }
 
@@ -819,8 +819,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       }
       leadCommand += ` ${homeArgs.map(shellQuote).join(" ")}`;
       if (leadHarness.initialPromptArgs && firstMessage !== "") {
-        leadCommand += ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
-        firstMessageOnCommandLine = true;
+        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
       if (renderedPosture !== null) {
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
@@ -834,15 +833,16 @@ async function cmdLead(argv: string[]): Promise<void> {
 
     const envFlags = buildEnvFlags({
       ...leadEnv,
-      [FIRST_MESSAGE_SHA_ENV]: firstMessageOnCommandLine ? firstMessageDigest(firstMessage) : "",
+      [FIRST_MESSAGE_SHA_ENV]: promptSuffix !== "" ? firstMessageDigest(firstMessage) : "",
       ...(newCodexHomeKey ? { CODEX_HOME: codexHomeDir(newCodexHomeKey) } : {}),
     });
 
+    const launchCommand = leadCommand + promptSuffix;
     const { leadPane, leadWindow, createdPane } = withWindowClaim(() => {
       let leadPane: string;
       let leadWindow: string;
       let createdPane: boolean;
-      const started = ensureSession(session, project.path, { envFlags, command: leadCommand });
+      const started = ensureSession(session, project.path, { envFlags, command: launchCommand });
       if (started.created) {
         const claimed = claimInitialWindow(started, windowName, project.id);
         leadPane = claimed.pane;
@@ -864,7 +864,7 @@ async function cmdLead(argv: string[]): Promise<void> {
           createdPane = false;
         } else if (!foundWindow) {
 
-          const fresh = createWindow(session, windowName, project.path, envFlags, leadCommand, project.id, detach);
+          const fresh = createWindow(session, windowName, project.path, envFlags, launchCommand, project.id, detach);
           leadPane = fresh.pane;
           leadWindow = fresh.window;
           createdPane = true;
@@ -881,7 +881,7 @@ async function cmdLead(argv: string[]): Promise<void> {
             "-c",
             project.path,
             ...envFlags,
-            leadCommand,
+            launchCommand,
           );
           leadWindow = foundWindow;
           createdPane = true;

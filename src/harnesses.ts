@@ -195,7 +195,7 @@ export const codexHarness: HarnessCapabilities = {
   needsHome: true,
 
   // Auto-submits with no Enter; verified live on v0.149.0.
-  initialPromptArgs: (message) => [message],
+  initialPromptArgs: (message) => ["--", message],
 
   // Measured live on 0.151.0 (todo 782 S1): both `/quit` and Ctrl-C twice fire SessionEnd with
   // reason "other" - never claude's `prompt_input_exit` or `logout`. Codex's vocabulary is

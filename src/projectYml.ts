@@ -302,11 +302,8 @@ function applyLayer(
 
   if (has("first_message")) {
     const value = root.first_message;
-    if (value == null) {
-      config.first_message = null;
-      sources.first_message = source;
-    } else if (typeof value === "string") {
-      config.first_message = value;
+    if (value == null || typeof value === "string") {
+      config.first_message = value ?? "";
       sources.first_message = source;
     } else warn("first_message must be a string; ignoring it.");
   }

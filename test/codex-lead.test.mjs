@@ -101,20 +101,17 @@ describe("a codex lead is routed through the generated CODEX_HOME (todo 575)", {
       );
     });
 
-    it("appends the home's launch flags and the triage message as codex's own [PROMPT] positional, live-verified to auto-submit with no keystroke", async () => {
+    it("records the home's launch flags but not the first message in the row's command", async () => {
       const row = leadRow(db, project.id);
       assert.match(row.command, /--dangerously-bypass-hook-trust/);
       assert.match(row.command, /--dangerously-bypass-approvals-and-sandbox/);
-      assert.equal(
-        row.command.trim().endsWith(shellQuote(TRIAGE_MESSAGE)),
-        true,
-        "the triage message must be the final positional argument, matching codex's own [PROMPT] shape",
-      );
+      assert.equal(row.command.includes(TRIAGE_MESSAGE), false);
     });
 
     it("the pane actually received the triage message as its argv, not just the stored command string", async () => {
       await until(() => existsSync(argvFile), 5000);
       const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+      assert.equal(argv.at(-2), "--", "the message follows -- so a leading dash is never a flag");
       assert.ok(
         argv.includes(TRIAGE_MESSAGE),
         `expected TRIAGE_MESSAGE among the codex process's real argv, got: ${JSON.stringify(argv)}`,

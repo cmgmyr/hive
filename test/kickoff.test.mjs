@@ -567,6 +567,12 @@ describe("the SessionStart first message is configurable", () => {
     assert.match(out.additionalContext, /\[hive\] Project/, "the board still arrives");
   });
 
+  it("sends nothing for a blank first_message (YAML null), even when global sets one", async () => {
+    writeFileSync(globalYml, "first_message: global says hi\n");
+    yml("profile: orchestration\nfirst_message:\n");
+    assert.equal(Object.hasOwn(fired((await kickoff()).stdout), "initialUserMessage"), false);
+  });
+
   it("warns and falls back when first_message is not a string", async () => {
     try { unlinkSync(globalYml); } catch {}
     yml("profile: orchestration\nfirst_message: 42\n");
