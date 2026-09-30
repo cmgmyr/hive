@@ -565,12 +565,18 @@ function renderQueenPage(queenId: number): { html: string; hash: string } {
   return { html, hash: createHash("sha256").update(stable).digest("hex") };
 }
 
+function publishQueenPage(queenId: number, target: string, page: { html: string; hash: string }): void {
+  writeDashboardAtomically(target, page.html);
+  bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", page.hash, queenId);
+}
+
 export function generateQueenDashboardNow(): string | null {
   try {
     const home = queenHome();
     if (home === null) return null;
     const target = join(home.path, "dashboard.html");
-    writeDashboardAtomically(target, renderQueenPage(home.id).html);
+    bestEffortRun("INSERT OR IGNORE INTO dashboard_meta (project_id) VALUES (?)", home.id);
+    publishQueenPage(home.id, target, renderQueenPage(home.id));
     return target;
   } catch {
     return null;
@@ -581,13 +587,12 @@ function maybeGenerateQueenDashboard(queen: { id: number; path: string }): void 
   try {
     if (!claimDashboardAttempt(queen.id)) return;
     const target = join(queen.path, "dashboard.html");
-    const { html, hash } = renderQueenPage(queen.id);
+    const page = renderQueenPage(queen.id);
     const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(queen.id) as {
       last_mark: string | null;
     };
-    if (known.last_mark === hash && existsSync(target)) return;
-    writeDashboardAtomically(target, html);
-    bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", hash, queen.id);
+    if (known.last_mark === page.hash && existsSync(target)) return;
+    publishQueenPage(queen.id, target, page);
   } catch {
 
   }

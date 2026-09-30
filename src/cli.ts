@@ -1012,10 +1012,8 @@ async function cmdQueen(argv: string[]): Promise<void> {
   mkdirSync(home, { recursive: true });
   publishQueenYml(home);
   const queen = addProject(home, "queen");
-  if (!parsed.flags.has("--no-dashboard")) {
-    generateQueenDashboardNow();
-    maybeOpenQueenDashboard(queen);
-  }
+  generateQueenDashboardNow();
+  if (!parsed.flags.has("--no-dashboard")) maybeOpenQueenDashboard(queen);
   await cmdLead([home, ...parsed.flags]);
 }
 

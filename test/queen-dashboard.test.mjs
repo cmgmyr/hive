@@ -369,6 +369,26 @@ describe("queen dashboard generation", () => {
     assert.deepEqual(readdirSync(realpathSync(home)).filter((f) => f.includes(".tmp-")), []);
   });
 
+  it("a cold generate records the page hash so a later tick cannot keep a stale cold page", async () => {
+    const put = (summary) =>
+      db.prepare("INSERT OR REPLACE INTO kv (project_id, key, value) VALUES (?, ?, ?)").run(
+        queen.id,
+        QUEEN_BRIEF_KEY,
+        JSON.stringify(brief({ summary, picks: [], lanes_at_brief: {} })),
+      );
+    put("State A");
+    forceClaim();
+    await tick(null);
+    assert.match(readFileSync(page(), "utf8"), /State A/);
+    put("State C");
+    assert.equal(generateQueenDashboardNow(), page());
+    assert.match(readFileSync(page(), "utf8"), /State C/);
+    put("State A");
+    forceClaim();
+    await tick(null);
+    assert.match(readFileSync(page(), "utf8"), /State A/);
+  });
+
   it("does not rewrite while the five-second claim is held", async () => {
     forceClaim();
     await tick(null);
@@ -467,11 +487,13 @@ describe("hive queen opens the queen page", { skip: hasTmux && process.platform 
     assert.equal(fakeOpen.calls().length, 1);
   });
 
-  it("--no-dashboard opens nothing, and a failed open leaves no marker so the next run retries", async () => {
+  it("--no-dashboard writes the page but opens nothing, and a failed open leaves no marker so the next run retries", async () => {
     db.prepare("DELETE FROM kv WHERE project_id = ? AND key = ?").run(queenId(), MARKER);
     fakeOpen.reset();
+    rmSync(queenPage());
     assert.equal((await run(fakeOpen.bin, ["--no-dashboard"])).code, 0);
     assert.deepEqual(fakeOpen.calls(), []);
+    assert.ok(existsSync(queenPage()), "--no-dashboard skips only the open; the page is still written");
 
     assert.equal((await run(fakeOpen.failBin)).code, 0);
     assert.equal(db.prepare("SELECT 1 FROM kv WHERE project_id = ? AND key = ?").get(queenId(), MARKER), undefined);
