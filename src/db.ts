@@ -425,6 +425,22 @@ CREATE TABLE lead_idle_subscriptions (
   terminal_reason TEXT
 );
 `,
+
+  `
+CREATE TABLE queen_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id TEXT NOT NULL,
+  home_project_id INTEGER NOT NULL,
+  target_project_id INTEGER NOT NULL,
+  operation TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id INTEGER NOT NULL CHECK(resource_id > 0),
+  summary TEXT NOT NULL CHECK(length(summary) <= 160),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),
+  CHECK(home_project_id != target_project_id)
+);
+CREATE INDEX idx_queen_audit_target ON queen_audit(target_project_id, id);
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

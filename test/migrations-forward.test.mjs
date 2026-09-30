@@ -49,6 +49,15 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     assert.ok(agentColumns.includes("extra_args"));
   });
 
+  it("creates an empty queen audit table and does not duplicate it on a second migration", () => {
+    assert.deepEqual(db.prepare("SELECT * FROM queen_audit").all(), []);
+    const columns = db.prepare("SELECT name FROM pragma_table_info('queen_audit')").all().map((c) => c.name);
+    assert.deepEqual(columns, ["id", "actor_id", "home_project_id", "target_project_id", "operation", "resource_type", "resource_id", "summary", "created_at"]);
+    migrate();
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM migrations").get().n, MIGRATIONS.length);
+    assert.deepEqual(db.prepare("SELECT * FROM queen_audit").all(), []);
+  });
+
   it("keeps the pre-existing agent row, reading its new launch-flag columns as null", () => {
     const after = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId);
     const { model, extra_args: extraArgs, ...rest } = after;
