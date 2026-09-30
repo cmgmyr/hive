@@ -114,6 +114,13 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
     assert.match(trailer.trimEnd().split("\n").at(-1), /^input box: empty/, trailer);
   });
 
+  it("keeps the raw tail when one agent output row sits between the prompt and a shortcuts row", async () => {
+    const path = join(dirs.tmp, "codex-output-row-above-shortcuts.txt");
+    writeFileSync(path, "› say hi\n\n• Working\n  ? for shortcuts\n");
+    const { trailer } = await trailerFor(path, "codex");
+    assert.ok(!/^input box:/m.test(trailer), trailer);
+  });
+
   it("keeps the raw tail for a codex approval dialog", async () => {
     const { trailer } = await trailerFor("codex-sandbox-approval-dialog.txt", "codex");
     assert.ok(!/^input box:/m.test(trailer), trailer);

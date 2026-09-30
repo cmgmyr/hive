@@ -1268,11 +1268,8 @@ function findCodexPromptBox(rows: string[]): { footer: number; prompt: number } 
   while (footer >= 0 && text[footer] === "") footer -= 1;
   if (footer < 0) return null;
 
-  // A status row directly above codex's "? for shortcuts" row is one footer block: the block starts there.
-  if (CODEX_SHORTCUTS_ROW.test(text[footer]) && footer > 0) {
-    const above = text[footer - 1];
-    if (above !== "" && !above.startsWith("›")) footer -= 1;
-  }
+  // The row directly above "? for shortcuts" starts one footer block if it has codex's " · " status separator.
+  if (CODEX_SHORTCUTS_ROW.test(text[footer]) && footer > 0 && text[footer - 1].includes(" · ")) footer -= 1;
 
   let prompt = -1;
   for (let i = footer - 1; i >= 0 && footer - i <= BOX_MAX_ROWS; i--) {
