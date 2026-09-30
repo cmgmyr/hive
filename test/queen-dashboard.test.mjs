@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import vm from "node:vm";
 import { after, before, describe, it } from "node:test";
@@ -321,6 +321,14 @@ describe("renderQueenDashboard", () => {
     writeFileSync(join(root, ".hive", "dashboard.html"), "<html></html>");
     const withFile = renderQueenDashboard(report([proj(1, "quiet", { root })]), { kind: "missing" });
     assert.match(withFile, /<a class="proj" href="file:\/\/[^"]*\/linked\/\.hive\/dashboard\.html"/);
+    const outside = join(dirs.tmp, "outside-hive");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "dashboard.html"), "<html>elsewhere</html>");
+    const escaped = join(dirs.tmp, "escaped-root");
+    mkdirSync(escaped, { recursive: true });
+    symlinkSync(outside, join(escaped, ".hive"));
+    const viaSymlink = renderQueenDashboard(report([proj(1, "quiet", { root: escaped })]), { kind: "missing" });
+    assert.doesNotMatch(viaSymlink, /<a class="proj"/, "a .hive symlinked outside the project root must not be linked");
     const without = renderQueenDashboard(report([proj(1, "quiet", { root: join(dirs.tmp, "nolink") })]), { kind: "missing" });
     assert.doesNotMatch(without, /<a class="proj"/);
   });
