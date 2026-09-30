@@ -22,7 +22,7 @@ const RULE_ROW_RE = /^\| `(\.claude\/rules\/[\w.-]+\.md)` \| ([^|]+) \|/gm;
 const COMMANDS = (() => {
   const table = /const COMMANDS = \[([\s\S]*?)\];/.exec(readFileSync(CLI, "utf8"));
   assert.ok(table, "COMMANDS table not found in dist/cli.js");
-  return [...table[1].matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+  return [...table[1].matchAll(/"([a-z][a-z-]*)"/g)].map((m) => m[1]);
 })();
 
 const { RAW_ATTACH_TMUX_CONFIG, TMUX_DOC } = await import("../dist/tmux.js");

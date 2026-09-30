@@ -10,6 +10,7 @@ import { registerTodos } from "./tools/todos.js";
 import { registerKv } from "./tools/kv.js";
 import { registerLeases } from "./tools/leases.js";
 import { registerWakes } from "./tools/wakes.js";
+import { registerQueenAudit } from "./tools/queenAudit.js";
 import { registerPrompts } from "./prompts.js";
 import { schedulerIntervalMs, startScheduler } from "./scheduler.js";
 import { enforceStrictInput } from "./strictInput.js";
@@ -43,6 +44,7 @@ registerTodos(server);
 registerKv(server);
 registerLeases(server);
 registerWakes(server);
+registerQueenAudit(server);
 registerPrompts(server);
 startScheduler(schedulerIntervalMs());
 

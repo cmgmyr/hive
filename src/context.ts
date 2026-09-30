@@ -332,6 +332,17 @@ export function isQueenLead(): boolean {
   return queenProjectId() !== null;
 }
 
+export interface QueenWriteIdentity {
+  actor_id: string;
+  home_project_id: number;
+}
+
+export function captureQueenWriteIdentity(targetProjectId: number): QueenWriteIdentity | null {
+  const home = queenProjectId();
+  if (home === null || home === targetProjectId) return null;
+  return { actor_id: process.env.HIVE_AGENT_ID!, home_project_id: home };
+}
+
 // Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
 // queen everywhere, and test/queen-scope.test.mjs fails on any registered tool missing from it.
 type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up";
@@ -352,6 +363,7 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   agent_status: "read",
   agent_output: "read",
   agent_message_get: "read",
+  queen_audit_list: "read",
   todo_create: "todo",
   todo_comment: "todo",
   wake_set: "lead_wake",
@@ -383,6 +395,7 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   project_prune: "global",
   actor_prune: "global",
   "hive lead": "spin_up",
+  "hive queen-audit": "read",
   "hive init": "home",
   "hive attach": "home",
   "hive next": "home",

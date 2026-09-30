@@ -63,6 +63,7 @@ import {
   addProject,
   agentProjectPin,
   assertQueenCrossProjectWrite,
+  captureQueenWriteIdentity,
   currentActor,
   effectiveProjectId,
   findProjectForCwd,
@@ -77,6 +78,7 @@ import {
   takeRegistrationNotice,
   type Project,
 } from "./context.js";
+import { confirmQueenWrite, listQueenAudit } from "./queenAudit.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
@@ -287,6 +289,9 @@ Usage:
   hive status                overview of agents, todos, and wake-ups everywhere
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
+  hive queen-audit           confirmed queen writes, newest first; 30-day history
+    [--project-id <id>]      filter the target project (queen only across projects)
+    [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
   hive next [--print]        attach to the lead of the project that needs you most
                              (waiting on you, then stuck), starting a dead or
                              missing lead first; --print only names the choice
@@ -658,6 +663,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     const project = resolveProjectForWrite("hive lead", path, (text) => {
       registrationNotice = text;
     });
+    const auditIdentity = captureQueenWriteIdentity(project.id);
     const { config, warnings } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -871,31 +877,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     // codex, since createdPane's branch does not require leadHarness.needsHome to fire.
     const recordedCodexHome = createdPane ? (newCodexHomeKey ?? "") : previousCodexHome;
 
-    const wonRace = db.transaction(() => {
-
-      const updated = db
-        .prepare(
-          "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
-        )
-        .run(
-          leadPane,
-          tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
-          panePid(leadPane),
-          recordedCommand,
-          recordedCodexHome,
-          leadAgentId,
-          casExpected,
-        ).changes;
-      if (updated === 0) return false;
-      db.prepare(
-        `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-         WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
-           AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
-      ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
-      return true;
-    })();
-    if (!wonRace) {
-
+    const abandonClaim = () => {
       if (createdPane) {
         try {
           waitForPaneEstablished(leadPane);
@@ -905,6 +887,42 @@ async function cmdLead(argv: string[]): Promise<void> {
         }
       }
       if (newCodexHomeKey) reapCodexHome(newCodexHomeKey);
+    };
+    let wonRace: boolean;
+    try {
+      wonRace = db.transaction(() => {
+
+        const updated = db
+          .prepare(
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+          )
+          .run(
+            leadPane,
+            tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+            panePid(leadPane),
+            recordedCommand,
+            recordedCodexHome,
+            leadAgentId,
+            casExpected,
+          ).changes;
+        if (updated === 0) return false;
+        db.prepare(
+          `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+           WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
+             AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
+        ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
+        confirmQueenWrite("hive lead", project.id, { detach }, {
+          agent_id: leadAgentId,
+          disposition: createdPane ? "started" : "adopted",
+        }, auditIdentity);
+        return true;
+      })();
+    } catch (e) {
+      abandonClaim();
+      throw e;
+    }
+    if (!wonRace) {
+      abandonClaim();
       throw new Error(
         "Another `hive lead` won the race to record a live pane for this project's lead session (both saw the " +
           "same dead pane and both tried to replace it, or this row was closed by another process mid-restart). " +
@@ -3515,6 +3533,38 @@ async function cmdNext(argv: string[]): Promise<void> {
   cmdAttach([chosen.root]);
 }
 
+function cmdQueenAudit(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"], valued: ["--project-id", "--limit"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("queen-audit", parsed, "--project-id <id>, --limit <n>, --json");
+  requireFlagValues("queen-audit", parsed);
+  let report: ReturnType<typeof listQueenAudit>;
+  try {
+    const project = pinnedOrCwdProject();
+    if (!project) throw new Error("hive queen-audit: the cwd is not a registered project. Run this command from a registered project.");
+    report = listQueenAudit({
+      project_id: parsed.values.has("--project-id") ? Number(parsed.values.get("--project-id")) : undefined,
+      limit: parsed.values.has("--limit") ? Number(parsed.values.get("--limit")) : undefined,
+    }, project.id);
+  } catch (e) {
+    console.error(errorMessage(e));
+    process.exitCode = 1;
+    return;
+  }
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify(report));
+    return;
+  }
+  if (report.entries.length === 0) {
+    console.log("No queen actions recorded.");
+    return;
+  }
+  for (const entry of report.entries) {
+    console.log(`${entry.created_at} UTC  ${entry.actor_id} -> target #${entry.target_project_id}\n` +
+      `  ${entry.operation}  ${entry.resource_type} #${entry.resource_id}\n  ${entry.summary}`);
+  }
+}
+
 function cmdPortfolio(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--json"] });
   if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
@@ -3972,7 +4022,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -4024,6 +4074,9 @@ try {
       break;
     case "portfolio":
       cmdPortfolio(rest);
+      break;
+    case "queen-audit":
+      cmdQueenAudit(rest);
       break;
     case "next":
       await cmdNext(rest);
