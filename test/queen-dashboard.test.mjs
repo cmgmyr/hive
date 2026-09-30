@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, runNode, scratchDirs, tmux } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen dashboard tests");
 clearHiveEnv();
@@ -367,3 +367,43 @@ describe("queen dashboard generation", () => {
   });
 });
 
+
+describe("hive queen opens the queen page", { skip: hasTmux && process.platform === "darwin" ? false : "needs tmux on darwin" }, () => {
+  const fakeOpen = makeFakeOpen(dirs.tmp);
+  const claudePath = makeFakeClaude(dirs.tmp)("sleep 600");
+  const MARKER = "hive:dashboard_opened";
+  const run = (bin, extra = []) =>
+    runCli(["queen", ...extra], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+      env: { PATH: `${dirname(claudePath)}:${bin}:${process.env.PATH}`, TERM_PROGRAM: "" },
+    });
+  const queenId = () => db.prepare("SELECT id FROM projects WHERE name = 'queen'").get().id;
+  const queenPage = () => join(realpathSync(join(dirs.dataDir, "queen")), "dashboard.html");
+
+  it("renders the page before attaching, opens its one file:// URL, and suppresses a repeat inside eight hours", async () => {
+    const first = await run(fakeOpen.bin);
+    assert.equal(first.code, 0, first.stderr + first.stdout);
+    assert.ok(existsSync(queenPage()));
+    const calls = fakeOpen.calls();
+    assert.equal(calls.length, 1, JSON.stringify(calls));
+    assert.equal(calls[0], new URL(`file://${queenPage()}`).href);
+
+    const again = await run(fakeOpen.bin);
+    assert.equal(again.code, 0, again.stderr + again.stdout);
+    assert.equal(fakeOpen.calls().length, 1);
+  });
+
+  it("--no-dashboard opens nothing, and a failed open leaves no marker so the next run retries", async () => {
+    db.prepare("DELETE FROM kv WHERE project_id = ? AND key = ?").run(queenId(), MARKER);
+    fakeOpen.reset();
+    assert.equal((await run(fakeOpen.bin, ["--no-dashboard"])).code, 0);
+    assert.deepEqual(fakeOpen.calls(), []);
+
+    assert.equal((await run(fakeOpen.failBin)).code, 0);
+    assert.equal(db.prepare("SELECT 1 FROM kv WHERE project_id = ? AND key = ?").get(queenId(), MARKER), undefined);
+    assert.equal((await run(fakeOpen.bin)).code, 0);
+    assert.equal(fakeOpen.calls().length, 1);
+  });
+});
