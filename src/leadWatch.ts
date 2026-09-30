@@ -1,0 +1,92 @@
+import { db } from "./db.js";
+import { paneClassifierFor } from "./harnesses.js";
+import { readLeadTurnState } from "./leadState.js";
+import { LEAD_KIND } from "./spawn.js";
+import { holdsHumanInput, paneReissued, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
+
+export const LEAD_TARGET_GONE = "LEAD_TARGET_GONE";
+export const LEAD_TARGET_REISSUED = "LEAD_TARGET_REISSUED";
+export const LEAD_TARGET_RESTARTED = "LEAD_TARGET_RESTARTED";
+
+export interface LeadIdleSubscription {
+  wake_id: number;
+  target_project_id: number;
+  agent_id: number;
+  pane_pid: string;
+  session_id: string;
+  baseline_idle_seq: number;
+  terminal_reason: string | null;
+}
+
+export interface WatchedLead {
+  id: number;
+  name: string;
+  status: string;
+  tmux_target: string;
+  tmux_socket: string;
+  pane_pid: string;
+  command: string;
+}
+
+export type LeadWatchResult =
+  | { kind: "idle"; idle_seq: number }
+  | { kind: "pending"; reason: string }
+  | { kind: "invalid"; reason: string };
+
+export type PaneVeto = (lead: WatchedLead) => string | null;
+
+export function leadSubscription(wakeId: number): LeadIdleSubscription | null {
+  return (
+    (db.prepare("SELECT * FROM lead_idle_subscriptions WHERE wake_id = ?").get(wakeId) as LeadIdleSubscription | undefined) ??
+    null
+  );
+}
+
+export function runningLeadOf(projectId: number): WatchedLead | null {
+  return (
+    (db
+      .prepare(
+        `SELECT id, name, status, tmux_target, tmux_socket, pane_pid, command FROM agents
+          WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id LIMIT 1`,
+      )
+      .get(projectId, LEAD_KIND) as WatchedLead | undefined) ?? null
+  );
+}
+
+// Reads the watched lead's screen only to stay quiet; it can never make a lead read idle.
+export function paneVeto(lead: WatchedLead): string | null {
+  const classifier = paneClassifierFor(lead.command);
+  if (!classifier) return "its screen cannot be classified";
+  const choice = classifier.choiceCheck(lead.tmux_target).awaitingChoice;
+  if (choice === true) return "it is on a dialog";
+  if (choice === null) return "its screen could not be read";
+  if (holdsHumanInput(classifier.inputBoxState(lead.tmux_target))) return "it has unsubmitted text in its input box";
+  return null;
+}
+
+export function evaluateLeadWatch(
+  sub: LeadIdleSubscription,
+  mode: "any" | "all",
+  snapshot: AliveSnapshot | null,
+  veto: PaneVeto,
+): LeadWatchResult {
+  const lead = db
+    .prepare("SELECT id, name, status, tmux_target, tmux_socket, pane_pid, command FROM agents WHERE id = ? AND kind = ?")
+    .get(sub.agent_id, LEAD_KIND) as WatchedLead | undefined;
+  if (!lead || lead.status !== "running") return { kind: "invalid", reason: LEAD_TARGET_GONE };
+  if (lead.pane_pid !== sub.pane_pid) return { kind: "invalid", reason: LEAD_TARGET_RESTARTED };
+  if (snapshot === null) return { kind: "pending", reason: "tmux did not answer" };
+  const probe = rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot);
+  if (probe.live === null) return { kind: "pending", reason: "its pane cannot be probed from this process" };
+  if (!probe.live) return { kind: "invalid", reason: LEAD_TARGET_GONE };
+  if (paneReissued(sub.pane_pid, probe)) return { kind: "invalid", reason: LEAD_TARGET_REISSUED };
+
+  const state = readLeadTurnState(lead.id);
+  if (state === null || state.pane_pid !== sub.pane_pid) return { kind: "pending", reason: "no turn recorded yet" };
+  if (sub.session_id !== "" && state.session_id !== sub.session_id) return { kind: "invalid", reason: LEAD_TARGET_RESTARTED };
+  const ended = mode === "any" ? state.idle_seq > sub.baseline_idle_seq : state.state === "idle";
+  if (!ended) return { kind: "pending", reason: `its turn state is ${state.state}` };
+  const vetoed = veto(lead);
+  if (vetoed !== null) return { kind: "pending", reason: `its turn ended, but ${vetoed}` };
+  return { kind: "idle", idle_seq: state.idle_seq };
+}

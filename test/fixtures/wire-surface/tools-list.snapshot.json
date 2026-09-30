@@ -2668,7 +2668,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. Refuses a lead target: a lead has no idle/working state channel.",
+    "description": "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes for workers, plus one for the queen, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. agents=[...] refuses a lead: it watches worker state, which a lead does not write. lead_project_id is the QUEEN's alone: a one-shot that fires when another registered project's running lead ENDS A TURN (never 'finished its work'), stored in and delivered to the queen's own project, and ended with a named reason if that lead's pane dies, is reissued, or restarts.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -2709,6 +2709,12 @@
             }
           ],
           "description": "Deliver to a spawned agent instead of this session."
+        },
+        "lead_project_id": {
+          "description": "QUEEN ONLY: wake when the running lead of this OTHER registered project ends a turn. The wake is stored in the queen's own project and delivered only to the queen; the watched lead is read, never typed into. Mutually exclusive with agents and scope; refuses project_id and deliver_to.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
         },
         "max_wait_seconds": {
           "description": "For agents=[...]: how long to wait for idle before firing anyway, default 900. For scope=\"project\": THE WATCH'S LIFETIME, default 14400 (4 hours), after which it delivers one last wake saying it has expired and stops watching. Not a hard deadline either way: delivery holds past it while the target pane is on a dialog or has unsubmitted text, until the pane clears.",
@@ -2755,6 +2761,13 @@
         },
         "hive_notice": {
           "type": "string"
+        },
+        "lead_watch": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
         },
         "max_wait_seconds": {
           "type": "number"

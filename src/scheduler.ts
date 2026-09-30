@@ -14,6 +14,7 @@ import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneVeto } from "./leadWatch.js";
 import {
   describeLiveTasks,
   describeOneTask,
@@ -669,7 +670,12 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     const choices: ChoiceCache = new Map();
     for (const timer of candidates) {
-      if (timer.kind === "delay") await fireDelay(timer, snapshot, choices);
+      if (timer.kind === "delay") {
+        await fireDelay(timer, snapshot, choices);
+        continue;
+      }
+      const leadWatch = leadSubscription(timer.id);
+      if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, snapshot, now, choices);
       else await maybeFireIdle(timer, snapshot, now, choices);
     }
   } catch {
@@ -2191,6 +2197,40 @@ async function maybeFireIdle(
       await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
     }
   }
+}
+
+// A lead watch never enters the worker helpers below: it reads its own subscription row and the
+// watched lead's own turn record, and ends with a named reason rather than ever reading as idle.
+async function maybeFireLeadWatch(
+  timer: TimerRow,
+  sub: LeadIdleSubscription,
+  snapshot: AliveSnapshot | null,
+  now: string,
+  choices: ChoiceCache,
+): Promise<void> {
+  const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
+  const veto: PaneVeto = (lead) => {
+    const dialog = awaitingChoice(lead.tmux_target, lead.command, choices);
+    if (dialog === true) return "it is on a dialog";
+    if (dialog === null) return "its screen could not be read";
+    return inputBoxHoldsWake(lead.tmux_target, lead.command, choices) ? "it has unsubmitted text in its input box" : null;
+  };
+  const result = evaluateLeadWatch(sub, timer.kind === "idle_all" ? "all" : "any", snapshot, veto);
+  const note =
+    result.kind === "idle"
+      ? "watched lead's turn ended"
+      : result.kind === "invalid"
+        ? `lead watch ended: ${result.reason}`
+        : timedOut
+          ? "max wait reached"
+          : null;
+  if (note === null) return;
+  const decision = deliverable(timer, snapshot, choices);
+  if (!decision.ok || !claimOneShot(timer)) return;
+  if (result.kind === "invalid") {
+    bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
+  }
+  await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt);
 }
 
 const TAIL_AGENTS = 3;

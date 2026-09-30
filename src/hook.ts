@@ -217,6 +217,16 @@ try {
       ).run(actorId);
     }
 
+    // A lead's turn state is its own table; agents.agent_state stays worker-only.
+    if (process.env.HIVE_LEAD === "1" && (event === "prompt" || event === "stop" || event === "session_end")) {
+      try {
+        const { applyLeadHook } = await import("./leadState.js");
+        applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
+      } catch {
+
+      }
+    }
+
     if (event === "session_end") {
       try {
         await stopProcessesForEndedLead(actorId, readPayload());
