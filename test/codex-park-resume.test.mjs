@@ -27,12 +27,14 @@ const codexBinDir = join(dirs.tmp, "codex-bin");
 mkdirSync(codexBinDir, { recursive: true });
 const fakeCodexBin = join(codexBinDir, "codex");
 const argvFile = join(dirs.tmp, "codex-argv.txt");
+const argvTemp = join(dirs.tmp, "codex-argv.tmp");
 const envFile = join(dirs.tmp, "codex-env.txt");
+const envTemp = join(dirs.tmp, "codex-env.tmp");
 // Same binary serves both the initial spawn and every resume - only the argv differs - so each
 // call site below clears these two files first and waits for them to reappear.
 writeFileSync(
   fakeCodexBin,
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nenv > ${JSON.stringify(envFile)}\nsleep 30\n`,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 30\n`,
 );
 chmodSync(fakeCodexBin, 0o755);
 
@@ -63,7 +65,7 @@ const clearArgvEnv = () => {
 const spawnCodex = async (name) => {
   clearArgvEnv();
   const receipt = await mcp.call("agent_spawn", { name, command: fakeCodexBin });
-  await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+  assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
   db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run(`fake-${name}-session`, receipt.agent_id);
   await liveAgentRow(mcp, name);
   return receipt;
@@ -96,7 +98,7 @@ describe(
       clearArgvEnv();
       const resumeReceipt = await mcp.call("agent_resume", { agent_id: receipt.agent_id });
       assert.equal(resumeReceipt.resumed_session_id, "fake-codex-resume-shape-session");
-      await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
 
       const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
       assert.ok(argv.includes("resume"), `must use the subcommand form, not a flag: ${argv.join(" ")}`);
@@ -126,7 +128,7 @@ describe(
 
       clearArgvEnv();
       await mcp.call("agent_resume", { agent_id: receipt.agent_id });
-      await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
 
       const paneEnv = Object.fromEntries(
         readFileSync(envFile, "utf8").split("\n").filter((l) => l.startsWith("HIVE_") && !l.endsWith("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
@@ -148,14 +150,14 @@ describe(
         model: "gpt-5-codex",
         extra_args: ["-c", "model_reasoning_effort=low", "--resume", "stale-session"],
       });
-      await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
       db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("fake-codex-resume-model-session", receipt.agent_id);
       await liveAgentRow(mcp, "codex-resume-model");
       await mcp.call("agent_park", { agent_id: receipt.agent_id });
 
       clearArgvEnv();
       await mcp.call("agent_resume", { agent_id: receipt.agent_id });
-      await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+      assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
 
       const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
       const modelIndex = argv.indexOf("--model");

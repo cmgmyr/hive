@@ -31,10 +31,12 @@ const codexBinDir = join(dirs.tmp, "codex-bin");
 mkdirSync(codexBinDir, { recursive: true });
 const fakeCodexBin = join(codexBinDir, "codex");
 const argvFile = join(dirs.tmp, "codex-argv.txt");
+const argvTemp = join(dirs.tmp, "codex-argv.tmp");
 const envFile = join(dirs.tmp, "codex-env.txt");
+const envTemp = join(dirs.tmp, "codex-env.tmp");
 writeFileSync(
   fakeCodexBin,
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\nenv > ${JSON.stringify(envFile)}\nsleep 30\n`,
+  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 30\n`,
 );
 chmodSync(fakeCodexBin, 0o755);
 
@@ -64,7 +66,7 @@ describe("agent_spawn: codex worker gets a real per-worker CODEX_HOME", () => {
     agentId = receipt.agent_id;
     target = receipt.tmux_target;
     assert.ok(receipt.codex_home, "the receipt must name where the brief and MCP config landed");
-    await until(() => existsSync(argvFile) && existsSync(envFile), 5000);
+    assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
   });
 
   it("sets CODEX_HOME in the pane's real environment, pointing at the generated files", { skip: hasTmux ? false : "tmux is not installed" }, () => {
@@ -229,7 +231,7 @@ describe("agent_spawn: the receipt names which instruction layers (todo 787) wer
       assert.equal(receipt.codex_instructions, "instructions: global, local");
 
       const home = receipt.codex_home;
-      await until(() => existsSync(join(home, "config.toml")), 5000);
+      assert.ok(await until(() => existsSync(join(home, "config.toml")), 5000), "codex config never appeared");
       assert.equal(readFileSync(join(home, "AGENTS.md"), "utf8"), "GLOBAL SENTINEL");
       const config = parseToml(readFileSync(join(home, "config.toml"), "utf8"));
       assert.match(config.developer_instructions, /LOCAL SENTINEL/);
