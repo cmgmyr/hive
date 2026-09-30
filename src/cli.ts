@@ -2362,7 +2362,7 @@ function reportProjectScope(here: Project | null): void {
     if (project.path === homePath || project.path === "/") {
       warn(
         "project scope",
-        `"${project.name}" (${project.path}) is a home directory; every unregistered directory under it resolves to this project. hive project prune removes it once it holds nothing.`,
+        `"${project.name}" (${project.path}) is a home directory; every unregistered directory under it resolves to this project. The project_prune tool with this project's id (from any hive session) removes it once it holds nothing.`,
       );
     }
   }
