@@ -145,18 +145,21 @@ function projectRow(
   const liveness = (a: AgentRow): boolean | null =>
     snapshot ? rowAlive(a.tmux_socket, a.tmux_target, snapshot) : null;
 
+  const reissued = (a: AgentRow): boolean =>
+    snapshot !== null && paneReissued(a.pane_pid, rowAliveProbe(a.tmux_socket, a.tmux_target, snapshot));
+
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
   let liveWaiting = 0;
   let lead: PortfolioProject["lead"] = { state: "none", agent_id: null };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = snapshot && paneReissued(a.pane_pid, rowAliveProbe(a.tmux_socket, a.tmux_target, snapshot)) ? false : liveness(a);
+      const live = reissued(a) ? false : liveness(a);
       lead = { state: live === true ? "alive" : live === false ? "dead_pane" : "unknown", agent_id: a.id };
       continue;
     }
     if (a.kind !== "agent") continue;
-    const live = liveness(a);
+    const live = reissued(a) ? false : liveness(a);
     if (live === false) workers.unreachable++;
     else if (live === null) workers.unconfirmed++;
     else if (a.agent_state === "working") {

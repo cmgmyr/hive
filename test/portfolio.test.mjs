@@ -433,6 +433,15 @@ describe("portfolio panes", () => {
     assert.equal(row(same).lead.state, "alive");
   });
 
+  it("counts a worker whose pane id was reissued to a different pid as unreachable, not working", { skip }, () => {
+    const p = project();
+    const id = agent(p, { state: "working", target: livePane() });
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(id);
+    const r = row(p);
+    assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 1, unconfirmed: 0 });
+    assert.equal(r.lane, "quiet");
+  });
+
   it("reads a foreign-socket lead as unknown, never dead", { skip }, () => {
     const p = project();
     agent(p, { kind: "lead", target: "%dead", socket: "/somewhere/else/default" });
