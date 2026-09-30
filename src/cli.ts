@@ -1084,6 +1084,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # agents: [claude, codex]       # crew harness pool; the first entry is the default
 
 # lead_branches: [main, master] # branches where a session gets hive's kickoff
+# first_message: ""            # a lead's first turn; "" sends none, absent sends morning triage
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 
