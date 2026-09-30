@@ -104,6 +104,14 @@ describe("hive project rm", () => {
     assert.ok(exists(target.id));
   });
 
+  it("refuses when only HIVE_PROJECT_LOCK=1 is set, with no agent id", async () => {
+    const target = withRows(project("locked-env-only"));
+    const r = await run(["rm", String(target.id), "--yes"], { env: { HIVE_PROJECT_LOCK: "1" } });
+    assert.equal(r.code, 1);
+    assert.match(r.stdout, /HIVE_PROJECT_LOCK/);
+    assert.ok(exists(target.id));
+  });
+
   it("prints usage for anything but rm <ref>", async () => {
     const r = await run(["rm"]);
     assert.equal(r.code, 1);

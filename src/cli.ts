@@ -3648,7 +3648,7 @@ async function cmdProject(argv: string[]): Promise<void> {
     console.log("Usage: hive project rm <id|path> [--yes]");
     process.exit(1);
   }
-  if (agentProjectPin() != null) {
+  if (process.env.HIVE_PROJECT_LOCK === "1" || agentProjectPin() != null) {
     console.log("hive project rm: this session is locked to one project (HIVE_PROJECT_LOCK=1) and cannot remove projects.");
     process.exit(1);
   }
