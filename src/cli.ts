@@ -78,7 +78,7 @@ import {
   takeRegistrationNotice,
   type Project,
 } from "./context.js";
-import { confirmQueenWrite } from "./queenAudit.js";
+import { confirmQueenWrite, listQueenAudit } from "./queenAudit.js";
 import { ensureHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
@@ -289,6 +289,12 @@ Usage:
   hive status                overview of agents, todos, and wake-ups everywhere
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
+  hive queen-audit           confirmed queen writes, newest first; 30-day history
+    [--project-id <id>]      filter the target project (queen only across projects)
+    [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
+  hive queen-audit           confirmed queen writes, newest first; 30-day history
+    [--project-id <id>]      filter the target project (queen only across projects)
+    [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
   hive next [--print]        attach to the lead of the project that needs you most
                              (waiting on you, then stuck), starting a dead or
                              missing lead first; --print only names the choice
@@ -3530,6 +3536,38 @@ async function cmdNext(argv: string[]): Promise<void> {
   cmdAttach([chosen.root]);
 }
 
+function cmdQueenAudit(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"], valued: ["--project-id", "--limit"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("queen-audit", parsed, "--project-id <id>, --limit <n>, --json");
+  requireFlagValues("queen-audit", parsed);
+  let report: ReturnType<typeof listQueenAudit>;
+  try {
+    report = listQueenAudit({
+      project_id: parsed.values.has("--project-id") ? Number(parsed.values.get("--project-id")) : undefined,
+      limit: parsed.values.has("--limit") ? Number(parsed.values.get("--limit")) : undefined,
+    });
+  } catch (e) {
+    console.error(errorMessage(e));
+    process.exitCode = 1;
+    return;
+  }
+  const notice = takeRegistrationNotice();
+  if (notice) console.error(registrationNoticeText(notice));
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify(report));
+    return;
+  }
+  if (report.entries.length === 0) {
+    console.log("No queen actions recorded.");
+    return;
+  }
+  for (const entry of report.entries) {
+    console.log(`${entry.created_at} UTC  ${entry.actor_id} -> target #${entry.target_project_id}\n` +
+      `  ${entry.operation}  ${entry.resource_type} #${entry.resource_id}\n  ${entry.summary}`);
+  }
+}
+
 function cmdPortfolio(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--json"] });
   if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
@@ -3987,7 +4025,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -4039,6 +4077,9 @@ try {
       break;
     case "portfolio":
       cmdPortfolio(rest);
+      break;
+    case "queen-audit":
+      cmdQueenAudit(rest);
       break;
     case "next":
       await cmdNext(rest);

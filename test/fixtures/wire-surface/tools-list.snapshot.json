@@ -1754,6 +1754,36 @@
       "type": "object"
     }
   },
+  "queen_audit_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List confirmed queen writes into other projects, newest first. The queen may read all targets; other callers see only their own project. Default 20, maximum 100 entries. History is retained for 30 days with a 20,000 id-range backstop. A crash between a completed terminal send and its audit insert can leave that send unrecorded.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "project_id": {
+          "description": "Filter by the target project id. Only the queen may name another project.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
   "todo_archive": {
     "annotations": {
       "destructiveHint": true,

@@ -8,6 +8,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive --version --check` | Ask npm for the latest published version, cache the result for 24 hours, and print whether this build is current |
 | `hive` / `hive lead [path] [--no-dashboard] [--detach]` | Start, or reattach to, this project's lead session; `--detach` starts or adopts the lead and prints its pane and attach command without attaching |
 | `hive queen` | Start, or reattach to, the queen: one lead per data dir that reads every registered project and writes into another one only through its lead (todos, comments, and text or wakes addressed to that lead). The first run creates `<data dir>/queen` with a `hive.yml` selecting the shipped `queen` profile |
+| `hive queen-audit [--project-id <id>] [--limit <n>] [--json]` | List confirmed queen writes, newest first, for 30 days with a 20,000 id-range backstop. The queen can filter any target; other callers see their own project. Default 20, maximum 100. A crash after a terminal send but before its audit insert can leave that send unrecorded |
 | `hive init [path]` | Set up a project: writes `hive.yml`, picks a profile, seeds the board pad, and registers the checkout it is pointed at even under a registered parent |
 | `hive attach` | Attach to the project's tmux session without opening a lead |
 | `hive start <name>` | Start a `hive.yml` process by hand |

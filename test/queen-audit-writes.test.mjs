@@ -126,8 +126,10 @@ it("refused, invalid, cancelled and already-satisfied calls append no completed 
 it("blocker validation and audit failures roll back todo, comment touch, wake update and cancel notices", needsTmux, async () => {
   const before = trail().length;
   const todosBefore = db.prepare("SELECT COUNT(*) AS n FROM todos").get().n;
-  await assert.rejects(client.call("todo_create", { title: "invalid blocker", blocked_by: [999999], project_id: alpha.id }), /No todo/);
+  const blockersBefore = db.prepare("SELECT * FROM todo_blockers").all();
+  await assert.rejects(client.call("todo_create", { title: "invalid blocker", blocked_by: [todo, 999999], project_id: alpha.id }), /No todo/);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM todos").get().n, todosBefore);
+  assert.deepEqual(db.prepare("SELECT * FROM todo_blockers").all(), blockersBefore);
   const active = await client.call("wake_set", { delay_seconds: 3600, body: "keep", deliver_to: lead.id, project_id: alpha.id });
   db.prepare("INSERT INTO wakes (project_id, owner, body, kind, parent_wake_id, deliver_actor, deliver_pane, due_at) VALUES (?, ?, 'notice', 'delay', ?, ?, '%none', datetime('now', '+1 day'))").run(alpha.id, q.actor_id, active.wake_id, lead.actor_id);
   db.prepare("UPDATE todos SET updated_at = '2000-01-01' WHERE id = ?").run(todo);
@@ -224,4 +226,33 @@ else { const r=spawnSync(${JSON.stringify(realTmux)},args,{stdio:'inherit'}); if
   } finally { await tailClient.close(); }
   const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(calls.filter((a) => a[0] === "paste-buffer").length, 4);
+});
+it("real cross-project writes and adoption are readable through both surfaces and the target lead", needsTmux, async () => {
+  const before = trail().length;
+  const adopted = await runCli(["lead", beta.path, "--detach", "--no-dashboard"], { cwd: queen.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: q.actor_id } });
+  assert.equal(adopted.code, 0, adopted.stdout + adopted.stderr);
+  assert.equal(trail().length, before + 1);
+  assert.match(trail().at(-1).summary, /^adopted/);
+  const expected = trail().reverse();
+  const all = await client.call("queen_audit_list", { limit: 100 });
+  assert.deepEqual(all.entries, expected);
+  assert.deepEqual(new Set(all.entries.map((r) => r.operation)), new Set(Object.keys(fixture)));
+  assert.ok(all.entries.every((r) => r.actor_id === q.actor_id));
+  const filtered = await client.call("queen_audit_list", { project_id: alpha.id, limit: 100 });
+  const alphaEntries = expected.filter((r) => r.target_project_id === alpha.id);
+  assert.deepEqual(filtered.entries, alphaEntries);
+  const targetLead = new McpClient({ cwd: alpha.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: lead.actor_id, HIVE_SCHEDULER_INTERVAL_MS: "3600000" } });
+  try { await targetLead.start(); assert.deepEqual((await targetLead.call("queen_audit_list", { limit: 100 })).entries, alphaEntries); }
+  finally { await targetLead.close(); }
+  const cli = await runCli(["queen-audit", "--json", "--limit", "100"], { cwd: queen.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: q.actor_id } });
+  assert.equal(cli.code, 0, cli.stderr);
+  assert.deepEqual(JSON.parse(cli.stdout).entries, expected);
+  const cliAlpha = await runCli(["queen-audit", "--json", "--limit", "100", "--project-id", String(alpha.id)], { cwd: queen.path, dataDir: dirs.dataDir, env: { HIVE_AGENT_ID: q.actor_id } });
+  assert.equal(cliAlpha.code, 0, cliAlpha.stderr);
+  assert.deepEqual(JSON.parse(cliAlpha.stdout).entries, alphaEntries);
+  const auditBefore = trail().length;
+  await client.call("todo_create", { title: "another home todo", project_id: queen.id });
+  await assert.rejects(client.call("pad_write", { name: "board", content: "refused", project_id: alpha.id }), /QUEEN_CROSS_PROJECT_WRITE_REFUSED/);
+  assert.equal((await client.call("wake_cancel", { wake_id: wake, project_id: alpha.id })).cancelled, false);
+  assert.equal(trail().length, auditBefore);
 });

@@ -38,6 +38,7 @@ const EXPECTED_TOOL_NAMES = [
   "project_list",
   "project_prune",
   "project_select",
+  "queen_audit_list",
   "todo_archive",
   "todo_block",
   "todo_comment",
