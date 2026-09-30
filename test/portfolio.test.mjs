@@ -417,6 +417,31 @@ describe("portfolio panes", () => {
     assert.equal(row(withWake).lane, "stuck");
   });
 
+  it("reads a lead whose pane id was reissued to a different pid as dead_pane, and a matching pid as alive", { skip }, () => {
+    const reissued = project();
+    const id = agent(reissued, { kind: "lead", state: "idle", target: livePane() });
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(id);
+    todo(reissued, { status: "in_progress", updated: at("-1 hour") });
+    assert.deepEqual(row(reissued).lead, { state: "dead_pane", agent_id: id });
+    assert.deepEqual(row(reissued).reasons, ["dead_lead_pane", "todo_in_progress"]);
+
+    const same = project();
+    const sameId = agent(same, { kind: "lead", state: "idle", target: livePane() });
+    const pid = db.prepare("SELECT tmux_target FROM agents WHERE id = ?").get(sameId).tmux_target;
+    const livePid = tmux("display-message", "-p", "-t", pid, "#{pane_pid}");
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(livePid, sameId);
+    assert.equal(row(same).lead.state, "alive");
+  });
+
+  it("counts a worker whose pane id was reissued to a different pid as unreachable, not working", { skip }, () => {
+    const p = project();
+    const id = agent(p, { state: "working", target: livePane() });
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(id);
+    const r = row(p);
+    assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 1, unconfirmed: 0 });
+    assert.equal(r.lane, "quiet");
+  });
+
   it("reads a foreign-socket lead as unknown, never dead", { skip }, () => {
     const p = project();
     agent(p, { kind: "lead", target: "%dead", socket: "/somewhere/else/default" });

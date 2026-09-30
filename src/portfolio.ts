@@ -3,7 +3,7 @@ import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
-import { liveTargets, rowAlive, type AliveSnapshot } from "./tmux.js";
+import { liveTargets, paneReissued, rowAlive, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
 
@@ -78,6 +78,7 @@ interface AgentRow {
   agent_state: string;
   tmux_target: string;
   tmux_socket: string;
+  pane_pid: string;
 }
 
 const ONE = (sql: string, ...params: unknown[]): unknown => db.prepare(sql).get(...params);
@@ -137,12 +138,15 @@ function projectRow(
 
   const agents = db
     .prepare(
-      "SELECT id, kind, agent_state, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
+      "SELECT id, kind, agent_state, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
     )
     .all(project.id) as AgentRow[];
 
   const liveness = (a: AgentRow): boolean | null =>
     snapshot ? rowAlive(a.tmux_socket, a.tmux_target, snapshot) : null;
+
+  const reissued = (a: AgentRow): boolean =>
+    snapshot !== null && paneReissued(a.pane_pid, rowAliveProbe(a.tmux_socket, a.tmux_target, snapshot));
 
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
@@ -150,12 +154,12 @@ function projectRow(
   let lead: PortfolioProject["lead"] = { state: "none", agent_id: null };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = liveness(a);
+      const live = reissued(a) ? false : liveness(a);
       lead = { state: live === true ? "alive" : live === false ? "dead_pane" : "unknown", agent_id: a.id };
       continue;
     }
     if (a.kind !== "agent") continue;
-    const live = liveness(a);
+    const live = reissued(a) ? false : liveness(a);
     if (live === false) workers.unreachable++;
     else if (live === null) workers.unconfirmed++;
     else if (a.agent_state === "working") {

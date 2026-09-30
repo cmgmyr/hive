@@ -91,6 +91,7 @@ import {
   isUnsubmittedInputHold,
   janitor,
   resolveDashboardFile,
+  generateQueenDashboardNow,
   transcriptStaleness,
   wasHeldForPaneReissue,
 } from "./scheduler.js";
@@ -1010,7 +1011,9 @@ async function cmdQueen(argv: string[]): Promise<void> {
   }
   mkdirSync(home, { recursive: true });
   publishQueenYml(home);
-  addProject(home, "queen");
+  const queen = addProject(home, "queen");
+  generateQueenDashboardNow();
+  if (!parsed.flags.has("--no-dashboard")) maybeOpenQueenDashboard(queen);
   await cmdLead([home, ...parsed.flags]);
 }
 
@@ -1580,6 +1583,21 @@ function maybeOpenDashboard(project: Project, dashboardEnabled: boolean): void {
 
   if (!dashboardFileContained(dashboardFile, project.path)) return;
 
+  openDashboardOnce(project, dashboardFile);
+}
+
+function maybeOpenQueenDashboard(project: Project): void {
+  if (process.platform !== "darwin") return;
+  const dashboardFile = join(project.path, "dashboard.html");
+  try {
+    if (!existsSync(dashboardFile) || !dashboardFileContained(dashboardFile, project.path)) return;
+  } catch {
+    return;
+  }
+  openDashboardOnce(project, dashboardFile);
+}
+
+function openDashboardOnce(project: Project, dashboardFile: string): void {
   const actor = currentActor();
   const claim = db
     .prepare(

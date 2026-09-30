@@ -1,13 +1,16 @@
 import { runningBuildChange, runningBuildNotice } from "./version.js";
 import type { Statement } from "better-sqlite3";
-import { existsSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
 import { snapshotProcesses } from "./processes.js";
 import { loadProjectYml } from "./projectYml.js";
-import { listProjects } from "./context.js";
+import { getProjectByPath, listProjects, queenHomeDir } from "./context.js";
+import { collectPortfolio } from "./portfolio.js";
+import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./queenDashboard.js";
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
@@ -544,10 +547,63 @@ function maybeGenerateDashboard(project: { id: number; path: string }): void {
   }
 }
 
+function queenHome(): { id: number; path: string } | null {
+  try {
+    const home = queenHomeDir();
+    if (lstatSync(home).isSymbolicLink()) return null;
+    const project = getProjectByPath(realpathSync(home));
+    return project ? { id: project.id, path: home } : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderQueenPage(queenId: number): { html: string; hash: string } {
+  const report = collectPortfolio();
+  const html = renderQueenDashboard(report, readQueenBrief(queenId, report.as_of));
+  const stable = html.replace(new RegExp(`<p class="generated" ${QUEEN_GENERATED_MARKER}>[^<]*</p>`), "");
+  return { html, hash: createHash("sha256").update(stable).digest("hex") };
+}
+
+function publishQueenPage(queenId: number, target: string, page: { html: string; hash: string }): void {
+  writeDashboardAtomically(target, page.html);
+  bestEffortRun("UPDATE dashboard_meta SET last_mark = ? WHERE project_id = ?", page.hash, queenId);
+}
+
+export function generateQueenDashboardNow(): string | null {
+  try {
+    const home = queenHome();
+    if (home === null) return null;
+    const target = join(home.path, "dashboard.html");
+    bestEffortRun("INSERT OR IGNORE INTO dashboard_meta (project_id) VALUES (?)", home.id);
+    publishQueenPage(home.id, target, renderQueenPage(home.id));
+    return target;
+  } catch {
+    return null;
+  }
+}
+
+function maybeGenerateQueenDashboard(queen: { id: number; path: string }): void {
+  try {
+    if (!claimDashboardAttempt(queen.id)) return;
+    const target = join(queen.path, "dashboard.html");
+    const page = renderQueenPage(queen.id);
+    const known = stmt("SELECT last_mark FROM dashboard_meta WHERE project_id = ?").get(queen.id) as {
+      last_mark: string | null;
+    };
+    if (known.last_mark === page.hash && existsSync(target)) return;
+    publishQueenPage(queen.id, target, page);
+  } catch {
+
+  }
+}
+
 function maybeGenerateDashboards(): void {
   try {
+    const queen = queenHome();
     for (const project of listProjects()) {
-      maybeGenerateDashboard(project);
+      if (queen !== null && project.id === queen.id) maybeGenerateQueenDashboard(queen);
+      else maybeGenerateDashboard(project);
     }
   } catch {
 
