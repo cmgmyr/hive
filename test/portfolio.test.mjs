@@ -106,7 +106,7 @@ describe("portfolio lanes", () => {
     assert.equal(r.lane, "quiet");
     assert.deepEqual(r.reasons, ["quiet"]);
     assert.equal(r.last_activity_at, OLD);
-    assert.deepEqual(r.lead, { state: "none", agent_id: null });
+    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown" });
   });
 
   it("puts a needs-human todo in waiting_on_you", () => {
@@ -400,7 +400,7 @@ describe("portfolio panes", () => {
     const id = agent(p, { kind: "lead", state: "idle", target: "%dead" });
     todo(p);
     const r = row(p);
-    assert.deepEqual(r.lead, { state: "dead_pane", agent_id: id });
+    assert.deepEqual(r.lead, { state: "dead_pane", agent_id: id, turn: "unknown" });
     assert.equal(r.lane, "quiet");
   });
 
@@ -422,7 +422,7 @@ describe("portfolio panes", () => {
     const id = agent(reissued, { kind: "lead", state: "idle", target: livePane() });
     db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(id);
     todo(reissued, { status: "in_progress", updated: at("-1 hour") });
-    assert.deepEqual(row(reissued).lead, { state: "dead_pane", agent_id: id });
+    assert.deepEqual(row(reissued).lead, { state: "dead_pane", agent_id: id, turn: "unknown" });
     assert.deepEqual(row(reissued).reasons, ["dead_lead_pane", "todo_in_progress"]);
 
     const same = project();
@@ -481,7 +481,7 @@ describe("portfolio panes", () => {
     agent(p, { kind: "command", state: "working", target: livePane() });
     const r = row(p);
     assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 });
-    assert.deepEqual(r.lead, { state: "none", agent_id: null });
+    assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown" });
     assert.equal(r.lane, "quiet");
   });
 
@@ -490,6 +490,38 @@ describe("portfolio panes", () => {
     agent(p, { state: "working", target: livePane() });
     assert.equal(row(p).lane, "moving");
     assert.deepEqual(row(p).reasons, ["worker_working"]);
+  });
+});
+
+describe("portfolio lead turn", () => {
+  const leadWith = (panePid, rowPid, state) => {
+    const p = project();
+    const id = agent(p, { kind: "lead", state: "idle", target: "%dead" });
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(panePid, id);
+    if (rowPid !== null) {
+      db.prepare(
+        "INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at) VALUES (?, ?, 's', ?, 1, 'stop', ?)",
+      ).run(id, rowPid, state, OLD);
+    }
+    return p;
+  };
+
+  it("maps a matching-pane working row to working and an idle row to turn_ended", () => {
+    assert.equal(row(leadWith("100", "100", "working")).lead.turn, "working");
+    assert.equal(row(leadWith("100", "100", "idle")).lead.turn, "turn_ended");
+  });
+
+  it("reads unknown for no row, an unknown state, or a row from another pane launch", () => {
+    assert.equal(row(leadWith("100", null)).lead.turn, "unknown");
+    assert.equal(row(leadWith("100", "100", "unknown")).lead.turn, "unknown");
+    assert.equal(row(leadWith("100", "999", "idle")).lead.turn, "unknown");
+  });
+
+  it("leaves the lane and reasons exactly as they were without a turn row", () => {
+    const withTurn = leadWith("100", "100", "idle");
+    const without = leadWith("100", null);
+    assert.equal(row(withTurn).lane, row(without).lane);
+    assert.deepEqual(row(withTurn).reasons, row(without).reasons);
   });
 });
 
@@ -525,7 +557,7 @@ describe("hive portfolio CLI", () => {
       "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human",
       "needs_human_items", "last_activity_at", "wakes",
     ]);
-    assert.deepEqual(Object.keys(p.lead), ["state", "agent_id"]);
+    assert.deepEqual(Object.keys(p.lead), ["state", "agent_id", "turn"]);
     assert.deepEqual(Object.keys(p.workers), ["working", "idle", "needs_input", "other", "unreachable", "unconfirmed"]);
     assert.deepEqual(Object.keys(p.todos), ["open", "in_progress", "blocked", "blocked_in_progress", "high"]);
     assert.deepEqual(Object.keys(p.wakes), ["pending", "overdue"]);

@@ -3,6 +3,7 @@ import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
+import { readLeadTurnState } from "./leadState.js";
 import { liveTargets, paneReissued, rowAlive, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
@@ -31,6 +32,20 @@ const WAKE_UPCOMING = "+24 hours";
 
 export const ACTIVE_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
+export type PortfolioLeadTurn = "working" | "turn_ended" | "unknown";
+
+export function leadText(p: Pick<PortfolioProject, "lead">): string {
+  return p.lead.state === "alive" && p.lead.turn !== "unknown"
+    ? `alive, turn ${p.lead.turn === "working" ? "working" : "ended"}`
+    : p.lead.state;
+}
+
+function leadTurnFor(agentId: number, panePid: string): PortfolioLeadTurn {
+  const row = readLeadTurnState(agentId);
+  if (row === null || row.pane_pid !== panePid) return "unknown";
+  return row.state === "working" ? "working" : row.state === "idle" ? "turn_ended" : "unknown";
+}
+
 export interface PortfolioProject {
   id: number;
   name: string;
@@ -38,7 +53,7 @@ export interface PortfolioProject {
   root_exists: boolean;
   lane: PortfolioLane;
   reasons: PortfolioReason[];
-  lead: { state: "alive" | "dead_pane" | "none" | "unknown"; agent_id: number | null };
+  lead: { state: "alive" | "dead_pane" | "none" | "unknown"; agent_id: number | null; turn: PortfolioLeadTurn };
   workers: {
     working: number;
     idle: number;
@@ -151,11 +166,15 @@ function projectRow(
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
   let liveWaiting = 0;
-  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null };
+  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown" };
   for (const a of agents) {
     if (a.kind === "lead") {
       const live = reissued(a) ? false : liveness(a);
-      lead = { state: live === true ? "alive" : live === false ? "dead_pane" : "unknown", agent_id: a.id };
+      lead = {
+        state: live === true ? "alive" : live === false ? "dead_pane" : "unknown",
+        agent_id: a.id,
+        turn: leadTurnFor(a.id, a.pane_pid),
+      };
       continue;
     }
     if (a.kind !== "agent") continue;
