@@ -13,6 +13,7 @@ import {
 import { errorMessage, run } from "../result.js";
 import { HELP_TOPICS, helpOverview } from "../help.js";
 import { idParam } from "./params.js";
+import { PROJECT_OWNER_TABLES } from "../projectRemove.js";
 
 function refuseIfLocked(tool: string): void {
   if (process.env.HIVE_PROJECT_LOCK === "1") {
@@ -22,15 +23,7 @@ function refuseIfLocked(tool: string): void {
   }
 }
 
-export const PROJECT_OWNER_TABLES = [
-  "pads",
-  "todos",
-  "kv",
-  "leases",
-  "agents",
-  "wakes",
-  "command_trust",
-] as const;
+export { PROJECT_OWNER_TABLES };
 
 function existsWhere(table: string, column: string, value: string | number): boolean {
   return db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(value) !== undefined;
