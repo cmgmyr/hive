@@ -173,7 +173,7 @@ function projectRow(
       lead = {
         state: live === true ? "alive" : live === false ? "dead_pane" : "unknown",
         agent_id: a.id,
-        turn: leadTurnFor(a.id, a.pane_pid),
+        turn: live === true ? leadTurnFor(a.id, a.pane_pid) : "unknown",
       };
       continue;
     }
