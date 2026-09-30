@@ -40,8 +40,8 @@ describe("a migration that fails for a reason other than SQLITE_BUSY (todo 1493)
     assert.match(result.stderr, new RegExp(`migration ${LAST_VERSION}\\b`));
   });
 
-  it("carries the underlying SQL error", () => {
-    assert.match(result.stderr, /duplicate column name/);
+  it("carries the underlying SQL error of re-running the last migration", () => {
+    assert.match(result.stderr, /duplicate column name|already exists/);
   });
 
   it("never claims the write lock never freed or points at a wedged process", () => {

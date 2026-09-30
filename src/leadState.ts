@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { TRIAGE_MESSAGE } from "./kickoff.js";
+import { TRIAGE_MESSAGE } from "./triageMessage.js";
 
 export type LeadTurn = "unknown" | "working" | "idle";
 
