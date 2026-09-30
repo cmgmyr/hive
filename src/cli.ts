@@ -3684,11 +3684,11 @@ async function cmdProject(argv: string[]): Promise<void> {
     const confirmed = await confirmYesNo("Remove this project and everything it owns? [y/N] ");
     if (confirmed === null) {
       console.log("Not removed: run hive interactively to confirm, or pass --yes.");
-      return;
+      process.exit(1);
     }
     if (!confirmed) {
       console.log("Not removed.");
-      return;
+      process.exit(1);
     }
   }
 

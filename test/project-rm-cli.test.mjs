@@ -53,6 +53,7 @@ describe("hive project rm", () => {
     const target = withRows(project("kept-on-no"));
     const r = await run(["rm", String(target.id)], { stdin: "n\n" });
     assert.match(r.stdout, /Not removed/);
+    assert.equal(r.code, 1);
     assert.ok(exists(target.id));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM todos WHERE project_id = ?").get(target.id).n, 1);
   });
