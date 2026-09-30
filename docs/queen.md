@@ -131,6 +131,8 @@ The queen uses this to spin up a lead in a project that has none. From a script 
 
 The queen has its own dashboard, separate from the [per-project dashboard](dashboard.md). It lives at `<data dir>/queen/dashboard.html` and opens straight from `file://`. It is read-only.
 
+![The queen dashboard: a Picks today card, one section per lane, the Every project grid and the Recent queen actions card, filled with sample data for a few invented projects](assets/queen-dashboard-dark.png)
+
 `hive queen` writes it once at start, and the scheduler rewrites it when the content changes. On macOS `hive queen` opens it in your browser, and it opens at most once per interval, the same throttle a project dashboard uses. `--no-dashboard` skips the open.
 
 The page is titled "All projects". It shows:
@@ -192,7 +194,7 @@ Run it from a terminal inside a registered project and it lists the queen writes
 
 The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send` and `hive lead`, each with the target project, the resource, and a summary of at most 160 characters.
 
-Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100. 
+Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100.
 
 One gap is stated on purpose. A crash after a terminal send but before its audit insert can leave that send unrecorded.
 

@@ -339,27 +339,34 @@ describe("renderQueenDashboard", () => {
     assert.doesNotMatch(cardOf(8), /need you/);
   });
 
-  it("names every portfolio STUCK reason in the stuck lane caption", () => {
+  it("names every portfolio STUCK reason in the guide's portfolio section", () => {
     const source = readFileSync(new URL("../dist/portfolio.js", import.meta.url), "utf8");
     const stuck = [...source.matchAll(/const (?:HARD_STALL|TODO_GRAPH) = \[([^\]]*)\]/g)].flatMap((l) =>
       [...l[1].matchAll(/"([a-z_0-9]+)"/g)].map((m) => m[1]),
     );
     assert.ok(stuck.length >= 6, `parsed STUCK list: ${stuck}`);
     const phrase = {
-      dead_lead_pane: "dead lead",
-      missing_root_with_work: "missing folder",
-      worker_needs_input: "prompt",
-      wake_overdue_5m: "late wake",
-      in_progress_blocked: "blocked",
-      all_active_todos_blocked: "blocked",
-      stale_in_progress_48h: "stale",
+      dead_lead_pane: "pane is dead",
+      missing_root_with_work: "folder is missing",
+      worker_needs_input: "waiting on input",
+      wake_overdue_5m: "minutes overdue",
+      in_progress_blocked: "in-progress todo is blocked",
+      all_active_todos_blocked: "every open or in-progress todo is blocked",
+      stale_in_progress_48h: "48 hours",
     };
-    const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
-    const caption = html.match(/data-lane="stuck"[^>]*>.*?<p class="lane-rule">([^<]*)<\/p>/)[1];
+    const guide = readFileSync(new URL("../docs/queen.md", import.meta.url), "utf8");
+    const section = guide.match(/^## The portfolio$[\s\S]*?(?=^## |(?![\s\S]))/m)[0];
     for (const reason of stuck) {
-      assert.ok(phrase[reason], `caption phrase needed for new STUCK reason ${reason}`);
-      assert.ok(caption.includes(phrase[reason]), `${reason} missing from caption: ${caption}`);
+      assert.ok(phrase[reason], `guide phrase needed for new STUCK reason ${reason}`);
+      assert.ok(section.includes(phrase[reason]), `${reason} missing from docs/queen.md "## The portfolio": ${phrase[reason]}`);
     }
+  });
+
+  it("keeps every lane caption on the page at 45 characters or fewer", () => {
+    const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
+    const captions = [...html.matchAll(/<p class="lane-rule">([^<]*)<\/p>/g)].map((m) => m[1]);
+    assert.equal(captions.length, LANES.length);
+    for (const c of captions) assert.ok(c.length <= 45, `caption is ${c.length} characters: ${c}`);
   });
 
   it("starts the reload timer by default, stops it when stored off, and re-arms on toggle", () => {
