@@ -43,7 +43,7 @@ would have held the missing tool; see the file named in each case.
 | leases | `lease_acquire` | none, accepted (`src/tools/leases.ts`) | none, accepted (`src/tools/leases.ts`) | `lease_acquire` (re-acquiring extends) | TTL | `lease_release` |
 | agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | `agent_park` | `agent_close` |
 | wakes | `wake_set`, `wake_when_idle` | `wake_get` | `wake_list` | `wake_update` | n/a | `wake_cancel` |
-| projects | `project_add` | none, accepted (`src/tools/meta.ts`) | `project_list` | none, accepted (`src/tools/meta.ts`) | none, accepted (`src/tools/meta.ts`) | `project_prune` |
+| projects | `project_add` | none, accepted (`src/tools/meta.ts`) | `project_list` | none, accepted (`src/tools/meta.ts`) | none, accepted (`src/tools/meta.ts`) | `project_prune` (empty projects; with `confirm_name`, one non-empty project and everything it owns, via `src/projectRemove.ts`) |
 | actors | implicit (`src/context.ts`) | none, accepted (`src/context.ts`) | none, accepted (`src/context.ts`) | n/a | none, accepted (`src/context.ts`) | `actor_prune` |
 
 Filed in the same batch from the #82 audit: #96 (wake read-plus-reschedule)

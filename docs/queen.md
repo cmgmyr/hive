@@ -37,8 +37,9 @@ Writing into another project is narrow. The queen may do exactly these things th
 | `wake_update`, `wake_cancel` | Only on a wake the queen set there, still addressed to the current lead |
 | `agent_send` | Text only, to that project's running lead. `keys` is refused because it can interrupt a lead mid-turn |
 | `hive lead <path>` | Starts or adopts that project's lead |
+| `project_prune`, `hive project rm <id\|path>` | Removes a stray project. `project_prune` takes the empty-only sweep, or one `project_id` with `confirm_name` set to its exact name to remove a project that owns rows. Never the queen's own project, never one with a running agent. See [removing a project](projects.md#removing-a-project) |
 
-Everything else there belongs to the project's own lead: pads, todo status, kv, leases, workers, project selection. Anything not listed is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`, and the message names the operation, the project, and why. A tool hive has not classified for the queen is refused by default.
+Everything else there belongs to the project's own lead: pads, todo status, kv, leases, workers, project selection. `project_add` and `actor_prune` stay refused: they change the whole store, not one project. Anything not listed is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`, and the message names the operation, the project, and why. A tool hive has not classified for the queen is refused by default.
 
 In its own home the queen is an ordinary project lead. Pads, todos and workers there are its own, and workers it spawns stay locked to the home.
 
@@ -192,7 +193,7 @@ hive queen-audit --project-id 1      # the queen's pane only, see below
 
 Run it from a terminal inside a registered project and it lists the queen writes into that project. Outside a registered project it prints `hive queen-audit: the cwd is not a registered project. Run this command from a registered project.` and exits 1. `--project-id` for another project belongs to the queen alone; anyone else gets `Queen audit access is limited to your own project` and exit 1.
 
-The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send` and `hive lead`, each with the target project, the resource, and a summary of at most 160 characters.
+The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send`, `hive lead`, `project_prune` and `hive project rm`, each with the target project, the resource, and a summary of at most 160 characters.
 
 Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100.
 
