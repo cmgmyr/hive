@@ -233,7 +233,7 @@ function footCounts(p: PortfolioProject, asOf: string, rank: number): string {
 function movingBadges(p: PortfolioProject): string {
   if (p.lane !== "moving") return "";
   return (
-    (p.needs_human > 0 ? `<span class="n-need">${p.needs_human} need you</span>` : "") +
+    (p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
     (p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
   );
 }
@@ -470,10 +470,9 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .g-head .g-num { font-family: var(--font-sans); }
 .zero { color: var(--fg-subtle); opacity: 0.55; }
 .n-high { color: var(--fail); font-weight: 650; }
-.n-need { color: var(--warn); font-weight: 650; }
 .n-muted { color: var(--fg-muted); }
 .n-blocked { color: var(--warn); font-weight: 650; }
-.n-needs { color: var(--accent); font-weight: 700; }
+.n-needs { color: var(--warn); font-weight: 700; }
 .workers { display: flex; gap: 0.45rem; flex-wrap: wrap; font-size: 0.8125rem; color: var(--fg-muted); }
 .w { display: inline-flex; align-items: center; gap: 0.25rem; white-space: nowrap; }
 .w::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }

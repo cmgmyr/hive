@@ -3536,7 +3536,7 @@ async function cmdNext(argv: string[]): Promise<void> {
   }
   const chosen = nextCandidates()[0];
   if (!chosen) {
-    console.log("No project is waiting on you or stuck.");
+    console.log("No project needs you: none is waiting, stuck, or holding a needs-human item.");
     return;
   }
   console.log(

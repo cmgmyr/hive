@@ -334,7 +334,7 @@ describe("renderQueenDashboard", () => {
     const waiting = proj(8, "waiting_on_you", { needs_human: 2 });
     const html = renderQueenDashboard(report([moving, waiting]), { kind: "missing" }, noLinks);
     const cardOf = (id) => html.match(new RegExp(`<article class="card pc"[^>]*data-project="${id}">.*?</article>`))[0];
-    assert.match(cardOf(7), /<span class="n-need">2 need you<\/span>/);
+    assert.match(cardOf(7), /<span class="n-needs">2 need you<\/span>/);
     assert.match(cardOf(7), /<span class="n-muted">1 blocked<\/span>/);
     assert.doesNotMatch(cardOf(8), /need you/);
   });

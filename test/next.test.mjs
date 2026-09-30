@@ -157,9 +157,9 @@ describe("hive next --print: selection", () => {
     assert.equal(picked(r.stdout).project_id, busyAsk.id);
     assert.equal(picked(r.stdout).lane, "moving");
 
-    db.prepare("DELETE FROM todos WHERE project_id = ?").run(busyAsk.id);
+    db.prepare("DELETE FROM todos WHERE project_id IN (?, ?)").run(busyAsk.id, stuck.id);
     r = await print();
-    assert.equal(picked(r.stdout).project_id, stuck.id, "a moving project with no ask is not a candidate");
+    assert.equal(r.stdout, "No project needs you: none is waiting, stuck, or holding a needs-human item.\n", "a moving project with no ask is not a candidate");
   });
 
   it("ranks stuck by blocked_in_progress, then overdue wakes, then oldest activity", async () => {
@@ -243,7 +243,7 @@ describe("hive next --print: selection", () => {
     for (const args of [["next", "--print"], ["next"]]) {
       const r = await runCli(args, opts());
       assert.equal(r.code, 0, r.stderr);
-      assert.equal(r.stdout, "No project is waiting on you or stuck.\n");
+      assert.equal(r.stdout, "No project needs you: none is waiting, stuck, or holding a needs-human item.\n");
     }
   });
 

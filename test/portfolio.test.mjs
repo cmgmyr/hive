@@ -676,12 +676,14 @@ describe("portfolio busy is moving", () => {
     assert.equal(row(p).lane, "stuck");
   });
 
-  it("keeps a stale in-progress todo in moving while a worker is working", { skip }, () => {
+  it("pin, unchanged from main: a working worker keeps a stale in-progress todo in moving, and without one it is stuck", { skip }, () => {
     const p = project();
     todo(p, { status: "in_progress", updated: OLD });
     working(p);
-    const r = row(p);
-    assert.equal(r.lane, "moving");
+    assert.equal(row(p).lane, "moving");
+    const idle = project();
+    todo(idle, { status: "in_progress", updated: OLD });
+    assert.equal(row(idle).lane, "stuck");
   });
 
   it("puts a dead lead with a working worker in stuck", { skip }, () => {
