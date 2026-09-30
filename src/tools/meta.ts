@@ -25,8 +25,6 @@ function refuseIfLocked(tool: string): void {
   }
 }
 
-export { PROJECT_OWNER_TABLES };
-
 function existsWhere(table: string, column: string, value: string | number): boolean {
   return db.prepare(`SELECT 1 FROM ${table} WHERE ${column} = ? LIMIT 1`).get(value) !== undefined;
 }

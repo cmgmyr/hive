@@ -11,7 +11,8 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
 const { db } = await import("../dist/db.js");
 
-const { PROJECT_OWNER_TABLES, ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
+const { ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
+const { PROJECT_OWNER_TABLES } = await import("../dist/projectRemove.js");
 
 const BACKDATE_PAST_LIVENESS = "-150 seconds";
 

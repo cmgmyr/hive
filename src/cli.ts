@@ -3655,16 +3655,7 @@ async function cmdProject(argv: string[]): Promise<void> {
 
   let target: Project | undefined;
   if (/^\d+$/.test(ref)) target = getProject(Number(ref));
-  else {
-    target = getProjectByPath(ref);
-    if (!target) {
-      try {
-        target = getProjectByPath(realpathSync(ref));
-      } catch {
-
-      }
-    }
-  }
+  else target = getProjectByPath(ref) ?? getProjectByPath(canonicalPath(ref));
   if (!target) {
     console.log(`hive project rm: "${ref}" is not a registered project id or exact registered path. List them with the project_list tool.`);
     process.exit(1);
