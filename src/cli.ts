@@ -138,6 +138,7 @@ import {
 } from "./spawn.js";
 import {
   adoptableWindow,
+  type AliveSnapshot,
   applyLayout,
   claimInitialWindow,
   configureHiveWindow,
@@ -151,6 +152,7 @@ import {
   isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
+  liveTargets,
   type OwnedWindow,
   ORPHAN_MIN_AGE_MS,
   type OrphanScratchServers,
@@ -171,6 +173,9 @@ import {
   paneReissued,
   rowLive,
   rowLiveProbe,
+  rowOwnership,
+  type RowOwnership,
+  type RowPaneIdentity,
   SESSION_PREFIX,
   appendGlobalHook,
   globalHooks,
@@ -1994,9 +1999,18 @@ function cmdHide(argv: string[]): void {
   );
 }
 
+const LEAD_OWNERSHIP_LABEL: Record<RowOwnership, string> = {
+  live: "running",
+  gone: "no live pane",
+  reissued: "no live pane",
+  unknown: "pane identity unknown",
+};
+
 function cmdStatus(): void {
   janitor();
   let anyOutput = false;
+  let snapshot: AliveSnapshot | null | undefined;
+  const statusSnapshot = (): AliveSnapshot | null => (snapshot === undefined ? (snapshot = liveTargets()) : snapshot);
 
   let windows: OwnedWindow[] | null | undefined;
   let windowsError: unknown;
@@ -2018,6 +2032,8 @@ function cmdStatus(): void {
       kind: string;
       name: string;
       tmux_target: string;
+      tmux_socket: string;
+      pane_pid: string;
       cwd: string;
     })[];
 
@@ -2059,7 +2075,9 @@ function cmdStatus(): void {
       const state =
         a.kind === "agent"
           ? describeForHuman(deriveProvenance(a, null))
-          : (whereIs.get(a.name) ?? "running");
+          : a.kind === LEAD_KIND
+            ? LEAD_OWNERSHIP_LABEL[rowOwnership(a, statusSnapshot())]
+            : (whereIs.get(a.name) ?? "running");
 
       const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
       console.log(`  ${label}  ${a.name.padEnd(20)} ${state}`);
@@ -2750,7 +2768,7 @@ function reportStalledWorkers(projectId: number): void {
   const latched = (
     db
       .prepare(
-        `SELECT name, command, kind, cwd, session_id, transcript_path, agent_state, state_changed_at, tmux_target, tmux_socket
+        `SELECT name, command, kind, cwd, session_id, transcript_path, agent_state, state_changed_at, tmux_target, tmux_socket, pane_pid
            FROM agents
           WHERE project_id = ? AND status = 'running' AND kind = 'agent'
             AND agent_state IN ('working', 'waiting') AND state_changed_at IS NOT NULL
@@ -2767,6 +2785,7 @@ function reportStalledWorkers(projectId: number): void {
       state_changed_at: string;
       tmux_target: string;
       tmux_socket: string;
+      pane_pid: string;
     }[]
   )
 
@@ -2775,6 +2794,7 @@ function reportStalledWorkers(projectId: number): void {
     // never this latch"), and a harness with no transcript to check would have nothing to read.
     .filter((row) => reportsAgentStateLog(row) && hasTranscriptSignal(row) && row.session_id !== "");
   const stalled: { name: string; sentence: string }[] = [];
+  let snapshot: AliveSnapshot | null | undefined;
   for (const row of latched) {
 
     const latchedFor = ageSecondsSince(row.state_changed_at);
@@ -2790,7 +2810,8 @@ function reportStalledWorkers(projectId: number): void {
     if (stale !== "never" && stale.seconds < STALL_BOUND_SECONDS) continue;
 
     if (row.agent_state === "waiting") {
-      if (foreignSocket(row.tmux_socket)) continue;
+      if (snapshot === undefined) snapshot = liveTargets();
+      if (rowOwnership(row, snapshot) !== "live") continue;
       const choiceCheck = paneClassifierFor(row.command)?.choiceCheck;
       if (!choiceCheck || choiceCheck(row.tmux_target).awaitingChoice !== false) continue;
     }
@@ -3060,25 +3081,37 @@ function cmdDoctor(argv: string[]): void {
 
     const lead = db
       .prepare(
-        "SELECT tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+        "SELECT id, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
       )
-      .get(here.id, LEAD_KIND) as { tmux_target: string; tmux_socket: string } | undefined;
+      .get(here.id, LEAD_KIND) as ({ id: number } & RowPaneIdentity) | undefined;
     if (lead) {
-
-      const live = rowLive(lead.tmux_socket, lead.tmux_target);
-      if (live === false) {
+      const snapshot = liveTargets();
+      const ownership = rowOwnership(lead, snapshot);
+      const unobserved = !foreignSocket(lead.tmux_socket) && (snapshot === null || snapshot.serverAnswered === false);
+      if (ownership === "gone" || ownership === "reissued") {
 
         warn(
           "lead",
-          "the lead's row is running but its pane is not live. The janitor leaves lead rows alone on " +
+          (ownership === "reissued"
+            ? "the lead's row is running but its pane id now belongs to a different process. "
+            : "the lead's row is running but its pane is not live. ") +
+            "The janitor leaves lead rows alone on " +
             "purpose, so nothing will fix this by itself. Run `hive lead` to record a fresh pane and reuse " +
             "this identity, or ask a claude session connected to this project's hive MCP server to call " +
             "the agent_close tool on it to retire the row for good - required before `hive restore`, which " +
             "otherwise refuses while any lead row reads running, and end that session too, since it also " +
             "holds this store open.",
         );
-      } else if (live === null) {
+      } else if (ownership === "unknown" && unobserved) {
         warn("lead", "the lead's pane liveness could not be probed (tmux did not answer).");
+      } else if (ownership === "unknown") {
+        warn(
+          "lead",
+          `pane identity unknown: the lead's row (agents.id ${lead.id}) cannot be verified as owning pane ` +
+            `${lead.tmux_target || "(none)"}, because it is on another tmux socket or no pane pid was recorded ` +
+            "for it. Its screen was not read. If this lead is gone, a human or peer lead (never a worker) can " +
+            `retire the row with the MCP tool agent_close({agent_id: ${lead.id}, row_only: true}).`,
+        );
       }
     }
 
@@ -3108,16 +3141,15 @@ function cmdDoctor(argv: string[]): void {
   if (here) {
     const workers = db
       .prepare(
-        "SELECT name, actor_id, command, kind, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
+        "SELECT name, actor_id, command, kind, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' AND kind = 'agent' ORDER BY id",
       )
-      .all(here.id) as {
+      .all(here.id) as ({
       name: string;
       actor_id: string;
       command: string;
       kind: string;
-      tmux_target: string;
-      tmux_socket: string;
-    }[];
+    } & RowPaneIdentity)[];
+    const paneSnapshot = workers.length > 0 ? liveTargets() : null;
 
     let inputBoxClean = 0;
     let inputBoxDrifted = 0;
@@ -3128,17 +3160,13 @@ function cmdDoctor(argv: string[]): void {
 
     const leadRows = db
       .prepare(
-        "SELECT name, command, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
+        "SELECT name, command, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id",
       )
-      .all(here.id, LEAD_KIND) as {
-      name: string;
-      command: string;
-      tmux_target: string;
-      tmux_socket: string;
-    }[];
+      .all(here.id, LEAD_KIND) as ({ name: string; command: string } & RowPaneIdentity)[];
+    const leadSnapshot = leadRows.length > 0 ? (paneSnapshot ?? liveTargets()) : null;
     for (const leadBox of leadRows) {
       const leadHarness = harnessFor(leadBox.command);
-      if (!leadHarness.classifiesPaneScreen || foreignSocket(leadBox.tmux_socket)) continue;
+      if (!leadHarness.classifiesPaneScreen || rowOwnership(leadBox, leadSnapshot) !== "live") continue;
       leadsProbed += 1;
       const box = leadHarness.paneClassifier!.inputBoxState(leadBox.tmux_target);
       if (box === null) {
@@ -3165,10 +3193,12 @@ function cmdDoctor(argv: string[]): void {
 
         // Dispatched through w's OWN harness, never the claude-only import - reading a codex pane
         // with claude's dialog regexes fails silently in either direction (.claude/rules/tmux-and-panes.md).
+        const ownership = rowOwnership(w, paneSnapshot);
         const foreign = foreignSocket(w.tmux_socket);
+        const unowned = ownership !== "live";
         const workerChoiceCheck = paneClassifierFor(w.command)?.choiceCheck;
         const { awaitingChoice, tail } =
-          foreign || !workerChoiceCheck ? { awaitingChoice: null, tail: "" } : workerChoiceCheck(w.tmux_target);
+          unowned || !workerChoiceCheck ? { awaitingChoice: null, tail: "" } : workerChoiceCheck(w.tmux_target);
         if (awaitingChoice === true) dialogCount += 1;
 
         verboseInfo(
@@ -3178,10 +3208,14 @@ function cmdDoctor(argv: string[]): void {
           `permission mode: ${lastPermissionMode(w.actor_id) ?? "unknown (no record)"}`,
           foreign
             ? `pane: recorded on a different tmux socket (${w.tmux_socket}); this process cannot read it`
-            : `pane: ${describePaneChoice(awaitingChoice)}`,
+            : unowned
+              ? `pane: not read - pane ownership ${ownership}`
+              : `pane: ${describePaneChoice(awaitingChoice)}`,
           ...(foreign
             ? ["tail: (not read - foreign socket)"]
-            : awaitingChoice === null
+            : unowned
+              ? [`tail: (not read - pane ownership ${ownership})`]
+              : awaitingChoice === null
               ? ["tail: (pane could not be read)"]
               : tail === ""
                 ? ["tail: (pane rendered nothing)"]
@@ -3195,7 +3229,7 @@ function cmdDoctor(argv: string[]): void {
       // own harness, never the claude-only import above, or a codex worker's screen gets read with
       // claude's regexes (see hive-internals).
       const harness = harnessFor(w.command);
-      if (!harness.classifiesPaneScreen || foreignSocket(w.tmux_socket)) continue;
+      if (!harness.classifiesPaneScreen || rowOwnership(w, paneSnapshot) !== "live") continue;
 
       workersProbed += 1;
       const box = harness.paneClassifier!.inputBoxState(w.tmux_target);

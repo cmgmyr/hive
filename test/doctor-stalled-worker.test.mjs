@@ -8,6 +8,7 @@ import {
   assertScratchStore,
   clearHiveEnv,
   isolateTmux,
+  paneField,
   promotedCount,
   REPO,
   runCli,
@@ -61,20 +62,21 @@ after(() => cleanup(SESSION));
 function worker(
   name,
   latchedAgo,
-  { state = "working", socket = "", command = "claude", sessionId, transcriptPath = "", pane } = {},
+  { state = "working", socket = "", command = "claude", sessionId, transcriptPath = "", pane, pid = pane ? paneField(pane, "#{pane_pid}") : "" } = {},
 ) {
   const changedAt =
     latchedAgo === null ? null : new Date(Date.now() - latchedAgo * 1000).toISOString().slice(0, 19).replace("T", " ");
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind,
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status, kind,
         agent_state, state_changed_at, session_id, transcript_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'running', 'agent', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', 'agent', ?, ?, ?, ?)`,
   ).run(
     project,
     `agent:${name}`,
     name,
     pane ?? "%9600",
     socket,
+    pid,
     command,
     WORKER_CWD,
     state,
@@ -172,6 +174,17 @@ describe(
         /warn {2}worker prompted: has claimed `waiting` for 47m, its pane shows no dialog, and its transcript has not been written for 30m/,
         `arm 2 must fire, and must say what it actually checked; got: ${stdout}`,
       );
+    });
+
+    it("says nothing about a `waiting` worker on a live pane whose row recorded no pane pid", async () => {
+      reset();
+      worker("nopid", 47 * 60, { state: "waiting", pane: livePane, pid: "" });
+      transcript("sid-nopid", STALE);
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(stdout, /worker nopid: has claimed/);
+      assert.match(stdout, /info {2}stalled workers: 1 worker\(s\) latched working\/waiting/);
     });
 
     it("says nothing about a `waiting` worker whose pane could not be read", async () => {

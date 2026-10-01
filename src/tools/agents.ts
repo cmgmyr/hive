@@ -67,12 +67,13 @@ import {
   findUnsafeControlChar,
   holdsHumanInput,
   liveTargets,
+  ownershipLiveness,
   paneCurrentCommand,
   paneInCopyMode,
   paneWindow,
   pollPaneReadiness,
-  rowAlive,
   rowLive,
+  rowOwnership,
   sendText,
   sessionName,
   setRemainOnExit,
@@ -101,6 +102,7 @@ export interface AgentRow {
   name: string;
   tmux_target: string;
   tmux_socket: string;
+  pane_pid: string;
   command: string;
   cwd: string;
   parent_actor_id: string | null;
@@ -290,6 +292,9 @@ export function isLive(agent: AgentRow): Liveness {
 export const PROBE_FAILED_NOTE =
   "tmux could not be probed, so liveness is unknown. Nothing was changed. Retry in a few seconds.";
 
+export const UNVERIFIED_OWNERSHIP_NOTE =
+  "This row's pane cannot be verified as its own: it is on another tmux socket, or no pane pid was recorded for it, so liveness is unknown and no screen was read. Nothing was changed. If the row is stale, a human or peer lead can retire it with agent_close(row_only=true).";
+
 export const probeFailed = (agent: AgentRow) =>
   new Error(`Agent ${agent.id} ("${agent.name}"): ${PROBE_FAILED_NOTE}`);
 
@@ -419,9 +424,7 @@ const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
 
   if (row.status !== "running") return false;
-  if (snapshot === undefined) return rowLive(row.tmux_socket, row.tmux_target);
-  if (snapshot === null) return null;
-  return rowAlive(row.tmux_socket, row.tmux_target, snapshot);
+  return ownershipLiveness(rowOwnership(row, snapshot));
 }
 
 function capturePaneQuietly(target: string): string {
@@ -1354,12 +1357,14 @@ export function registerAgents(server: McpServer): void {
       run(() => {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
-        const summary = agentSummary(agent);
+        const snapshot = agent.status === "running" ? liveTargets() : null;
+        const summary = agentSummary(agent, snapshot);
         const briefPath = agentBriefPath(agent.id);
+        const probeFailedNow = snapshot === null || snapshot.serverAnswered === false;
         return {
           ...summary,
 
-          ...(summary.alive === null ? { note: PROBE_FAILED_NOTE } : {}),
+          ...(summary.alive === null ? { note: probeFailedNow ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE } : {}),
           closed_at: agent.closed_at,
           current_command: summary.alive ? paneCurrentCommand(agent.tmux_target) : null,
 

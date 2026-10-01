@@ -10,6 +10,7 @@ import {
   createLiveAndDialogPanes,
   failureCount,
   isolateTmux,
+  paneField,
   promotedCount,
   runCli,
   scratchDirs,
@@ -113,18 +114,18 @@ assert.equal(init.code, 0, init.stderr);
 
 const project = db.prepare("SELECT id FROM projects WHERE path = ?").get(projectDir).id;
 
-function agentRow({ name, target, socket = ownSocket, command = "claude" }) {
+function agentRow({ name, target, socket = ownSocket, command = "claude", pid = paneField(target, "#{pane_pid}") }) {
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state)
-     VALUES (?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', 'working')`,
-  ).run(project, `agent:${name}`, name, target, socket, command);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status, kind, agent_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', 'working')`,
+  ).run(project, `agent:${name}`, name, target, socket, pid, command);
 }
 
-function leadRow({ name = "lead", target, socket = ownSocket, command = "claude" }) {
+function leadRow({ name = "lead", target, socket = ownSocket, command = "claude", pid = paneField(target, "#{pane_pid}") }) {
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state)
-     VALUES (?, ?, ?, ?, ?, ?, '/tmp/lead', 'running', 'lead', 'working')`,
-  ).run(project, `lead:${name}`, name, target, socket, command);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status, kind, agent_state)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '/tmp/lead', 'running', 'lead', 'working')`,
+  ).run(project, `lead:${name}`, name, target, socket, pid, command);
 }
 
 function reset() {
@@ -179,6 +180,17 @@ describe(
         /every probed input box in this project classified 'unknown'/,
         "one drifted box out of two probed must not be reported as project-wide drift",
       );
+    });
+
+    it("probes no box on a drifted pane whose lead and worker rows recorded no pane pid", async () => {
+      reset();
+      leadRow({ target: driftedPane, pid: "" });
+      agentRow({ name: "worker-drifted-nopid", target: driftedPane, pid: "" });
+
+      const { stdout } = await runCli(["doctor"], opts);
+
+      assert.doesNotMatch(stdout, /input box classifies 'unknown'/);
+      assert.doesNotMatch(stdout, /running box\(es\) probed/);
     });
 
     it("control: a worker with a healthy box is not named, and the clean-run line reports all three states", async () => {

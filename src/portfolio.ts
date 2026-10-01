@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
 import { readLeadTurnState } from "./leadState.js";
-import { liveTargets, paneReissued, rowAlive, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
+import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
 
@@ -157,11 +157,7 @@ function projectRow(
     )
     .all(project.id) as AgentRow[];
 
-  const liveness = (a: AgentRow): boolean | null =>
-    snapshot ? rowAlive(a.tmux_socket, a.tmux_target, snapshot) : null;
-
-  const reissued = (a: AgentRow): boolean =>
-    snapshot !== null && paneReissued(a.pane_pid, rowAliveProbe(a.tmux_socket, a.tmux_target, snapshot));
+  const liveness = (a: AgentRow): boolean | null => ownershipLiveness(rowOwnership(a, snapshot));
 
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
@@ -169,7 +165,7 @@ function projectRow(
   let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown" };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = reissued(a) ? false : liveness(a);
+      const live = liveness(a);
       lead = {
         state: live === true ? "alive" : live === false ? "dead_pane" : "unknown",
         agent_id: a.id,
@@ -178,7 +174,7 @@ function projectRow(
       continue;
     }
     if (a.kind !== "agent") continue;
-    const live = reissued(a) ? false : liveness(a);
+    const live = liveness(a);
     if (live === false) workers.unreachable++;
     else if (live === null) workers.unconfirmed++;
     else if (a.agent_state === "working") {

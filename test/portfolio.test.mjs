@@ -54,15 +54,24 @@ const block = (todoId, blockerId) =>
 
 function agent(
   p,
-  { kind = "agent", state = "working", target = "%nope", socket = "", status = "running", created = OLD, changed = OLD } = {},
+  {
+    kind = "agent",
+    state = "working",
+    target = "%nope",
+    socket = "",
+    status = "running",
+    created = OLD,
+    changed = OLD,
+    pid = livePanes.has(target) ? tmux("display-message", "-p", "-t", target, "#{pane_pid}") : "",
+  } = {},
 ) {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status,
                            agent_state, created_at, state_changed_at)
-       VALUES (?, ?, ?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?) RETURNING id`,
+       VALUES (?, ?, ?, ?, ?, ?, 'claude', ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
-    .get(p.id, `${kind}:${++seq}`, `${kind}-${seq}`, target, socket, p.path, kind, status, state, created, changed).id;
+    .get(p.id, `${kind}:${++seq}`, `${kind}-${seq}`, target, socket, pid, p.path, kind, status, state, created, changed).id;
 }
 
 function wake(
@@ -79,10 +88,13 @@ function wake(
 }
 
 const sessions = [];
+const livePanes = new Set();
 function livePane() {
   const name = `pf${++seq}`;
   sessions.push(name);
-  return tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "sleep 300");
+  const pane = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "sleep 300");
+  livePanes.add(pane);
+  return pane;
 }
 
 const row = (p) => collectPortfolio(NOW).projects.find((r) => r.id === p.id);
@@ -442,6 +454,24 @@ describe("portfolio panes", () => {
     const r = row(p);
     assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 1, unconfirmed: 0 });
     assert.equal(r.lane, "quiet");
+  });
+
+  it("counts a working worker with an empty recorded pid on a live pane as unconfirmed, never working", { skip }, () => {
+    const p = project();
+    agent(p, { state: "working", target: livePane(), pid: "" });
+    agent(p, { state: "waiting", target: livePane(), pid: "" });
+    const r = row(p);
+    assert.deepEqual(r.workers, { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 2 });
+    assert.deepEqual(r.reasons, ["quiet"]);
+  });
+
+  it("reads a lead with an empty recorded pid on a live pane as unknown, with its stored working turn unknown too", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", state: "idle", target: livePane(), pid: "" });
+    db.prepare(
+      "INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at) VALUES (?, '', 's', 'working', 1, 'stop', ?)",
+    ).run(id, OLD);
+    assert.deepEqual(row(p).lead, { state: "unknown", agent_id: id, turn: "unknown" });
   });
 
   it("reads a foreign-socket lead as unknown, never dead", { skip }, () => {
