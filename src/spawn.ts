@@ -32,6 +32,7 @@ import {
   windowOwner,
   windowTitle,
   type WindowLayout,
+  type RowPaneIdentity,
 } from "./tmux.js";
 
 export function withWindowClaim<T>(claim: () => T): T {
@@ -597,16 +598,23 @@ export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string):
   db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
 }
 
-export function closeAgentRow(agentId: number, expectedTmuxTarget?: string): boolean {
+export function closeAgentRow(agentId: number, expected?: string | RowPaneIdentity): boolean {
   const info =
-    expectedTmuxTarget === undefined
+    expected === undefined
       ? db
           .prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'")
           .run(agentId)
-      : db
-          .prepare(
-            "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' AND tmux_target = ?",
-          )
-          .run(agentId, expectedTmuxTarget);
+      : typeof expected === "string"
+        ? db
+            .prepare(
+              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' AND tmux_target = ?",
+            )
+            .run(agentId, expected)
+        : db
+            .prepare(
+              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
+                "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
+            )
+            .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
   return info.changes > 0;
 }

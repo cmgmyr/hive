@@ -284,6 +284,58 @@ function buildParkReceipt(
   };
 }
 
+function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
+  const receipt = { row_only: true, agent_id: agent.id, name: agent.name, closed: true };
+  if (currentActor().startsWith("agent:")) {
+    throw new Error(
+      `Agent ${agent.id} ("${agent.name}"): row_only retirement is reserved for a human at a terminal or a peer ` +
+        "lead; a worker may not retire rows this way. Nothing was changed.",
+    );
+  }
+  if (agent.actor_id === currentActor() && !confirmSelf) {
+    throw new Error(
+      "This would close your own session. Pass confirm_self=true only if the user explicitly asked you to close yourself.",
+    );
+  }
+  if (agent.status !== "running") {
+    return {
+      ...receipt,
+      ...(agent.parked_at ? { parked: true } : {}),
+      note: "Already closed; row_only changed nothing and left any park in place.",
+    };
+  }
+  const ownership = rowOwnership(agent);
+  if (ownership === "live") {
+    throw new Error(
+      `Agent ${agent.id} ("${agent.name}") owns a live pane (its recorded pane pid matches), so row_only refuses: ` +
+        "retiring the row would orphan a running process with nothing left to stop it by. " +
+        (agent.kind === LEAD_KIND
+          ? "Restart or end the lead from its own terminal."
+          : "Use agent_close without row_only to stop it."),
+    );
+  }
+  if (!closeAgentRow(agent.id, { tmux_target: agent.tmux_target, tmux_socket: agent.tmux_socket, pane_pid: agent.pane_pid })) {
+    const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
+    if (after.status !== "running") {
+      return {
+        ...receipt,
+        ...(after.parked_at ? { parked: true } : {}),
+        note: "Already closed by someone else before this call's row-only retirement landed. Nothing else was changed.",
+      };
+    }
+    throw new Error(
+      `Agent ${agent.id} ("${agent.name}")'s pane identity changed since this call read it, most likely a fresh ` +
+        "pane recorded on it. Nothing was closed. Re-read it with agent_status and decide again.",
+    );
+  }
+  return {
+    ...receipt,
+    note:
+      `Row retired without touching tmux; its pane ownership read ${ownership}.` +
+      (ownership === "unknown" ? " Anything still running in that pane was left alone." : ""),
+  };
+}
+
 export function isLive(agent: AgentRow): Liveness {
   if (agent.status !== "running") return false;
   return rowLive(agent.tmux_socket, agent.tmux_target);
@@ -1694,7 +1746,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row without touching tmux (no kill, no stop, nothing typed): for a human or peer lead only, and refused for any row that provably owns a live pane.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1705,12 +1757,19 @@ export function registerAgents(server: McpServer): void {
         name: agentNameParam,
         agent_id: agentIdParam,
         confirm_self: z.boolean().optional(),
+        row_only: z
+          .boolean()
+          .optional()
+          .describe(
+            "Mark the row closed without any tmux action, for a row whose pane is gone, reissued or unverifiable. Human or peer lead only. Defaults to false.",
+          ),
         project_id: projectIdParam,
       },
       outputSchema: {
         agent_id: idParam,
         name: z.string(),
         closed: z.boolean(),
+        row_only: z.boolean().optional(),
         park_released: z.boolean().optional(),
         parked: z.boolean().optional(),
         note: z.string().optional(),
@@ -1720,6 +1779,8 @@ export function registerAgents(server: McpServer): void {
       run(() => {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
+
+        if (args.row_only === true) return closeRowOnly(agent, args.confirm_self === true);
 
         if (agent.kind === LEAD_KIND && currentActor().startsWith("agent:")) {
           throw new Error(
