@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node
 import { execFileSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, tmux, tmuxSocketUnder } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, paneField, runCli, scratchDirs, tmux, tmuxSocketUnder } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("hive next");
 clearHiveEnv();
@@ -76,9 +76,9 @@ function waitingWorker(p) {
   const pane = tmux("new-session", "-d", "-P", "-F", "#{pane_id}", "-s", name, "sleep 300");
   waitingPanes.push(name);
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, agent_state)
-     VALUES (?, ?, ?, ?, 'claude', ?, 'agent', 'running', 'waiting')`,
-  ).run(p.id, `agent:${++seq}`, name, pane, p.path);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, agent_state)
+     VALUES (?, ?, ?, ?, ?, 'claude', ?, 'agent', 'running', 'waiting')`,
+  ).run(p.id, `agent:${++seq}`, name, pane, paneField(pane, "#{pane_pid}"), p.path);
 }
 
 function leadAgent(p, { target = "%not-a-real-pane", socket = "" } = {}) {
