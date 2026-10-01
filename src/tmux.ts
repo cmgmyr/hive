@@ -1241,7 +1241,7 @@ export function paneChoiceCheck(target: string): { awaitingChoice: boolean | nul
 // text of its footer status line - but that text is not stable (todo 524: two different compositions
 // seen on one codex version, one with no shared substring at all). The anchor below reads structure
 // instead of content: the pane's own last non-blank row IS the bottom edge, whatever it says, except that a
-// "? for shortcuts" row pulls the edge up to the status row above it (todo 1604).
+// "? for shortcuts" row or a right-aligned footer row pulls the edge up to the status row above it.
 
 // codex's own choice-menu shape (see hive-internals), not claude's CHOICE_DIALOG wording. Declared
 // above findCodexPromptBox because the box search itself now needs it to reject a choice row rather
@@ -1271,6 +1271,13 @@ function findCodexPromptBox(rows: string[]): { footer: number; prompt: number } 
 
   // The row directly above "? for shortcuts" starts one footer block if it has codex's " · " status separator.
   if (CODEX_SHORTCUTS_ROW.test(text[footer]) && footer > 0 && text[footer - 1].includes(" · ")) footer -= 1;
+  else if (footer > 0 && text[footer - 1].includes(" · ")) {
+    const footerRow = stripControlBytes(stripSgr(rows[footer]));
+    const footerContent = footerRow.trim();
+    const leadingWhitespace = footerRow.length - footerRow.trimStart().length;
+    // Use the row's geometry so this remains independent of whatever Codex writes in its footer.
+    if (leadingWhitespace > footerContent.length) footer -= 1;
+  }
 
   let prompt = -1;
   for (let i = footer - 1; i >= 0 && footer - i <= BOX_MAX_ROWS; i--) {
@@ -1290,12 +1297,10 @@ function findCodexPromptBox(rows: string[]): { footer: number; prompt: number } 
   // stale submitted prompt that also starts with "›").
   if (CODEX_CHOICE_LINE.test(text[prompt])) return null;
 
-  // Nothing but the prompt's own continuation, then one blank gap, may sit between the prompt row and
-  // the footer. Real content in that gap means the "›" found above is stale scrollback, not the live
-  // box - a busy/mid-turn screen can have an old prompt sitting within BOX_MAX_ROWS of whatever text
-  // is currently at the bottom, and only this check tells the two apart (see hive-internals).
+  // Only indented continuation rows, then one blank gap, may sit between the prompt and footer.
+  // Left-aligned output in that gap means the prompt is stale, not a live box (see hive-internals).
   let i = prompt + 1;
-  while (i <= footer && text[i] !== "") i += 1;
+  while (i <= footer && text[i] !== "" && /^\s/.test(stripControlBytes(stripSgr(rows[i])))) i += 1;
   while (i <= footer && text[i] === "") i += 1;
   if (i !== footer) return null;
 

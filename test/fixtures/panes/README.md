@@ -581,8 +581,8 @@ substring, and the anchor never matched.
 - `codex-two-row-footer-two-warnings-e.txt`: RECONSTRUCTED from the real
   capture above, not captured. It adds the `Worked for ...` row above the
   prompt and reads `2 warnings`, matching a trailer seen in the field.
-- `codex-two-row-footer-pending-e.txt`: RECONSTRUCTED from
-  `codex-two-row-footer-e.txt`, not captured. The placeholder in the prompt
-  row is replaced by undimmed typed text, in the byte shape
-  `codex-idle-pending-e.txt` records for typed text. Pins that a two-row
-  footer no longer hides a human's unsubmitted text from `codexInputBoxState`.
+- `codex-warnings-pending-e.txt`: a REAL capture, 2026-10-01, codex-cli
+  0.159.3, on a private tmux socket using a scratch copy of the generated
+  CODEX_HOME and Hive's production launch flags. Typed text remains in the
+  input box without Enter; the final footer row is right-aligned and the
+  shortcuts text is absent. The classifier reads it as pending.
