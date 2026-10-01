@@ -18,15 +18,18 @@ A harness may persist tool output over about 30KB to a file and show only a shor
 ```sh
 profile_rendered=$(mktemp)
 hive profile read "$profile_file" --profile "$profile_name" > "$profile_rendered" && wc -c < "$profile_rendered"
+printf '%s\n' "$profile_rendered"
 ```
 
-Use the saved content only if the read command succeeded. `wc -c` is the rendered size in bytes, the same number `hive profile list` and `hive doctor` show. If it is 25600 or less, read the whole file. Above that, never read the whole file in one tool call; read it in sections of at most 16000 bytes each:
+Shell variables do not survive between tool calls. Note the path the last line printed and write that literal path into every later command and every file-reader call; do not rely on `$profile_rendered` after this call.
 
-1. Pick a line range with your file reader's offset and limit, and measure it first: `sed -n '1,80p' "$profile_rendered" | wc -c`. Shrink the range until the count is 16000 or less, then read it.
-2. Continue from the next line until you have read the last line. A scan of the headers is not a read.
-3. If a single line is over 16000 bytes, read it by bytes instead: `dd if="$profile_rendered" bs=1 skip=0 count=16000 2>/dev/null`. Advance `skip` by 15996 each time, which overlaps 4 bytes so text split at a section edge shows whole in the next section. Stop when a section reaches the byte count from `wc -c`.
+Use the saved content only if the read command succeeded. `wc -c` is the rendered size in bytes, the same number `hive profile list` and `hive doctor` show. If it is 25600 or less, read the whole file with your file reader. Above that, never read the whole file in one tool call; read it in sections of at most 16000 bytes each:
 
-Delete `"$profile_rendered"` when you are done. It is for understanding and checking only, never a source for an edit (see below).
+1. Check for long lines first: `awk 'length > 2000 {print NR; exit}' PATH`. A file reader truncates any line over 2000 characters, so if this prints a line number, read the whole file by bytes with step 3 instead of with line ranges.
+2. Otherwise pick a line range with your file reader's offset and limit, and measure it first: `sed -n '1,80p' PATH | wc -c`. Shrink the range until the count is 16000 or less, then read it. Continue from the next line until you have read the last line. A scan of the headers is not a read.
+3. To read by bytes: `dd if=PATH bs=1 skip=0 count=16000 2>/dev/null`. Advance `skip` by 15996 each time, which overlaps 4 bytes so text split at a section edge shows whole in the next section. Stop when a section reaches the byte count from `wc -c`.
+
+Delete the temporary file when you are done. It is for understanding and checking only, never a source for an edit (see below).
 
 ## Discovery first, not a checklist
 
