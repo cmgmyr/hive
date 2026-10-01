@@ -1504,6 +1504,21 @@ function profileDriftText(f: ProfileFileStatus): { rewrite: boolean; text: strin
   };
 }
 
+const PROFILE_SIZE_WARNING_BYTES = 25600;
+
+function profileRenderedBytes(name: string, file: string, vars: Record<string, string>): number | null {
+  const rendered = renderProfileFile(name, file, vars);
+  return rendered == null ? null : Buffer.byteLength(withTrailingNewline(rendered), "utf8");
+}
+
+function profileSizeAdvisory(name: string, file: string): string {
+  return (
+    `${name}/${file}: rendered size exceeds ${PROFILE_SIZE_WARNING_BYTES} bytes. A harness may persist tool output ` +
+    "over about 30KB and show only a short preview. Split into smaller profile files read with hive profile read, " +
+    "or redirect hive profile read to a file and read by section."
+  );
+}
+
 function cmdProfile(argv: string[]): void {
   const [sub, ...rest] = argv;
 
@@ -1520,7 +1535,9 @@ function cmdProfile(argv: string[]): void {
         }
 
         const here = findProjectForCwd();
-        const current = here ? activeProfile(loadProjectYml(here.path).config) : null;
+        const hereConfig = here ? loadProjectYml(here.path).config : null;
+        const current = here ? activeProfile(hereConfig) : null;
+        const listVars = mergedProjectVars(hereConfig);
         const statuses = names.map((profile) => profileStatus(profile));
         const fileWidth = Math.max(11, ...statuses.flatMap((s) => s.files.map((f) => f.file.length)));
         for (const [i, profile] of names.entries()) {
@@ -1528,7 +1545,10 @@ function cmdProfile(argv: string[]): void {
           console.log(`${profile === current ? "*" : " "} ${profile}`);
           for (const f of status.files) {
             const drift = profileDriftText(f);
-            console.log(`    ${f.file.padEnd(fileWidth)} ${f.source.padEnd(7)} ${f.path}${drift ? `   (${drift.text})` : ""}`);
+            const bytes = profileRenderedBytes(profile, f.file, listVars);
+            const size = bytes == null ? "[rendered size unavailable]" : `[${bytes} rendered bytes]`;
+            console.log(`    ${f.file.padEnd(fileWidth)} ${f.source.padEnd(7)} ${f.path}${drift ? `   (${drift.text})` : ""} ${size}`);
+            if (bytes != null && bytes > PROFILE_SIZE_WARNING_BYTES) console.log(`      ${profileSizeAdvisory(profile, f.file)}`);
           }
         }
         if (current) console.log(`\n* is this project's profile.`);
@@ -2976,6 +2996,11 @@ function cmdDoctor(argv: string[]): void {
     }
 
     const vars = mergedProjectVars(cfg);
+    for (const f of resolved) {
+      const bytes = profileRenderedBytes(name, f.file, vars);
+      info("profile size", bytes == null ? `${name}/${f.file}: rendered size unavailable` : `${name}/${f.file}: ${bytes} rendered bytes`);
+      if (bytes != null && bytes > PROFILE_SIZE_WARNING_BYTES) info("profile size warning", profileSizeAdvisory(name, f.file));
+    }
     const renderedText = profileFileNames(name)
       .map((file) => renderProfileFile(name, file, vars))
       .filter((t): t is string => t != null)

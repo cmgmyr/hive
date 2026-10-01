@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, describe, it } from "node:test";
@@ -248,7 +248,7 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     assert.match(stdout, /posture\.md\s+shipped/);
     assert.match(stdout, /runbook\.md\s+shipped/);
     assert.match(stdout, /worker\.md\s+shipped/);
-    assert.match(stdout, /extra\.md\s+user\s+\S+extra\.md$/m);
+    assert.match(stdout, /extra\.md\s+user\s+\S+extra\.md \[\d+ rendered bytes\]$/m);
     assert.doesNotMatch(stdout, /extra\.md.*rewrite/);
     assert.doesNotMatch(stdout, /extra\.md.*diverged/);
   });
@@ -271,5 +271,159 @@ describe("todo 339/454: no-regression, the three named files behave exactly as b
     assert.equal(positions.size, 1, `source column should start at the same offset on every row: ${lines.join(" | ")}`);
 
     assert.match(stdout, /checklist\.md\s+user/);
+  });
+});
+
+describe("todo 1633: profile list and doctor show the rendered size, and advise only above 25600 bytes", () => {
+  const ADVISORY = /rendered size exceeds 25600 bytes/;
+
+  async function project(profile, files, yml = `profile: ${profile}\n`) {
+    const d = scratchDirs();
+    const o = { cwd: d.projectDir, dataDir: d.dataDir, tmp: d.tmp };
+    const dir = join(d.dataDir, "profiles", profile);
+    mkdirSync(dir, { recursive: true });
+    for (const [file, content] of Object.entries(files)) writeFileSync(join(dir, file), content);
+    await runCli(["init", "--no-profile"], o);
+    writeFileSync(join(d.projectDir, "hive.yml"), yml);
+    return o;
+  }
+
+  const readBytes = async (o, profile, file) => {
+    const read = await runCli(["profile", "read", file, "--profile", profile], o);
+    assert.equal(read.code, 0, read.stdout);
+    return Buffer.byteLength(read.stdout, "utf8");
+  };
+
+  const listedBytes = (stdout, profile, file) => {
+    const block = stdout.split(/^[* ] (?=\S)/m).find((b) => b.startsWith(`${profile}\n`));
+    assert.ok(block, `profile ${profile} missing from:\n${stdout}`);
+    const m = new RegExp(`^ {4}${file.replace(".", "\\.")}\\s.*\\[(\\d+) rendered bytes\\]$`, "m").exec(block);
+    assert.ok(m, `no byte field for ${file} in:\n${block}`);
+    return Number(m[1]);
+  };
+
+  const doctorBytes = (stdout, profile, file) => {
+    const m = new RegExp(`info {2}profile size: ${profile}/${file.replace(".", "\\.")}: (\\d+) rendered bytes`).exec(stdout);
+    assert.ok(m, `no doctor size row for ${file} in:\n${stdout}`);
+    return Number(m[1]);
+  };
+
+  it("matches the bytes `profile read` prints for UTF-8, var expansion, stripped conditionals and literal worker vars", async () => {
+    const o = await project(
+      "sized",
+      {
+        "posture.md": "h\u00e9llo \u2603 {{repo}}\n",
+        "runbook.md": ["start", "<!--if:strict-->", "x".repeat(500), "<!--end-->", "end"].join("\n"),
+        "worker.md": "You are {{agent_name}} in {{repo}}.\n",
+        "extra.md": "no trailing newline",
+      },
+      "profile: sized\nvars:\n  repo: a-much-longer-repository-name\n",
+    );
+    const list = await runCli(["profile", "list"], o);
+    const doctor = await runCli(["doctor"], o);
+    for (const file of ["posture.md", "runbook.md", "worker.md", "extra.md"]) {
+      const expected = await readBytes(o, "sized", file);
+      assert.equal(listedBytes(list.stdout, "sized", file), expected, `list ${file}`);
+      assert.equal(doctorBytes(doctor.stdout, "sized", file), expected, `doctor ${file}`);
+    }
+    const worker = await runCli(["profile", "read", "worker.md", "--profile", "sized"], o);
+    assert.match(worker.stdout, /You are \{\{agent_name\}\} in a-much-longer-repository-name\./);
+    assert.doesNotMatch(list.stdout, ADVISORY);
+  });
+
+  it("counts an empty file as zero bytes, the same as profile read prints", async () => {
+    const o = await project("empty-sized", { "posture.md": "p\n", "runbook.md": "r\n", "extra.md": "" });
+    const list = await runCli(["profile", "list"], o);
+    assert.equal(await readBytes(o, "empty-sized", "extra.md"), 0);
+    assert.equal(listedBytes(list.stdout, "empty-sized", "extra.md"), 0);
+  });
+
+  it("shows a user override's size, not the shipped file's", async () => {
+    const o = await project("orchestration", { "posture.md": "short override\n" });
+    const list = await runCli(["profile", "list"], o);
+    assert.equal(listedBytes(list.stdout, "orchestration", "posture.md"), Buffer.byteLength("short override\n"));
+    assert.equal(await readBytes(o, "orchestration", "posture.md"), Buffer.byteLength("short override\n"));
+  });
+
+  it("renders a profile other than the active one with the reading project's vars", async () => {
+    const o = await project("active-one", { "posture.md": "p\n", "runbook.md": "r\n" }, "profile: active-one\nvars:\n  repo: twelve-chars\n");
+    const dir = join(o.dataDir, "profiles", "other-one");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "posture.md"), "{{repo}}\n");
+    const list = await runCli(["profile", "list"], o);
+    assert.equal(listedBytes(list.stdout, "other-one", "posture.md"), Buffer.byteLength("twelve-chars\n"));
+    assert.equal(await readBytes(o, "other-one", "posture.md"), Buffer.byteLength("twelve-chars\n"));
+  });
+
+  it("lists outside a registered project with no project vars", async () => {
+    const o = await project("novars", { "posture.md": "{{repo}}|<!--if:repo-->gone<!--end-->\n", "runbook.md": "r\n" });
+    const bare = scratchDirs();
+    mkdirSync(join(bare.dataDir, "profiles"), { recursive: true });
+    const outside = { cwd: bare.projectDir, dataDir: o.dataDir, tmp: bare.tmp };
+    const list = await runCli(["profile", "list"], outside);
+    assert.equal(list.code, 0, list.stdout);
+    assert.equal(listedBytes(list.stdout, "novars", "posture.md"), await readBytes(outside, "novars", "posture.md"));
+  });
+
+  it("reports an unreadable resolved file as unavailable, on both surfaces, without a failure", async () => {
+    const o = await project("unreadable", { "posture.md": "p\n", "runbook.md": "r\n", "extra.md": "x\n" });
+    const extra = join(o.dataDir, "profiles", "unreadable", "extra.md");
+    chmodSync(extra, 0o000);
+    try {
+      const list = await runCli(["profile", "list"], o);
+      const doctor = await runCli(["doctor"], o);
+      assert.match(list.stdout, /extra\.md\s+user\s+\S+extra\.md \[rendered size unavailable\]$/m);
+      assert.match(doctor.stdout, /info {2}profile size: unreadable\/extra\.md: rendered size unavailable/);
+      assert.doesNotMatch(doctor.stdout, /FAIL {2}profile/);
+    } finally {
+      chmodSync(extra, 0o644);
+    }
+  });
+
+  it("advises at 25601 bytes and not at 25599 or 25600, on list and doctor alike", async () => {
+    const cases = [
+      [25599, false],
+      [25600, false],
+      [25601, true],
+    ];
+    for (const [bytes, advises] of cases) {
+      const name = `edge-${bytes}`;
+      const o = await project(name, { "posture.md": "p\n", "runbook.md": "r\n", "big.md": `${"a".repeat(bytes - 1)}\n` });
+      const list = await runCli(["profile", "list"], o);
+      const doctor = await runCli(["doctor"], o);
+      assert.equal(listedBytes(list.stdout, name, "big.md"), bytes);
+      assert.equal(doctorBytes(doctor.stdout, name, "big.md"), bytes);
+      assert.equal(await readBytes(o, name, "big.md"), bytes);
+      assert.equal(ADVISORY.test(list.stdout), advises, `list at ${bytes}`);
+      assert.equal(ADVISORY.test(doctor.stdout), advises, `doctor at ${bytes}`);
+      if (advises) {
+        assert.match(list.stdout, new RegExp(`${name}/big\\.md: rendered size exceeds 25600 bytes`));
+        assert.match(doctor.stdout, new RegExp(`info {2}profile size warning: ${name}/big\\.md: rendered size exceeds`));
+        assert.match(doctor.stdout, /redirect hive profile read to a file and read by section/);
+      }
+    }
+  });
+
+  it("measures the rendered size: a large raw conditional stays quiet, a small raw var advises", async () => {
+    const stripped = await project("raw-large", {
+      "posture.md": "p\n",
+      "runbook.md": "r\n",
+      "cond.md": `<!--if:unset_var-->\n${"z".repeat(30000)}\n<!--end-->\nok\n`,
+    });
+    const strippedList = await runCli(["profile", "list"], stripped);
+    assert.equal(listedBytes(strippedList.stdout, "raw-large", "cond.md"), await readBytes(stripped, "raw-large", "cond.md"));
+    assert.ok(listedBytes(strippedList.stdout, "raw-large", "cond.md") < 25600);
+    assert.doesNotMatch(strippedList.stdout, ADVISORY);
+
+    const expanded = await project(
+      "raw-small",
+      { "posture.md": "p\n", "runbook.md": "r\n", "var.md": "{{blob}}\n" },
+      `profile: raw-small\nvars:\n  blob: ${"b".repeat(26000)}\n`,
+    );
+    const expandedList = await runCli(["profile", "list"], expanded);
+    const expandedDoctor = await runCli(["doctor"], expanded);
+    assert.equal(listedBytes(expandedList.stdout, "raw-small", "var.md"), 26001);
+    assert.match(expandedList.stdout, ADVISORY);
+    assert.match(expandedDoctor.stdout, ADVISORY);
   });
 });

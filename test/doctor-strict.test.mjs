@@ -202,3 +202,51 @@ describe("hive doctor --strict promotes only the warns that mean this install is
     assert.equal(stdout, "", "a refused run must not print a report a script could read as a result");
   });
 });
+
+describe("todo 1633: the profile size advisory never changes what doctor counts or how it exits", () => {
+  const sizeLine = /^\s*info {2}profile size(?: warning)?: /;
+  const strip = (stdout) => stdout.split("\n").filter((l) => !sizeLine.test(l)).join("\n");
+  const counts = (stdout) => [failureCount(stdout), warningCount(stdout), promotedCount(stdout)];
+
+  const d = scratchDirs();
+  const o = { ...isolated, cwd: d.projectDir, dataDir: d.dataDir, tmp: d.tmp };
+  const runbook = join(d.dataDir, "profiles", "sized", "runbook.md");
+  before(async () => {
+    mkdirSync(join(d.dataDir, "profiles", "sized"), { recursive: true });
+    writeFileSync(join(d.dataDir, "profiles", "sized", "posture.md"), "p\n");
+    writeFileSync(join(d.projectDir, "hive.yml"), "profile: sized\n");
+    const init = await runCli(["init"], o);
+    assert.equal(init.code, 0, init.stderr);
+  });
+  async function run(bytes, args) {
+    writeFileSync(runbook, `${"a".repeat(bytes - 1)}\n`);
+    return runCli(["doctor", ...args], o);
+  }
+
+  for (const args of [[], ["--strict"], ["--verbose"]]) {
+    it(`doctor ${args.join(" ") || "(plain)"}: 25600 and 25601 bytes differ only by the advisory, with equal counts`, async () => {
+      const at = await run(25600, args);
+      const over = await run(25601, args);
+      assert.doesNotMatch(at.stdout, /profile size warning/);
+      assert.match(over.stdout, /info {2}profile size warning: sized\/runbook\.md: rendered size exceeds 25600 bytes/);
+      assert.deepEqual(counts(over.stdout), counts(at.stdout));
+      assert.equal(summaryLine(over.stdout), summaryLine(at.stdout));
+      assert.equal(over.code === 0, failureCount(over.stdout) === 0, over.stdout);
+      assert.equal(at.code === 0, failureCount(at.stdout) === 0, at.stdout);
+      assert.equal(
+        strip(over.stdout),
+        strip(at.stdout),
+        "outside the size lines the two reports must match",
+      );
+    });
+  }
+
+  it("keeps rejecting doctor --json as an unknown argument whatever the file size", async () => {
+    for (const bytes of [25600, 25601]) {
+      const r = await run(bytes, ["--json"]);
+      assert.equal(r.code, 1, `at ${bytes}`);
+      assert.match(r.stderr, /unknown argument "--json"/);
+      assert.equal(r.stdout, "");
+    }
+  });
+});
