@@ -179,8 +179,9 @@ runbook (fork it first), not a pad write.`,
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how
     you abandon a lane you have decided not to resume. row_only=true marks
-    a stale row closed with no tmux action at all; a human or peer lead
-    only, refused for a row that provably owns a live pane.
+    a stale row closed with no kill, stop or typing; a human or peer lead
+    only, refused for a row that provably owns a live pane or when tmux
+    could not be probed.
 
 Address a worker by its name, not its id: agent_send(name="impl", ...). A
 partial name works when it matches one running worker, so name="123" finds

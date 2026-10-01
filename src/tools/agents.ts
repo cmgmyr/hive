@@ -336,7 +336,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   return {
     ...receipt,
     note:
-      `Row retired without touching tmux; its pane ownership read ${ownership}.` +
+      `Row retired with no kill, stop or typing; its pane ownership read ${ownership}.` +
       (ownership === "unknown" ? " Anything still running in that pane was left alone." : ""),
   };
 }
@@ -1754,7 +1754,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row without touching tmux (no kill, no stop, nothing typed): for a human or peer lead only, and refused for any row that provably owns a live pane.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1769,7 +1769,7 @@ export function registerAgents(server: McpServer): void {
           .boolean()
           .optional()
           .describe(
-            "Mark the row closed without any tmux action, for a row whose pane is gone, reissued or unverifiable. Human or peer lead only. Defaults to false.",
+            "Mark the row closed with no kill, stop or typing, for a row whose pane is gone, reissued or unverifiable. Human or peer lead only. Defaults to false.",
           ),
         project_id: projectIdParam,
       },
