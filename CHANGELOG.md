@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.5.0 - 2026-10-01
+
+- `hive project rm <id|path> [--yes]` removes a project and everything it owns: its agents, todos, pads, wakes and the rest. It prints what it will remove, asks `[y/N]` unless you pass `--yes`, and takes a snapshot of the store first. It refuses your own project, a project with a running agent, and any run under `HIVE_PROJECT_LOCK=1`. A path must match a registered project's path exactly.
+- `project_prune` takes `confirm_name`. With `project_id` and that project's exact name, it removes a project that still owns rows, under the same guards, and reports per-table counts and the snapshot path. Without it, `project_prune` behaves as before.
+- The queen can run `project_prune` and `hive project rm`, so it can clean up stray projects across your machine. Each project it removes is recorded in `hive queen-audit`.
+- The idle-wake trailer and the unsubmitted-text hold now work for Codex workers. Codex 0.159 draws a two-row footer, and hive could not find the input box above it, so a wake could be typed over a Codex worker's half-written prompt. That includes the footer Codex shows while you type, which drops its shortcuts row.
+- After upgrading, restart every hive session. Any running hive server can deliver any project's wakes, so a session still on an older build can still type a wake over a Codex draft.
+
 ## 1.4.0 - 2026-09-30
 
 - `hive queen` starts the queen: one lead per data dir that reads every registered project and tells you which one needs you. It writes into another project only by handing things to that project's lead: todos, comments, and text or wakes addressed to the running lead. Anything else there is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`. The first run creates `<data dir>/queen` with a `hive.yml` that selects a new shipped `queen` profile, a skeleton you fork and fill in. The new queen guide, `docs/queen.md`, covers all of it.
