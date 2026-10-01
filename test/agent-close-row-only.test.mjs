@@ -158,12 +158,13 @@ describe("agent_close row_only", () => {
     assert.equal(rowOf(id).status, "closed");
   });
 
-  it("retires a lead whose probe fails, without treating the failure as live", { skip }, async () => {
+  it("refuses with the retry wording when the tmux probe fails, leaving the row running", { skip }, async () => {
     const failing = await client({ PATH: `${fakeFailingTmux({ failOn: "list-panes" })}:${process.env.PATH}` });
-    const id = row({ pid: livePid });
-    const receipt = await failing.call("agent_close", { agent_id: id, row_only: true });
-    assert.match(receipt.note, /ownership read unknown/);
-    assert.equal(rowOf(id).status, "closed");
+    for (const pid of [livePid, ""]) {
+      const id = row({ name: `lead-${pid || "nopid"}`, pid });
+      await assert.rejects(failing.call("agent_close", { agent_id: id, row_only: true }), /could not be probed[\s\S]*Retry in a few seconds/);
+      assert.equal(rowOf(id).status, "running");
+    }
     assert.ok(bystanderAlive());
   });
 

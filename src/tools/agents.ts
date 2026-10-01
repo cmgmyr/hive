@@ -65,6 +65,7 @@ import {
   describePaneChoice,
   ensureAttached,
   findUnsafeControlChar,
+  foreignSocket,
   holdsHumanInput,
   liveTargets,
   observationFailed,
@@ -305,7 +306,10 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
       note: "Already closed; row_only changed nothing and left any park in place.",
     };
   }
-  const ownership = rowOwnership(agent);
+  const observes = !foreignSocket(agent.tmux_socket) && agent.tmux_target !== "";
+  const snapshot = observes ? liveTargets() : null;
+  if (observes && observationFailed(snapshot)) throw probeFailed(agent);
+  const ownership = rowOwnership(agent, snapshot);
   if (ownership === "live") {
     throw new Error(
       `Agent ${agent.id} ("${agent.name}") owns a live pane (its recorded pane pid matches), so row_only refuses: ` +
