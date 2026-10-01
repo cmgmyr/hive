@@ -35,7 +35,8 @@ function fixture(kind) {
        VALUES (?, ?, ?, '%9600', 'codex', ?, 'running', 'agent', ?, ?)`
     ).run(project, actor, actor, dirs.tmp, key, sessionId);
   }
-  return { kind, actor, path, input, marker: join(dirs.dataDir, "context-checkpoints", `${encodeURIComponent(actor)}.fired`) };
+  const agentId = kind === "codex" ? db.prepare("SELECT id FROM agents WHERE actor_id = ?").get(actor).id : null;
+  return { kind, actor, key, agentId, path, input, marker: join(dirs.dataDir, "context-checkpoints", `${encodeURIComponent(actor)}.fired`) };
 }
 function usage(f, input) {
   const record = f.kind === "claude"
@@ -59,6 +60,11 @@ function run(f, options) {
   const result = spawnSync(process.execPath, spec.args, spec.options);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
+}
+async function closeAndReapHome(f) {
+  db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(f.agentId);
+  const { reapCodexHomeForClosedAgent } = await import("../dist/spawn.js");
+  reapCodexHomeForClosedAgent(f.agentId, f.key);
 }
 function expected(percent, threshold = 35) {
   return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext:
@@ -149,6 +155,20 @@ for (const kind of ["claude", "codex"]) {
     const input = JSON.stringify({ cwd: dirs.tmp, session_id: "session", transcript_path: foreign.path });
     assert.equal(run(f, { input }), "");
     assert.equal(existsSync(f.marker), true);
+  });
+
+  if (kind === "codex") it("a closed and reaped worker cannot fire a foreign checkpoint", async () => {
+    const f = fixture("codex");
+    const foreign = fixture("codex");
+    usage(foreign, 50000);
+    await closeAndReapHome(f);
+    const before = db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(f.actor);
+    const beforeLogs = db.prepare("SELECT * FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(f.actor);
+    const input = JSON.stringify({ cwd: dirs.tmp, session_id: "foreign-session", transcript_path: foreign.path });
+    assert.equal(run(f, { input }), "");
+    assert.equal(existsSync(f.marker), false);
+    assert.deepEqual(db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(f.actor), before);
+    assert.deepEqual(db.prepare("SELECT * FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(f.actor), beforeLogs);
   });
 
   if (kind === "codex") it("missing-path first binding and mismatched bound sessions stay silent without reconciling or logging", () => {

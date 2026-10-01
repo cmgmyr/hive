@@ -33,7 +33,8 @@ function fixture({ command = "codex", kind = "agent", home = true, state = "unkn
   const rollout = join(sessions, "2026", "10", "rollout-session.jsonl");
   mkdirSync(dirname(rollout), { recursive: true });
   writeFileSync(rollout, "{}\n");
-  return { actorId, key, homeDir, sessions, rollout };
+  const agentId = db.prepare("SELECT id FROM agents WHERE actor_id = ?").get(actorId).id;
+  return { actorId, agentId, key, homeDir, sessions, rollout };
 }
 
 function row(actorId) {
@@ -60,6 +61,12 @@ async function send(f, event, payload, actorId = f.actorId) {
     stdin: JSON.stringify(payload),
   });
   assert.equal(result.code, 0, `hook must exit 0 for ${event}`);
+}
+
+async function closeAndReapHome(f) {
+  db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(f.agentId);
+  const { reapCodexHomeForClosedAgent } = await import("../dist/spawn.js");
+  reapCodexHomeForClosedAgent(f.agentId, f.key);
 }
 
 const event = (session_id, transcript_path, extra = {}) => ({ hook_event_name: "UserPromptSubmit", session_id, transcript_path, ...extra });
@@ -238,6 +245,30 @@ describe("Codex worker hooks write only when the transcript belongs to the gener
     ]);
   });
 
+  it("a closed and reaped Codex row ignores a foreign late hook while a running owned row still accepts its prompt", async () => {
+    const closed = fixture();
+    const foreign = fixture();
+    await closeAndReapHome(closed);
+    assert.equal(existsSync(closed.homeDir), false);
+    assert.equal(row(closed.actorId).codex_home, "");
+    const beforeRow = db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(closed.actorId);
+    const beforeActor = db.prepare("SELECT * FROM actors WHERE id = ?").get(closed.actorId);
+    const beforeLogs = logs(closed.actorId);
+
+    await send(closed, "prompt", event("late-foreign-session", foreign.rollout));
+
+    assert.deepEqual(db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(closed.actorId), beforeRow);
+    assert.deepEqual(db.prepare("SELECT * FROM actors WHERE id = ?").get(closed.actorId), beforeActor);
+    assert.deepEqual(logs(closed.actorId), beforeLogs);
+
+    const running = fixture();
+    await send(running, "prompt", event("owned-session", running.rollout));
+    assert.equal(row(running.actorId).agent_state, "working");
+    assert.equal(row(running.actorId).session_id, "owned-session");
+    assert.equal(row(running.actorId).transcript_path, running.rollout);
+    assert.deepEqual(logs(running.actorId).map(({ event, state }) => ({ event, state })), [{ event: "prompt", state: "working" }]);
+  });
+
   it("preserves Claude, lead, legacy Codex and missing-identity behavior", async () => {
     const claude = fixture({ command: "claude", home: false });
     await send(claude, "prompt", event("claude-replacement", "/elsewhere/claude.jsonl"));
@@ -249,6 +280,14 @@ describe("Codex worker hooks write only when the transcript belongs to the gener
     const legacy = fixture({ command: "codex", home: false });
     await send(legacy, "prompt", event("legacy-session", "/legacy/path.jsonl"));
     assert.equal(row(legacy.actorId).session_id, "legacy-session");
+
+    const closedClaude = fixture({ command: "claude", home: false });
+    db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE actor_id = ?").run(closedClaude.actorId);
+    await send(closedClaude, "prompt", event("closed-claude-session", "/closed/claude.jsonl"));
+    assert.equal(row(closedClaude.actorId).agent_state, "working");
+    assert.equal(row(closedClaude.actorId).session_id, "closed-claude-session");
+    assert.equal(row(closedClaude.actorId).transcript_path, "/closed/claude.jsonl");
+
     const missing = fixture();
     await send(missing, "prompt", event("no-actor", missing.rollout), null);
     assert.deepEqual(logs(missing.actorId), []);

@@ -17,6 +17,7 @@ interface HookPayload {
 interface HookOwnerRow {
   kind: string;
   command: string;
+  status: string;
   codex_home: string;
   session_id: string;
 }
@@ -267,14 +268,17 @@ if (process.argv[2] === "post_tool_use") {
     if (kind === "codex" && validCheckpointThreshold() && actorId.startsWith("agent:")) {
       suppliedPayload = readPayload();
       const { db } = await import("./db.js");
-      const row = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+      const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
         .get(actorId) as HookOwnerRow | undefined;
-      if (row?.kind === "agent" && typeof row.codex_home === "string" && row.codex_home !== "") {
+      if (row?.kind === "agent") {
         const { harnessFor } = await import("./harnesses.js");
         if (harnessFor(row.command).name === "codex") {
-          const { codexHomeDir } = await import("./codexHome.js");
-          if (!acceptsWorkerHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
-            process.exit(0);
+          if (row.status !== "running") process.exit(0);
+          if (typeof row.codex_home === "string" && row.codex_home !== "") {
+            const { codexHomeDir } = await import("./codexHome.js");
+            if (!acceptsWorkerHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
+              process.exit(0);
+            }
           }
         }
       }
@@ -293,17 +297,21 @@ try {
   if (actorId) {
     const event = process.argv[2] ?? "";
     const hookPayload = readPayload();
-    const row = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+    const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
       .get(actorId) as HookOwnerRow | undefined;
     let guarded = false;
     let state: string | null = null;
-    if (row?.kind === "agent" && typeof row.codex_home === "string" && row.codex_home !== "") {
+    if (row?.kind === "agent") {
       const { harnessFor } = await import("./harnesses.js");
       if (harnessFor(row.command).name === "codex") {
+        if (row.status !== "running") process.exit(0);
         const { codexHomeDir } = await import("./codexHome.js");
         const result = db.transaction(() => {
-          const current = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+          const current = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
             .get(actorId) as HookOwnerRow | undefined;
+          if (current?.kind === "agent" && harnessFor(current.command).name === "codex" && current.status !== "running") {
+            return { status: "inactive" as const, state: null };
+          }
           if (!current || current.kind !== "agent" || typeof current.codex_home !== "string" || !current.codex_home || harnessFor(current.command).name !== "codex") {
             return { status: "changed" as const, state: null };
           }
@@ -315,7 +323,7 @@ try {
           db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
           return { status: "accepted" as const, state };
         }).immediate();
-        if (result.status === "rejected") process.exit(0);
+        if (result.status === "rejected" || result.status === "inactive") process.exit(0);
         guarded = result.status === "accepted";
         state = result.state;
       }
