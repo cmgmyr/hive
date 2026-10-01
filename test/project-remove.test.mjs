@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, paneField, scratchDirs } from "./helpers.mjs";
 
@@ -162,6 +164,25 @@ describe("removeProject", () => {
       assert.ok(bystanderAlive());
     });
   }
+
+  it("runs no tmux probe while it holds the store's write lock", { skip }, () => {
+    const p = seedProject("lock-free-probe");
+    runningAgent(p, { name: "lead", kind: "lead", panePid: "1" });
+    const dir = mkdtempSync(join(tmpdir(), "hive-lockprobe-"));
+    const log = join(dir, "lock.log");
+    const real = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+    writeFileSync(
+      join(dir, "tmux"),
+      `#!/bin/sh\nif sqlite3 -cmd ".timeout 0" ${JSON.stringify(join(dirs.dataDir, "hive.db"))} "BEGIN IMMEDIATE; ROLLBACK;" >/dev/null 2>&1; ` +
+        `then echo free >> ${JSON.stringify(log)}; else echo locked >> ${JSON.stringify(log)}; fi\nexec ${real} "$@"\n`,
+      { mode: 0o755 },
+    );
+    withPath(dir, () => removeProject(p, { snapshot: false }));
+    const probes = readFileSync(log, "utf8").trim().split("\n");
+    assert.ok(probes.length >= 2, `both guards must have probed: ${probes}`);
+    assert.deepEqual(probes.filter((line) => line !== "free"), []);
+    assert.equal(naming("projects", "id", p), 0);
+  });
 
   it("names both remedies when a live worker and an unknown lead block together", { skip }, () => {
     const p = seedProject("mixed");
