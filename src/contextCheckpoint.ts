@@ -21,7 +21,7 @@ export function contextCheckpointAdditionalContext(actorId: string, thresholdPer
   }
 }
 
-export function runContextCheckpointHook(kind: string | undefined): void {
+export function runContextCheckpointHook(kind: string | undefined, suppliedPayload?: unknown): void {
   const thresholdText = process.env.HIVE_CONTEXT_CHECKPOINT_PERCENT;
   if (!thresholdText || !/^\d+$/.test(thresholdText)) return;
   const threshold = Number(thresholdText);
@@ -29,7 +29,7 @@ export function runContextCheckpointHook(kind: string | undefined): void {
   const actorId = process.env.HIVE_AGENT_ID ?? "";
   if (!actorId.startsWith("agent:") || (kind !== "claude" && kind !== "codex")) return;
   try {
-    const payload = JSON.parse(readFileSync(0, "utf8"));
+    const payload = suppliedPayload === undefined ? JSON.parse(readFileSync(0, "utf8")) : suppliedPayload;
     if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return;
     const fill = readContextFill(kind, {
       actor_id: actorId,

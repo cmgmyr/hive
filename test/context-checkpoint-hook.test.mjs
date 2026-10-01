@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { after, describe, it } from "node:test";
 import { clearHiveEnv, DIST, isolateTmux, scratchDirs } from "./helpers.mjs";
@@ -12,15 +12,31 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 mkdirSync(dirs.dataDir, { recursive: true });
+const { db, migrate } = await import("../dist/db.js");
+migrate();
+const project = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
+  .get("context-checkpoint-hook", dirs.dataDir).id;
 const { recordClaudeWindowSize } = await import("../dist/statusline.js");
 const HOOK = join(DIST, "hook.js");
 let seq = 0;
 function fixture(kind) {
   const actor = `agent:checkpoint-${seq++}`;
-  const path = join(dirs.dataDir, `${actor}.jsonl`);
+  const key = `checkpoint-${seq}`;
+  const sessions = join(dirs.dataDir, "codex-homes", key, "sessions");
+  if (kind === "codex") mkdirSync(sessions, { recursive: true });
+  const path = kind === "codex" ? join(sessions, `${actor}.jsonl`) : join(dirs.dataDir, `${actor}.jsonl`);
   if (kind === "claude") recordClaudeWindowSize(actor, JSON.stringify({ context_window: { context_window_size: 100000 } }));
-  const input = JSON.stringify({ cwd: dirs.tmp, session_id: "session", transcript_path: path });
-  return { kind, actor, path, input, marker: join(dirs.dataDir, "context-checkpoints", `${encodeURIComponent(actor)}.fired`) };
+  const sessionId = "session";
+  const input = JSON.stringify({ cwd: dirs.tmp, session_id: sessionId, transcript_path: path });
+  if (kind === "codex") {
+    db.prepare("INSERT INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(actor, actor);
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status, kind, codex_home, session_id)
+       VALUES (?, ?, ?, '%9600', 'codex', ?, 'running', 'agent', ?, ?)`
+    ).run(project, actor, actor, dirs.tmp, key, sessionId);
+  }
+  const agentId = kind === "codex" ? db.prepare("SELECT id FROM agents WHERE actor_id = ?").get(actor).id : null;
+  return { kind, actor, key, agentId, path, input, marker: join(dirs.dataDir, "context-checkpoints", `${encodeURIComponent(actor)}.fired`) };
 }
 function usage(f, input) {
   const record = f.kind === "claude"
@@ -44,6 +60,11 @@ function run(f, options) {
   const result = spawnSync(process.execPath, spec.args, spec.options);
   assert.equal(result.status, 0, result.stderr);
   return result.stdout;
+}
+async function closeAndReapHome(f) {
+  db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(f.agentId);
+  const { reapCodexHomeForClosedAgent } = await import("../dist/spawn.js");
+  reapCodexHomeForClosedAgent(f.agentId, f.key);
 }
 function expected(percent, threshold = 35) {
   return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext:
@@ -71,7 +92,13 @@ for (const kind of ["claude", "codex"]) {
       assert.equal(run(f), "");
       assert.equal(existsSync(f.marker), false);
       usage(f, 35000);
+      const beforeRow = kind === "codex" ? db.prepare("SELECT session_id, transcript_path FROM agents WHERE actor_id = ?").get(f.actor) : null;
+      const beforeLogs = kind === "codex" ? db.prepare("SELECT count(*) AS n FROM agent_state_log WHERE actor_id = ?").get(f.actor).n : null;
       assert.deepEqual(JSON.parse(run(f)), expected(35));
+      if (kind === "codex") {
+        assert.deepEqual(db.prepare("SELECT session_id, transcript_path FROM agents WHERE actor_id = ?").get(f.actor), beforeRow);
+        assert.equal(db.prepare("SELECT count(*) AS n FROM agent_state_log WHERE actor_id = ?").get(f.actor).n, beforeLogs);
+      }
       const marker = statSync(f.marker, { bigint: true });
       usage(f, 79000);
       assert.equal(run(f), "");
@@ -95,7 +122,7 @@ for (const kind of ["claude", "codex"]) {
       assert.deepEqual(JSON.parse(outputs.find(Boolean)), expected(50));
     });
 
-    it("silently ignores absent, malformed and mid-write data without creating a marker", () => {
+  it("silently ignores absent, malformed and mid-write data without creating a marker", () => {
       const f = fixture(kind);
       assert.equal(run(f), "");
       for (const body of ["", "not JSON\n", '{"type":"assistant","message":', 'x'.repeat(300000), "null\n"]) {
@@ -107,9 +134,57 @@ for (const kind of ["claude", "codex"]) {
       writeFileSync(f.path, readFileSync(f.path, "utf8") + '{"type":');
       assert.equal(run(f), "");
       for (const input of ["null", "[]", "not json", "{}", '{"transcript_path":12}']) assert.equal(run(f, { input }), "");
-      assert.equal(existsSync(f.marker), false);
-    });
+    assert.equal(existsSync(f.marker), false);
   });
+
+  if (kind === "codex") it("foreign high observations neither create a marker nor emit context", () => {
+    const f = fixture("codex");
+    const foreign = fixture("codex");
+    usage(f, 50000);
+    const input = JSON.stringify({ cwd: dirs.tmp, session_id: "session", transcript_path: foreign.path });
+    assert.equal(run(f, { input }), "");
+    assert.equal(existsSync(f.marker), false);
+  });
+
+  if (kind === "codex") it("foreign low observations cannot remove a previously fired marker", () => {
+    const f = fixture("codex");
+    const foreign = fixture("codex");
+    usage(f, 10000);
+    mkdirSync(dirname(f.marker), { recursive: true });
+    writeFileSync(f.marker, "");
+    const input = JSON.stringify({ cwd: dirs.tmp, session_id: "session", transcript_path: foreign.path });
+    assert.equal(run(f, { input }), "");
+    assert.equal(existsSync(f.marker), true);
+  });
+
+  if (kind === "codex") it("a closed and reaped worker cannot fire a foreign checkpoint", async () => {
+    const f = fixture("codex");
+    const foreign = fixture("codex");
+    usage(foreign, 50000);
+    await closeAndReapHome(f);
+    const before = db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(f.actor);
+    const beforeLogs = db.prepare("SELECT * FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(f.actor);
+    const input = JSON.stringify({ cwd: dirs.tmp, session_id: "foreign-session", transcript_path: foreign.path });
+    assert.equal(run(f, { input }), "");
+    assert.equal(existsSync(f.marker), false);
+    assert.deepEqual(db.prepare("SELECT * FROM agents WHERE actor_id = ?").get(f.actor), before);
+    assert.deepEqual(db.prepare("SELECT * FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(f.actor), beforeLogs);
+  });
+
+  if (kind === "codex") it("missing-path first binding and mismatched bound sessions stay silent without reconciling or logging", () => {
+    const f = fixture("codex");
+    usage(f, 50000);
+    const before = db.prepare("SELECT session_id, transcript_path FROM agents WHERE actor_id = ?").get(f.actor);
+    const logCount = db.prepare("SELECT count(*) AS n FROM agent_state_log WHERE actor_id = ?").get(f.actor).n;
+    assert.equal(run(f, { input: JSON.stringify({ cwd: dirs.tmp, session_id: "other-session" }) }), "");
+    assert.deepEqual(db.prepare("SELECT session_id, transcript_path FROM agents WHERE actor_id = ?").get(f.actor), before);
+    assert.equal(db.prepare("SELECT count(*) AS n FROM agent_state_log WHERE actor_id = ?").get(f.actor).n, logCount);
+    db.prepare("UPDATE agents SET session_id = '' WHERE actor_id = ?").run(f.actor);
+    assert.equal(run(f, { input: JSON.stringify({ cwd: dirs.tmp, session_id: "first-session" }) }), "");
+    assert.equal(db.prepare("SELECT session_id FROM agents WHERE actor_id = ?").get(f.actor).session_id, "");
+    assert.equal(existsSync(f.marker), false);
+  });
+});
 }
 
 describe("hot-path isolation", () => {
@@ -133,9 +208,11 @@ describe("hot-path isolation", () => {
     assert.equal(existsSync(observed), true);
   });
 
-  it("emits context without loading hooks, SQLite or the native addon, while the same guard detects a state event", () => {
-    const f = fixture("codex");
-    usage(f, 50000);
+  it("keeps Claude and disabled Codex checkpoints off SQLite while enabled Codex checks its worker row", () => {
+    const codex = fixture("codex");
+    usage(codex, 50000);
+    const claude = fixture("claude");
+    usage(claude, 50000);
     const observed = join(dirs.tmp, "forbidden-import");
     const loader = join(dirs.tmp, "guard-loader.mjs");
     writeFileSync(loader, `import { writeFileSync } from 'node:fs';
@@ -146,9 +223,22 @@ describe("hot-path isolation", () => {
         return next(specifier, context);
       }`);
     const nodeArgs = ["--loader", pathToFileURL(loader).href];
-    assert.deepEqual(JSON.parse(run(f, { nodeArgs })), expected(50));
+    assert.deepEqual(JSON.parse(run(claude, { nodeArgs })), expected(50));
     assert.equal(existsSync(observed), false);
-    const control = spawnSync(process.execPath, [...nodeArgs, HOOK, "prompt"], { env: { ...process.env, HIVE_AGENT_ID: f.actor }, encoding: "utf8", input: "{}" });
+    assert.equal(run(codex, { nodeArgs, threshold: "" }), "");
+    assert.equal(existsSync(observed), false);
+
+    const observeDb = join(dirs.tmp, "enabled-codex-store-read");
+    const dbLoader = join(dirs.tmp, "observe-db-loader.mjs");
+    writeFileSync(dbLoader, `import { writeFileSync } from 'node:fs';
+      export async function resolve(specifier, context, next) {
+        if (specifier.endsWith('/db.js')) writeFileSync(${JSON.stringify(observeDb)}, 'read');
+        return next(specifier, context);
+      }`);
+    assert.deepEqual(JSON.parse(run(codex, { nodeArgs: ["--loader", pathToFileURL(dbLoader).href] })), expected(50));
+    assert.equal(readFileSync(observeDb, "utf8"), "read");
+
+    const control = spawnSync(process.execPath, [...nodeArgs, HOOK, "prompt"], { env: { ...process.env, HIVE_AGENT_ID: codex.actor }, encoding: "utf8", input: "{}" });
     assert.notEqual(control.status, 0);
     assert.match(readFileSync(observed, "utf8"), /db\.js$/);
   });

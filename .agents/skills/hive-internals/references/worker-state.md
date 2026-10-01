@@ -1,10 +1,18 @@
-Worker state (working/idle/waiting) comes from Claude Code hooks writing directly to the database, keyed by `HIVE_AGENT_ID`. hive depends here on a payload contract it does not own, cannot see change, and pins no version of.
+Worker state (working/idle/waiting) comes from Claude Code and Codex hooks writing directly to the database, keyed by `HIVE_AGENT_ID`. Hive depends here on payload contracts it does not own, cannot see change, and pins no version of.
+
+## Codex hook ownership (todo 1611)
+
+A generated-home Codex worker may write its row only when the hook payload names a transcript beneath that row's own `sessions` directory. `src/hook.ts` resolves existing path components through symlinks and checks path segments, so `/tmp` and `/private/tmp` aliases work while an outward link does not. If Codex omits `transcript_path`, the row must already have a nonempty `session_id` equal to the payload's nonempty session id. A present owned transcript permits a new session id; the rollout filename may name a child while the hook carries the parent's id.
+
+The row's `codex_home` is authoritative. The incoming environment, current directory and transcript spelling do not establish ownership. The check runs before state, resume-latch, session, transcript, actor last-seen, log or checkpoint effects. For state hooks, the current row check and synchronous worker writes share one immediate transaction. An accepted raw log row is appended afterwards in its independent best-effort write, so log failure cannot undo state. A rejected event exits silently and adds no diagnostic row, including a rejected subagent event that otherwise could change the bounded latch.
+
+Enabled Codex `PostToolUse` hooks check the same row before reading transcript usage or changing the checkpoint marker. They pass the already parsed payload into the checkpoint function. Claude checkpoints and disabled or invalid thresholds keep the no-store early return. This ownership boundary rejects a child using a different generated home but accepts a process with the same home, including copied MCP identity. It is not process authentication and does not clean up rows written before this check.
 
 ## A state that corrects itself still has to be readable afterwards
 
 `agents.agent_state` is one row overwritten in place, so a wrong value replaced a second later leaves nothing behind. Issue #24 was closed on that basis and reopened the same day: a false `idle` was written at 13:27:39 and overwritten with `working` at 13:27:41, the lead sampled at 13:28, saw `working`, and recorded a PASS on a lane that had already failed. No polling frequency anyone would really run catches two seconds.
 
-So `agent_state_log` is append-only and the hook writes one row per invocation. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
+So `agent_state_log` is append-only and the hook writes one row per accepted state-hook invocation. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
 
 - **The `event` column.** Both #24 lanes reasoned from "an idle was written" to "`stateFor("stop")` wrote it" without checking, and the truth was that the notify branch wrote it. One column answers that at a glance.
 - **The payload is stored raw and unredacted.** The bug turned on `notification_type`, a field nothing in hive read. A projection can only preserve fields someone already knew mattered, which is the same incomplete-corpus failure wearing a disguise.
