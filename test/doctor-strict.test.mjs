@@ -204,7 +204,7 @@ describe("hive doctor --strict promotes only the warns that mean this install is
 });
 
 describe("todo 1633: the profile size advisory never changes what doctor counts or how it exits", () => {
-  const sizeLine = /^\s*info {2}profile size(?: warning)?: /;
+  const sizeLine = /^\s*info {2}(?:profile size(?: warning)?|ptys): /;
   const strip = (stdout) => stdout.split("\n").filter((l) => !sizeLine.test(l)).join("\n");
   const counts = (stdout) => [failureCount(stdout), warningCount(stdout), promotedCount(stdout)];
 
