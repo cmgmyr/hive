@@ -14,7 +14,7 @@ paths:
 
 # Worker state, and why it has an append-only log
 
-`agent_state_log` is append-only and the hook writes one row per invocation. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
+`agent_state_log` is append-only and the hook writes one row per accepted state-hook invocation. A generated-home Codex event from another home is rejected before any effects. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
 
 - **The `event` column.** Both #24 lanes reasoned from "an idle was written" to "`stateFor("stop")` wrote it" without checking, and the truth was that the notify branch wrote it. One column answers that at a glance.
 - **The payload is stored raw and unredacted.** A projection can only preserve fields someone already knew mattered.

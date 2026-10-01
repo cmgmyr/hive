@@ -1,4 +1,12 @@
-Worker state (working/idle/waiting) comes from Claude Code hooks writing directly to the database, keyed by `HIVE_AGENT_ID`. hive depends here on a payload contract it does not own, cannot see change, and pins no version of.
+Worker state (working/idle/waiting) comes from Claude Code and Codex hooks writing directly to the database, keyed by `HIVE_AGENT_ID`. Hive depends here on payload contracts it does not own, cannot see change, and pins no version of.
+
+## Codex hook ownership (todo 1611)
+
+A generated-home Codex worker may write its row only when the hook payload names a transcript beneath that row's own `sessions` directory. `src/hook.ts` resolves existing path components through symlinks and checks path segments, so `/tmp` and `/private/tmp` aliases work while an outward link does not. If Codex omits `transcript_path`, the row must already have a nonempty `session_id` equal to the payload's nonempty session id. A present owned transcript permits a new session id; the rollout filename may name a child while the hook carries the parent's id.
+
+The row's `codex_home` is authoritative. The incoming environment, current directory and transcript spelling do not establish ownership. The check runs before state, resume-latch, session, transcript, actor last-seen, log or checkpoint effects. For state hooks, the current row check and synchronous worker writes share one immediate transaction. An accepted raw log row is appended afterwards in its independent best-effort write, so log failure cannot undo state. A rejected event exits silently and adds no diagnostic row, including a rejected subagent event that otherwise could change the bounded latch.
+
+Enabled Codex `PostToolUse` hooks check the same row before reading transcript usage or changing the checkpoint marker. They pass the already parsed payload into the checkpoint function. Claude checkpoints and disabled or invalid thresholds keep the no-store early return. This ownership boundary rejects a child using a different generated home but accepts a process with the same home, including copied MCP identity. It is not process authentication and does not clean up rows written before this check.
 
 ## A state that corrects itself still has to be readable afterwards
 
