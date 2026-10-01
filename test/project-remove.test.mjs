@@ -136,19 +136,28 @@ describe("removeProject", () => {
     assert.ok(bystanderAlive(), "removing a reissued row must not touch the pane's new owner");
   });
 
-  for (const [name, seed, run] of [
-    ["an empty recorded pid on a live pane id", (p) => runningAgent(p, { name: "lead", kind: "lead", panePid: "" }), (f) => f()],
-    ["a foreign recorded socket", (p) => runningAgent(p, { name: "lead", kind: "lead", socket: FOREIGN_SOCKET }), (f) => f()],
-    ["a failed tmux probe", (p) => runningAgent(p, { name: "lead", kind: "lead" }), (f) => withPath(fakeFailingTmux({ failOn: "list-panes" }), f)],
+  const rowOnlyHint = (id) => new RegExp(`agent_close\\(\\{agent_id: ${id}, row_only: true\\}\\)`);
+  const RERUN = /run this again from the tmux socket a foreign-socket row was recorded on/;
+  for (const [name, seed, run, hint, rerun] of [
+    ["an empty recorded pid on a live pane id", (p) => runningAgent(p, { name: "lead", kind: "lead", panePid: "" }), (f) => f(), rowOnlyHint, false],
+    ["a foreign recorded socket", (p) => runningAgent(p, { name: "lead", kind: "lead", socket: FOREIGN_SOCKET }), (f) => f(), rowOnlyHint, true],
+    [
+      "a failed tmux probe",
+      (p) => runningAgent(p, { name: "lead", kind: "lead" }),
+      (f) => withPath(fakeFailingTmux({ failOn: "list-panes" }), f),
+      () => /tmux could not be probed[\s\S]*Retry in a few seconds/,
+      false,
+    ],
   ]) {
-    it(`refuses ${name} as pane identity unknown, with the row_only hint, leaving every row`, { skip }, () => {
+    it(`refuses ${name} as pane identity unknown with the remedy that reaches it, leaving every row`, { skip }, () => {
       const p = seedProject(`unknown-${name}`);
       const id = seed(p);
       const counts = projectRowCounts(p);
-      assert.throws(
-        () => run(() => removeProject(p, { snapshot: false })),
-        new RegExp(`lead \\(agent ${id}, pane identity unknown\\)[\\s\\S]*agent_close\\(\\{agent_id: ${id}, row_only: true\\}\\)`),
-      );
+      let message = "";
+      assert.throws(() => run(() => removeProject(p, { snapshot: false })), (e) => ((message = e.message), true));
+      assert.match(message, new RegExp(`lead \\(agent ${id}, pane identity unknown\\)`));
+      assert.match(message, hint(id));
+      assert.equal(RERUN.test(message), rerun, message);
       assert.deepEqual(projectRowCounts(p), counts);
       assert.ok(bystanderAlive());
     });

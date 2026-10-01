@@ -1,7 +1,7 @@
 import { backupNow } from "./backup.js";
 import { dataDir, db } from "./db.js";
 import { LEAD_KIND } from "./spawn.js";
-import { liveTargets, rowOwnership, type RowPaneIdentity } from "./tmux.js";
+import { foreignSocket, liveTargets, observationFailed, rowOwnership, type RowPaneIdentity } from "./tmux.js";
 
 export const PROJECT_OWNER_TABLES = [
   "pads",
@@ -59,11 +59,16 @@ function assertNoRunningAgents(projectId: number, name: string): void {
   const unknown = blockers.filter((a) => a.ownership === "unknown");
   if (liveLeads.length > 0) hints.push("A live lead is stopped or restarted from its own terminal, never retired with row_only.");
   if (liveOthers.length > 0) hints.push("Stop a live worker or command with agent_close first.");
-  if (unknown.length > 0) {
+  if (unknown.length > 0 && observationFailed(snapshot)) {
+    hints.push("tmux could not be probed, so no row's ownership could be checked. Retry in a few seconds.");
+  } else if (unknown.length > 0) {
+    const foreign = unknown.some((a) => foreignSocket(a.tmux_socket));
     hints.push(
       "A row whose pane cannot be verified is retired explicitly by a human or peer lead through this project's MCP " +
-        `tool, ${unknown.map((a) => `agent_close({agent_id: ${a.id}, row_only: true})`).join(", ")}, or run this ` +
-        "again from the tmux socket the row was recorded on once its ownership can be verified.",
+        `tool, ${unknown.map((a) => `agent_close({agent_id: ${a.id}, row_only: true})`).join(", ")}` +
+        (foreign
+          ? ", or run this again from the tmux socket a foreign-socket row was recorded on, where its ownership can be verified."
+          : "."),
     );
   }
   throw new Error(`project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. ${hints.join(" ")}`);
