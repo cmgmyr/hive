@@ -12,7 +12,7 @@ Enabled Codex `PostToolUse` hooks check the same row before reading transcript u
 
 `agents.agent_state` is one row overwritten in place, so a wrong value replaced a second later leaves nothing behind. Issue #24 was closed on that basis and reopened the same day: a false `idle` was written at 13:27:39 and overwritten with `working` at 13:27:41, the lead sampled at 13:28, saw `working`, and recorded a PASS on a lane that had already failed. No polling frequency anyone would really run catches two seconds.
 
-So `agent_state_log` is append-only and the hook writes one row per invocation. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
+So `agent_state_log` is append-only and the hook writes one row per accepted state-hook invocation. Nothing updates a row and nothing deletes one except retention. Three things about it are load-bearing:
 
 - **The `event` column.** Both #24 lanes reasoned from "an idle was written" to "`stateFor("stop")` wrote it" without checking, and the truth was that the notify branch wrote it. One column answers that at a glance.
 - **The payload is stored raw and unredacted.** The bug turned on `notification_type`, a field nothing in hive read. A projection can only preserve fields someone already knew mattered, which is the same incomplete-corpus failure wearing a disguise.
