@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { parse as parseToml } from "smol-toml";
-import { isolateTmux, liveAgentRow, McpClient, scratchDirs, scratchGit, until } from "./helpers.mjs";
+import { DIST, isolateTmux, liveAgentRow, McpClient, runNode, scratchDirs, scratchGit, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the codex park/resume tests");
 
@@ -30,11 +30,12 @@ const argvFile = join(dirs.tmp, "codex-argv.txt");
 const argvTemp = join(dirs.tmp, "codex-argv.tmp");
 const envFile = join(dirs.tmp, "codex-env.txt");
 const envTemp = join(dirs.tmp, "codex-env.tmp");
+const HOOK = join(DIST, "hook.js");
 // Same binary serves both the initial spawn and every resume - only the argv differs - so each
 // call site below clears these two files first and waits for them to reappear.
 writeFileSync(
   fakeCodexBin,
-  `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 30\n`,
+  `#!/bin/sh\nresume=0\nfor arg in "$@"; do [ "$arg" = "resume" ] && resume=1; done\nif [ "$resume" = 0 ]; then\n  session_id="fake-$HIVE_AGENT_NAME-session"\n  printf '{"hook_event_name":"UserPromptSubmit","session_id":"%s","transcript_path":"%s/sessions/rollout-%s.jsonl"}\\n' "$session_id" "$CODEX_HOME" "$session_id" | ${JSON.stringify(process.execPath)} ${JSON.stringify(HOOK)} prompt\nfi\nprintf '%s\\n' "$@" > ${JSON.stringify(argvTemp)}\nenv > ${JSON.stringify(envTemp)}\nmv ${JSON.stringify(argvTemp)} ${JSON.stringify(argvFile)}\nmv ${JSON.stringify(envTemp)} ${JSON.stringify(envFile)}\nsleep 30\n`,
 );
 chmodSync(fakeCodexBin, 0o755);
 
@@ -59,17 +60,23 @@ const clearArgvEnv = () => {
   rmSync(envFile, { force: true });
 };
 
-// The fake binary never calls hive's own hooks, so it never reports a session_id the way a real
-// codex worker would (src/hook.ts:122-125). Writing one directly onto the row simulates that hook
-// having already fired, which is all agent_park/agent_resume actually read.
-const spawnCodex = async (name) => {
+const spawnCodex = async (name, options = {}) => {
   clearArgvEnv();
-  const receipt = await mcp.call("agent_spawn", { name, command: fakeCodexBin });
+  const receipt = await mcp.call("agent_spawn", { name, command: fakeCodexBin, ...options });
   assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
-  db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run(`fake-${name}-session`, receipt.agent_id);
+  assert.ok(await until(() => db.prepare("SELECT session_id FROM agents WHERE id = ?").get(receipt.agent_id)?.session_id === `fake-${name}-session`, 5000), "owned prompt hook did not bind its session");
   await liveAgentRow(mcp, name);
   return receipt;
 };
+
+async function sendHook(actorId, event, payload) {
+  const result = await runNode(HOOK, [event], {
+    dataDir: dirs.dataDir,
+    env: { HIVE_AGENT_ID: actorId },
+    stdin: JSON.stringify(payload),
+  });
+  assert.equal(result.code, 0, `hook must exit 0 for ${event}`);
+}
 
 describe(
   "agent_park / agent_resume for a codex worker (todo 563)",
@@ -118,6 +125,66 @@ describe(
       await mcp.call("agent_close", { agent_id: receipt.agent_id });
     });
 
+    it("uses the hook-bound session on resume and ignores foreign events until the owned first prompt", async () => {
+      const name = "codex-resume-owned-hook";
+      const receipt = await spawnCodex(name, { model: "gpt-5-codex", extra_args: ["-c", "model_reasoning_effort=low"] });
+      const ownedSession = `fake-${name}-session`;
+      const initial = db.prepare("SELECT * FROM agents WHERE id = ?").get(receipt.agent_id);
+      assert.equal(initial.session_id, ownedSession);
+      assert.equal(initial.transcript_path, join(receipt.codex_home, "sessions", `rollout-${ownedSession}.jsonl`));
+      assert.deepEqual(
+        db.prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(initial.actor_id),
+        [{ event: "prompt", state: "working" }],
+      );
+
+      await mcp.call("agent_park", { agent_id: receipt.agent_id });
+      clearArgvEnv();
+      const resumed = await mcp.call("agent_resume", { agent_id: receipt.agent_id });
+      assert.equal(resumed.resumed_session_id, ownedSession);
+      assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "resume snapshots never appeared");
+      const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+      assert.ok(argv.includes("resume"));
+      assert.ok(argv.includes(ownedSession), "agent_resume must consume the hook-bound session id");
+      assert.equal(argv[argv.indexOf("--model") + 1], "gpt-5-codex");
+      assert.equal(argv[argv.indexOf("-c") + 1], "model_reasoning_effort=low");
+      const env = readFileSync(envFile, "utf8");
+      assert.equal(env.match(/^CODEX_HOME=(.*)$/m)?.[1], receipt.codex_home);
+      const paneEnv = Object.fromEntries(env.split("\n").filter((line) => line.startsWith("HIVE_") && !line.endsWith("="))
+        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+      const configEnv = parseToml(readFileSync(join(receipt.codex_home, "config.toml"), "utf8")).mcp_servers.hive.env;
+      for (const key of ["HIVE_AGENT_ID", "HIVE_AGENT_NAME", "HIVE_PROJECT_LOCK", "HIVE_PROJECT_PATH", "HIVE_DATA_DIR"]) {
+        assert.equal(configEnv[key], paneEnv[key]);
+      }
+
+      const afterResume = db.prepare("SELECT agent_state, session_id, transcript_path, resumed_at, state_changed_at, codex_home FROM agents WHERE id = ?")
+        .get(receipt.agent_id);
+      const lastSeen = db.prepare("SELECT last_seen_at FROM actors WHERE id = ?").get(initial.actor_id);
+      const foreignPath = join(dirs.tmp, "foreign-home", "sessions", "rollout-foreign.jsonl");
+      mkdirSync(join(dirs.tmp, "foreign-home", "sessions"), { recursive: true });
+      writeFileSync(foreignPath, "{}\n");
+      await sendHook(initial.actor_id, "prompt", { hook_event_name: "UserPromptSubmit", session_id: "foreign-session", transcript_path: foreignPath });
+      await sendHook(initial.actor_id, "stop", { hook_event_name: "Stop", session_id: ownedSession, transcript_path: foreignPath });
+      assert.deepEqual(db.prepare("SELECT agent_state, session_id, transcript_path, resumed_at, state_changed_at, codex_home FROM agents WHERE id = ?")
+        .get(receipt.agent_id), afterResume);
+      assert.deepEqual(db.prepare("SELECT last_seen_at FROM actors WHERE id = ?").get(initial.actor_id), lastSeen);
+      assert.deepEqual(
+        db.prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(initial.actor_id),
+        [{ event: "prompt", state: "working" }],
+      );
+
+      const ownedPath = join(receipt.codex_home, "sessions", `rollout-${ownedSession}.jsonl`);
+      await sendHook(initial.actor_id, "prompt", { hook_event_name: "UserPromptSubmit", session_id: ownedSession, transcript_path: ownedPath });
+      assert.equal(db.prepare("SELECT resumed_at FROM agents WHERE id = ?").get(receipt.agent_id).resumed_at, "");
+      assert.equal(db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(receipt.agent_id).agent_state, "working");
+      await sendHook(initial.actor_id, "stop", { hook_event_name: "Stop", session_id: ownedSession, transcript_path: ownedPath });
+      assert.equal(db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(receipt.agent_id).agent_state, "idle");
+      assert.deepEqual(
+        db.prepare("SELECT event, state FROM agent_state_log WHERE actor_id = ? ORDER BY id").all(initial.actor_id),
+        [{ event: "prompt", state: "working" }, { event: "prompt", state: "working" }, { event: "stop", state: "idle" }],
+      );
+      await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    });
+
     it("resume rewrites a pre-existing home's MCP server env to match the resumed pane's own HIVE_* values (todo 1404)", async () => {
       const receipt = await spawnCodex("codex-resume-env");
       const configPath = join(receipt.codex_home, "config.toml");
@@ -151,7 +218,7 @@ describe(
         extra_args: ["-c", "model_reasoning_effort=low", "--resume", "stale-session"],
       });
       assert.ok(await until(() => existsSync(argvFile) && existsSync(envFile), 5000), "codex snapshots never appeared");
-      db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("fake-codex-resume-model-session", receipt.agent_id);
+      assert.ok(await until(() => db.prepare("SELECT session_id FROM agents WHERE id = ?").get(receipt.agent_id)?.session_id === "fake-codex-resume-model-session", 5000), "owned prompt hook did not bind its session");
       await liveAgentRow(mcp, "codex-resume-model");
       await mcp.call("agent_park", { agent_id: receipt.agent_id });
 
