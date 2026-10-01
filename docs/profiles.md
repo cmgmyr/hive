@@ -67,6 +67,14 @@ The three named files, and any fork-local extra, take `{{repo}}` and friends fro
 
 Your forks are never overwritten. hive records the hash of what it shipped at fork time, so `hive profile list` and `hive doctor` can tell you when upstream moved and leave the decision to you.
 
+### File size: how big a file renders
+
+`hive profile list` and `hive doctor` show each file's rendered size, in bytes, as `[N rendered bytes]`. That is the number of UTF-8 bytes `hive profile read` prints for this project: your `hive.yml` `vars` applied, unset conditional sections dropped, your override in place of the shipped file, and the final newline the command adds (an empty file counts as zero). It is not the size of the file on disk. `worker.md` is measured with your project's vars only, so its per-spawn placeholders stay literal and the number is not a prediction of a spawned worker's brief.
+
+Above 25600 bytes (exclusive: a file of exactly 25600 is quiet), both commands add one advisory line for that file. A harness may persist tool output over about 30KB to a file and show only a short preview, so a larger file is read mostly unseen. Split it into smaller profile files read with `hive profile read`, or redirect `hive profile read` to a file and read that in sections. The line is report-only: it is an `info` line in `hive doctor`, so it never changes the warning or problem counts or the exit status, with or without `--strict`. There is no setting for the threshold.
+
+The `profile` skill reads large files that way: it redirects `hive profile read` to a temporary file, checks the byte count, and reads it in sections of at most 16000 bytes until it reaches the last line.
+
 ### Creating or editing a profile by interview
 
 The `profile` skill (`claude-plugin/skills/profile`, invoked as `/hive:profile` once the plugin is installed) interviews you about how you work with agents today, then creates a new profile or edits an existing one from your answers.
@@ -75,7 +83,7 @@ Discovery comes first: it asks about a recent task, follows up on what already w
 
 It can write to your own override (`~/.hive/profiles/<name>/` or wherever `HIVE_DATA_DIR` points) or, when you are working inside a hive source checkout, to that checkout's own `profiles/<name>/`; it shows you which one before writing and says so if your override is already hiding the shipped source it is about to change. "This project only" picks a distinct named profile selected in this project's `hive.yml`; "every project on this machine" sets `profile:` in your `~/.hive/hive.yml` instead - there is no way to make a profile live as files inside a project's own repository.
 
-Editing preserves anything you did not ask to change: unrelated sections, extra `.md` files a profile carries, `hive.yml`'s own keys and comments. It validates what it wrote with `hive doctor` and `hive profile read` before telling you it's done, and reminds you to restart the affected session afterward.
+Editing preserves anything you did not ask to change: unrelated sections, extra `.md` files a profile carries, `hive.yml`'s own keys and comments. It validates what it wrote with `hive doctor` and `hive profile read` (read in sections when the file is large) before telling you it's done, and reminds you to restart the affected session afterward.
 
 It also carries a small library of optional recipes (verification, a shared test-resource rule, a review-decision habit, session continuity, a worker context checkpoint) - patterns it offers only when your answers actually point at the problem each one solves, never as a required checklist.
 

@@ -9,7 +9,24 @@ You are interviewing someone to produce, or change, a hive profile: the standing
 
 ## Read before you ask anything
 
-Run `hive profile list` and `hive doctor` (or read this project's `hive.yml` directly) before the first question. If this is an edit, also read the named profile's current, rendered behavior with `hive profile read <file> --profile <name>` for each of `posture.md`, `runbook.md`, `worker.md`, and any other `.md` it carries, so you understand what this profile actually does today. Do not ask the user to repeat anything already answered by what you just read. This rendered read is for understanding only - `references/interview.md` covers the raw template (via `hive profile path`) you must read from, and write onto, when you actually apply an edit; a rendered copy drops any conditional section whose var is unset, so it is never a safe edit source.
+Run `hive profile list` and `hive doctor` (or read this project's `hive.yml` directly) before the first question. If this is an edit, also read the named profile's current, rendered behavior for each of `posture.md`, `runbook.md`, `worker.md`, and any other `.md` it carries, using "Read a rendered file in bounded sections" below, so you understand what this profile actually does today. Do not ask the user to repeat anything already answered by what you just read. This rendered read is for understanding only - `references/interview.md` covers the raw template (via `hive profile path`) you must read from, and write onto, when you actually apply an edit; a rendered copy drops any conditional section whose var is unset, so it is never a safe edit source.
+
+## Read a rendered file in bounded sections
+
+A harness may persist tool output over about 30KB to a file and show only a short preview, so a large rendered file read straight into a tool result is read mostly unseen. Redirect first, then look. `profile_name` is a name from `hive profile list`, `profile_file` is a filename it lists, and `profile_rendered` is a disposable file:
+
+```sh
+profile_rendered=$(mktemp)
+hive profile read "$profile_file" --profile "$profile_name" > "$profile_rendered" && wc -c < "$profile_rendered"
+```
+
+Use the saved content only if the read command succeeded. `wc -c` is the rendered size in bytes, the same number `hive profile list` and `hive doctor` show. If it is 25600 or less, read the whole file. Above that, never read the whole file in one tool call; read it in sections of at most 16000 bytes each:
+
+1. Pick a line range with your file reader's offset and limit, and measure it first: `sed -n '1,80p' "$profile_rendered" | wc -c`. Shrink the range until the count is 16000 or less, then read it.
+2. Continue from the next line until you have read the last line. A scan of the headers is not a read.
+3. If a single line is over 16000 bytes, read it by bytes instead: `dd if="$profile_rendered" bs=1 skip=0 count=16000 2>/dev/null`. Advance `skip` by 15996 each time, which overlaps 4 bytes so text split at a section edge shows whole in the next section. Stop when a section reaches the byte count from `wc -c`.
+
+Delete `"$profile_rendered"` when you are done. It is for understanding and checking only, never a source for an edit (see below).
 
 ## Discovery first, not a checklist
 
@@ -70,7 +87,7 @@ A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars`
 
 ## Validate before you tell them it's done
 
-After writing, run `hive doctor` and `hive profile read <file> --profile <name>` for each file you touched, from the project the profile is meant to serve. A profile with no readable `runbook.md` fails `hive doctor` outright; `posture.md` and `worker.md` do not, but check them anyway. Tell the user to restart any running hive session so it picks up the change, and invite one small follow-up edit once they've tried it - that is the expected way a profile keeps improving.
+After writing, run `hive doctor` and read each file you touched with "Read a rendered file in bounded sections" above, from the project the profile is meant to serve. Read it to the last line: a change near the end of a large file is easy to miss. A profile with no readable `runbook.md` fails `hive doctor` outright; `posture.md` and `worker.md` do not, but check them anyway. Tell the user to restart any running hive session so it picks up the change, and invite one small follow-up edit once they've tried it - that is the expected way a profile keeps improving.
 
 ## What this skill does not do
 
