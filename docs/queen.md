@@ -37,7 +37,7 @@ Writing into another project is narrow. The queen may do exactly these things th
 | `wake_update`, `wake_cancel` | Only on a wake the queen set there, still addressed to the current lead |
 | `agent_send` | Text only, to that project's running lead. `keys` is refused because it can interrupt a lead mid-turn |
 | `hive lead <path>` | Starts or adopts that project's lead |
-| `project_prune`, `hive project rm <id\|path>` | Removes a stray project. `project_prune` takes the empty-only sweep, or one `project_id` with `confirm_name` set to its exact name to remove a project that owns rows. Never the queen's own project, never one with a running agent. See [removing a project](projects.md#removing-a-project) |
+| `project_prune`, `hive project rm <id\|path>` | Removes a stray project. `project_prune` takes the empty-only sweep, or one `project_id` with `confirm_name` set to its exact name to remove a project that owns rows. Never the queen's own project, never one with a running row that owns a live pane or cannot be verified. See [removing a project](projects.md#removing-a-project) |
 
 Everything else there belongs to the project's own lead: pads, todo status, kv, leases, workers, project selection. `project_add` and `actor_prune` stay refused: they change the whole store, not one project. Anything not listed is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`, and the message names the operation, the project, and why. A tool hive has not classified for the queen is refused by default.
 

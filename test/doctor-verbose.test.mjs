@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { assertScratchStore, clearHiveEnv, createLiveAndDialogPanes, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, createLiveAndDialogPanes, isolateTmux, paneField, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup: cleanupTmux } = isolateTmux("the doctor verbose-collapse tests");
 const session = `doctor-verbose-${process.pid}`;
@@ -31,11 +31,19 @@ before(() => {
 });
 after(() => cleanupTmux(session));
 
+function realPanePid(target) {
+  try {
+    return paneField(target, "#{pane_pid}") ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function worker(name, { target = "%9600" } = {}) {
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind)
-     VALUES (?, ?, ?, ?, '', 'claude', '/tmp/worker', 'running', 'agent')`,
-  ).run(project, `agent:${name}`, name, target);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status, kind)
+     VALUES (?, ?, ?, ?, '', ?, 'claude', '/tmp/worker', 'running', 'agent')`,
+  ).run(project, `agent:${name}`, name, target, realPanePid(target));
 }
 
 const reset = () => db.exec("DELETE FROM agents;");

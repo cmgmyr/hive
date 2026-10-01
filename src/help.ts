@@ -178,7 +178,10 @@ runbook (fork it first), not a pad write.`,
   agent_close(name|agent_id) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how
-    you abandon a lane you have decided not to resume.
+    you abandon a lane you have decided not to resume. row_only=true marks
+    a stale row closed with no kill, stop or typing; a human or peer lead
+    only, refused for a row that provably owns a live pane or when tmux
+    could not be probed.
 
 Address a worker by its name, not its id: agent_send(name="impl", ...). A
 partial name works when it matches one running worker, so name="123" finds
@@ -262,8 +265,9 @@ Every pad, todo, kv entry, and lease belongs to one project (a directory).
     under HIVE_PROJECT_LOCK=1 since it sweeps every project, not just yours.
     With project_id, removes only that project, and only if it owns no rows.
     With project_id and confirm_name (its exact name), removes it with every
-    row it owns after a snapshot; refuses while it has a running agent. From a
-    terminal: hive project rm <id|path> [--yes].
+    row it owns after a snapshot; refuses while a running row owns a live
+    pane or cannot be verified (agent_close row_only retires the latter).
+    From a terminal: hive project rm <id|path> [--yes].
 
 Resolution order: explicit project_id argument, then session selection, then
 working-directory auto-detection. When the working directory matches no

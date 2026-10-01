@@ -16,6 +16,7 @@ import {
   isolateTmux,
   runCli,
   runNode,
+  paneField,
   scratchDirs,
 } from "./helpers.mjs";
 
@@ -95,13 +96,29 @@ assert.equal(init.code, 0, init.stderr);
 
 const project = db.prepare("SELECT id FROM projects WHERE path = ?").get(projectDir).id;
 
-function agentRow({ name, command = "claude", state = "unknown", stateChangedAgo = null, target = "%9600", socket = "" }) {
+function realPanePid(target) {
+  try {
+    return paneField(target, "#{pane_pid}") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function agentRow({
+  name,
+  command = "claude",
+  state = "unknown",
+  stateChangedAgo = null,
+  target = "%9600",
+  socket = "",
+  pid = realPanePid(target),
+}) {
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, kind, agent_state, state_changed_at)
-     VALUES (?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', ?,
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status, kind, agent_state, state_changed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '/tmp/worker', 'running', 'agent', ?,
        ${stateChangedAgo == null ? "NULL" : "datetime('now', ?)"})`,
   ).run(
-    ...[project, `agent:${name}`, name, target, socket, command, state],
+    ...[project, `agent:${name}`, name, target, socket, pid, command, state],
     ...(stateChangedAgo == null ? [] : [`-${stateChangedAgo} seconds`]),
   );
 }
@@ -144,7 +161,7 @@ describe("hive status decorates worker lines with provenance", () => {
     const { code, stdout } = await runCli(["status"], opts);
 
     assert.equal(code, 0, stdout);
-    assert.match(stdout, /lead {3}lead {17}running/);
+    assert.match(stdout, /lead {3}lead {17}no live pane/);
     assert.doesNotMatch(stdout, /agent {2}lead /, "must not print the two-way ternary's old 'agent' label");
   });
 
@@ -284,8 +301,8 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
 
     const { stdout } = await runCli(["doctor", "--verbose"], opts);
 
-    assert.match(stdout, /worker worker-unreadable:[\s\S]*?pane: could not be read/);
-    assert.match(stdout, /worker worker-unreadable:[\s\S]*?tail: \(pane could not be read\)/);
+    assert.match(stdout, /worker worker-unreadable:[\s\S]*?pane: not read - pane ownership gone/);
+    assert.match(stdout, /worker worker-unreadable:[\s\S]*?tail: \(not read - pane ownership gone\)/);
     assert.doesNotMatch(
       stdout,
       /worker worker-unreadable:[\s\S]*?tail: \(pane rendered nothing\)/,
@@ -311,6 +328,18 @@ describe("hive doctor reports #72's stopped-worker signal per worker", { skip: h
       /auto mode on/,
       "busyPane's real content must never be captured for a row whose recorded socket is foreign",
     );
+  });
+
+  it("never captures the screen of a live pane whose row recorded no pane pid", async () => {
+    reset();
+    agentRow({ name: "worker-nopid", state: "working", stateChangedAgo: 90, target: busyPane, socket: ownSocket, pid: "" });
+    logRow("agent:worker-nopid", "prompt", "working", 90);
+
+    const { stdout } = await runCli(["doctor", "--verbose"], opts);
+
+    assert.match(stdout, /worker worker-nopid:[\s\S]*?pane: not read - pane ownership unknown/);
+    assert.match(stdout, /worker worker-nopid:[\s\S]*?tail: \(not read - pane ownership unknown\)/);
+    assert.doesNotMatch(stdout, /auto mode on/, "an empty-pid row must not capture the bystander's screen");
   });
 
   it("control: still captures the identical pane's content when the worker's own recorded socket matches this process", async () => {

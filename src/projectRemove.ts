@@ -1,5 +1,7 @@
 import { backupNow } from "./backup.js";
 import { dataDir, db } from "./db.js";
+import { LEAD_KIND } from "./spawn.js";
+import { type AliveSnapshot, foreignSocket, liveTargets, observationFailed, rowOwnership, type RowPaneIdentity } from "./tmux.js";
 
 export const PROJECT_OWNER_TABLES = [
   "pads",
@@ -38,20 +40,60 @@ export interface RemovedProject {
   snapshot: string | null;
 }
 
-function assertNoRunningAgents(projectId: number, name: string): void {
-  const running = db
-    .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-    .all(projectId) as { id: number; name: string }[];
+type RunningRow = { id: number; name: string; kind: string } & RowPaneIdentity;
+
+const runningRows = (projectId: number): RunningRow[] =>
+  db
+    .prepare("SELECT id, name, kind, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+    .all(projectId) as RunningRow[];
+
+const identities = (rows: RunningRow[]): string =>
+  JSON.stringify(rows.map((r) => [r.id, r.tmux_target, r.tmux_socket, r.pane_pid]));
+
+function assertNoRunningAgents(projectId: number, name: string, running: RunningRow[], panes?: AliveSnapshot | null): void {
   if (running.length === 0) return;
-  const names = running.map((a) => `${a.name} (agent ${a.id})`).join(", ");
-  throw new Error(
-    `project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. Run hive doctor to close rows whose panes are gone, or agent_close them.`,
-  );
+  const snapshot = panes === undefined ? liveTargets() : panes;
+  const blockers = running
+    .map((a) => ({ ...a, ownership: rowOwnership(a, snapshot) }))
+    .filter((a) => a.ownership === "live" || a.ownership === "unknown");
+  if (blockers.length === 0) return;
+  const names = blockers
+    .map((a) => `${a.name} (agent ${a.id}, ${a.ownership === "live" ? "owns a live pane" : "pane identity unknown"})`)
+    .join(", ");
+  const hints: string[] = [];
+  const liveLeads = blockers.filter((a) => a.ownership === "live" && a.kind === LEAD_KIND);
+  const liveOthers = blockers.filter((a) => a.ownership === "live" && a.kind !== LEAD_KIND);
+  const unknown = blockers.filter((a) => a.ownership === "unknown");
+  if (liveLeads.length > 0) hints.push("A live lead is stopped or restarted from its own terminal, never retired with row_only.");
+  if (liveOthers.length > 0) hints.push("Stop a live worker or command with agent_close first.");
+  if (unknown.length > 0 && observationFailed(snapshot)) {
+    hints.push("tmux could not be probed, so no row's ownership could be checked. Retry in a few seconds.");
+  } else if (unknown.length > 0) {
+    const foreign = unknown.some((a) => foreignSocket(a.tmux_socket));
+    hints.push(
+      "A row whose pane cannot be verified is retired explicitly by a human or peer lead through this project's MCP " +
+        `tool, ${unknown.map((a) => `agent_close({agent_id: ${a.id}, row_only: true})`).join(", ")}` +
+        (foreign
+          ? ", or run this again from the tmux socket a foreign-socket row was recorded on, where its ownership can be verified."
+          : "."),
+    );
+  }
+  throw new Error(`project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. ${hints.join(" ")}`);
 }
 
 const deleteProjectRows = db.transaction(
-  (projectId: number, name: string, expected: Record<string, number>, after: () => void): void => {
-    assertNoRunningAgents(projectId, name);
+  (
+    projectId: number,
+    name: string,
+    expected: Record<string, number>,
+    observed: { rows: string; panes: AliveSnapshot | null },
+    after: () => void,
+  ): void => {
+    const running = runningRows(projectId);
+    if (identities(running) !== observed.rows) {
+      throw new Error(`project ${projectId} ("${name}") changed while the snapshot was taken; nothing removed, run it again.`);
+    }
+    assertNoRunningAgents(projectId, name, running, observed.panes);
     if (JSON.stringify(projectRowCounts(projectId)) !== JSON.stringify(expected)) {
       throw new Error(`project ${projectId} ("${name}") changed while the snapshot was taken; nothing removed, run it again.`);
     }
@@ -71,7 +113,7 @@ export function removeProject(
     | { id: number; name: string; path: string }
     | undefined;
   if (!target) throw new Error(`no project ${projectId}.`);
-  assertNoRunningAgents(projectId, target.name);
+  assertNoRunningAgents(projectId, target.name, runningRows(projectId));
 
   const counts = projectRowCounts(projectId);
   let snapshot: string | null = null;
@@ -81,7 +123,9 @@ export function removeProject(
     snapshot = result.path ?? null;
   }
   opts.afterSnapshot?.();
+  const rows = runningRows(projectId);
+  const observed = { rows: identities(rows), panes: rows.length > 0 ? liveTargets() : null };
   const removed = { deleted: { id: target.id, name: target.name, path: target.path }, counts, snapshot };
-  deleteProjectRows.immediate(projectId, target.name, counts, () => opts.onRemoved?.(removed));
+  deleteProjectRows.immediate(projectId, target.name, counts, observed, () => opts.onRemoved?.(removed));
   return removed;
 }

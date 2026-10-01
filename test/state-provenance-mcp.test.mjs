@@ -8,6 +8,7 @@ import {
   createLiveAndDialogPanes,
   insertStateLogRow,
   isolateTmux,
+  paneField,
   scratchDirs,
 } from "./helpers.mjs";
 
@@ -41,19 +42,27 @@ function makeActor(actorId) {
   db.prepare("INSERT INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(actorId, actorId);
 }
 
-function agentRow({ name, command = "claude", state = "unknown", target = livePane, stateChangedAgo = null }) {
+function realPanePid(target) {
+  try {
+    return paneField(target, "#{pane_pid}") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function agentRow({ name, command = "claude", state = "unknown", target = livePane, stateChangedAgo = null, pid = realPanePid(target) }) {
   const actorId = `agent:${name}`;
   makeActor(actorId);
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, status,
          agent_state, state_changed_at, created_at)
-       VALUES (?, ?, ?, ?, ?, '/tmp', 'running', ?,
+       VALUES (?, ?, ?, ?, ?, ?, '/tmp', 'running', ?,
          ${stateChangedAgo == null ? "NULL" : "datetime('now', ?)"}, datetime('now', '-60 seconds'))
        RETURNING id`,
     )
     .get(
-      ...[project, actorId, name, target, command, state],
+      ...[project, actorId, name, target, pid, command, state],
       ...(stateChangedAgo == null ? [] : [`-${stateChangedAgo} seconds`]),
     ).id;
 }

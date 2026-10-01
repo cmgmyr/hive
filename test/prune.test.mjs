@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { assertScratchStore, isolateTmux, McpClient, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, McpClient, paneField, scratchDirs } from "./helpers.mjs";
 
-const { cleanup: cleanupTmux } = isolateTmux("the prune tests");
+const { hasTmux, cleanup: cleanupTmux } = isolateTmux("the prune tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
@@ -13,6 +14,27 @@ const { db } = await import("../dist/db.js");
 
 const { ACTOR_OWNER_COLUMNS } = await import("../dist/tools/meta.js");
 const { PROJECT_OWNER_TABLES } = await import("../dist/projectRemove.js");
+const { tmuxSocketPath } = await import("../dist/tmux.js");
+
+const BYSTANDER = `prune-bystander-${process.pid}`;
+let pane = "%unset";
+let pid = "";
+const bystanderAlive = () => paneField(pane, "#{pane_pid}") === pid;
+const runningRow = (projectId, name, kind, panePid) =>
+  db
+    .prepare(
+      "INSERT INTO agents (project_id, name, kind, command, cwd, status, tmux_target, tmux_socket, pane_pid) VALUES (?, ?, ?, 'sleep', '/tmp', 'running', ?, ?, ?) RETURNING id",
+    )
+    .get(projectId, name, kind, pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), panePid).id;
+
+before(() => {
+  if (!hasTmux) return;
+  execFileSync("tmux", ["new-session", "-d", "-s", BYSTANDER, "sleep 600"], { stdio: "ignore" });
+  pane = execFileSync("tmux", ["list-panes", "-t", `=${BYSTANDER}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+  pid = paneField(pane, "#{pane_pid}");
+});
+
+after(() => cleanupTmux(BYSTANDER));
 
 const BACKDATE_PAST_LIVENESS = "-150 seconds";
 
@@ -348,14 +370,32 @@ describe("project_prune confirm_name", () => {
     assert.ok(projectExists(target.id));
   });
 
-  it("refuses a target with a running agent and deletes nothing", async () => {
+  it("refuses a target whose running worker owns a live pane and deletes nothing", { skip: !hasTmux && "tmux is not installed" }, async () => {
     const target = await nonEmptyProject();
-    db.prepare("INSERT INTO agents (project_id, name, command, cwd, status) VALUES (?, 'busy', 'sleep', '/tmp', 'running')").run(target.id);
+    runningRow(target.id, "busy", "agent", pid);
     await assert.rejects(
       mcp.call("project_prune", { project_id: target.id, confirm_name: target.name }),
-      /running agents: busy.*hive doctor/s,
+      /running agents: busy \(agent \d+, owns a live pane\).*agent_close first/s,
     );
     assert.ok(projectExists(target.id));
+  });
+
+  it("refuses a target whose lead has no recorded pane pid, with the row_only hint", { skip: !hasTmux && "tmux is not installed" }, async () => {
+    const target = await nonEmptyProject();
+    const id = runningRow(target.id, "lead", "lead", "");
+    await assert.rejects(
+      mcp.call("project_prune", { project_id: target.id, confirm_name: target.name }),
+      new RegExp(`pane identity unknown[\\s\\S]*agent_close\\(\\{agent_id: ${id}, row_only: true\\}\\)`),
+    );
+    assert.ok(projectExists(target.id));
+  });
+
+  it("removes a target whose running lead row names a reissued pane, leaving the pane's new owner alive", { skip: !hasTmux && "tmux is not installed" }, async () => {
+    const target = await nonEmptyProject();
+    runningRow(target.id, "lead", "lead", "1");
+    await mcp.call("project_prune", { project_id: target.id, confirm_name: target.name });
+    assert.ok(!projectExists(target.id));
+    assert.ok(bystanderAlive());
   });
 });
 
