@@ -586,11 +586,15 @@ export type RowOwnership = "gone" | "reissued" | "live" | "unknown";
 
 // The one place a row's claim on a pane is decided. An existing pane is "live" only when both
 // pids are known and equal; an empty recorded pid on a live id is "unknown", never "live".
+export function observationFailed(snapshot: AliveSnapshot | null): boolean {
+  return snapshot === null || snapshot.serverAnswered === false;
+}
+
 export function rowOwnership(row: RowPaneIdentity, snapshot?: AliveSnapshot | null): RowOwnership {
   if (foreignSocket(row.tmux_socket)) return "unknown";
   if (row.tmux_target === "") return "gone";
   const observed = snapshot === undefined ? liveTargets() : snapshot;
-  if (observed === null || observed.serverAnswered === false) return "unknown";
+  if (observed === null || observationFailed(observed)) return "unknown";
   if (!targetAlive(row.tmux_target, observed)) return "gone";
   if (!isPaneTarget(row.tmux_target)) return "unknown";
   const pid = targetPid(row.tmux_target, observed) ?? "";

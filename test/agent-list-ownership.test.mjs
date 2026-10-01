@@ -74,6 +74,20 @@ describe("agent_list and agent_status report verified pane ownership", () => {
     db.prepare("DELETE FROM agents").run();
   });
 
+  it("agent_output reads no screen for an empty-pid or reissued row and says why", { skip }, async () => {
+    const empty = leadRow("lead-empty-output", pane, "");
+    const reissued = leadRow("lead-reissued-output", pane, "1");
+    const unknown = await mcp.call("agent_output", { agent_id: empty });
+    const stale = await mcp.call("agent_output", { agent_id: reissued });
+    assert.deepEqual([unknown.alive, unknown.output, stale.alive, stale.output], [null, "", false, ""]);
+    assert.doesNotMatch(JSON.stringify([unknown, stale]), new RegExp(MARK));
+    assert.match(unknown.note, /no pane pid was recorded/);
+    const matching = await mcp.call("agent_output", { agent_id: leadRow("lead-matching-output", pane, pid) });
+    assert.equal(matching.alive, true);
+    assert.match(matching.output, new RegExp(MARK));
+    db.prepare("DELETE FROM agents").run();
+  });
+
   it("control: agent_status captures the screen of a row whose recorded pid matches", { skip }, async () => {
     const id = leadRow("lead-matching-status", pane, pid);
     const status = await mcp.call("agent_status", { agent_id: id });

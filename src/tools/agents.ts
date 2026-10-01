@@ -67,6 +67,7 @@ import {
   findUnsafeControlChar,
   holdsHumanInput,
   liveTargets,
+  observationFailed,
   ownershipLiveness,
   paneCurrentCommand,
   paneInCopyMode,
@@ -344,7 +345,10 @@ export function isLive(agent: AgentRow): Liveness {
 export const PROBE_FAILED_NOTE =
   "tmux could not be probed, so liveness is unknown. Nothing was changed. Retry in a few seconds.";
 
-export const UNVERIFIED_OWNERSHIP_NOTE =
+const unknownOwnershipNote = (snapshot: AliveSnapshot | null): string =>
+  observationFailed(snapshot) ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE;
+
+const UNVERIFIED_OWNERSHIP_NOTE =
   "This row's pane cannot be verified as its own: it is on another tmux socket, or no pane pid was recorded for it, so liveness is unknown and no screen was read. Nothing was changed. If the row is stale, a human or peer lead can retire it with agent_close(row_only=true).";
 
 export const probeFailed = (agent: AgentRow) =>
@@ -1412,11 +1416,10 @@ export function registerAgents(server: McpServer): void {
         const snapshot = agent.status === "running" ? liveTargets() : null;
         const summary = agentSummary(agent, snapshot);
         const briefPath = agentBriefPath(agent.id);
-        const probeFailedNow = snapshot === null || snapshot.serverAnswered === false;
         return {
           ...summary,
 
-          ...(summary.alive === null ? { note: probeFailedNow ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE } : {}),
+          ...(summary.alive === null ? { note: unknownOwnershipNote(snapshot) } : {}),
           closed_at: agent.closed_at,
           current_command: summary.alive ? paneCurrentCommand(agent.tmux_target) : null,
 
@@ -1722,7 +1725,8 @@ export function registerAgents(server: McpServer): void {
         const project = resolveProject(args.project_id);
         const agent = findAgent(project.id, args);
         const lines = Math.min(args.lines ?? 50, 200);
-        const alive = isLive(agent);
+        const snapshot = agent.status === "running" ? liveTargets() : null;
+        const alive = summaryLiveness(agent, snapshot);
         return {
           agent_id: agent.id,
           name: agent.name,
@@ -1734,8 +1738,8 @@ export function registerAgents(server: McpServer): void {
             : {
                 note:
                   alive === null
-                    ? PROBE_FAILED_NOTE
-                    : "No live tmux window; output is not retained after exit.",
+                    ? unknownOwnershipNote(snapshot)
+                    : "No live tmux window this row owns; output is not retained after exit.",
               }),
           ...(alive !== true && agent.exit_tail ? { exit_tail: agent.exit_tail } : {}),
         };
