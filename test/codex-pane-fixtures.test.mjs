@@ -130,10 +130,16 @@ const STATE_CASES = [
     expect: { state: "pending", text: "check the current git statusline one line two line three" },
   },
   {
-    file: "codex-two-row-footer-pending-e.txt",
-    name: "two-row-pending",
-    marker: "check the current git status",
-    expect: { state: "pending", text: "check the current git status" },
+    file: "codex-warnings-pending-e.txt",
+    name: "warnings-pending",
+    marker: "half-typed draft, do not submit",
+    expect: { state: "pending", text: "half-typed draft, do not submit" },
+  },
+  {
+    file: "codex-stale-prompt-scrollback.txt",
+    name: "left-aligned-output-under-stale-prompt",
+    marker: "fatal: not a git repository",
+    expect: null,
   },
   {
     file: "codex-production-idle-ghost-e.txt",
@@ -144,7 +150,7 @@ const STATE_CASES = [
 ];
 
 describe(
-  "codexInputBoxState against real codex 0.146.0 screens",
+  "codexInputBoxState against real codex screens",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     const session = `hive-codexstate-${process.pid}`;

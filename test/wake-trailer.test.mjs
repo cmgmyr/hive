@@ -114,14 +114,14 @@ describe("the generated wake trailer", { skip: hasTmux ? false : "tmux is not in
     assert.match(trailer.trimEnd().split("\n").at(-1), /^input box: empty/, trailer);
   });
 
-  it("shows a reconstructed codex two-row-footer pane's human text labelled UNSUBMITTED", async () => {
-    const { trailer } = await trailerFor("codex-two-row-footer-pending-e.txt", "codex");
-    assert.match(trailer, /input box: UNSUBMITTED TEXT, not sent: "check the current git status"/);
+  it("shows a real codex warnings-footer pane's human text labelled UNSUBMITTED", async () => {
+    const { trailer } = await trailerFor("codex-warnings-pending-e.txt", "codex");
+    assert.match(trailer, /input box: UNSUBMITTED TEXT, not sent: "half-typed draft, do not submit"/);
   });
 
-  it("keeps the raw tail when one agent output row sits between the prompt and a shortcuts row", async () => {
+  it("keeps the raw tail when one left-aligned output row sits between the prompt and a two-row footer", async () => {
     const path = join(dirs.tmp, "codex-output-row-above-shortcuts.txt");
-    writeFileSync(path, "› say hi\n\n• Working\n  ? for shortcuts\n");
+    writeFileSync(path, `› say hi\n• Working\n\nstatus · model\n${" ".repeat(54)}arbitrary footer\n`);
     const { trailer } = await trailerFor(path, "codex");
     assert.ok(!/^input box:/m.test(trailer), trailer);
   });
