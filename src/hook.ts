@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 import { awaitingFirstPromptSql } from "./firstPrompt.js";
 import { liveBackgroundTasks, SUBAGENT_LATCH_SQL, withholdsIdle } from "./backgroundTasks.js";
 
@@ -11,6 +12,75 @@ interface HookPayload {
   background_tasks?: unknown;
   session_id?: unknown;
   transcript_path?: unknown;
+}
+
+interface HookOwnerRow {
+  kind: string;
+  command: string;
+  codex_home: string;
+  session_id: string;
+}
+
+function canonicalPathWithMissingSuffix(input: string): string | null {
+  if (!isAbsolute(input) || input.includes("\0")) return null;
+  let current = parse(input).root;
+  const missing: string[] = [];
+  try {
+    current = realpathSync(current);
+  } catch {
+    return null;
+  }
+
+  for (const part of input.slice(parse(input).root.length).split(sep)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (missing.length) missing.pop();
+      else current = dirname(current);
+      continue;
+    }
+    if (missing.length) {
+      missing.push(part);
+      continue;
+    }
+    const candidate = join(current, part);
+    try {
+      current = realpathSync(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      missing.push(part);
+    }
+  }
+  return join(current, ...missing);
+}
+
+function acceptsWorkerHook(
+  row: HookOwnerRow | undefined,
+  payload: HookPayload,
+  sessionsRoot: string | undefined,
+): boolean {
+  if (!row || row.kind !== "agent" || row.codex_home === "" || sessionsRoot === undefined) return true;
+
+  const transcript = payload.transcript_path;
+  if (typeof transcript === "string" && transcript !== "") {
+    const canonicalRoot = canonicalPathWithMissingSuffix(sessionsRoot);
+    const canonicalTranscript = canonicalPathWithMissingSuffix(transcript);
+    if (canonicalRoot === null || canonicalTranscript === null) return false;
+    const rel = relative(canonicalRoot, canonicalTranscript);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  }
+  if (transcript !== undefined && transcript !== null && transcript !== "") return false;
+  return (
+    typeof row.session_id === "string" && row.session_id !== "" &&
+    typeof payload.session_id === "string" && payload.session_id !== "" &&
+    row.session_id === payload.session_id
+  );
+}
+
+function validCheckpointThreshold(): boolean {
+  const text = process.env.HIVE_CONTEXT_CHECKPOINT_PERCENT;
+  if (!text || !/^\d+$/.test(text)) return false;
+  const value = Number(text);
+  return Number.isInteger(value) && value >= 1 && value <= 100;
 }
 
 let raw: string | null | undefined;
@@ -191,8 +261,27 @@ function stateFor(event: string, actorId: string): string | null {
 
 if (process.argv[2] === "post_tool_use") {
   try {
+    const kind = process.argv[3];
+    const actorId = process.env.HIVE_AGENT_ID ?? "";
+    let suppliedPayload: HookPayload | undefined;
+    if (kind === "codex" && validCheckpointThreshold() && actorId.startsWith("agent:")) {
+      suppliedPayload = readPayload();
+      const { db } = await import("./db.js");
+      const row = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+        .get(actorId) as HookOwnerRow | undefined;
+      if (row?.kind === "agent" && typeof row.codex_home === "string" && row.codex_home !== "") {
+        const { harnessFor } = await import("./harnesses.js");
+        if (harnessFor(row.command).name === "codex") {
+          const { codexHomeDir } = await import("./codexHome.js");
+          if (!acceptsWorkerHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
+            process.exit(0);
+          }
+        }
+      }
+    }
     const { runContextCheckpointHook } = await import("./contextCheckpoint.js");
-    runContextCheckpointHook(process.argv[3]);
+    if (suppliedPayload === undefined) runContextCheckpointHook(kind);
+    else runContextCheckpointHook(kind, suppliedPayload);
   } catch {}
   process.exit(0);
 }
@@ -203,19 +292,36 @@ try {
   const actorId = process.env.HIVE_AGENT_ID;
   if (actorId) {
     const event = process.argv[2] ?? "";
-    const state = stateFor(event, actorId);
-    if (state !== null) {
-      db.prepare(
-        "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
-      ).run(state, actorId);
+    const hookPayload = readPayload();
+    const row = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+      .get(actorId) as HookOwnerRow | undefined;
+    let guarded = false;
+    let state: string | null = null;
+    if (row?.kind === "agent" && typeof row.codex_home === "string" && row.codex_home !== "") {
+      const { harnessFor } = await import("./harnesses.js");
+      if (harnessFor(row.command).name === "codex") {
+        const { codexHomeDir } = await import("./codexHome.js");
+        const result = db.transaction(() => {
+          const current = db.prepare("SELECT kind, command, codex_home, session_id FROM agents WHERE actor_id = ?")
+            .get(actorId) as HookOwnerRow | undefined;
+          if (!current || current.kind !== "agent" || typeof current.codex_home !== "string" || !current.codex_home || harnessFor(current.command).name !== "codex") {
+            return { status: "changed" as const, state: null };
+          }
+          const sessionsRoot = join(codexHomeDir(current.codex_home), "sessions");
+          if (!acceptsWorkerHook(current, hookPayload, sessionsRoot)) return { status: "rejected" as const, state: null };
+          const state = applyWorkerTransition(actorId, event);
+          reconcileSessionId(actorId, hookPayload);
+          reconcileTranscriptPath(actorId, hookPayload);
+          db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
+          return { status: "accepted" as const, state };
+        }).immediate();
+        if (result.status === "rejected") process.exit(0);
+        guarded = result.status === "accepted";
+        state = result.state;
+      }
     }
 
-    if (event === "prompt") {
-      db.prepare(
-
-        `UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND ${awaitingFirstPromptSql("agents")}`,
-      ).run(actorId);
-    }
+    if (!guarded) state = applyWorkerTransition(actorId, event);
 
     // A lead's turn state is its own table; agents.agent_state stays worker-only.
     if (process.env.HIVE_LEAD === "1" && (event === "prompt" || event === "stop" || event === "session_end")) {
@@ -235,10 +341,11 @@ try {
       }
     }
 
-    reconcileSessionId(actorId, readPayload());
-    reconcileTranscriptPath(actorId, readPayload());
-
-    db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
+    if (!guarded) {
+      reconcileSessionId(actorId, hookPayload);
+      reconcileTranscriptPath(actorId, hookPayload);
+      db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
+    }
 
     record(actorId, event, state ?? UNCHANGED);
   }
@@ -246,3 +353,20 @@ try {
 
 }
 process.exit(0);
+
+function applyWorkerTransition(actorId: string, event: string): string | null {
+  const state = stateFor(event, actorId);
+  if (state !== null) {
+    db.prepare(
+      "UPDATE agents SET agent_state = ?, state_changed_at = datetime('now') WHERE actor_id = ? AND kind = 'agent'",
+    ).run(state, actorId);
+  }
+
+  if (event === "prompt") {
+    db.prepare(
+      `UPDATE agents SET resumed_at = '' WHERE actor_id = ? AND kind = 'agent' AND ${awaitingFirstPromptSql("agents")}`,
+    ).run(actorId);
+  }
+
+  return state;
+}
