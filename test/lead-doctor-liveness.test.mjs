@@ -109,6 +109,7 @@ describe("hive doctor reports a lead row whose pane is not live", { skip: hasTmu
     bystanderLead("1");
     const out = await runCli(["doctor"], opts);
     assert.match(out.stdout, /warn {2}lead: the lead's row is running but its pane id now belongs to a different process/);
+    assert.match(out.stdout, /agent_close\(\{agent_id: \d+, row_only: true\}\) on it/, "plain agent_close refuses a reissued pane id");
     assert.equal(failureCount(out.stdout), failureCount(baseline.stdout));
     dropBystander();
   });

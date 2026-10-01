@@ -153,6 +153,7 @@ import {
   isViewSessionName,
   listOwnedWindows,
   liveTargets,
+  observationFailed,
   type OwnedWindow,
   ORPHAN_MIN_AGE_MS,
   type OrphanScratchServers,
@@ -3087,7 +3088,7 @@ function cmdDoctor(argv: string[]): void {
     if (lead) {
       const snapshot = liveTargets();
       const ownership = rowOwnership(lead, snapshot);
-      const unobserved = !foreignSocket(lead.tmux_socket) && (snapshot === null || snapshot.serverAnswered === false);
+      const unobserved = !foreignSocket(lead.tmux_socket) && observationFailed(snapshot);
       if (ownership === "gone" || ownership === "reissued") {
 
         warn(
@@ -3098,7 +3099,11 @@ function cmdDoctor(argv: string[]): void {
             "The janitor leaves lead rows alone on " +
             "purpose, so nothing will fix this by itself. Run `hive lead` to record a fresh pane and reuse " +
             "this identity, or ask a claude session connected to this project's hive MCP server to call " +
-            "the agent_close tool on it to retire the row for good - required before `hive restore`, which " +
+            (ownership === "reissued"
+              ? `agent_close({agent_id: ${lead.id}, row_only: true}) on it (plain agent_close refuses a pane id ` +
+                "that still exists)"
+              : "the agent_close tool on it") +
+            " to retire the row for good - required before `hive restore`, which " +
             "otherwise refuses while any lead row reads running, and end that session too, since it also " +
             "holds this store open.",
         );
