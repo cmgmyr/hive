@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { describe, it } from "node:test";
-import { assertScratchStore, clearHiveEnv, isolateTmux, scratchDirs } from "./helpers.mjs";
+import { after, before, describe, it } from "node:test";
+import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, paneField, scratchDirs } from "./helpers.mjs";
 
-isolateTmux("the project-remove tests");
+const { hasTmux, cleanup } = isolateTmux("the project-remove tests");
 clearHiveEnv();
 
 const dirs = scratchDirs();
@@ -12,6 +13,42 @@ await assertScratchStore();
 const { db, migrate } = await import("../dist/db.js");
 migrate();
 const { removeProject, projectRowCounts, PROJECT_OWNER_TABLES } = await import("../dist/projectRemove.js");
+const { tmuxSocketPath } = await import("../dist/tmux.js");
+
+const OWN_SOCKET = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const FOREIGN_SOCKET = "/nonexistent/foreign-socket-dir/tmux-0/default";
+const BYSTANDER = `project-remove-bystander-${process.pid}`;
+let pane = "%unset";
+let pid = "";
+
+before(() => {
+  if (!hasTmux) return;
+  execFileSync("tmux", ["new-session", "-d", "-s", BYSTANDER, "sleep 600"], { stdio: "ignore" });
+  pane = execFileSync("tmux", ["list-panes", "-t", `=${BYSTANDER}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+  pid = paneField(pane, "#{pane_pid}");
+});
+
+after(() => cleanup(BYSTANDER));
+
+const bystanderAlive = () => paneField(pane, "#{pane_pid}") === pid;
+
+function runningAgent(p, { name = "x", kind = "agent", target = pane, socket = OWN_SOCKET, panePid = pid } = {}) {
+  return db
+    .prepare(
+      "INSERT INTO agents (project_id, name, kind, command, cwd, status, tmux_target, tmux_socket, pane_pid) VALUES (?, ?, ?, 'sleep', '/tmp', 'running', ?, ?, ?) RETURNING id",
+    )
+    .get(p, name, kind, target, socket, panePid).id;
+}
+
+function withPath(dir, fn) {
+  const saved = process.env.PATH;
+  process.env.PATH = `${dir}:${saved}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = saved;
+  }
+}
 
 function seedProject(name, { agentStatus = "closed" } = {}) {
   const p = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get(name, `/nowhere/${name}`).id;
@@ -67,22 +104,87 @@ describe("removeProject", () => {
     assert.equal(naming("todo_comments", "todo_id", db.prepare("SELECT id FROM todos WHERE project_id = ?").get(keep).id), 1);
   });
 
-  it("refuses a project with a running agent, names it, and deletes nothing", () => {
-    const p = seedProject("busy", { agentStatus: "running" });
-    assert.throws(() => removeProject(p, { snapshot: false }), /running agents: x \(agent \d+\).*hive doctor/s);
+  const skip = !hasTmux && "tmux is not installed";
+
+  it("refuses a project whose running worker owns a live pane, names it, and deletes nothing", { skip }, () => {
+    const p = seedProject("busy");
+    runningAgent(p);
+    assert.throws(
+      () => removeProject(p, { snapshot: false }),
+      /running agents: x \(agent \d+, owns a live pane\)\. Nothing deleted\. Stop a live worker or command with agent_close first\./,
+    );
     assert.equal(naming("projects", "id", p), 1);
     assert.equal(naming("todos", "project_id", p), 1);
     assert.equal(naming("agent_messages", "project_id", p), 1);
   });
 
-  it("re-checks running agents inside the delete transaction after the snapshot", () => {
+  it("refuses a live lead with the own-terminal remedy, never row_only", { skip }, () => {
+    const p = seedProject("live-lead");
+    runningAgent(p, { name: "lead", kind: "lead" });
+    assert.throws(() => removeProject(p, { snapshot: false }), /stopped or restarted from its own terminal, never retired with row_only/);
+    assert.equal(naming("projects", "id", p), 1);
+  });
+
+  it("removes a project whose only running rows provably lost their panes: an empty target and a reissued lead", { skip }, () => {
+    const p = seedProject("stale-rows");
+    runningAgent(p, { name: "empty", target: "", panePid: "" });
+    runningAgent(p, { name: "lead", kind: "lead", panePid: "1" });
+    const out = removeProject(p, { snapshot: true });
+    assert.ok(out.snapshot && existsSync(out.snapshot));
+    assert.equal(naming("projects", "id", p), 0);
+    assert.equal(naming("agents", "project_id", p), 0);
+    assert.ok(bystanderAlive(), "removing a reissued row must not touch the pane's new owner");
+  });
+
+  for (const [name, seed, run] of [
+    ["an empty recorded pid on a live pane id", (p) => runningAgent(p, { name: "lead", kind: "lead", panePid: "" }), (f) => f()],
+    ["a foreign recorded socket", (p) => runningAgent(p, { name: "lead", kind: "lead", socket: FOREIGN_SOCKET }), (f) => f()],
+    ["a failed tmux probe", (p) => runningAgent(p, { name: "lead", kind: "lead" }), (f) => withPath(fakeFailingTmux({ failOn: "list-panes" }), f)],
+  ]) {
+    it(`refuses ${name} as pane identity unknown, with the row_only hint, leaving every row`, { skip }, () => {
+      const p = seedProject(`unknown-${name}`);
+      const id = seed(p);
+      const counts = projectRowCounts(p);
+      assert.throws(
+        () => run(() => removeProject(p, { snapshot: false })),
+        new RegExp(`lead \\(agent ${id}, pane identity unknown\\)[\\s\\S]*agent_close\\(\\{agent_id: ${id}, row_only: true\\}\\)`),
+      );
+      assert.deepEqual(projectRowCounts(p), counts);
+      assert.ok(bystanderAlive());
+    });
+  }
+
+  it("names both remedies when a live worker and an unknown lead block together", { skip }, () => {
+    const p = seedProject("mixed");
+    runningAgent(p, { name: "w" });
+    runningAgent(p, { name: "lead", kind: "lead", panePid: "" });
+    assert.throws(() => removeProject(p, { snapshot: false }), /owns a live pane[\s\S]*pane identity unknown[\s\S]*agent_close first[\s\S]*row_only: true/);
+  });
+
+  it("re-checks running agents inside the delete transaction after the snapshot", { skip }, () => {
     const p = seedProject("raced-agent");
     assert.throws(
-      () => removeProject(p, { snapshot: true, afterSnapshot: () => db.prepare("INSERT INTO agents (project_id, name, command, cwd, status) VALUES (?, 'late', 'sleep', '/tmp', 'running')").run(p) }),
+      () => removeProject(p, { snapshot: true, afterSnapshot: () => runningAgent(p, { name: "late" }) }),
       /running agents: late/,
     );
     assert.equal(naming("projects", "id", p), 1);
     assert.equal(naming("pads", "project_id", p), 1);
+  });
+
+  it("catches the same row republished from gone to live after the snapshot, with row counts unchanged", { skip }, () => {
+    const p = seedProject("republished");
+    const id = runningAgent(p, { name: "lead", kind: "lead", target: "", panePid: "" });
+    const counts = projectRowCounts(p);
+    assert.throws(
+      () =>
+        removeProject(p, {
+          snapshot: true,
+          afterSnapshot: () => db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(pane, pid, id),
+        }),
+      /running agents: lead \(agent \d+, owns a live pane\)/,
+    );
+    assert.deepEqual(projectRowCounts(p), counts);
+    assert.equal(naming("projects", "id", p), 1);
   });
 
   it("aborts when the project's rows changed while the snapshot was taken", () => {

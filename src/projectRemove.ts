@@ -1,5 +1,7 @@
 import { backupNow } from "./backup.js";
 import { dataDir, db } from "./db.js";
+import { LEAD_KIND } from "./spawn.js";
+import { liveTargets, rowOwnership, type RowPaneIdentity } from "./tmux.js";
 
 export const PROJECT_OWNER_TABLES = [
   "pads",
@@ -40,13 +42,31 @@ export interface RemovedProject {
 
 function assertNoRunningAgents(projectId: number, name: string): void {
   const running = db
-    .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-    .all(projectId) as { id: number; name: string }[];
+    .prepare("SELECT id, name, kind, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+    .all(projectId) as ({ id: number; name: string; kind: string } & RowPaneIdentity)[];
   if (running.length === 0) return;
-  const names = running.map((a) => `${a.name} (agent ${a.id})`).join(", ");
-  throw new Error(
-    `project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. Run hive doctor to close rows whose panes are gone, or agent_close them.`,
-  );
+  const snapshot = liveTargets();
+  const blockers = running
+    .map((a) => ({ ...a, ownership: rowOwnership(a, snapshot) }))
+    .filter((a) => a.ownership === "live" || a.ownership === "unknown");
+  if (blockers.length === 0) return;
+  const names = blockers
+    .map((a) => `${a.name} (agent ${a.id}, ${a.ownership === "live" ? "owns a live pane" : "pane identity unknown"})`)
+    .join(", ");
+  const hints: string[] = [];
+  const liveLeads = blockers.filter((a) => a.ownership === "live" && a.kind === LEAD_KIND);
+  const liveOthers = blockers.filter((a) => a.ownership === "live" && a.kind !== LEAD_KIND);
+  const unknown = blockers.filter((a) => a.ownership === "unknown");
+  if (liveLeads.length > 0) hints.push("A live lead is stopped or restarted from its own terminal, never retired with row_only.");
+  if (liveOthers.length > 0) hints.push("Stop a live worker or command with agent_close first.");
+  if (unknown.length > 0) {
+    hints.push(
+      "A row whose pane cannot be verified is retired explicitly by a human or peer lead through this project's MCP " +
+        `tool, ${unknown.map((a) => `agent_close({agent_id: ${a.id}, row_only: true})`).join(", ")}, or run this ` +
+        "again from the tmux socket the row was recorded on once its ownership can be verified.",
+    );
+  }
+  throw new Error(`project ${projectId} ("${name}") has running agents: ${names}. Nothing deleted. ${hints.join(" ")}`);
 }
 
 const deleteProjectRows = db.transaction(
