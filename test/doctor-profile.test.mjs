@@ -243,3 +243,35 @@ describe("profile divergence: warn survives small drift, info replaces a rewrite
     assert.doesNotMatch(out.stdout, /warn {2}profile: hive's default runbook\.md changed since you forked it/);
   });
 });
+
+describe("todo 1633: doctor reports a size row per resolved profile file and leaves the summary alone", () => {
+  it("shows posture, runbook, worker and an extra, beside the unchanged profile summary line", async () => {
+    const dir = join(dirs.dataDir, "profiles", "sized-rows");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "posture.md"), "p\n");
+    writeFileSync(join(dir, "runbook.md"), "r\n");
+    writeFileSync(join(dir, "worker.md"), "You are {{agent_name}}.\n");
+    writeFileSync(join(dir, "extra.md"), "no newline");
+    writeFileSync(ymlPath, "profile: sized-rows\n");
+    const out = await runCli(["doctor"], opts);
+
+    assert.match(out.stdout, /info {2}profile: sized-rows \(posture\.md: user, runbook\.md: user, worker\.md: user, extra\.md: user\)/);
+    assert.match(out.stdout, /info {2}profile size: sized-rows\/posture\.md: 2 rendered bytes/);
+    assert.match(out.stdout, /info {2}profile size: sized-rows\/runbook\.md: 2 rendered bytes/);
+    assert.match(out.stdout, /info {2}profile size: sized-rows\/worker\.md: 24 rendered bytes/);
+    assert.match(out.stdout, /info {2}profile size: sized-rows\/extra\.md: 11 rendered bytes/);
+    assert.doesNotMatch(out.stdout, /profile size warning/);
+    assert.equal(failureCount(out.stdout), failureCount(baseline.stdout));
+  });
+
+  it("still fails a profile with no readable runbook.md, and adds no size advisory to that failure", async () => {
+    const dir = join(dirs.dataDir, "profiles", "sized-no-runbook");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "extra.md"), "only an extra\n");
+    writeFileSync(ymlPath, "profile: sized-no-runbook\n");
+    const out = await runCli(["doctor"], opts);
+
+    assert.match(out.stdout, /FAIL {2}profile: "sized-no-runbook" has no readable runbook\.md/);
+    assert.equal(failureCount(out.stdout), failureCount(baseline.stdout) + 1);
+  });
+});
