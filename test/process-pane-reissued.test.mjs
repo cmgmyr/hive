@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
-import { after, before, describe, it } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, before, beforeEach, describe, it } from "node:test";
 
-import { isolateTmux, panesIn, runCli, scratchDirs, seedTrustedYml, tmux } from "./helpers.mjs";
+import {
+  fakeFailingTmux,
+  isolateTmux,
+  McpClient,
+  panesIn,
+  recordingTmux,
+  runCli,
+  scratchDirs,
+  seedTrustedYml,
+  sleep,
+  tmux,
+  tmuxCallsIn,
+} from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the reissued-pane show/hide tests");
 
@@ -9,7 +24,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
-const { createWindow, ensureSession, sessionName } = await import("../dist/tmux.js");
+const { createWindow, ensureSession, sessionName, tmuxSocketPath } = await import("../dist/tmux.js");
 
 const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 const STRANGER = "someone-elses";
@@ -65,7 +80,11 @@ before(async () => {
     db,
     projectId,
     projectDir: dirs.projectDir,
-    processes: { api: { command: "sleep 600", visible: false } },
+    processes: {
+      api: { command: "sleep 600", visible: false },
+      stale: { command: "sleep 600", visible: false },
+      trapper: { command: "trap '' INT; sleep 600", visible: false },
+    },
   });
 
   if (!hasTmux) return;
@@ -123,5 +142,125 @@ describe("hive show and hive hide refuse a pane id the server has reissued (todo
     assert.deepEqual(windowsIn(STRANGER), [strangerWindow], "break-pane must not have made a processes window here");
     assert.equal(code, 0, stdout);
     assert.match(stdout, /api: not running \(start with: hive start "api"\)/);
+  });
+});
+
+const OWN_SOCKET = () => tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const FOREIGN_SOCKET = "/nonexistent/foreign-socket-dir/tmux-0/default";
+const SIGNALLING_VERBS = new Set(["send-keys", "kill-pane", "kill-window", "paste-buffer"]);
+
+function seedStale({ pid, socket = OWN_SOCKET() }) {
+  return db
+    .prepare(
+      `INSERT INTO agents (project_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status)
+       VALUES (?, 'stale', ?, ?, ?, 'sleep 600', ?, 'command', 'running') RETURNING id`,
+    )
+    .get(projectId, recorded.tmux_target, socket, pid, dirs.projectDir).id;
+}
+
+const statusOf = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
+
+async function stopsNothing(trigger) {
+  const pidBefore = panePidOf(recorded.tmux_target);
+  const log = join(mkdtempSync(join(tmpdir(), "hive-stopguard-")), "calls.log");
+  const out = await trigger({ PATH: `${recordingTmux({ log })}:${process.env.PATH}` });
+  assert.equal(panePidOf(recorded.tmux_target), pidBefore, "the stranger's process must survive");
+  assert.equal(panesIn(strangerWindow).length, 5);
+  const signalling = tmuxCallsIn(log)
+    .map((argv) => argv.find((a) => !a.startsWith("-")))
+    .filter((verb) => SIGNALLING_VERBS.has(verb));
+  assert.deepEqual(signalling, [], "no copy-mode cancel, C-c or kill may reach a pane the row does not own");
+  return out;
+}
+
+const TRIGGERS = {
+  "hive stop <name>": async (env) => (await runCli(["stop", "stale"], { ...opts, env })).stdout,
+  "hive stop --all": async (env) => (await runCli(["stop", "--all"], { ...opts, env })).stdout,
+  agent_close: async (env) => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env });
+    await mcp.start();
+    try {
+      return JSON.stringify(await mcp.call("agent_close", { name: "stale" }));
+    } catch (err) {
+      return err.message;
+    } finally {
+      await mcp.close();
+    }
+  },
+};
+
+describe("stopProcess acts only on a command row that owns its pane", () => {
+  beforeEach(() => db.prepare("DELETE FROM agents WHERE project_id = ? AND name = 'stale'").run(projectId));
+
+  for (const [trigger, run] of Object.entries(TRIGGERS)) {
+    it(`${trigger} leaves an empty-pid row running and the stranger untouched, naming unknown ownership`, needsTmux, async () => {
+      const id = seedStale({ pid: "" });
+      const out = await stopsNothing(run);
+      assert.match(out, /ownership (is|reads) unknown/);
+      assert.equal(statusOf(id), "running");
+    });
+
+    it(`${trigger} leaves a foreign-socket row running and the stranger untouched`, needsTmux, async () => {
+      const id = seedStale({ pid: recorded.pane_pid, socket: FOREIGN_SOCKET });
+      const out = await stopsNothing(run);
+      assert.match(out, /ownership (is|reads) unknown/);
+      assert.equal(statusOf(id), "running");
+    });
+
+    it(`${trigger} retires a reissued row without signalling the stranger now holding its pane id`, needsTmux, async () => {
+      const id = seedStale({ pid: recorded.pane_pid });
+      const out = await stopsNothing(run);
+      assert.match(out, /pane id now belongs to another process|ownership read reissued/);
+      assert.equal(statusOf(id), "closed");
+    });
+  }
+
+  it("hive stop leaves the row running when the tmux probe fails", needsTmux, async () => {
+    const id = seedStale({ pid: panePidOf(recorded.tmux_target) });
+    const failing = { PATH: `${fakeFailingTmux({ failOn: "list-panes" })}:${process.env.PATH}` };
+    const { stdout } = await runCli(["stop", "stale"], { ...opts, env: failing });
+    assert.match(stdout, /tmux could not be probed, so hive left it running/);
+    assert.equal(statusOf(id), "running");
+  });
+
+  it("does not fall back to kill-pane when the row records a different pane during the grace period", needsTmux, async () => {
+    const started = await runCli(["start", "trapper"], opts);
+    assert.equal(started.code, 0, started.stdout + started.stderr);
+    const row = rowFor("trapper");
+    try {
+      const stopping = runCli(["stop", "trapper"], opts);
+      await sleep(600);
+      db.prepare("UPDATE agents SET pane_pid = '1' WHERE project_id = ? AND name = 'trapper' AND status = 'running'").run(projectId);
+      const { stdout } = await stopping;
+      assert.match(stdout, /trapper: its row was closed or recorded a different pane during the stop/);
+      assert.equal(panePidOf(row.tmux_target), row.pane_pid, "the trapped process must not have been killed");
+      assert.equal(rowFor("trapper").status, "running");
+    } finally {
+      tmux("kill-pane", "-t", row.tmux_target);
+      db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND name = 'trapper'").run(projectId);
+    }
+  });
+
+  it("agent_close reports closed:false when a command stop ends with the row still open", needsTmux, async () => {
+    const started = await runCli(["start", "trapper"], opts);
+    assert.equal(started.code, 0, started.stdout + started.stderr);
+    const row = db
+      .prepare("SELECT tmux_target, pane_pid FROM agents WHERE project_id = ? AND name = 'trapper' AND status = 'running'")
+      .get(projectId);
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      const closing = mcp.call("agent_close", { name: "trapper" });
+      await sleep(600);
+      db.prepare("UPDATE agents SET pane_pid = '1' WHERE project_id = ? AND name = 'trapper' AND status = 'running'").run(projectId);
+      const receipt = await closing;
+      assert.equal(receipt.closed, false);
+      assert.equal(receipt.stop_leg, "unreachable");
+      assert.equal(panePidOf(row.tmux_target), row.pane_pid);
+    } finally {
+      await mcp.close();
+      tmux("kill-pane", "-t", row.tmux_target);
+      db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND name = 'trapper'").run(projectId);
+    }
   });
 });

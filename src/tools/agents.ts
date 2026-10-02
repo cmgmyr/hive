@@ -1922,10 +1922,11 @@ export function registerAgents(server: McpServer): void {
         const commandRow = agent.kind === COMMAND_KIND ? runningCommandRow(project.id, agent.name) : undefined;
         if (commandRow && live) {
           const stopped = stopProcess(commandRow, STOP_REASONS.byHand);
+          const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
           return {
             agent_id: agent.id,
             name: agent.name,
-            closed: stopped.leg !== "still-running",
+            closed: after.status !== "running",
             stop_leg: stopped.leg,
             note: stopLine(stopped),
           };
