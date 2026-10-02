@@ -345,7 +345,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
 
 export function isLive(agent: AgentRow): Liveness {
   if (agent.status !== "running") return false;
-  return rowLive(agent.tmux_socket, agent.tmux_target);
+  return ownershipLiveness(rowOwnership(agent));
 }
 
 export const PROBE_FAILED_NOTE =
@@ -361,7 +361,7 @@ export const probeFailed = (agent: AgentRow) =>
   new Error(`Agent ${agent.id} ("${agent.name}"): ${PROBE_FAILED_NOTE}`);
 
 // A failed probe throws rather than answering unknown, so callers keep the retry wording.
-function observeOwnership(agent: AgentRow): RowOwnership {
+export function observeOwnership(agent: AgentRow): RowOwnership {
   const observes = !foreignSocket(agent.tmux_socket) && agent.tmux_target !== "";
   const snapshot = observes ? liveTargets() : null;
   if (observes && observationFailed(snapshot)) throw probeFailed(agent);
@@ -371,7 +371,7 @@ function observeOwnership(agent: AgentRow): RowOwnership {
 export const REISSUED_PANE_NOTE =
   "Its recorded pane id now belongs to a different process (the recorded pane pid no longer matches), so its own process is gone and the pane is someone else's. Nothing was typed, read or killed there.";
 
-function notOwnedError(agent: AgentRow, ownership: Exclude<RowOwnership, "live">): Error {
+export function notOwnedError(agent: AgentRow, ownership: Exclude<RowOwnership, "live">): Error {
   const who = `Agent ${agent.id} ("${agent.name}")`;
   if (ownership === "gone") {
     return new Error(

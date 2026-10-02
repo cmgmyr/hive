@@ -347,9 +347,11 @@ describe("the queen waits on another project's lead ending a turn", () => {
     assert.match(await refusal(queenMcp, { lead_project_id: beta.id, body: "x" }), /LEAD_TARGET_GONE: .*pane is gone/);
   });
 
-  it("refuses at arming a lead with no recorded pane pid", SKIP, async () => {
+  it("refuses at arming a lead with no recorded pane pid by naming unknown ownership, not a reissue", SKIP, async () => {
     db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(betaLead.id);
-    assert.match(await refusal(queenMcp, { lead_project_id: beta.id, body: "x" }), /no recorded pane pid/);
+    const message = await refusal(queenMcp, { lead_project_id: beta.id, body: "x" });
+    assert.match(message, /pane ownership is unknown: it has no recorded pane pid/);
+    assert.doesNotMatch(message, /LEAD_TARGET_REISSUED/);
   });
 
   it("refuses at arming a lead whose command hive cannot classify", SKIP, async () => {

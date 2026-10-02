@@ -2,7 +2,7 @@ import { db } from "./db.js";
 import { paneClassifierFor } from "./harnesses.js";
 import { readLeadTurnState } from "./leadState.js";
 import { LEAD_KIND } from "./spawn.js";
-import { holdsHumanInput, paneReissued, rowAliveProbe, type AliveSnapshot } from "./tmux.js";
+import { foreignSocket, holdsHumanInput, observationFailed, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export const LEAD_TARGET_GONE = "LEAD_TARGET_GONE";
 export const LEAD_TARGET_REISSUED = "LEAD_TARGET_REISSUED";
@@ -81,11 +81,12 @@ export function evaluateLeadWatch(
     .get(sub.agent_id, LEAD_KIND) as WatchedLead | undefined;
   if (!lead || lead.status !== "running") return { kind: "invalid", reason: LEAD_TARGET_GONE };
   if (lead.pane_pid !== sub.pane_pid) return { kind: "invalid", reason: LEAD_TARGET_RESTARTED };
-  if (snapshot === null) return { kind: "pending", reason: "tmux did not answer" };
-  const probe = rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot);
-  if (probe.live === null) return { kind: "pending", reason: "its pane cannot be probed from this process" };
-  if (!probe.live) return { kind: "invalid", reason: LEAD_TARGET_GONE };
-  if (paneReissued(sub.pane_pid, probe)) return { kind: "invalid", reason: LEAD_TARGET_REISSUED };
+  if (foreignSocket(lead.tmux_socket)) return { kind: "pending", reason: "its pane cannot be probed from this process" };
+  if (observationFailed(snapshot)) return { kind: "pending", reason: "tmux did not answer" };
+  const ownership = rowOwnership(lead, snapshot);
+  if (ownership === "unknown") return { kind: "pending", reason: "pane ownership unknown" };
+  if (ownership === "gone") return { kind: "invalid", reason: LEAD_TARGET_GONE };
+  if (ownership === "reissued") return { kind: "invalid", reason: LEAD_TARGET_REISSUED };
 
   const state = readLeadTurnState(lead.id);
   if (state === null || state.pane_pid !== sub.pane_pid) return { kind: "pending", reason: "no turn recorded yet" };

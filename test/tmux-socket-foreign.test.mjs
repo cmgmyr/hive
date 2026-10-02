@@ -28,6 +28,7 @@ const project = db
 
 const session = `hive-foreign-socket-${process.pid}`;
 let livePane;
+let livePid;
 
 before(() => {
   if (!hasTmux) return;
@@ -37,6 +38,7 @@ before(() => {
   })
     .trim()
     .split("\n")[0];
+  livePid = execFileSync("tmux", ["display-message", "-p", "-t", livePane, "#{pane_pid}"], { encoding: "utf8" }).trim();
 });
 
 after(() => cleanup(session));
@@ -102,13 +104,18 @@ describe(
     });
 
     it("control: reads true for this process's own socket against the same live pane", () => {
-      const agent = { status: "running", tmux_target: livePane, tmux_socket: ownSocket };
+      const agent = { status: "running", tmux_target: livePane, tmux_socket: ownSocket, pane_pid: livePid };
       assert.equal(isLive(agent), true, "the matching-socket case must behave exactly as before this lane");
     });
 
     it("control: reads true for a legacy empty socket against the same live pane", () => {
-      const agent = { status: "running", tmux_target: livePane, tmux_socket: "" };
+      const agent = { status: "running", tmux_target: livePane, tmux_socket: "", pane_pid: livePid };
       assert.equal(isLive(agent), true, "an empty socket is 'no fact recorded', not foreign - D2");
+    });
+
+    it("reads null, never true, for a live pane whose row recorded no pane pid", () => {
+      const agent = { status: "running", tmux_target: livePane, tmux_socket: ownSocket, pane_pid: "" };
+      assert.equal(isLive(agent), null);
     });
   },
 );
@@ -187,7 +194,7 @@ describe(
       assert.equal(result.cancelled_timers, 1);
     });
 
-    it("leaves the timer pending when the ONLY matching agents row is CLOSED and carries a foreign socket (R2-1)", () => {
+    it("cancels with the named closed-actor reason when the ONLY matching agents row is CLOSED and carries a foreign socket", () => {
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, created_at)
          VALUES (?, 'agent:closed-foreign-timer', 'closed-foreign-timer', '%stale', ?, 'claude', '/tmp', 'closed', datetime('now', '-1 hour'))`,
@@ -196,12 +203,9 @@ describe(
 
       const result = janitor();
 
-      assert.equal(
-        timerOf(timer).cancelled_at,
-        null,
-        "a closed row's own recorded foreign socket must still hold the wake, not cancel it - R2-1",
-      );
-      assert.equal(result.cancelled_timers, 0);
+      assert.notEqual(timerOf(timer).cancelled_at, null, "a closed actor's wake ends on the closure, whatever its socket");
+      assert.match(timerOf(timer).held_reason, /^delivery actor closed/);
+      assert.equal(result.cancelled_timers, 1);
     });
 
     it("control: cancels the identical timer when the ONLY matching agents row is CLOSED but carries a MATCHING socket", () => {
@@ -260,9 +264,9 @@ describe(
 
     it("control: delivers exactly as before when only the running row exists (no duplicate actor_id, matching socket)", async () => {
       db.prepare(
-        `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, command, cwd, status, created_at)
-         VALUES (?, 'lead:solo', 'lead', 'lead', ?, ?, 'claude', '/tmp', 'running', datetime('now', '-60 seconds'))`,
-      ).run(project, livePane, ownSocket);
+        `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status, created_at)
+         VALUES (?, 'lead:solo', 'lead', 'lead', ?, ?, ?, 'claude', '/tmp', 'running', datetime('now', '-60 seconds'))`,
+      ).run(project, livePane, ownSocket, livePid);
       const timer = timerRow({ pane: livePane, deliverActor: "lead:solo", due: "-1 seconds" });
 
       await tick();
@@ -275,7 +279,7 @@ describe(
       );
     });
 
-    it("never delivers when the ONLY matching agents row is CLOSED and carries a foreign socket (R2-1)", async () => {
+    it("never delivers, and cancels with the closed-actor reason, when the ONLY matching agents row is CLOSED and carries a foreign socket", async () => {
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, created_at)
          VALUES (?, 'agent:closed-foreign-deliver', 'closed-foreign-deliver', '%stale', ?, 'claude', '/tmp', 'closed', datetime('now', '-1 hour'))`,
@@ -285,11 +289,12 @@ describe(
       await tick();
 
       const row = timerOf(timer);
-      assert.equal(row.fired_at, null, "a closed row's own recorded foreign socket must still hold the wake - R2-1");
-      assert.equal(row.cancelled_at, null, "unknown liveness must hold the wake, not cancel it - D4");
+      assert.equal(row.fired_at, null, "a closed actor's wake is never typed");
+      assert.equal(row.fire_count, 0);
+      assert.match(row.held_reason, /^delivery actor closed/);
     });
 
-    it("control: delivers when the ONLY matching agents row is CLOSED but carries a MATCHING socket", async () => {
+    it("never delivers into a live pane for an actor whose ONLY agents row is CLOSED, even on a MATCHING socket", async () => {
       db.prepare(
         `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status, created_at)
          VALUES (?, 'agent:closed-local-deliver', 'closed-local-deliver', '%stale', ?, 'claude', '/tmp', 'closed', datetime('now', '-1 hour'))`,
@@ -299,11 +304,10 @@ describe(
       await tick();
 
       const row = timerOf(timer);
-      assert.notEqual(
-        row.fired_at,
-        null,
-        "a closed row's own matching socket must still deliver exactly as before R2-1's fix",
-      );
+      assert.equal(row.fired_at, null, "a closed row no longer owns any pane, so its wake is never typed");
+      assert.equal(row.fire_count, 0);
+      assert.notEqual(row.cancelled_at, null);
+      assert.match(row.held_reason, /^delivery actor closed/);
     });
   },
 );

@@ -20,25 +20,28 @@ const IMPORTS =
   "migrate();\n";
 
 const SEED = `
+const PIDS = { '%lead': '7100', '%stuck': '7200', '%0': '7000', '%1': '7001', '%2': '7002', '%3': '7003', '%4': '7004',
+  '%5': '7005', '%6': '7006', '%7': '7007', '%8': '7008', '%9': '7009', '%10': '7010', '%99': '7099' };
+const pidsFor = (panes) => new Map(panes.filter((p) => PIDS[p]).map((p) => [p, PIDS[p]]));
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('sw', '/tmp/sw') RETURNING id").get().id;
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-    VALUES (?, 'lead:1', 'lead', '%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
-).run(project);
+  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, created_at)
+    VALUES (?, 'lead:1', 'lead', '%lead', ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
+).run(project, PIDS['%lead']);
 const addWorker = (actor, name, pane, state, changedOffset) =>
   db.prepare(
-    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
         agent_state, state_changed_at, created_at)
-      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+      VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset).id;
+  ).get(project, actor, name, pane, PIDS[pane] ?? '', state, changedOffset).id;
 const addWorkerWithParent = (actor, name, pane, state, changedOffset, parentActorId) =>
   db.prepare(
-    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
         agent_state, state_changed_at, created_at, parent_actor_id)
-      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+      VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds'), ?) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset, parentActorId).id;
+  ).get(project, actor, name, pane, PIDS[pane] ?? '', state, changedOffset, parentActorId).id;
 const addStandingWatch = (createdOffset = '-60 seconds', maxWait = '+4 hours', opts = {}) =>
   db.prepare(
     \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
@@ -65,7 +68,8 @@ const cursor = (watchId) =>
   db.prepare("SELECT agent_id, condition, episode, notice_wake_id FROM wake_idle_notices WHERE wake_id = ? ORDER BY agent_id, condition").all(watchId);
 `;
 
-const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
+const SNAPSHOT = (panes) =>
+  `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set(), pids: pidsFor(${JSON.stringify(panes)}) };\n`;
 
 const fixture = (name, body, panes = ["%1", "%2"]) => {
   const { dataDir, tmp } = scratchDirs();
@@ -400,7 +404,7 @@ describe("a watched worker that dies", () => {
       // is the real path: nothing else stamps closed_at. '%9' (the notice's
       // own delivery pane) must stay alive here too, or the janitor cancels
       // the watch itself for a dead delivery pane before candidates are read.
-      const shrunk = { panes: new Set(['%2', '%9']), windows: new Set() };
+      const shrunk = { panes: new Set(['%2', '%9']), windows: new Set(), pids: pidsFor(['%2', '%9']) };
       await tick(shrunk);
       const after = notices(watchId);
       const w1Row = db.prepare("SELECT status, closed_at FROM agents WHERE id = ?").get(w1);
@@ -1902,10 +1906,11 @@ describe("delivery-time context on idle notices", () => {
       const usage = (input) => JSON.stringify({ type: "assistant", message: { usage: { input_tokens: input } } }) + "\n";
       writeFileSync(path, usage(1000));
       recordClaudeWindowSize("agent:idle-context", JSON.stringify({ context_window: { context_window_size: 100000 } }));
-      const row = db.prepare(`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
-        agent_state, state_changed_at, created_at, transcript_path) VALUES (?, 'agent:idle-context', 'idle-context', ?, 'claude', ?, 'agent',
+      const workerPid = execFileSync("tmux", ["display-message", "-p", "-t", workerPane, "#{pane_pid}"], { encoding: "utf8" }).trim();
+      const row = db.prepare(`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
+        agent_state, state_changed_at, created_at, transcript_path) VALUES (?, 'agent:idle-context', 'idle-context', ?, ?, 'claude', ?, 'agent',
         'running', 'working', datetime('now', '-120 seconds'), datetime('now', '-300 seconds'), ?) RETURNING id`)
-        .get(projectId, workerPane, dirs.projectDir, path);
+        .get(projectId, workerPane, workerPid, dirs.projectDir, path);
       const body = "Keep this exact author text: punctuation, Unicode é, and a second line.\nDo the recorded task.";
       const receipt = await client.call("wake_when_idle", { agents: ["idle-context"], body, mode: "all" });
       writeFileSync(path, usage(75000));

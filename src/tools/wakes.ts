@@ -4,7 +4,7 @@ import { db } from "../db.js";
 import { commitQueenStateWrite } from "../queenAudit.js";
 import { currentActor, effectiveProjectId, getProject, isQueenLead } from "../context.js";
 import { run } from "../result.js";
-import { findAgent, isLive, probeFailed, summaryLiveness, type AgentRow } from "./agents.js";
+import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "./agents.js";
 import {
   ACTIVE_TIMER_WHERE,
   LOG_RETENTION,
@@ -19,9 +19,10 @@ import { awaitingFirstPrompt } from "../firstPrompt.js";
 import { deriveProvenance } from "../stateProvenance.js";
 import {
   findUnsafeControlChar,
+  foreignSocket,
   liveTargets,
-  paneReissued,
-  rowAliveProbe,
+  observationFailed,
+  rowOwnership,
   TEXT_ALLOWED_CONTROL_CHARS,
 } from "../tmux.js";
 import { readLeadTurnState } from "../leadState.js";
@@ -63,11 +64,9 @@ function resolveDelivery(
     // Before the liveness probe: the harness is a durable fact about the row, while liveness is a
     // question about right now, so a dead bash worker should say what is actually wrong with it.
     refuseUnclassifiableTarget(agent);
-    const live = isLive(agent);
-    if (live === null) throw probeFailed(agent);
-    if (!live) {
-      throw new Error(`Agent "${agent.name}" has no live tmux window to deliver to.`);
-    }
+    const ownership = agent.status === "running" ? observeOwnership(agent) : "gone";
+    if (ownership === "gone") throw new Error(`Agent "${agent.name}" has no live tmux window to deliver to.`);
+    if (ownership !== "live") throw notOwnedError(agent, ownership);
     return { actor: agent.actor_id, pane: agent.tmux_target };
   }
   const actor = currentActor();
@@ -79,8 +78,11 @@ function resolveDelivery(
   // fall through to the TMUX_PANE branch below accepts a wake the scheduler will then hold forever
   // against that same row's command - the never-firing timer this refusal exists to prevent.
   if (own) refuseUnclassifiableTarget(own);
-  if (own && isLive(own) === true) {
-    return { actor, pane: own.tmux_target };
+  if (own) {
+    const ownership = observeOwnership(own);
+    if (ownership === "live") return { actor, pane: own.tmux_target };
+    // Unknown never falls through to the ambient pane: that would bind this row's actor to a pane it may not own.
+    if (ownership === "unknown") throw notOwnedError(own, ownership);
   }
   const pane = process.env.TMUX_PANE;
   if (pane) return { actor, pane };
@@ -323,20 +325,20 @@ function createLeadWatch(
         "classify, so a turn ending while a human is typing to it could not be told apart from one nobody is at.",
     );
   }
-  if (lead.pane_pid === "") {
-    throw new Error(
-      `${LEAD_TARGET_REISSUED}: project ${leadProjectId}'s lead has no recorded pane pid, so a reused pane id ` +
-        "could not be told from this lead. Restart it with hive lead to record one.",
-    );
-  }
-  const snapshot = liveTargets();
-  if (snapshot === null) throw new Error("tmux did not answer, so the watched lead's pane cannot be verified. Try again.");
-  const probe = rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot);
-  if (probe.live === null) {
+  if (foreignSocket(lead.tmux_socket)) {
     throw new Error(`Project ${leadProjectId}'s lead lives on a tmux socket this process cannot probe.`);
   }
-  if (!probe.live) throw new Error(`${LEAD_TARGET_GONE}: project ${leadProjectId}'s lead pane is gone.`);
-  if (paneReissued(lead.pane_pid, probe)) {
+  const snapshot = liveTargets();
+  if (observationFailed(snapshot)) throw new Error("tmux did not answer, so the watched lead's pane cannot be verified. Try again.");
+  const ownership = rowOwnership(lead, snapshot);
+  if (ownership === "unknown") {
+    throw new Error(
+      `Project ${leadProjectId}'s lead's pane ownership is unknown: it has no recorded pane pid (or a legacy ` +
+        "window target), so a reused pane id could not be told from this lead. Restart it with hive lead to record one.",
+    );
+  }
+  if (ownership === "gone") throw new Error(`${LEAD_TARGET_GONE}: project ${leadProjectId}'s lead pane is gone.`);
+  if (ownership === "reissued") {
     throw new Error(`${LEAD_TARGET_REISSUED}: project ${leadProjectId}'s lead pane id now belongs to another process.`);
   }
 

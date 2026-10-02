@@ -18,12 +18,12 @@ const IMPORTS =
 const SEED = `
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('conv', '/tmp/conv') RETURNING id").get().id;
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
-   VALUES (?, 'lead:1', 'the-lead', 'lead', '%lead', 'claude', '/tmp', 'running', 'unknown', datetime('now', '-300 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status, agent_state, created_at)
+   VALUES (?, 'lead:1', 'the-lead', 'lead', '%lead', '8100', 'claude', '/tmp', 'running', 'unknown', datetime('now', '-300 seconds'))\`,
 ).run(project);
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
-   VALUES (?, 'agent:9', 'a-worker', 'agent', '%worker', 'claude', '/tmp', 'running', 'idle', datetime('now', '-300 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status, agent_state, created_at)
+   VALUES (?, 'agent:9', 'a-worker', 'agent', '%worker', '8200', 'claude', '/tmp', 'running', 'idle', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWake = (deliverActor, deliverPane) => db.prepare(
   \`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)
@@ -34,7 +34,11 @@ const logPrompt = (actor, offset, prompt) => db.prepare(
   "INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES (?, 'prompt', 'working', ?, datetime('now', ?))",
 ).run(actor, JSON.stringify({ prompt }), offset);
 const timerRow = (id) => db.prepare("SELECT held_at, held_reason, first_held_at, fired_at, typed_at FROM wakes WHERE id = ?").get(id);
-const snapshot = { panes: new Set(['%lead', '%worker']), windows: new Set() };
+const snapshot = {
+  panes: new Set(['%lead', '%worker']),
+  windows: new Set(),
+  pids: new Map([['%lead', '8100'], ['%worker', '8200']]),
+};
 `;
 
 const fixture = (name, body) => {
