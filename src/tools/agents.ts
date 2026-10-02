@@ -42,14 +42,18 @@ import {
   agentIdentityEnv,
   branchAt,
   closeAgentRow,
+  currentOwnership,
   discardOrphanedPane,
   isReservedAgentName,
   isRunningLeadActor,
   killAgentPane,
   launchAgent,
   LEAD_KIND,
+  PaneOwnershipLost,
+  paneIdentity,
   parkAgentRow,
   reapCodexHomeForClosedAgent,
+  requireStillOwned,
   releaseParkRow,
   renameAgent,
   resumeAgent,
@@ -87,6 +91,7 @@ import {
   type AliveSnapshot,
   type InputBoxState,
   type Liveness,
+  type RowOwnership,
 } from "../tmux.js";
 import { agentIdParam, agentNameParam, idParam, projectIdParam } from "./params.js";
 import {
@@ -306,10 +311,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
       note: "Already closed; row_only changed nothing and left any park in place.",
     };
   }
-  const observes = !foreignSocket(agent.tmux_socket) && agent.tmux_target !== "";
-  const snapshot = observes ? liveTargets() : null;
-  if (observes && observationFailed(snapshot)) throw probeFailed(agent);
-  const ownership = rowOwnership(agent, snapshot);
+  const ownership = observeOwnership(agent);
   if (ownership === "live") {
     throw new Error(
       `Agent ${agent.id} ("${agent.name}") owns a live pane (its recorded pane pid matches), so row_only refuses: ` +
@@ -319,7 +321,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
           : "Use agent_close without row_only to stop it."),
     );
   }
-  if (!closeAgentRow(agent.id, { tmux_target: agent.tmux_target, tmux_socket: agent.tmux_socket, pane_pid: agent.pane_pid })) {
+  if (!closeAgentRow(agent.id, paneIdentity(agent))) {
     const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
     if (after.status !== "running") {
       return {
@@ -358,17 +360,45 @@ const UNVERIFIED_OWNERSHIP_NOTE =
 export const probeFailed = (agent: AgentRow) =>
   new Error(`Agent ${agent.id} ("${agent.name}"): ${PROBE_FAILED_NOTE}`);
 
+// A failed probe throws rather than answering unknown, so callers keep the retry wording.
+function observeOwnership(agent: AgentRow): RowOwnership {
+  const observes = !foreignSocket(agent.tmux_socket) && agent.tmux_target !== "";
+  const snapshot = observes ? liveTargets() : null;
+  if (observes && observationFailed(snapshot)) throw probeFailed(agent);
+  return rowOwnership(agent, snapshot);
+}
+
+export const REISSUED_PANE_NOTE =
+  "Its recorded pane id now belongs to a different process (the recorded pane pid no longer matches), so its own process is gone and the pane is someone else's. Nothing was typed, read or killed there.";
+
+function notOwnedError(agent: AgentRow, ownership: Exclude<RowOwnership, "live">): Error {
+  const who = `Agent ${agent.id} ("${agent.name}")`;
+  if (ownership === "gone") {
+    return new Error(
+      `${who} has no live tmux window (its process exited or the window was killed). Close it with agent_close and spawn a new one.`,
+    );
+  }
+  if (ownership === "reissued") {
+    return new Error(
+      `${who}: pane ownership reads reissued. ${REISSUED_PANE_NOTE} Close the row with agent_close, which retires it without touching that pane.`,
+    );
+  }
+  return new Error(`${who}: pane ownership reads unknown. ${UNVERIFIED_OWNERSHIP_NOTE}`);
+}
+
+// Rechecked just before a kill. "changed" skips the kill and lets the row CAS report the race.
+function stillOwnsPane(agent: AgentRow, action: string): boolean {
+  const now = currentOwnership(agent.id, paneIdentity(agent));
+  if (now === "unknown") throw new PaneOwnershipLost(agent.id, now, action);
+  return now === "live";
+}
+
 function requireLive(agent: AgentRow): void {
   if (agent.status !== "running") {
     throw new Error(`Agent ${agent.id} ("${agent.name}") is closed.`);
   }
-  const live = isLive(agent);
-  if (live === null) throw probeFailed(agent);
-  if (!live) {
-    throw new Error(
-      `Agent ${agent.id} ("${agent.name}") has no live tmux window (its process exited or the window was killed). Close it with agent_close and spawn a new one.`,
-    );
-  }
+  const ownership = observeOwnership(agent);
+  if (ownership !== "live") throw notOwnedError(agent, ownership);
 }
 
 function runningAgentNamed(
@@ -1136,9 +1166,9 @@ export function registerAgents(server: McpServer): void {
               "path first if you want this lane back tomorrow, or close it with agent_close.",
           );
         }
-        const live = isLive(agent);
-
-        if (live === null) throw probeFailed(agent);
+        const ownership = observeOwnership(agent);
+        if (ownership === "unknown") throw notOwnedError(agent, ownership);
+        let live = ownership === "live";
         if (agent.actor_id === currentActor() && args.confirm_self !== true) {
           throw new Error(
             "This would park your own session. Pass confirm_self=true only if the user explicitly asked you to park yourself.",
@@ -1146,9 +1176,10 @@ export function registerAgents(server: McpServer): void {
         }
 
         const branch = branchAt(agent.cwd);
+        if (live) live = stillOwnsPane(agent, "agent_park");
         if (live) killAgentPane(agent.tmux_target);
 
-        const parkedAt = parkAgentRow(agent.id, agent.tmux_target, branch);
+        const parkedAt = parkAgentRow(agent.id, paneIdentity(agent), branch);
         if (parkedAt === undefined) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
@@ -1182,7 +1213,16 @@ export function registerAgents(server: McpServer): void {
           );
         }
 
-        return buildParkReceipt(project, agent, parkedAt, branch);
+        return buildParkReceipt(
+          project,
+          agent,
+          parkedAt,
+          branch,
+          live
+            ? undefined
+            : `Parked with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so its own process was already gone and ` +
+                "that pane was left alone.",
+        );
       }),
   );
 
@@ -1233,7 +1273,10 @@ export function registerAgents(server: McpServer): void {
         const newName = normalizeAgentName(args.new_name, "new_name");
         requireNameFree(project.id, newName, agent.id);
 
-        const live = isLive(agent) === true;
+        const ownership = observeOwnership(agent);
+        if (ownership === "unknown") throw notOwnedError(agent, ownership);
+        const live = ownership === "live";
+        const identity = paneIdentity(agent);
 
         renameAgent(agent, newName, live ? project.name : null);
 
@@ -1269,12 +1312,25 @@ export function registerAgents(server: McpServer): void {
 
             let pasted = false;
             try {
-              await sendText(agent.tmux_target, `/rename ${newName}`, true, () => {
-                pasted = true;
-              });
+              await sendText(
+                agent.tmux_target,
+                `/rename ${newName}`,
+                true,
+                () => {
+                  pasted = true;
+                },
+                undefined,
+                () => requireStillOwned(agent.id, identity, "agent_rename"),
+              );
               retitled = true;
-            } catch {
-              if (pasted) {
+            } catch (err) {
+              if (err instanceof PaneOwnershipLost) {
+                heldNote =
+                  `Not retitled: ${err.message} The row IS renamed - it is "${newName}" now.` +
+                  (pasted
+                    ? ` "/rename ${newName}" was pasted before the check failed and was left unsubmitted; no Enter was sent. Do not send keys to that pane until you know whose it is.`
+                    : "");
+              } else if (pasted) {
                 heldNote =
                   `Not retitled: the rename command reached the pane but the Enter that submits it failed, so "/rename ${newName}" is sitting on screen unsubmitted. The row IS renamed - it is "${newName}" now - only the pane's own title was left alone. Do not resend /rename: agent_send(name: ${JSON.stringify(newName)}, keys: ["Enter"]) finishes this exact delivery, or agent_send(name: ${JSON.stringify(newName)}, keys: ["C-a", "C-k"]) clears it.`;
                 try {
@@ -1286,6 +1342,10 @@ export function registerAgents(server: McpServer): void {
 
             }
           }
+        }
+
+        if (!live) {
+          heldNote = `Not retitled: its pane ownership read ${ownership}, so no pane was read or typed into. The row IS renamed - it is "${newName}" now.`;
         }
 
         return {
@@ -1604,6 +1664,7 @@ export function registerAgents(server: McpServer): void {
 
           let pasted = false;
           let buffered = false;
+          const identity = paneIdentity(agent);
           try {
             await sendText(
               target,
@@ -1615,10 +1676,18 @@ export function registerAgents(server: McpServer): void {
               () => {
                 buffered = true;
               },
+              () => requireStillOwned(agent.id, identity, "agent_send"),
             );
           } catch (err) {
             const shortenedClause =
               shortened === null ? "" : shortenedSendFailureClause(shortened.marker, shortened.message_id);
+            if (err instanceof PaneOwnershipLost) {
+              if (!pasted) throw err;
+              throw new Error(
+                `[agent_send:paste-landed-enter-withheld] agent_send pasted into ${agent.name}'s pane, then withheld the Enter: ${err.message} The text is on that screen unsubmitted. Do NOT resend it and do NOT press Enter there: the pane may no longer be this worker's. Read it with agent_status first.${shortenedClause}`,
+                { cause: err },
+              );
+            }
             if (!pasted) {
 
               if (buffered && err instanceof TmuxTimeoutError) {
@@ -1826,8 +1895,15 @@ export function registerAgents(server: McpServer): void {
           return { agent_id: agent.id, name: agent.name, closed: true, park_released: true };
         }
 
-        const live = isLive(agent);
-        if (live === null) throw probeFailed(agent);
+        const ownership: RowOwnership = agent.status === "running" ? observeOwnership(agent) : "gone";
+        if (ownership === "unknown") {
+          throw new Error(
+            `Agent ${agent.id} ("${agent.name}"): pane ownership reads unknown, so agent_close neither stops nor ` +
+              "retires it. " +
+              UNVERIFIED_OWNERSHIP_NOTE,
+          );
+        }
+        let live = ownership === "live";
 
         if (agent.kind === LEAD_KIND && live) {
           throw new Error(
@@ -1854,9 +1930,10 @@ export function registerAgents(server: McpServer): void {
             note: stopLine(stopped),
           };
         }
+        if (live) live = stillOwnsPane(agent, "agent_close");
         if (live) killAgentPane(agent.tmux_target);
 
-        if (!closeAgentRow(agent.id, agent.tmux_target)) {
+        if (!closeAgentRow(agent.id, paneIdentity(agent))) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
           const report = classifyLostCas(after);
@@ -1900,7 +1977,16 @@ export function registerAgents(server: McpServer): void {
           }
         }
 
-        return { agent_id: agent.id, name: agent.name, closed: true };
+        return {
+          agent_id: agent.id,
+          name: agent.name,
+          closed: true,
+          ...(agent.status === "running" && !live
+            ? {
+                note: `Closed with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so that pane was left alone.`,
+              }
+            : {}),
+        };
       }),
   );
 }

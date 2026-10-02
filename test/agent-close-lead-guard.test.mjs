@@ -57,13 +57,14 @@ describe("agent_close and the lead's retirement path", { skip: hasTmux ? false :
 
   function seedLiveLeadRow() {
     const pane = spawnLivePane();
+    const pid = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"], { encoding: "utf8" }).trim();
     const id = db
       .prepare(
-        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
-         VALUES (?, 'lead:999', 'lead', ?, 'claude', ?, 'lead', 'running')
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status)
+         VALUES (?, 'lead:999', 'lead', ?, ?, 'claude', ?, 'lead', 'running')
          RETURNING id`,
       )
-      .get(projectId, pane, dirs.projectDir).id;
+      .get(projectId, pane, pid, dirs.projectDir).id;
     return { id, pane };
   }
 

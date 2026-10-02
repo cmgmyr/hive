@@ -1624,6 +1624,7 @@ export async function sendText(
   submit = true,
   onPasted?: () => void,
   onBuffered?: () => void,
+  beforePaneWrite?: () => void,
 ): Promise<void> {
   // tmux hands a pane its input in 1022-byte writes, and only paste-buffer -p
   // brackets them, so send-keys -l loses everything before the last write.
@@ -1636,6 +1637,7 @@ export async function sendText(
     tmux("set-buffer", "-b", buffer, "--", text);
     onBuffered?.();
     try {
+      beforePaneWrite?.();
       tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
     } catch (err) {
       // paste-buffer's -d never ran, and nothing ever reclaims a NAMED buffer:
@@ -1655,6 +1657,7 @@ export async function sendText(
   }
   if (submit) {
     await sleep(ENTER_DELAY_MS);
+    beforePaneWrite?.();
     tmux("send-keys", "-t", target, "Enter");
   }
 }

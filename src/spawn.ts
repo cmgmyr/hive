@@ -31,6 +31,9 @@ import {
   windowLayout,
   windowOwner,
   windowTitle,
+  rowOwnership,
+  type AliveSnapshot,
+  type RowOwnership,
   type WindowLayout,
   type RowPaneIdentity,
 } from "./tmux.js";
@@ -536,16 +539,64 @@ export function branchAt(cwd: string): string {
   return git(["rev-parse", "--short", "HEAD"]) ?? "";
 }
 
-export function parkAgentRow(agentId: number, expectedTmuxTarget: string, branch: string): string | undefined {
+export function parkAgentRow(agentId: number, expected: string | RowPaneIdentity, branch: string): string | undefined {
+  const park =
+    "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
+    "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ?";
+  const row =
+    typeof expected === "string"
+      ? db.prepare(`${park} RETURNING parked_at`).get(branch, agentId, expected)
+      : db
+          .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
+          .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
+  return (row as { parked_at: string } | undefined)?.parked_at;
+}
 
-  return (
-    db
-      .prepare(
-        "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
-          "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ? RETURNING parked_at",
-      )
-      .get(branch, agentId, expectedTmuxTarget) as { parked_at: string } | undefined
-  )?.parked_at;
+export const paneIdentity = (row: RowPaneIdentity): RowPaneIdentity => ({
+  tmux_target: row.tmux_target,
+  tmux_socket: row.tmux_socket,
+  pane_pid: row.pane_pid,
+});
+
+// "changed" means the row is no longer running or no longer carries the identity the caller read.
+export function currentOwnership(
+  agentId: number,
+  expected: RowPaneIdentity,
+  snapshot?: AliveSnapshot | null,
+): RowOwnership | "changed" {
+  const row = db
+    .prepare("SELECT status, tmux_target, tmux_socket, pane_pid FROM agents WHERE id = ?")
+    .get(agentId) as (RowPaneIdentity & { status: string }) | undefined;
+  if (
+    !row ||
+    row.status !== "running" ||
+    row.tmux_target !== expected.tmux_target ||
+    row.tmux_socket !== expected.tmux_socket ||
+    row.pane_pid !== expected.pane_pid
+  ) {
+    return "changed";
+  }
+  return rowOwnership(row, snapshot);
+}
+
+export class PaneOwnershipLost extends Error {
+  constructor(
+    readonly agentId: number,
+    readonly ownership: RowOwnership | "changed",
+    action: string,
+  ) {
+    super(
+      `[pane-ownership-lost] ${action} stopped before touching agent ${agentId}'s pane: ` +
+        (ownership === "changed"
+          ? "its row was closed or recorded a different pane since this call read it."
+          : `its pane ownership now reads ${ownership}, so the pane may belong to another process.`),
+    );
+  }
+}
+
+export function requireStillOwned(agentId: number, expected: RowPaneIdentity, action: string): void {
+  const ownership = currentOwnership(agentId, expected);
+  if (ownership !== "live") throw new PaneOwnershipLost(agentId, ownership, action);
 }
 
 export const PARK_STAMP_CLEARED = "parked_at = '', parked_branch = ''";
