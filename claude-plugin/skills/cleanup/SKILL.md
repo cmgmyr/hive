@@ -7,7 +7,7 @@ description: Trims a hive project's board pad, closes finished todos on evidence
 
 ## Read everything first
 
-You cannot tell live state from dead state off a partial view. Before changing anything, read the board pad in full, `todo_list(status="open")`, `pad_list`, `agent_list`, and `wake_list`. Also run `hive posture` and `hive runbook`, and read profile files only with `hive profile read <file>` from a project checkout. A trim done off a truncated board deletes state nobody read.
+You cannot tell live state from dead state off a partial view. Before changing anything, read the board pad in full, `todo_list(status="open")`, `pad_list`, `agent_list`, and `wake_list`. A trim done off a truncated board deletes state nobody read.
 
 ## The test for the board
 
@@ -49,7 +49,7 @@ A watch armed for a crew that is gone is noise. A dated reminder someone set on 
 
 ## Project copies of the shared profile: report, do not rewrite
 
-At wrap-up, compare the rendered profile from `hive posture`, `hive runbook`, and `hive profile read <file>` with five kinds of project artifacts: pad headers, lines in the board pad, active todo bodies, the lead's project memory, and `CLAUDE.md`, `AGENTS.md`, or files under `docs/`. Read pad headers rather than whole lessons pads, and inspect todos without their comments. Read large profile output in bounded sections. For every match, give the artifact and location, the exact profile source and line, its class, and a proposed pointer such as `see <profile source>, <section or line>`.
+At wrap-up, compare the rendered profile from `hive posture`, `hive runbook`, and `hive profile read <file>` with five kinds of project artifacts: pad headers, lines in the board pad, active todo bodies, the lead's project memory, and `CLAUDE.md`, `AGENTS.md`, or files under `docs/`. Read pad headers rather than whole lessons pads, and inspect todos without their comments. Read profile sources only when this pass runs: redirect `hive posture`, `hive runbook`, and `hive profile read <file>` to files, then inspect them in bounded sections. For example, use `hive runbook > <file>` and read it by range. For every match, give the artifact and location, the exact profile source and line, its class, and a proposed pointer such as `see <profile source>, <section or line>`.
 
 List contradictions first, then restatements, then likely deliberate copies. A contradiction gives an outdated project-specific value as current guidance when the rendered profile now says something different or no longer says it. For example, a project memory that says commits use `--no-gpg-sign` contradicts a rendered rule requiring signed commits. A restatement repeats a profile rule without adding a project-specific choice; if replacing it with a pointer loses no useful detail, propose the pointer. A deliberate override has a project-specific delta, such as a path, a measured value, or a dated human decision; keep that detail and report it as an override. When a copy says it was kept because readers could not find the on-demand source, report it as a likely deliberate copy and ask whether it is still needed. Never infer that an outdated value is an override just because it is project-specific.
 
