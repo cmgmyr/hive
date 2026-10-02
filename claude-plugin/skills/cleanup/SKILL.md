@@ -7,7 +7,7 @@ description: Trims a hive project's board pad, closes finished todos on evidence
 
 ## Read everything first
 
-You cannot tell live state from dead state off a partial view. Before changing anything, read the board pad in full, `todo_list(status="open")`, `pad_list`, `agent_list`, and `wake_list`. A trim done off a truncated board deletes state nobody read.
+You cannot tell live state from dead state off a partial view. Before changing anything, read the board pad in full, `todo_list(status="open")`, `pad_list`, `agent_list`, and `wake_list`. Also run `hive posture` and `hive runbook`, and read profile files only with `hive profile read <file>` from a project checkout. A trim done off a truncated board deletes state nobody read.
 
 ## The test for the board
 
@@ -47,13 +47,21 @@ Archive it. A pad still describing in-flight state for work that finished is wor
 
 A watch armed for a crew that is gone is noise. A dated reminder someone set on purpose is not - cancelling one silently loses a commitment nobody will notice missing until the date passes. If you cannot tell which it is, leave it and say so.
 
+## Project copies of the shared profile: report, do not rewrite
+
+At wrap-up, compare the rendered profile from `hive posture`, `hive runbook`, and `hive profile read <file>` with five kinds of project artifacts: pad headers, lines in the board pad, active todo bodies, the lead's project memory, and `CLAUDE.md`, `AGENTS.md`, or files under `docs/`. Read pad headers rather than whole lessons pads, and inspect todos without their comments. Read large profile output in bounded sections. For every match, give the artifact and location, the exact profile source and line, its class, and a proposed pointer such as `see <profile source>, <section or line>`.
+
+List contradictions first, then restatements, then likely deliberate copies. A contradiction gives an outdated project-specific value as current guidance when the rendered profile now says something different or no longer says it. For example, a project memory that says commits use `--no-gpg-sign` contradicts a rendered rule requiring signed commits. A restatement repeats a profile rule without adding a project-specific choice; if replacing it with a pointer loses no useful detail, propose the pointer. A deliberate override has a project-specific delta, such as a path, a measured value, or a dated human decision; keep that detail and report it as an override. When a copy says it was kept because readers could not find the on-demand source, report it as a likely deliberate copy and ask whether it is still needed. Never infer that an outdated value is an override just because it is project-specific.
+
+This pass only reports and proposes. The lead may apply pointer changes to pads and board lines. Any memory change or deletion needs the human's OK. Do not edit, delete, archive, or send anything as part of this pass. Run it at wrap-up, not at every lane end.
+
 ## Residue you report and do not remove
 
 Worktrees, branches, running agents. Removing a worktree can destroy uncommitted work, and a running agent may be mid-turn. Name what you found and let the human or the lead decide.
 
 ## Finish by saying what you left, not just what you changed
 
-A cleanup that reports only its edits cannot be audited, and the interesting part is usually what was deliberately not touched. Leave the board in the shape the next session needs: where the code is now, whatever verification number this project quotes, what is genuinely in flight (often nothing), and what is waiting on a human.
+A cleanup that reports only its edits cannot be audited, and the interesting part is usually what was deliberately not touched. Leave the board in the shape the next session needs: where the code is now, whatever verification number this project quotes, what is genuinely in flight (often nothing), what is waiting on a human, and the profile-drift report with its proposed pointers.
 
 ## Where to route evidence in this project
 
