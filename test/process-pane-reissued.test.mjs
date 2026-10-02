@@ -263,4 +263,14 @@ describe("stopProcess acts only on a command row that owns its pane", () => {
       db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND name = 'trapper'").run(projectId);
     }
   });
+
+  it("hive show and hide refuse an empty-pid row by naming unknown ownership, moving no pane", needsTmux, async () => {
+    seedStale({ pid: "" });
+    for (const verb of ["show", "hide"]) {
+      const { stdout } = await runCli([verb, "stale"], opts);
+      assert.match(stdout, /stale: its pane ownership is unknown/);
+      assert.equal(panesIn(strangerWindow).length, 5);
+      assert.deepEqual(windowsIn(STRANGER), [strangerWindow]);
+    }
+  });
 });

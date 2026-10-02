@@ -573,6 +573,8 @@ function ensureLeadRow(
   previousCommand: string;
   previousCodexHome: string;
   casExpected: string;
+  casSocket: string;
+  casPid: string;
 } {
 
   const existing = db
@@ -616,6 +618,8 @@ function ensureLeadRow(
       previousCommand: existing.command,
       previousCodexHome: existing.codex_home,
       casExpected: existing.tmux_target,
+      casSocket: existing.tmux_socket,
+      casPid: existing.pane_pid,
     };
   }
 
@@ -634,6 +638,7 @@ function ensureLeadRow(
       }
     | undefined;
 
+  const insertedSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
   let result;
   try {
     result = db.transaction(() => {
@@ -650,7 +655,7 @@ function ensureLeadRow(
           LEAD_KIND,
           currentActor(),
           "",
-          tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
+          insertedSocket,
           "",
         );
       const agentId = Number(info.lastInsertRowid);
@@ -673,6 +678,8 @@ function ensureLeadRow(
     previousCommand: priorClosed?.command ?? "",
     previousCodexHome: priorClosed?.codex_home ?? "",
     casExpected: "",
+    casSocket: insertedSocket,
+    casPid: "",
   };
 }
 
@@ -786,7 +793,10 @@ async function cmdLead(argv: string[]): Promise<void> {
       previousCommand,
       previousCodexHome,
       casExpected,
+      casSocket,
+      casPid,
     } = ensureLeadRow(project, leadCommand);
+    const previousIdentity = { tmux_target: previousTarget, tmux_socket: previousSocket, pane_pid: previousPanePid };
 
     // A fresh CODEX_HOME is built on every invocation, same as claude's hooks/posture files above -
     // cheap (a few KB; the codex-side plugins/cache bootstrap only materializes once a process
@@ -862,11 +872,9 @@ async function cmdLead(argv: string[]): Promise<void> {
 
         const foundWindow = findProjectWindow(session, project.id);
 
-        const probe = rowLiveProbe(previousSocket, previousTarget);
+        // Only a pane the row provably owns is adopted; unknown or reissued gets a fresh pane, never the stranger's pid.
         const adopted =
-          isPaneTarget(previousTarget) && probe.live === true && !paneReissued(previousPanePid, probe)
-            ? adoptableWindow(session, project.id, previousTarget)
-            : null;
+          rowOwnership(previousIdentity) === "live" ? adoptableWindow(session, project.id, previousTarget) : null;
         if (adopted) {
 
           leadPane = previousTarget;
@@ -930,22 +938,32 @@ async function cmdLead(argv: string[]): Promise<void> {
       }
       if (newCodexHomeKey) reapCodexHome(newCodexHomeKey);
     };
+    if (!createdPane && rowOwnership(previousIdentity) !== "live") {
+      abandonClaim();
+      throw new Error(
+        "The lead pane this `hive lead` was about to adopt no longer reads as the lead's own (its pane pid changed " +
+          "or could not be verified), so nothing was recorded. Re-run `hive lead`; it will start a fresh pane.",
+      );
+    }
     let wonRace: boolean;
     try {
       wonRace = db.transaction(() => {
 
         const updated = db
           .prepare(
-            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? WHERE id = ? AND tmux_target = ? AND status = 'running'",
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? " +
+              "WHERE id = ? AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND status = 'running'",
           )
           .run(
             leadPane,
             tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
-            panePid(leadPane),
+            createdPane ? panePid(leadPane) : previousPanePid,
             recordedCommand,
             recordedCodexHome,
             leadAgentId,
             casExpected,
+            casSocket,
+            casPid,
           ).changes;
         if (updated === 0) return false;
         db.prepare(
@@ -1794,15 +1812,21 @@ function resolveNamedProcess(
     console.log(`${name}: not running (start with: hive start "${name}")`);
     return null;
   }
-  const probe = rowLiveProbe(row.tmux_socket, row.tmux_target);
-  if (probe.live === null) {
+  const observes = !foreignSocket(row.tmux_socket) && row.tmux_target !== "";
+  const snapshot = observes ? liveTargets() : null;
+  if (observes && observationFailed(snapshot)) {
     console.log(CANNOT_TELL_WHERE(name));
+    return null;
+  }
+  const ownership = rowOwnership(row, snapshot);
+  if (ownership === "unknown") {
+    console.log(`${name}: its pane ownership is unknown (no pane pid recorded, or another tmux socket), so hive will not move that pane`);
     return null;
   }
 
   // A pane id alone is not an identity: tmux restarts them at %0 on a fresh server, so a stale
-  // running row names whoever holds that id now. Same compare as janitor() and wake delivery.
-  if (!probe.live || paneReissued(row.pane_pid, probe)) {
+  // running row names whoever holds that id now.
+  if (ownership !== "live") {
     console.log(`${name}: not running (start with: hive start "${name}")`);
     return null;
   }

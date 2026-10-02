@@ -409,23 +409,36 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
   );
 
   it(
-    "BEHAVIOUR 6 (issue #157): a recorded pane_pid of '' (no fact recorded) still adopts exactly as today",
+    "BEHAVIOUR 6: a recorded pane_pid of '' is unknown ownership, so hive lead starts a fresh pane and leaves the old one alone",
     async () => {
       const { cliOpts, project, session, before, pane, windowTarget } =
         await bootSinglePaneLead("lead-nullpid-adopt-test");
       try {
-
+        const pidOf = (p) => execFileSync("tmux", ["display-message", "-p", "-t", p, "#{pane_pid}"], { encoding: "utf8" }).trim();
+        const strangerPid = pidOf(pane);
         db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run("", before.id);
+        const wakeId = db
+          .prepare(
+            `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+             VALUES (?, ?, 'pending', 'delay', ?, ?, datetime('now', '+1 day')) RETURNING id`,
+          )
+          .get(project.id, before.actor_id, before.actor_id, pane).id;
 
         const second = await runCli(["lead"], cliOpts);
         assert.equal(second.code, 0, second.stderr);
 
         const after = leadRow(db, project.id);
-        assert.equal(after.tmux_target, pane, "an absent recorded pid must still adopt the SAME pane, exactly as today");
-
-        const panesAfter = panesIn(windowTarget);
-        assert.deepEqual(panesAfter, [pane], "no second pane may be created - this is the adopt path, not the fresh-pane path");
-        assert.notEqual(after.pane_pid, "", "the CAS must record a real pid now that the pane is confirmed live");
+        assert.notEqual(after.tmux_target, pane, "an unknown pane is never adopted");
+        assert.equal(after.actor_id, before.actor_id, "the same lead actor carries on in the fresh pane");
+        assert.equal(after.pane_pid, pidOf(after.tmux_target), "the fresh pane's own pid is recorded");
+        assert.notEqual(after.pane_pid, strangerPid, "never the old occupant's pid");
+        assert.equal(pidOf(pane), strangerPid, "the old pane's process is untouched");
+        assert.deepEqual(panesIn(windowTarget).sort(), [pane, after.tmux_target].sort(), "a second pane, beside the old one");
+        assert.equal(
+          db.prepare("SELECT deliver_pane FROM wakes WHERE id = ?").get(wakeId).deliver_pane,
+          after.tmux_target,
+          "pending lead wakes are re-pointed to the fresh pane",
+        );
       } finally {
         cleanup(session);
       }
