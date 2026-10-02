@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0 - 2026-10-01
+
+- hive now tells a row that owns a live tmux pane apart from a pane id that merely exists. After a tmux restart a pane id can come back attached to a different process. A row counts as live only when the pane's process matches the one hive recorded for it.
+  - `hive status` prints `running` for a lead only when its pane is live. It prints `no live pane` when the pane is gone or its id now belongs to another process. It prints `pane identity unknown` when hive cannot check, for example a row with no recorded pane pid. Before this release `hive status` printed `running` for every lead row.
+  - `hive portfolio`, `hive doctor`, `agent_list`, `agent_status` and `agent_output` report the same way. `alive` is `null` when ownership cannot be verified, and none of them reads the screen of a pane the row does not own. Doctor's warnings name a remedy that works for each case.
+- `agent_close` takes `row_only: true`. It marks a row closed whose pane is gone, reused or unverifiable, with no kill, stop or typing. Only a human or a peer lead can pass it. It refuses a row that owns a live pane, and it refuses with a retry message when tmux does not answer.
+- `hive project rm` and `project_prune` no longer refuse because of a running row whose pane is provably gone or reused. A row whose ownership is unknown still blocks removal, and the message names `agent_close` with `row_only: true` for it.
+- A Codex worker's hook events are accepted only from the worker's own generated Codex home. A Codex run that a worker starts inside its session no longer writes its state or session id into the worker's row, so it can no longer make a busy worker look idle. A closed Codex worker's row ignores hook events.
+- `hive profile list` and `hive doctor` show each profile file's rendered size, the bytes `hive profile read` prints for the project. Above 25600 bytes they add an advisory: a harness may save long tool output to a file and show only a short preview, so split the file or read it in sections. The advisory never changes doctor's exit status, including under `--strict`.
+- The `/hive:profile` skill reads a large profile file in sections from a saved copy, so it never edits text it has only seen a preview of.
+- The custom status line example in the install guide now pipes Claude Code's statusline JSON into `hive statusline`, so a lead's status line shows `turns N`. It reads stdin only when your script has not already.
+- After upgrading, a lead row created before hive recorded pane pids, and never restarted since, shows `pane identity unknown` instead of `running`, even while that lead is live. Restart it with `hive lead` and hive records its pid. Until then the queen may not count it as a running lead.
+- Closing, typing into and delivering wakes to a row still use the earlier liveness check. A later release moves them to the new one.
+- After upgrading, restart every hive session. A session still on an older build keeps the old behaviour, and any running hive server can deliver any project's wakes.
+
 ## 1.5.0 - 2026-10-01
 
 - `hive project rm <id|path> [--yes]` removes a project and everything it owns: its agents, todos, pads, wakes and the rest. It prints what it will remove, asks `[y/N]` unless you pass `--yes`, and takes a snapshot of the store first. It refuses your own project, a project with a running agent, and any run under `HIVE_PROJECT_LOCK=1`. A path must match a registered project's path exactly.
