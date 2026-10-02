@@ -182,6 +182,10 @@ runbook (fork it first), not a pad write.`,
     a stale row closed with no kill, stop or typing; a human or peer lead
     only, refused for a row that provably owns a live pane or when tmux
     could not be probed.
+  Every kill or type above acts only on a pane whose recorded pid matches.
+    Unverifiable ownership (no recorded pid) refuses by name; a gone or
+    reissued pane is never touched, and close, park and rename then act
+    on the row alone.
 
 Address a worker by its name, not its id: agent_send(name="impl", ...). A
 partial name works when it matches one running worker, so name="123" finds

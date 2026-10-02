@@ -111,7 +111,7 @@ With nothing to pick, it prints this line and exits 0:
 No project needs you: none is waiting, stuck, or holding a needs-human item.
 ```
 
-Without `--print`, it starts that project's lead detached first, then attaches. A dead or reissued lead is restarted, and a live one is adopted. If hive cannot tell whether the lead is alive because tmux did not answer, it starts nothing. It exits 1 when the chosen project's folder is missing, and it refuses in a session locked to one project.
+Without `--print`, it starts that project's lead detached first, then attaches. A dead, reissued or unverifiable lead (one with no recorded pane pid) gets a fresh pane, and only a lead whose recorded pane pid matches its pane is adopted. If hive cannot tell whether the lead is alive because tmux did not answer, it starts nothing. It exits 1 when the chosen project's folder is missing, and it refuses in a session locked to one project.
 
 ## Start a lead without attaching
 

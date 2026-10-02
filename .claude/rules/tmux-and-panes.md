@@ -42,7 +42,15 @@ One session per STORE, one window per project inside it: `sessionName()` takes n
 
 ## A row owns a pane only when `rowOwnership` says "live"
 
-`rowOwnership()` (`src/tmux.ts`) is the one place that decides gone, reissued, live or unknown for an `agents` row. Do not re-derive it at a call site from `targetAlive`/`rowAlive` plus a pid comparison. An empty stored `pane_pid` on a pane id that exists is UNKNOWN, never live: reports say unknown, project removal blocks on it, and only an explicit `agent_close(row_only: true)` retires the row. Unknown is not proof of death either, so nothing sweeps or closes a row because it reads unknown. The raw probes (`isLive`, `rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch. These sites still use them and move to the classifier in lane B (todo 1638), so they are the known exceptions to the line above, not a pattern to copy: the kill and type sites (`agent_close` and `agent_park` kill, `agent_send`, `agent_rename`, `stopProcess`, wake delivery in `deliverable()`), plus `leadWatch.evaluateLeadWatch`, the scheduler's build-change notice (`reportRunningBuildChange`), `wake_when_idle`'s lead-watch creation in `src/tools/wakes.ts`, and `src/cli.ts`'s `hive show` command resolve and `cmdLead`'s adopt check.
+`rowOwnership()` (`src/tmux.ts`) is the one place that decides gone, reissued, live or unknown for an `agents` row. Do not re-derive it at a call site from `targetAlive`/`rowAlive` plus a pid comparison. An empty stored `pane_pid` on a pane id that exists is UNKNOWN, never live: reports say unknown, project removal blocks on it, and only an explicit `agent_close(row_only: true)` retires the row. Unknown is not proof of death either, so nothing sweeps or closes a row because it reads unknown.
+
+- **Every site that kills, types into, or reads the screen of a row's pane acts only on "live".** `agent_close`, `agent_park`, `agent_send` (text and keys, `-X cancel` included), `agent_rename`, `stopProcess`, wake delivery, `hive lead`'s adopt, `hive show`/`hide`, and `scripts/restart-lead.sh`. Unknown refuses or holds by name. Gone and reissued may retire or relabel the ROW, never touch the pane.
+- **Recheck after every await or wait, before the next pane write.** `currentOwnership()`/`requireStillOwned()` (`src/spawn.ts`) re-read the row and reclassify; row-bound `sendText` callers pass that as `beforePaneWrite`, which runs before the paste and again before the Enter. Do not add a second copy of that recheck.
+- **A row's pid certifies only the pane that row records.** A wake whose `deliver_pane` differs from its row's `tmux_target` reads unknown, whatever the row's pid.
+- **A wake with no `agents` row behind its actor stays pane-addressed**, raw-probe semantics, exactly as before. A wake whose row is closed never types: a worker's is cancelled with `delivery actor closed`, a lead's holds for `hive lead` to re-point.
+- **Never backfill an empty pid from the live pane.** A pid read from a reused id is the stranger's pid.
+
+The raw probes (`rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch; `spawn.splitTargetWindow` and the CLI's `startYmlCommand` use them for placement only and never kill or type.
 
 ## A pane hive is about to claim is created WITH its command, never as a login shell it then replaces
 
