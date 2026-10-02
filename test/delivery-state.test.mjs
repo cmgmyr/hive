@@ -179,10 +179,11 @@ describe("issue #75: the scheduler records whether the target was busy at delive
     if (!hasTmux) return;
     const project = seedProject();
     const actor = `lead:e2-${project}`;
+    const livePid = execFileSync("tmux", ["display-message", "-p", "-t", livePane, "#{pane_pid}"], { encoding: "utf8" }).trim();
     db.prepare(
-      `INSERT INTO agents (project_id, actor_id, name, command, cwd, kind)
-       VALUES (?, ?, 'e2-lead', 'claude', '/tmp', 'lead')`,
-    ).run(project, actor);
+      `INSERT INTO agents (project_id, actor_id, name, command, cwd, kind, tmux_target, pane_pid)
+       VALUES (?, ?, 'e2-lead', 'claude', '/tmp', 'lead', ?, ?)`,
+    ).run(project, actor, livePane, livePid);
     assert.equal(
       db.prepare("SELECT agent_state FROM agents WHERE actor_id = ?").get(actor).agent_state,
       "unknown",

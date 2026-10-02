@@ -17,16 +17,16 @@ const IMPORTS =
 const SEED = `
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('na', '/tmp/na') RETURNING id").get().id;
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-    VALUES (?, 'lead:1', 'lead', '%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, created_at)
+    VALUES (?, 'lead:1', 'lead', '%lead', 'pid-%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWorker = (actor, name, pane, state, changedOffset) =>
   db.prepare(
-    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
         agent_state, state_changed_at, created_at)
-      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+      VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset).id;
+  ).get(project, actor, name, pane, 'pid-' + pane, state, changedOffset).id;
 const addStandingWatch = () =>
   db.prepare(
     \`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane,
@@ -48,7 +48,8 @@ const backdateCursor = (watchId, agentId, offset) =>
   );
 `;
 
-const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
+const SNAPSHOT = (panes) =>
+  `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set(), pids: new Map(${JSON.stringify(panes)}.map((p) => [p, 'pid-' + p])) };\n`;
 
 const fixture = (name, body, panes = ["%1", "%2"]) => {
   const { dataDir, tmp } = scratchDirs();

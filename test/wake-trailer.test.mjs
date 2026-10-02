@@ -50,12 +50,13 @@ async function trailerFor(fixture, command = "claude") {
   writeFileSync(outFile, "");
   paint(fixture.startsWith("/") ? fixture : join(FIXTURES, fixture));
   await until(() => capturePane(watchedPane, 5).trim() !== "");
+  const watchedPid = execFileSync("tmux", ["display-message", "-p", "-t", watchedPane, "#{pane_pid}"], { encoding: "utf8" }).trim();
   const agent = db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status, agent_state, created_at)
-       VALUES (?, 'agent:tr', 'tr', ?, ?, '/tmp', 'running', 'working', datetime('now', '-60 seconds')) RETURNING id`,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, status, agent_state, created_at)
+       VALUES (?, 'agent:tr', 'tr', ?, ?, ?, '/tmp', 'running', 'working', datetime('now', '-60 seconds')) RETURNING id`,
     )
-    .get(project, watchedPane, command).id;
+    .get(project, watchedPane, watchedPid, command).id;
   db.prepare(
     `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, max_wait_at, created_at)
      VALUES (?, 'user:test', 'lane check', 'idle_any', ?, 'user:test', ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))`,

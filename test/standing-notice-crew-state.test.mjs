@@ -22,16 +22,16 @@ const IMPORTS =
 const SEED = `
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('cs', '/tmp/cs') RETURNING id").get().id;
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-    VALUES (?, 'lead:1', 'lead', '%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, created_at)
+    VALUES (?, 'lead:1', 'lead', '%lead', 'pid-%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWorker = (actor, name, pane, state, changedOffset) =>
   db.prepare(
-    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
         agent_state, state_changed_at, created_at)
-      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+      VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset).id;
+  ).get(project, actor, name, pane, 'pid-' + pane, state, changedOffset).id;
 const setState = (actor, state, offset) => {
   db.prepare("UPDATE agents SET agent_state = ?, state_changed_at = datetime('now', ?) WHERE actor_id = ?")
     .run(state, offset, actor);
@@ -57,9 +57,11 @@ const noticeRow = (watchId) =>
 const claimCount = (noticeId) =>
   db.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT agent_id) AS a FROM wake_idle_notices WHERE notice_wake_id = ?")
     .get(noticeId);
-const pointAt = (noticeId, pane) =>
+const pointAt = (noticeId, pane) => {
+  db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE actor_id = 'lead:1'").run(pane, snapshot.pids.get(pane));
   db.prepare("UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL WHERE id = ?")
     .run(pane, noticeId);
+};
 const resumeWorker = (actor) =>
   db.prepare(
     "UPDATE agents SET agent_state = 'unknown', state_changed_at = NULL, resumed_at = datetime('now') WHERE actor_id = ?",
@@ -77,7 +79,9 @@ const backdate = (noticeId, offset, alsoCreatedAt) => {
 };
 `;
 
-const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
+const SNAPSHOT = (panes, real = []) =>
+  `const realPids = (await import(${JSON.stringify(join(DIST, "tmux.js"))})).liveTargets()?.pids ?? new Map();\n` +
+  `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set(), pids: new Map(${JSON.stringify(panes)}.map((p) => [p, ${JSON.stringify(real)}.includes(p) ? realPids.get(p) : 'pid-' + p])) };\n`;
 
 const out = (expr) => `process.stdout.write(JSON.stringify(${expr}));\n`;
 
@@ -101,7 +105,7 @@ function deliverToPane(name, body, extraPanes = []) {
     const result = runFixture(
       tmp,
       name,
-      IMPORTS + SEED + SNAPSHOT([...extraPanes, pane]) + `const deliveryPane = ${JSON.stringify(pane)};\n` + body,
+      IMPORTS + SEED + SNAPSHOT([...extraPanes, pane], [pane]) + `const deliveryPane = ${JSON.stringify(pane)};\n` + body,
       fixtureEnv(dataDir),
     );
     const text = existsSync(captureFile) ? readFileSync(captureFile, "utf8") : "";

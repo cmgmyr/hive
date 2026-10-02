@@ -34,16 +34,16 @@ const seedContext = (id, actor) => {
 const EPISODE = '-5 seconds';
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('bt', '/tmp/bt') RETURNING id").get().id;
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-    VALUES (?, 'lead:1', 'lead', '%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, created_at)
+    VALUES (?, 'lead:1', 'lead', '%lead', 'pid-%lead', 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`,
 ).run(project);
 const addWorker = (actor, name, pane, state, changedOffset) =>
   seedContext(db.prepare(
-    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+    \`INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
         agent_state, state_changed_at, created_at)
-      VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
+      VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', ?,
         datetime('now', ?), datetime('now', '-300 seconds')) RETURNING id\`,
-  ).get(project, actor, name, pane, state, changedOffset).id, actor);
+  ).get(project, actor, name, pane, 'pid-' + pane, state, changedOffset).id, actor);
 const addDeadWorker = (actor, name, offset) =>
   seedContext(db.prepare(
     \`INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
@@ -81,7 +81,8 @@ const shortAndFull = (watchId) => {
 const stateOf = (id) => db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(id).agent_state;
 `;
 
-const SNAPSHOT = (panes) => `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set() };\n`;
+const SNAPSHOT = (panes) =>
+  `const snapshot = { panes: new Set(${JSON.stringify(panes)}), windows: new Set(), pids: new Map(${JSON.stringify(panes)}.map((p) => [p, 'pid-' + p])) };\n`;
 
 const fixture = (name, body, panes = ["%1", "%2", "%3", "%4", "%5"]) => {
   const { dataDir, tmp } = scratchDirs();

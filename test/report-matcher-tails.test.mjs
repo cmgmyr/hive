@@ -23,22 +23,22 @@ db.prepare(
 const addFinisher = (name) =>
   db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
           agent_state, state_changed_at, created_at)
-         VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle',
+         VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle',
           datetime('now', '-1 seconds'), datetime('now', '-300 seconds')) RETURNING id`,
     )
-    .get(projectId, `actor:${name}`, name, `%${name}`).id;
+    .get(projectId, `actor:${name}`, name, `%${name}`, `pid-${name}`).id;
 
 const addStillGoing = (name) =>
   db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status,
           agent_state, created_at)
-         VALUES (?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'working', datetime('now', '-300 seconds'))
+         VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'working', datetime('now', '-300 seconds'))
          RETURNING id`,
     )
-    .get(projectId, `actor:${name}`, name, `%${name}`).id;
+    .get(projectId, `actor:${name}`, name, `%${name}`, `pid-${name}`).id;
 
 const addStandingWatch = () =>
   db
@@ -64,7 +64,7 @@ stillGoingNames.forEach(addStillGoing);
 // more finishers instead of leaving it running.
 const allPanes = new Set([...finisherNames, ...stillGoingNames].map((n) => `%${n}`));
 
-await tick({ panes: allPanes, windows: new Set() });
+await tick({ panes: allPanes, windows: new Set(), pids: new Map([...allPanes].map((p) => [p, `pid-${p.slice(1)}`])) });
 
 const body = standingNoticeBodies(db, watchId).find(Boolean);
 
