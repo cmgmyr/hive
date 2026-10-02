@@ -49,6 +49,7 @@ import {
   maskChoiceMarker,
   observationFailed,
   paneInCopyMode,
+  paneReissued,
   rowAlive,
   rowAliveProbe,
   rowLiveProbe,
@@ -414,8 +415,8 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
   ).all(LEAD_KIND, SETTLE_WINDOW) as CrewRowForRecord[];
   for (const agent of agents) {
 
-    const ownership = rowOwnership(agent, snapshot);
-    if (ownership === "gone" || ownership === "reissued") {
+    const probe = rowAliveProbe(agent.tmux_socket, agent.tmux_target, snapshot);
+    if (probe.live === false || paneReissued(agent.pane_pid, probe)) {
 
       // The conditional UPDATE is the claim: two instances probing the same dead socket both reach
       // this branch, and only the one that actually closed the row may put it in a record.

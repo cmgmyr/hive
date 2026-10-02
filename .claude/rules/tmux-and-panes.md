@@ -50,7 +50,7 @@ One session per STORE, one window per project inside it: `sessionName()` takes n
 - **A wake with no `agents` row behind its actor stays pane-addressed**, raw-probe semantics, exactly as before. A wake whose row is closed never types: a worker's is cancelled with `delivery actor closed`, a lead's holds for `hive lead` to re-point.
 - **Never backfill an empty pid from the live pane.** A pid read from a reused id is the stranger's pid.
 
-The raw probes (`rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch; `spawn.splitTargetWindow` and the CLI's `startYmlCommand` use them for placement only and never kill or type.
+The raw probes (`rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch; `spawn.splitTargetWindow` and the CLI's `startYmlCommand` use them for placement, and the janitor's agent sweep uses them to close rows, including on a no-tmux empty snapshot. None of the three kills or types.
 
 ## A pane hive is about to claim is created WITH its command, never as a login shell it then replaces
 

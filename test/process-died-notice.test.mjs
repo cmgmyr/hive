@@ -56,9 +56,9 @@ before(async () => {
   createWindow(session, projectName, dirs.projectDir, [], "sleep 600", projectId, true, false);
   leadPane = tmux("list-panes", "-t", findProjectWindow(session, projectId), "-F", "#{pane_id}").split("\n")[0];
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status)
-     VALUES (?, 'lead:900', 'lead', ?, '', 'claude', ?, 'lead', 'running')`,
-  ).run(projectId, leadPane, dirs.projectDir);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status)
+     VALUES (?, 'lead:900', 'lead', ?, '', ?, 'claude', ?, 'lead', 'running')`,
+  ).run(projectId, leadPane, tmux("display-message", "-p", "-t", leadPane, "#{pane_pid}"), dirs.projectDir);
 });
 
 after(() => cleanup(session));
