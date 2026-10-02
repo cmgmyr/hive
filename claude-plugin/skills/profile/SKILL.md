@@ -92,7 +92,14 @@ A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars`
 
 After writing, run `hive doctor` and read each file you touched with "Read a rendered file in bounded sections" above, from the project the profile is meant to serve. Read it to the last line: a change near the end of a large file is easy to miss. A profile with no readable `runbook.md` fails `hive doctor` outright; `posture.md` and `worker.md` do not, but check them anyway. Tell the user to restart any running hive session so it picks up the change, and invite one small follow-up edit once they've tried it - that is the expected way a profile keeps improving.
 
+## After a profile edit lands, ask once about notifying leads
+
+Do this once after the full profile edit has been reviewed and committed, not after each commit or review round. Find the changed files and the commit range for that edit, and record when both review and commit are complete; that is when the edit landed. Use `project_list` to enumerate registered projects and their paths. In each project, run `hive profile list`; its `*` marks the active profile. Keep projects whose active profile matches the one you edited.
+
+For each matching project, call `agent_list` with `{project_id: <project id>}`. A recipient must have `kind: "lead"`, `status: "running"`, and `alive: true`, which means the row owns a live pane. Inspect its `command` for `--append-system-prompt-file <path>`. When the named file exists, compare its modification time with the edit's landed time: notify if the file is older, and exclude it if it is equal or newer. `hive lead` rewrites that file when it launches, so its modification time reflects the current session's posture render. If the command has no such flag or the file is missing, include the lead and state the reason, such as `no posture file flag` or `posture file missing`. Do not include rows with `alive: false` or `alive: null`. Ask once and show the project names, lead names, and any reason a posture age could not be checked: `N running leads use this profile: <projects and reasons>. Notify them?` If no leads qualify, report that and stop.
+
+On no, send nothing. On yes, call `wake_set` once per qualifying lead with `delay_seconds: 1`, `project_id: <that project's integer id>`, and `deliver_to: <lead's integer agent_id>`. Do not pass an actor id such as `lead:663` as `deliver_to`. Each wake body names the changed files and commit range, then tells the lead to re-read with `hive posture`, `hive runbook`, and `hive profile read <file>`, or restart through `hive lead` to reload the posture. Do not send a wake before the human says yes.
+
 ## What this skill does not do
 
 It does not dispatch project work, change which agent application or model a project uses beyond what was explicitly asked, install a third-party tool, or commit or publish anything. It edits `hive.yml`'s `profile`, `agents`, `vars`, `context_checkpoint_percent`, and `lead_turn_budget` keys only on an explicit ask, and only to values the user gave or confirmed.
-
