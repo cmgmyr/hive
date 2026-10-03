@@ -24,7 +24,7 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { ENTER_DELAY_MS, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText, tmuxSocketPath, withGlobalFlag } =
+const { ENTER_DELAY_MS, liveTargets, maskChoiceMarker, paneAwaitingChoice, sanitizeTail, sendText, tmuxSocketPath, withGlobalFlag } =
   await import("../dist/tmux.js");
 migrate();
 
@@ -37,15 +37,17 @@ const project = db
   .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
   .get("false-idle-test", projectDir).id;
 
+const recordedPid = (target) => liveTargets()?.pids.get(target) ?? "";
+
 function agentRow(name, target, state = "idle", socket = "") {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status,
          agent_state, created_at)
-       VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'running', ?, datetime('now', '-60 seconds'))
+       VALUES (?, ?, ?, ?, ?, ?, 'claude', '/tmp', 'running', ?, datetime('now', '-60 seconds'))
        RETURNING id`,
     )
-    .get(project, `agent:${name}`, name, target, socket, state).id;
+    .get(project, `agent:${name}`, name, target, socket, recordedPid(target), state).id;
 }
 
 const stateOf = (id) => db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(id).agent_state;
@@ -632,13 +634,13 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
 
     const id = db
       .prepare(
-        `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, status,
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, status,
            agent_state, kind, created_at)
-         VALUES (?, 'agent:hive-yml-process', 'hive-yml-process', ?, '', 'claude -p "go"', '/tmp', 'running',
+         VALUES (?, 'agent:hive-yml-process', 'hive-yml-process', ?, '', ?, 'claude -p "go"', '/tmp', 'running',
            'working', 'command', datetime('now', '-60 seconds'))
          RETURNING id`,
       )
-      .get(project, watchedPane).id;
+      .get(project, watchedPane, recordedPid(watchedPane)).id;
     const wake = timedOutIdleWake(id);
 
     await tick();
@@ -835,6 +837,19 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
       /cannot honestly be read/,
       "must say plainly why the terminal is missing, not omit it silently",
     );
+  });
+
+  it("never captures a watched agent's screen when its row records no pane pid, and says why", async () => {
+    const agent = agentRow("unknown-watched", watchedPane, "working", ownSocket);
+    db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(agent);
+    const wake = timedOutIdleWake(agent);
+
+    await tick();
+    await until(() => delivered().includes(`hive wake #${wake}`));
+
+    const text = delivered();
+    assert.ok(!text.includes(MARKER), `an unknown-ownership agent's screen must never be captured; got: ${JSON.stringify(text)}`);
+    assert.match(text, /unknown-watched [^\n]*pane ownership reads unknown, so its terminal was not read/);
   });
 
   it("control: still captures the identical screen, via the identical timeout path, when the watched agent's own recorded socket matches this process", async () => {

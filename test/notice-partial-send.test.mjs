@@ -69,6 +69,8 @@ after(() => {
   cleanup(sessionName());
 });
 
+const pidOf = (pane) => execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"], { encoding: "utf8" }).trim();
+
 let seq = 0;
 function seedScenario(pane) {
   const tag = `ps${++seq}`;
@@ -76,9 +78,9 @@ function seedScenario(pane) {
     .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
     .get(tag, `/tmp/${tag}`).id;
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, created_at)
-       VALUES (?, ?, 'lead', ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))`,
-  ).run(project, `lead:${tag}`, pane);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status, created_at)
+       VALUES (?, ?, 'lead', ?, ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))`,
+  ).run(project, `lead:${tag}`, pane, pidOf(pane));
 
   const worker = db
     .prepare(
@@ -117,7 +119,7 @@ const cursor = (watch) =>
 const reportedGone = (watch, name) =>
   notices(watch).filter((n) => new RegExp(`^ {2}${name}: GONE`, "m").test(n.body));
 
-const snapshotWith = (target) => ({ panes: new Set([target]), windows: new Set() });
+const snapshotWith = (target) => ({ panes: new Set([target]), windows: new Set(), pids: new Map([[target, pidOf(target)]]) });
 
 function capture(pane) {
   return execFileSync("tmux", ["capture-pane", "-p", "-t", pane], { encoding: "utf8" });

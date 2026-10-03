@@ -151,15 +151,15 @@ db.prepare(
    VALUES (?, 'lead:1', 'the-lead', 'lead', '%dead', 'claude', '/tmp', 'running', 'unknown', datetime('now', '-60 seconds'))\`,
 ).run(project);
 db.prepare(
-  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
-   VALUES (?, 'agent:9', 'the-owner', 'agent', '%live', 'claude', '/tmp', 'running', 'idle', datetime('now', '-60 seconds'))\`,
+  \`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status, agent_state, created_at)
+   VALUES (?, 'agent:9', 'the-owner', 'agent', '%live', '8300', 'claude', '/tmp', 'running', 'idle', datetime('now', '-60 seconds'))\`,
 ).run(project);
 const timerId = db.prepare(
   \`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at)
    VALUES (?, 'agent:9', 'wake body', 'delay', '[]', 'lead:1', '%dead', datetime('now', '-1 seconds'), datetime('now', '-60 seconds'))
    RETURNING id\`,
 ).get(project).id;
-const snapshot = { panes: new Set(['%live']), windows: new Set() };
+const snapshot = { panes: new Set(['%live']), windows: new Set(), pids: new Map([['%live', '8300']]) };
 `;
 
 describe("the lead-pane-dead hold stays silent", () => {
@@ -209,22 +209,23 @@ describe("the block half does not re-read a pane it just found no dialog on", ()
       "no-dialog-fork-count",
       `const { db, migrate } = await import(${JSON.stringify(join(DIST, "db.js"))});\n` +
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
-        `const { tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `const { liveTargets, tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
         `migrate();\n` +
         `const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);\n` +
+        `const pidOf = (pane) => liveTargets()?.pids.get(pane) ?? '';\n` +
         `const pane = ${JSON.stringify(pane)};\n` +
         `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('fc', '/tmp/fc') RETURNING id").get().id;\n` +
         `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, created_at)\n` +
         `  VALUES (?, 'lead:1', 'lead', '%dead', ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`).run(project, socket);\n` +
-        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status,\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status,\n` +
         `    agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:1', 'stale', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting',\n` +
-        `    datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, pane, socket);\n` +
+        `  VALUES (?, 'agent:1', 'stale', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting',\n` +
+        `    datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, pane, socket, pidOf(pane));\n` +
         `const watchId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor,\n` +
         `    deliver_pane, max_wait_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'lead:1', '%dead',\n` +
         `    datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`).get(project).id;\n` +
-        `const snapshot = { panes: new Set([pane]), windows: new Set() };\n` +
+        `const snapshot = { panes: new Set([pane]), windows: new Set(), pids: new Map([pane].map((p) => [p, pidOf(p)])) };\n` +
         `await tick(snapshot);\nawait tick(snapshot);\nawait tick(snapshot);\n` +
         `const notices = db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices WHERE wake_id = ?").get(watchId).n;\n` +
         `process.stdout.write(JSON.stringify({ notices, watching: db.prepare("SELECT fired_at FROM wakes WHERE id = ?").get(watchId).fired_at }));`,
@@ -261,23 +262,24 @@ describe("a block notice falls back when the owner's pane is dead", () => {
       "dead-owner-pane-fallback",
       `const { db, migrate } = await import(${JSON.stringify(join(DIST, "db.js"))});\n` +
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
-        `const { tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `const { liveTargets, tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
         `migrate();\n` +
         `const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);\n` +
+        `const pidOf = (pane) => liveTargets()?.pids.get(pane) ?? '';\n` +
         `const stuckPane = ${JSON.stringify(stuckPane)};\n` +
         `const tellPane = ${JSON.stringify(tellPane)};\n` +
         `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('df', '/tmp/df') RETURNING id").get().id;\n` +
 
         `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, created_at)\n` +
         `  VALUES (?, 'lead:1', 'lead', '%dead', ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`).run(project, socket);\n` +
-        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:2', 'teller', ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, tellPane, socket);\n` +
-        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:3', 'stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket);\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:2', 'teller', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, tellPane, socket, pidOf(tellPane));\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:3', 'stuck', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket, pidOf(stuckPane));\n` +
 
         `const watchId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, watch_scope, deliver_actor, deliver_pane, max_wait_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'crew update', 'idle_any', 'project', 'agent:2', ?, datetime('now', '+4 hours'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, tellPane).id;\n` +
-        `const snapshot = { panes: new Set([stuckPane, tellPane]), windows: new Set() };\n` +
+        `const snapshot = { panes: new Set([stuckPane, tellPane]), windows: new Set(), pids: new Map([stuckPane, tellPane].map((p) => [p, pidOf(p)])) };\n` +
 
         `await tick(snapshot);\n` +
         `await tick(snapshot);\n` +
@@ -318,26 +320,27 @@ describe("a modal hold does not spend its claim on a dead lead pane", () => {
       "modal-hold-dead-owner",
       `const { db, migrate } = await import(${JSON.stringify(join(DIST, "db.js"))});\n` +
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
-        `const { tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `const { liveTargets, tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
         `migrate();\n` +
         `const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);\n` +
+        `const pidOf = (pane) => liveTargets()?.pids.get(pane) ?? '';\n` +
         `const stuckPane = ${JSON.stringify(stuckPane)};\n` +
         `const leadPane = ${JSON.stringify(leadPane)};\n` +
         `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('mh', '/tmp/mh') RETURNING id").get().id;\n` +
         `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, created_at)\n` +
         `  VALUES (?, 'lead:1', 'lead', '%dead', ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`).run(project, socket);\n` +
-        `const stuckId = db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:2', 'stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds')) RETURNING id\`).get(project, stuckPane, socket).id;\n` +
+        `const stuckId = db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:2', 'stuck', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds')) RETURNING id\`).get(project, stuckPane, socket, pidOf(stuckPane)).id;\n` +
 
         `const wakeId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
         `  VALUES (?, 'lead:1', 'go on then', 'delay', 'agent:2', ?, datetime('now', '-5 seconds'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, stuckPane).id;\n` +
-        `const snapshot = { panes: new Set([stuckPane, leadPane]), windows: new Set() };\n` +
+        `const snapshot = { panes: new Set([stuckPane, leadPane]), windows: new Set(), pids: new Map([stuckPane, leadPane].map((p) => [p, pidOf(p)])) };\n` +
         `await tick(snapshot);\n` +
         `const dead = { notices: db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id != ?").get(wakeId).n,\n` +
         `  claims: db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices").get().n,\n` +
         `  held: db.prepare("SELECT held_reason FROM wakes WHERE id = ?").get(wakeId).held_reason };\n` +
 
-        `db.prepare("UPDATE agents SET tmux_target = ? WHERE actor_id = 'lead:1'").run(leadPane);\n` +
+        `db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE actor_id = 'lead:1'").run(leadPane, pidOf(leadPane));\n` +
         `db.prepare("UPDATE wakes SET held_at = NULL, held_reason = NULL WHERE id = ?").run(wakeId);\n` +
         `await tick(snapshot);\n` +
         `const alive = { notices: db.prepare("SELECT deliver_pane, body FROM wakes WHERE id != ?").all(wakeId),\n` +
@@ -352,6 +355,66 @@ describe("a modal hold does not spend its claim on a dead lead pane", () => {
     assert.match(out.dead.held ?? "", /modal choice/, "the hold itself still happens, or this proves nothing");
 
     assert.equal(out.alive.notices.length, 1, "the returning lead must be told about the block it missed");
+    assert.equal(out.alive.notices[0].deliver_pane, leadPane, "at its fresh pane");
+    assert.deepEqual(
+      out.alive.claims.map((c) => c.agent_id),
+      [out.stuckId],
+      "and the episode is claimed exactly once, now that someone has actually been told",
+    );
+  });
+});
+
+describe("a modal hold tells an owner only through a pane the owner's row owns", () => {
+  it("stays silent while the owner's row records no pane pid, and tells it once the row owns its pane", { skip: hasTmux ? false : "no tmux" }, () => {
+    const { dataDir, tmp } = scratchDirs();
+    const spawnPane = (fixture) =>
+      execFileSync("tmux", ["new-window", "-P", "-F", "#{pane_id}", "-t", sessionName(), replayFixture(fixture)], {
+        encoding: "utf8",
+      }).trim();
+    const stuckPane = spawnPane("folder-trust-dialog.txt");
+    const leadPane = spawnPane("ready-idle.txt");
+    execFileSync("sh", ["-c", `for i in $(seq 1 60); do tmux capture-pane -p -t ${stuckPane} | grep -q 'I trust this folder' && exit 0; sleep 0.25; done; exit 1`]);
+
+    const out = runFixture(
+      tmp,
+      "modal-hold-unknown-owner",
+      `const { db, migrate } = await import(${JSON.stringify(join(DIST, "db.js"))});\n` +
+        `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
+        `const { liveTargets, tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `migrate();\n` +
+        `const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);\n` +
+        `const pidOf = (pane) => liveTargets()?.pids.get(pane) ?? '';\n` +
+        `const stuckPane = ${JSON.stringify(stuckPane)};\n` +
+        `const leadPane = ${JSON.stringify(leadPane)};\n` +
+        `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('mh', '/tmp/mh') RETURNING id").get().id;\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, created_at)\n` +
+        `  VALUES (?, 'lead:1', 'lead', ?, ?, 'claude', '/tmp', 'lead', 'running', datetime('now', '-300 seconds'))\`).run(project, leadPane, socket);\n` +
+        `const stuckId = db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:2', 'stuck', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'waiting', datetime('now', '-120 seconds'), datetime('now', '-300 seconds')) RETURNING id\`).get(project, stuckPane, socket, pidOf(stuckPane)).id;\n` +
+
+        `const wakeId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
+        `  VALUES (?, 'lead:1', 'go on then', 'delay', 'agent:2', ?, datetime('now', '-5 seconds'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, stuckPane).id;\n` +
+        `const snapshot = { panes: new Set([stuckPane, leadPane]), windows: new Set(), pids: new Map([stuckPane, leadPane].map((p) => [p, pidOf(p)])) };\n` +
+        `await tick(snapshot);\n` +
+        `const dead = { notices: db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE id != ?").get(wakeId).n,\n` +
+        `  claims: db.prepare("SELECT COUNT(*) AS n FROM wake_block_notices").get().n,\n` +
+        `  held: db.prepare("SELECT held_reason FROM wakes WHERE id = ?").get(wakeId).held_reason };\n` +
+
+        `db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE actor_id = 'lead:1'").run(leadPane, pidOf(leadPane));\n` +
+        `db.prepare("UPDATE wakes SET held_at = NULL, held_reason = NULL WHERE id = ?").run(wakeId);\n` +
+        `await tick(snapshot);\n` +
+        `const alive = { notices: db.prepare("SELECT deliver_pane, body FROM wakes WHERE id != ?").all(wakeId),\n` +
+        `  claims: db.prepare("SELECT agent_id FROM wake_block_notices").all() };\n` +
+        `process.stdout.write(JSON.stringify({ dead, alive, stuckId }));`,
+      { HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR },
+    );
+    for (const pane of [stuckPane, leadPane]) execFileSync("tmux", ["kill-pane", "-t", pane], { stdio: "ignore" });
+
+    assert.equal(out.dead.notices, 0, "no notice may be filed at a pane its owner row cannot be verified to own");
+    assert.equal(out.dead.claims, 0, "and the block episode must NOT be claimed by a path that told nobody");
+    assert.match(out.dead.held ?? "", /modal choice/, "the hold itself still happens, or this proves nothing");
+
+    assert.equal(out.alive.notices.length, 1, "control: once the row records the pane's real pid, the owner is told");
     assert.equal(out.alive.notices[0].deliver_pane, leadPane, "at its fresh pane");
     assert.deepEqual(
       out.alive.claims.map((c) => c.agent_id),

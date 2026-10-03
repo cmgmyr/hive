@@ -83,7 +83,7 @@ describe(
       assert.notEqual(row.tmux_target, workerTarget, "the lead's own pane must differ from the worker's");
     });
 
-    it("delivers a lead-directed wake to the lead's own pane; the pre-fix window target would reach the split worker instead", async () => {
+    it("delivers a lead-directed wake to the lead's own pane, and refuses the pre-fix window target that would reach the split worker", async () => {
       const row = leadRow(db, project.id);
       const leadPane = row.tmux_target;
 
@@ -108,16 +108,13 @@ describe(
       db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(windowTarget, row.id);
       try {
         const oldShapeMarker = `OLD-SHAPE-${row.id}`;
-        await mcp.call("wake_set", { delay_seconds: 1, body: oldShapeMarker, deliver_to: "lead" });
-        assert.ok(
-          await until(() => capture(workerTarget).includes(oldShapeMarker), 10000),
-          "the window-shaped target (the pre-fix behaviour) must deliver to the window's active pane - " +
-            "the split worker's, not the lead's - proving the old shape misdelivered",
+        await assert.rejects(
+          mcp.call("wake_set", { delay_seconds: 1, body: oldShapeMarker, deliver_to: "lead" }),
+          /ownership reads unknown/,
+          "a legacy window-shaped target cannot be verified as the lead's own pane, so the wake is refused",
         );
-        assert.ok(
-          !capture(leadPane).includes(oldShapeMarker),
-          "and must NOT reach the lead's own pane under the old shape",
-        );
+        assert.ok(!capture(workerTarget).includes(oldShapeMarker), "the window's active pane (the split worker) gets nothing");
+        assert.ok(!capture(leadPane).includes(oldShapeMarker));
       } finally {
         db.prepare("UPDATE agents SET tmux_target = ? WHERE id = ?").run(leadPane, row.id);
       }

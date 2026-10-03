@@ -203,7 +203,8 @@ describe("two schedulers holding the same unsubmitted-input wake", () => {
       const IMPORTS =
         `const { db, migrate } = await import(${JSON.stringify(join(DIST, "db.js"))});\n` +
         `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\n` +
-        `const { tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `const { liveTargets, tmuxSocketPath } = await import(${JSON.stringify(join(DIST, "tmux.js"))});\n` +
+        `const pidOf = (pane) => liveTargets()?.pids.get(pane) ?? '';\n` +
         `migrate();\n`;
 
       const SEED =
@@ -211,16 +212,16 @@ describe("two schedulers holding the same unsubmitted-input wake", () => {
         `const stuckPane = ${JSON.stringify(stuckPane)};\n` +
         `const ownerPane = ${JSON.stringify(ownerPane)};\n` +
         `const project = db.prepare("INSERT INTO projects (name, path) VALUES ('cc', '/tmp/cc') RETURNING id").get().id;\n` +
-        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:9', 'conc-owner', ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, ownerPane, socket);\n` +
-        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
-        `  VALUES (?, 'agent:2', 'conc-stuck', ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket);\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:9', 'conc-owner', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, ownerPane, socket, pidOf(ownerPane));\n` +
+        `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, agent_state, state_changed_at, created_at)\n` +
+        `  VALUES (?, 'agent:2', 'conc-stuck', ?, ?, ?, 'claude', '/tmp', 'agent', 'running', 'idle', datetime('now', '-200 seconds'), datetime('now', '-300 seconds'))\`).run(project, stuckPane, socket, pidOf(stuckPane));\n` +
         `const wakeId = db.prepare(\`INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, created_at)\n` +
         `  VALUES (?, 'agent:9', 'go on then', 'delay', 'agent:2', ?, datetime('now', '-5 seconds'), datetime('now', '-60 seconds')) RETURNING id\`).get(project, stuckPane).id;\n`;
 
       const TICKER =
         IMPORTS +
-        `const snapshot = { panes: new Set([${JSON.stringify(stuckPane)}, ${JSON.stringify(ownerPane)}]), windows: new Set() };\n` +
+        `const snapshot = { panes: new Set([${JSON.stringify(stuckPane)}, ${JSON.stringify(ownerPane)}]), windows: new Set(), pids: liveTargets()?.pids };\n` +
         `const startAt = Number(process.env.CONC_BARRIER_AT);\n` +
         `while (Date.now() < startAt) {}\n` +
         `for (let i = 0; i < 3; i++) await tick(snapshot);\n`;

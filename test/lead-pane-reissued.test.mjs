@@ -69,18 +69,18 @@ function insertDueLeadWake(projectId, actorId, pane, body) {
     .get(projectId, actorId, body, actorId, pane).id;
 }
 
-function insertWorkerRow(projectId, actorId, pane, panePid) {
+function insertWorkerRow(projectId, actorId, pane, panePid, age = "-60 seconds") {
   return db
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status, created_at)
-       VALUES (?, ?, 'worker', 'agent', ?, ?, ?, 'claude', '/tmp', 'running', datetime('now', '-60 seconds'))
+       VALUES (?, ?, 'worker', 'agent', ?, ?, ?, 'claude', '/tmp', 'running', datetime('now', ?))
        RETURNING id`,
     )
-    .get(projectId, actorId, pane, ownSocket, panePid).id;
+    .get(projectId, actorId, pane, ownSocket, panePid, age).id;
 }
 
 const timerRow = (id) =>
-  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, cancelled_at FROM wakes WHERE id = ?").get(id);
+  db.prepare("SELECT fired_at, typed_at, held_at, held_reason, cancelled_at, fire_count FROM wakes WHERE id = ?").get(id);
 
 const agentStatus = (id) => db.prepare("SELECT status FROM agents WHERE id = ?").get(id).status;
 
@@ -161,7 +161,7 @@ describe("todo 336: a lead-owned wake must not type into a pane a tmux restart r
     }
   });
 
-  it("a pre-migration row (pane_pid = '') is never treated as a mismatch", async () => {
+  it("a lead row with no recorded pane pid holds as unknown ownership and is never typed into", async () => {
     const project = seedProject();
     const actorId = "lead:336003";
     const session = `hive-336-nullpid-${process.pid}`;
@@ -171,18 +171,19 @@ describe("todo 336: a lead-owned wake must not type into a pane a tmux restart r
     try {
 
       insertLeadRow(project, actorId, pane, "");
-      const wakeBody = "echo wake-336-nullpid-should-deliver";
+      const wakeBody = "echo wake-336-nullpid-must-not-land";
       const timerId = insertDueLeadWake(project, actorId, pane, wakeBody);
 
       await tick();
+      await tick();
 
       const timer = timerRow(timerId);
-      assert.notEqual(timer.fired_at, null, "an absent recorded pid must proceed exactly as before this migration");
-      assert.notEqual(timer.typed_at, null);
-      assert.equal(timer.held_reason, null);
-
-      const settled = await until(() => capture(pane).includes("wake-336-nullpid-should-deliver"), 5000);
-      assert.ok(settled, `expected the wake body to land on the pane; last capture:\n${capture(pane)}`);
+      assert.equal(timer.fired_at, null);
+      assert.equal(timer.typed_at, null);
+      assert.equal(timer.fire_count, 0, "repeated ticks must not churn the claim counter");
+      assert.equal(timer.cancelled_at, null, "unknown ownership holds visibly; it is never a cancellation");
+      assert.match(timer.held_reason, /^pane ownership for this wake's row cannot be verified[\s\S]*run `hive lead`/);
+      assert.ok(!capture(pane).includes("wake-336-nullpid-must-not-land"));
     } finally {
       cleanup(session);
     }
@@ -190,7 +191,7 @@ describe("todo 336: a lead-owned wake must not type into a pane a tmux restart r
 });
 
 describe("issue #149: a worker-owned wake must not type into a pane a tmux restart reissued", { skip: hasTmux ? false : "tmux is not installed" }, () => {
-  it("DEFECT, reproduced for real: a worker-owned wake held against a reissued pane, and its agents row reaped in the same tick", async () => {
+  it("a worker-owned wake whose agents row the janitor reaps as reissued in the same tick ends with the closed-actor reason, never typed", async () => {
     const project = seedProject();
     const actorId = "agent:149001";
 
@@ -220,19 +221,11 @@ describe("issue #149: a worker-owned wake must not type into a pane a tmux resta
       await tick();
 
       const timer = timerRow(timerId);
-      assert.equal(timer.fired_at, null, "deliverable() must hold before claimOneShot, not deliver into the stranger");
+      assert.equal(timer.fired_at, null, "nothing may be claimed for a stranger's pane");
       assert.equal(timer.typed_at, null, "nothing may have been typed at all - this is the case that used to execute");
-      assert.ok(timer.held_at, "the hold must be RECORDED, not just silently applied");
-      assert.match(
-        timer.held_reason,
-        /now belongs to a different pane/,
-        "held_reason must name the pane-identity mismatch, not read as an ordinary not-due-yet or dead-pane hold",
-      );
-      assert.match(
-        timer.held_reason,
-        /nothing re-points a worker's wake automatically/,
-        "a worker-owned hold must not point the reader at `hive lead`, which does not rescue this wake",
-      );
+      assert.equal(timer.fire_count, 0);
+      assert.notEqual(timer.cancelled_at, null);
+      assert.match(timer.held_reason, /^delivery actor closed/, "the cancellation must say why, readable through wake_get");
 
       const onScreen = capture(gen2Pane);
       assert.ok(
@@ -259,7 +252,7 @@ describe("issue #149: a worker-owned wake must not type into a pane a tmux resta
     const gen1Pane = paneIdOf(`=${gen1Session}`);
     const gen1Pid = panePidOf(gen1Pane);
 
-    insertWorkerRow(project, actorId, gen1Pane, gen1Pid);
+    insertWorkerRow(project, actorId, gen1Pane, gen1Pid, "+0 seconds");
     const timerId = insertDueLeadWake(project, actorId, gen1Pane, "echo wake-149c-should-not-execute");
 
     execFileSync("tmux", ["kill-session", "-t", `=${gen1Session}`], { stdio: "ignore" });
@@ -278,6 +271,8 @@ describe("issue #149: a worker-owned wake must not type into a pane a tmux resta
       const heldForReissue = timerRow(timerId);
       assert.ok(heldForReissue.held_at, "sanity check: the reissue hold from the earlier test's own shape must apply here too");
       assert.match(heldForReissue.held_reason, /now belongs to a different pane/);
+      assert.match(heldForReissue.held_reason, /nothing re-points a worker's wake automatically/);
+      assert.doesNotMatch(heldForReissue.held_reason, /run `hive lead`/, "a worker's hold must not send the reader to hive lead");
 
       execFileSync("tmux", ["kill-session", "-t", `=${gen2Session}`], { stdio: "ignore" });
       const paneGone = await until(() => {

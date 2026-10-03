@@ -2,18 +2,18 @@ import { getProject } from "./context.js";
 import type { ProcessSnapshot } from "./dashboard.js";
 import { db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
-import { closeAgentRow, killAgentPane, relayoutAfterPaneLeft } from "./spawn.js";
+import { closeAgentRow, currentOwnership, killAgentPane, paneIdentity, relayoutAfterPaneLeft } from "./spawn.js";
 import {
   cancelCopyMode,
+  observeRowOwnership,
   paneProcessExited,
-  paneReissued,
   paneVisibility,
   paneWindow,
   projectWindows,
   rowLive,
-  rowLiveProbe,
   sessionName,
   tmux,
+  type RowOwnership,
 } from "./tmux.js";
 
 // One derivation for every surface that reports where a project's processes are: `hive status`,
@@ -64,6 +64,7 @@ export type StopLeg = "interrupted" | "killed" | "already-gone" | "unreachable" 
 export interface StoppedProcess {
   name: string;
   leg: StopLeg;
+  note?: string;
 }
 
 export interface StoppableRow {
@@ -149,6 +150,21 @@ function waitForPaneToExit(target: string, timeoutMs: number): boolean {
   }
 }
 
+const UNKNOWN_OWNERSHIP_NOTE =
+  "its pane ownership is unknown (no pane pid recorded, a legacy window target, or another tmux socket), so hive left it running";
+const REISSUED_NOTE = "its pane id now belongs to another process, which was left alone";
+const CHANGED_NOTE =
+  "its row was closed or recorded a different pane during the stop, so hive touched nothing further";
+
+// Unknown, or a row that changed underneath the stop, is left running: closing it would hide a
+// process that may still be running from every surface that reports one.
+function notOwned(row: StoppableRow, ownership: Exclude<RowOwnership, "live"> | "changed"): StoppedProcess {
+  if (ownership === "unknown") return { name: row.name, leg: "unreachable", note: UNKNOWN_OWNERSHIP_NOTE };
+  if (ownership === "changed") return { name: row.name, leg: "unreachable", note: CHANGED_NOTE };
+  closeAgentRow(row.id, paneIdentity(row));
+  return { name: row.name, leg: "already-gone", ...(ownership === "reissued" ? { note: REISSUED_NOTE } : {}) };
+}
+
 // The only thing that stops a hive.yml command. kill-pane alone is SIGHUP, which a dev server with
 // detached grandchildren survives while still holding its port, so the graceful leg comes first and
 // the receipt says which one ended it.
@@ -156,21 +172,18 @@ function waitForPaneToExit(target: string, timeoutMs: number): boolean {
 // argument so every caller has to declare its trigger from the closed set docs/projects.md is
 // checked against, and whichever caller prints it already knows which one it passed.
 export function stopProcess(row: StoppableRow, reason: StopReason): StoppedProcess {
-  const probe = rowLiveProbe(row.tmux_socket, row.tmux_target);
-
-  // A pane hive cannot see is left alone, row and all: closing the row here would hide a process
-  // that is still running from every surface that reports one.
-  if (probe.live === null) return { name: row.name, leg: "unreachable" };
-
-  // A reissued pane id belongs to whoever holds it now, so it is never killed - same compare as
-  // janitor() and wake delivery.
-  if (probe.live === false || paneReissued(row.pane_pid, probe)) {
-    closeAgentRow(row.id);
-    return { name: row.name, leg: "already-gone" };
-  }
+  const identity = paneIdentity(row);
+  const ownership = observeRowOwnership(identity);
+  if (ownership === "probe-failed") return { name: row.name, leg: "unreachable" };
+  if (ownership !== "live") return notOwned(row, ownership);
 
   markStopping(row.project_id, row.id);
   const window = paneWindow(row.tmux_target);
+  const beforeSignal = currentOwnership(row.id, identity);
+  if (beforeSignal !== "live") {
+    clearStoppingMarker(row.project_id, row.id);
+    return notOwned(row, beforeSignal);
+  }
   try {
 
     // In copy mode C-c is `cancel`, not SIGINT, so the graceful leg would silently do nothing to a
@@ -182,6 +195,11 @@ export function stopProcess(row: StoppableRow, reason: StopReason): StoppedProce
   }
   let leg: StopLeg = "interrupted";
   if (!waitForPaneToExit(row.tmux_target, STOP_GRACE_MS)) {
+    const beforeKill = currentOwnership(row.id, identity);
+    if (beforeKill !== "live") {
+      clearStoppingMarker(row.project_id, row.id);
+      return notOwned(row, beforeKill);
+    }
     try {
       killAgentPane(row.tmux_target);
     } catch {
@@ -193,7 +211,7 @@ export function stopProcess(row: StoppableRow, reason: StopReason): StoppedProce
   // The row closes only once the pane is confirmed gone. A stop that did not finish leaves the row
   // RUNNING, so the process stays visible to hive status, hive stop and the janitor.
   if (leg === "still-running") return { name: row.name, leg };
-  closeAgentRow(row.id, row.tmux_target);
+  closeAgentRow(row.id, identity);
   clearStoppingMarker(row.project_id, row.id);
   relayoutAfterPaneLeft(window);
   return { name: row.name, leg };
@@ -210,9 +228,13 @@ export function stopLine(stopped: StoppedProcess): string {
     case "killed":
       return `${stopped.name}: stopped (killed after ${STOP_GRACE_MS / 1000}s)`;
     case "already-gone":
-      return `${stopped.name}: already gone (nothing was running)`;
+      return stopped.note
+        ? `${stopped.name}: already gone (${stopped.note})`
+        : `${stopped.name}: already gone (nothing was running)`;
     case "unreachable":
-      return `${stopped.name}: tmux could not be probed, so hive left it running`;
+      return stopped.note
+        ? `${stopped.name}: ${stopped.note}`
+        : `${stopped.name}: tmux could not be probed, so hive left it running`;
     case "still-running":
       return `${stopped.name}: still running: its pane survived C-c and kill-pane, so hive left the row open`;
   }

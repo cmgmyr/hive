@@ -8,6 +8,7 @@ paths:
   - "src/leadMessage.ts"
   - "src/harnesses.ts"
   - "src/processes.ts"
+  - "scripts/restart-lead.sh"
 ---
 
 # tmux, panes, and typing into them
@@ -26,7 +27,7 @@ Get the boundary right. The danger is a private socket plus the DEFAULT store, n
 
 ## A row's `tmux_target` is always a PANE id, whatever the placement
 
-**`killAgentPane`'s window branch is NOT dead code and must stay**: an MCP server started before this change keeps writing window ids into the shared store, and `kill-pane` against a window id fails, so deleting it would leak a live process instead of erroring.
+**`killAgentPane`'s window branch is unreachable since todo 1638 and kept deliberately as defense in depth.** `rowOwnership` reads a window-id target as unknown and every caller kills only on live, so no caller reaches it. A row an older MCP server wrote with a window id retires only through `agent_close(row_only=true)`, which leaves its process running.
 
 ## A pane must never be recorded onto a row that is no longer running
 
@@ -42,7 +43,15 @@ One session per STORE, one window per project inside it: `sessionName()` takes n
 
 ## A row owns a pane only when `rowOwnership` says "live"
 
-`rowOwnership()` (`src/tmux.ts`) is the one place that decides gone, reissued, live or unknown for an `agents` row. Do not re-derive it at a call site from `targetAlive`/`rowAlive` plus a pid comparison. An empty stored `pane_pid` on a pane id that exists is UNKNOWN, never live: reports say unknown, project removal blocks on it, and only an explicit `agent_close(row_only: true)` retires the row. Unknown is not proof of death either, so nothing sweeps or closes a row because it reads unknown. The raw probes (`isLive`, `rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch. These sites still use them and move to the classifier in lane B (todo 1638), so they are the known exceptions to the line above, not a pattern to copy: the kill and type sites (`agent_close` and `agent_park` kill, `agent_send`, `agent_rename`, `stopProcess`, wake delivery in `deliverable()`), plus `leadWatch.evaluateLeadWatch`, the scheduler's build-change notice (`reportRunningBuildChange`), `wake_when_idle`'s lead-watch creation in `src/tools/wakes.ts`, and `src/cli.ts`'s `hive show` command resolve and `cmdLead`'s adopt check.
+`rowOwnership()` (`src/tmux.ts`) is the one place that decides gone, reissued, live or unknown for an `agents` row. Do not re-derive it at a call site from `targetAlive`/`rowAlive` plus a pid comparison. An empty stored `pane_pid` on a pane id that exists is UNKNOWN, never live: reports say unknown, project removal blocks on it, and only an explicit `agent_close(row_only: true)` retires the row. Unknown is not proof of death either, so nothing sweeps or closes a row because it reads unknown.
+
+- **Every site that kills, types into, or reads the screen of a row's pane acts only on "live".** `agent_close`, `agent_park`, `agent_send` (text and keys, `-X cancel` included), `agent_rename`, `stopProcess`, wake delivery, `hive lead`'s adopt, `hive show`/`hide`, and `scripts/restart-lead.sh`. Unknown refuses or holds by name. Gone and reissued may retire or relabel the ROW, never touch the pane.
+- **Recheck after every await or wait, before the next pane write.** `currentOwnership()`/`requireStillOwned()` (`src/spawn.ts`) re-read the row and reclassify; row-bound `sendText` callers pass that as `beforePaneWrite`, which runs before the paste and again before the Enter. Do not add a second copy of that recheck.
+- **A row's pid certifies only the pane that row records.** A wake whose `deliver_pane` differs from its row's `tmux_target` reads unknown, whatever the row's pid.
+- **A wake with no `agents` row behind its actor stays pane-addressed**, raw-probe semantics, exactly as before. A wake whose row is closed never types: a worker's is cancelled with `delivery actor closed`, a lead's holds for `hive lead` to re-point.
+- **Never backfill an empty pid from the live pane.** A pid read from a reused id is the stranger's pid.
+
+The raw probes (`rowLive`, `rowAlive`, `paneReissued`) still read an empty pid as no mismatch; `spawn.splitTargetWindow` and the CLI's `startYmlCommand` use them for placement, and the janitor's agent sweep uses them to close rows, including on a no-tmux empty snapshot. They are not the only raw-probe users (`src/processes.ts` pane visibility and the janitor's wake sweep are among the others), and none of them kills or types.
 
 ## A pane hive is about to claim is created WITH its command, never as a login shell it then replaces
 
@@ -191,7 +200,7 @@ Never build a shell command string out of data.
 
 `tmux()` in `src/tmux.ts` is the way to reach tmux, but it is **not the only path**, so do not read it as a coverage claim. Known others, not guaranteed exhaustive: `src/cli.ts`'s `attach()` calls `spawnSync("tmux", argv, { stdio: "inherit" })` twice (`:381`, `:392`) because it hands the terminal over rather than capturing output; doctor probes `execFileSync("tmux", ["-V"])` (`:1885`); and `ensureAttached` runs `execFileSync("osascript", ["-e", script])` (`src/tmux.ts:1129`) where `script` comes from `attachScripts()` and **is a built string carrying the session name** - one of two live exceptions to the sentence above, and the reason they are called out here rather than left to be discovered. The second is `leadPaneExitedHookCommand` (`src/cli.ts`), which builds the string tmux `run-shell` hands to `/bin/sh` for the lead-pane backstop; every value interpolated into it goes through `shellQuote`.
 
-What those paths do NOT carry is what `tmux()` itself adds, which is exactly two things: the timeout bound, and `scratchStoreOnSharedSocket()`. **`untrustedTmuxServer()` is NOT one of them** - it is applied per call site (`ensureSession`, `targetLiveProbe`, `src/tmux.ts:432`, `src/spawn.ts:186`/`:297`, `src/cli.ts:1987`), so a NEW read path built on `tmux()` gets the timeout and the socket guard for free and still needs its own cross-server check. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
+What those paths do NOT carry is what `tmux()` itself adds, which is exactly two things: the timeout bound, and `scratchStoreOnSharedSocket()`. **`untrustedTmuxServer()` is NOT one of them** - it is applied per call site (`ensureSession`, `targetLiveProbe`, `src/tmux.ts:432`, `src/spawn.ts:186`/`:310`, `src/cli.ts:1987`), so a NEW read path built on `tmux()` gets the timeout and the socket guard for free and still needs its own cross-server check. Pane titles, session names, agent names, wake bodies and `hive.yml` values all reach these calls, and every one of them is attacker-adjacent in the weak sense that matters here: they are typed by a human or written by a repo, not validated by hive.
 
 ## iTerm profile commands run with no shell and a minimal PATH
 

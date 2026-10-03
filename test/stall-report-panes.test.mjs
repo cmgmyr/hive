@@ -183,4 +183,19 @@ describe("arm 2: a `waiting` worker whose pane shows no dialog", { skip: hasTmux
     assert.equal(stallCursor(watchId).length, 0);
     assert.equal(blockNotices(watchId).length, 1, "and the block half still spoke exactly once");
   });
+
+  it("says nothing about a worker whose row records no pane pid, until it records the real one", async () => {
+    freshCase("2020-01-04 00:00:00", "ready-idle.txt");
+    const pid = db.prepare("SELECT pane_pid FROM agents WHERE name = 'stall-stuck'").get().pane_pid;
+    db.prepare("UPDATE agents SET pane_pid = '' WHERE name = 'stall-stuck'").run();
+    const watchId = await watchOwnedBy("stall-watcher");
+
+    await new Promise((r) => setTimeout(r, 7000));
+    assert.equal(stallNotices(watchId).length, 0, "a pane the row cannot be verified to own is never read or reported");
+    assert.equal(stallCursor(watchId).length, 0);
+
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE name = 'stall-stuck'").run(pid);
+    assert.ok(await until(() => stallNotices(watchId).length > 0, 30000), "control: the same stall is reported once the row owns its pane");
+  });
+
 });

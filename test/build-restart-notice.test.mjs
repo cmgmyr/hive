@@ -132,7 +132,8 @@ it("two ticks file one notice to the server's own lead and a second build files 
   const { liveTargets, tmuxSocketPath } = await import(join(f.root, "dist", "tmux.js"));
   mkdirSync(dirname(tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR)), { recursive: true, mode: 0o700 });
   const pane = tmux("new-session", "-d", "-s", "restart-notice", "-P", "-F", "#{pane_id}", "cat");
-  f.db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ? WHERE actor_id = ?").run(pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), f.actor);
+  const panePid = tmux("display-message", "-p", "-t", pane, "#{pane_pid}");
+  f.db.prepare("UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE actor_id = ?").run(pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), panePid, f.actor);
   f.db.prepare(`INSERT INTO agents (project_id, actor_id, name, command, cwd, kind)
     VALUES (?, 'lead:901', 'other-lead', 'claude', ?, 'lead')`).run(f.project.id, f.projectDir);
   const authored = "Remember the exact body.\nNo added restart instructions.";
@@ -184,6 +185,9 @@ it("no live own lead or a failed insertion stays retryable, and never targets an
     f.db.prepare("UPDATE agents SET tmux_target = '%900', pane_pid = '901' WHERE actor_id = ?").run(f.actor);
     reportRunningBuildChange(snapshot);
     assert.equal(count(), 0, "a reused pane is not the lead's live pane");
+    f.db.prepare("UPDATE agents SET pane_pid = '' WHERE actor_id = ?").run(f.actor);
+    reportRunningBuildChange(snapshot);
+    assert.equal(count(), 0, "a lead with no recorded pane pid has unknown ownership and gets no notice");
     f.db.prepare("UPDATE agents SET pane_pid = '900' WHERE actor_id = ?").run(f.actor);
     f.db.exec("CREATE TRIGGER reject_notice BEFORE INSERT ON wakes BEGIN SELECT RAISE(ABORT, 'fixture failure'); END");
     assert.doesNotThrow(() => reportRunningBuildChange(snapshot));

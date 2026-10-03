@@ -215,6 +215,29 @@ describe("hive CLI pads", () => {
     );
   });
 
+  for (const [kind, reason] of [
+    [
+      "an unverifiable-ownership hold",
+      "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now " +
+        "records a different pane, or the pane is on another tmux socket); held rather than typed into a pane " +
+        "that may not be its own - run `hive lead` to start or adopt a lead with a recorded pane and re-point it",
+    ],
+    [
+      "a closed-lead-row hold",
+      "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a " +
+        "lead and re-points it",
+    ],
+  ]) {
+    it(`labels ${kind} 'needs you', since only hive lead or wake_cancel clears it`, async () => {
+      const { cwd, projectId } = await freshHeldProject(`held-${kind.split(" ")[1]}`);
+      seedHeldTimer(projectId, { reason, firstHeldAtExpr: "datetime('now', '-60 seconds')" });
+
+      const { code, stdout } = await runCli(["statusline"], { ...cliOpts, cwd });
+      assert.equal(code, 0);
+      assert.match(stdout, /1 held \(1m, needs you\)/);
+    });
+  }
+
   it("gives todo 455's conversation hold its own reason word, not 'blocked'", async () => {
     const HELD_REASON_CONVERSATION =
       "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +

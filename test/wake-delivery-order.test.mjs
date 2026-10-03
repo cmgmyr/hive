@@ -47,10 +47,11 @@ describe(
         "new-window", "-P", "-F", "#{pane_id}", "-t", `=${sessionName()}`, "-c", dirs.projectDir,
         fakeClaude("sleep 600"),
       ]).toString().trim();
+      const panePid = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"]).toString().trim();
       db.prepare(
-        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
-         VALUES (?, ?, 'wake-order-live', ?, 'claude', ?, 'agent', 'running')`,
-      ).run(projectId, actorId, pane, dirs.projectDir);
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status)
+         VALUES (?, ?, 'wake-order-live', ?, ?, 'claude', ?, 'agent', 'running')`,
+      ).run(projectId, actorId, pane, panePid, dirs.projectDir);
 
       const wake = await mcp.call("wake_set", { delay_seconds: 1, body: "WAKE-ORDER marker" });
 

@@ -139,12 +139,12 @@ const project = db
 function agentRow(name, target, age = "-60 seconds") {
   return db
     .prepare(
-      `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, status,
+      `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, status,
          agent_state, created_at)
-       VALUES (?, ?, ?, ?, 'claude', '/tmp', 'running', 'working', datetime('now', ?))
+       VALUES (?, ?, ?, ?, ?, 'claude', '/tmp', 'running', 'working', datetime('now', ?))
        RETURNING id`,
     )
-    .get(project, `agent:${name}`, name, target, age).id;
+    .get(project, `agent:${name}`, name, target, liveTargets()?.pids.get(target) ?? "", age).id;
 }
 
 function timerRow({ pane, kind = "delay", watch = [], due = "+1 hour" }) {
@@ -556,21 +556,16 @@ describe("the tools that changed how they refuse", { skip: hasTmux ? false : "tm
     assert.match(message, /agent_close and spawn a new one/);
   });
 
-  it("agent_rename renames the row even when tmux cannot be asked", async () => {
+  it("agent_rename refuses, changing neither row nor pane, when tmux cannot be asked", async () => {
 
     const agent = agentRow("rename-unknown", "%9404");
 
-    const out = await callWithBrokenTmux(
-      "agent_rename",
-      { name: "rename-unknown", new_name: "renamed" },
-      "%9404",
+    await assert.rejects(
+      callWithBrokenTmux("agent_rename", { name: "rename-unknown", new_name: "renamed" }, "%9404"),
+      /could not be probed[\s\S]*Retry in a few seconds/,
     );
-
-    assert.equal(out.previous_name, "rename-unknown");
-    assert.equal(out.name, "renamed");
-    assert.equal(out.retitled, false, "the pane is not retitled while tmux is unreachable");
     const row = db.prepare("SELECT name FROM agents WHERE id = ?").get(agent);
-    assert.equal(row.name, "renamed", "the row is renamed either way");
+    assert.equal(row.name, "rename-unknown", "an unverifiable row keeps its label");
   });
 });
 

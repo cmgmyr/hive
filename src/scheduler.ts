@@ -13,7 +13,15 @@ import { getProjectByPath, listProjects, queenHomeDir } from "./context.js";
 import { collectPortfolio } from "./portfolio.js";
 import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./queenDashboard.js";
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
-import { closeAgentRow, isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND, reapCodexHomeForClosedAgent } from "./spawn.js";
+import {
+  closeAgentRow,
+  isLeadActorId,
+  LEAD_ACTOR_PREFIX,
+  LEAD_KIND,
+  PaneOwnershipLost,
+  reapCodexHomeForClosedAgent,
+  requireStillOwned,
+} from "./spawn.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
 import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
@@ -39,12 +47,13 @@ import {
   holdsHumanInput,
   liveTargets,
   maskChoiceMarker,
+  observationFailed,
   paneInCopyMode,
   paneReissued,
   rowAlive,
   rowAliveProbe,
-  rowLive,
   rowLiveProbe,
+  rowOwnership,
   renderTrailerView,
   sanitizeTail,
   sendText,
@@ -53,6 +62,8 @@ import {
   tmuxSocketPath,
   type AliveSnapshot,
   type InputBoxState,
+  type RowOwnership,
+  type RowPaneIdentity,
 } from "./tmux.js";
 import {
   appendTeardown,
@@ -96,6 +107,10 @@ export interface TimerRow {
 
   deliver_command: string;
 
+  deliver_row_id: number | null;
+  deliver_row_status: string | null;
+  deliver_row_target: string;
+
   watch_scope: string | null;
 
   parent_wake_id: number | null;
@@ -109,6 +124,40 @@ export const DELIVER_SOCKET_JOIN = `LEFT JOIN agents ON agents.id = (
   SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
    ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1
 )`;
+
+const DELIVER_ROW_COLUMNS = `COALESCE(agents.tmux_socket, '') AS deliver_socket,
+  COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
+  COALESCE(agents.command, '') AS deliver_command,
+  agents.id AS deliver_row_id, agents.status AS deliver_row_status,
+  COALESCE(agents.tmux_target, '') AS deliver_row_target`;
+
+type DeliveryRow = Pick<
+  TimerRow,
+  | "deliver_actor"
+  | "deliver_pane"
+  | "deliver_socket"
+  | "deliver_pane_pid"
+  | "deliver_command"
+  | "deliver_row_id"
+  | "deliver_row_status"
+  | "deliver_row_target"
+>;
+
+// "raw" is a wake with no agents row behind its actor (resolveDelivery's TMUX_PANE fallback): pane-addressed.
+type DeliveryOwnership = RowOwnership | "closed" | "raw";
+
+// A row's pid certifies only the pane that row records, never a different deliver_pane.
+const deliveryIdentity = (row: DeliveryRow): RowPaneIdentity => ({
+  tmux_target: row.deliver_pane,
+  tmux_socket: row.deliver_socket,
+  pane_pid: row.deliver_row_target === row.deliver_pane ? row.deliver_pane_pid : "",
+});
+
+function deliveryOwnership(row: DeliveryRow, snapshot: AliveSnapshot | null): DeliveryOwnership {
+  if (row.deliver_row_id === null) return "raw";
+  if (row.deliver_row_status !== "running") return "closed";
+  return rowOwnership(deliveryIdentity(row), snapshot);
+}
 
 export const ACTIVE_TIMER_WHERE =
   "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
@@ -219,7 +268,7 @@ function goneLeadRows(snapshot: AliveSnapshot): CrewRowForRecord[] {
     stmt(
       `SELECT ${CREW_ROW_COLUMNS} FROM agents WHERE status = 'running' AND kind = ? AND tmux_target != ''`,
     ).all(LEAD_KIND) as CrewRowForRecord[]
-  ).filter((row) => rowAliveProbe(row.tmux_socket, row.tmux_target, snapshot).live === false);
+  ).filter((row) => ["gone", "reissued"].includes(rowOwnership(row, snapshot)));
 }
 
 function recordTeardown(snapshot: AliveSnapshot, swept: CrewRowForRecord[]): TeardownRecord | undefined {
@@ -292,15 +341,15 @@ function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): vo
     // interrupted between the two is not reported as a crash.
     if (stoppingMarkerLive(agent.project_id, agent.id)) return;
     const lead = stmt(
-      `SELECT actor_id, tmux_target, tmux_socket FROM agents
+      `SELECT actor_id, tmux_target, tmux_socket, pane_pid FROM agents
         WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id DESC LIMIT 1`,
     ).get(agent.project_id, LEAD_KIND) as
-      | { actor_id: string; tmux_target: string; tmux_socket: string }
+      | ({ actor_id: string } & RowPaneIdentity)
       | undefined;
 
     // Never mint a notice hive could not deliver: with no live lead pane there is nobody this could
     // ever reach, and the row would sit in wakes forever.
-    if (!lead?.tmux_target || rowAlive(lead.tmux_socket, lead.tmux_target, snapshot) !== true) return;
+    if (!lead?.tmux_target || rowOwnership(lead, snapshot) !== "live") return;
     insertNotice(
       { project_id: agent.project_id, owner: lead.actor_id },
       lead.actor_id,
@@ -326,9 +375,7 @@ export function reportRunningBuildChange(snapshot: AliveSnapshot): void {
     ).get(actor, LEAD_KIND) as
       | { project_id: number; actor_id: string; tmux_target: string; tmux_socket: string; pane_pid: string; command: string }
       | undefined;
-    if (!lead?.tmux_target || !screenClassifiable(lead.command) ||
-        rowAlive(lead.tmux_socket, lead.tmux_target, snapshot) !== true ||
-        paneReissued(lead.pane_pid, rowAliveProbe(lead.tmux_socket, lead.tmux_target, snapshot))) return;
+    if (!lead?.tmux_target || !screenClassifiable(lead.command) || rowOwnership(lead, snapshot) !== "live") return;
     insertNotice(
       { project_id: lead.project_id, owner: lead.actor_id },
       lead.actor_id, lead.tmux_target, runningBuildNotice(change), null,
@@ -391,22 +438,24 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
     sawARealServer && snapshot.panes.size === 0 && swept.length > 0 ? recordTeardown(snapshot, swept) : undefined;
 
   const wakes = stmt(
-    `SELECT wakes.id, wakes.due_at, wakes.held_reason, wakes.deliver_pane,
-            COALESCE(agents.tmux_socket, '') AS deliver_socket
+    `SELECT wakes.id, wakes.due_at, wakes.held_reason, wakes.deliver_pane, wakes.deliver_actor, ${DELIVER_ROW_COLUMNS}
        FROM wakes ${DELIVER_SOCKET_JOIN}
       WHERE ${ACTIVE_TIMER_WHERE} AND wakes.deliver_actor NOT LIKE ?
         AND wakes.created_at < datetime('now', ?)`,
-  ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as {
+  ).all(`${LEAD_ACTOR_PREFIX}%`, SETTLE_WINDOW) as (DeliveryRow & {
     id: number;
     due_at: string | null;
     held_reason: string | null;
-    deliver_pane: string;
-    deliver_socket: string;
-  }[];
+  })[];
   for (const timer of wakes) {
+    if (deliveryOwnership(timer, snapshot) === "closed") {
+      cancelWithReason(timer.id, HELD_REASON_ACTOR_CLOSED);
+      cancelledTimers += 1;
+      continue;
+    }
     if (rowAlive(timer.deliver_socket, timer.deliver_pane, snapshot) === false) {
-      if (wasHeldForPaneReissue(timer.held_reason)) {
-        holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
+      if (wasHeldForPaneIdentity(timer.held_reason)) {
+        holdTimer(timer, identityThenDead(timer.held_reason));
       } else {
         cancelTimer(timer.id);
         cancelledTimers += 1;
@@ -424,6 +473,14 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
 
 function cancelTimer(timerId: number): void {
   stmt("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(timerId);
+}
+
+function cancelWithReason(timerId: number, reason: string): void {
+  bestEffortRun(
+    "UPDATE wakes SET cancelled_at = datetime('now'), held_reason = ? WHERE id = ? AND cancelled_at IS NULL",
+    reason,
+    timerId,
+  );
 }
 
 export const LOG_RETENTION = "-7 days";
@@ -697,9 +754,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
     const candidates = stmt(
-      `SELECT wakes.*, COALESCE(agents.tmux_socket, '') AS deliver_socket,
-              COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
-              COALESCE(agents.command, '') AS deliver_command
+      `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
          FROM wakes ${DELIVER_SOCKET_JOIN}
         WHERE wakes.cancelled_at IS NULL AND (
          (wakes.kind = 'delay' AND wakes.due_at <= datetime('now')
@@ -814,6 +869,40 @@ const HELD_REASON_PANE_REISSUED_THEN_DEAD =
 export function wasHeldForPaneReissue(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
 }
+
+const HELD_REASON_PANE_UNKNOWN_PREFIX =
+  "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now " +
+  "records a different pane, or the pane is on another tmux socket); held rather than typed into a pane " +
+  "that may not be its own - ";
+const HELD_REASON_PANE_UNKNOWN_LEAD =
+  `${HELD_REASON_PANE_UNKNOWN_PREFIX}run \`hive lead\` to start or adopt a lead with a recorded pane and re-point it`;
+const HELD_REASON_PANE_UNKNOWN_WORKER =
+  `${HELD_REASON_PANE_UNKNOWN_PREFIX}nothing re-points a worker's wake automatically, so cancel it with ` +
+  "wake_cancel (any running lead may, even though the wake is not theirs), or leave it: it keeps holding " +
+  "rather than deliver wrongly";
+const HELD_REASON_PANE_UNKNOWN_THEN_DEAD =
+  `${HELD_REASON_PANE_UNKNOWN_PREFIX}that pane has since gone dead too; nothing re-points a worker's wake ` +
+  "automatically, so cancel it with wake_cancel (any running lead may) if it is no longer needed";
+
+// One family for both identity holds, so a later dead pane re-holds them instead of cancelling.
+export function wasHeldForPaneIdentity(heldReason: string | null): boolean {
+  return wasHeldForPaneReissue(heldReason) || (heldReason?.startsWith(HELD_REASON_PANE_UNKNOWN_PREFIX) ?? false);
+}
+
+const identityThenDead = (heldReason: string | null): string =>
+  wasHeldForPaneReissue(heldReason) ? HELD_REASON_PANE_REISSUED_THEN_DEAD : HELD_REASON_PANE_UNKNOWN_THEN_DEAD;
+
+export const HELD_REASON_ACTOR_CLOSED =
+  "delivery actor closed: the row this wake was bound to is closed, so nothing was typed and the wake was " +
+  "cancelled rather than delivered into a pane that row no longer owns";
+const HELD_REASON_LEAD_ROW_CLOSED =
+  "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a " +
+  "lead and re-points it";
+
+export function isLeadRowClosedHold(heldReason: string | null): boolean {
+  return heldReason === HELD_REASON_LEAD_ROW_CLOSED;
+}
+const HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM = "delivery stopped after claim: ";
 
 export const HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX =
   "the pane's harness is not one hive can classify; ";
@@ -972,11 +1061,11 @@ function standingBlockNoticeBody(timer: TimerRow, names: string[], observedAt: s
 
 function ownerPaneIfLive(timer: TimerRow, snapshot: AliveSnapshot | null): string | null {
   const row = stmt(
-    `SELECT tmux_target, tmux_socket FROM agents WHERE actor_id = ? AND status = 'running'
+    `SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE actor_id = ? AND status = 'running'
       ORDER BY id DESC LIMIT 1`,
-  ).get(timer.owner) as { tmux_target: string; tmux_socket: string } | undefined;
+  ).get(timer.owner) as RowPaneIdentity | undefined;
   if (!row?.tmux_target || snapshot === null) return null;
-  return rowAlive(row.tmux_socket, row.tmux_target, snapshot) === true ? row.tmux_target : null;
+  return rowOwnership(row, snapshot) === "live" ? row.tmux_target : null;
 }
 
 function blockNoticeTarget(timer: TimerRow, snapshot: AliveSnapshot | null): { actor: string; pane: string } | null {
@@ -1189,7 +1278,7 @@ function blockedWatchedAgents(
   const rows = isStandingWatch(timer) ? standingBlockedRows(timer, tellActor) : oneShotBlockedRows(timer);
   return rows
 
-    .filter((r) => rowAlive(r.tmux_socket, r.tmux_target, snapshot) === true)
+    .filter((r) => rowOwnership(r, snapshot) === "live")
     .map((r) => ({
       id: r.id,
       name: r.name,
@@ -1313,7 +1402,7 @@ const unreported = (condition: string, episode: string): string => `NOT EXISTS (
                 AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
 
 const CREW_COLUMNS =
-  `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.agent_state,
+  `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.pane_pid, a.agent_state,
    a.state_changed_at, a.status, a.command, a.kind, a.resumed_at, a.closed_at,
    a.cwd, a.session_id, a.transcript_path`;
 
@@ -1323,6 +1412,7 @@ interface CrewRow extends ContextWorker {
   actor_id: string;
   tmux_target: string;
   tmux_socket: string;
+  pane_pid: string;
   agent_state: string;
   state_changed_at: string | null;
   status: string;
@@ -1748,7 +1838,7 @@ function noteStandingTransitions(timer: TimerRow, snapshot: AliveSnapshot | null
     if (snapshot !== null) {
       for (const row of standingIdleRows(timer)) {
         if (row.tmux_target === pane) continue;
-        if (rowAlive(row.tmux_socket, row.tmux_target, snapshot) !== true) continue;
+        if (rowOwnership(row, snapshot) !== "live") continue;
         if (!idleIsAFreshTransition(timer.id, row)) continue;
         candidates.push({ condition: CONDITION_IDLE, row });
       }
@@ -1895,7 +1985,7 @@ function noteStalledCrew(timer: TimerRow, snapshot: AliveSnapshot | null, choice
       if (row.agent_state === "waiting") {
 
         if (snapshot === null) continue;
-        if (rowAlive(row.tmux_socket, row.tmux_target, snapshot) !== true) continue;
+        if (rowOwnership(row, snapshot) !== "live") continue;
         if (awaitingChoice(row.tmux_target, row.command, choices) !== false) continue;
       }
       candidates.push({ row, stale });
@@ -2005,39 +2095,65 @@ const ageOutNotice = db.transaction((timer: TimerRow): void => {
   insertNotice(timer, timer.deliver_actor, timer.deliver_pane, agedOutBody(timer), null);
 });
 
-type DeliverableResult = { ok: true; typedSeen: string; firstHeldAt: string | null } | { ok: false };
+interface DeliveryOwner {
+  rowId: number;
+  identity: RowPaneIdentity;
+}
+
+type DeliverableResult =
+  | { ok: true; typedSeen: string; firstHeldAt: string | null; owner: DeliveryOwner | null }
+  | { ok: false };
+
+function freshDeliveryRow(timerId: number): DeliveryRow | undefined {
+  return stmt(
+    `SELECT wakes.deliver_actor, wakes.deliver_pane, ${DELIVER_ROW_COLUMNS}
+       FROM wakes ${DELIVER_SOCKET_JOIN} WHERE wakes.id = ? AND wakes.cancelled_at IS NULL`,
+  ).get(timerId) as DeliveryRow | undefined;
+}
+
+// Applies the hold, cancel or wait for a row-bound wake whose row does not own deliver_pane.
+function refuseUnowned(timer: TimerRow, ownership: Exclude<DeliveryOwnership, "live" | "raw">, snapshot: AliveSnapshot | null): void {
+  const lead = isLeadActorId(timer.deliver_actor);
+  switch (ownership) {
+    case "closed":
+      if (lead) holdTimer(timer, HELD_REASON_LEAD_ROW_CLOSED);
+      else cancelWithReason(timer.id, HELD_REASON_ACTOR_CLOSED);
+      return;
+    case "unknown":
+      // A failed observation re-evaluates next tick; it is never read as gone.
+      if (!foreignSocket(timer.deliver_socket) && observationFailed(snapshot)) return;
+      holdTimer(timer, lead ? HELD_REASON_PANE_UNKNOWN_LEAD : HELD_REASON_PANE_UNKNOWN_WORKER);
+      return;
+    case "reissued":
+      holdTimer(timer, lead ? HELD_REASON_PANE_REISSUED_LEAD : HELD_REASON_PANE_REISSUED_WORKER);
+      return;
+    case "gone":
+      if (lead) holdTimer(timer, HELD_REASON_LEAD_PANE_DEAD);
+      else if (wasHeldForPaneIdentity(timer.held_reason)) holdTimer(timer, identityThenDead(timer.held_reason));
+      else cancelTimer(timer.id);
+      return;
+  }
+}
 
 function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): DeliverableResult {
-
-  const probe = snapshot
-    ? rowAliveProbe(timer.deliver_socket, timer.deliver_pane, snapshot)
-    : rowLiveProbe(timer.deliver_socket, timer.deliver_pane);
-  const live = probe.live;
-
-  if (live === null) return { ok: false };
-  if (!live) {
-
-    if (isLeadActorId(timer.deliver_actor)) {
-      holdTimer(timer, HELD_REASON_LEAD_PANE_DEAD);
-    } else {
-
-      if (wasHeldForPaneReissue(timer.held_reason)) {
-        holdTimer(timer, HELD_REASON_PANE_REISSUED_THEN_DEAD);
-      } else {
-        cancelTimer(timer.id);
-      }
+  const row = freshDeliveryRow(timer.id);
+  if (!row || row.deliver_pane !== timer.deliver_pane) return { ok: false };
+  let owner: DeliveryOwner | null = null;
+  const ownership = deliveryOwnership(row, snapshot);
+  if (ownership === "raw") {
+    const probe = snapshot
+      ? rowAliveProbe(row.deliver_socket, row.deliver_pane, snapshot)
+      : rowLiveProbe(row.deliver_socket, row.deliver_pane);
+    if (probe.live === null) return { ok: false };
+    if (!probe.live) {
+      refuseUnowned(timer, "gone", snapshot);
+      return { ok: false };
     }
+  } else if (ownership !== "live") {
+    refuseUnowned(timer, ownership, snapshot);
     return { ok: false };
-  }
-
-  if (paneReissued(timer.deliver_pane_pid, probe)) {
-    holdTimer(
-      timer,
-      isLeadActorId(timer.deliver_actor)
-        ? HELD_REASON_PANE_REISSUED_LEAD
-        : HELD_REASON_PANE_REISSUED_WORKER,
-    );
-    return { ok: false };
+  } else {
+    owner = { rowId: row.deliver_row_id!, identity: deliveryIdentity(row) };
   }
 
   // Above both pane reads: this population must not be captured at all, and the verdicts would be
@@ -2078,12 +2194,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
-  const pid =
-    timer.deliver_pane_pid === "" || probe.pid === null
-      ? "no-fact"
-      : probe.pid === timer.deliver_pane_pid
-        ? "ok"
-        : "reissued";
+  const pid = owner === null ? "no-fact" : "ok";
 
   const dialogSeen = dialog === false ? "no" : "unknown";
 
@@ -2095,6 +2206,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}`,
 
     firstHeldAt: timer.held_at != null ? timer.first_held_at : null,
+    owner,
   };
 }
 
@@ -2184,7 +2296,7 @@ async function fireDelayClaimed(
     claimed = claimOneShot(timer);
   }
   if (!claimed) return false;
-  await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt);
+  await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
   return true;
 }
 
@@ -2208,21 +2320,19 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
     const agent = stmt(
       `SELECT *, created_at < datetime('now', ?) AS settled FROM agents WHERE id = ?`,
     ).get(SETTLE_WINDOW, id) as
-      | {
+      | (RowPaneIdentity & {
           status: string;
-          tmux_target: string;
-          tmux_socket: string;
           agent_state: string;
           state_changed_at: string | null;
           resumed_at: string;
           settled: number;
-        }
+        })
       | undefined;
     if (!agent || agent.status !== "running") return GONE;
-    const alive = rowAlive(agent.tmux_socket, agent.tmux_target, snapshot);
+    const ownership = rowOwnership(agent, snapshot);
 
-    if (alive === null) return UNKNOWN;
-    if (!alive) {
+    if (ownership === "unknown") return UNKNOWN;
+    if (ownership !== "live") {
 
       if (!agent.settled) return UNKNOWN;
       return GONE;
@@ -2261,7 +2371,7 @@ async function maybeFireIdle(
       await withPaneClaim(timer, async () => {
         const decision = deliverable(timer, snapshot, choices);
         if (!decision.ok || !claimOneShot(timer)) return false;
-        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt);
+        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
         return true;
       });
     }
@@ -2284,7 +2394,7 @@ async function maybeFireIdle(
     await withPaneClaim(timer, async () => {
       const decision = deliverable(timer, snapshot, choices);
       if (!decision.ok || !claimOneShot(timer)) return false;
-      await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt);
+      await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
       return true;
     });
   }
@@ -2320,7 +2430,7 @@ async function maybeFireLeadWatch(
     if (result.kind === "invalid") {
       bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
     }
-    await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt);
+    await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
     return true;
   });
 }
@@ -2368,12 +2478,13 @@ function watchedTail(timer: TimerRow): string {
     const shown: string[] = [];
     for (const id of ids.slice(0, TAIL_AGENTS)) {
       const agent = stmt(
-        "SELECT name, tmux_target, tmux_socket, agent_state, state_changed_at, status, actor_id, command, kind, cwd, session_id, transcript_path FROM agents WHERE id = ?",
+        "SELECT name, tmux_target, tmux_socket, pane_pid, agent_state, state_changed_at, status, actor_id, command, kind, cwd, session_id, transcript_path FROM agents WHERE id = ?",
       ).get(id) as
         | {
             name: string;
             tmux_target: string;
             tmux_socket: string;
+            pane_pid: string;
             agent_state: string;
             state_changed_at: string | null;
             status: string;
@@ -2397,6 +2508,14 @@ function watchedTail(timer: TimerRow): string {
         shown.push(
           `${agent.name} (hive state now: ${stateNowClause(agent)}${context}): its terminal lives on a different tmux ` +
             "socket than this process, so it cannot honestly be read from here.",
+        );
+        continue;
+      }
+      const ownership = rowOwnership(agent);
+      if (ownership !== "live") {
+        shown.push(
+          `${agent.name} (hive state now: ${stateNowClause(agent)}${context}): its pane ownership reads ${ownership}, ` +
+            "so its terminal was not read.",
         );
         continue;
       }
@@ -2485,6 +2604,19 @@ export function shortRenderForLeadDelivery(timer: TimerRow): string | null {
   return standingNoticeBodyShort(timer, candidates, timer.id);
 }
 
+// The claim already happened, so this records why and never re-arms or replays the wake.
+function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string): void {
+  bestEffortRun(
+    `UPDATE wakes SET held_reason = ?,
+       typed_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE typed_at END,
+       cancelled_at = CASE WHEN repeat_every_ms IS NULL THEN datetime('now') ELSE cancelled_at END
+     WHERE id = ?`,
+    HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM + why + (pasted ? " The body was pasted; no Enter was sent." : ""),
+    pasted ? 1 : 0,
+    timer.id,
+  );
+}
+
 async function deliver(
   timer: TimerRow,
   note: string,
@@ -2492,6 +2624,7 @@ async function deliver(
   typedSeen: string,
 
   firstHeldAt: string | null,
+  owner: DeliveryOwner | null,
 ): Promise<void> {
   const tail = watchedTail(timer);
   const prefix = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] `;
@@ -2518,13 +2651,23 @@ async function deliver(
 
   const box = cacheEntry(timer.deliver_pane, choices).box;
   const strandedTextWouldHold = box !== undefined && box !== null && box.state !== "unknown";
+  let pasted = false;
   try {
     await sendText(
       timer.deliver_pane,
       prefix + body + noticeStalenessNote(timer) + tail,
       true,
-      strandedTextWouldHold ? recordTyped : undefined,
+      () => {
+        pasted = true;
+        if (strandedTextWouldHold) recordTyped();
+      },
+      undefined,
+      owner ? () => requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`) : undefined,
     );
+  } catch (err) {
+    if (!(err instanceof PaneOwnershipLost)) throw err;
+    recordLostAfterClaim(timer, pasted, err.message);
+    return;
   } finally {
 
     forgetPaneAnswers(timer.deliver_pane, choices);

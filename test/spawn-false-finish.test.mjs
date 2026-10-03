@@ -26,7 +26,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { sessionName } = await import("../dist/tmux.js");
+const { liveTargets, sessionName } = await import("../dist/tmux.js");
 
 const HOOK = join(DIST, "hook.js");
 const payload = (name) => readFileSync(join(REPO, "test", "fixtures", "hook-payloads", name), "utf8");
@@ -112,6 +112,7 @@ describe("todo 387: a spawned worker has no turn at all until briefed", NEEDS_TM
     await tick({
       panes: new Set([assigned.row.tmux_target, unbriefed.row.tmux_target]),
       windows: new Set(),
+      pids: liveTargets()?.pids,
     });
 
     const body = noticeReporting(watchId, "sf-roster-assigned");
@@ -164,7 +165,7 @@ describe("todo 387: a spawned worker has no turn at all until briefed", NEEDS_TM
   it("a real assignment is the worker's first and only turn, and its finish is reported", async () => {
     const watchId = addStandingWatch();
     const { row } = await spawnWorker("sf-real-first-turn");
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set(), pids: liveTargets()?.pids };
 
     await fireHook("prompt", USER_PROMPT_PAYLOAD, row.actor_id);
     await fireHook("stop", STOP_PAYLOAD, row.actor_id);
@@ -183,7 +184,7 @@ describe("todo 384's regression: nothing suppresses an assignment landing immedi
   it("a spawn immediately followed by an assignment - the two-for-two reproduction shape - reports the finish", async () => {
     const watchId = addStandingWatch();
     const { row } = await spawnWorker("sf-immediate-send");
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set(), pids: liveTargets()?.pids };
 
     await fireHook("prompt", FORMER_ANNOUNCEMENT_PAYLOAD, row.actor_id);
     await fireHook("stop", STOP_PAYLOAD, row.actor_id);

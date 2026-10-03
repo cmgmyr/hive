@@ -89,12 +89,43 @@ resolve_project() {
 resolve_project "$REPO" || refuse "REPO ($REPO) does not resolve to a registered hive project (checked its own path and, if it is a git worktree, its primary checkout's); run 'hive init' there first, or set HIVE_REPO to a registered checkout"
 say "resolved project: $PROJECT_NAME (id $PROJECT_ID, $PROJECT_PATH)"
 
+DIST_SPAWN="$SCRIPT_DIR/../dist/spawn.js"
+DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
+
+# Prints gone, reissued, live, unknown or changed for one lead row identity, through hive's own
+# classifier, or classifier-failed (its stderr goes to the log) when node or the addon could not run it.
+ownership_of() {
+  local out err
+  err=$(mktemp)
+  out=$(HIVE_DATA_DIR="$DATA_DIR" RL_DIST_SPAWN="$DIST_SPAWN" node --input-type=module -e '
+    const { currentOwnership } = await import(process.env.RL_DIST_SPAWN);
+    const [id, tmux_target, tmux_socket, pane_pid] = process.argv.slice(1);
+    process.stdout.write(currentOwnership(Number(id), { tmux_target, tmux_socket, pane_pid }));
+  ' "$1" "$2" "$3" "$4" 2>"$err")
+  case "$out" in
+    gone|reissued|live|unknown|changed) printf '%s' "$out" ;;
+    *)
+      log "ownership classifier failed: $(head -c 2000 "$err")"
+      printf classifier-failed
+      ;;
+  esac
+  rm -f "$err"
+}
+
 resolve_lead_pane() {
   local row sess rows
-  row=$(db_query "select tmux_target from agents where project_id = $PROJECT_ID and kind = 'lead' and status = 'running' order by id limit 1;")
+  row=$(db_query "select id, tmux_target, tmux_socket, pane_pid from agents where project_id = $PROJECT_ID and kind = 'lead' and status = 'running' order by id limit 1;")
   PANE=""
   PANE_CMD=""
+  LEAD_OWNERSHIP="none"
   [ -n "$row" ] || return 0
+  LEAD_ID=$(printf '%s' "$row" | cut -f1)
+  LEAD_TARGET=$(printf '%s' "$row" | cut -f2)
+  LEAD_SOCKET=$(printf '%s' "$row" | cut -f3)
+  LEAD_PID=$(printf '%s' "$row" | cut -f4)
+  LEAD_OWNERSHIP=$(ownership_of "$LEAD_ID" "$LEAD_TARGET" "$LEAD_SOCKET" "$LEAD_PID")
+  [ "$LEAD_OWNERSHIP" = "live" ] || return 0
+  row="$LEAD_TARGET"
   if [ -n "${HIVE_SESSION:-}" ]; then
     sess="$HIVE_SESSION"
     tmux list-panes -s -t "=$sess" -F '#{pane_id}' 2>/dev/null | grep -qxF "$row" || return 0
@@ -111,14 +142,27 @@ resolve_lead_pane() {
   return 0
 }
 
-resolve_lead_pane
-if [ -n "$PANE" ]; then
-  say "lead pane: $PANE (running: $PANE_CMD; session: $SESSION; resolved via: store, project $PROJECT_ID's running kind='lead' row)"
-else
-  say "no live pane for project $PROJECT_ID's lead (no running row, or its row's pane is not live) - nothing to kill; will just run hive lead"
-fi
+command -v node >/dev/null || refuse "node is not on PATH, so the lead row's pane ownership cannot be verified; refusing to kill or type by stored pane id alone"
+[ -f "$DIST_SPAWN" ] || refuse "cannot verify the lead's pane ownership: $DIST_SPAWN is missing (dist/ not built) - run 'npm run build' first"
 
-DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
+refuse_unowned() {
+  case "$LEAD_OWNERSHIP" in
+    unknown) refuse "the lead row's pane ownership is unknown ($LEAD_TARGET has no recorded pane pid, a legacy window target, another tmux socket, or tmux did not answer); not killing or typing into it. If the row is stale, retire it with agent_close(row_only=true) from a peer lead or terminal, then re-run" ;;
+    reissued) refuse "the lead row's pane id $LEAD_TARGET now belongs to a different process (its recorded pane pid no longer matches); not killing or typing into it. Retire the stale row with agent_close, then re-run" ;;
+    changed) refuse "the lead row changed while this script was reading it; re-run" ;;
+    classifier-failed) refuse "could not run the ownership classifier (node or the native addon failed; the node on this PATH is $(command -v node), and its error is in $LOG); not killing or typing into $LEAD_TARGET" ;;
+  esac
+}
+
+resolve_lead_pane
+refuse_unowned
+if [ -n "$PANE" ]; then
+  say "lead pane: $PANE (running: $PANE_CMD; session: $SESSION; resolved via: store, project $PROJECT_ID's running kind='lead' row, pane ownership live)"
+elif [ "$LEAD_OWNERSHIP" = "live" ]; then
+  refuse "the lead row owns live pane $LEAD_TARGET but no session holding it could be resolved; not killing it blind"
+else
+  say "no live pane for project $PROJECT_ID's lead (pane ownership: $LEAD_OWNERSHIP) - nothing to kill; will just run hive lead"
+fi
 
 pane_says() {
   command -v node >/dev/null || return 2
@@ -225,6 +269,14 @@ if [ -n "$PANE" ]; then
   PLACEHOLDER=$(tmux new-window -d -P -F '#{window_id}' -t "=$SESSION" -n "restart-lead-placeholder-$$" 2>/dev/null) || PLACEHOLDER=""
   [ -n "$PLACEHOLDER" ] || refuse "could not create a placeholder window to protect the session across the kill; refusing to kill $PANE without it"
 
+  LEAD_OWNERSHIP=$(ownership_of "$LEAD_ID" "$LEAD_TARGET" "$LEAD_SOCKET" "$LEAD_PID")
+  if [ "$LEAD_OWNERSHIP" != "live" ]; then
+    remove_placeholder
+    [ "$LEAD_OWNERSHIP" = "gone" ] && refuse "the lead pane $PANE went away during the delay; nothing was killed - re-run to start a fresh lead"
+    refuse_unowned
+    refuse "the lead pane's ownership changed during the delay; nothing was killed"
+  fi
+
   say "killing $PANE"
 
   tmux kill-pane -t "$PANE" || gone "kill-pane failed; $PANE may still be live, in an unknown state - check it by hand before touching this lead again"
@@ -262,9 +314,22 @@ STORE_PANE=$(db_query "select tmux_target from agents where project_id = $PROJEC
 
 PROMPT='Run `hive runbook`, read the board pad in full, then continue from its first live item. This session was restarted automatically by scripts/restart-lead.sh, so nothing was handed to you in conversation and the store is the only handoff. Anything outward-facing still waits for the human.'
 
-tmux send-keys -t "$PANE" -l "$PROMPT" || gone "send-keys (prompt) failed against $PANE after the kill; the new lead may be up with no handoff typed - check it by hand"
-sleep 0.3
-tmux send-keys -t "$PANE" Enter || gone "send-keys (Enter) failed against $PANE after the kill; the prompt is pasted but not submitted - check it by hand"
+# A bracketed paste, rechecked against the row's recorded identity before the paste and again before the Enter.
+SEND_OUT=$(HIVE_DATA_DIR="$DATA_DIR" RL_DIST_SPAWN="$DIST_SPAWN" RL_DIST_TMUX="$DIST_TMUX" node --input-type=module -e '
+  const { requireStillOwned } = await import(process.env.RL_DIST_SPAWN);
+  const { sendText } = await import(process.env.RL_DIST_TMUX);
+  const [id, tmux_target, tmux_socket, pane_pid, prompt] = process.argv.slice(1);
+  const identity = { tmux_target, tmux_socket, pane_pid };
+  let pasted = false;
+  try {
+    await sendText(tmux_target, prompt, true, () => { pasted = true; }, undefined,
+      () => requireStillOwned(Number(id), identity, "restart-lead handoff"));
+  } catch (err) {
+    process.stdout.write((pasted ? "PASTED " : "") + String(err?.message ?? err));
+    process.exit(1);
+  }
+' "$LEAD_ID" "$LEAD_TARGET" "$LEAD_SOCKET" "$LEAD_PID" "$PROMPT" 2>&1) ||
+  gone "handoff prompt not delivered to $PANE: $SEND_OUT - check it by hand"
 
 remove_placeholder
 say "prompt sent; restart complete"

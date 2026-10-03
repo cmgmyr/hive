@@ -347,9 +347,11 @@ describe("the queen waits on another project's lead ending a turn", () => {
     assert.match(await refusal(queenMcp, { lead_project_id: beta.id, body: "x" }), /LEAD_TARGET_GONE: .*pane is gone/);
   });
 
-  it("refuses at arming a lead with no recorded pane pid", SKIP, async () => {
+  it("refuses at arming a lead with no recorded pane pid by naming unknown ownership, not a reissue", SKIP, async () => {
     db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(betaLead.id);
-    assert.match(await refusal(queenMcp, { lead_project_id: beta.id, body: "x" }), /no recorded pane pid/);
+    const message = await refusal(queenMcp, { lead_project_id: beta.id, body: "x" });
+    assert.match(message, /pane ownership is unknown: it has no recorded pane pid/);
+    assert.doesNotMatch(message, /LEAD_TARGET_REISSUED/);
   });
 
   it("refuses at arming a lead whose command hive cannot classify", SKIP, async () => {
@@ -400,5 +402,27 @@ describe("the queen waits on another project's lead ending a turn", () => {
     await until(() => markers(queenPane, armed.wake_id) === 1);
     assert.equal(subRow(armed.wake_id).terminal_reason, "LEAD_TARGET_GONE");
     assert.doesNotMatch(screen(queenPane), /max wait reached/);
+  });
+});
+
+describe("a running lead watch never acts on a lead whose pane ownership reads unknown", () => {
+  it("stays pending, even with an idle turn recorded, when the lead's pane reports no pid", async () => {
+    const { evaluateLeadWatch } = await import("../dist/leadWatch.js");
+    const projectId = db
+      .prepare("INSERT INTO projects (name, path) VALUES ('lead-watch-unknown', ?) RETURNING id")
+      .get(join(dirs.tmp, "lead-watch-unknown")).id;
+    const leadId = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status)
+         VALUES (?, 'lead:watch-unknown', 'lead', 'lead', '%77', '', '4242', 'claude', '/tmp', 'running') RETURNING id`,
+      )
+      .get(projectId).id;
+    db.prepare("INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq) VALUES (?, '4242', 's1', 'idle', 3)").run(leadId);
+    const sub = { wake_id: 0, target_project_id: projectId, agent_id: leadId, pane_pid: "4242", session_id: "s1", baseline_idle_seq: 1, terminal_reason: null };
+    const quietReaders = { awaitingChoice: () => false, holdsInput: () => false };
+    const snapshot = (pid) => ({ panes: new Set(["%77"]), windows: new Set(), pids: new Map(pid ? [["%77", pid]] : []), serverAnswered: true });
+
+    assert.deepEqual(evaluateLeadWatch(sub, "any", snapshot(""), quietReaders), { kind: "pending", reason: "pane ownership unknown" });
+    assert.deepEqual(evaluateLeadWatch(sub, "any", snapshot("4242"), quietReaders), { kind: "idle", idle_seq: 3 }, "control: the owned lead reads idle");
   });
 });

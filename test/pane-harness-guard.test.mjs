@@ -86,9 +86,9 @@ function tickOne({ command, deliverActor = "agent:1" }) {
   const seedAgent =
     command === null
       ? ""
-      : `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, command, cwd, status, agent_state, created_at)
+      : `db.prepare(\`INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status, agent_state, created_at)
 ` +
-        `   VALUES (?, 'agent:1', 'target', 'agent', '%pane', ?, '/tmp', 'running', 'idle', datetime('now', '-60 seconds'))\`).run(project, ${JSON.stringify(command)});\n`;
+        `   VALUES (?, 'agent:1', 'target', 'agent', '%pane', '4242', ?, '/tmp', 'running', 'idle', datetime('now', '-60 seconds'))\`).run(project, ${JSON.stringify(command)});\n`;
   return runFixture(
     tmp,
     `unclassifiable-pane-${command ?? "no-row"}`.replace(/[^a-z0-9-]/gi, "-"),
@@ -106,7 +106,7 @@ function tickOne({ command, deliverActor = "agent:1" }) {
       `   LEFT JOIN agents ON agents.id = (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
 ` +
       `   WHERE wakes.id = ?\`).get(id).c;\n` +
-      `try { await tick({ panes: new Set(['%pane']), windows: new Set() }); } catch {}\n` +
+      `try { await tick({ panes: new Set(['%pane']), windows: new Set(), pids: new Map([['%pane', '4242']]) }); } catch {}\n` +
       `const row = db.prepare("SELECT held_reason, typed_at, fired_at FROM wakes WHERE id = ?").get(id);\n` +
       `process.stdout.write(JSON.stringify({ joined, ...row }));`,
     { HIVE_DATA_DIR: dataDir },

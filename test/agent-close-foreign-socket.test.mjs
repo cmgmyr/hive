@@ -41,11 +41,11 @@ describe(
   () => {
     beforeEach(reset);
 
-    it("refuses a foreign-socket lead row with probeFailed, rather than retiring it", async () => {
+    it("refuses a foreign-socket lead row as unknown ownership, rather than retiring it", async () => {
       const id = seedLeadRow(db, project, dirs.projectDir, FOREIGN_SOCKET);
 
       await assert.rejects(callClose(), (err) => {
-        assert.match(err.message, /could not be probed/);
+        assert.match(err.message, /ownership reads unknown[\s\S]*another tmux socket/);
         return true;
       });
       assert.equal(agentStatus(id), "running", "a row this process cannot honestly judge must not be retired");

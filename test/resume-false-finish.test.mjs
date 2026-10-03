@@ -26,7 +26,8 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
 const { tick } = await import("../dist/scheduler.js");
-const { sessionName } = await import("../dist/tmux.js");
+const { liveTargets, sessionName } = await import("../dist/tmux.js");
+const realPids = () => liveTargets()?.pids ?? new Map();
 
 const HOOK = join(DIST, "hook.js");
 const STOP_PAYLOAD = readFileSync(join(REPO, "test", "fixtures", "hook-payloads", "stop-idle.json"), "utf8");
@@ -129,7 +130,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     const watchId = addStandingWatch();
     const row = await parkAndResume("ff-report");
 
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set(), pids: realPids() };
 
     await fireStopHook(row.actor_id);
     await tick(snapshot);
@@ -171,7 +172,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
 
     const heldAt = () => db.prepare("SELECT held_at FROM wakes WHERE id = ?").get(oneShot).held_at;
 
-    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set() };
+    const snapshot = { panes: new Set([row.tmux_target]), windows: new Set(), pids: realPids() };
     await tick(snapshot);
     assert.equal(heldAt(), null, "the restore turn must not make a one-shot idle wake ready either");
 
@@ -309,7 +310,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     await fireStopHook(resumed.actor_id);
     await firePromptHook(plainRow.actor_id);
     await fireStopHook(plainRow.actor_id);
-    await tick({ panes: new Set([resumed.tmux_target, plainRow.tmux_target]), windows: new Set() });
+    await tick({ panes: new Set([resumed.tmux_target, plainRow.tmux_target]), windows: new Set(), pids: realPids() });
 
     assert.equal(wasReportedAsFinished(watchId, "ff-neighbour-plain"), true, "a real finish is still news");
     assert.equal(
@@ -359,7 +360,7 @@ describe("issue #156 D3: a resumed worker's restore turn is not a finish", NEEDS
     await fireStopHook(parentRow.actor_id);
     await firePromptHook(grandRow.actor_id);
     await fireStopHook(grandRow.actor_id);
-    await tick({ panes: new Set([parentRow.tmux_target, grandRow.tmux_target]), windows: new Set() });
+    await tick({ panes: new Set([parentRow.tmux_target, grandRow.tmux_target]), windows: new Set(), pids: realPids() });
 
     assert.equal(
       wasReportedAsFinished(watchId, "ff-grand-parent"),

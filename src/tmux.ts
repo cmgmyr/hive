@@ -511,6 +511,11 @@ export function panePid(target: string): string {
   return targetLiveProbe(target).pid ?? "";
 }
 
+// A row recorded with an empty pid reads unknown for life, so a pane hive just created gets one retry.
+export function panePidForRecord(target: string): string {
+  return panePid(target) || panePid(target);
+}
+
 const DESTROY_READINESS_BOUND_MS = 200;
 
 function paneHasEstablishedProcess(pid: string): boolean {
@@ -600,6 +605,14 @@ export function rowOwnership(row: RowPaneIdentity, snapshot?: AliveSnapshot | nu
   const pid = targetPid(row.tmux_target, observed) ?? "";
   if (row.pane_pid === "" || pid === "") return "unknown";
   return pid === row.pane_pid ? "live" : "reissued";
+}
+
+// The one place a row's ownership is observed: a failed probe is its own answer, never unknown.
+export function observeRowOwnership(row: RowPaneIdentity): RowOwnership | "probe-failed" {
+  const observes = !foreignSocket(row.tmux_socket) && row.tmux_target !== "";
+  const snapshot = observes ? liveTargets() : null;
+  if (observes && observationFailed(snapshot)) return "probe-failed";
+  return rowOwnership(row, snapshot);
 }
 
 export function ownershipLiveness(ownership: RowOwnership): Liveness {
@@ -1624,6 +1637,7 @@ export async function sendText(
   submit = true,
   onPasted?: () => void,
   onBuffered?: () => void,
+  beforePaneWrite?: () => void,
 ): Promise<void> {
   // tmux hands a pane its input in 1022-byte writes, and only paste-buffer -p
   // brackets them, so send-keys -l loses everything before the last write.
@@ -1636,6 +1650,7 @@ export async function sendText(
     tmux("set-buffer", "-b", buffer, "--", text);
     onBuffered?.();
     try {
+      beforePaneWrite?.();
       tmux("paste-buffer", "-d", "-p", "-b", buffer, "-t", target);
     } catch (err) {
       // paste-buffer's -d never ran, and nothing ever reclaims a NAMED buffer:
@@ -1655,6 +1670,7 @@ export async function sendText(
   }
   if (submit) {
     await sleep(ENTER_DELAY_MS);
+    beforePaneWrite?.();
     tmux("send-keys", "-t", target, "Enter");
   }
 }

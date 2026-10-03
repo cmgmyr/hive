@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, until } from "./helpers.mjs";
@@ -409,26 +409,71 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
   );
 
   it(
-    "BEHAVIOUR 6 (issue #157): a recorded pane_pid of '' (no fact recorded) still adopts exactly as today",
+    "BEHAVIOUR 6: a recorded pane_pid of '' is unknown ownership, so hive lead starts a fresh pane and leaves the old one alone",
     async () => {
       const { cliOpts, project, session, before, pane, windowTarget } =
         await bootSinglePaneLead("lead-nullpid-adopt-test");
       try {
-
+        const pidOf = (p) => execFileSync("tmux", ["display-message", "-p", "-t", p, "#{pane_pid}"], { encoding: "utf8" }).trim();
+        const strangerPid = pidOf(pane);
         db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run("", before.id);
+        const wakeId = db
+          .prepare(
+            `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+             VALUES (?, ?, 'pending', 'delay', ?, ?, datetime('now', '+1 day')) RETURNING id`,
+          )
+          .get(project.id, before.actor_id, before.actor_id, pane).id;
 
         const second = await runCli(["lead"], cliOpts);
         assert.equal(second.code, 0, second.stderr);
 
         const after = leadRow(db, project.id);
-        assert.equal(after.tmux_target, pane, "an absent recorded pid must still adopt the SAME pane, exactly as today");
-
-        const panesAfter = panesIn(windowTarget);
-        assert.deepEqual(panesAfter, [pane], "no second pane may be created - this is the adopt path, not the fresh-pane path");
-        assert.notEqual(after.pane_pid, "", "the CAS must record a real pid now that the pane is confirmed live");
+        assert.notEqual(after.tmux_target, pane, "an unknown pane is never adopted");
+        assert.equal(after.actor_id, before.actor_id, "the same lead actor carries on in the fresh pane");
+        assert.equal(after.pane_pid, pidOf(after.tmux_target), "the fresh pane's own pid is recorded");
+        assert.notEqual(after.pane_pid, strangerPid, "never the old occupant's pid");
+        assert.equal(pidOf(pane), strangerPid, "the old pane's process is untouched");
+        assert.deepEqual(panesIn(windowTarget).sort(), [pane, after.tmux_target].sort(), "a second pane, beside the old one");
+        assert.equal(
+          db.prepare("SELECT deliver_pane FROM wakes WHERE id = ?").get(wakeId).deliver_pane,
+          after.tmux_target,
+          "pending lead wakes are re-pointed to the fresh pane",
+        );
       } finally {
         cleanup(session);
       }
     },
   );
+});
+
+describe("hive lead rechecks an adopted pane's ownership just before publishing it", () => {
+  it("refuses the adopt when the pane's pid changes after the adopt decision, recording nothing", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const boot = await bootSinglePaneLead("lead-adopt-recheck");
+    try {
+      const shimDir = mkdtempSync(join(dirs.tmp, "adopt-recheck-shim-"));
+      const marker = join(shimDir, "decided");
+      const real = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+      writeFileSync(
+        join(shimDir, "tmux"),
+        `#!/bin/sh
+if [ "$1" = list-panes ] && [ "$2" = -t ] && [ "$3" = '${boot.pane}' ] && [ "$5" = '#{session_name}:#{window_id}' ]; then : > '${marker}'; fi
+if [ -e '${marker}' ] && [ "$1" = list-panes ] && [ "$2" = -a ]; then
+  '${real}' "$@" | awk '$1 == "${boot.pane}" { $2 = "1" } { print }'
+  exit 0
+fi
+exec '${real}' "$@"
+`,
+        { mode: 0o755 },
+      );
+      const second = await runCli(["lead"], { ...boot.cliOpts, env: { PATH: `${shimDir}:${boot.cliOpts.env.PATH}` } });
+      assert.ok(existsSync(marker), "setup bug: the shim never saw the adopt decision's window lookup");
+      assert.notEqual(second.code, 0, second.stdout);
+      assert.match(second.stdout + second.stderr, /no longer reads as the lead's own/);
+      const after = leadRow(db, boot.project.id);
+      assert.equal(after.tmux_target, boot.before.tmux_target);
+      assert.equal(after.pane_pid, boot.before.pane_pid);
+    } finally {
+      cleanup(boot.session);
+    }
+  });
 });

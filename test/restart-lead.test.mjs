@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
@@ -763,10 +763,11 @@ describe(
         "sh", "-c", "printf 'brew upgrade\\nWould you like to proceed with the upgrade? [Y/n]\\n'; sleep 600",
       ]).toString().trim();
 
+      const panePid = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"]).toString().trim();
       db.prepare(
-        `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
-         VALUES (?, 'lead:not-claude-test', 'not-claude-lead', ?, 'sh', ?, 'lead', 'running')`,
-      ).run(proj.id, pane, dir);
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, kind, status)
+         VALUES (?, 'lead:not-claude-test', 'not-claude-lead', ?, ?, 'sh', ?, 'lead', 'running')`,
+      ).run(proj.id, pane, panePid, dir);
 
       const rendered = await until(() =>
         execFileSync("tmux", ["capture-pane", "-p", "-t", pane]).toString().includes("Would you like to proceed"),
@@ -821,5 +822,87 @@ describe("restart-lead.sh's view-session filter agrees with src/tmux.ts's isView
         `restart-lead.sh's filter and isViewSessionName disagree on ${JSON.stringify(name)}`,
       );
     }
+  });
+});
+
+describe("restart-lead.sh kills and types only through a lead row that owns its pane", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  const pidOf = (p) => execFileSync("tmux", ["display-message", "-p", "-t", p, "#{pane_pid}"]).toString().trim();
+
+  async function strangerLead(tag, recordedPid) {
+    const dir = mkdtempSync(join(dirs.tmp, `proj-${tag}-`));
+    const proj = insertProject(`restart-lead-${tag}`, dir);
+    const projSession = sessionName();
+    const pane = execFileSync("tmux", [
+      "new-session", "-d", "-P", "-F", "#{pane_id}", "-s", projSession, "-x", "220", "-y", "50", claudePath,
+    ]).toString().trim();
+    after(() => cleanup(projSession));
+    assert.ok(await until(() => execFileSync("tmux", ["capture-pane", "-p", "-t", pane]).toString().includes("shift+tab to cycle")));
+    const pid = pidOf(pane);
+    const id = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status)
+         VALUES (?, ?, 'lead', ?, ?, ?, 'claude', ?, 'lead', 'running') RETURNING id`,
+      )
+      .get(proj.id, `lead:${tag}`, pane, execFileSync("tmux", ["display-message", "-p", "#{socket_path}"]).toString().trim(), recordedPid(pid), dir).id;
+    return { dir, proj, projSession, pane, pid, id };
+  }
+
+  const windows = (s) => execFileSync("tmux", ["list-windows", "-t", `=${s}`, "-F", "#{window_id}"]).toString().trim().split("\n");
+
+  for (const [label, recordedPid, reason] of [
+    ["empty-pid", () => "", /pane ownership is unknown/],
+    ["wrong-pid", () => "1", /now belongs to a different process/],
+  ]) {
+    for (const args of [["--dry-run"], ["--delay", "0"], ["--force", "--delay", "0"]]) {
+      it(`refuses a ${label} lead row with ${args.join(" ")}, leaving that pane's process and screen as they were`, async () => {
+        const s = await strangerLead(`${label}-${args.length}`, recordedPid);
+        const screenBefore = execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString();
+        const windowsBefore = windows(s.projSession);
+        const result = runScript(args, { HIVE_SESSION: s.projSession, HIVE_REPO: s.dir }, join(dirs.tmp, `rl-${label}-${args.length}.log`));
+        assert.notEqual(result.status, 0, result.stdout);
+        assert.match(result.stderr, reason);
+        assert.equal(pidOf(s.pane), s.pid);
+        assert.equal(execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString(), screenBefore);
+        assert.deepEqual(windows(s.projSession), windowsBefore, "no placeholder or fresh lead window was left behind");
+        assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(s.id).status, "running");
+      });
+    }
+  }
+
+  it("names a classifier that could not run (node or the addon failed) instead of reading it as unknown", async () => {
+    const s = await strangerLead("classifier-failed", (pid) => pid);
+    const nodeDir = mkdtempSync(join(dirs.tmp, "failing-node-"));
+    writeFileSync(
+      join(nodeDir, "node"),
+      `#!/bin/sh\n[ -n "$RL_DIST_SPAWN" ] && { echo "simulated native addon ABI failure" >&2; exit 1; }\nexec '${process.execPath}' "$@"\n`,
+    );
+    chmodSync(join(nodeDir, "node"), 0o755);
+    const screenBefore = execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString();
+    const log = join(dirs.tmp, "rl-classifier-failed.log");
+    const result = runScript(["--delay", "0"], { HIVE_SESSION: s.projSession, HIVE_REPO: s.dir, PATH: `${nodeDir}:${PATH}` }, log);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /could not run the ownership classifier \(node or the native addon failed/);
+    assert.doesNotMatch(result.stderr, /pane ownership is unknown/);
+    assert.match(readFileSync(log, "utf8"), /ownership classifier failed: simulated native addon ABI failure/);
+    assert.equal(pidOf(s.pane), s.pid);
+    assert.equal(execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString(), screenBefore);
+  });
+
+  it("refuses at the kill when the lead row's pid changes during --delay, removing its placeholder", async () => {
+    const s = await strangerLead("delay-race", (pid) => pid);
+    const windowsBefore = windows(s.projSession);
+    const env = { ...process.env, PATH, HIVE_DATA_DIR: dirs.dataDir, HIVE_RESTART_LOG: join(dirs.tmp, "rl-race.log"), HIVE_SESSION: s.projSession, HIVE_REPO: s.dir };
+    const { spawn } = await import("node:child_process");
+    const child = spawn(SCRIPT, ["--delay", "2"], { env });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    const exited = new Promise((resolve) => child.on("exit", resolve));
+    assert.ok(await until(() => existsSync(join(dirs.tmp, "rl-race.log")) && readFileSync(join(dirs.tmp, "rl-race.log"), "utf8").includes("waiting 2s before killing"), 15000));
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(s.id);
+    const code = await exited;
+    assert.notEqual(code, 0);
+    assert.match(stderr, /lead row changed while this script was reading it/);
+    assert.equal(pidOf(s.pane), s.pid, "the pane survives");
+    assert.deepEqual(windows(s.projSession), windowsBefore, "the placeholder window was removed");
   });
 });

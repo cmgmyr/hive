@@ -168,7 +168,7 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
   );
 
   it(
-    "records pid=no-fact when the agents row carries no pane_pid, even though the pane is genuinely live",
+    "holds, never types, a wake whose agents row carries no pane_pid, even though the pane is genuinely live",
     async () => {
 
       const spawned = await spawnShowing("typed-seen-no-pid", replayFixture("ready-idle.txt"));
@@ -181,17 +181,16 @@ describe("typed_seen records what deliverable() saw at delivery time", { skip: h
 
       db.prepare("UPDATE agents SET pane_pid = '' WHERE tmux_target = ?").run(spawned.tmux_target);
 
-      let delivered;
-      await until(async () => {
-        const list = await mcp.call("wake_list");
-        delivered = findWake(list.recently_delivered, wake.wake_id);
-        return delivered?.typed_at != null;
+      const held = await until(() => {
+        const row = db.prepare("SELECT held_reason FROM wakes WHERE id = ?").get(wake.wake_id);
+        return row.held_reason?.startsWith("pane ownership for this wake's row cannot be verified");
       }, 10000);
-
-      assert.match(
-        delivered.typed_seen,
-        /^live=yes pid=no-fact dialog=no box=empty$/,
-        "a live pane whose agents row carries no recorded pid must read pid=no-fact, not pid=ok",
+      assert.ok(held, "an empty recorded pid is unknown ownership, so the wake must hold with that reason");
+      const row = db.prepare("SELECT typed_at, fire_count, cancelled_at FROM wakes WHERE id = ?").get(wake.wake_id);
+      assert.deepEqual(row, { typed_at: null, fire_count: 0, cancelled_at: null });
+      assert.doesNotMatch(
+        execFileSync("tmux", ["capture-pane", "-p", "-t", spawned.tmux_target], { encoding: "utf8" }),
+        /INTEGRATION typed_seen no-pid check/,
       );
     },
   );

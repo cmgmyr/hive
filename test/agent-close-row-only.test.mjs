@@ -108,7 +108,7 @@ describe("agent_close row_only", () => {
   it("ordinary agent_close still refuses an empty-pid lead on a live pane id", { skip }, async () => {
     const human = clients[0];
     const id = row();
-    await assert.rejects(human.call("agent_close", { agent_id: id }), /still live/);
+    await assert.rejects(human.call("agent_close", { agent_id: id }), /ownership reads unknown[\s\S]*row_only=true/);
     assert.equal(rowOf(id).status, "running");
     assert.ok(bystanderAlive());
   });
