@@ -180,6 +180,51 @@ describe("scripts/gen-version.mjs: the build-time stamp writer", () => {
     assert.deepEqual(readdirSync(join(scratch, "dist")), ["build-info.json"]);
     assert.deepEqual(info, { build_id: info.build_id, version: "1.2.3", sha: null, dirty: false });
   });
+
+  describe("build_id is a content hash of dist", () => {
+    const generate = (scratch) => {
+      execFileSync(process.execPath, [join(scratch, "scripts", "gen-version.mjs")], { cwd: scratch });
+      return JSON.parse(readFileSync(join(scratch, "dist", "build-info.json"), "utf8")).build_id;
+    };
+    const withDist = () => {
+      const scratch = scratchGenerator(dirs.tmp);
+      mkdirSync(join(scratch, "dist", "tools"), { recursive: true });
+      writeFileSync(join(scratch, "dist", "index.js"), "export const a = 1;\n");
+      writeFileSync(join(scratch, "dist", "tools", "todos.js"), "export const b = 2;\n");
+      return scratch;
+    };
+
+    it("two runs over an unchanged dist give the same id", () => {
+      const scratch = withDist();
+      const first = generate(scratch);
+      assert.match(first, /^[0-9a-f]{64}$/);
+      assert.equal(generate(scratch), first);
+    });
+
+    it("changing one byte of one emitted file changes the id, and reverting restores it", () => {
+      const scratch = withDist();
+      const first = generate(scratch);
+      writeFileSync(join(scratch, "dist", "tools", "todos.js"), "export const b = 3;\n");
+      const changed = generate(scratch);
+      assert.notEqual(changed, first);
+      writeFileSync(join(scratch, "dist", "tools", "todos.js"), "export const b = 2;\n");
+      assert.equal(generate(scratch), first);
+    });
+
+    it("renaming an emitted file changes the id even when its bytes are identical", () => {
+      const scratch = withDist();
+      const first = generate(scratch);
+      renameSync(join(scratch, "dist", "index.js"), join(scratch, "dist", "main.js"));
+      assert.notEqual(generate(scratch), first);
+    });
+
+    it("a change to build-info.json alone does not change the id", () => {
+      const scratch = withDist();
+      const first = generate(scratch);
+      writeFileSync(join(scratch, "dist", "build-info.json"), JSON.stringify({ version: "0", build_id: "stale" }));
+      assert.equal(generate(scratch), first);
+    });
+  });
 });
 
 
