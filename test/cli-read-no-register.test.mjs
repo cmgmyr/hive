@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -44,6 +45,22 @@ describe("read-only CLI verbs from an unregistered cwd", () => {
     assert.equal(r.code, 1);
     assert.match(r.stderr, /not a registered hive project/);
     assert.equal(projects().length, 0);
+  });
+
+  it("posture and runbook refuse an unregistered git repo without registering it", async () => {
+    const gitStranger = join(dirs.tmp, "git-scratchpad");
+    mkdirSync(gitStranger, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: gitStranger });
+
+    for (const verb of ["posture", "runbook"]) {
+      const before = projects().length;
+      const r = await runCli([verb], { cwd: gitStranger, dataDir: dirs.dataDir });
+      assert.equal(r.code, 1, r.stdout + r.stderr);
+      assert.match(r.stderr, new RegExp(`^hive ${verb}.*not a registered hive project.*hive init`));
+      assert.equal(r.stdout, "");
+      assert.equal(projects().length, before);
+      assert.equal(projects().some((p) => p.path === gitStranger), false);
+    }
   });
 
   it("a registered project still reads", async () => {
