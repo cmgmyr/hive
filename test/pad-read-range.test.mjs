@@ -92,9 +92,17 @@ it("pad_read with a zero limit returns an empty chunk without advancing", async 
 
 it("pad_read refuses out-of-bounds range values and unknown keys", async () => {
   const created = await mcp.call("pad_write", { name: "invalid-range", content: "short" });
+  const rejectsRangeValue = (error) => {
+    assert.match(error.message, /Input validation error: Invalid arguments for tool pad_read:/);
+    assert.doesNotMatch(error.message, /Unrecognized keys/);
+    return true;
+  };
 
-  await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, offset: -1 }), /offset/i);
-  await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, limit: -1 }), /limit/i);
-  await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, offset: Number.MAX_SAFE_INTEGER + 1 }), /offset/i);
+  await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, offset: -1 }), rejectsRangeValue);
+  await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, limit: -1 }), rejectsRangeValue);
+  await assert.rejects(
+    mcp.call("pad_read", { pad_id: created.pad_id, offset: Number.MAX_SAFE_INTEGER + 1 }),
+    rejectsRangeValue,
+  );
   await assert.rejects(mcp.call("pad_read", { pad_id: created.pad_id, typo: true }), /typo/i);
 });
