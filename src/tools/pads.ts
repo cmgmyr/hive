@@ -19,6 +19,13 @@ export interface PadRow {
 
 type PadMeta = Pick<PadRow, "id" | "name" | "revision" | "archived">;
 
+function splitsSurrogatePair(content: string, index: number): boolean {
+  if (index <= 0 || index >= content.length) return false;
+  const before = content.charCodeAt(index - 1);
+  const after = content.charCodeAt(index);
+  return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+}
+
 function selectPad<T>(projectId: number, padId: number, columns: string): T {
   const row = db
     .prepare(`SELECT ${columns} FROM pads WHERE project_id = ? AND id = ?`)
@@ -187,7 +194,8 @@ export function registerPads(server: McpServer): void {
   server.registerTool(
     "pad_read",
     {
-      description: "Read a pad's content, revision, and metadata by pad_id or name.",
+      description:
+        "Read a pad's content, revision, and metadata by pad_id or name. Optional offset and limit use UTF-16 code units and are nonnegative safe integers. There is no default cap; a cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing, and the result reports the effective offset.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -197,6 +205,8 @@ export function registerPads(server: McpServer): void {
       inputSchema: {
         pad_id: idParam.optional(),
         name: z.string().optional(),
+        offset: z.number().int().nonnegative().optional().describe("Start index in UTF-16 code units; an index inside a surrogate pair moves back one code unit."),
+        limit: z.number().int().nonnegative().optional().describe("Requested UTF-16 code units to read; no default cap. An end cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing."),
         project_id: projectIdParam,
       },
     },
@@ -215,7 +225,7 @@ export function registerPads(server: McpServer): void {
         } else {
           throw new Error("Pass pad_id or name.");
         }
-        return {
+        const result = {
           pad_id: pad.id,
           name: pad.name,
           revision: pad.revision,
@@ -223,6 +233,25 @@ export function registerPads(server: McpServer): void {
           updated_by: pad.updated_by,
           updated_at: pad.updated_at,
           content: pad.content,
+        };
+        if (args.offset == null && args.limit == null) return result;
+
+        const totalLength = pad.content.length;
+        const requestedOffset = args.offset ?? 0;
+        const offset = splitsSurrogatePair(pad.content, requestedOffset) ? requestedOffset - 1 : requestedOffset;
+
+        let end = args.limit == null ? totalLength : Math.min(totalLength, requestedOffset + args.limit);
+        if (splitsSurrogatePair(pad.content, end)) {
+          const backedUpEnd = end - 1;
+          end = args.limit != null && args.limit > 0 && backedUpEnd <= offset ? end + 1 : backedUpEnd;
+        }
+
+        return {
+          ...result,
+          content: pad.content.slice(offset, end),
+          total_length: totalLength,
+          offset,
+          next_offset: end < totalLength ? end : null,
         };
       }),
   );

@@ -1463,7 +1463,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Read a pad's content, revision, and metadata by pad_id or name.",
+    "description": "Read a pad's content, revision, and metadata by pad_id or name. Optional offset and limit use UTF-16 code units and are nonnegative safe integers. There is no default cap; a cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing, and the result reports the effective offset.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1471,8 +1471,20 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "limit": {
+          "description": "Requested UTF-16 code units to read; no default cap. An end cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
         "name": {
           "type": "string"
+        },
+        "offset": {
+          "description": "Start index in UTF-16 code units; an index inside a surrogate pair moves back one code unit.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
         },
         "pad_id": {
           "exclusiveMinimum": 0,
