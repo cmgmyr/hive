@@ -93,18 +93,23 @@ DIST_SPAWN="$SCRIPT_DIR/../dist/spawn.js"
 DIST_TMUX_MODULE="$SCRIPT_DIR/../dist/tmux.js"
 
 # Prints gone, reissued, live, unknown or changed for one lead row identity, through hive's own
-# classifier. Any failure to answer is unknown, never "nothing to kill".
+# classifier, or classifier-failed (its stderr goes to the log) when node or the addon could not run it.
 ownership_of() {
-  local out
+  local out err
+  err=$(mktemp)
   out=$(HIVE_DATA_DIR="$DATA_DIR" RL_DIST_SPAWN="$DIST_SPAWN" node --input-type=module -e '
     const { currentOwnership } = await import(process.env.RL_DIST_SPAWN);
     const [id, tmux_target, tmux_socket, pane_pid] = process.argv.slice(1);
     process.stdout.write(currentOwnership(Number(id), { tmux_target, tmux_socket, pane_pid }));
-  ' "$1" "$2" "$3" "$4" 2>/dev/null)
+  ' "$1" "$2" "$3" "$4" 2>"$err")
   case "$out" in
     gone|reissued|live|unknown|changed) printf '%s' "$out" ;;
-    *) printf unknown ;;
+    *)
+      log "ownership classifier failed: $(head -c 2000 "$err")"
+      printf classifier-failed
+      ;;
   esac
+  rm -f "$err"
 }
 
 resolve_lead_pane() {
@@ -145,6 +150,7 @@ refuse_unowned() {
     unknown) refuse "the lead row's pane ownership is unknown ($LEAD_TARGET has no recorded pane pid, a legacy window target, another tmux socket, or tmux did not answer); not killing or typing into it. If the row is stale, retire it with agent_close(row_only=true) from a peer lead or terminal, then re-run" ;;
     reissued) refuse "the lead row's pane id $LEAD_TARGET now belongs to a different process (its recorded pane pid no longer matches); not killing or typing into it. Retire the stale row with agent_close, then re-run" ;;
     changed) refuse "the lead row changed while this script was reading it; re-run" ;;
+    classifier-failed) refuse "could not run the ownership classifier (node or the native addon failed; the node on this PATH is $(command -v node), and its error is in $LOG); not killing or typing into $LEAD_TARGET" ;;
   esac
 }
 

@@ -14,7 +14,7 @@ import {
   findProcessesWindow,
   findProjectWindow,
   isPaneTarget,
-  panePid,
+  panePidForRecord,
   paneWindow,
   PROCESSES_LAYOUT,
   processesPaneTitle,
@@ -127,13 +127,23 @@ export function agentIdentityEnv(actorId: string, name: string, projectPath: str
   };
 }
 
-function recordPane(agentId: number, target: string, socket: string): boolean {
+function recordPane(agentId: number, target: string, socket: string, pid: string): boolean {
   return (
     db
       .prepare(
         "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ? AND status = 'running'",
       )
-      .run(target, socket, panePid(target), agentId).changes > 0
+      .run(target, socket, pid, agentId).changes > 0
+  );
+}
+
+function readPidOrDiscard(target: string): string {
+  const pid = panePidForRecord(target);
+  if (pid !== "") return pid;
+  discardOrphanedPane(target);
+  throw new Error(
+    `tmux did not report a process id for the new pane ${target} (asked twice), so it was discarded rather than ` +
+      "recorded: a row with no pane pid can never be verified as owning its pane. Retry.",
   );
 }
 
@@ -351,9 +361,10 @@ export function launchAgent(spec: LaunchSpec): {
     const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placeAgentPane(
       session, spec, envFlags, commandString, title,
     );
+    const pid = readPidOrDiscard(target);
     paneUp = true;
 
-    if (!recordPane(agentId, target, socket)) {
+    if (!recordPane(agentId, target, socket, pid)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
@@ -464,9 +475,10 @@ export function resumeAgent(
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
     const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
+    const pid = readPidOrDiscard(target);
     paneUp = true;
 
-    if (!recordPane(spec.agentId, target, socket)) {
+    if (!recordPane(spec.agentId, target, socket, pid)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(spec.agentId);
     }

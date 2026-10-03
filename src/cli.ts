@@ -89,6 +89,7 @@ import {
   HELD_REASON_CONVERSATION,
   HELD_REASON_LEAD_PANE_DEAD,
   HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  isLeadRowClosedHold,
   isUnclassifiablePaneHold,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   isUnsubmittedInputHold,
@@ -96,7 +97,7 @@ import {
   resolveDashboardFile,
   generateQueenDashboardNow,
   transcriptStaleness,
-  wasHeldForPaneReissue,
+  wasHeldForPaneIdentity,
 } from "./scheduler.js";
 import { readTurnCount } from "./turnCount.js";
 import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
@@ -161,7 +162,7 @@ import {
   orphansWorthWarningAbout,
   paneIsAloneInWindow,
   paneVisibility,
-  panePid,
+  panePidForRecord,
   type ProjectWindows,
   PROCESSES_LAYOUT,
   processesPaneTitle,
@@ -945,6 +946,14 @@ async function cmdLead(argv: string[]): Promise<void> {
           "or could not be verified), so nothing was recorded. Re-run `hive lead`; it will start a fresh pane.",
       );
     }
+    const recordedPanePid = createdPane ? panePidForRecord(leadPane) : previousPanePid;
+    if (recordedPanePid === "") {
+      abandonClaim();
+      throw new Error(
+        `tmux did not report a process id for the new lead pane ${leadPane} (asked twice), so it was discarded ` +
+          "rather than recorded: a lead row with no pane pid can never be verified as owning its pane. Re-run `hive lead`.",
+      );
+    }
     let wonRace: boolean;
     try {
       wonRace = db.transaction(() => {
@@ -957,7 +966,7 @@ async function cmdLead(argv: string[]): Promise<void> {
           .run(
             leadPane,
             tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR),
-            createdPane ? panePid(leadPane) : previousPanePid,
+            recordedPanePid,
             recordedCommand,
             recordedCodexHome,
             leadAgentId,
@@ -3551,7 +3560,8 @@ export function heldReasonLabel(heldReason: string | null): (typeof HELD_REASON_
   if (isUnsubmittedInputHold(heldReason)) return "typing";
   if (
     heldReason === HELD_REASON_LEAD_PANE_DEAD ||
-    wasHeldForPaneReissue(heldReason) ||
+    wasHeldForPaneIdentity(heldReason) ||
+    isLeadRowClosedHold(heldReason) ||
     isUnclassifiablePaneHold(heldReason)
   ) {
     return "needs you";

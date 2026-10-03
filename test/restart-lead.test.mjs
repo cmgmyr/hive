@@ -869,6 +869,25 @@ describe("restart-lead.sh kills and types only through a lead row that owns its 
     }
   }
 
+  it("names a classifier that could not run (node or the addon failed) instead of reading it as unknown", async () => {
+    const s = await strangerLead("classifier-failed", (pid) => pid);
+    const nodeDir = mkdtempSync(join(dirs.tmp, "failing-node-"));
+    writeFileSync(
+      join(nodeDir, "node"),
+      `#!/bin/sh\n[ -n "$RL_DIST_SPAWN" ] && { echo "simulated native addon ABI failure" >&2; exit 1; }\nexec '${process.execPath}' "$@"\n`,
+    );
+    chmodSync(join(nodeDir, "node"), 0o755);
+    const screenBefore = execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString();
+    const log = join(dirs.tmp, "rl-classifier-failed.log");
+    const result = runScript(["--delay", "0"], { HIVE_SESSION: s.projSession, HIVE_REPO: s.dir, PATH: `${nodeDir}:${PATH}` }, log);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(result.stderr, /could not run the ownership classifier \(node or the native addon failed/);
+    assert.doesNotMatch(result.stderr, /pane ownership is unknown/);
+    assert.match(readFileSync(log, "utf8"), /ownership classifier failed: simulated native addon ABI failure/);
+    assert.equal(pidOf(s.pane), s.pid);
+    assert.equal(execFileSync("tmux", ["capture-pane", "-p", "-t", s.pane]).toString(), screenBefore);
+  });
+
   it("refuses at the kill when the lead row's pid changes during --delay, removing its placeholder", async () => {
     const s = await strangerLead("delay-race", (pid) => pid);
     const windowsBefore = windows(s.projSession);

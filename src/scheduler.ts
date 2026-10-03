@@ -898,6 +898,10 @@ export const HELD_REASON_ACTOR_CLOSED =
 const HELD_REASON_LEAD_ROW_CLOSED =
   "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a " +
   "lead and re-points it";
+
+export function isLeadRowClosedHold(heldReason: string | null): boolean {
+  return heldReason === HELD_REASON_LEAD_ROW_CLOSED;
+}
 const HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM = "delivery stopped after claim: ";
 
 export const HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX =

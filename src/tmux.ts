@@ -511,6 +511,11 @@ export function panePid(target: string): string {
   return targetLiveProbe(target).pid ?? "";
 }
 
+// A row recorded with an empty pid reads unknown for life, so a pane hive just created gets one retry.
+export function panePidForRecord(target: string): string {
+  return panePid(target) || panePid(target);
+}
+
 const DESTROY_READINESS_BOUND_MS = 200;
 
 function paneHasEstablishedProcess(pid: string): boolean {

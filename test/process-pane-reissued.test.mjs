@@ -232,9 +232,12 @@ describe("stopProcess acts only on a command row that owns its pane", () => {
       await sleep(600);
       db.prepare("UPDATE agents SET pane_pid = '1' WHERE project_id = ? AND name = 'trapper' AND status = 'running'").run(projectId);
       const { stdout } = await stopping;
-      assert.match(stdout, /trapper: its row was closed or recorded a different pane during the stop/);
+      assert.match(stdout, /trapper: its row was closed or recorded a different pane during the stop, so hive touched nothing further$/m);
       assert.equal(panePidOf(row.tmux_target), row.pane_pid, "the trapped process must not have been killed");
       assert.equal(rowFor("trapper").status, "running");
+      const id = db.prepare("SELECT id FROM agents WHERE project_id = ? AND name = 'trapper' AND status = 'running'").get(projectId).id;
+      const marker = db.prepare("SELECT 1 FROM kv WHERE project_id = ? AND key = ?").get(projectId, `stopping:${id}`);
+      assert.equal(marker, undefined, "a stop that touched nothing must not leave its stopping marker behind");
     } finally {
       tmux("kill-pane", "-t", row.tmux_target);
       db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND name = 'trapper'").run(projectId);

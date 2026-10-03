@@ -160,9 +160,10 @@ function waitForPaneToExit(target: string, timeoutMs: number): boolean {
 // argument so every caller has to declare its trigger from the closed set docs/projects.md is
 // checked against, and whichever caller prints it already knows which one it passed.
 const UNKNOWN_OWNERSHIP_NOTE =
-  "its pane ownership is unknown (no pane pid recorded, a legacy window target, or another tmux socket)";
+  "its pane ownership is unknown (no pane pid recorded, a legacy window target, or another tmux socket), so hive left it running";
 const REISSUED_NOTE = "its pane id now belongs to another process, which was left alone";
-const CHANGED_NOTE = "its row was closed or recorded a different pane during the stop, so nothing further was touched";
+const CHANGED_NOTE =
+  "its row was closed or recorded a different pane during the stop, so hive touched nothing further";
 
 // Unknown, or a row that changed underneath the stop, is left running: closing it would hide a
 // process that may still be running from every surface that reports one.
@@ -200,7 +201,10 @@ export function stopProcess(row: StoppableRow, reason: StopReason): StoppedProce
   let leg: StopLeg = "interrupted";
   if (!waitForPaneToExit(row.tmux_target, STOP_GRACE_MS)) {
     const beforeKill = currentOwnership(row.id, identity);
-    if (beforeKill !== "live") return notOwned(row, beforeKill);
+    if (beforeKill !== "live") {
+      clearStoppingMarker(row.project_id, row.id);
+      return notOwned(row, beforeKill);
+    }
     try {
       killAgentPane(row.tmux_target);
     } catch {
@@ -234,7 +238,7 @@ export function stopLine(stopped: StoppedProcess): string {
         : `${stopped.name}: already gone (nothing was running)`;
     case "unreachable":
       return stopped.note
-        ? `${stopped.name}: ${stopped.note}, so hive left it running`
+        ? `${stopped.name}: ${stopped.note}`
         : `${stopped.name}: tmux could not be probed, so hive left it running`;
     case "still-running":
       return `${stopped.name}: still running: its pane survived C-c and kill-pane, so hive left the row open`;
