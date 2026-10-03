@@ -591,13 +591,13 @@ export function registerWakes(server: McpServer): void {
         }
 
         const maxWait = args.max_wait_seconds ?? 900;
-        return commitQueenStateWrite("wake_when_idle", projectId, args, () => {
+        return commitQueenStateWrite("wake_when_idle", projectId, args, () => db.transaction(() => {
           const watchedIds = watched.map((a) => a.id);
           const sameSet = (json: string) => {
             const ids = JSON.parse(json) as number[];
             return ids.length === watchedIds.length && watchedIds.every((id) => ids.includes(id));
           };
-          const superseded = (
+          const candidates = (
             db
               .prepare(
                 `SELECT id, watch FROM wakes
@@ -610,9 +610,12 @@ export function registerWakes(server: McpServer): void {
           )
             .filter((w) => sameSet(w.watch))
             .map((w) => w.id);
-          for (const id of superseded) {
-            db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL").run(id);
-          }
+          const superseded = candidates.filter(
+            (id) =>
+              db
+                .prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL")
+                .run(id).changes === 1,
+          );
           const info = db
             .prepare(
               `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane,
@@ -646,7 +649,7 @@ export function registerWakes(server: McpServer): void {
                 ? "Fires on the next fresh idle transition; agents already idle now do not count."
                 : "Fires when all watched agents are idle.",
           };
-        });
+        }).immediate());
       }),
   );
 

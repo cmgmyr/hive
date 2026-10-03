@@ -55,6 +55,17 @@ describe("wake_when_idle supersedes the same owner's older one-shot", { skip: ha
     assert.equal(live, 1, "only the new wake may remain pending");
   });
 
+  it("rolls the cancel back when the replacement insert fails", async () => {
+    const a = await arm([w1]);
+    db.exec("CREATE TRIGGER supersede_boom BEFORE INSERT ON wakes WHEN NEW.body = 'boom' BEGIN SELECT RAISE(ABORT, 'boom'); END");
+    try {
+      await assert.rejects(arm([w1], "boom"), /boom/);
+    } finally {
+      db.exec("DROP TRIGGER supersede_boom");
+    }
+    assert.equal(row(a.wake_id).cancelled_at, null, "a failed re-arm must not strand the wake it was replacing");
+  });
+
   it("matches the watched set regardless of order", async () => {
     const a = await arm([w1, w2]);
     const b = await arm([w2, w1]);
