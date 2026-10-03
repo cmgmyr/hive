@@ -110,6 +110,6 @@ like any other, and reporting it as a crash was the smaller half of that bug.
 
 ## A standing watch reports its owner's crew only, and a lead-bound wake can hold for an active conversation
 
-`OWNED_BY_WATCH` excludes a grandchild an owner never dispatched itself, except on the blocked/stalled path, which stays unfiltered on purpose. A lead-bound wake held for a live human conversation (`HELD_REASON_CONVERSATION`) measures its own ceiling against `due_at`, never `first_held_at` - the latter is cleared by an ordinary `hive lead` reattach and would silently launder the ceiling. Rationale, the measured TTLs, and the reattach bug: `.claude/skills/hive-internals/references/worker-state.md`.
+`OWNED_BY_WATCH` excludes a grandchild an owner never dispatched itself, except on the blocked/stalled path, which stays unfiltered on purpose. A lead-bound wake held for a live human conversation (`HELD_REASON_CONVERSATION`) measures its own ceiling against `due_at` (an idle wake, which has none, against the moment its idle condition was met), never `first_held_at` - the latter is cleared by an ordinary `hive lead` reattach and would silently launder the ceiling. Rationale, the measured TTLs, and the reattach bug: `.claude/skills/hive-internals/references/worker-state.md`.
 
 See `.claude/skills/hive-internals` for the six incidents and the measurements behind these.
