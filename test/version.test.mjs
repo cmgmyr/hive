@@ -218,6 +218,13 @@ describe("scripts/gen-version.mjs: the build-time stamp writer", () => {
       assert.notEqual(generate(scratch), first);
     });
 
+    it("the same dist under a different package.json version gives a different id", () => {
+      const scratch = withDist();
+      const first = generate(scratch);
+      writeFileSync(join(scratch, "package.json"), JSON.stringify({ version: "1.2.4" }));
+      assert.notEqual(generate(scratch), first);
+    });
+
     it("a change to build-info.json alone does not change the id", () => {
       const scratch = withDist();
       const first = generate(scratch);

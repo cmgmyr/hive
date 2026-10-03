@@ -26,13 +26,14 @@ function gitState() {
   }
 }
 
-function distDigest(dist) {
+function buildId(dist, version) {
   const files = readdirSync(dist, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile())
     .map((entry) => relative(dist, join(entry.parentPath, entry.name)).split(sep).join("/"))
     .filter((path) => path !== "build-info.json" && !/^build-info\..+\.tmp$/.test(path))
     .sort();
   const hash = createHash("sha256");
+  hash.update(`${version}\0`);
   for (const path of files) {
     hash.update(`${path}\0`);
     hash.update(readFileSync(join(dist, path)));
@@ -45,7 +46,7 @@ const temporary = join(REPO, "dist", `build-info.${randomUUID()}.tmp`);
 try {
   const { version } = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8"));
   const { sha, dirty } = gitState();
-  const build_id = distDigest(join(REPO, "dist"));
+  const build_id = buildId(join(REPO, "dist"), version);
   writeFileSync(temporary, JSON.stringify({ version, sha, dirty, build_id }));
   renameSync(temporary, join(REPO, "dist", "build-info.json"));
 } catch (e) {
