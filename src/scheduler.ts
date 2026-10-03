@@ -950,15 +950,16 @@ const CONVERSATION_HOLD_TTL_SECONDS = 5 * 60;
 const CONVERSATION_HOLD_TTL = `-${CONVERSATION_HOLD_TTL_SECONDS} seconds`;
 
 // Must stay well under NOTICE_MAX_AGE, past which noticeDisposition cancels a held notice rather than
-// typing stale news (it says so in a replacement wake; it is not silent). Measured against due_at, not first_held_at: cli.ts's hive-lead
+// typing stale news (it says so in a replacement wake; it is not silent). Measured against due_at (idleCeilingStart for an idle wake), not first_held_at: cli.ts's hive-lead
 // re-point clears held_at (and so first_held_at) on every ordinary reattach, which would otherwise
 // launder this ceiling indefinitely.
 const CONVERSATION_HOLD_MAX = "-15 minutes";
 
-function conversationHoldsWake(timer: TimerRow): boolean {
-  if (timer.due_at !== null) {
+function conversationHoldsWake(timer: TimerRow, snapshot: AliveSnapshot | null): boolean {
+  const clockStart = timer.due_at ?? idleCeilingStart(timer, snapshot);
+  if (clockStart !== null) {
     const withinCeiling = stmt(`SELECT ? >= datetime('now', ?) AS within`).get(
-      timer.due_at,
+      clockStart,
       CONVERSATION_HOLD_MAX,
     ) as { within: number };
     if (!withinCeiling.within) return false;
@@ -2189,7 +2190,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   // so it sits after them. No notice-claim of its own: the human being held for is the human at the
   // keyboard, and the statusline is what tells them (see the two dead-ends on notice-claim latching
   // and on splitting a hold reason in two).
-  if (isLeadActorId(timer.deliver_actor) && conversationHoldsWake(timer)) {
+  if (isLeadActorId(timer.deliver_actor) && conversationHoldsWake(timer, snapshot)) {
     holdTimer(timer, HELD_REASON_CONVERSATION);
     return { ok: false };
   }
@@ -2351,6 +2352,26 @@ function idleConditionMet(timer: TimerRow, snapshot: AliveSnapshot): boolean {
   return timer.kind === "idle_any"
     ? states.some((s) => s.gone || (s.idle && s.since != null && s.since >= timer.created_at))
     : states.length > 0 && states.every((s) => s.idle);
+}
+
+// An idle wake has no due_at, so its ceiling clock is the moment its condition was met (the watched
+// worker's state_changed_at, latest for idle_all, earliest qualifying for idle_any), or max_wait_at
+// once it has timed out unmet. A met condition with no such moment (a gone worker) falls back to
+// first_held_at.
+function idleCeilingStart(timer: TimerRow, snapshot: AliveSnapshot | null): string | null {
+  if (timer.kind !== "idle_any" && timer.kind !== "idle_all") return null;
+  if (snapshot === null || !idleConditionMet(timer, snapshot)) {
+    if (timer.max_wait_at === null) return null;
+    const timedOut = stmt(`SELECT ? <= datetime('now') AS out`).get(timer.max_wait_at) as { out: number };
+    return timedOut.out ? timer.max_wait_at : null;
+  }
+  const states = watchedStates(timer, snapshot);
+  const sinces = states
+    .filter((s) => (timer.kind === "idle_any" ? s.idle && !s.gone && s.since != null && s.since >= timer.created_at : true))
+    .map((s) => s.since);
+  const met = sinces.length > 0 && sinces.every((v) => v != null) ? (sinces as string[]) : null;
+  if (met !== null) return timer.kind === "idle_any" ? met.reduce((a, b) => (a < b ? a : b)) : met.reduce((a, b) => (a > b ? a : b));
+  return timer.held_at != null ? timer.first_held_at : null;
 }
 
 async function maybeFireIdle(

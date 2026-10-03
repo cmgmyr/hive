@@ -122,7 +122,7 @@ If a human message reaches a lead in the last five minutes, a wake bound for tha
 
 A hold of any kind that lasts more than an hour is the one case where a finish notice does not arrive as written. hive will not type an hour-old "your worker finished" as news, so it cancels that notice - and tells you it did, in a line naming the workers it covered and pointing at `wake_get` on the cancelled notice, which still holds the full text. You lose the timing, never the fact.
 
-So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking.
+So a wake arriving minutes later than you expected, while you are mid-thread with a lead, is the hold working rather than a stall. Two bounds keep it honest: the window refreshes on each thing you say, and a wake is never held more than fifteen minutes past its due time however long you keep talking. A one-shot idle wake has no fixed due time, so for it the clock starts when its idle condition was met, or at its max wait if the condition never was.
 
 Under a `/goal` the lead takes its own turns without anyone prompting it, so nothing refreshes the window and the hold stays out of the way. Human conversation still refreshes it, while tagged worker reports do not, so an unattended run's crew can report without delaying each wake.
 
