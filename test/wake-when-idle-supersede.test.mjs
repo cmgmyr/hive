@@ -8,7 +8,8 @@ const { hasTmux, cleanup } = isolateTmux("the wake_when_idle supersede tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
-const { sessionName } = await import("../dist/tmux.js");
+const { sessionName, liveTargets } = await import("../dist/tmux.js");
+const { tick } = await import("../dist/scheduler.js");
 
 const fakeClaude = makeFakeClaude(dirs.tmp);
 
@@ -36,6 +37,7 @@ describe("wake_when_idle supersedes the same owner's older one-shot", { skip: ha
 
   beforeEach(() => {
     db.prepare("DELETE FROM wakes WHERE project_id = ?").run(projectId);
+    db.prepare("UPDATE agents SET agent_state = 'unknown', state_changed_at = NULL WHERE id IN (?, ?)").run(w1, w2);
   });
 
   const arm = (agents, body = "b", mode = "any") =>
@@ -64,6 +66,30 @@ describe("wake_when_idle supersedes the same owner's older one-shot", { skip: ha
       db.exec("DROP TRIGGER supersede_boom");
     }
     assert.equal(row(a.wake_id).cancelled_at, null, "a failed re-arm must not strand the wake it was replacing");
+  });
+
+  it("delivers the new wake once and never the superseded one", async () => {
+    const a = await arm([w1]);
+    db.prepare("UPDATE wakes SET held_at = datetime('now'), held_reason = 'held' WHERE id = ?").run(a.wake_id);
+    const b = await arm([w1], "fresh body");
+    db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now', '+60 seconds'), created_at = datetime('now', '-600 seconds') WHERE id = ?").run(w1);
+    await tick(liveTargets());
+    await tick(liveTargets());
+    assert.equal(row(a.wake_id).fired_at, null, "the superseded wake must never deliver");
+    assert.notEqual(row(b.wake_id).fired_at, null, "the replacement must deliver");
+    const fires = db.prepare("SELECT SUM(fire_count) AS n FROM wakes WHERE project_id = ?").get(projectId).n;
+    assert.equal(fires, 1);
+  });
+
+  it("never supersedes a queen lead subscription", async () => {
+    const a = await arm([w1]);
+    const lead = db.prepare("SELECT id FROM agents WHERE id = ?").get(w1).id;
+    db.prepare(
+      "INSERT INTO lead_idle_subscriptions (wake_id, target_project_id, agent_id, pane_pid) VALUES (?, ?, ?, '1')",
+    ).run(a.wake_id, projectId, lead);
+    const b = await arm([w1]);
+    assert.equal(row(a.wake_id).cancelled_at, null);
+    assert.equal("superseded" in b, false);
   });
 
   it("matches the watched set regardless of order", async () => {
