@@ -188,3 +188,54 @@ describe("todo 455 commit 2: the conversation hold", () => {
     );
   });
 });
+
+describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes", () => {
+  const idleSetup = (metOffset) => `
+      const workerRow = db.prepare("SELECT id FROM agents WHERE actor_id = 'agent:9'").get().id;
+      db.prepare("UPDATE agents SET agent_state = 'idle', state_changed_at = datetime('now', ?) WHERE id = ?").run('${metOffset}', workerRow);
+      const wakeId = db.prepare(
+        \`INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, created_at)
+         VALUES (?, 'lead:1', 'idle body', 'idle_any', ?, 'lead:1', '%lead', datetime('now', '-3600 seconds')) RETURNING id\`,
+      ).get(project, JSON.stringify([workerRow])).id;
+  `;
+
+  it("delivers a held idle wake once 15 minutes have passed since its condition was met, however fresh the human message", () => {
+    const result = fixture(
+      "idle-ceiling-after-met",
+      `${idleSetup("-1200 seconds")}
+      logPrompt('lead:1', '-15 seconds', 'still talking');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "an idle wake met 20 minutes ago must not wait on the human any longer");
+  });
+
+  it("still holds an idle wake whose condition was met within the ceiling", () => {
+    const result = fixture(
+      "idle-held-within-ceiling",
+      `${idleSetup("-300 seconds")}
+      logPrompt('lead:1', '-15 seconds', 'still talking');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
+  });
+
+  it("never forces out an idle wake whose condition has not been met", () => {
+    const result = fixture(
+      "idle-unmet-never-forced",
+      `${idleSetup("-1200 seconds")}
+      db.prepare("UPDATE agents SET agent_state = 'working' WHERE id = ?").run(workerRow);
+      db.prepare("UPDATE wakes SET held_at = datetime('now', '-1200 seconds'), first_held_at = datetime('now', '-1200 seconds') WHERE id = ?").run(wakeId);
+      logPrompt('lead:1', '-15 seconds', 'still talking');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null, "a wake whose idle condition is unmet is not delivered by the ceiling");
+  });
+});
+
