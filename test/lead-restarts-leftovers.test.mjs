@@ -130,6 +130,57 @@ describe("a fresh hive lead clears the processes a previous lead left running (t
     assert.equal(targetLive(leftover.tmux_target), false);
   });
 
+  it("spares a row that starts running after the lead's snapshot, and does not label it as left by a previous lead", async () => {
+    const project = await seedProject(
+      "leftovers-late-start",
+      `lead: ${leadBin}\nprocesses:\n  api:\n    command: sleep 600\n    visible: false\n  late:\n    command: sleep 600\n    visible: false\n    auto_start: false\n`,
+      { api: "sleep 600", late: "sleep 600" },
+    );
+    const first = await runCli(["lead"], cliOpts(project.dir));
+    assert.equal(first.code, 0, first.stderr);
+    const started = await runCli(["start", "late"], cliOpts(project.dir));
+    assert.equal(started.code, 0, started.stderr + started.stdout);
+    const late = commandRow(project.id, "late");
+    assert.ok(late, "the fixture needs a live process to appear mid-startup");
+    db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(late.id);
+    db.exec(
+      `CREATE TRIGGER late_start AFTER UPDATE ON agents WHEN NEW.kind = 'lead' AND NEW.project_id = ${project.id}
+       BEGIN UPDATE agents SET status = 'running' WHERE id = ${late.id}; END`,
+    );
+
+    execFileSync("tmux", ["kill-pane", "-t", leadRow(db, project.id).tmux_target], { stdio: "ignore" });
+    const second = await runCli(["lead"], cliOpts(project.dir));
+    db.exec("DROP TRIGGER late_start");
+
+    assert.equal(second.code, 0, second.stderr);
+    assert.doesNotMatch(second.stdout, /^- late: stopped/m, "the late row must not be stopped");
+    assert.doesNotMatch(second.stdout, /^- late: .*left running by a previous lead/m, "the late row must not be labelled");
+    assert.equal(commandRow(project.id, "late")?.tmux_target, late.tmux_target, "the late row must still be running");
+    assert.equal(targetLive(late.tmux_target), true);
+    assert.match(second.stdout, /^- api: stopped \(C-c\); left running by a previous lead$/m, "the genuine leftover is still stopped");
+  });
+
+  it("stops a genuine leftover when ensureLeadRow reuses the old lead row", async () => {
+    const project = await seedProject(
+      "leftovers-reused-row",
+      `lead: ${leadBin}\nprocesses:\n  api:\n    command: sleep 600\n    visible: false\n`,
+      { api: "sleep 600" },
+    );
+    const first = await runCli(["lead"], cliOpts(project.dir));
+    assert.equal(first.code, 0, first.stderr);
+    const leftover = commandRow(project.id, "api");
+    assert.ok(leftover);
+    const leadBefore = leadRow(db, project.id);
+    execFileSync("tmux", ["kill-pane", "-t", leadBefore.tmux_target], { stdio: "ignore" });
+
+    const second = await runCli(["lead"], cliOpts(project.dir));
+
+    assert.equal(second.code, 0, second.stderr);
+    assert.equal(leadRow(db, project.id).id, leadBefore.id, "the fixture needs the old lead row reused");
+    assert.match(second.stdout, /^- api: stopped \(C-c\); left running by a previous lead$/m);
+    assert.equal(targetLive(leftover.tmux_target), false);
+  });
+
   it("an adopted live lead stops nothing and prints no leftover line", async () => {
     const project = await seedProject(
       "leftovers-adopt",

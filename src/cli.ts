@@ -704,6 +704,8 @@ async function cmdLead(argv: string[]): Promise<void> {
       registrationNotice = text;
     });
     const auditIdentity = captureQueenWriteIdentity(project.id);
+    // Only rows running before this invocation began are leftovers, trust prompts included; a later `hive start` is not.
+    const leftoverIds = new Set(runningCommandRows(project.id).map((row) => row.id));
     const { config, warnings, sources } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -1006,7 +1008,7 @@ async function cmdLead(argv: string[]): Promise<void> {
 
     if (createdPane) {
       armLeadPaneExitedHook();
-      clearLeftoverProcesses(project, config);
+      clearLeftoverProcesses(project, config, leftoverIds);
     } else if (!leadPaneExitedHookArmed()) {
       console.log(
         `! this tmux server carries no ${LEAD_PANE_EXITED_HOOK} backstop and hive arms one only on a pane it created, ` +
@@ -1918,8 +1920,9 @@ function cmdLeadPaneExited(argv: string[]): void {
 
 // Only a lead that CREATED its pane clears leftovers. An adopted live lead is the same lead those
 // processes belong to, and stopping them there would take down a running crew's dev server.
-function clearLeftoverProcesses(project: Project, config: ProjectYml | null): void {
+function clearLeftoverProcesses(project: Project, config: ProjectYml | null, leftoverIds: Set<number>): void {
   for (const row of runningCommandRows(project.id)) {
+    if (!leftoverIds.has(row.id)) continue;
     const stopped = stopProcess(row, STOP_REASONS.previousLead);
 
     // Nothing was running under it, so the auto-start line that follows is the whole story.
