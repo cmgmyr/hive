@@ -704,6 +704,8 @@ async function cmdLead(argv: string[]): Promise<void> {
       registrationNotice = text;
     });
     const auditIdentity = captureQueenWriteIdentity(project.id);
+    // Only rows running before this invocation began are leftovers, trust prompts included; a later `hive start` is not.
+    const leftoverIds = new Set(runningCommandRows(project.id).map((row) => row.id));
     const { config, warnings, sources } = loadProjectYml(project.path);
     if (detach && (!process.stdin.isTTY || !process.stdout.isTTY)) {
       let untrusted: string | undefined;
@@ -783,8 +785,6 @@ async function cmdLead(argv: string[]): Promise<void> {
     }
 
     const windowName = project.name;
-    // Only rows running before this invocation touched the store are leftovers; a later `hive start` is not.
-    const leftoverIds = new Set(runningCommandRows(project.id).map((row) => row.id));
     const {
       agentId: leadAgentId,
       actorId: leadActorId,
