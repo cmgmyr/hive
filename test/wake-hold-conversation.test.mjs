@@ -224,18 +224,24 @@ describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes
     assert.match(result.row.held_reason ?? "", /talked to this lead/);
   });
 
-  it("never forces out an idle wake whose condition has not been met", () => {
-    const result = fixture(
-      "idle-unmet-never-forced",
-      `${idleSetup("-1200 seconds")}
+  const unmetTimedOut = (maxWaitOffset) => `${idleSetup("-1200 seconds")}
       db.prepare("UPDATE agents SET agent_state = 'working' WHERE id = ?").run(workerRow);
-      db.prepare("UPDATE wakes SET held_at = datetime('now', '-1200 seconds'), first_held_at = datetime('now', '-1200 seconds') WHERE id = ?").run(wakeId);
+      db.prepare("UPDATE wakes SET max_wait_at = datetime('now', ?) WHERE id = ?").run('${maxWaitOffset}', wakeId);
       logPrompt('lead:1', '-15 seconds', 'still talking');
       await tick(snapshot);
       ${out("{ row: timerRow(wakeId) }")}
-      `,
-    );
-    assert.equal(result.row.fired_at, null, "a wake whose idle condition is unmet is not delivered by the ceiling");
+      `;
+
+  it("holds a timed-out idle wake with an unmet condition within 15 minutes of max_wait_at", () => {
+    const result = fixture("idle-timed-out-unmet-within", unmetTimedOut("-300 seconds"));
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
   });
+
+  it("delivers a timed-out idle wake with an unmet condition once 15 minutes have passed since max_wait_at", () => {
+    const result = fixture("idle-timed-out-unmet-past", unmetTimedOut("-1200 seconds"));
+    assert.ok(result.row.fired_at !== null, "max_wait_at is the due time of a wake whose condition never met");
+  });
+
 });
 

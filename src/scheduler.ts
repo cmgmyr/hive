@@ -2355,11 +2355,16 @@ function idleConditionMet(timer: TimerRow, snapshot: AliveSnapshot): boolean {
 }
 
 // An idle wake has no due_at, so its ceiling clock is the moment its condition was met (the watched
-// worker's state_changed_at, latest for idle_all, earliest qualifying for idle_any). A met condition
-// with no such moment (a gone worker) falls back to first_held_at; an unmet one has no clock at all.
+// worker's state_changed_at, latest for idle_all, earliest qualifying for idle_any), or max_wait_at
+// once it has timed out unmet. A met condition with no such moment (a gone worker) falls back to
+// first_held_at.
 function idleCeilingStart(timer: TimerRow, snapshot: AliveSnapshot | null): string | null {
   if (timer.kind !== "idle_any" && timer.kind !== "idle_all") return null;
-  if (snapshot === null || !idleConditionMet(timer, snapshot)) return null;
+  if (snapshot === null || !idleConditionMet(timer, snapshot)) {
+    if (timer.max_wait_at === null) return null;
+    const timedOut = stmt(`SELECT ? <= datetime('now') AS out`).get(timer.max_wait_at) as { out: number };
+    return timedOut.out ? timer.max_wait_at : null;
+  }
   const states = watchedStates(timer, snapshot);
   const sinces = states
     .filter((s) => (timer.kind === "idle_any" ? s.idle && !s.gone && s.since != null && s.since >= timer.created_at : true))
