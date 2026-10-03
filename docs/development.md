@@ -14,7 +14,7 @@ it; hive works without one, and every key in it is optional. Machine-wide
 defaults live separately in `$HIVE_DATA_DIR/hive.yml`; see
 [global defaults](configuration.md#global-defaults).
 
-Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on the Monday 08:42 UTC schedule and on `workflow_dispatch`, covering both ubuntu and macOS legs; its Mermaid docs check also runs on push and pull request, so a local full suite run is the merge gate.
+Tests use Node's built-in runner and exercise the real MCP server and CLI as child processes against scratch data directories. CI (`.github/workflows/ci.yml`) runs build plus tests on every pull request, on every push to `main`, on the Monday 08:42 UTC schedule, and on `workflow_dispatch`, covering both ubuntu and macOS legs plus a Mermaid docs check.
 
 Smoke test without touching your real data:
 
