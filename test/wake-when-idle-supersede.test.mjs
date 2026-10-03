@@ -79,6 +79,16 @@ describe("wake_when_idle supersedes the same owner's older one-shot", { skip: ha
     assert.equal("superseded" in b, false);
   });
 
+  it("leaves an older wake of the other mode alone, in both directions", async () => {
+    const any = await arm([w1], "b", "any");
+    const all = await arm([w1], "b", "all");
+    assert.equal(row(any.wake_id).cancelled_at, null);
+    assert.equal("superseded" in all, false);
+    const any2 = await arm([w1], "b", "any");
+    assert.deepEqual(any2.superseded, [any.wake_id]);
+    assert.equal(row(all.wake_id).cancelled_at, null);
+  });
+
   it("leaves a standing watch with the same set untouched", async () => {
     const a = await arm([w1]);
     db.prepare("UPDATE wakes SET watch_scope = 'project' WHERE id = ?").run(a.wake_id);

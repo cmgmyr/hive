@@ -459,7 +459,7 @@ export function registerWakes(server: McpServer): void {
     "wake_when_idle",
     {
       description:
-        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes for workers, plus one for the queen, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. Arming a one-shot for the same deliver target and an identical watched set cancels your own older pending one and names it in the receipt's superseded. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. agents=[...] refuses a lead: it watches worker state, which a lead does not write. lead_project_id is the QUEEN's alone: a one-shot that fires when another registered project's running lead ENDS A TURN (never 'finished its work'), stored in and delivered to the queen's own project, and ended with a named reason if that lead's pane dies, is reissued, or restarts.",
+        "Wake up when watched agents go idle (exact state from Claude Code hooks) or max_wait_seconds passes - except delivery HOLDS past that bound instead, for as long as the target pane is on a dialog or has unsubmitted human text in it, rather than pasting the wake body into either (.claude/rules/tmux-and-panes.md). Two shapes for workers, plus one for the queen, and you pass EXACTLY ONE of them. agents=[...] is a ONE-SHOT over a named list: mode=any fires on the first fresh idle transition, mode=all fires when every watched agent is idle (returns already_satisfied without scheduling anything if they all are now), and either way it stops watching once it fires. Arming a one-shot of the same mode for the same deliver target and an identical watched set cancels your own older pending one and names it in the receipt's superseded. scope=\"project\" is a STANDING WATCH over the crew you spawn in this project, including workers spawned later: it never stops watching, and on each finish it delivers a roster naming who finished and who is still going, until max_wait_seconds runs out or you wake_cancel it. You may hold ONE standing watch per project: a second call is refused and names the one already running, since two would report every finish twice. Use the standing watch when you are running more than one worker - a one-shot leaves every other worker unwatched from the moment it fires. Use either instead of polling. agents=[...] refuses a lead: it watches worker state, which a lead does not write. lead_project_id is the QUEEN's alone: a one-shot that fires when another registered project's running lead ENDS A TURN (never 'finished its work'), stored in and delivered to the queen's own project, and ended with a named reason if that lead's pane dies, is reissued, or restarts.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -601,12 +601,12 @@ export function registerWakes(server: McpServer): void {
             db
               .prepare(
                 `SELECT id, watch FROM wakes
-                  WHERE project_id = ? AND owner = ? AND kind IN ('idle_any', 'idle_all')
+                  WHERE project_id = ? AND owner = ? AND kind = ?
                     AND watch_scope IS NULL AND deliver_actor = ? AND deliver_pane = ?
                     AND fired_at IS NULL AND cancelled_at IS NULL
                     AND id NOT IN (SELECT wake_id FROM lead_idle_subscriptions)`,
               )
-              .all(projectId, currentActor(), delivery.actor, delivery.pane) as { id: number; watch: string }[]
+              .all(projectId, currentActor(), `idle_${mode}`, delivery.actor, delivery.pane) as { id: number; watch: string }[]
           )
             .filter((w) => sameSet(w.watch))
             .map((w) => w.id);
