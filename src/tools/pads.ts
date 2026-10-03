@@ -195,7 +195,7 @@ export function registerPads(server: McpServer): void {
     "pad_read",
     {
       description:
-        "Read a pad's content, revision, and metadata by pad_id or name. Optional offset and limit use UTF-16 code units and are nonnegative safe integers. There is no default cap; a cut inside a surrogate pair moves back one code unit, and the result reports the effective offset.",
+        "Read a pad's content, revision, and metadata by pad_id or name. Optional offset and limit use UTF-16 code units and are nonnegative safe integers. There is no default cap; a cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing, and the result reports the effective offset.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -206,7 +206,7 @@ export function registerPads(server: McpServer): void {
         pad_id: idParam.optional(),
         name: z.string().optional(),
         offset: z.number().int().nonnegative().optional().describe("Start index in UTF-16 code units; an index inside a surrogate pair moves back one code unit."),
-        limit: z.number().int().nonnegative().optional().describe("Requested UTF-16 code units to read; no default cap. A cut inside a surrogate pair moves back one code unit."),
+        limit: z.number().int().nonnegative().optional().describe("Requested UTF-16 code units to read; no default cap. An end cut inside a surrogate pair moves back one code unit, or forward if moving back would return nothing."),
         project_id: projectIdParam,
       },
     },
@@ -241,7 +241,10 @@ export function registerPads(server: McpServer): void {
         const offset = splitsSurrogatePair(pad.content, requestedOffset) ? requestedOffset - 1 : requestedOffset;
 
         let end = args.limit == null ? totalLength : Math.min(totalLength, requestedOffset + args.limit);
-        if (splitsSurrogatePair(pad.content, end)) end--;
+        if (splitsSurrogatePair(pad.content, end)) {
+          const backedUpEnd = end - 1;
+          end = args.limit != null && args.limit > 0 && backedUpEnd <= offset ? end + 1 : backedUpEnd;
+        }
 
         return {
           ...result,

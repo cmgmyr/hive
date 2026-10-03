@@ -330,8 +330,9 @@ place.`,
     revision guard makes concurrent writers safe
   pad_read(pad_id | name, offset?, limit?) — content plus revision and metadata
     offset and limit are nonnegative safe integers in UTF-16 code units, with
-    no default cap; cuts inside a surrogate pair move back one unit, and the
-    result reports its effective offset
+    no default cap; a cut inside a surrogate pair moves back one unit, or
+    forward if moving back would return nothing, and the result reports its
+    effective offset
   pad_append(pad_id, content, expected_revision?) — add to the end
   pad_edit(pad_id, old_text, new_text, expected_revision?) — replace one
     unique literal occurrence; include enough context to disambiguate

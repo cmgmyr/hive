@@ -33,7 +33,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `wake_cancel` | Cancels a pending wake-up you own | When the plan changes |
 | **pads** | | |
 | `pad_write` | Creates a named pad, or overwrites one with `expected_revision` | Shared plans, findings, the runbook, the board |
-| `pad_read` | Full content plus revision and metadata; optional nonnegative safe-integer UTF-16 code-unit `offset` and `limit`, with no default cap; surrogate-pair cuts move back one unit and the result reports its effective offset | Before editing, and whenever a pad is referenced |
+| `pad_read` | Full content plus revision and metadata; optional nonnegative safe-integer UTF-16 code-unit `offset` and `limit`, with no default cap; a surrogate-pair cut moves back one unit, or forward if moving back would return nothing, and the result reports its effective offset | Before editing, and whenever a pad is referenced |
 | `pad_append` | Adds to the end of a pad | Logs and running notes |
 | `pad_edit` | Replaces one literal text occurrence | Targeted changes without rewriting the pad |
 | `pad_list` | Pad summaries; filters by query or tags | Discovery without paying for full content |

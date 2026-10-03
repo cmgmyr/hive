@@ -70,6 +70,24 @@ it("pad_read moves a chunk end back instead of splitting a surrogate pair", asyn
   assert.equal(overlapping.next_offset, null);
 });
 
+it("pad_read advances through a leading surrogate pair when limit is one", async () => {
+  const content = "😀b";
+  const created = await mcp.call("pad_write", { name: "one-unit-surrogate", content });
+  const chunks = [];
+  let offset = 0;
+  let reads = 0;
+
+  while (offset != null && reads < 10) {
+    const read = await mcp.call("pad_read", { pad_id: created.pad_id, offset, limit: 1 });
+    chunks.push(read.content);
+    offset = read.next_offset;
+    reads++;
+  }
+
+  assert.equal(offset, null, "following next_offset must reach the end instead of stalling");
+  assert.equal(chunks.join(""), content);
+});
+
 it("pad_read returns an empty terminal chunk when offset is past the pad", async () => {
   const created = await mcp.call("pad_write", { name: "past-end", content: "short" });
   const read = await mcp.call("pad_read", { pad_id: created.pad_id, offset: 9, limit: 3 });
