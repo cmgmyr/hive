@@ -20,7 +20,7 @@ npm test
 
 Tests run against the built `dist/`, so build first. [docs/development.md](docs/development.md) has the details.
 
-There is no CI on pull requests. CI runs weekly, so run `npm test` locally before you open one.
+CI runs the build and the full suite on every pull request, on ubuntu and macOS. Run `npm test` locally before you open one anyway, since a local run is faster than a CI round trip.
 
 ## Writing and commits
 
