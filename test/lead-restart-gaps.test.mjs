@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { existsSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, until } from "./helpers.mjs";
@@ -444,4 +444,36 @@ describe("cmdLead's restart path - the audit's gaps", { skip: hasTmux ? false : 
       }
     },
   );
+});
+
+describe("hive lead rechecks an adopted pane's ownership just before publishing it", () => {
+  it("refuses the adopt when the pane's pid changes after the adopt decision, recording nothing", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const boot = await bootSinglePaneLead("lead-adopt-recheck");
+    try {
+      const shimDir = mkdtempSync(join(dirs.tmp, "adopt-recheck-shim-"));
+      const marker = join(shimDir, "decided");
+      const real = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+      writeFileSync(
+        join(shimDir, "tmux"),
+        `#!/bin/sh
+if [ "$1" = list-panes ] && [ "$2" = -t ] && [ "$3" = '${boot.pane}' ] && [ "$5" = '#{session_name}:#{window_id}' ]; then : > '${marker}'; fi
+if [ -e '${marker}' ] && [ "$1" = list-panes ] && [ "$2" = -a ]; then
+  '${real}' "$@" | awk '$1 == "${boot.pane}" { $2 = "1" } { print }'
+  exit 0
+fi
+exec '${real}' "$@"
+`,
+        { mode: 0o755 },
+      );
+      const second = await runCli(["lead"], { ...boot.cliOpts, env: { PATH: `${shimDir}:${boot.cliOpts.env.PATH}` } });
+      assert.ok(existsSync(marker), "setup bug: the shim never saw the adopt decision's window lookup");
+      assert.notEqual(second.code, 0, second.stdout);
+      assert.match(second.stdout + second.stderr, /no longer reads as the lead's own/);
+      const after = leadRow(db, boot.project.id);
+      assert.equal(after.tmux_target, boot.before.tmux_target);
+      assert.equal(after.pane_pid, boot.before.pane_pid);
+    } finally {
+      cleanup(boot.session);
+    }
+  });
 });

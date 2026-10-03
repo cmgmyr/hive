@@ -271,6 +271,8 @@ describe("issue #149: a worker-owned wake must not type into a pane a tmux resta
       const heldForReissue = timerRow(timerId);
       assert.ok(heldForReissue.held_at, "sanity check: the reissue hold from the earlier test's own shape must apply here too");
       assert.match(heldForReissue.held_reason, /now belongs to a different pane/);
+      assert.match(heldForReissue.held_reason, /nothing re-points a worker's wake automatically/);
+      assert.doesNotMatch(heldForReissue.held_reason, /run `hive lead`/, "a worker's hold must not send the reader to hive lead");
 
       execFileSync("tmux", ["kill-session", "-t", `=${gen2Session}`], { stdio: "ignore" });
       const paneGone = await until(() => {

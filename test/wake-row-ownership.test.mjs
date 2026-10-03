@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 
-import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, REPO, scratchDirs, tmuxCallsIn, until } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, McpClient, REPO, scratchDirs, tmuxCallsIn, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the wake row-ownership tests");
 const dirs = scratchDirs();
@@ -108,6 +108,19 @@ describe("a row-bound wake types only into a pane its row owns", () => {
       assert.equal(wakeRow(id).held_reason, null);
     });
   }
+
+  it("a failed tmux probe leaves an owned row's wake unheld, to re-evaluate next tick", { skip }, async () => {
+    const p = pane();
+    row({ actor: "agent:probefail", target: p.id, pid: p.pid });
+    const id = wake({ actor: "agent:probefail", pane: p.id, body: "PROBE-FAILED-BODY" });
+    await tickWithPath(fakeFailingTmux({ failOn: "list-panes" }));
+    const w = wakeRow(id);
+    assert.equal(w.held_reason, null, "a probe that failed proves nothing about ownership, so it must not hold by name");
+    assert.equal(w.fire_count, 0);
+    assert.equal(w.cancelled_at, null);
+    await tick();
+    assert.notEqual(wakeRow(id).typed_at, null, "control: once tmux answers, the owned row's wake delivers");
+  });
 
   it("a lead row with no recorded pid holds with the hive lead remedy", { skip }, async () => {
     const p = pane();
@@ -221,35 +234,44 @@ describe("a wake whose actor's row is closed is cancelled with a named reason an
   });
 });
 
+function repidOn(verb, rowId) {
+  const shimDir = mkdtempSync(join(tmpdir(), "hive-wake-repid-"));
+  const log = join(shimDir, "calls.log");
+  writeFileSync(log, "");
+  const repid = join(shimDir, "repid.mjs");
+  writeFileSync(
+    repid,
+    `import Database from ${JSON.stringify(join(REPO, "node_modules", "better-sqlite3", "lib", "index.js"))};\n` +
+      `new Database(${JSON.stringify(db.name)}).prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(${rowId});\n`,
+  );
+  const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+  writeFileSync(
+    join(shimDir, "tmux"),
+    `#!/bin/sh\n{ printf '%s\\037' "$@"; printf '\\n'; } >> ${JSON.stringify(log)}\n` +
+      `if [ "$1" = "${verb}" ]; then ${realTmux} "$@" || exit $?; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(repid)}; fi\n` +
+      `exec ${realTmux} "$@"\n`,
+    { mode: 0o755 },
+  );
+  return { shimDir, log };
+}
+
+async function tickWithPath(dir) {
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${dir}:${savedPath}`;
+  try {
+    await tick();
+  } finally {
+    process.env.PATH = savedPath;
+  }
+}
+
 describe("ownership lost after the claim withholds the Enter and records why", () => {
   it("a wake whose row changes between paste and Enter is cancelled by name, typed_at kept, no Enter sent", { skip }, async () => {
     const p = pane();
     const rowId = row({ actor: "agent:mid", target: p.id, pid: p.pid });
     const id = wake({ actor: "agent:mid", pane: p.id, body: "MID-DELIVERY" });
-    const shimDir = mkdtempSync(join(tmpdir(), "hive-wake-repid-"));
-    const log = join(shimDir, "calls.log");
-    writeFileSync(log, "");
-    const repid = join(shimDir, "repid.mjs");
-    writeFileSync(
-      repid,
-      `import Database from ${JSON.stringify(join(REPO, "node_modules", "better-sqlite3", "lib", "index.js"))};\n` +
-        `new Database(${JSON.stringify(db.name)}).prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(${rowId});\n`,
-    );
-    const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
-    writeFileSync(
-      join(shimDir, "tmux"),
-      `#!/bin/sh\n{ printf '%s\\037' "$@"; printf '\\n'; } >> ${JSON.stringify(log)}\n` +
-        `if [ "$1" = "paste-buffer" ]; then ${realTmux} "$@" || exit $?; exec ${JSON.stringify(process.execPath)} ${JSON.stringify(repid)}; fi\n` +
-        `exec ${realTmux} "$@"\n`,
-      { mode: 0o755 },
-    );
-    const savedPath = process.env.PATH;
-    process.env.PATH = `${shimDir}:${savedPath}`;
-    try {
-      await tick();
-    } finally {
-      process.env.PATH = savedPath;
-    }
+    const { shimDir, log } = repidOn("paste-buffer", rowId);
+    await tickWithPath(shimDir);
     const w = wakeRow(id);
     assert.equal(w.fire_count, 1, "claimed once");
     assert.notEqual(w.typed_at, null, "the paste happened, so typed_at is kept");
@@ -258,6 +280,24 @@ describe("ownership lost after the claim withholds the Enter and records why", (
     const calls = tmuxCallsIn(log);
     assert.equal(calls.filter((a) => a[0] === "paste-buffer").length, 1);
     assert.deepEqual(calls.filter((a) => a[0] === "send-keys" && a.includes("Enter")), []);
+  });
+
+  it("a wake whose row changes after its claim but before the paste types nothing at all", { skip }, async () => {
+    const p = pane();
+    const rowId = row({ actor: "agent:prepaste", target: p.id, pid: p.pid });
+    const id = wake({ actor: "agent:prepaste", pane: p.id, body: "PRE-PASTE-BODY" });
+    const { shimDir, log } = repidOn("set-buffer", rowId);
+    await tickWithPath(shimDir);
+    const w = wakeRow(id);
+    assert.equal(w.fire_count, 1, "claimed once");
+    assert.equal(w.typed_at, null, "nothing reached the pane, so no typed_at");
+    assert.notEqual(w.cancelled_at, null);
+    assert.match(w.held_reason, /^delivery stopped after claim: /);
+    const calls = tmuxCallsIn(log);
+    assert.equal(calls.filter((a) => a[0] === "set-buffer").length, 1, "setup bug: the shim never saw the buffer write");
+    assert.deepEqual(calls.filter((a) => a[0] === "paste-buffer"), []);
+    assert.deepEqual(calls.filter((a) => a[0] === "send-keys" && a.includes("Enter")), []);
+    assert.doesNotMatch(screen(p.id), /PRE-PASTE-BODY/);
   });
 });
 

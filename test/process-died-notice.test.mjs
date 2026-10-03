@@ -168,3 +168,26 @@ describe("a process that dies on its own is reported to the lead once; a stopped
     assert.equal(noticeBodies().length, before, "a notice nobody could ever be told is never written");
   });
 });
+
+describe("a dead-process notice is filed only for a lead whose pane the lead row owns", () => {
+  async function crashApi() {
+    assert.equal((await runCli(["start", "api"], opts)).code, 0);
+    const pane = paneOf("api");
+    crashPane(pane);
+    assert.equal(await until(() => targetLive(pane) === false), true);
+    ageRows();
+    janitor();
+  }
+
+  it("files nothing while the lead row records no pane pid, and files once it records the real one", needsTmux, async () => {
+    const leadPid = tmux("display-message", "-p", "-t", leadPane, "#{pane_pid}");
+    db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = '' WHERE kind = 'lead'").run(leadPane);
+    const before = noticeBodies().length;
+    await crashApi();
+    assert.equal(noticeBodies().length, before, "a lead whose pane ownership is unknown must not be handed a notice");
+
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE kind = 'lead'").run(leadPid);
+    await crashApi();
+    assert.equal(noticeBodies().length, before + 1, "control: the same death reaches a lead that owns its pane");
+  });
+});

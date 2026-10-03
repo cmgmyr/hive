@@ -249,5 +249,25 @@ describe(
       assert.equal(timerRow(wakeId).typed_at, null, "and was never typed into the dialog");
       assert.equal(noticeCount(wakeId), 1, "still one across later ticks");
     });
+
+    it("says nothing about a blocked worker whose row records no pane pid, until it records the real one", async () => {
+      const owner = await spawnShowing("block-unknown-owner", replayFixture("ready-idle.txt"));
+      await spawnShowing("block-unknown-stuck", replayFixture("folder-trust-dialog.txt"));
+      const pid = db.prepare("SELECT pane_pid FROM agents WHERE name = ? AND status = 'running'").get("block-unknown-stuck").pane_pid;
+      db.prepare("UPDATE agents SET pane_pid = '' WHERE name = ?").run("block-unknown-stuck");
+      markWaiting("block-unknown-stuck", "2026-08-08 10:00:00");
+      const wakeId = await ownedIdleWake("block-unknown-owner", ["block-unknown-stuck"], owner.agent_id, "INTEGRATION unknown blocked");
+
+      const control = await fx.mcp.call("wake_set", { delay_seconds: 2, body: "INTEGRATION unknown control", deliver_to: owner.agent_id });
+      await until(async () => timerRow(control.wake_id).typed_at != null, 15000);
+      await settleTicks();
+      assert.ok(timerRow(control.wake_id).typed_at, "the scheduler must have been ticking through that window");
+      assert.equal(noticeCount(wakeId), 0, "a worker whose pane ownership is unknown must not have its screen read or be reported");
+
+      db.prepare("UPDATE agents SET pane_pid = ? WHERE name = ?").run(pid, "block-unknown-stuck");
+      await until(async () => noticeCount(wakeId) > 0, 15000);
+      assert.equal(noticeCount(wakeId), 1, "control: the same block is reported once the row owns its pane");
+    });
+
   },
 );

@@ -839,6 +839,19 @@ describe("an idle wake carries what hive saw on the watched panes", { skip: hasT
     );
   });
 
+  it("never captures a watched agent's screen when its row records no pane pid, and says why", async () => {
+    const agent = agentRow("unknown-watched", watchedPane, "working", ownSocket);
+    db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(agent);
+    const wake = timedOutIdleWake(agent);
+
+    await tick();
+    await until(() => delivered().includes(`hive wake #${wake}`));
+
+    const text = delivered();
+    assert.ok(!text.includes(MARKER), `an unknown-ownership agent's screen must never be captured; got: ${JSON.stringify(text)}`);
+    assert.match(text, /unknown-watched [^\n]*pane ownership reads unknown, so its terminal was not read/);
+  });
+
   it("control: still captures the identical screen, via the identical timeout path, when the watched agent's own recorded socket matches this process", async () => {
     const agent = agentRow("matching-watched", watchedPane, "working", ownSocket);
     const wake = timedOutIdleWake(agent);
