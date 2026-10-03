@@ -1721,7 +1721,7 @@ function openDashboardOnce(project: Project, dashboardFile: string): void {
 
   try {
 
-    execFileSync("open", [pathToFileURL(dashboardFile).href], { stdio: "ignore", timeout: 5000 });
+    execFileSync("open", [pathToFileURL(dashboardFile).href], { stdio: "ignore", timeout: 10000 });
   } catch {
 
     db.prepare("DELETE FROM kv WHERE project_id = ? AND key = ?").run(project.id, DASHBOARD_OPENED_KV_KEY);
