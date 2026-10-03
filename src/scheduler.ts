@@ -950,7 +950,7 @@ const CONVERSATION_HOLD_TTL_SECONDS = 5 * 60;
 const CONVERSATION_HOLD_TTL = `-${CONVERSATION_HOLD_TTL_SECONDS} seconds`;
 
 // Must stay well under NOTICE_MAX_AGE, past which noticeDisposition cancels a held notice rather than
-// typing stale news (it says so in a replacement wake; it is not silent). Measured against due_at, not first_held_at: cli.ts's hive-lead
+// typing stale news (it says so in a replacement wake; it is not silent). Measured against due_at (idleCeilingStart for an idle wake), not first_held_at: cli.ts's hive-lead
 // re-point clears held_at (and so first_held_at) on every ordinary reattach, which would otherwise
 // launder this ceiling indefinitely.
 const CONVERSATION_HOLD_MAX = "-15 minutes";
