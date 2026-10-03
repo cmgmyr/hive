@@ -607,6 +607,14 @@ export function rowOwnership(row: RowPaneIdentity, snapshot?: AliveSnapshot | nu
   return pid === row.pane_pid ? "live" : "reissued";
 }
 
+// The one place a row's ownership is observed: a failed probe is its own answer, never unknown.
+export function observeRowOwnership(row: RowPaneIdentity): RowOwnership | "probe-failed" {
+  const observes = !foreignSocket(row.tmux_socket) && row.tmux_target !== "";
+  const snapshot = observes ? liveTargets() : null;
+  if (observes && observationFailed(snapshot)) return "probe-failed";
+  return rowOwnership(row, snapshot);
+}
+
 export function ownershipLiveness(ownership: RowOwnership): Liveness {
   return ownership === "live" ? true : ownership === "unknown" ? null : false;
 }

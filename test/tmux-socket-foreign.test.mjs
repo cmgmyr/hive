@@ -15,7 +15,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 const { janitor, tick } = await import("../dist/scheduler.js");
-const { isLive } = await import("../dist/tools/agents.js");
+const { summaryLiveness } = await import("../dist/tools/agents.js");
 const { foreignSocket, rowLive, rowAlive, tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
@@ -95,27 +95,27 @@ describe("foreignSocket/rowLive/rowAlive: the predicate itself, no tmux fork nee
 });
 
 describe(
-  "isLive: a foreign-socket agents row reads unknown, never dead - even for a genuinely live pane",
+  "summaryLiveness: a foreign-socket agents row reads unknown, never dead - even for a genuinely live pane",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     it("reads null for a foreign socket, even though the pane is really alive", () => {
       const agent = { status: "running", tmux_target: livePane, tmux_socket: FOREIGN_SOCKET };
-      assert.equal(isLive(agent), null, "a foreign socket must never be believed, alive or dead");
+      assert.equal(summaryLiveness(agent), null, "a foreign socket must never be believed, alive or dead");
     });
 
     it("control: reads true for this process's own socket against the same live pane", () => {
       const agent = { status: "running", tmux_target: livePane, tmux_socket: ownSocket, pane_pid: livePid };
-      assert.equal(isLive(agent), true, "the matching-socket case must behave exactly as before this lane");
+      assert.equal(summaryLiveness(agent), true, "the matching-socket case must behave exactly as before this lane");
     });
 
     it("control: reads true for a legacy empty socket against the same live pane", () => {
       const agent = { status: "running", tmux_target: livePane, tmux_socket: "", pane_pid: livePid };
-      assert.equal(isLive(agent), true, "an empty socket is 'no fact recorded', not foreign - D2");
+      assert.equal(summaryLiveness(agent), true, "an empty socket is 'no fact recorded', not foreign - D2");
     });
 
     it("reads null, never true, for a live pane whose row recorded no pane pid", () => {
       const agent = { status: "running", tmux_target: livePane, tmux_socket: ownSocket, pane_pid: "" };
-      assert.equal(isLive(agent), null);
+      assert.equal(summaryLiveness(agent), null);
     });
   },
 );

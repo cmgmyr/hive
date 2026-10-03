@@ -90,7 +90,7 @@ resolve_project "$REPO" || refuse "REPO ($REPO) does not resolve to a registered
 say "resolved project: $PROJECT_NAME (id $PROJECT_ID, $PROJECT_PATH)"
 
 DIST_SPAWN="$SCRIPT_DIR/../dist/spawn.js"
-DIST_TMUX_MODULE="$SCRIPT_DIR/../dist/tmux.js"
+DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
 
 # Prints gone, reissued, live, unknown or changed for one lead row identity, through hive's own
 # classifier, or classifier-failed (its stderr goes to the log) when node or the addon could not run it.
@@ -163,8 +163,6 @@ elif [ "$LEAD_OWNERSHIP" = "live" ]; then
 else
   say "no live pane for project $PROJECT_ID's lead (pane ownership: $LEAD_OWNERSHIP) - nothing to kill; will just run hive lead"
 fi
-
-DIST_TMUX="$SCRIPT_DIR/../dist/tmux.js"
 
 pane_says() {
   command -v node >/dev/null || return 2
@@ -317,7 +315,7 @@ STORE_PANE=$(db_query "select tmux_target from agents where project_id = $PROJEC
 PROMPT='Run `hive runbook`, read the board pad in full, then continue from its first live item. This session was restarted automatically by scripts/restart-lead.sh, so nothing was handed to you in conversation and the store is the only handoff. Anything outward-facing still waits for the human.'
 
 # A bracketed paste, rechecked against the row's recorded identity before the paste and again before the Enter.
-SEND_OUT=$(HIVE_DATA_DIR="$DATA_DIR" RL_DIST_SPAWN="$DIST_SPAWN" RL_DIST_TMUX="$DIST_TMUX_MODULE" node --input-type=module -e '
+SEND_OUT=$(HIVE_DATA_DIR="$DATA_DIR" RL_DIST_SPAWN="$DIST_SPAWN" RL_DIST_TMUX="$DIST_TMUX" node --input-type=module -e '
   const { requireStillOwned } = await import(process.env.RL_DIST_SPAWN);
   const { sendText } = await import(process.env.RL_DIST_TMUX);
   const [id, tmux_target, tmux_socket, pane_pid, prompt] = process.argv.slice(1);

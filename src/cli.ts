@@ -150,11 +150,11 @@ import {
   ensureSession,
   findProjectWindow,
   foreignSocket,
-  isPaneTarget,
   isViewSessionName,
   listOwnedWindows,
   liveTargets,
   observationFailed,
+  observeRowOwnership,
   type OwnedWindow,
   ORPHAN_MIN_AGE_MS,
   type OrphanScratchServers,
@@ -172,9 +172,7 @@ import {
   renderAttachCommand,
   resolveAttachTarget,
   resolveInTmuxTarget,
-  paneReissued,
   rowLive,
-  rowLiveProbe,
   rowOwnership,
   type RowOwnership,
   type RowPaneIdentity,
@@ -1821,13 +1819,11 @@ function resolveNamedProcess(
     console.log(`${name}: not running (start with: hive start "${name}")`);
     return null;
   }
-  const observes = !foreignSocket(row.tmux_socket) && row.tmux_target !== "";
-  const snapshot = observes ? liveTargets() : null;
-  if (observes && observationFailed(snapshot)) {
+  const ownership = observeRowOwnership(row);
+  if (ownership === "probe-failed") {
     console.log(CANNOT_TELL_WHERE(name));
     return null;
   }
-  const ownership = rowOwnership(row, snapshot);
   if (ownership === "unknown") {
     console.log(`${name}: its pane ownership is unknown (no pane pid recorded, or another tmux socket), so hive will not move that pane`);
     return null;

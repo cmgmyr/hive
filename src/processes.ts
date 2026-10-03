@@ -5,15 +5,12 @@ import { loadProjectYml } from "./projectYml.js";
 import { closeAgentRow, currentOwnership, killAgentPane, paneIdentity, relayoutAfterPaneLeft } from "./spawn.js";
 import {
   cancelCopyMode,
-  foreignSocket,
-  liveTargets,
-  observationFailed,
+  observeRowOwnership,
   paneProcessExited,
   paneVisibility,
   paneWindow,
   projectWindows,
   rowLive,
-  rowOwnership,
   sessionName,
   tmux,
   type RowOwnership,
@@ -153,12 +150,6 @@ function waitForPaneToExit(target: string, timeoutMs: number): boolean {
   }
 }
 
-// The only thing that stops a hive.yml command. kill-pane alone is SIGHUP, which a dev server with
-// detached grandchildren survives while still holding its port, so the graceful leg comes first and
-// the receipt says which one ended it.
-// `reason` is deliberately not read here and is not carried on the receipt: it is a required
-// argument so every caller has to declare its trigger from the closed set docs/projects.md is
-// checked against, and whichever caller prints it already knows which one it passed.
 const UNKNOWN_OWNERSHIP_NOTE =
   "its pane ownership is unknown (no pane pid recorded, a legacy window target, or another tmux socket), so hive left it running";
 const REISSUED_NOTE = "its pane id now belongs to another process, which was left alone";
@@ -174,12 +165,16 @@ function notOwned(row: StoppableRow, ownership: Exclude<RowOwnership, "live"> | 
   return { name: row.name, leg: "already-gone", ...(ownership === "reissued" ? { note: REISSUED_NOTE } : {}) };
 }
 
+// The only thing that stops a hive.yml command. kill-pane alone is SIGHUP, which a dev server with
+// detached grandchildren survives while still holding its port, so the graceful leg comes first and
+// the receipt says which one ended it.
+// `reason` is deliberately not read here and is not carried on the receipt: it is a required
+// argument so every caller has to declare its trigger from the closed set docs/projects.md is
+// checked against, and whichever caller prints it already knows which one it passed.
 export function stopProcess(row: StoppableRow, reason: StopReason): StoppedProcess {
   const identity = paneIdentity(row);
-  const observes = !foreignSocket(row.tmux_socket) && row.tmux_target !== "";
-  const snapshot = observes ? liveTargets() : null;
-  if (observes && observationFailed(snapshot)) return { name: row.name, leg: "unreachable" };
-  const ownership = rowOwnership(identity, snapshot);
+  const ownership = observeRowOwnership(identity);
+  if (ownership === "probe-failed") return { name: row.name, leg: "unreachable" };
   if (ownership !== "live") return notOwned(row, ownership);
 
   markStopping(row.project_id, row.id);

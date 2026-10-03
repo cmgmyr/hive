@@ -69,10 +69,10 @@ import {
   describePaneChoice,
   ensureAttached,
   findUnsafeControlChar,
-  foreignSocket,
   holdsHumanInput,
   liveTargets,
   observationFailed,
+  observeRowOwnership,
   ownershipLiveness,
   paneCurrentCommand,
   paneInCopyMode,
@@ -343,11 +343,6 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   };
 }
 
-export function isLive(agent: AgentRow): Liveness {
-  if (agent.status !== "running") return false;
-  return ownershipLiveness(rowOwnership(agent));
-}
-
 export const PROBE_FAILED_NOTE =
   "tmux could not be probed, so liveness is unknown. Nothing was changed. Retry in a few seconds.";
 
@@ -362,10 +357,9 @@ export const probeFailed = (agent: AgentRow) =>
 
 // A failed probe throws rather than answering unknown, so callers keep the retry wording.
 export function observeOwnership(agent: AgentRow): RowOwnership {
-  const observes = !foreignSocket(agent.tmux_socket) && agent.tmux_target !== "";
-  const snapshot = observes ? liveTargets() : null;
-  if (observes && observationFailed(snapshot)) throw probeFailed(agent);
-  return rowOwnership(agent, snapshot);
+  const ownership = observeRowOwnership(agent);
+  if (ownership === "probe-failed") throw probeFailed(agent);
+  return ownership;
 }
 
 export const REISSUED_PANE_NOTE =
