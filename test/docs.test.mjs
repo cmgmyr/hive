@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, globSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -649,16 +650,14 @@ describe("docs/queen.md names every operation the queen may write into another p
 });
 
 describe("docs/security.md cites every source file that can touch the network, start a process or write a file", () => {
-  const NAMES = {
-    process: ["execFileSync", "execFile", "execSync", "exec", "spawn", "spawnSync", "fork"],
-    write: [
-      "writeFileSync", "appendFileSync", "rmSync", "unlinkSync", "renameSync", "mkdirSync", "copyFileSync",
-      "symlinkSync", "linkSync", "cpSync", "rmdirSync", "truncateSync", "createWriteStream", "promises",
-      "writeFile", "appendFile", "rm", "unlink", "rename", "mkdir", "copyFile", "symlink", "cp",
-    ],
-  };
+  const READ_ONLY_FS = [
+    "readFileSync", "readFile", "existsSync", "statSync", "stat", "lstatSync", "readdirSync", "readdir",
+    "realpathSync", "readSync", "closeSync", "fstatSync", "accessSync", "constants", "watch", "createReadStream",
+  ];
   const MODULES = {
     child_process: "process",
+    worker_threads: "process",
+    cluster: "process",
     fs: "write",
     "fs/promises": "write",
     http: "network",
@@ -667,9 +666,10 @@ describe("docs/security.md cites every source file that can touch the network, s
     net: "network",
     tls: "network",
     dgram: "network",
+    dns: "network",
+    "dns/promises": "network",
   };
-  const SECTION = { network: "NETWORK", process: "EXECUTES", write: "WRITES" };
-  const EXCLUDED = {};
+  const CODE_FILE = /\.(ts|mjs|cjs|js|json)$/;
 
   function strip(source) {
     let noComments = "";
@@ -706,18 +706,18 @@ describe("docs/security.md cites every source file that can touch the network, s
       return hits;
     }
     const { noComments, blanked } = strip(source);
-    const importRe = /import\s+(type\s+)?([^;"']+?)\s+from\s+["'](?:node:)?([\w/]+)["']/g;
+    const importRe = /\b(?:import|export)\s+(type\s+)?([^;"']+?)\s+from\s+["'](?:node:)?([\w/]+)["']/g;
     for (const m of noComments.matchAll(importRe)) {
       const cls = MODULES[m[3]];
       if (!cls || m[1]) continue;
       const braces = /\{([^}]*)\}/.exec(m[2]);
       const outside = m[2].replace(/\{[^}]*\}/, "").replace(/,/g, "").trim();
-      if (outside) add(cls, `${m[3]} (default or namespace import)`);
+      if (outside) add(cls, `${m[3]} (default, namespace or star import)`);
       if (!braces) continue;
       for (const spec of braces[1].split(",").map((s) => s.trim()).filter(Boolean)) {
         if (spec.startsWith("type ")) continue;
         const original = spec.split(/\s+as\s+/)[0];
-        if (cls === "network" || NAMES[cls].includes(original)) add(cls, original);
+        if (m[3] === "fs" || m[3] === "fs/promises" ? !READ_ONLY_FS.includes(original) : true) add(cls, original);
       }
     }
     const loadRe = /(?:\bimport|\brequire)\s*\(\s*["'`](?:node:)?([\w/]+)["'`]/g;
@@ -729,10 +729,13 @@ describe("docs/security.md cites every source file that can touch the network, s
     return hits;
   }
 
-  const REPO_FILES = [
-    ...globSync("src/**/*", { cwd: REPO }),
-    ...globSync("claude-plugin/**/*", { cwd: REPO }),
-  ].filter((f) => /\.[a-z]+$/.test(f) && !f.endsWith(".md"));
+  const REPO_FILES = execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard", "src", "claude-plugin"],
+    { cwd: REPO, encoding: "utf8" },
+  )
+    .split("\n")
+    .filter((f) => f && existsSync(join(REPO, f)));
 
   function citedFiles() {
     const page = readRepo("docs/security.md");
@@ -742,23 +745,26 @@ describe("docs/security.md cites every source file that can touch the network, s
   function uncitedFindings(files, readFile, cited) {
     const out = [];
     for (const file of files) {
-      if (cited.has(file) || EXCLUDED[file]) continue;
+      if (cited.has(file)) continue;
       for (const hit of scanSource(file, readFile(file))) {
-        out.push(`${file} calls ${hit.name} (${hit.cls}) but docs/security.md does not cite it; add it under ${SECTION[hit.cls]}`);
+        out.push(
+          `${file} calls ${hit.name} (${hit.cls}) but docs/security.md does not cite it; add a citation for it to docs/security.md (NETWORK, EXECUTES or WRITES)`,
+        );
       }
     }
     return out;
   }
 
-  it("scans only file types it can read, so a new extension cannot hide a capability", () => {
-    const unreadable = REPO_FILES.filter((f) => !/\.(ts|mjs|json)$/.test(f));
+  it("scans every tracked or new code file under src/ and claude-plugin/, including dot-directories; markdown is prose and never executed, so it is skipped", () => {
+    const unreadable = REPO_FILES.filter((f) => !CODE_FILE.test(f) && !f.endsWith(".md"));
 
     assert.deepEqual(unreadable, [], "src/ or claude-plugin/ holds a file type the capability scan does not understand");
-    assert.ok(REPO_FILES.length >= 40, `the walk found ${REPO_FILES.length} files; the globs are wrong`);
+    assert.ok(REPO_FILES.includes("claude-plugin/.claude-plugin/plugin.json"), "the walk missed a dot-directory");
+    assert.ok(REPO_FILES.filter((f) => CODE_FILE.test(f)).length >= 40, "the walk found too few code files");
   });
 
   it("finds capabilities in the source rather than repeating a list of files here", () => {
-    const withHits = REPO_FILES.filter((f) => scanSource(f, readRepo(f)).length > 0);
+    const withHits = REPO_FILES.filter((f) => CODE_FILE.test(f) && scanSource(f, readRepo(f)).length > 0);
 
     assert.ok(withHits.includes("src/updateCheck.ts"), `parse is wrong: ${JSON.stringify(withHits)}`);
     assert.ok(withHits.includes("claude-plugin/kickoff.mjs"), "the plugin script spawns a process");
@@ -766,20 +772,20 @@ describe("docs/security.md cites every source file that can touch the network, s
     assert.ok(withHits.length >= 10, `expected many capability files, found ${withHits.length}`);
   });
 
-  it("reports every capability file the page does not cite, naming file, call and section", () => {
-    assert.deepEqual(uncitedFindings(REPO_FILES, readRepo, citedFiles()), []);
-  });
+  it("reports every capability file the page does not cite, naming file and call", () => {
+    const codeFiles = REPO_FILES.filter((f) => CODE_FILE.test(f));
 
-  it("explains every excluded file", () => {
-    for (const [file, reason] of Object.entries(EXCLUDED)) {
-      assert.ok(REPO_FILES.includes(file), `${file} is excluded but no longer exists`);
-      assert.ok(reason.length > 20, `${file} is excluded without a reason`);
-    }
+    assert.deepEqual(uncitedFindings(codeFiles, readRepo, citedFiles()), []);
   });
 
   it("goes red on a planted hit in an uncited file, in every spelling a call can take", () => {
     const planted = {
       "src/plant-named.ts": 'import { writeFileSync } from "node:fs";',
+      "src/plant-open.ts": 'import { openSync } from "node:fs";',
+      "src/plant-chmod.ts": 'import { readFileSync, chmodSync } from "fs";',
+      "src/plant-fsp.ts": 'import { writeFile } from "node:fs/promises";',
+      "src/plant-reexport.ts": 'export { writeFileSync } from "node:fs";',
+      "src/plant-star.ts": 'export * from "node:child_process";',
       "src/plant-alias.ts": 'import { spawnSync as run } from "node:child_process";',
       "src/plant-multiline.ts": 'import {\n  readFileSync,\n  rmSync,\n} from "node:fs";',
       "src/plant-namespace.ts": 'import * as fs from "node:fs";',
@@ -788,6 +794,9 @@ describe("docs/security.md cites every source file that can touch the network, s
       "src/plant-require.ts": 'const { execSync } = require("node:child_process");',
       "src/plant-promises.ts": 'import { promises } from "node:fs";',
       "src/plant-http.ts": 'import { request } from "node:https";',
+      "src/plant-dns.ts": 'import { lookup } from "node:dns/promises";',
+      "src/plant-worker.ts": 'import { Worker } from "node:worker_threads";',
+      "src/plant-cluster.ts": 'import { fork } from "node:cluster";',
       "src/plant-fetch.ts": 'const r = await fetch("https://example.com");',
       "src/plant-ws.ts": "const s = new WebSocket(url);",
       "plugin/plant.mjs": 'import { exec } from "node:child_process";',
@@ -798,10 +807,14 @@ describe("docs/security.md cites every source file that can touch the network, s
     for (const file of Object.keys(planted)) {
       assert.ok(findings.some((l) => l.startsWith(`${file} calls `)), `no finding for ${file}`);
     }
-    assert.ok(findings.includes("src/plant-named.ts calls writeFileSync (write) but docs/security.md does not cite it; add it under WRITES"));
-    assert.ok(findings.includes("src/plant-alias.ts calls spawnSync (process) but docs/security.md does not cite it; add it under EXECUTES"));
-    assert.ok(findings.some((l) => l.startsWith("src/plant-multiline.ts calls rmSync")));
-    assert.ok(findings.some((l) => l.startsWith("src/plant-fetch.ts calls fetch (network)") && l.endsWith("under NETWORK")));
+    assert.ok(
+      findings.includes(
+        "src/plant-open.ts calls openSync (write) but docs/security.md does not cite it; add a citation for it to docs/security.md (NETWORK, EXECUTES or WRITES)",
+      ),
+    );
+    assert.ok(findings.some((l) => l.startsWith("src/plant-multiline.ts calls rmSync (write)")));
+    assert.ok(findings.some((l) => l.startsWith("src/plant-alias.ts calls spawnSync (process)")));
+    assert.ok(findings.some((l) => l.startsWith("src/plant-fetch.ts calls fetch (network)")));
   });
 
   it("stays quiet on harmless text: comments, string contents, type imports and read-only fs imports", () => {
@@ -811,7 +824,8 @@ describe("docs/security.md cites every source file that can touch the network, s
       'const s = "fetch(url) and writeFileSync(x)";',
       "const t = `<script>fetch('/x')</script>`;",
       'import type { ChildProcess } from "node:child_process";',
-      'import { readFileSync, existsSync } from "node:fs";',
+      'import { readFileSync, existsSync, statSync, constants } from "node:fs";',
+      'import { readFile, readdir } from "node:fs/promises";',
       'import { join } from "node:path";',
     ].join("\n");
 
