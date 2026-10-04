@@ -53,7 +53,7 @@ hive re-applies the layout whenever a worker spawns or closes, so it holds up as
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
 
-Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works, and a codex worker gives up some things a claude one has: no park or resume, no stall reporting, no context-percentage reporting. See [docs/install.md#codex-workers](install.md#codex-workers) for the full list and what opting in takes.
+Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works. See [Codex workers](install.md#codex-workers) for its lifecycle, reporting, and instruction-loading limits.
 
 ### A worker's long report reaches you as one line
 
