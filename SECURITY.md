@@ -2,7 +2,7 @@
 
 See [What hive can do on your machine](docs/security.md) for a code-cited list of network access, commands, file writes, and process model.
 
-hive runs only on your machine. It has no daemon. The CLI makes one npm registry request only when you explicitly run `hive --version --check`, or when interactive `hive doctor` refreshes a cache older than a day. The MCP server, hooks, and scheduler never make that request. Set `HIVE_NO_UPDATE_CHECK=1` to disable it.
+hive runs only on your machine. It has no daemon. The CLI queries npm for hive's latest version on an explicit `hive --version --check`, a global `hive upgrade`, or an interactive stale-cache doctor refresh. An upgrade can also download software: global installs run `npm install -g @cmgmyr/hive@latest`; checkouts run `git pull --ff-only` and `npm install` only with `hive upgrade --run`. `HIVE_NO_UPDATE_CHECK=1` disables the version query, but does not prevent downloads from an explicitly run checkout upgrade. A global upgrade stops before installing when the flag disables its version query. The MCP server, hooks, and scheduler make no outbound requests. See [What hive can do on your machine](docs/security.md) for code references and the full list.
 
 ## What to know
 
