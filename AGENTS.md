@@ -2,7 +2,7 @@
 
 ## What this is
 
-hive is an MCP server plus CLI that gives multiple Claude Code sessions one shared, project-scoped state store: pads, todos with blockers, kv, leases, tmux-backed worker agents, and scheduled wake-ups. Every session runs its own server instance over stdio; all instances share one WAL-mode SQLite database (default `~/.hive/hive.db`). There is no daemon. The CLI makes one npm registry request only for an explicit `hive --version --check`, `hive upgrade`, or an interactive doctor refresh, and `HIVE_NO_UPDATE_CHECK=1` disables it. The MCP server, hooks, and scheduler never make that request.
+hive is an MCP server plus CLI that gives multiple Claude Code sessions one shared, project-scoped state store: pads, todos with blockers, kv, leases, tmux-backed worker agents, and scheduled wake-ups. Every session runs its own server instance over stdio; all instances share one WAL-mode SQLite database (default `~/.hive/hive.db`). There is no daemon. The CLI queries npm for hive's latest version on an explicit `hive --version --check`, a global `hive upgrade`, or an interactive stale-cache doctor refresh; the MCP server, hooks, and scheduler make no outbound requests. Explicit upgrades can also download software: a global install with an available update runs `npm install -g @cmgmyr/hive@latest`, while a checkout runs `git pull --ff-only` and `npm install` only with `hive upgrade --run`; `HIVE_NO_UPDATE_CHECK=1` disables the version query, not checkout upgrade downloads, and a global upgrade stops before installing when the flag disables its version query.
 
 ## Commands
 

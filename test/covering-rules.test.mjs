@@ -527,6 +527,7 @@ describe("against the real repo", () => {
         "docs/profiles.md",
         "docs/projects.md",
         "docs/queen.md",
+        "docs/security.md",
         "docs/tmux.md",
         "docs/tools.md",
         "docs/troubleshooting.md",
