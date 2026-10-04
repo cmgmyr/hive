@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.0 - 2026-10-04
+
+- hive now kills, types into, or reads the screen of a pane only when the row owns it. 1.6.0 changed what hive reports about a row's pane; this release changes what it does. Closing, parking, sending, renaming, `hive stop`, wake delivery, `hive lead`'s adopt and `scripts/restart-lead.sh` act only on a pane whose process matches the one hive recorded. After a tmux restart a pane id can name another process, and hive no longer touches it. When ownership cannot be checked, hive refuses or holds and says why.
+- `pad_read` takes optional `offset` and `limit` arguments, so you can read a large pad in chunks. A ranged read returns `total_length`, the effective `offset` and `next_offset`. A read without them returns the whole pad as before.
+- A held idle wake (`wake_when_idle` with `agents`) now follows the same 15 minute ceiling as other wakes. Before, it waited as long as you kept typing in the target pane.
+- Arming a one-shot idle wake for the same watched workers, mode and target cancels your older pending one, so only one delivers. The receipt lists the cancelled ids in `superseded`.
+- A rebuild that produces identical output no longer sends every session a "the build on disk changed" restart notice. `build_id` is now a hash of the version and the built files.
+- `hive lead`'s cleanup of commands left running by a previous lead no longer stops a `hive start` you run while the lead is starting.
+- Opening the dashboard waits up to 10 seconds for `open`, up from 5, so a slow machine no longer reports a failed open.
+- The `hive:cleanup` skill reports drift in your active profile when you wrap up, without changing anything. The `/hive:profile` skill asks once, after a profile edit, before telling running leads about it.
+- New page: [What hive can do on your machine](docs/security.md), a code-cited list of what hive sends over the network, runs and writes, for security reviewers. SECURITY.md now also says that `hive upgrade` downloads and installs the new version, and that `HIVE_NO_UPDATE_CHECK=1` stops only the version query.
+- After upgrading, restart every hive session. A session on an older build keeps the old behaviour, and any running hive server can deliver any project's wakes.
+
 ## 1.6.0 - 2026-10-01
 
 - hive now tells a row that owns a live tmux pane apart from a pane id that merely exists. After a tmux restart a pane id can come back attached to a different process. A row counts as live only when the pane's process matches the one hive recorded for it.
