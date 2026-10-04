@@ -60,11 +60,12 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 
 `agents` can also be set as a machine-wide default in `$HIVE_DATA_DIR/hive.yml`. A project list replaces that value. See [global defaults](configuration.md#global-defaults).
 
-A codex worker is not at parity with a claude one, and hive does not pretend otherwise:
+A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
-- It cannot be parked or resumed (`agent_park`, `agent_resume`); closing one ends that session for good.
-- Stall reporting skips it entirely. A stall report corroborates a worker's state against its transcript's mtime, and codex writes no transcript hive can read, so hive excludes the row rather than guessing at it, both in `hive doctor` and in the stall notice a standing watch sends a lead. Context-percentage reporting is unavailable for the same reason.
-- `.claude/rules/*.md` are not injected automatically the way Claude Code injects them for a claude worker; a codex worker only reads one if its brief tells it to.
+- You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1093`; `agent_resume`, `src/tools/agents.ts:920`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:973`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2800`; `noteStalledCrew`, `src/scheduler.ts:1961`; `transcriptStaleness`, `src/scheduler.ts:1879`).
+- Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:551-553`).
+- Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:309`).
 
 `agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
 

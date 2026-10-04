@@ -7,7 +7,7 @@ The vocabulary, identity model, workflow, and shared store behind hive.
 | Term | Meaning |
 |---|---|
 | lead | The session you talk to. Plans, spawns workers, dispatches todos. `hive` starts one. |
-| worker | A Claude session the lead spawns into a tmux pane, locked to the project. |
+| worker | A Claude or Codex session the lead spawns into a tmux pane, locked to the project. |
 | actor | Who a write is attributed to: `user:<name>` for humans, `agent:<id>` for workers. |
 | pad | A named shared document in the store. |
 | runbook | The pad holding your standing instructions for a project's lead. |
