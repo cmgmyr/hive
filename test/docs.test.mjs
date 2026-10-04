@@ -647,3 +647,182 @@ describe("docs/queen.md names every operation the queen may write into another p
     }
   });
 });
+
+describe("docs/security.md cites every source file that can touch the network, start a process or write a file", () => {
+  const NAMES = {
+    process: ["execFileSync", "execFile", "execSync", "exec", "spawn", "spawnSync", "fork"],
+    write: [
+      "writeFileSync", "appendFileSync", "rmSync", "unlinkSync", "renameSync", "mkdirSync", "copyFileSync",
+      "symlinkSync", "linkSync", "cpSync", "rmdirSync", "truncateSync", "createWriteStream", "promises",
+      "writeFile", "appendFile", "rm", "unlink", "rename", "mkdir", "copyFile", "symlink", "cp",
+    ],
+  };
+  const MODULES = {
+    child_process: "process",
+    fs: "write",
+    "fs/promises": "write",
+    http: "network",
+    https: "network",
+    http2: "network",
+    net: "network",
+    tls: "network",
+    dgram: "network",
+  };
+  const SECTION = { network: "NETWORK", process: "EXECUTES", write: "WRITES" };
+  const EXCLUDED = {};
+
+  function strip(source) {
+    let noComments = "";
+    let blanked = "";
+    for (let i = 0; i < source.length; ) {
+      const c = source[i];
+      const next = source[i + 1];
+      if (c === "/" && next === "/") {
+        while (i < source.length && source[i] !== "\n") i++;
+      } else if (c === "/" && next === "*") {
+        const end = source.indexOf("*/", i + 2);
+        i = end === -1 ? source.length : end + 2;
+      } else if (c === '"' || c === "'" || c === "`") {
+        let j = i + 1;
+        while (j < source.length && source[j] !== c) j += source[j] === "\\" ? 2 : 1;
+        const literal = source.slice(i, j + 1);
+        noComments += literal;
+        blanked += c + " ".repeat(Math.max(0, literal.length - 2)) + c;
+        i = j + 1;
+      } else {
+        noComments += c;
+        blanked += c;
+        i++;
+      }
+    }
+    return { noComments, blanked };
+  }
+
+  function scanSource(file, source) {
+    const hits = [];
+    const add = (cls, name) => hits.push({ file, cls, name });
+    if (file.endsWith(".json")) {
+      if (/"command"\s*:/.test(source)) add("process", "command");
+      return hits;
+    }
+    const { noComments, blanked } = strip(source);
+    const importRe = /import\s+(type\s+)?([^;"']+?)\s+from\s+["'](?:node:)?([\w/]+)["']/g;
+    for (const m of noComments.matchAll(importRe)) {
+      const cls = MODULES[m[3]];
+      if (!cls || m[1]) continue;
+      const braces = /\{([^}]*)\}/.exec(m[2]);
+      const outside = m[2].replace(/\{[^}]*\}/, "").replace(/,/g, "").trim();
+      if (outside) add(cls, `${m[3]} (default or namespace import)`);
+      if (!braces) continue;
+      for (const spec of braces[1].split(",").map((s) => s.trim()).filter(Boolean)) {
+        if (spec.startsWith("type ")) continue;
+        const original = spec.split(/\s+as\s+/)[0];
+        if (cls === "network" || NAMES[cls].includes(original)) add(cls, original);
+      }
+    }
+    const loadRe = /(?:\bimport|\brequire)\s*\(\s*["'`](?:node:)?([\w/]+)["'`]/g;
+    for (const m of noComments.matchAll(loadRe)) {
+      if (MODULES[m[1]]) add(MODULES[m[1]], `${m[1]} (dynamic import or require)`);
+    }
+    if (/\bfetch\s*\(/.test(blanked)) add("network", "fetch");
+    if (/\bnew\s+WebSocket\b/.test(blanked)) add("network", "WebSocket");
+    return hits;
+  }
+
+  const REPO_FILES = [
+    ...globSync("src/**/*", { cwd: REPO }),
+    ...globSync("claude-plugin/**/*", { cwd: REPO }),
+  ].filter((f) => /\.[a-z]+$/.test(f) && !f.endsWith(".md"));
+
+  function citedFiles() {
+    const page = readRepo("docs/security.md");
+    return new Set([...page.matchAll(/\b((?:src|claude-plugin)\/[\w./-]+\.(?:ts|mjs|js|json)):\d+/g)].map((m) => m[1]));
+  }
+
+  function uncitedFindings(files, readFile, cited) {
+    const out = [];
+    for (const file of files) {
+      if (cited.has(file) || EXCLUDED[file]) continue;
+      for (const hit of scanSource(file, readFile(file))) {
+        out.push(`${file} calls ${hit.name} (${hit.cls}) but docs/security.md does not cite it; add it under ${SECTION[hit.cls]}`);
+      }
+    }
+    return out;
+  }
+
+  it("scans only file types it can read, so a new extension cannot hide a capability", () => {
+    const unreadable = REPO_FILES.filter((f) => !/\.(ts|mjs|json)$/.test(f));
+
+    assert.deepEqual(unreadable, [], "src/ or claude-plugin/ holds a file type the capability scan does not understand");
+    assert.ok(REPO_FILES.length >= 40, `the walk found ${REPO_FILES.length} files; the globs are wrong`);
+  });
+
+  it("finds capabilities in the source rather than repeating a list of files here", () => {
+    const withHits = REPO_FILES.filter((f) => scanSource(f, readRepo(f)).length > 0);
+
+    assert.ok(withHits.includes("src/updateCheck.ts"), `parse is wrong: ${JSON.stringify(withHits)}`);
+    assert.ok(withHits.includes("claude-plugin/kickoff.mjs"), "the plugin script spawns a process");
+    assert.ok(withHits.includes("claude-plugin/hooks/hooks.json"), "the plugin hook runs a command");
+    assert.ok(withHits.length >= 10, `expected many capability files, found ${withHits.length}`);
+  });
+
+  it("reports every capability file the page does not cite, naming file, call and section", () => {
+    assert.deepEqual(uncitedFindings(REPO_FILES, readRepo, citedFiles()), []);
+  });
+
+  it("explains every excluded file", () => {
+    for (const [file, reason] of Object.entries(EXCLUDED)) {
+      assert.ok(REPO_FILES.includes(file), `${file} is excluded but no longer exists`);
+      assert.ok(reason.length > 20, `${file} is excluded without a reason`);
+    }
+  });
+
+  it("goes red on a planted hit in an uncited file, in every spelling a call can take", () => {
+    const planted = {
+      "src/plant-named.ts": 'import { writeFileSync } from "node:fs";',
+      "src/plant-alias.ts": 'import { spawnSync as run } from "node:child_process";',
+      "src/plant-multiline.ts": 'import {\n  readFileSync,\n  rmSync,\n} from "node:fs";',
+      "src/plant-namespace.ts": 'import * as fs from "node:fs";',
+      "src/plant-default.ts": 'import cp from "child_process";',
+      "src/plant-dynamic.ts": 'const m = await import("node:fs/promises");',
+      "src/plant-require.ts": 'const { execSync } = require("node:child_process");',
+      "src/plant-promises.ts": 'import { promises } from "node:fs";',
+      "src/plant-http.ts": 'import { request } from "node:https";',
+      "src/plant-fetch.ts": 'const r = await fetch("https://example.com");',
+      "src/plant-ws.ts": "const s = new WebSocket(url);",
+      "plugin/plant.mjs": 'import { exec } from "node:child_process";',
+      "plugin/plant.json": '{ "hooks": [{ "command": "node x.mjs" }] }',
+    };
+    const findings = uncitedFindings(Object.keys(planted), (f) => planted[f], new Set());
+
+    for (const file of Object.keys(planted)) {
+      assert.ok(findings.some((l) => l.startsWith(`${file} calls `)), `no finding for ${file}`);
+    }
+    assert.ok(findings.includes("src/plant-named.ts calls writeFileSync (write) but docs/security.md does not cite it; add it under WRITES"));
+    assert.ok(findings.includes("src/plant-alias.ts calls spawnSync (process) but docs/security.md does not cite it; add it under EXECUTES"));
+    assert.ok(findings.some((l) => l.startsWith("src/plant-multiline.ts calls rmSync")));
+    assert.ok(findings.some((l) => l.startsWith("src/plant-fetch.ts calls fetch (network)") && l.endsWith("under NETWORK")));
+  });
+
+  it("stays quiet on harmless text: comments, string contents, type imports and read-only fs imports", () => {
+    const quiet = [
+      "// writeFileSync(x) and fetch(y) in a comment",
+      "/* import { spawn } from 'node:child_process'; */",
+      'const s = "fetch(url) and writeFileSync(x)";',
+      "const t = `<script>fetch('/x')</script>`;",
+      'import type { ChildProcess } from "node:child_process";',
+      'import { readFileSync, existsSync } from "node:fs";',
+      'import { join } from "node:path";',
+    ].join("\n");
+
+    assert.deepEqual(scanSource("src/quiet.ts", quiet), []);
+  });
+
+  it("passes a planted hit once the page cites the file", () => {
+    const files = ["src/plant-named.ts"];
+    const read = () => 'import { writeFileSync } from "node:fs";';
+
+    assert.equal(uncitedFindings(files, read, new Set(["src/plant-named.ts"])).length, 0);
+    assert.equal(uncitedFindings(files, read, new Set()).length, 1);
+  });
+});
