@@ -1,5 +1,7 @@
 # Security
 
+See [What hive can do on your machine](docs/security.md) for a code-cited list of network access, commands, file writes, and process model.
+
 hive runs only on your machine. It has no daemon. The CLI makes one npm registry request only when you explicitly run `hive --version --check`, or when interactive `hive doctor` refreshes a cache older than a day. The MCP server, hooks, and scheduler never make that request. Set `HIVE_NO_UPDATE_CHECK=1` to disable it.
 
 ## What to know
