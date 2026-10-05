@@ -14,6 +14,8 @@ Where useful review already happens today, and who should decide whether a findi
 
 ## Add
 
+The shipped orchestration runbook already has a REVIEW section: the lead reads the real diff, runs a fresh-context reviewer by risk or on request, keeps findings as written, and renders `review_command` when it is set. On that base, set `review_command` if the user runs a real tool, and add the block below only to name a decision owner other than the lead.
+
 A runbook block naming the reviewer, the timing, and the decision owner:
 
 ```markdown

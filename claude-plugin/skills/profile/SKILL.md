@@ -47,7 +47,7 @@ The user may want more than one profile - a simple one and an orchestration one,
 
 ## Start small; editing is how a profile grows
 
-A first profile carries only what this interview actually surfaced. A new simple profile is `posture.md` plus a short `runbook.md` written from the confirmed answers - not a copy of anything thicker. A new orchestration profile fills in the shipped orchestration template's placeholders from those same answers; it does not add sections nobody asked for. Depth comes from running this skill again later to edit, not from a bigger first pass. Do not add a mandatory extra `.md` file, a review tool, or a tracking artifact that nobody's answer called for.
+A first profile carries only what this interview actually surfaced. A new simple profile is `posture.md` plus a short `runbook.md` written from the confirmed answers - not a copy of anything thicker. A new orchestration profile starts from the shipped orchestration files as they are. That base already says the lead assigns todo ids, supervises and accepts, and a worker never completes its own todo. It carries 13 rules (brief, scope, assigned todos, isolation, checks, waiting, review by risk, standing authority, checkpoint, record, closure, project facts in vars, model tiers by role), so do not interview for any of them. The interview only fills its optional vars from confirmed answers and edits a rule the user wants changed; it does not add sections nobody asked for. Depth comes from running this skill again later to edit, not from a bigger first pass. Do not add a mandatory extra `.md` file, a review tool, or a tracking artifact that nobody's answer called for.
 
 ## Converge, then confirm once
 
@@ -82,7 +82,7 @@ An edit changes only the rule that was discussed and any dependent instruction t
 
 ## Route project facts into `hive.yml` `vars`, not prose
 
-A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars` and get referenced from the profile as `{{var}}`, not hard-coded into the generated `posture.md`/`runbook.md`/`worker.md` text. This is what lets one profile serve several projects. `references/interview.md` lists the `hive.yml` keys and var names this skill knows how to write, and which existing shipped vars (`check`, `repo`, `install`, `ticket_prefix`, `start_command`) to reuse before introducing a new one.
+A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars` and get referenced from the profile as `{{var}}`, not hard-coded into the generated `posture.md`/`runbook.md`/`worker.md` text. This is what lets one profile serve several projects. `references/interview.md` lists the `hive.yml` keys and var names this skill knows how to write. The shipped orchestration profile renders these optional vars: `check`, `install`, `repo`, `ticket_prefix`, `start_command`, `test_command`, `suite_command`, `verify_command`, `review_command` and `worker_model`. Offer one only when the interview confirmed its value, and leave the rest unset: an unset var drops its section, and nothing makes the user fill every one.
 
 ## Offer a recipe only on its own signal
 
@@ -90,7 +90,7 @@ A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars`
 
 ## Validate before you tell them it's done
 
-After writing, run `hive doctor` and read each file you touched with "Read a rendered file in bounded sections" above, from the project the profile is meant to serve. Read it to the last line: a change near the end of a large file is easy to miss. A profile with no readable `runbook.md` fails `hive doctor` outright; `posture.md` and `worker.md` do not, but check them anyway. Tell the user to restart any running hive session so it picks up the change, and invite one small follow-up edit once they've tried it - that is the expected way a profile keeps improving.
+After writing, run `hive doctor` and read each file you touched with "Read a rendered file in bounded sections" above, from the project the profile is meant to serve. Read it to the last line: a change near the end of a large file is easy to miss. Read worker text with `hive profile read worker.md`, never `hive posture`: `hive posture` prints the lead's file only. `worker.md` keeps its identity placeholders (`{{agent_name}}` and the like) in that read because they fill at spawn, so do not treat them as a defect. A profile with no readable `runbook.md` fails `hive doctor` outright; `posture.md` and `worker.md` do not, but check them anyway. Tell the user to restart any running hive session so it picks up the change, and invite one small follow-up edit once they've tried it - that is the expected way a profile keeps improving.
 
 ## After a profile edit lands, ask once about notifying leads
 
@@ -100,6 +100,10 @@ For each matching project, call `agent_list` with `{project_id: <project id>}`. 
 
 On no, send nothing. On yes, call `wake_set` once per qualifying lead with `delay_seconds: 1`, `project_id: <that project's integer id>`, and `deliver_to: <lead's integer agent_id>`. Do not pass an actor id such as `lead:663` as `deliver_to`. Each wake body names the changed files and commit range, then tells the lead to re-read with `hive posture`, `hive runbook`, and `hive profile read <file>`, or restart through `hive lead` to reload the posture. Do not send a wake before the human says yes.
 
+## Without the Claude plugin
+
+The plugin only delivers this skill and the `/hive:profile` trigger. A stock Codex user, or anyone without the plugin, follows the same steps by hand: open this file and `references/interview.md` (they ship in the npm package under `claude-plugin/skills/profile/`, and in a checkout), then run the interview in any session. Every command here is a plain `hive` CLI call (`hive profile list`, `path`, `read`, `fork`, `hive doctor`, `hive posture`, `hive runbook`), and the profiles are ordinary markdown. Three parts are Claude-only or harness-specific: the `/hive:profile` trigger, a subagent for reading transcripts (do it inline in a harness with none, in small batches), and Claude Code's transcript location (Codex's rollout path is named above). The notify-leads step uses hive's own MCP tools, so it works wherever hive is registered.
+
 ## What this skill does not do
 
-It does not dispatch project work, change which agent application or model a project uses beyond what was explicitly asked, install a third-party tool, or commit or publish anything. It edits `hive.yml`'s `profile`, `agents`, `vars`, `context_checkpoint_percent`, and `lead_turn_budget` keys only on an explicit ask, and only to values the user gave or confirmed.
+It does not dispatch project work, change which agent application or model a project uses beyond what was explicitly asked, install a third-party tool, or commit or publish anything. It does not choose a model name for the user: `worker_model` is written only to a value they gave. It edits `hive.yml`'s `profile`, `agents`, `vars`, `context_checkpoint_percent`, and `lead_turn_budget` keys only on an explicit ask, and only to values the user gave or confirmed.

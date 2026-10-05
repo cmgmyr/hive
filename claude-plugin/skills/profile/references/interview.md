@@ -14,6 +14,13 @@ For an edit, open with "What should change, and what should stay?" and read the 
 
 **Simple** fits one active agent, sequential tasks, the user directly controlling the work, or a case where coordinating several sessions would cost more than it saves. **Orchestration** fits someone who already delegates, needs independent work to run in parallel, or names a concrete coordination problem they are trying to solve. Treat both as signals to weigh, never as a rule to apply mechanically.
 
+**What the orchestration base already settles.** The shipped orchestration files are written outright, with no mode var to switch on. The lead assigns todo ids, supervises and accepts; workers never self-dispatch and never complete their own todo; a brief names goal, decisions, files, base, checks and done-means; scope stops go to the lead; each lane has its own worktree and a lease on any shared runtime; the lead reads the real diff and runs the change; a fresh-context review runs by risk or on request, never on every change; pushes, PRs and posts need standing authority; a handback and a record live on the todo; the lead runs on the strongest model tier and workers on a cheaper one. A follow-up question on any of these is wasted unless the user's answer pushes against it, and then it is an edit to that rule, not a new section.
+
+**Three synthetic walk-throughs, each inside the budget** (illustrations, not real interviews). Each converges in at most six discovery questions plus three follow-ups, and none needs a question beyond the map below.
+- A solo user with personal repos, one stock harness and no tracker, CI or suite: no preference for delegation, so recommend simple. Dimensions asked: 12 (what done means), 15 (which command, or a stated manual check). No var beyond `check`, if they name one.
+- A user in work repos with a hosted tracker, CI and required human PR review: recommend orchestration only if they say they delegate. Dimensions asked: 14 (tracker), 13 and 09 (who pushes and posts; human PR review stays required), 15. Vars: `ticket_prefix`, `start_command` if they run one, `repo`, `check`. Do not mirror the ticket body into todos, and do not add a model var for a gateway-routed setup.
+- Two harnesses on a shared project with one suite and one dev database: recommend orchestration, since they name a coordination problem. Dimensions asked: 16, 15, 24. Vars: `suite_command`, `test_command`, `install`. The shipped SHARED RESOURCES rule covers the resource; the shared-test-resource recipe is offered only if they want a named coordinator.
+
 Summarise your recommendation with one reason tied to what the user said, and offer the other route without framing it as an upgrade or a downgrade. No stated preference means recommend simple, as the smaller thing to start from, while noting delegation is available later through an edit. If different kinds of project the user described need conflicting policies, offer separate profiles for them; do not offer several profiles just because both bases exist. Share discovery once, then confirm each profile's own differences and its selection separately.
 
 ## 3. Optional follow-up map
@@ -46,7 +53,7 @@ Every row below is optional. A row with no answer signal in what the user alread
 | 22 | Runtime verification | Green checks have missed a real failure before. | What real action demonstrates the change actually works? | The outcome the user described, exercised with a realistic input. | hive.yml vars, runbook.md |
 | 23 | Visual evidence | The project has a visible interface. | Which visible states do you need to see before accepting a change? | Only the states relevant to this project. | hive.yml vars, runbook.md |
 | 24 | Agent applications | More than one agent application is already in use. | Which applications are available, and which can use your tools? | Keep whatever is already working for the user. | top-level hive.yml `agents` |
-| 25 | Model selection | The user has a model preference. | Do you want a default model, or to choose one per task? | Keep current settings; propose no model ranking of your own. | posture.md, runbook.md |
+| 25 | Model selection | The user has a model preference. | Do you want a default model, or to choose one per task? | Keep current settings; propose no model ranking of your own. | hive.yml vars (`worker_model`), posture.md, runbook.md |
 | 26 | Model identifiers | The user's setup routes models by a custom name. | Does your installed application expect an alias, or an exact identifier? | Use an identifier the user has verified works. | top-level hive.yml `lead`, runbook.md |
 | 27 | Reasoning effort | The user has an effort preference. | Should tasks inherit the default effort, or use a level you choose? | Inherit current settings. | top-level hive.yml `lead`, runbook.md |
 | 28 | Escalation | A session repeatedly gets stuck. | When do you want a fresh session, or a different model? | Return a blocked choice to the user. | runbook.md, worker.md |
@@ -119,14 +126,29 @@ When selecting one project's `profile:` key in `hive.yml`, treat each project's 
 
 - `profile: <name>` selects the profile; write it to the project's own `hive.yml` for "this project", or to `~/.hive/hive.yml` only on an explicit ask for "every project" (see Scope, above).
 - `agents: [<harness>, ...]` selects which agent applications this project allows; write it only when the user names more than the default.
-- `vars:` holds project facts referenced as `{{var}}` from the profile's own text - reuse shipped names before inventing one: `check` (the before-you-report-done gate), `repo`, `install`, `ticket_prefix`, `start_command`. This lane's own additions, each a plain string substituted into prose and never executed by hive itself, are: `test_command` (scoped tests), `suite_command` (the full suite), `verify_command` (a real, observable outcome check), and `review_command` (an existing review the user already runs). Write one only when a generated template actually references it - an unreferenced var is dead weight, not a feature.
+- `vars:` holds project facts referenced as `{{var}}` from the profile's own text - reuse the shipped names before inventing one. Each is a plain string substituted into prose and never executed by hive itself, and each is optional: an unset var drops its section from the render. The shipped orchestration profile renders exactly these ten, and this skill offers each only on a confirmed signal:
+
+  | Var | Holds | Signal (dimension) |
+  |---|---|---|
+  | `check` | the before-you-report-done gate | the user names one command that proves readiness (15) |
+  | `test_command` | scoped checks for one change | they name a smaller command (15) |
+  | `suite_command` | the full suite | they name one, often alongside a shared resource (15, 16) |
+  | `verify_command` | a real, observable outcome check | green checks have missed a failure before (22) |
+  | `review_command` | a review the user already runs | they run an installed review tool (18, 19) |
+  | `worker_model` | the cheaper model tier workers spawn on | they name a model they want workers on (25) |
+  | `install` | dependency setup for a fresh worktree | a fresh checkout needs setup (08) |
+  | `repo` | the project's remote | a remote is in use (09) |
+  | `ticket_prefix` | a ticket id prefix, linked from the todo | a tracker is in use (14) |
+  | `start_command` | how ticket work starts; rendered only under `ticket_prefix` | they have a start routine for tickets (14, 40) |
+
+  `worker_model` is a value the user gave or confirmed, never a name you pick. Write a var only when a template actually references it; an unreferenced var is dead weight, not a feature. On a simple profile, only `check` is meaningful unless the user's own runbook references another.
 - `context_checkpoint_percent` (an integer from 1 to 100) and `lead_turn_budget` (a `{warn, stop}` pair, `stop` greater than `warn`) are optional and written only when the user asks for them.
 
 Never write a `hive.yml` key this skill does not know, and never invent a model name, an effort flag, a reserved identity var, or an `agents_*` / `harness_*` var - those are hive's own, computed at spawn time, and a project-defined one is stripped before it ever reaches a template.
 
 ## 5. Recipes
 
-`recipes/index.md` links a small library of optional patterns, each tied to one or more dimensions above: verification (15, 17, 22), a shared test resource (16, 15), a review decision (18-21), session continuity (33, 40, 35), and a worker context checkpoint (30, 28, orchestration only). Read the matching recipe when its dimension's signal shows up in discovery; it is never a required stop on the way to a first profile.
+`recipes/index.md` links a small library of optional patterns, each tied to one or more dimensions above: verification (15, 17, 22), a shared test resource (16, 15), a review decision (18-21), session continuity (33, 40, 35), and a worker context checkpoint (30, 28, orchestration only). Read the matching recipe when its dimension's signal shows up in discovery; it is never a required stop on the way to a first profile. On the shipped orchestration base, several recipes are mostly a var away because the base already renders the section (checks, review, shared resources, checkpoint); each recipe says what to set and when a block is still worth adding. Recipes keep their five-recipe count; the orchestration changes add no recipe.
 
 ## Known traps
 
