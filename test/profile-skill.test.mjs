@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -121,8 +121,21 @@ describe("the skill teaches the shipped orchestration profile as it is", () => {
     assert.deepEqual([...tableVars].sort(), [...rendered].sort());
   });
 
-  it("SKILL.md names every var the shipped profile renders", () => {
-    for (const v of rendered) assert.ok(skill.includes(`\`${v}\``), `SKILL.md never names \`${v}\``);
+  it("SKILL.md's own vars sentence names every var the shipped profile renders", () => {
+    const sentence = skill.match(/renders these optional vars:([^]*?)\. Offer one/);
+    assert.ok(sentence, "the vars sentence did not parse - did its wording change?");
+    for (const v of rendered) assert.ok(sentence[1].includes(`\`${v}\``), `the vars sentence never names \`${v}\``);
+  });
+
+  it("the shipped runbook still carries THE ONE RULE and every section heading the skill and recipes cite", () => {
+    const runbook = readFileSync(join(shippedProfilesDir, "orchestration", "runbook.md"), "utf8");
+    assert.match(runbook, /^THE ONE RULE\nThe lead supervises and accepts; a worker never completes its own todo\./m);
+    for (const heading of ["SHARED RESOURCES", "CHECKS", "REVIEW", "CONTEXT CHECKPOINT", "HANDBACK AND RECORD", "CLOSING A LANE", "COLD BOOT"]) {
+      assert.match(runbook, new RegExp(`^${heading}( \\(.*\\))?$`, "m"), `runbook.md lost its ${heading} heading`);
+    }
+    for (const word of ["lanes", "the brief", "scope", "worktrees", "shared resources", "checks", "review", "permissions", "waiting", "context checkpoint", "handback and record", "closing a lane", "cold boot"]) {
+      assert.ok(skill.includes(word), `SKILL.md no longer names "${word}"`);
+    }
   });
 
   it("teaches that the lead assigns and accepts, and offers no opt-in mode var", () => {
@@ -149,8 +162,16 @@ describe("the skill teaches the shipped orchestration profile as it is", () => {
     assert.match(skill, /## Without the Claude plugin/);
     assert.match(skill, /Claude-only/);
     const unshipped = /\b(cg-review|cg-architecture-review|counselors|lookover|evaluate-leads|ci-check|social-moment)\b/;
-    for (const text of [skill, interview, verification]) assert.doesNotMatch(text, unshipped);
-    assert.doesNotMatch(skill + interview + verification, /\/Users\/|\/home\//);
+    const files = [join(skillDir, "SKILL.md")];
+    for (const dir of [join(skillDir, "references"), recipesDir]) {
+      for (const name of readdirSync(dir)) if (name.endsWith(".md")) files.push(join(dir, name));
+    }
+    assert.ok(files.length >= 8, `expected SKILL.md, interview.md and the recipes, got ${files.length} files`);
+    for (const file of files) {
+      const text = readFileSync(file, "utf8");
+      assert.doesNotMatch(text, unshipped, file);
+      assert.doesNotMatch(text, /\/Users\/|\/home\//, file);
+    }
   });
 });
 

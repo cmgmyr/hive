@@ -19,7 +19,7 @@ For an edit, open with "What should change, and what should stay?" and read the 
 **Three synthetic walk-throughs, each inside the budget** (illustrations, not real interviews). Each converges in at most six discovery questions plus three follow-ups, and none needs a question beyond the map below.
 - A solo user with personal repos, one stock harness and no tracker, CI or suite: no preference for delegation, so recommend simple. Dimensions asked: 12 (what done means), 15 (which command, or a stated manual check). No var beyond `check`, if they name one.
 - A user in work repos with a hosted tracker, CI and required human PR review: recommend orchestration only if they say they delegate. Dimensions asked: 14 (tracker), 13 and 09 (who pushes and posts; human PR review stays required), 15. Vars: `ticket_prefix`, `start_command` if they run one, `repo`, `check`. Do not mirror the ticket body into todos, and do not add a model var for a gateway-routed setup.
-- Two harnesses on a shared project with one suite and one dev database: recommend orchestration, since they name a coordination problem. Dimensions asked: 16, 15, 24. Vars: `suite_command`, `test_command`, `install`. The shipped SHARED RESOURCES rule covers the resource; the shared-test-resource recipe is offered only if they want a named coordinator.
+- Two harnesses on a shared project with one suite and one dev database: recommend orchestration, since they name a coordination problem. Dimensions asked: 16, 15, 24. Vars: `suite_command`, `test_command`; `install` only if they name a setup step. The shipped SHARED RESOURCES rule covers the resource; the shared-test-resource recipe is offered only if they want a named coordinator.
 
 Summarise your recommendation with one reason tied to what the user said, and offer the other route without framing it as an upgrade or a downgrade. No stated preference means recommend simple, as the smaller thing to start from, while noting delegation is available later through an edit. If different kinds of project the user described need conflicting policies, offer separate profiles for them; do not offer several profiles just because both bases exist. Share discovery once, then confirm each profile's own differences and its selection separately.
 
@@ -136,7 +136,7 @@ When selecting one project's `profile:` key in `hive.yml`, treat each project's 
   | `verify_command` | a real, observable outcome check | green checks have missed a failure before (22) |
   | `review_command` | a review the user already runs | they run an installed review tool (18, 19) |
   | `worker_model` | the cheaper model tier workers spawn on | they name a model they want workers on (25) |
-  | `install` | dependency setup for a fresh worktree | a fresh checkout needs setup (08) |
+  | `install` | dependency setup for a fresh worktree | the user names a setup step a fresh checkout needs |
   | `repo` | the project's remote | a remote is in use (09) |
   | `ticket_prefix` | a ticket id prefix, linked from the todo | a tracker is in use (14) |
   | `start_command` | how ticket work starts; rendered only under `ticket_prefix` | they have a start routine for tickets (14, 40) |

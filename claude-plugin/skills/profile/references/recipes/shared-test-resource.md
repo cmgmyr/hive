@@ -14,7 +14,7 @@ The name of the actual shared resource (a database, a port, a device) and who or
 
 ## Add
 
-The shipped orchestration runbook already has a SHARED RESOURCES section (name the runtime, take a lease, one full check at a time, the lead gives out the slot) and renders `suite_command` when it is set. On that base, set `suite_command` and add the block below only to name a coordinator other than the lead.
+The shipped orchestration runbook already has a SHARED RESOURCES section (name the runtime, take a lease, one full check at a time, the lead gives out the slot). That section is unconditional prose and renders no var; `suite_command` renders under CHECKS. On that base, set `suite_command` and add the block below only to name a coordinator other than the lead.
 
 A runbook rule naming the resource and the coordination habit:
 
