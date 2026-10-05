@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -97,6 +97,82 @@ describe("a recipe's fenced additions render the same way hive's loader renders 
       }
     }
   }
+});
+
+describe("the skill teaches the shipped orchestration profile as it is", () => {
+  const read = (...p) => readFileSync(join(skillDir, ...p), "utf8");
+  const skill = read("SKILL.md");
+  const interview = read("references", "interview.md");
+  const verification = read("references", "recipes", "verification.md");
+  const RESERVED = new Set(["actor_id", "agent_name", "cwd", "primary_root", "project_name", "project_path"]);
+  const rendered = new Set();
+  for (const f of ["posture.md", "runbook.md", "worker.md"]) {
+    for (const v of templateVars(readFileSync(join(shippedProfilesDir, "orchestration", f), "utf8"))) {
+      if (!RESERVED.has(v)) rendered.add(v);
+    }
+  }
+  const tableVars = [...interview.matchAll(/^ {2}\| `([a-z_]+)` \|/gm)].map((m) => m[1]);
+
+  it("the shipped orchestration profile renders the ten vars the plan names, so the checks below compare a real set", () => {
+    assert.deepEqual([...rendered].sort(), ["check", "install", "repo", "review_command", "start_command", "suite_command", "test_command", "ticket_prefix", "verify_command", "worker_model"]);
+  });
+
+  it("interview.md's var table offers exactly the vars the shipped profile renders, no more and no fewer", () => {
+    assert.deepEqual([...tableVars].sort(), [...rendered].sort());
+  });
+
+  it("SKILL.md's own vars sentence names every var the shipped profile renders", () => {
+    const sentence = skill.match(/renders these optional vars:([^]*?)\. Offer one/);
+    assert.ok(sentence, "the vars sentence did not parse - did its wording change?");
+    for (const v of rendered) assert.ok(sentence[1].includes(`\`${v}\``), `the vars sentence never names \`${v}\``);
+  });
+
+  it("the shipped runbook still carries THE ONE RULE and every section heading the skill and recipes cite", () => {
+    const runbook = readFileSync(join(shippedProfilesDir, "orchestration", "runbook.md"), "utf8");
+    assert.match(runbook, /^THE ONE RULE\nThe lead supervises and accepts; a worker never completes its own todo\./m);
+    for (const heading of ["SHARED RESOURCES", "CHECKS", "REVIEW", "CONTEXT CHECKPOINT", "HANDBACK AND RECORD", "CLOSING A LANE", "COLD BOOT"]) {
+      assert.match(runbook, new RegExp(`^${heading}( \\(.*\\))?$`, "m"), `runbook.md lost its ${heading} heading`);
+    }
+    for (const word of ["lanes", "the brief", "scope", "worktrees", "shared resources", "checks", "review", "permissions", "waiting", "context checkpoint", "handback and record", "closing a lane", "cold boot"]) {
+      assert.ok(skill.includes(word), `SKILL.md no longer names "${word}"`);
+    }
+  });
+
+  it("teaches that the lead assigns and accepts, and offers no opt-in mode var", () => {
+    assert.match(skill, /lead assigns todo ids, supervises and accepts/);
+    assert.match(skill, /never complete[s]? its own todo/);
+    assert.doesNotMatch(skill + interview, /orchestration_workflow/);
+  });
+
+  it("keeps simple as the no-preference recommendation and the existing question budget", () => {
+    assert.match(skill, /No stated preference means recommend simple/);
+    assert.match(interview, /No stated preference means recommend simple/);
+    assert.match(interview, /at most six discovery questions/);
+    assert.match(interview, /at most three targeted follow-ups/);
+  });
+
+  it("the verification recipe reads worker text with `hive profile read worker.md` and never through `hive posture`", () => {
+    assert.match(verification, /hive profile read worker\.md/);
+    assert.doesNotMatch(verification, /`hive posture` for the worker copy, on orchestration/);
+    assert.match(verification, /Never use `hive posture` for the worker copy/);
+    assert.match(skill, /Read worker text with `hive profile read worker\.md`, never `hive posture`/);
+  });
+
+  it("says which parts are Claude-only for a stock Codex user, and names no skill hive does not ship", () => {
+    assert.match(skill, /## Without the Claude plugin/);
+    assert.match(skill, /Claude-only/);
+    const unshipped = /\b(cg-review|cg-architecture-review|counselors|lookover|evaluate-leads|ci-check|social-moment)\b/;
+    const files = [join(skillDir, "SKILL.md")];
+    for (const dir of [join(skillDir, "references"), recipesDir]) {
+      for (const name of readdirSync(dir)) if (name.endsWith(".md")) files.push(join(dir, name));
+    }
+    assert.ok(files.length >= 8, `expected SKILL.md, interview.md and the recipes, got ${files.length} files`);
+    for (const file of files) {
+      const text = readFileSync(file, "utf8");
+      assert.doesNotMatch(text, unshipped, file);
+      assert.doesNotMatch(text, /\/Users\/|\/home\//, file);
+    }
+  });
 });
 
 describe("hive's loader accepts the profiles the skill would produce", () => {
