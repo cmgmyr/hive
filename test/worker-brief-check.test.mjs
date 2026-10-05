@@ -37,8 +37,9 @@ describe("shipped orchestration worker.md: before-you-report-done block (todo 79
     assert.match(rendered, /2\. Rebuild before any screenshot/);
     assert.match(rendered, /4\. Run the scoped checks again after your last edit/);
     assert.match(rendered, /5\. Commit; do not push\./);
-    assert.match(rendered, /6\. Report on the todo:.*You do not complete the todo\./);
-    assert.match(rendered, /7\. Run the readers the brief names/);
+    assert.match(rendered, /6\. Run the readers the brief names.*post their findings raw.*Then report on the todo:.*You do not complete the todo\./);
+    assert.match(rendered, /otherwise ask the lead\./);
+    assert.doesNotMatch(rendered, /^7\./m);
   });
 
   it("renders step 3 with the project's check command when vars.check is set", () => {
@@ -74,7 +75,7 @@ describe("shipped orchestration worker.md: before-you-report-done block (todo 79
     const codex = renderShipped(mergedBriefVars({}, "codex"));
     const claude = renderShipped(mergedBriefVars({}, "claude"));
     for (const rendered of [codex, claude]) {
-      assert.match(rendered, /7\. Run the readers the brief names, with this harness's own review command, and post their findings raw\./);
+      assert.match(rendered, /6\. Run the readers the brief names, with this harness's own review command, and post their findings raw/);
     }
   });
 });
@@ -99,6 +100,16 @@ describe("shipped orchestration: one dispatch and completion owner across the th
     const posture = readProfileFile("orchestration", "posture.md");
     assert.match(posture, /strongest model tier/);
     assert.doesNotMatch(posture, /claude-|gpt-|opus|sonnet|haiku/i);
+  });
+
+  it("renders the worker model line only when worker_model is set", async () => {
+    const { renderProfileFile } = await import("../dist/profiles.js");
+    const withVar = renderProfileFile("orchestration", "posture.md", { worker_model: "sonnet" });
+    const without = renderProfileFile("orchestration", "posture.md", {});
+    assert.match(withVar, /Default worker model: sonnet\./);
+    assert.doesNotMatch(without, /Default worker model/);
+    assert.match(renderProfileFile("orchestration", "runbook.md", { worker_model: "sonnet" }), /Worker model: sonnet\./);
+    assert.match(without, /agent_spawn's `model` argument/);
   });
 
   it("carries no opt-in mode var", async () => {

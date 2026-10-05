@@ -1136,8 +1136,13 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 #   start_command: /jira-start
 #   check: npm run lint && npx tsc --noEmit   # what a worker runs before
                                               # reporting done; gates only,
-                                              # no suite (test_all is that)
+                                              # no suite (suite_command is that)
 #   check: ./vendor/bin/pint --test && ./vendor/bin/phpstan   # a PHP stack's
+#   test_command: npm test -- test/foo.test.mjs   # scoped check for one change
+#   suite_command: npm test     # full suite; one run at a time, lead's slot
+#   verify_command: npm run build && node dist/cli.js --version   # exercises the real outcome
+#   review_command: /review     # a fresh-context reviewer, if your harness has one
+#   worker_model: sonnet        # the cheaper tier workers spawn on
 #   ci: weekly                  # absent: CI runs on push/PR. weekly: CI runs
                                 # on schedule + dispatch only, and the local
                                 # full suite gates the merge

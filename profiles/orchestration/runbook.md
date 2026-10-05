@@ -27,7 +27,11 @@ HOW A LANE RUNS
 1. Read the request and the project's own rules. Name the lane and who accepts. A lane without an acceptance owner stalls on the first question.
 2. Write the brief (shape below). Put it on the todo, or in a pad when it is long.
 3. Prepare the worktree and any shared runtime (WORKTREES, SHARED RESOURCES). A worker started before this edits the wrong place.
-4. Spawn the worker with agent_spawn: `cwd` set to the worktree, `name` set, and `model` set to the worker tier from `vars:` when you have named one. Send the brief. Then wake_when_idle(scope="project").
+4. Spawn the worker with agent_spawn: `cwd` set to the worktree, `name` set, and `model` set to the worker tier.
+<!--if:worker_model-->
+   Worker model: {{worker_model}}.
+<!--end-->
+   Send the brief. Then wake_when_idle(scope="project").
 5. When it reports, read the todo comments, the diff and agent_output. Run the change yourself. Triage findings (REVIEW).
 6. Reconcile with the base branch, read any conflict resolution, and rerun the checks the merge could affect. A merge that was never rerun ships a break that each side passed alone.
 7. Accept, then close out (CLOSING A LANE). Record the next action on the todo.
@@ -107,7 +111,7 @@ Text that leaves the machine describes the change and the evidence only. Keep co
 CLOSING A LANE
 1. Accept the result. Confirm the merge when delivery was required.
 2. todo_complete, with the evidence in the comment.
-3. Capture anything still only in the worker's pane, then agent_close.
+3. Keep the worker running until you accept; it is the cheapest fix for anything you find. Then capture anything still only in its pane and agent_close.
 4. Remove only the worktrees and branches that lane made. Release its leases. Cancel wakes it set (wake_cancel).
 5. Leave dirty or uncertain work in place and say so. Teardown that destroys live work loses the author's only copy.
 

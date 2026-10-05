@@ -33,9 +33,8 @@ BEFORE YOU REPORT DONE, in this order.
 3. Run this project's gates and fix what they find: {{check}}
 <!--end-->
 4. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
-5. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it.
-6. Report on the todo: files and commits, checks and results, outcome, risks, and the next action. Wait for the lead. You do not complete the todo.
-7. Run the readers the brief names, with this harness's own review command, and post their findings raw. Do not summarise or filter them.
+5. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it; otherwise ask the lead.
+6. Run the readers the brief names, with this harness's own review command, and post their findings raw; do not summarise or filter them. Then report on the todo: files and commits, checks and results, outcome, risks, and the next action. Wait for the lead. You do not complete the todo.
 
 WAIT FOR EVERYTHING YOU START
 Await every helper or background job you started and read its result before you move on. Keep commands in the foreground. A helper still running changes code you already checked.
