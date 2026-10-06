@@ -4,34 +4,68 @@ The npm and source install paths, the Node version and interpreter pin, the sess
 
 ## Install from npm
 
-Install the published package globally, then pin the command to the Node interpreter you used. `hive setup` prints the MCP registration line when the registration is missing or stale.
+Install the published package globally, then choose the setup section for your harness below. Both paths pin the Hive command to the Node interpreter running setup.
 
 ```bash
 npm install -g @cmgmyr/hive
-hive setup
-brew install tmux
-claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
-ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
-hive doctor
+brew install tmux           # macOS; on Linux/WSL use your distribution's package manager
 ```
+
+### Claude setup (default)
+
+```bash
+hive setup                  # equivalent to hive setup --harness claude
+claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+mkdir -p ~/.claude/skills
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive
+```
+
+The symlink is optional and enables Claude's session-start plugin. Claude remains the built-in lead and worker default.
+
+### Codex setup (opt-in)
+
+```bash
+codex login
+hive setup --harness codex
+codex mcp add hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+codex mcp get hive
+```
+
+Run `hive init` in your project if needed, then add the following keys to its `hive.yml`:
+
+```yaml
+lead: codex
+agents: [codex]
+```
+
+Setup selects registration instructions only; it prints this recipe without modifying project or global harness settings. To use Codex across projects, put those keys in `$HIVE_DATA_DIR/hive.yml` (normally `~/.hive/hive.yml`). Project keys override machine defaults. The lead and worker pool are independent: `agents: [codex, claude]` allows both worker harnesses and defaults workers to Codex, but does not change `lead`.
+
+Hive-managed Codex leads and workers currently require `~/.codex/auth.json`; Hive symlinks that file into generated homes. Other authentication storage arrangements are not automatically supported. Doctor checks that the file exists without reading its contents. Run `hive doctor` from the project, then `hive` from an interactive terminal and accept the configuration trust prompt. Doctor checks the effective lead and worker executables; it does not require an unused harness. Missing recognized lead executables fail before a lead row or pane is created. Custom commands or dynamic prefixes such as `PATH=... codex` are not preflighted, because their executable cannot be inferred safely from the caller's PATH.
+
+Optional skills for ordinary Codex sessions:
+
+```bash
+mkdir -p ~/.agents/skills
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin/skills/profile" ~/.agents/skills/hive-profile
+ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin/skills/cleanup" ~/.agents/skills/hive-cleanup
+```
+
+Use `/skills` to check discovery. These links install skill instructions, not the Claude plugin's hooks. See [Codex session-start hooks](#codex-session-start-hooks) for the optional user hook.
 
 Put `~/.local/bin` on your PATH below your version manager's block. See [Node version and the interpreter pin](#node-version-and-the-interpreter-pin) for why the order matters.
 
 ## From source
 
-Clone the repository when you want to work from source:
+Clone and build before following either harness setup section above:
 
 ```bash
 git clone https://github.com/cmgmyr/hive.git hive && cd hive
 npm install
 npm run build
-npm link             # puts the hive command on your PATH
-hive setup           # pins that command to one interpreter
-brew install tmux
-claude mcp add --scope user hive -- "$(command -v node)" "$(pwd)/dist/index.js"
-ln -s "$(pwd)/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
-hive doctor          # verify: node, ABI, tmux, claude, database, hooks all green
+npm link
 ```
+
+For MCP registration, replace `$(npm root -g)/@cmgmyr/hive/dist/index.js` with `$(pwd)/dist/index.js`. For plugin or skill links, use this checkout's absolute `claude-plugin` path. Run `hive setup` for Claude or `hive setup --harness codex` for Codex, then follow the corresponding project configuration steps. Run `hive doctor` from the project you intend to launch.
 
 ## Node version and the interpreter pin
 
@@ -51,9 +85,9 @@ export PATH="$HOME/.local/bin:$PATH"     # below the version manager's block in 
 
 Both lines prepend to PATH, so whichever runs LAST ends up first. Put hive's line below the version manager's, not above it, or the version manager's shim wins and you are back to the failure `hive setup` exists to prevent.
 
-## Codex workers
+## Codex leads and workers
 
-A worker can run `codex` instead of Claude Code. Two things beyond a plain `claude` worker's requirements:
+Both leads and workers can run `codex`. Set `lead: codex` for the lead and configure `agents` separately for workers. Requirements:
 
 - The `codex` CLI installed and logged in (`codex login`). A codex worker's per-worker home symlinks its credentials from `~/.codex/auth.json`, so hive needs that file to already exist.
 - The project's `hive.yml` opting in: `agents: [claude, codex]` (see [docs/projects.md](projects.md#project-commands-hiveyml)). With no `agents:` key, a project allows `claude` only, and spawning codex, whether through `agent_spawn`'s `harness` parameter or a `command` that resolves to it, refuses with `[agent_spawn:harness-not-allowed]`. Add `codex` to `agents:` and spawn again.
@@ -63,13 +97,13 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
 - You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1093`; `agent_resume`, `src/tools/agents.ts:920`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:973`).
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2800`; `noteStalledCrew`, `src/scheduler.ts:1961`; `transcriptStaleness`, `src/scheduler.ts:1879`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2833`; `noteStalledCrew`, `src/scheduler.ts:1961`; `transcriptStaleness`, `src/scheduler.ts:1879`).
 - Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:551-553`).
 - Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:309`).
 
 `agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
 
-## Session-start plugin
+## Claude session-start plugin
 
 Symlink the plugin once per machine, not per project:
 
@@ -79,7 +113,34 @@ ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive
 
 A session opened afterward in a project root, on a lead branch, with a profile that resolves, starts with hive's live state already loaded: the board pad, in-flight and dispatchable todos, running workers, and pending wake-ups. See [docs/profiles.md](profiles.md) for what it loads, when it stays silent, and `hive kickoff --explain`.
 
-## One-time iTerm settings
+## Codex session-start hooks
+
+Hive-launched Codex leads already receive a generated `CODEX_HOME` with MCP configuration, lifecycle hooks, and `kickoff --codex`. No user-level kickoff hook is needed for those sessions. Hive-managed worker homes contain their own lifecycle hooks and do not receive the lead kickoff.
+
+For ordinary Codex sessions started outside Hive, optionally merge this entry into `~/.codex/hooks.json`, preserving any existing hooks. Replace both placeholders with the absolute Node and package paths from your installation:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/absolute/path/to/node\" \"/absolute/path/to/hive/claude-plugin/kickoff.mjs\" --codex",
+            "timeout": 10,
+            "statusMessage": "Loading Hive project context"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `--codex` argument selects Codex-compatible output. Review and trust this user hook through `/hooks`, then start a new session. See [Codex's hook documentation](https://learn.chatgpt.com/docs/hooks). The hook stays silent outside the configured project/profile/lead-branch conditions; use `hive kickoff --codex --explain` to inspect those gates. Avoid registering a second kickoff hook when one is already provided for that session.
+
+## One-time iTerm settings (macOS)
 
 The first time a worker spawns with nobody attached, macOS asks permission for hive to control iTerm; approve it once. This applies under either attach mode: `raw` still opens iTerm, just without control mode.
 
@@ -91,7 +152,7 @@ With the default `auto` attach mode (or `control`), set these once per machine u
 
 None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
-## Status line
+## Claude status line
 
 `hive statusline` prints a one-line summary (`⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`) and prints nothing when a project has no live state (no agents, todos, pads, or wake-ups) or is not registered at all, so it is safe to run everywhere. A lead can pipe Claude Code's statusline JSON to it, for example `printf '%s' "$input" | hive statusline`; when that JSON includes `transcript_path`, the lead summary adds its API-response count as `turns N`. Workers and plain shells never print that field. When a wake-up is held, it adds a segment naming the count of every held wake, plus the age and reason for the one it's telling you about - a `typing` hold when there is one, since that's the one you can clear yourself, otherwise the oldest: `2 wakes · 2 held (4m, typing)` means an input box (most likely your own) has unsubmitted text sitting in it, even if an older hold for another reason is also waiting. The other three reasons are `talking` (a message was SENT to this lead in the last five minutes - usually by you - so hive is holding the wake rather than splitting the conversation; unlike `typing`, which is text still sitting unsent, this needs a submitted turn. See [Wake-ups, not polling](daily-driver.md#wake-ups-not-polling)), `needs you` (nothing clears it without running `hive lead` or `wake_cancel`), and `blocked` (waiting on something else to resolve, such as a dialog). If you use a custom status line script, append the block below. Claude Code sends its statusline JSON on stdin, and stdin can be read only once, so the block reuses `$input` when your script already holds the JSON there (the usual `input=$(cat)` at the top). If your script reads stdin some other way, such as `jq` straight off stdin, read it into `$input` first and point `jq` at that instead, or the lead loses `turns N`:
 
@@ -122,7 +183,7 @@ The status line only re-renders on session activity by default. Add `"refreshInt
 }
 ```
 
-## Registering hive in more than one scope
+## Claude MCP registration scopes
 
 `--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: run `claude mcp add hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"` from that project's directory, or use the checkout's `dist/index.js` when you installed from source. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
 
@@ -186,12 +247,15 @@ The plugin symlink is a live pointer too, so the session-start hook and the ship
 The new code reaches each entry point at a different time:
 
 - The `hive` CLI picks it up immediately; every invocation is a fresh process.
-- New Claude Code sessions pick it up immediately; each session starts its own server from `dist/`.
+- New Claude Code or Codex sessions pick it up immediately; each session starts its own server from `dist/`.
 - Sessions already running keep the old server in memory. Run `/mcp` in that session and reconnect hive, or let it catch up when the session ends. Pulling before you open sessions for the day avoids this entirely.
 
 When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, so your lead command and vars stay yours) and uncomment its `watch: npm run watch` process. That auto-starts the compiler with the session and replaces the manual build step. The restart rules for running sessions still apply.
 
 ## Uninstall
+
+For Codex, run `codex mcp remove hive`. Remove only the Hive skill symlinks you created under `~/.agents/skills`, and remove only Hive's `SessionStart` entry from user `hooks.json`, preserving other hooks. Skip the Claude-specific registration and symlink commands below if you did not use them. After upgrades, verify ordinary Codex registration with `codex mcp get hive`; Hive-managed sessions regenerate their configuration when launched.
+
 
 Hive touches six things on a machine; remove them in any order:
 

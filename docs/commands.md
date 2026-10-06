@@ -20,6 +20,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive next [--print]` | Attach to the lead of the one project that needs you most. Projects waiting on you come first, ranked by needs-human count, then oldest activity, then project id. Stuck projects come next, and so do moving projects holding a needs-human item, all ranked by needs-human count first, then in-progress todos that are blocked, overdue wakes, workers needing input, oldest activity, then project id. It skips the project rooted at `<dataDir>/queen`. Every lead state except unknown goes through `hive lead --detach` first, which adopts a live lead and restarts a dead or reissued one. `--print` prints the choice as one JSON line and starts and attaches nothing; with nothing waiting it prints one line saying so and exits 0. See [the queen guide](queen.md#jump-to-the-project-that-needs-you). |
 | `hive upgrade` | Update a global npm install and re-pin; in a checkout, print the recipe only |
 | `hive upgrade --check` | Preview the commands without changing your install or update cache |
+| `hive setup --harness <name>` | Print registration and configuration instructions for `claude` (default) or `codex`; preserve existing harness settings |
 | `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
 | `hive setup` | Pin the `hive` command to the interpreter that built it |
 | `hive doctor` | Check the environment and sweep stale state |

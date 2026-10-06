@@ -52,8 +52,10 @@ import {
   hiveRegistrations,
   registrationOffer,
   registrationProblem,
+  serverPath,
   type McpRegistration,
 } from "./mcpConfig.js";
+import { executableOnPath, harnessExecutable, leadExecutableProblem } from "./harnessSetup.js";
 import { DEFAULT_DATA_DIR, storeDir } from "./dataDir.js";
 import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
 import { cacheIsStale, queryUpdate, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
@@ -306,6 +308,7 @@ Usage:
   hive upgrade --run        run the printed pull/install/build/setup checkout recipe
   hive setup [--dir <dir>]   write a \`hive\` that runs the interpreter this build
                              was compiled for; re-run after every update
+  hive setup --harness <name> claude (default) or codex: print MCP/config recipe
   hive setup --attach <mode> auto|raw|control: whether tmux attaches carry -CC
   hive doctor [--strict] [--verbose]
                              check the environment and clean up stale state;
@@ -739,6 +742,17 @@ async function cmdLead(argv: string[]): Promise<void> {
       }
     }
 
+    const executableProblem = leadExecutableProblem(leadCommand, project.path);
+    const requireLaunchExecutable = () => {
+      if (!executableProblem) return;
+      const existing = db.prepare(
+        "SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id",
+      ).get(project.id) as { tmux_target: string; tmux_socket: string; pane_pid: string } | undefined;
+      if (existing && rowOwnership(existing) === "live" && adoptableWindow(session, project.id, existing.tmux_target)) return;
+      throw new Error(`hive lead: ${executableProblem}`);
+    };
+    requireLaunchExecutable();
+
     const leadHarness = harnessFor(leadCommand);
     let firstMessage = resolveFirstMessage(config, sources).message;
     if (firstMessage !== "" && !(await (await import("./kickoff.js")).kickoffGate(project.path)).ok) firstMessage = "";
@@ -863,6 +877,7 @@ async function cmdLead(argv: string[]): Promise<void> {
       let leadPane: string;
       let leadWindow: string;
       let createdPane: boolean;
+      requireLaunchExecutable();
       const started = ensureSession(session, project.path, { envFlags, command: launchCommand });
       if (started.created) {
         const claimed = claimInitialWindow(started, windowName, project.id);
@@ -2223,9 +2238,14 @@ function cmdUpgrade(argv: string[]): void {
 }
 
 function cmdSetup(argv: string[]): void {
-  const parsed = parseArgs(argv, { flags: ["--force"], valued: ["--dir", "--attach", "--auto-attach"] });
-  rejectUnknownFlags("setup", parsed, "--dir, --attach, --auto-attach, --force");
+  const parsed = parseArgs(argv, { flags: ["--force"], valued: ["--dir", "--attach", "--auto-attach", "--harness"] });
+  rejectUnknownFlags("setup", parsed, "--dir, --attach, --auto-attach, --harness, --force");
   requireFlagValues("setup", parsed);
+  const harness = parsed.values.has("--harness") ? parsed.values.get("--harness") : "claude";
+  if (harness !== "claude" && harness !== "codex") {
+    console.error("hive setup: --harness must be claude or codex (default: claude).");
+    process.exit(1);
+  }
 
   const dir = parsed.values.has("--dir") ? resolve(parsed.values.get("--dir") ?? "") : dispatcherDir();
   const file = join(dir, "hive");
@@ -2315,10 +2335,18 @@ function cmdSetup(argv: string[]): void {
   console.log("\nFor future updates, run hive upgrade. It re-pins after installing;");
   console.log("checkouts print the recipe and run it only with --run.");
   console.log(`\nPATH: ${pathAdvice(dir, file).join("\n")}`);
-  reportSetupRegistrations(node);
+  reportSetupRegistrations(node, harness);
+  const effective = loadProjectYml(findProjectForCwd()?.path ?? process.cwd()).config;
+  console.log(`\nSetup harness: ${harness} (registration instructions only; configuration unchanged).`);
+  console.log(`Effective lead: ${effective?.lead ?? "claude"}`);
+  console.log(`Effective workers: ${(effective?.agents ?? ["claude"]).join(", ")}`);
+  console.log("To select this harness, add these keys to your project's hive.yml:");
+  console.log(`  lead: ${harness}\n  agents: [${harness}]`);
+  console.log(`Or set machine defaults in ${join(dataDir, "hive.yml")}; project keys take precedence.`);
+  console.log("lead selects the lead; agents selects the allowed workers and their default (first entry).");
 }
 
-function reportSetupRegistrations(pinned: string): void {
+function reportSetupRegistrations(pinned: string, harness: "claude" | "codex"): void {
   const found = hiveRegistrations(findProjectForCwd()?.path ?? null);
   const problems = found
     .map((r) => ({ r, lines: registrationProblem(r, pinned) }))
@@ -2339,7 +2367,12 @@ function reportSetupRegistrations(pinned: string): void {
     for (const line of lines.slice(1)) console.log(`  ${line}`);
   }
 
-  const offer = registrationOffer(pinned, found);
+  const offer = harness === "codex"
+    ? (codexHiveRegistrations().length === 0 ? [
+      `hive's MCP tools are not registered in ${codexConfigPath()}.`,
+      `codex mcp add hive -- ${shellQuote(pinned)} ${shellQuote(serverPath())}`,
+    ] : null)
+    : registrationOffer(pinned, found);
   if (offer) {
     console.log("");
     for (const line of offer) console.log(`  ${line}`);
@@ -2955,7 +2988,34 @@ function cmdDoctor(argv: string[]): void {
   const orphans = orphanScratchServers();
   reportPtyHeadroom(orphans);
   reportOrphanTmuxServers(orphans);
-  check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
+  const here = findProjectForCwd();
+  const loaded = loadProjectYml(here?.path ?? process.cwd());
+  const lead = loaded.config?.lead ?? "claude";
+  const workers = loaded.config?.agents ?? ["claude"];
+  info("harnesses", `lead command=${lead}; workers=${workers.join(", ")}`);
+  const required = new Set(workers);
+  const leadExecutable = harnessExecutable(lead);
+  if (leadExecutable) required.add(leadExecutable);
+  else info("lead executable", "custom or dynamic command; executable availability was not checked");
+  for (const executable of required) {
+    check(executable, () => {
+      const path = executableOnPath(executable, here?.path ?? process.cwd());
+      if (!path) throw new Error(`not found or not executable; install ${executable} or change lead/agents in hive.yml`);
+      return path;
+    });
+  }
+  for (const optional of ["claude", "codex"]) {
+    if (!workers.includes(optional) && harnessFor(lead).name !== optional) {
+      info(optional, "not required by this configuration");
+    }
+  }
+  if (workers.includes("codex") || harnessFor(lead).name === "codex") {
+    const auth = join(homedir(), ".codex", "auth.json");
+    (existsSync(auth) ? info : warn)("codex credentials", existsSync(auth)
+      ? `${auth} exists (contents not inspected)`
+      : `${auth} is missing; run codex login before launching Hive-managed Codex sessions`);
+    info("codex hooks", "Hive-managed sessions use generated homes; ordinary Codex sessions review user hooks with /hooks");
+  }
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
     const ahead = storeSchemaAhead(db);
@@ -2969,14 +3029,11 @@ function cmdDoctor(argv: string[]): void {
   });
   check("hooks file", () => ensureHooksFile());
 
-  const here = findProjectForCwd();
   reportDispatcher();
   reportMcpRegistrations(here);
   reportProjectScope(here);
   reportSessionInterpreters();
   reportCodexHomes(here?.id ?? null);
-
-  const loaded = loadProjectYml(here?.path ?? process.cwd());
 
   for (const w of loaded.warnings) {
     const qualified = /^([^:]+): ([\s\S]*)$/.exec(w);

@@ -11,16 +11,40 @@ Run a crew of Claude Code and Codex workers from one lead session: visible tmux 
 
 ## Install
 
-Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. codex is optional, only needed if a project opts a worker into it; see [docs/install.md](docs/install.md#codex-workers).
+Requirements: Node `^22.14.0 || >=23.6.0`, Claude Code or Codex, and tmux for the agent tools. Claude is the default. Hive is dogfooded on macOS; Linux runs in CI, but interactive Linux/WSL behavior has less coverage.
 
 ```bash
 npm install -g @cmgmyr/hive
-hive setup           # pins the hive command to one interpreter, prints the MCP line
-brew install tmux
-claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
-ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive   # optional: session-start kickoff
-hive doctor          # verify: node, ABI, tmux, claude, database, hooks all green
+brew install tmux           # macOS; on Linux/WSL use your distribution's package manager
 ```
+
+### Claude setup (default)
+
+```bash
+hive setup
+claude mcp add --scope user hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+```
+
+Plain `hive setup` selects Claude registration instructions; `hive setup --harness claude` is equivalent. See [Claude setup](docs/install.md#claude-setup-default) for the optional session-start plugin.
+
+### Codex setup (opt-in)
+
+```bash
+codex login
+hive setup --harness codex
+codex mcp add hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"
+```
+
+In your project, run `hive init` if needed, then add these keys to `hive.yml`:
+
+```yaml
+lead: codex
+agents: [codex]
+```
+
+`lead` chooses the lead command; `agents` chooses the allowed workers, with the first entry as their default. Setup prints a recipe and never rewrites these settings. Existing project overrides remain in effect. See [Codex setup](docs/install.md#codex-setup-opt-in) for credentials, optional skills, and hooks.
+
+Run `hive doctor` from the project to check the configured harnesses, then run `hive` from your terminal and review the command trust prompt. An unused Claude installation is not required for a Codex-only project.
 
 Working from a clone instead? See [docs/install.md](docs/install.md#from-source).
 
@@ -28,11 +52,11 @@ Put `~/.local/bin` on your PATH below your version manager's block. See [Node ve
 
 ## First run
 
-Run `cd ~/Code/your-project && hive`. It is shorthand for `hive lead`, and it opens a `lead` window running Claude in this project's tmux session, with the lead session named after the project so your other Claude Code sessions can address it by that name; ask it to triage, and it reads the standing process and proposes work. Spawn workers with `agent_spawn`, and watch or take over any of them with `tmux -CC attach -t hive-main` (or plain `tmux attach`).
+Run `cd ~/Code/your-project && hive`. It is shorthand for `hive lead`, and it opens a `lead` window running the configured harness (Claude by default) in this project's tmux session, with Claude lead sessions named after the project so other Claude Code sessions can address them by that name; ask it to triage, and it reads the standing process and proposes work. Spawn workers with `agent_spawn`, and watch or take over any of them with `tmux -CC attach -t hive-main` (or plain `tmux attach`).
 
 ## How it works
 
-Each Claude Code session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon and nothing leaves your machine. State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
+Each Claude Code or Codex session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon and nothing leaves your machine. State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
 
 ## Why not subagents?
 
