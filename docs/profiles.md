@@ -17,8 +17,8 @@ Resolution is per file, not per profile, so a file you never forked keeps tracki
 
 | File | How it reaches the model | What hive ships |
 |---|---|---|
-| `posture.md` | Appended to the lead's system prompt by `hive lead`; `hive posture` shows it | Real content: lead-not-IC, name the lane, ask on ambiguity, don't poll |
-| `runbook.md` | On demand, `hive runbook` | A skeleton. Headers plus facts true of any hive project. Your process is yours to write |
+| `posture.md` | Appended to the lead's system prompt by `hive lead`; `hive posture` shows it | Real content: name the lane, ask on ambiguity, assign todo ids, brief, isolate, don't poll, read the diff, you accept, model tiers |
+| `runbook.md` | On demand, `hive runbook` | A starting point: the lead-supervises process (lanes, briefs, checks, review, acceptance). Fork it and make it yours with `/hive:profile` |
 | `worker.md` | Appended to each worker's system prompt by `agent_spawn` | The worker brief: identity, project lock, tool contract, lane discipline |
 
 `hive doctor` fails a profile with no readable `runbook.md`, on the grounds that a lead using it then has no standing process; `posture.md` and `worker.md` have no such gate.
