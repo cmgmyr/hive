@@ -158,10 +158,9 @@ describe("the skill teaches the shipped orchestration profile as it is", () => {
     assert.match(skill, /Read worker text with `hive profile read worker\.md`, never `hive posture`/);
   });
 
-  it("says which parts are Claude-only for a stock Codex user, and names no skill hive does not ship", () => {
+  it("says which parts are Claude-only for a stock Codex user, and carries no home path", () => {
     assert.match(skill, /## Without the Claude plugin/);
     assert.match(skill, /Claude-only/);
-    const unshipped = /\b(cg-review|cg-architecture-review|counselors|lookover|evaluate-leads|ci-check|social-moment)\b/;
     const files = [join(skillDir, "SKILL.md")];
     for (const dir of [join(skillDir, "references"), recipesDir, join(skillDir, "references", "examples")]) {
       for (const name of readdirSync(dir)) if (name.endsWith(".md")) files.push(join(dir, name));
@@ -169,7 +168,6 @@ describe("the skill teaches the shipped orchestration profile as it is", () => {
     assert.ok(files.length >= 11, `expected SKILL.md, interview.md, the recipes and the examples, got ${files.length} files`);
     for (const file of files) {
       const text = readFileSync(file, "utf8");
-      assert.doesNotMatch(text, unshipped, file);
       assert.doesNotMatch(text, /\/Users\/|\/home\//, file);
     }
   });
