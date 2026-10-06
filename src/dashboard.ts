@@ -1130,7 +1130,7 @@ const STYLE = `
   .muted { font-size: 0.8125rem; }
   .cap-note { display: flex; align-items: center; gap: 0.4rem; color: var(--fg-subtle);
     font-size: 0.78125rem; margin: 0 0 0.6rem; }
-  pre.board { white-space: pre; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
+  pre.board { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
     border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0.85rem;
     font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.5; margin: 0;
     overscroll-behavior: contain; }
@@ -1331,6 +1331,7 @@ const SCRIPT = `
         s.filterCaret = filterInput.selectionStart;
         save(s);
         applyFilter(filterInput.value);
+        paintStamp();
         deferReload();
       });
     }
@@ -1371,7 +1372,21 @@ const SCRIPT = `
       window.addEventListener("resize", function () { measureHeader(); paintNav(); });
     }
 
-    if (typeof state.scrollY === "number") window.scrollTo(0, state.scrollY);
+    function absTop(el) { return el.getBoundingClientRect().top + window.scrollY; }
+    var anchorEl = state.anchor && typeof state.anchor.id === "string"
+      ? document.getElementById(state.anchor.id) : null;
+    if (anchorEl && typeof state.anchor.offset === "number") {
+      window.scrollTo(0, absTop(anchorEl) + state.anchor.offset);
+    } else if (typeof state.scrollY === "number") {
+      window.scrollTo(0, state.scrollY);
+    }
+    var itemSel = "details.pad-item, details.todo-item";
+    var padItems = document.querySelectorAll("details.pad-item");
+    for (var pi = 0; pi < padItems.length; pi++) {
+      var saved = state.padScroll && state.padScroll[padItems[pi].id];
+      var padPre = padItems[pi].querySelector("pre.board");
+      if (padItems[pi].open && padPre && typeof saved === "number") padPre.scrollTop = saved;
+    }
 
     // Live toggle. Replaces <meta http-equiv="refresh">, which the browser
     // schedules at PARSE TIME - removing the tag afterward does not cancel it,
@@ -1388,39 +1403,75 @@ const SCRIPT = `
     function clearReload() {
       if (reloadTimer !== null) { clearTimeout(reloadTimer); reloadTimer = null; }
     }
-    // Typing restarts the 10s rather than suspending it, so "refreshes every
-    // 10s" stays true - it is measured from the last keystroke, not from load.
+    function anyItemOpen() {
+      var items = document.querySelectorAll(itemSel);
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.open && !it.closest("details.section:not([open])") && !it.closest("[hidden]")) return true;
+      }
+      return false;
+    }
+    // Typing and scrolling restart the 10s rather than suspending it, so
+    // "refreshes every 10s" stays true; an open pad or todo suspends it.
     function deferReload() {
       if (!live) return;
       clearReload();
-      armReload();
+      if (!anyItemOpen()) armReload();
     }
     var toggle = document.getElementById("live-toggle");
     var stamp = document.getElementById("generated-stamp");
     var stampTime = stamp ? stamp.getAttribute("data-time") : "";
-    function paintStamp(live) {
+    var tail = " local. Read-only: nothing here writes back to the store.";
+    function paintStamp() {
       if (!stamp) return;
-      stamp.textContent = live
-        ? "generated " + stampTime + " local, refreshes every 10s. Read-only: nothing here writes back to the store."
-        : "paused, generated " + stampTime + " local. Read-only: nothing here writes back to the store.";
+      stamp.textContent = !live
+        ? "paused, generated " + stampTime + tail
+        : anyItemOpen()
+          ? "paused while a pad or todo is open, generated " + stampTime + tail
+          : "generated " + stampTime + " local, refreshes every 10s. Read-only: nothing here writes back to the store.";
     }
     var live = typeof state.live === "boolean" ? state.live : true;
     if (toggle) toggle.checked = live;
-    paintStamp(live);
-    if (live) armReload(); else clearReload();
+    paintStamp();
+    deferReload();
+    var items = document.querySelectorAll(itemSel);
+    for (var ii = 0; ii < items.length; ii++) {
+      items[ii].addEventListener("toggle", function () { paintStamp(); deferReload(); });
+    }
+    var sectionEls = document.querySelectorAll("details.section");
+    for (var si = 0; si < sectionEls.length; si++) {
+      sectionEls[si].addEventListener("toggle", function () { paintStamp(); deferReload(); });
+    }
     if (toggle) {
       toggle.addEventListener("change", function () {
         var s = load();
-        s.live = toggle.checked;
+        live = toggle.checked;
+        s.live = live;
         save(s);
-        paintStamp(toggle.checked);
-        if (toggle.checked) armReload(); else clearReload();
+        paintStamp();
+        if (live) deferReload(); else clearReload();
       });
     }
+    window.addEventListener("scroll", function () {
+      if (reloadTimer !== null) deferReload();
+    }, { passive: true });
 
     window.addEventListener("beforeunload", function () {
       var s = load();
       s.scrollY = window.scrollY;
+      s.anchor = null;
+      var secs = document.querySelectorAll("details.section");
+      for (var k = 0; k < secs.length; k++) {
+        if (secs[k].getBoundingClientRect().top <= headerOffset) {
+          s.anchor = { id: secs[k].id, offset: window.scrollY - absTop(secs[k]) };
+        }
+      }
+      s.padScroll = {};
+      var openPads = document.querySelectorAll("details.pad-item");
+      for (var m = 0; m < openPads.length; m++) {
+        var pre = openPads[m].querySelector("pre.board");
+        if (openPads[m].open && pre && pre.scrollTop > 0) s.padScroll[openPads[m].id] = pre.scrollTop;
+      }
       if (filterInput) {
         s.filterFocused = document.activeElement === filterInput;
         s.filterCaret = filterInput.selectionStart;
