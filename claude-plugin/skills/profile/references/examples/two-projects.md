@@ -28,11 +28,12 @@ Run the named checks. A green summary or a stale build is not a working result.
 - Scoped checks: npm test -- test/<file>.test.js
 ```
 
-What a worker sees (`hive profile read worker.md`). Step 3 is absent because no `check` var is set, so the numbering skips from 2 to 4. That is expected:
+What a worker sees (`hive profile read worker.md`). With no `check` var set, the scoped-checks step has no gate line under it:
 
 ```text rendered personal worker
 2. Rebuild before any screenshot, browser check, or measurement.
-4. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
+3. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
+4. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it; otherwise ask the lead.
 ```
 
 ## Project B: a work repo
@@ -74,10 +75,12 @@ The runbook gains a ticket lane, a worker model, a gate, a suite and a review co
 - This project's review command: /review
 ```
 
-The worker's report-done list gets a gate step:
+The worker's report-done list gets a gate line under the scoped-checks step, and the numbering does not change:
 
 ```text rendered work worker
-3. Run this project's gates and fix what they find: make lint test
+3. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
+   Also run this project's gates and fix what they find: make lint test
+4. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it; otherwise ask the lead.
 ```
 
 ## What to change for your project

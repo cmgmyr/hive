@@ -35,23 +35,26 @@ describe("shipped orchestration worker.md: before-you-report-done block (todo 79
     const rendered = renderShipped(mergedBriefVars({}, "claude"));
     assert.match(rendered, /1\. `git -C <your worktree> status`/);
     assert.match(rendered, /2\. Rebuild before any screenshot/);
-    assert.match(rendered, /4\. Run the scoped checks again after your last edit/);
-    assert.match(rendered, /5\. Commit; do not push\./);
-    assert.match(rendered, /6\. Run the readers the brief names.*post their findings raw.*Then report on the todo:.*You do not complete the todo\./);
+    assert.match(rendered, /3\. Run the scoped checks again after your last edit/);
+    assert.match(rendered, /4\. Commit; do not push\./);
+    assert.match(rendered, /5\. Run the readers the brief names.*post their findings raw.*Then report on the todo:.*You do not complete the todo\./);
     assert.match(rendered, /otherwise ask the lead\./);
-    assert.doesNotMatch(rendered, /^7\./m);
+    assert.doesNotMatch(rendered, /^6\./m);
   });
 
-  it("renders step 3 with the project's check command when vars.check is set", () => {
+  it("adds the check command under the scoped-checks step when vars.check is set, numbering unchanged", () => {
     const rendered = renderShipped(mergedBriefVars({ check: "npm run lint && npx tsc --noEmit" }, "claude"));
-    assert.match(rendered, /3\. Run this project's gates and fix what they find: npm run lint && npx tsc --noEmit/);
+    assert.match(rendered, /3\. Run the scoped checks again[^\n]*\n {3}Also run this project's gates and fix what they find: npm run lint && npx tsc --noEmit\n4\. Commit/);
   });
 
-  it("drops step 3 entirely, without renumbering, when vars.check is unset", () => {
-    const rendered = renderShipped(mergedBriefVars({}, "claude"));
-    assert.doesNotMatch(rendered, /Run this project's gates and fix what they find/);
-    assert.doesNotMatch(rendered, /^3\./m);
-    assert.match(rendered, /4\. Run the scoped checks again/);
+  it("numbers the list 1 to 5 with no gap whether vars.check is set or unset", () => {
+    for (const vars of [{}, { check: "npm run build" }]) {
+      const rendered = renderShipped(mergedBriefVars(vars, "claude"));
+      const nums = [...rendered.slice(rendered.indexOf("BEFORE YOU REPORT DONE")).matchAll(/^(\d)\. /gm)].map((m) => Number(m[1]));
+      assert.deepEqual(nums.slice(0, 5), [1, 2, 3, 4, 5]);
+    }
+    const unset = renderShipped(mergedBriefVars({}, "claude"));
+    assert.doesNotMatch(unset, /Run this project's gates and fix what they find/);
   });
 
   it("says nothing machine-specific: no signing flag, no unshipped skill name, no personal path", () => {
@@ -75,7 +78,7 @@ describe("shipped orchestration worker.md: before-you-report-done block (todo 79
     const codex = renderShipped(mergedBriefVars({}, "codex"));
     const claude = renderShipped(mergedBriefVars({}, "claude"));
     for (const rendered of [codex, claude]) {
-      assert.match(rendered, /6\. Run the readers the brief names, with this harness's own review command, and post their findings raw/);
+      assert.match(rendered, /5\. Run the readers the brief names, with this harness's own review command, and post their findings raw/);
     }
   });
 });

@@ -9,7 +9,7 @@ Open one of these only when the user asks to see an example or wants to adapt on
 
 ## What they are not
 
-- They are illustrations to read and adapt. hive never forks, runs or injects them. Only `posture.md`, `runbook.md` and `worker.md` inside a profile directory are rendered.
+- They are illustrations to read and adapt. hive never forks, runs or injects them. `posture.md`, `runbook.md` and `worker.md` are the three files hive loads on its own. Any other `.md` in a profile directory renders its `{{vars}}` only when read with `hive profile read <file>.md`.
 - The projects in them are invented. Nothing is copied from a real setup.
 - A rendered block is checked by `test/profile-examples.test.mjs`, which renders the shipped orchestration profile with the example's `hive.yml` and fails when a block no longer matches. If the shipped profile changes, regenerate the block from the real output; do not edit it by hand.
 

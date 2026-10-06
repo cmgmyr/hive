@@ -29,12 +29,12 @@ Run the checks the brief names. A stale build gives false results, so rebuild be
 BEFORE YOU REPORT DONE, in this order.
 1. `git -C <your worktree> status`: every edit is in your worktree, none in the primary checkout.
 2. Rebuild before any screenshot, browser check, or measurement.
+3. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
 <!--if:check-->
-3. Run this project's gates and fix what they find: {{check}}
+   Also run this project's gates and fix what they find: {{check}}
 <!--end-->
-4. Run the scoped checks again after your last edit, and the full suite once if the brief asks for it.
-5. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it; otherwise ask the lead.
-6. Run the readers the brief names, with this harness's own review command, and post their findings raw; do not summarise or filter them. Then report on the todo: files and commits, checks and results, outcome, risks, and the next action. Wait for the lead. You do not complete the todo.
+4. Commit; do not push. Research lanes record findings on the todo and need no commit. Publish only where the brief grants it; otherwise ask the lead.
+5. Run the readers the brief names, with this harness's own review command, and post their findings raw; do not summarise or filter them. Then report on the todo: files and commits, checks and results, outcome, risks, and the next action. Wait for the lead. You do not complete the todo.
 
 WAIT FOR EVERYTHING YOU START
 Await every helper or background job you started and read its result before you move on. Keep commands in the foreground. A helper still running changes code you already checked.

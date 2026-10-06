@@ -1,6 +1,6 @@
 # Annotated skeleton
 
-This example assumes what `README.md` lists: hive, git and one stock harness. It is a skeleton, not the shipped text. Each section keeps its heading and one line saying what it holds; the real wording is in `profiles/orchestration/`. Use it to see where a different method would diverge. A profile directory renders exactly three files; any other `.md` in it is carried but its `{{vars}}` are never filled.
+This example assumes what `README.md` lists: hive, git and one stock harness. It is a skeleton, not the shipped text. Each section keeps its heading and one line saying what it holds; the real wording is in `profiles/orchestration/`. Use it to see where a different method would diverge. hive loads exactly three files on its own; any other `.md` in a profile directory renders its `{{vars}}` when read with `hive profile read <file>.md`.
 
 Template syntax: `{{var}}` fills from `hive.yml` `vars`. `<!--if:var-->` ... `<!--end-->` keeps a section only when the var is set. Edit the raw template (`hive profile path <name> <file>`), and read what an agent sees with `hive profile read <file>`.
 
@@ -105,18 +105,18 @@ SCOPE | YOUR FILES AND YOUR STORE | CHECKS
 BEFORE YOU REPORT DONE, in this order.
 1. <status in the worktree>
 2. <rebuild>
+3. <rerun scoped checks>
 <!--if:check-->
-3. Run this project's gates: {{check}}
+   Also run this project's gates: {{check}}
 <!--end-->
-4. <rerun scoped checks>
-5. <commit; do not push; publish only where the brief grants it>
-6. <post reader findings raw, report on the todo, wait for the lead>
+4. <commit; do not push; publish only where the brief grants it>
+5. <post reader findings raw, report on the todo, wait for the lead>
 
 WAIT FOR EVERYTHING YOU START | IF YOU HIT YOUR CONTEXT CHECKPOINT
 <each a short block>
 ```
 
-SEAMS: the worker never completes its own todo and never publishes unless the brief grants it. A gated step keeps its number, so an unset `check` leaves a gap at 3.
+SEAMS: the worker never completes its own todo and never publishes unless the brief grants it. The gate is an unnumbered line under the scoped-checks step, so the numbering is the same with `check` set or unset.
 
 ## Which facts go in vars
 
