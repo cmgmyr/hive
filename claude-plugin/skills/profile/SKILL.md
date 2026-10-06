@@ -84,6 +84,10 @@ An edit changes only the rule that was discussed and any dependent instruction t
 
 A command, a repository name, a ticket prefix: these belong in `hive.yml` `vars` and get referenced from the profile as `{{var}}`, not hard-coded into the generated `posture.md`/`runbook.md`/`worker.md` text. This is what lets one profile serve several projects. `references/interview.md` lists the `hive.yml` keys and var names this skill knows how to write. The shipped orchestration profile renders these optional vars: `check`, `install`, `repo`, `ticket_prefix`, `start_command`, `test_command`, `suite_command`, `verify_command`, `review_command` and `worker_model`. Offer one only when the interview confirmed its value, and leave the rest unset: an unset var drops its section, and nothing makes the user fill every one.
 
+## Worked examples, only on request
+
+`references/examples/README.md` indexes two worked examples: one orchestration profile rendered for a personal repo and a work repo, and an annotated skeleton of the three files. Open one only when the user asks to see an example or wants to adapt one. They are not part of discovery and add no interview question.
+
 ## Offer a recipe only on its own signal
 
 `references/recipes/index.md` links a small library of optional patterns - a verification step, a shared-resource rule, a review-decision habit, and so on - each written to solve one problem an interview signal points to. Read a recipe only after discovery actually surfaces its signal; propose its benefit and cost, and apply it only if the user accepts. A recipe with no signal in this interview does not get offered, and accepting one is never required to finish a profile.

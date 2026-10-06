@@ -163,14 +163,29 @@ describe("the skill teaches the shipped orchestration profile as it is", () => {
     assert.match(skill, /Claude-only/);
     const unshipped = /\b(cg-review|cg-architecture-review|counselors|lookover|evaluate-leads|ci-check|social-moment)\b/;
     const files = [join(skillDir, "SKILL.md")];
-    for (const dir of [join(skillDir, "references"), recipesDir]) {
+    for (const dir of [join(skillDir, "references"), recipesDir, join(skillDir, "references", "examples")]) {
       for (const name of readdirSync(dir)) if (name.endsWith(".md")) files.push(join(dir, name));
     }
-    assert.ok(files.length >= 8, `expected SKILL.md, interview.md and the recipes, got ${files.length} files`);
+    assert.ok(files.length >= 11, `expected SKILL.md, interview.md, the recipes and the examples, got ${files.length} files`);
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       assert.doesNotMatch(text, unshipped, file);
       assert.doesNotMatch(text, /\/Users\/|\/home\//, file);
+    }
+  });
+});
+
+describe("the skill points at the worked examples only on request", () => {
+  it("SKILL.md and the recipe index link examples/README.md", () => {
+    assert.match(readFileSync(join(skillDir, "SKILL.md"), "utf8"), /references\/examples\/README\.md[\s\S]{0,300}only when the user asks/);
+    assert.match(readFileSync(join(recipesDir, "index.md"), "utf8"), /\.\.\/examples\/README\.md/);
+  });
+
+  it("the examples README links both example files and they exist", () => {
+    const readme = readFileSync(join(skillDir, "references", "examples", "README.md"), "utf8");
+    for (const f of ["two-projects.md", "skeleton.md"]) {
+      assert.ok(readme.includes(`](${f})`), `${f} not linked`);
+      assert.equal(existsSync(join(skillDir, "references", "examples", f)), true);
     }
   });
 });
