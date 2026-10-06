@@ -40,7 +40,7 @@ function extractScript(html) {
   return html.slice(start, end);
 }
 
-function makeFakeToggleEnv(storedState, fakeDetails = []) {
+function makeFakeToggleEnv(storedState, fakeDetails = [], { filter = false } = {}) {
   const sessionData = {};
   if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
 
@@ -63,6 +63,8 @@ function makeFakeToggleEnv(storedState, fakeDetails = []) {
     kind: d.kind,
     open: d.open ?? false,
     absTop: d.absTop ?? 0,
+    inSection: d.inSection ?? null,
+    hidden: d.hidden ?? false,
     pre: d.kind === "pad-item" ? { scrollTop: d.padScrollTop ?? 0 } : null,
     listeners: [],
     addEventListener(type, fn) {
@@ -74,8 +76,28 @@ function makeFakeToggleEnv(storedState, fakeDetails = []) {
     querySelector() {
       return this.pre;
     },
+    closest(sel) {
+      if (sel === "[hidden]") return this.hidden ? this : null;
+      if (sel === "details.section:not([open])") {
+        const parent = elementsById[this.inSection];
+        return parent && !parent.open ? parent : null;
+      }
+      return null;
+    },
   }));
   for (const d of details) elementsById[d.id] = d;
+  const filterInput = {
+    value: "",
+    selectionStart: 0,
+    listeners: [],
+    addEventListener(type, fn) {
+      if (type === "input") this.listeners.push(fn);
+    },
+  };
+  if (filter) {
+    elementsById["todo-filter"] = filterInput;
+    elementsById["todo-list"] = { querySelectorAll: () => [] };
+  }
   const byKind = (...kinds) => details.filter((d) => kinds.includes(d.kind));
 
   let armedCount = 0;
@@ -86,6 +108,11 @@ function makeFakeToggleEnv(storedState, fakeDetails = []) {
     checkbox,
     stampEl,
     details,
+    filterInput,
+    typeInFilter(value) {
+      filterInput.value = value;
+      for (const fn of filterInput.listeners) fn();
+    },
     scrolls,
     getActiveTimers: () => armedCount - clearedCount,
     setOpen(id, open) {
@@ -312,6 +339,47 @@ describe("dashboard reload pauses while a pad or todo is open (todo 1754)", () =
     runToggleScript(scriptSrc(), second);
     assert.equal(second.scrolls.at(-1), 1700, "anchor top moved from 1000 to 1400, offset 300 is kept");
     assert.equal(second.details.find((d) => d.id === "pad-a").pre.scrollTop, 240);
+  });
+
+  it("does not pause for an open todo the filter hides, and pauses again when the filter clears", () => {
+    const env = makeFakeToggleEnv(undefined, [item("todo-1")], { filter: true });
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("todo-1", true);
+    assert.equal(env.getActiveTimers(), 0);
+    env.details[0].hidden = true;
+    env.typeInFilter("nomatch");
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+    env.details[0].hidden = false;
+    env.typeInFilter("");
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("does not pause for an open pad inside a collapsed section, and pauses again when the section reopens", () => {
+    const env = makeFakeToggleEnv(undefined, [
+      { id: "section-pads", kind: "section", open: true },
+      item("pad-a", { inSection: "section-pads" }),
+    ]);
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("pad-a", true);
+    assert.equal(env.getActiveTimers(), 0);
+    env.setOpen("section-pads", false);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+    env.setOpen("section-pads", true);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("arms the timer on load when an open item sits inside a section stored as closed", () => {
+    const env = makeFakeToggleEnv({ sections: { "section-pads": false, "pad-a": true } }, [
+      { id: "section-pads", kind: "section", open: true },
+      item("pad-a", { inSection: "section-pads" }),
+    ]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
   });
 
   it("falls back to the stored scrollY when the anchor element is gone", () => {

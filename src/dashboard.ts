@@ -1331,6 +1331,7 @@ const SCRIPT = `
         s.filterCaret = filterInput.selectionStart;
         save(s);
         applyFilter(filterInput.value);
+        paintStamp();
         deferReload();
       });
     }
@@ -1404,7 +1405,10 @@ const SCRIPT = `
     }
     function anyItemOpen() {
       var items = document.querySelectorAll(itemSel);
-      for (var i = 0; i < items.length; i++) if (items[i].open) return true;
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.open && !it.closest("details.section:not([open])") && !it.closest("[hidden]")) return true;
+      }
       return false;
     }
     // Typing and scrolling restart the 10s rather than suspending it, so
@@ -1433,6 +1437,10 @@ const SCRIPT = `
     var items = document.querySelectorAll(itemSel);
     for (var ii = 0; ii < items.length; ii++) {
       items[ii].addEventListener("toggle", function () { paintStamp(); deferReload(); });
+    }
+    var sectionEls = document.querySelectorAll("details.section");
+    for (var si = 0; si < sectionEls.length; si++) {
+      sectionEls[si].addEventListener("toggle", function () { paintStamp(); deferReload(); });
     }
     if (toggle) {
       toggle.addEventListener("change", function () {
