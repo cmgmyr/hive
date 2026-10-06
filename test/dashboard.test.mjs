@@ -40,7 +40,7 @@ function extractScript(html) {
   return html.slice(start, end);
 }
 
-function makeFakeToggleEnv(storedState) {
+function makeFakeToggleEnv(storedState, fakeDetails = []) {
   const sessionData = {};
   if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
 
@@ -56,6 +56,27 @@ function makeFakeToggleEnv(storedState) {
     getAttribute: () => "2026-08-07 20:34:36",
   };
   const elementsById = { "live-toggle": checkbox, "generated-stamp": stampEl };
+  const windowListeners = {};
+  const scrolls = [];
+  const details = fakeDetails.map((d) => ({
+    id: d.id,
+    kind: d.kind,
+    open: d.open ?? false,
+    absTop: d.absTop ?? 0,
+    pre: d.kind === "pad-item" ? { scrollTop: d.padScrollTop ?? 0 } : null,
+    listeners: [],
+    addEventListener(type, fn) {
+      if (type === "toggle") this.listeners.push(fn);
+    },
+    getBoundingClientRect() {
+      return { top: this.absTop - env.fakeWindow.scrollY };
+    },
+    querySelector() {
+      return this.pre;
+    },
+  }));
+  for (const d of details) elementsById[d.id] = d;
+  const byKind = (...kinds) => details.filter((d) => kinds.includes(d.kind));
 
   let armedCount = 0;
   let clearedCount = 0;
@@ -64,6 +85,17 @@ function makeFakeToggleEnv(storedState) {
   const env = {
     checkbox,
     stampEl,
+    details,
+    scrolls,
+    getActiveTimers: () => armedCount - clearedCount,
+    setOpen(id, open) {
+      const d = details.find((x) => x.id === id);
+      d.open = open;
+      for (const fn of d.listeners) fn();
+    },
+    fireWindow(type) {
+      for (const fn of windowListeners[type] || []) fn();
+    },
     getArmedCount: () => armedCount,
     getClearedCount: () => clearedCount,
     getReloaded: () => reloaded,
@@ -71,13 +103,24 @@ function makeFakeToggleEnv(storedState) {
   };
 
   env.fakeDocument = {
-    querySelectorAll: () => [],
+    querySelectorAll(sel) {
+      if (sel === "details[id]") return details;
+      if (sel === "details.pad-item, details.todo-item") return byKind("pad-item", "todo-item");
+      if (sel === "details.pad-item") return byKind("pad-item");
+      if (sel === "details.section") return byKind("section");
+      return [];
+    },
     getElementById: (id) => elementsById[id] || null,
   };
   env.fakeWindow = {
     scrollY: 0,
-    scrollTo() {},
-    addEventListener() {},
+    scrollTo(_x, y) {
+      this.scrollY = y;
+      scrolls.push(y);
+    },
+    addEventListener(type, fn) {
+      (windowListeners[type] ||= []).push(fn);
+    },
   };
   env.fakeSessionStorage = {
     getItem: (k) => (k in sessionData ? sessionData[k] : null),
@@ -169,6 +212,114 @@ function expectedLocal(utc) {
     `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
   );
 }
+
+describe("dashboard reload pauses while a pad or todo is open (todo 1754)", () => {
+  const scriptSrc = () => extractScript(renderDashboard(seedProject(`pause-${projectCount}`)));
+  const PAUSED = "paused while a pad or todo is open";
+  const item = (id, over = {}) => ({ id, kind: id.startsWith("pad-") ? "pad-item" : "todo-item", ...over });
+
+  it("arms no timer and says paused when Live is on and a pad item is open at load from stored state", () => {
+    const env = makeFakeToggleEnv({ sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("opening an item clears the armed timer and closing the last open item arms exactly one", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1);
+    env.setOpen("pad-a", true);
+    assert.equal(env.getActiveTimers(), 0);
+    assert.ok(env.stampEl.textContent.includes(PAUSED));
+    env.setOpen("pad-a", false);
+    assert.equal(env.getActiveTimers(), 1);
+    assert.ok(env.stampEl.textContent.includes("refreshes every 10s"));
+  });
+
+  it("stays paused when one of two open items closes", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a"), item("todo-1")]);
+    runToggleScript(scriptSrc(), env);
+    env.setOpen("pad-a", true);
+    env.setOpen("todo-1", true);
+    env.setOpen("pad-a", false);
+    assert.equal(env.getActiveTimers(), 0);
+    env.setOpen("todo-1", false);
+    assert.equal(env.getActiveTimers(), 1);
+  });
+
+  it("arms nothing when the last item closes with Live off, and turning Live on with an item open arms nothing", () => {
+    const off = makeFakeToggleEnv({ live: false, sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), off);
+    off.setOpen("pad-a", false);
+    assert.equal(off.getArmedCount(), 0);
+
+    const on = makeFakeToggleEnv({ live: false, sections: { "pad-a": true } }, [item("pad-a")]);
+    runToggleScript(scriptSrc(), on);
+    on.checkbox.checked = true;
+    on.checkbox.listeners.change();
+    assert.equal(on.getActiveTimers(), 0);
+    assert.ok(on.stampEl.textContent.includes(PAUSED));
+  });
+
+  it("ignores a details.section opening or closing", () => {
+    const env = makeFakeToggleEnv(undefined, [{ id: "section-todos", kind: "section", open: true }]);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.getActiveTimers(), 1, "an open section must not pause the reload");
+    env.setOpen("section-todos", false);
+    env.setOpen("section-todos", true);
+    assert.equal(env.getActiveTimers(), 1);
+  });
+
+  it("restarts the 10s on scroll only while a timer is armed, and never arms one under an open item", () => {
+    const env = makeFakeToggleEnv(undefined, [item("pad-a")]);
+    runToggleScript(scriptSrc(), env);
+    env.fireWindow("scroll");
+    assert.equal(env.getArmedCount(), 2);
+    assert.equal(env.getActiveTimers(), 1);
+    env.setOpen("pad-a", true);
+    env.fireWindow("scroll");
+    assert.equal(env.getActiveTimers(), 0);
+  });
+
+  it("keeps Live off after the toggle is switched off, even when typing or scrolling afterwards", () => {
+    const env = makeFakeToggleEnv(undefined, []);
+    runToggleScript(scriptSrc(), env);
+    env.checkbox.checked = false;
+    env.checkbox.listeners.change();
+    env.fireWindow("scroll");
+    assert.equal(env.getActiveTimers(), 0);
+  });
+
+  it("saves a section anchor and each open pad's scrollTop on unload, and a second run restores both", () => {
+    const sections = [
+      { id: "section-a", kind: "section", open: true, absTop: 0 },
+      { id: "section-b", kind: "section", open: true, absTop: 1000 },
+    ];
+    const first = makeFakeToggleEnv(undefined, [...sections, item("pad-a", { open: true, padScrollTop: 240 })]);
+    first.fakeWindow.scrollY = 1300;
+    runToggleScript(scriptSrc(), first);
+    first.fireWindow("beforeunload");
+    const saved = JSON.parse(first.getSessionData()["hive-dashboard-state"]);
+    assert.deepEqual(saved.anchor, { id: "section-b", offset: 300 });
+    assert.deepEqual(saved.padScroll, { "pad-a": 240 });
+
+    const grown = [
+      { id: "section-a", kind: "section", open: true, absTop: 0 },
+      { id: "section-b", kind: "section", open: true, absTop: 1400 },
+    ];
+    const second = makeFakeToggleEnv({ ...saved, sections: { "pad-a": true } }, [...grown, item("pad-a")]);
+    runToggleScript(scriptSrc(), second);
+    assert.equal(second.scrolls.at(-1), 1700, "anchor top moved from 1000 to 1400, offset 300 is kept");
+    assert.equal(second.details.find((d) => d.id === "pad-a").pre.scrollTop, 240);
+  });
+
+  it("falls back to the stored scrollY when the anchor element is gone", () => {
+    const env = makeFakeToggleEnv({ scrollY: 777, anchor: { id: "section-gone", offset: 5 } }, []);
+    runToggleScript(scriptSrc(), env);
+    assert.equal(env.scrolls.at(-1), 777);
+  });
+});
 
 describe("renderDashboard: board section", () => {
   it("renders the board pad's content in full, in a <pre>, unreflowed", () => {
