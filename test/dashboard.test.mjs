@@ -194,6 +194,17 @@ describe("renderDashboard: board section", () => {
     );
   });
 
+  it("wraps pad text with pre-wrap and overflow-wrap anywhere so a long unbroken line never scrolls sideways", () => {
+    const project = seedProject("board-wraps-test");
+    seedPad(project, "board", "x".repeat(400));
+    const html = renderDashboard(project);
+    const rule = /pre\.board\s*{([^}]*)}/s.exec(html);
+    assert.ok(rule, "pre.board rule must exist");
+    assert.ok(/white-space:\s*pre-wrap/.test(rule[1]), "pre.board must be pre-wrap");
+    assert.ok(/overflow-wrap:\s*anywhere/.test(rule[1]), "pre.board must break unbroken runs");
+    assert.ok(!/white-space:\s*pre\s*;/.test(rule[1]), "pre.board must not be white-space: pre");
+  });
+
   it("renders a designed empty state, naming the missing pad and how one gets written, when the project has no board pad", () => {
     const project = seedProject("no-board-test");
     const html = renderDashboard(project);

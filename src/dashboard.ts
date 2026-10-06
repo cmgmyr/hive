@@ -1130,7 +1130,7 @@ const STYLE = `
   .muted { font-size: 0.8125rem; }
   .cap-note { display: flex; align-items: center; gap: 0.4rem; color: var(--fg-subtle);
     font-size: 0.78125rem; margin: 0 0 0.6rem; }
-  pre.board { white-space: pre; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
+  pre.board { white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto; max-height: 60vh; background: var(--panel-sunken);
     border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 0.85rem;
     font-family: var(--font-mono); font-size: 0.8125rem; line-height: 1.5; margin: 0;
     overscroll-behavior: contain; }

@@ -501,7 +501,7 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .c-brief li { counter-increment: pick; font-size: 0.875rem; min-width: 0; overflow-wrap: anywhere; }
 .c-brief li::before { content: counter(pick); font-family: var(--font-mono); font-weight: 650; color: var(--accent); margin-right: 0.4rem; }
 .c-brief .why { display: block; color: var(--fg-muted); font-size: 0.8125rem; margin-top: 0.15rem; }
-.brief-summary, .brief-empty { margin: 0; font-size: 0.875rem; color: var(--fg-muted); grid-column: 2; }
+.brief-summary, .brief-empty { margin: 0; font-size: 0.875rem; color: var(--fg-muted); grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
 .brief-summary { color: var(--fg); }
 @media (max-width: 52rem) {
   .c-brief { grid-template-columns: minmax(0, 1fr); }

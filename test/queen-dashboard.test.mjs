@@ -134,6 +134,13 @@ describe("readQueenBrief", () => {
 });
 
 describe("renderQueenDashboard", () => {
+  it("lets the brief summary break an unbroken run instead of widening the page", () => {
+    const html = renderQueenDashboard(report(oneEach()), ready(brief({ summary: "S".repeat(300) })), noLinks);
+    const rule = /\.brief-summary,\s*\.brief-empty\s*{([^}]*)}/s.exec(html);
+    assert.ok(rule, "brief-summary rule must exist");
+    assert.ok(/overflow-wrap:\s*anywhere/.test(rule[1]) && /min-width:\s*0/.test(rule[1]));
+  });
+
   it("emits one card and one grid row per project, each project in exactly one lane, in lane order", () => {
     const projects = oneEach();
     const html = renderQueenDashboard(report(projects), { kind: "missing" }, noLinks);
