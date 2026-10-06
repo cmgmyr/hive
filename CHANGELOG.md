@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0 - 2026-10-06
+
+- The shipped `orchestration` profile has been rewritten. The old one was a skeleton; this one is a full starting point. The lead assigns todo ids, supervises the work, and accepts or rejects what comes back. Workers no longer take work off the shared queue or complete their own todos. The runbook spells out lanes, briefs, scope, worktrees, shared resources, checks, review, permissions, waiting, the context checkpoint, handback and closing a lane. The posture tells the lead to run on your strongest model tier and to spawn workers on a cheaper one with `agent_spawn`'s `model` argument.
+- The shipped orchestration profile renders new optional `hive.yml` vars: `test_command`, `suite_command`, `verify_command`, `review_command` and `worker_model`. Each var adds its section only when it is set. The `hive.yml` template that `hive init` writes lists them.
+- In a worker's done list, the gate step from your `check` var is now a line under the scoped-checks step. The numbering no longer skips a step when `check` is unset.
+- The `/hive:profile` skill matches the new profile. It starts an orchestration profile from the shipped files and offers each optional var only when your answers call for it. It reads worker text with `hive profile read worker.md`. A new section explains how to use the skill without the Claude plugin, for example from Codex.
+- The `/hive:profile` skill includes worked examples in `references/examples/`. One shipped profile renders differently for a personal repo and a work repo through `hive.yml` `vars`. There is also an annotated skeleton of the three profile files, and a prompt you can paste to your own agent to adapt the example.
+- If you forked the orchestration profile, your copy is unchanged. `hive profile list` and `hive doctor` report how far it has drifted from the new shipped files.
+- After upgrading, restart every hive session.
+
 ## 1.7.0 - 2026-10-04
 
 - hive now kills, types into, or reads the screen of a pane only when the row owns it. 1.6.0 changed what hive reports about a row's pane; this release changes what it does. Closing, parking, sending, renaming, `hive stop`, wake delivery, `hive lead`'s adopt and `scripts/restart-lead.sh` act only on a pane whose process matches the one hive recorded. After a tmux restart a pane id can name another process, and hive no longer touches it. When ownership cannot be checked, hive refuses or holds and says why.
