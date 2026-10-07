@@ -5,7 +5,7 @@ Run a crew of Claude Code and Codex workers from one lead session: visible tmux 
 
 - Visible workers: each one is a real tmux pane you can read and type into.
 - Exact state: workers report it through their own CLI's hooks, so nothing polls.
-- One local SQLite store: no daemon, and nothing leaves your machine.
+- One local SQLite store: no daemon. The MCP server, hooks, and scheduler make no outbound requests; explicit CLI update checks contact npm, and upgrades can download ([details](docs/security.md)).
 
 ![hive: a lead plans, spawns workers, and is woken when they finish](https://raw.githubusercontent.com/cmgmyr/hive/main/docs/assets/demo.svg)
 
@@ -32,7 +32,7 @@ Run `cd ~/Code/your-project && hive`. It is shorthand for `hive lead`, and it op
 
 ## How it works
 
-Each Claude Code session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon and nothing leaves your machine. State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
+Each Claude Code session runs its own `hive` MCP server over stdio, and every instance reads and writes one SQLite database (WAL mode) at `~/.hive/hive.db`, so every session sees the same state. There is no daemon. The MCP server, hooks, and scheduler make no outbound requests; explicit CLI update checks contact npm, and upgrades can download ([details](docs/security.md)). State is scoped to a project (a directory), resolved from the working directory; a lead spawns workers into tmux panes locked to that project.
 
 ## Why not subagents?
 
