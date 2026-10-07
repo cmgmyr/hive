@@ -4,7 +4,7 @@
 
 ```text
 you   ▸ good morning, let's triage
-lead  ▸ reads the runbook and board pads, lists open todos, proposes lanes
+lead  ▸ reads the runbook (the profile's, or a runbook pad in a project without one; see [runbook and board](projects.md#runbook-and-board-hive-init)) and board pads, lists open todos, proposes lanes
 you   ▸ approve the plan
 lead  ▸ agent_spawn("api"), agent_send(task + todo 12)
         agent_spawn("ui"),  agent_send(task + todo 14)

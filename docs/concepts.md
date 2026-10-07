@@ -10,7 +10,7 @@ The vocabulary, identity model, workflow, and shared store behind hive.
 | worker | A Claude or Codex session the lead spawns into a tmux pane, locked to the project. |
 | actor | Who a write is attributed to: `user:<name>` for humans, `agent:<id>` for workers. |
 | pad | A named shared document in the store. |
-| runbook | The pad holding your standing instructions for a project's lead. |
+| runbook | The profile's standing instructions, or a runbook pad in a project without a profile. See [runbook and board](projects.md#runbook-and-board-hive-init). |
 | board | The pad holding today's live state; archived and rewritten each day. |
 | lane | One independent stream of work: typically one worker plus one or more todos. |
 | queen | The one lead per data dir that reads every registered project and writes into another only through its lead. See [the queen guide](queen.md). |
@@ -52,7 +52,7 @@ Git worktrees and subdirectories resolve to the primary checkout's project, so a
 
 Four primitives hold all coordination state. Each is project-scoped, lives in SQLite, and is visible to every session the moment it changes. Sessions die; the store lives.
 
-**Pads** are named shared documents: the plan, research findings, the runbook, the daily board. A pad is the right home for anything a future session should be able to read without you re-explaining it. Every read returns a `revision`, and overwrites require `expected_revision`, so two sessions can never silently clobber each other; the loser gets a conflict and re-reads. Prefer `pad_append` and `pad_edit` for small changes so revisions stay cheap. Names are unique per project, and archiving retires a pad while keeping it readable by id, which gives you clean day-to-day rotation of pads like the board.
+**Pads** are named shared documents: the plan, research findings, a runbook pad in a project without a profile, and the daily board. A pad is the right home for anything a future session should be able to read without you re-explaining it. Every read returns a `revision`, and overwrites require `expected_revision`, so two sessions can never silently clobber each other; the loser gets a conflict and re-reads. Prefer `pad_append` and `pad_edit` for small changes so revisions stay cheap. Names are unique per project, and archiving retires a pad while keeping it readable by id, which gives you clean day-to-day rotation of pads like the board. See [runbook and board](projects.md#runbook-and-board-hive-init).
 
 **Todos** are the work queue. Each one carries a body (objective, owned files, acceptance criteria), a priority, tags, and a comment thread. Blockers link todos into a dependency graph: blocked work stays out of the dispatch filter until its blockers complete, cycles are rejected outright, and completing a todo reports exactly which todos it freed. Comments double as the handoff trail between workers and sessions: changed files, tests run, decisions made, remaining risk.
 
