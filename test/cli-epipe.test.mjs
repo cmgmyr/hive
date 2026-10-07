@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, it } from "node:test";
 import { CLI, isolateTmux, scratchDirs } from "./helpers.mjs";
+
+function emitStdoutError(code, dirs) {
+  const source = `
+    process.argv = [process.execPath, ${JSON.stringify(CLI)}, "status"];
+    const cli = import(${JSON.stringify(CLI)});
+    setImmediate(() => process.stdout.emit("error", Object.assign(new Error("synthetic stdout failure"), { code: ${JSON.stringify(code)} })));
+    await cli;
+  `;
+  return spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+    cwd: dirs.projectDir,
+    env: { ...process.env, HIVE_DATA_DIR: dirs.dataDir },
+    encoding: "utf8",
+  });
+}
 
 const { cleanup: cleanupTmux } = isolateTmux("the CLI EPIPE tests");
 after(() => cleanupTmux());
@@ -36,6 +50,33 @@ it("hive profile read exits quietly when its stdout reader closes early", async 
     assert.equal(closedBeforeRead, true, "the reader must close while the CLI is still writing");
     assert.equal(code, 0, stderr);
     assert.doesNotMatch(stderr, /EPIPE|Error:/);
+  } finally {
+    rmSync(dirs.projectDir, { recursive: true, force: true });
+    rmSync(dirs.dataDir, { recursive: true, force: true });
+    rmSync(dirs.tmp, { recursive: true, force: true });
+  }
+});
+
+it("the real stdout handler exits quietly on ENOTCONN", () => {
+  const dirs = scratchDirs();
+  try {
+    const result = emitStdoutError("ENOTCONN", dirs);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stderr, "");
+  } finally {
+    rmSync(dirs.projectDir, { recursive: true, force: true });
+    rmSync(dirs.dataDir, { recursive: true, force: true });
+    rmSync(dirs.tmp, { recursive: true, force: true });
+  }
+});
+
+it("the real stdout handler still throws errors other than EPIPE and ENOTCONN", () => {
+  const dirs = scratchDirs();
+  try {
+    const result = emitStdoutError("EIO", dirs);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /synthetic stdout failure/);
+    assert.match(result.stderr, /EIO/);
   } finally {
     rmSync(dirs.projectDir, { recursive: true, force: true });
     rmSync(dirs.dataDir, { recursive: true, force: true });
