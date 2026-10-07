@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -47,6 +48,9 @@ const fixture = (name, body) => {
 };
 
 const out = (expr) => `process.stdout.write(JSON.stringify(${expr}));\n`;
+const taskNotificationPrompt = JSON.parse(
+  readFileSync(new URL("./fixtures/hook-payloads/prompt-task-notification.json", import.meta.url), "utf8"),
+).prompt;
 
 describe("todo 455 commit 2: the conversation hold", () => {
   it("holds a wake to the lead's pane when a human message landed within the TTL", () => {
@@ -78,6 +82,34 @@ describe("todo 455 commit 2: the conversation hold", () => {
       `,
     );
     assert.ok(result.row.fired_at !== null, "with no prior human turn, the wake must deliver on schedule");
+  });
+
+  it("a task-notification prompt does not hold a due wake", () => {
+    const result = fixture(
+      "task-notification-not-human",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-30 seconds', ${JSON.stringify(taskNotificationPrompt)});
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "a task-notification prompt must not hold wake delivery");
+    assert.equal(result.row.held_reason, null);
+  });
+
+  it("a human prompt containing <task-notification> mid-text still holds", () => {
+    const result = fixture(
+      "human-prompt-with-task-notification-text",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-30 seconds', 'see <task-notification> above');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
   });
 
   it("delivers when the most recent prompt row is hive's own typed wake, not a human message", () => {
@@ -244,4 +276,3 @@ describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes
   });
 
 });
-
