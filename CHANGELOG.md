@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.0 - 2026-10-07
+
+- New opt-in setting `quiet_messaging`. With `quiet_messaging: true` in your global `~/.hive/hive.yml` or a project's `hive.yml`, a one-shot wake to a running Claude Code lead arrives as one dim `Message from @hive` row instead of a block of pasted text. Press ctrl+o to expand it. It is off unless you set it, and a project's `false` overrides a global `true`. Restart the lead with `/exit` and `hive lead` after changing it. See [Quiet messaging](docs/projects.md#quiet-messaging).
+  - `wake_get` and `wake_list` report how each wake was delivered in `delivery_method`: `socket`, `pty`, or `pty-after-socket-timeout`. A socket message the lead does not confirm within 60 seconds is typed into the pane once, marked `re-delivered`.
+  - Repeating wakes, wakes to workers and wakes to a Codex lead are still typed into the pane.
+  - Turning it on lets any local session send messages to that lead, not only hive. Workers still refuse inbound messages.
+- A lead started while a worker is still running in the project window now becomes the window's first pane, and the window re-applies your `layout`. Before, a `main-vertical` window came back with the worker on top and the lead underneath.
+- The dashboard wraps long lines in pads instead of scrolling the page sideways. With Live on, it no longer reloads while you have a pad or todo open, and a reload keeps your place on the page and inside each open pad. Scrolling restarts the reload timer the way typing does.
+- The dashboard's Live checkbox now stops the reload when you switch it off. Before, typing in the filter still re-armed it.
+- The store migrates to schema 34 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.8.0 - 2026-10-06
 
 - The shipped `orchestration` profile has been rewritten. The old one was a skeleton; this one is a full starting point. The lead assigns todo ids, supervises the work, and accepts or rejects what comes back. Workers no longer take work off the shared queue or complete their own todos. The runbook spells out lanes, briefs, scope, worktrees, shared resources, checks, review, permissions, waiting, the context checkpoint, handback and closing a lane. The posture tells the lead to run on your strongest model tier and to spawn workers on a cheaper one with `agent_spawn`'s `model` argument.
