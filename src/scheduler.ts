@@ -2707,10 +2707,10 @@ async function deliver(
   const retried = fallback;
   const tail = watchedTail(timer);
   const body = (isLeadActorId(timer.deliver_actor) ? shortRenderForLeadDelivery(timer) : null) ?? timer.body;
-  const rest = body + noticeStalenessNote(timer) + tail;
+  const staleness = noticeStalenessNote(timer);
 
   if (!fallback && socketRoute(timer, owner)) {
-    const text = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] ${rest}\n\n${SOCKET_WAKE_FOOTER}`;
+    const text = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
     if (!text.includes(CROSS_SESSION_CLOSE)) {
       bestEffortRun(
         `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
@@ -2768,7 +2768,7 @@ async function deliver(
   try {
     await sendText(
       timer.deliver_pane,
-      prefix + rest,
+      prefix + body + staleness + tail,
       true,
       () => {
         pasted = true;
