@@ -207,6 +207,7 @@ describe("hive lead into a window that already holds workers", { skip: hasTmux ?
     const window = tmux("display-message", "-p", "-t", oldLead, "#{window_id}");
     const worker = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", window, "sleep", "600");
     tmux("kill-pane", "-t", oldLead);
+    tmux("set-window-option", "-u", "-t", window, "@hive-layout");
     const second = await runCli(["lead", path, "--detach"], opts(path));
     assert.equal(second.code, 0, second.stderr);
     const lead = leadRow(db, projectId).tmux_target;
