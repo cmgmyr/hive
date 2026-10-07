@@ -9,7 +9,15 @@ function emitStdoutError(code, dirs) {
   const source = `
     process.argv = [process.execPath, ${JSON.stringify(CLI)}, "status"];
     const cli = import(${JSON.stringify(CLI)});
-    setImmediate(() => process.stdout.emit("error", Object.assign(new Error("synthetic stdout failure"), { code: ${JSON.stringify(code)} })));
+    const emitWhenReady = () => {
+      if (process.stdout.listenerCount("error") === 0) {
+        setImmediate(emitWhenReady);
+        return;
+      }
+      process.stderr.write("stdout error handler registered\\n");
+      process.stdout.emit("error", Object.assign(new Error("synthetic stdout failure"), { code: ${JSON.stringify(code)} }));
+    };
+    setImmediate(emitWhenReady);
     await cli;
   `;
   return spawnSync(process.execPath, ["--input-type=module", "-e", source], {
@@ -62,7 +70,7 @@ it("the real stdout handler exits quietly on ENOTCONN", () => {
   try {
     const result = emitStdoutError("ENOTCONN", dirs);
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stderr, "");
+    assert.equal(result.stderr, "stdout error handler registered\n");
   } finally {
     rmSync(dirs.projectDir, { recursive: true, force: true });
     rmSync(dirs.dataDir, { recursive: true, force: true });
@@ -75,6 +83,7 @@ it("the real stdout handler still throws errors other than EPIPE and ENOTCONN", 
   try {
     const result = emitStdoutError("EIO", dirs);
     assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /^stdout error handler registered\n/);
     assert.match(result.stderr, /synthetic stdout failure/);
     assert.match(result.stderr, /EIO/);
   } finally {
