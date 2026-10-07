@@ -32,6 +32,20 @@ export function ensureHooksFile(): string {
   return path;
 }
 
+// Off returns the store-wide file unchanged. On writes a per-project file, because hooks.json is shared
+// by every project's lead and an accept there would reach leads that never opted in.
+export function ensureLeadHooksFile(projectId: number, quietLeadWakes: boolean): string {
+  if (!quietLeadWakes) return ensureHooksFile();
+  const base = stateHookSettings();
+  const settings = {
+    hooks: { ...base.hooks, SessionStart: [hookEntry("session_start")] },
+    crossSessionInbound: "accept",
+  };
+  const path = join(dataDir, `lead-${projectId}-hooks.json`);
+  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
+  return path;
+}
+
 function stateHookSettings(): { hooks: Record<string, HookEntry[]> } {
   return {
     hooks: {

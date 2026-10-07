@@ -60,9 +60,16 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
 
   it("keeps the pre-existing agent row, reading its new launch-flag columns as null", () => {
     const after = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId);
-    const { model, extra_args: extraArgs, ...rest } = after;
+    const { model, extra_args: extraArgs, claude_messaging_socket: socket, claude_messaging_pane_pid: socketPid, ...rest } = after;
     assert.deepEqual(rest, before.agent);
     assert.equal(model, null);
     assert.equal(extraArgs, null);
+    assert.equal(socket, "");
+    assert.equal(socketPid, "");
+  });
+
+  it("adds the socket delivery columns to wakes, null on rows written before them", () => {
+    const columns = db.prepare("SELECT name FROM pragma_table_info('wakes')").all().map((c) => c.name);
+    for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note"]) assert.ok(columns.includes(name), name);
   });
 });

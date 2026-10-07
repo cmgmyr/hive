@@ -23,6 +23,7 @@ profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 # first_message: "..."         # a lead's first turn; absent or "" sends none
 dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
+# quiet_lead_wakes: true        # wakes reach a claude lead as one row; restart the lead after changing
 
 vars:
   shot: phone-dark, 390px wide # optional profile var; the lead opens this screenshot on UI lanes

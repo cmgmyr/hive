@@ -17,7 +17,7 @@ export const ALLOWLIST = [
   { path: "src/tmux.ts", marker: "export async function sendText" },
   { path: "src/tools/agents.ts", marker: "`/rename ${newName}`" },
   { path: "src/tools/agents.ts", marker: "target,\n              outgoing" },
-  { path: "src/scheduler.ts", marker: "prefix + body + noticeStalenessNote" },
+  { path: "src/scheduler.ts", marker: "prefix + body + staleness + tail" },
 ];
 
 export function sendTextSites(contents, path) {

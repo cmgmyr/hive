@@ -215,6 +215,23 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
   stopAllProcesses(row.project_id, STOP_REASONS.leadSessionEnded);
 }
 
+// Bound to the pid of the pane this hook runs in, not to agents.pane_pid: on a fresh launch this can
+// run before cmdLead records the new pane. The scheduler uses it only when the two pids agree.
+async function registerLeadMessagingSocket(actorId: string): Promise<void> {
+  const raw = process.env.CLAUDE_CODE_MESSAGING_SOCKET ?? "";
+  const pane = process.env.TMUX_PANE ?? "";
+  let socket = isAbsolute(raw) && !raw.includes("\0") ? raw : "";
+  let pid = "";
+  if (socket !== "" && pane !== "") {
+    const { panePidForRecord } = await import("./tmux.js");
+    pid = panePidForRecord(pane);
+  }
+  if (pid === "") socket = "";
+  db.prepare(
+    "UPDATE agents SET claude_messaging_socket = ?, claude_messaging_pane_pid = ? WHERE actor_id = ? AND kind = 'lead' AND status = 'running'",
+  ).run(socket, pid, actorId);
+}
+
 function reconcileSessionId(actorId: string, payload: HookPayload): void {
   const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
   if (!sessionId) return;
@@ -336,6 +353,14 @@ try {
       try {
         const { applyLeadHook } = await import("./leadState.js");
         applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
+      } catch {
+
+      }
+    }
+
+    if (event === "session_start" && process.env.HIVE_LEAD === "1") {
+      try {
+        await registerLeadMessagingSocket(actorId);
       } catch {
 
       }
