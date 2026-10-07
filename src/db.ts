@@ -441,6 +441,14 @@ CREATE TABLE queen_audit (
 );
 CREATE INDEX idx_queen_audit_target ON queen_audit(target_project_id, id);
 `,
+
+  `
+ALTER TABLE agents ADD COLUMN claude_messaging_socket TEXT NOT NULL DEFAULT '';
+ALTER TABLE agents ADD COLUMN claude_messaging_pane_pid TEXT NOT NULL DEFAULT '';
+ALTER TABLE wakes ADD COLUMN delivery_method TEXT;
+ALTER TABLE wakes ADD COLUMN socket_attempt_at TEXT;
+ALTER TABLE wakes ADD COLUMN socket_delivery_note TEXT;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

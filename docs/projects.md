@@ -40,6 +40,9 @@ dashboard: true               # optional; default false. Writes a generated, aut
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
                               # (`hive lead --no-dashboard` skips this run's open).
+quiet_lead_wakes: true        # optional; default false. A claude lead gets its wakes as one
+                              # "Message from @hive" row instead of typed text. Restart the
+                              # lead after changing it (see [Quiet lead wakes](#quiet-lead-wakes)).
 vars:                         # substituted into the profile runbook
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session

@@ -80,7 +80,7 @@ import {
 } from "./context.js";
 import { confirmQueenWrite, listQueenAudit } from "./queenAudit.js";
 import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemove.js";
-import { ensureHooksFile } from "./hooks.js";
+import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
   ACTIVE_TIMER_WHERE,
@@ -726,7 +726,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     reportMigrationResult(migrateLegacyConfig());
     for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
-    const hooksPath = ensureHooksFile();
+    const hooksPath = ensureLeadHooksFile(project.id, config?.quiet_lead_wakes === true);
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -1132,6 +1132,8 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
+
+# quiet_lead_wakes: true        # wakes reach a claude lead as one row (default: false; restart the lead)
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

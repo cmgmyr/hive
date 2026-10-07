@@ -110,6 +110,12 @@ export interface TimerRow {
   deliver_row_id: number | null;
   deliver_row_status: string | null;
   deliver_row_target: string;
+  deliver_messaging_socket: string;
+  deliver_messaging_pane_pid: string;
+
+  delivery_method: string | null;
+  socket_attempt_at: string | null;
+  socket_delivery_note: string | null;
 
   watch_scope: string | null;
 
@@ -129,7 +135,9 @@ const DELIVER_ROW_COLUMNS = `COALESCE(agents.tmux_socket, '') AS deliver_socket,
   COALESCE(agents.pane_pid, '') AS deliver_pane_pid,
   COALESCE(agents.command, '') AS deliver_command,
   agents.id AS deliver_row_id, agents.status AS deliver_row_status,
-  COALESCE(agents.tmux_target, '') AS deliver_row_target`;
+  COALESCE(agents.tmux_target, '') AS deliver_row_target,
+  COALESCE(agents.claude_messaging_socket, '') AS deliver_messaging_socket,
+  COALESCE(agents.claude_messaging_pane_pid, '') AS deliver_messaging_pane_pid`;
 
 type DeliveryRow = Pick<
   TimerRow,

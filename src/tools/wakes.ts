@@ -134,6 +134,8 @@ function deliveryState(
   held_reason: string | null;
   confirmed_at: string | null;
   confirmation: ConfirmationStatus | null;
+  delivery_method: string | null;
+  socket_attempt_at: string | null;
 } {
   return {
     typed_at: t.typed_at,
@@ -143,7 +145,7 @@ function deliveryState(
     confirmed_at: t.confirmed_at,
 
     confirmation:
-      t.typed_at == null
+      t.typed_at == null && t.socket_attempt_at == null
         ? null
         : t.confirmed_at != null
           ? "confirmed"
@@ -152,6 +154,8 @@ function deliveryState(
             : t.typed_busy === 1
               ? "unconfirmed_busy"
               : "unconfirmed",
+    delivery_method: t.delivery_method,
+    socket_attempt_at: t.socket_attempt_at,
   };
 }
 
