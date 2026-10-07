@@ -84,6 +84,7 @@ import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
   ACTIVE_TIMER_WHERE,
+  SOCKET_AWAITING_WHERE,
   dashboardFileContained,
   describeStall,
   HELD_REASON_CONVERSATION,
@@ -981,7 +982,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         if (updated === 0) return false;
         db.prepare(
           `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
-           WHERE ${ACTIVE_TIMER_WHERE} AND deliver_actor = ?
+           WHERE ((${ACTIVE_TIMER_WHERE}) OR (${SOCKET_AWAITING_WHERE})) AND deliver_actor = ?
              AND (? = 1 OR held_reason IS NULL OR held_reason NOT LIKE ?)`,
         ).run(leadPane, leadActorId, createdPane ? 1 : 0, `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}%`);
         confirmQueenWrite("hive lead", project.id, { detach }, {
