@@ -848,7 +848,7 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
      WHERE id = ? AND cancelled_at IS NULL
        AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?)
-         OR (delivery_method = 'socket' AND typed_at IS NULL AND confirmed_at IS NULL))`,
+         OR (${socketAwaitingWhere()}))`,
     reason,
     timer.id,
     timer.due_at,
@@ -1408,7 +1408,7 @@ const STANDING_EXPIRED_NOTE =
 const unreported = (condition: string, episode: string): string => `NOT EXISTS (
     SELECT 1 FROM wake_idle_notices n LEFT JOIN wakes nt ON nt.id = n.notice_wake_id
      WHERE n.wake_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
-       AND NOT (nt.fired_at IS NOT NULL AND nt.typed_at IS NULL AND nt.cancelled_at IS NULL
+       AND NOT (nt.fired_at IS NOT NULL AND COALESCE(nt.typed_at, nt.socket_attempt_at) IS NULL AND nt.cancelled_at IS NULL
                 AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
 
 const CREW_COLUMNS =
@@ -1740,7 +1740,7 @@ function rearmSpentEpisode(timerId: number, agentId: number, condition: string, 
       WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ?
         AND notice_wake_id IS NOT NULL
         AND EXISTS (SELECT 1 FROM wakes t WHERE t.id = wake_idle_notices.notice_wake_id
-                      AND t.fired_at IS NOT NULL AND t.typed_at IS NULL AND t.cancelled_at IS NULL
+                      AND t.fired_at IS NOT NULL AND COALESCE(t.typed_at, t.socket_attempt_at) IS NULL AND t.cancelled_at IS NULL
                       AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
   ).run(timerId, agentId, condition, episode);
 }
@@ -2647,10 +2647,11 @@ function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string): vo
   );
 }
 
-export const SOCKET_AWAITING_WHERE =
-  "delivery_method = 'socket' AND confirmed_at IS NULL AND typed_at IS NULL AND cancelled_at IS NULL";
+export const DELIVERY_METHOD = { socket: "socket", pty: "pty", ptyAfterSocketTimeout: "pty-after-socket-timeout" } as const;
+export const socketAwaitingWhere = (prefix = ""): string =>
+  `${prefix}delivery_method = '${DELIVERY_METHOD.socket}' AND ${prefix}confirmed_at IS NULL AND ${prefix}typed_at IS NULL AND ${prefix}cancelled_at IS NULL`;
 const SOCKET_CONFIRM_GRACE_SECONDS = 60;
-export const RE_DELIVERED_NOTE = "re-delivered";
+const withReDelivered = (note: string | null): string => (note ? `${note}, re-delivered` : "re-delivered");
 
 const promptEvidenceSql = (lowerBound: string): string => `
        SELECT MIN(created_at) FROM agent_state_log
@@ -2704,7 +2705,6 @@ async function deliver(
   owner: DeliveryOwner | null,
   fallback = false,
 ): Promise<void> {
-  const retried = fallback;
   const tail = watchedTail(timer);
   const body = (isLeadActorId(timer.deliver_actor) ? shortRenderForLeadDelivery(timer) : null) ?? timer.body;
   const staleness = noticeStalenessNote(timer);
@@ -2714,9 +2714,10 @@ async function deliver(
     if (!text.includes(CROSS_SESSION_CLOSE)) {
       bestEffortRun(
         `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-           delivery_method = NULL, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+           delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
          WHERE id = ?`,
         note,
+        DELIVERY_METHOD.socket,
         firstHeldAt,
         timer.id,
       );
@@ -2727,11 +2728,10 @@ async function deliver(
         beforeWrite: () => socketStillRegistered(timer, owner!),
       });
       if (posted) {
-        bestEffortRun("UPDATE wakes SET delivery_method = 'socket' WHERE id = ?", timer.id);
         forgetPaneAnswers(timer.deliver_pane, choices);
         return;
       }
-      note = note ? `${note}, ${RE_DELIVERED_NOTE}` : RE_DELIVERED_NOTE;
+      note = withReDelivered(note);
       fallback = true;
     }
   }
@@ -2739,7 +2739,7 @@ async function deliver(
   const prefix =
     `[hive wake #${timer.id}${note ? `, ${note}` : ""}] ` +
     (fallback ? `If you already handled wake #${timer.id}, ignore this.\n` : "");
-  const method = fallback ? "pty-after-socket-timeout" : "pty";
+  const method = fallback ? DELIVERY_METHOD.ptyAfterSocketTimeout : DELIVERY_METHOD.pty;
 
   let typedBusy: number | null;
   try {
@@ -2778,7 +2778,9 @@ async function deliver(
       owner ? () => requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`) : undefined,
     );
   } catch (err) {
-    if (retried && !pasted) bestEffortRun("UPDATE wakes SET delivery_method = 'socket' WHERE id = ? AND typed_at IS NULL", timer.id);
+    if (fallback && !pasted) {
+      bestEffortRun("UPDATE wakes SET delivery_method = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, timer.id);
+    }
     if (!(err instanceof PaneOwnershipLost)) throw err;
     recordLostAfterClaim(timer, pasted, err.message);
     return;
@@ -2815,13 +2817,12 @@ async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, 
   if (!decision.ok) return false;
   const claimed =
     stmt(
-      `UPDATE wakes SET delivery_method = 'pty-after-socket-timeout'
-        WHERE id = ? AND ${SOCKET_AWAITING_WHERE}
+      `UPDATE wakes SET delivery_method = ?
+        WHERE id = ? AND ${socketAwaitingWhere()}
           AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
-    ).run(timer.id).changes === 1;
+    ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id).changes === 1;
   if (!claimed) return false;
-  const note = timer.socket_delivery_note ? `${timer.socket_delivery_note}, ${RE_DELIVERED_NOTE}` : RE_DELIVERED_NOTE;
-  await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
+  await deliver(timer, withReDelivered(timer.socket_delivery_note), choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
   return true;
 }
 
@@ -2829,7 +2830,7 @@ async function retryUnconfirmedSocketWakes(snapshot: AliveSnapshot | null, choic
   const awaiting = stmt(
     `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
        FROM wakes ${DELIVER_SOCKET_JOIN}
-      WHERE wakes.${SOCKET_AWAITING_WHERE.replaceAll(" AND ", " AND wakes.")}
+      WHERE ${socketAwaitingWhere("wakes.")}
         AND wakes.socket_attempt_at >= datetime('now', ?)`,
   ).all(LOG_RETENTION) as TimerRow[];
   for (const timer of awaiting) {

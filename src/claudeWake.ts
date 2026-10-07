@@ -11,7 +11,7 @@ export function senderAddress(socketPath: string): string {
   return `uds:${encoded}`;
 }
 
-export function claudeWakeFrame(senderAddress: string, text: string): string {
+function claudeWakeFrame(senderAddress: string, text: string): string {
   const content = `<cross-session-message from="${senderAddress}" from-name="hive">\n${text}\n${CROSS_SESSION_CLOSE}`;
   return JSON.stringify({ type: "user", from: senderAddress, message: { role: "user", content } }) + "\n";
 }

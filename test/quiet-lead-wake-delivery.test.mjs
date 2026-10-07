@@ -272,6 +272,66 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     assert.equal(sinkText(target), "");
   });
 
+  async function postedAndDue(pid, target, sock) {
+    const id = dueWake(pid, target, BODY);
+    await tick();
+    await until(() => sock.received.length === 1, 3000);
+    backdateAttempt(id, 61);
+    return id;
+  }
+
+  it("a prompt that lands after the tick's confirmation pass but before the fallback claim stops the paste", needsTmux, async () => {
+    const sock = listener();
+    const pid = project(true);
+    const target = lead(pid, { socket: sock.path });
+    const id = await postedAndDue(pid, target, sock);
+    const other = lead(project(false));
+    dueWake(db.prepare("SELECT project_id FROM agents WHERE id = ?").get(other.rowId).project_id, other, "an earlier typed wake that holds the tick for ~800 ms");
+    const prompt = JSON.parse(sock.received[0]).message.content;
+    setTimeout(() => insertStateLogRow(db, target.actorId, "prompt", "working", 0, JSON.stringify({ prompt })), 150);
+
+    await tick();
+    await until(() => sinkText(other).includes("holds the tick"), 3000);
+    await sleep(300);
+    assert.equal(wake(id).confirmed_at, null, "the prompt arrived after this tick's confirmation pass");
+    assert.equal(sinkText(target), "", "the claim saw the prompt and typed nothing");
+    assert.equal(wake(id).delivery_method, "socket");
+  });
+
+  it("a cancelled socket wake gets no fallback", needsTmux, async () => {
+    const sock = listener();
+    const pid = project(true);
+    const target = lead(pid, { socket: sock.path });
+    const id = await postedAndDue(pid, target, sock);
+    db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(id);
+    await tick();
+    await sleep(500);
+    assert.equal(sinkText(target), "");
+    assert.equal(wake(id).typed_at, null);
+  });
+
+  it("a fallback held for a live conversation types exactly once after the hold lifts", needsTmux, async () => {
+    const sock = listener();
+    const pid = project(true);
+    const target = lead(pid, { socket: sock.path });
+    const id = await postedAndDue(pid, target, sock);
+    insertStateLogRow(db, target.actorId, "prompt", "working", 5, JSON.stringify({ prompt: "a human is talking to the lead" }));
+    await tick();
+    await sleep(300);
+    assert.match(wake(id).held_reason ?? "", /a human talked to this lead/);
+    assert.equal(sinkText(target), "");
+    assert.equal(wake(id).delivery_method, "socket");
+
+    db.prepare("DELETE FROM agent_state_log WHERE actor_id = ? AND payload LIKE '%a human is talking%'").run(target.actorId);
+    await tick();
+    await until(() => sinkText(target).includes("third, indented"), 3000);
+    await tick();
+    await sleep(300);
+    assert.equal(sinkText(target).split("re-delivered").length, 2, sinkText(target));
+    assert.equal(wake(id).delivery_method, "pty-after-socket-timeout");
+    assert.equal(wake(id).held_reason, null);
+  });
+
   it("two scheduler processes racing one due fallback type it once", needsTmux, async () => {
     const sock = listener();
     const pid = project(true);
@@ -290,6 +350,57 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     await sleep(500);
     assert.equal(sinkText(target).split("re-delivered").length, 2, sinkText(target));
   });
+});
+
+describe("a standing watch's finish notice delivered by socket", () => {
+  function idleWorkerAndWatch(pid, target) {
+    const worker = sinkPane();
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status,
+         agent_state, state_changed_at, created_at)
+       VALUES (?, ?, ?, 'agent', ?, ?, ?, 'claude', '/tmp', 'running', 'idle', datetime('now', '-30 seconds'), datetime('now', '-300 seconds'))`,
+    ).run(pid, `agent:qlw-w${actorCount}`, `qlw-w${actorCount++}`, worker.pane, ownSocket, worker.pid);
+    return db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, watch_scope, deliver_actor, deliver_pane, max_wait_at, created_at)
+         VALUES (?, ?, 'crew update', 'idle_any', '[]', 'project', ?, ?, datetime('now', '+4 hours'), datetime('now', '-60 seconds'))
+         RETURNING id`,
+      )
+      .get(pid, target.actorId, target.actorId, target.pane).id;
+  }
+  const notices = (watch) => db.prepare("SELECT * FROM wakes WHERE parent_wake_id = ? ORDER BY id").all(watch);
+  const agePastRetry = (id) =>
+    db.prepare(
+      "UPDATE wakes SET fired_at = datetime('now', '-90 seconds'), socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-90 seconds') WHERE id = ?",
+    ).run(id);
+
+  for (const confirmed of [true, false]) {
+    it(`is reported once and posted once across the 60 s re-arm boundary (${confirmed ? "confirmed" : "unconfirmed"})`, needsTmux, async () => {
+      const sock = listener();
+      const pid = project(true);
+      const target = lead(pid, { socket: sock.path });
+      const watch = idleWorkerAndWatch(pid, target);
+
+      for (let i = 0; i < 5 && sock.received.length === 0; i++) {
+        await tick();
+        await until(() => sock.received.length === 1, 600);
+      }
+      const [notice] = notices(watch);
+      assert.equal(notice.delivery_method, "socket");
+      if (confirmed) {
+        await promptHook(target, JSON.parse(sock.received[0]).message.content);
+        await tick();
+        assert.ok(wake(notice.id).confirmed_at);
+      }
+
+      agePastRetry(notice.id);
+      await tick();
+      await tick();
+      await sleep(300);
+      assert.equal(notices(watch).length, 1, "the finish is not re-reported as a new notice");
+      assert.equal(sock.received.length, 1, "and nothing is posted twice");
+    });
+  }
 });
 
 describe("everything outside the socket route keeps today's PTY delivery", () => {
