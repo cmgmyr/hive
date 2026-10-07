@@ -4209,7 +4209,7 @@ function cmdPad(argv: string[]): void {
 }
 
 process.stdout.on("error", (error: NodeJS.ErrnoException) => {
-  if (error.code === "EPIPE") process.exit(0);
+  if (error.code === "EPIPE" || error.code === "ENOTCONN") process.exit(0);
   throw error;
 });
 
