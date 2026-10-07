@@ -134,6 +134,7 @@ import {
   LEAD_KIND,
   LEAD_NAME,
   mintLeadActorId,
+  relayoutAfterPaneLeft,
   upsertActor,
   withWindowClaim,
 } from "./spawn.js";
@@ -889,19 +890,22 @@ async function cmdLead(argv: string[]): Promise<void> {
           createdPane = true;
         } else {
 
+          const firstPane = tmux("list-panes", "-t", foundWindow, "-F", "#{pane_id}").split("\n")[0];
           leadPane = tmux(
             "split-window",
+            "-b",
             ...(detach ? ["-d"] : []),
             "-P",
             "-F",
             "#{pane_id}",
             "-t",
-            foundWindow,
+            firstPane || foundWindow,
             "-c",
             project.path,
             ...envFlags,
             launchCommand,
           );
+          relayoutAfterPaneLeft(foundWindow);
           leadWindow = foundWindow;
           createdPane = true;
         }

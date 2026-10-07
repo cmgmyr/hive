@@ -1,19 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { loadProjectYml } from "../dist/projectYml.js";
-import { isolateTmux, scratchDirs } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the layout tests");
+clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
-const { applyLayout, claimInitialWindow, configureHiveWindow, ensureSession, paneWindow, windowLayout } = await import(
-  "../dist/tmux.js"
-);
+const { applyLayout, claimInitialWindow, configureHiveWindow, ensureSession, paneWindow, sessionName, windowLayout } =
+  await import("../dist/tmux.js");
+const { db, migrate } = await import("../dist/db.js");
+migrate();
 
 function ymlProject(body) {
   const dir = mkdtempSync(join(tmpdir(), "hive-yml-"));
@@ -178,5 +180,57 @@ describe("tmux layout application", { skip: hasTmux ? false : "tmux is not insta
     applyLayout(`=${session}:@9999`, "main-vertical");
     assert.equal(windowLayout(`=${session}:@9999`), null);
     assert.equal(paneWindow("%99999"), null);
+  });
+});
+
+describe("hive lead into a window that already holds workers", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  const leadSession = sessionName();
+  const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" }).replace(/\n$/, "");
+  const claudePath = makeFakeClaude(dirs.tmp)("sleep 600");
+  const opts = (cwd) => ({
+    cwd,
+    dataDir: dirs.dataDir,
+    tmp: dirs.tmp,
+    env: { PATH: `${dirname(claudePath)}:${process.env.PATH}` },
+  });
+
+  after(() => cleanup(leadSession));
+
+  async function restartIntoWorkerWindow(name, yml) {
+    const path = realpathSync(mkdtempSync(join(tmpdir(), `hive-resplit-${name}-`)));
+    writeFileSync(join(path, "hive.yml"), yml);
+    db.prepare("INSERT INTO projects (name, path) VALUES (?, ?)").run(name, path);
+    const projectId = db.prepare("SELECT id FROM projects WHERE path = ?").get(path).id;
+    const first = await runCli(["lead", path, "--detach"], opts(path));
+    assert.equal(first.code, 0, first.stderr);
+    const oldLead = leadRow(db, projectId).tmux_target;
+    const window = tmux("display-message", "-p", "-t", oldLead, "#{window_id}");
+    const worker = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", window, "sleep", "600");
+    tmux("kill-pane", "-t", oldLead);
+    const second = await runCli(["lead", path, "--detach"], opts(path));
+    assert.equal(second.code, 0, second.stderr);
+    const lead = leadRow(db, projectId).tmux_target;
+    const rows = tmux("list-panes", "-t", window, "-F", "#{pane_id} #{pane_index} #{pane_left} #{pane_width}")
+      .split("\n")
+      .map((row) => row.split(" "));
+    const info = (id) => {
+      const [, index, left, width] = rows.find(([pane]) => pane === id);
+      return { index: Number(index), left: Number(left), width: Number(width) };
+    };
+    return { window, lead: info(lead), worker: info(worker) };
+  }
+
+  it("restarted lead is pane 0 and the window's main-vertical layout is applied", async () => {
+    const r = await restartIntoWorkerWindow("main-vertical", "layout: main-vertical\n");
+    assert.equal(r.lead.index, 0);
+    assert.equal(r.lead.left, 0);
+    assert.ok(r.worker.left > 0, "the worker stacks to the right of the lead");
+    assert.equal(windowLayout(r.window), "main-vertical");
+  });
+
+  it("restarted lead is pane 0 under the default layout", async () => {
+    const r = await restartIntoWorkerWindow("default-layout", "dashboard: true\n");
+    assert.equal(r.lead.index, 0);
+    assert.equal(r.worker.index, 1);
   });
 });
