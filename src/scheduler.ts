@@ -2659,9 +2659,9 @@ const promptEvidenceSql = (lowerBound: string): string => `
           AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
                OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
 
-function quietLeadWakesOn(projectId: number): boolean {
+function quietMessagingOn(projectId: number): boolean {
   const project = stmt("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
-  return project !== undefined && loadProjectYml(project.path).config?.quiet_lead_wakes === true;
+  return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
 }
 
 // Only a one-shot wake to a live, row-owned Claude lead whose socket was registered by this pane epoch.
@@ -2675,7 +2675,7 @@ function socketRoute(timer: TimerRow, owner: DeliveryOwner | null): boolean {
     timer.deliver_messaging_pane_pid !== "" &&
     timer.deliver_messaging_pane_pid === timer.deliver_pane_pid &&
     timer.deliver_row_target === timer.deliver_pane &&
-    quietLeadWakesOn(timer.project_id)
+    quietMessagingOn(timer.project_id)
   );
 }
 

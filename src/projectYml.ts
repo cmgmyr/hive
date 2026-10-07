@@ -42,7 +42,7 @@ export interface ProjectYml {
   context_checkpoint_percent: number | null;
   lead_turn_budget: { warn: number; stop: number } | null;
   dashboard: boolean;
-  quiet_lead_wakes: boolean;
+  quiet_messaging: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
 }
@@ -58,7 +58,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
-  quiet_lead_wakes: false,
+  quiet_messaging: false,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
 });
@@ -271,15 +271,15 @@ function applyLayer(
     } else warn(`dashboard must be true or false; ignoring "${String(value)}".`);
   }
 
-  if (has("quiet_lead_wakes")) {
-    const value = root.quiet_lead_wakes;
+  if (has("quiet_messaging")) {
+    const value = root.quiet_messaging;
     if (value == null) {
-      config.quiet_lead_wakes = false;
-      sources.quiet_lead_wakes = source;
+      config.quiet_messaging = false;
+      sources.quiet_messaging = source;
     } else if (typeof value === "boolean") {
-      config.quiet_lead_wakes = value;
-      sources.quiet_lead_wakes = source;
-    } else warn(`quiet_lead_wakes must be true or false; ignoring "${String(value)}".`);
+      config.quiet_messaging = value;
+      sources.quiet_messaging = source;
+    } else warn(`quiet_messaging must be true or false; ignoring "${String(value)}".`);
   }
 
   if (has("agents")) {

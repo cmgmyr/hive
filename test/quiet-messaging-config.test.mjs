@@ -5,7 +5,7 @@ import { after, describe, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, seedLeadProject } from "./helpers.mjs";
 
-const { hasTmux, cleanup } = isolateTmux("the quiet_lead_wakes config tests");
+const { hasTmux, cleanup } = isolateTmux("the quiet_messaging config tests");
 clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
@@ -37,32 +37,32 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 after(() => cleanup(sessionName()));
 
-describe("quiet_lead_wakes resolves off unless set true", () => {
+describe("quiet_messaging resolves off unless set true", () => {
   it("is off when absent, false or null, with a built-in source when absent", () => {
     const absent = resolve({ project: "dashboard: true\n" });
-    assert.equal(absent.config.quiet_lead_wakes, false);
-    assert.equal(absent.sources.quiet_lead_wakes, "built-in");
-    assert.equal(resolve({ project: "quiet_lead_wakes: false\n" }).config.quiet_lead_wakes, false);
-    assert.equal(resolve({ project: "quiet_lead_wakes: null\n" }).config.quiet_lead_wakes, false);
+    assert.equal(absent.config.quiet_messaging, false);
+    assert.equal(absent.sources.quiet_messaging, "built-in");
+    assert.equal(resolve({ project: "quiet_messaging: false\n" }).config.quiet_messaging, false);
+    assert.equal(resolve({ project: "quiet_messaging: null\n" }).config.quiet_messaging, false);
   });
 
   it("warns on a non-boolean value and stays off", () => {
     for (const value of ["yes-please", "1", "\"true\""]) {
-      const loaded = resolve({ project: `quiet_lead_wakes: ${value}\n` });
-      assert.equal(loaded.config.quiet_lead_wakes, false, value);
-      assert.ok(loaded.warnings.some((w) => w.includes("quiet_lead_wakes must be true or false")), JSON.stringify(loaded.warnings));
+      const loaded = resolve({ project: `quiet_messaging: ${value}\n` });
+      assert.equal(loaded.config.quiet_messaging, false, value);
+      assert.ok(loaded.warnings.some((w) => w.includes("quiet_messaging must be true or false")), JSON.stringify(loaded.warnings));
     }
   });
 
   it("turns on from the global file, and a project false or null overrides a global true", () => {
-    const globalOn = resolve({ global: "quiet_lead_wakes: true\n" });
-    assert.equal(globalOn.config.quiet_lead_wakes, true);
-    assert.equal(globalOn.sources.quiet_lead_wakes, "global");
-    assert.equal(resolve({ global: "quiet_lead_wakes: true\n", project: "quiet_lead_wakes: false\n" }).config.quiet_lead_wakes, false);
-    assert.equal(resolve({ global: "quiet_lead_wakes: true\n", project: "quiet_lead_wakes: null\n" }).config.quiet_lead_wakes, false);
-    const projectOn = resolve({ project: "quiet_lead_wakes: true\n" });
-    assert.equal(projectOn.config.quiet_lead_wakes, true);
-    assert.equal(projectOn.sources.quiet_lead_wakes, "project");
+    const globalOn = resolve({ global: "quiet_messaging: true\n" });
+    assert.equal(globalOn.config.quiet_messaging, true);
+    assert.equal(globalOn.sources.quiet_messaging, "global");
+    assert.equal(resolve({ global: "quiet_messaging: true\n", project: "quiet_messaging: false\n" }).config.quiet_messaging, false);
+    assert.equal(resolve({ global: "quiet_messaging: true\n", project: "quiet_messaging: null\n" }).config.quiet_messaging, false);
+    const projectOn = resolve({ project: "quiet_messaging: true\n" });
+    assert.equal(projectOn.config.quiet_messaging, true);
+    assert.equal(projectOn.sources.quiet_messaging, "project");
   });
 });
 
@@ -114,7 +114,7 @@ describe("hive lead launches a claude lead with the settings its key selects", (
   const leadBin = makeFakeClaude(dirs.tmp)();
 
   it("an opted-in project's lead command names its own accept file; an off project's names hooks.json", needsTmux, async () => {
-    const on = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-on", leadBin, processes: {}, yml: `lead: ${leadBin}\nquiet_lead_wakes: true\n` });
+    const on = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-on", leadBin, processes: {}, yml: `lead: ${leadBin}\nquiet_messaging: true\n` });
     const off = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-off", leadBin, processes: {}, yml: `lead: ${leadBin}\n` });
     for (const project of [on, off]) {
       const result = await runCli(["lead", "--detach"], { cwd: project.dir, dataDir: dirs.dataDir, tmp: dirs.tmp });

@@ -40,9 +40,9 @@ dashboard: true               # optional; default false. Writes a generated, aut
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
                               # (`hive lead --no-dashboard` skips this run's open).
-quiet_lead_wakes: true        # optional; default false. A claude lead gets its wakes as one
+quiet_messaging: true        # optional; default false. A claude lead gets its wakes as one
                               # "Message from @hive" row instead of typed text. Restart the
-                              # lead after changing it (see [Quiet lead wakes](#quiet-lead-wakes)).
+                              # lead after changing it (see [Quiet messaging](#quiet-messaging)).
 vars:                         # substituted into the profile runbook
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
@@ -131,17 +131,17 @@ A process that dies on its own tells the lead so, once, naming the command that 
 
 A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
 
-### Quiet lead wakes
+### Quiet messaging
 
-By default hive types every wake into the lead's pane, so each one shows up as a block of pasted text. With `quiet_lead_wakes: true`, a one-shot wake to a running Claude Code lead goes to that session's cross-session message socket instead. Claude Code draws it as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. The setting is off unless you turn it on.
+By default hive types every wake into the lead's pane, so each one shows up as a block of pasted text. With `quiet_messaging: true`, a one-shot wake to a running Claude Code lead goes to that session's cross-session message socket instead. Claude Code draws it as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. The setting is off unless you turn it on.
 
 **Turn it on.** Add the key to your global `~/.hive/hive.yml` to cover every project, or to one project's `hive.yml` to cover only that project:
 
 ```yaml
-quiet_lead_wakes: true
+quiet_messaging: true
 ```
 
-A project's value wins over the global one, so `quiet_lead_wakes: false` in a project's `hive.yml` keeps that project on typed wakes while the global file turns it on everywhere else. If you set `HIVE_DATA_DIR`, the global file is `$HIVE_DATA_DIR/hive.yml`.
+A project's value wins over the global one, so `quiet_messaging: false` in a project's `hive.yml` keeps that project on typed wakes while the global file turns it on everywhere else. If you set `HIVE_DATA_DIR`, the global file is `$HIVE_DATA_DIR/hive.yml`.
 
 **Restart the lead.** The setting takes effect when `hive lead` starts a new Claude Code session. That launch passes a generated settings file, `~/.hive/lead-<project id>-hooks.json`, which sets `crossSessionInbound: "accept"` and adds a `SessionStart` hook that records the session's socket. A lead that was already running keeps the settings it started with, so reattaching to it or editing the generated file changes nothing. Close the lead session (`/exit`), then run `hive lead` again.
 
@@ -155,7 +155,7 @@ Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mo
 
 **If a message does not arrive.** A socket write succeeding does not prove the lead read the message, so hive waits for the prompt hook. When the lead was busy, the clock starts at the end of the lead's first turn after the post, because a busy session reads the message only then. If there is still no confirmation 60 seconds after that turn end, or 60 seconds after the post when no turn was running, hive types the same wake into the pane once. It starts `[hive wake #N, re-delivered] If you already handled wake #N, ignore this.` and `wake_get` shows `delivery_method: "pty-after-socket-timeout"`. A socket that refuses the connection, or a write that does not finish within one second, gets the same re-delivery straight away. A timed-out write may still have reached the lead, so that case can duplicate. The worst case is that the lead sees one wake twice, and the second copy says so.
 
-**Turn it off.** Set `quiet_lead_wakes: false`, or remove the key, in the file where you turned it on, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
+**Turn it off.** Set `quiet_messaging: false`, or remove the key, in the file where you turned it on, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
 
 Turning it on accepts cross-session messages from every sender to that lead, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
 
