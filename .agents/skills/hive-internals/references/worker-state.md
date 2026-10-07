@@ -215,7 +215,7 @@ Three things about it are the same decisions the other two already made, and one
 
 ## The opt-in socket last hop for lead wakes (todo 1757)
 
-`quiet_lead_wakes: true` changes how a claimed one-shot wake reaches a Claude lead, and nothing before that: holds, the claim, the rendered text and the episode ledger are the same. Five facts from the live spike (todo 1760, Claude Code 2.1.29x) shape it:
+`quiet_messaging: true` changes how a claimed one-shot wake reaches a Claude lead, and nothing before that: holds, the claim, the rendered text and the episode ledger are the same. Five facts from the live spike (todo 1760, Claude Code 2.1.29x) shape it:
 
 - **The frame.** One JSON line, no auth line and no reply: `{"type":"user","from":"uds:<path>","message":{"role":"user","content":"<cross-session-message from=\"uds:<path>\" from-name=\"hive\">\nBODY\n</cross-session-message>"}}`. A named sender draws one dim row showing the body's first line; an unnamed one draws a six-line warning block. The `from` path is a label only (`<data dir>/wake-sender.sock`, nothing listens there). The envelope is read from the binary, not documented, so a Claude Code change could make it loud again without tripping the fallback; that is why the key ships off.
 - **Timing.** An idle session starts a turn in under 3 s. A busy one queues the message and reads it at turn end. So the confirmation clock starts at the lead's first `stop` row after `socket_attempt_at`, read from `agent_state_log`, and falls back to the post time only when `lead_turn_state` does not say the lead is working in this pane. A flat clock from the post would duplicate nearly every wake sent to a busy lead, because lead turns run minutes.

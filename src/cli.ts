@@ -727,7 +727,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     reportMigrationResult(migrateLegacyConfig());
     for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
-    const hooksPath = ensureLeadHooksFile(project.id, config?.quiet_lead_wakes === true);
+    const hooksPath = ensureLeadHooksFile(project.id, config?.quiet_messaging === true);
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -1134,7 +1134,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
 
-# quiet_lead_wakes: true        # wakes reach a claude lead as one row (default: false; restart the lead)
+# quiet_messaging: true        # wakes reach a claude lead as one row (default: false; restart the lead)
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

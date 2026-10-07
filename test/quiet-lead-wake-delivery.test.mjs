@@ -46,7 +46,7 @@ after(() => {
 
 function project(on) {
   const dir = mkdtempSync(join(tmp, "qlw-project-"));
-  writeFileSync(join(dir, "hive.yml"), on ? "quiet_lead_wakes: true\n" : "dashboard: false\n");
+  writeFileSync(join(dir, "hive.yml"), on ? "quiet_messaging: true\n" : "dashboard: false\n");
   return db.prepare("INSERT INTO projects (name, path) VALUES ('qlw', ?) RETURNING id").get(dir).id;
 }
 

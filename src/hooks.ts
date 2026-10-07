@@ -34,8 +34,8 @@ export function ensureHooksFile(): string {
 
 // Off returns the store-wide file unchanged. On writes a per-project file, because hooks.json is shared
 // by every project's lead and an accept there would reach leads that never opted in.
-export function ensureLeadHooksFile(projectId: number, quietLeadWakes: boolean): string {
-  if (!quietLeadWakes) return ensureHooksFile();
+export function ensureLeadHooksFile(projectId: number, quietMessaging: boolean): string {
+  if (!quietMessaging) return ensureHooksFile();
   const base = stateHookSettings();
   const settings = {
     hooks: { ...base.hooks, SessionStart: [hookEntry("session_start")] },
