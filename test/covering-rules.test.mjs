@@ -519,6 +519,7 @@ describe("against the real repo", () => {
         "docs/commands.md",
         "docs/concepts.md",
         "docs/configuration.md",
+        "docs/crew.md",
         "docs/daily-driver.md",
         "docs/dashboard.md",
         "docs/development.md",

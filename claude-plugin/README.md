@@ -48,3 +48,7 @@ though the kernel would have resolved that same path fine.
 resolves normally; node then realpaths the main entry, which puts the shim's
 own `../dist/kickoff.js` import inside the real checkout. No absolute machine
 path is ever written into a committed file.
+
+## The crew mod
+
+`crew/` is a second, separate plugin (`hive-crew`) that `hive lead` loads with `--plugin-dir` only when `lead_sidebar: true` is set and the lead is Claude. It is not part of the symlink install above and workers never load it. See [docs/crew.md](../docs/crew.md).
