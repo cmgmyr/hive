@@ -7,6 +7,7 @@ paths:
   - "src/tools/wakes.ts"
   - "src/firstPrompt.ts"
   - "src/dashboard.ts"
+  - "src/crew.ts"
   - "src/processes.ts"
   - "src/leadState.ts"
   - "src/leadWatch.ts"
