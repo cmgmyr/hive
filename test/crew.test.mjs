@@ -180,6 +180,40 @@ describe("hive crew --json is read-only", () => {
   });
 });
 
+describe("hive crew --json schema v1", () => {
+  it("real CLI output has exactly the v1 key sets for snapshot lane worker activity wakes and needs_you", async () => {
+    const linked = todo({ status: "in_progress", slug: "lane" });
+    todo({ status: "in_progress", slug: "bare" });
+    todo({ tags: '["needs-human"]', slug: "ask" });
+    agent({ name: "schema-w", todo_id: linked });
+    wake({ body: "next one", due_at: "2030-01-01 00:00:00" });
+    wake({ body: "watcher", kind: "idle_any", watch_scope: "project", max_wait_at: "2030-01-01 00:00:00" });
+    const r = await runCli(["crew", "--json"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.equal(r.code, 0, r.stderr);
+    const snap = JSON.parse(r.stdout);
+    const keys = (o) => Object.keys(o).sort();
+    assert.deepEqual(keys(snap), ["context_checkpoint_percent", "lanes", "needs_you", "project", "read_at", "schema_version", "wakes"]);
+    assert.deepEqual(keys(snap.project), ["id", "name"]);
+    const staffed = snap.lanes.find((l) => l.worker);
+    const unstaffed = snap.lanes.find((l) => !l.worker);
+    assert.deepEqual(keys(staffed), ["todo", "worker"]);
+    assert.deepEqual(keys(staffed.todo), ["id", "slug", "status"]);
+    assert.deepEqual(keys(unstaffed), ["todo", "worker"]);
+    assert.deepEqual(keys(staffed.worker), [
+      "activity", "age_seconds", "commits_ahead", "context_fill", "created_at", "harness", "id", "model", "name",
+      "session_id", "state", "state_changed_at", "your_turn",
+    ]);
+    assert.deepEqual(keys(staffed.worker.activity), ["label", "lower_bound", "since"]);
+    assert.deepEqual(keys(snap.needs_you[0]), ["id", "slug"]);
+    assert.deepEqual(keys(snap.wakes), ["next", "pending", "watching"]);
+    assert.deepEqual(keys(snap.wakes.next), ["due_at", "id", "label"]);
+    assert.deepEqual(keys(snap.wakes.watching[0]), ["id", "label"]);
+    db.prepare("DELETE FROM agents").run();
+    db.prepare("DELETE FROM wakes").run();
+    db.prepare("DELETE FROM todos").run();
+  });
+});
+
 describe("collectCrew rows", () => {
   it("project-safe joins retain unlinked duplicate staffed and unstaffed rows", () => {
     const mine = todo({ status: "in_progress", slug: "mine" });
