@@ -201,6 +201,8 @@ describe("next wake text", () => {
     assert.equal(bearing.header, "proj · 0 workers · next in 30s: next: none");
     const undated = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "later", due_at: null }, watching: [] } }), null, NOW);
     assert.equal(undated.header, "proj · 0 workers · next: later");
+    const collides = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "none", due_at: null }, watching: [] } }), null, NOW);
+    assert.equal(collides.header, "proj · 0 workers · next: none");
   });
 });
 
