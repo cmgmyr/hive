@@ -13,6 +13,7 @@ import {
   clearHiveEnv,
   insertStateLogRow,
   isolateTmux,
+  McpClient,
   raceProcesses,
   runNode,
   scratchDirs,
@@ -433,7 +434,10 @@ describe("everything outside the socket route keeps today's PTY delivery", () =>
     assert.equal(sinkText(target), `[hive wake #${id}] ${body}\n`, "byte-identical to main's PTY delivery");
     const row = wake(id);
     assert.equal(row.delivery_method, "pty");
-    assert.equal(row.delivered_by, `pid ${process.pid}, ${versionInfo().line}`);
+    assert.equal(
+      row.delivered_by,
+      `pid ${process.pid}, ${versionInfo().line}${repeatMs == null ? "" : ", firing #1"}`,
+    );
     assert.equal(row.socket_attempt_at, null);
     await sleep(200);
     assert.deepEqual(sock.received, []);
@@ -537,6 +541,7 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
       const posted = wake(id);
       assert.equal(posted.fire_count, n);
       assert.equal(posted.delivery_method, "socket-repeating");
+      assert.equal(posted.delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #${n}`);
       assert.ok(posted.socket_attempt_at >= posted.fired_at);
       assert.equal(posted.typed_at, null);
       assert.equal(posted.confirmed_at, null);
@@ -549,6 +554,33 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
     }
     await sleep(300);
     assert.equal(sinkText(target), "");
+  });
+
+  it("wake_get marks a current firing as older-build delivery after the literal pre-field repeat claim", needsTmux, async () => {
+    const { pid, id } = await firstFiring();
+    const previous = wake(id);
+    assert.equal(previous.delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #1`);
+    const seconds = Math.max(1, Math.round(previous.repeat_every_ms / 1000));
+    const oldClaim = db.prepare(
+      `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
+         fired_at = datetime('now'), fire_count = fire_count + 1,
+         typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+         typed_seen = NULL, first_held_at = NULL
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
+    );
+    assert.equal(oldClaim.run(seconds, id, previous.due_at, previous.body, previous.repeat_every_ms).changes, 1);
+
+    const projectDir = db.prepare("SELECT path FROM projects WHERE id = ?").get(pid).path;
+    const client = new McpClient({ cwd: projectDir, dataDir });
+    await client.start();
+    try {
+      const current = await client.call("wake_get", { wake_id: id });
+      assert.equal(current.fire_count, 2);
+      assert.equal(current.delivered_by, previous.delivered_by, "the literal old claim leaves the prior identity untouched");
+      assert.equal(current.delivered_by_note, "the current firing was delivered by a hive build older than this field");
+    } finally {
+      await client.close();
+    }
   });
 
   it("key-off repeating wakes preserve exact legacy pane bytes after an earlier socket firing", needsTmux, async () => {

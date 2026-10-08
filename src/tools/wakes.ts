@@ -161,6 +161,16 @@ function deliveryState(
   };
 }
 
+function deliveredByNote(t: TimerRow): string | null {
+  if (t.delivery_method === null) return null;
+  if (t.delivered_by === null) return "delivered by a hive build older than this field";
+  if (t.repeat_every_ms === null) return null;
+  const firing = t.delivered_by.match(/, firing #(\d+)$/);
+  return firing === null || Number(firing[1]) !== t.fire_count
+    ? "the current firing was delivered by a hive build older than this field"
+    : null;
+}
+
 export const truncateBody = (body: string): string =>
   body.length > 120 ? `${cutToUnitBudget(body, 120)}…` : body;
 
@@ -666,7 +676,8 @@ export function registerWakes(server: McpServer): void {
         "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
         "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
         "wake_update just changed. Its delivery state includes delivery_method (socket, socket-repeating, pty or " +
-        "pty-after-socket-timeout), delivered_by (the pid and build of the hive server that last set the delivery method), " +
+        "pty-after-socket-timeout), delivered_by (the pid and build of the server that last set the delivery method, " +
+        "plus the firing number for repeating wakes), " +
         "and socket_attempt_at, set when a wake was posted to a Claude lead's socket; " +
         "for a repeating wake both describe its current firing (fire_count).",
       annotations: {
@@ -694,10 +705,7 @@ export function registerWakes(server: McpServer): void {
           fire_count: t.fire_count,
           cancelled_at: t.cancelled_at,
 
-          delivered_by_note:
-            t.delivery_method !== null && t.delivered_by === null
-              ? "delivered by a hive build older than this field"
-              : null,
+          delivered_by_note: deliveredByNote(t),
 
           first_held_at: t.first_held_at,
           ...deliveryState(t, hasChannel),

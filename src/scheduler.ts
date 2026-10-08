@@ -127,6 +127,8 @@ export interface TimerRow {
 
 export const WATCH_SCOPE_PROJECT = "project";
 const DELIVERED_BY = `pid ${process.pid}, ${versionInfo().line}`;
+const deliveredByForFiring = (timer: Pick<TimerRow, "repeat_every_ms" | "fire_count">): string =>
+  timer.repeat_every_ms == null ? DELIVERED_BY : `${DELIVERED_BY}, firing #${timer.fire_count}`;
 
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
@@ -2775,7 +2777,7 @@ function stampRepeatingAttempt(timer: TimerRow, note: string, firstHeldAt: strin
         `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
            delivery_method = ?, delivered_by = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
          WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL AND typed_at IS NULL AND socket_attempt_at IS NULL`,
-      ).run(note, DELIVERY_METHOD.socketRepeating, DELIVERED_BY, firstHeldAt, timer.id, timer.fire_count).changes === 1
+      ).run(note, DELIVERY_METHOD.socketRepeating, deliveredByForFiring(timer), firstHeldAt, timer.id, timer.fire_count).changes === 1
     );
   } catch {
     return false;
@@ -2790,7 +2792,7 @@ function claimRepeatingFallback(timer: TimerRow): boolean {
         `UPDATE wakes SET delivery_method = ?, delivered_by = ?
           WHERE id = ? AND fire_count = ? AND ${repeatingSocketAwaitingWhere()}
             AND NOT EXISTS (${repeatingEvidenceSql("1")})`,
-      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, DELIVERED_BY, timer.id, timer.fire_count).changes === 1
+      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, deliveredByForFiring(timer), timer.id, timer.fire_count).changes === 1
     );
   } catch {
     return false;
@@ -2851,7 +2853,7 @@ async function deliver(
            WHERE id = ?`,
           note,
           DELIVERY_METHOD.socket,
-          DELIVERED_BY,
+          deliveredByForFiring(timer),
           firstHeldAt,
           timer.id,
         );
@@ -2895,7 +2897,7 @@ async function deliver(
       typedSeen,
       firstHeldAt,
       method,
-      DELIVERED_BY,
+      deliveredByForFiring(timer),
       timer.id,
       firing,
       firing,
@@ -2923,7 +2925,7 @@ async function deliver(
     );
   } catch (err) {
     if (fallback && !pasted && firing === null) {
-      bestEffortRun("UPDATE wakes SET delivery_method = ?, delivered_by = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, DELIVERED_BY, timer.id);
+      bestEffortRun("UPDATE wakes SET delivery_method = ?, delivered_by = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, deliveredByForFiring(timer), timer.id);
     }
     if (err instanceof FiringSuperseded) return;
     if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
@@ -2968,7 +2970,7 @@ async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, 
           `UPDATE wakes SET delivery_method = ?, delivered_by = ?
             WHERE id = ? AND ${socketAwaitingWhere()}
               AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
-        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, DELIVERED_BY, timer.id).changes === 1;
+        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, deliveredByForFiring(timer), timer.id).changes === 1;
   if (!claimed) return false;
   await deliver(timer, withReDelivered(timer.socket_delivery_note), choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
   return true;
