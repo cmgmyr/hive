@@ -127,6 +127,14 @@ describe("hive crew --json exits", () => {
     }
   });
 
+  it("an unknown crew argument is refused the way every other command refuses one", async () => {
+    const r = await runCli(["crew", "--json", "--human"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.equal(r.code, 1);
+    assert.equal(r.stderr.trim(), 'hive crew: unknown argument "--human". Flags are --json.');
+    const bare = await runCli(["crew"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.match(bare.stderr, /usage: hive crew --json/);
+  });
+
   it("an unmigrated store exits 1 and is left with no tables", async () => {
     const dataDir = join(mkdtempSync(join(tmpdir(), "hive-crew-empty-")), "missing-data");
     const r = await runCli(["crew", "--json"], { cwd: dirs.projectDir, dataDir, tmp: dirs.tmp });

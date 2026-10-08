@@ -3721,7 +3721,10 @@ function cmdQueenAudit(argv: string[]): void {
 }
 
 function cmdCrew(argv: string[]): void {
-  if (argv.length !== 1 || argv[0] !== "--json") {
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("crew", parsed, "--json");
+  if (!parsed.flags.has("--json")) {
     console.error("hive crew: usage: hive crew --json. It prints one JSON snapshot of this project's workers, todos and wakes.");
     process.exit(1);
   }
