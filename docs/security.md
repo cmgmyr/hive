@@ -11,7 +11,7 @@ This page lists the local commands hive runs, the files it writes, and its netwo
 
 ## EXECUTES
 
-- `launchAgent` (`src/spawn.ts:301`) starts Claude Code or Codex commands inside tmux panes; tmux is also invoked by `tmuxWithin` (`src/tmux.ts:120`). These commands receive the configured working directory, launch arguments, and generated worker settings.
+- `launchAgent` (`src/spawn.ts:303`) starts Claude Code or Codex commands inside tmux panes; tmux is also invoked by `tmuxWithin` (`src/tmux.ts:120`). These commands receive the configured working directory, launch arguments, and generated worker settings.
 - `ensureWorkerHooksFile` (`src/hooks.ts:60`) writes Claude hook settings that run `hive hook` processes; `hookEntry` (`src/hooks.ts:17`) builds those commands. Codex worker homes receive equivalent hooks through `ensureCodexHooksFile` (`src/codexHome.ts:290`).
 - When the Claude Code plugin is enabled, its `SessionStart` hook runs `node "${CLAUDE_PLUGIN_ROOT}/kickoff.mjs"` in each session (`SessionStart`, `claude-plugin/hooks/hooks.json:3`; `runKickoff`, `claude-plugin/kickoff.mjs:41`). The script can re-execute under the pinned interpreter if its ABI check fails (`reexecUnderPinnedInterpreter`, `claude-plugin/kickoff.mjs:6`). For sessions in a configured project, `evaluate` (`src/kickoff.ts:169`) skips only workers with `HIVE_AGENT_ID` set unless `HIVE_LEAD=1`; `kickoffGate` (`src/kickoff.ts:149`) requires project config, an installed profile, and a lead branch, then adds board, todo, worker, and wake-up context to the registered project session.
 - `hive doctor` probes each configured project's Node interpreter by running `node` with hive's `abiProbe.js` (`reportSessionInterpreters`, `src/cli.ts:2423`; `probeSessionInterpreter`, `src/sessionProbe.ts:32`; `runProbe`, `src/sessionProbe.ts:40`).
@@ -38,7 +38,7 @@ This page lists the local commands hive runs, the files it writes, and its netwo
 - When a configured checkpoint threshold is reached, the checkpoint hook creates `<data dir>/context-checkpoints/<encoded actor id>.fired`; it removes that marker after usage drops below threshold (`contextCheckpointAdditionalContext`, `src/contextCheckpoint.ts:6`; `runContextCheckpointHook`, `src/contextCheckpoint.ts:24`).
 - A Claude worker's statusline records a valid context window size at `<data dir>/context-windows/<encoded actor id>.json`, and rewrites it only when the value changes (`claudeWindowPath`, `src/transcript.ts:94`; `recordClaudeWindowSize`, `src/statusline.ts:34`).
 - When enabled in project config, the scheduler writes the dashboard to `<project>/.hive/dashboard.html` when its content changes (`resolveDashboardFile`, `src/scheduler.ts:599`; `maybeGenerateDashboard`, `src/scheduler.ts:615`; `writeDashboardAtomically`, `src/scheduler.ts:578`).
-- `hive pad` can export a pad to a path you choose (`cmdPad`, `src/cli.ts:4128`). Restore and cleanup commands can replace or remove hive-managed files in the data directory, generated Codex homes, or exported pad files (`restoreSnapshot`, `src/backup.ts:454`; `unlinkSync`, `src/cli.ts:4190`; `rmSync`, `src/tools/agents.ts:819`).
+- `hive pad` can export a pad to a path you choose (`cmdPad`, `src/cli.ts:4128`). Restore and cleanup commands can replace or remove hive-managed files in the data directory, generated Codex homes, or exported pad files (`restoreSnapshot`, `src/backup.ts:454`; `unlinkSync`, `src/cli.ts:4190`; `rmSync`, `src/tools/agents.ts:833`).
 
 ## NOT GATED
 
