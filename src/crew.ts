@@ -212,11 +212,11 @@ function configuredMatchers(vars: Vars): Matcher[] {
     const segments = segmentsOf(value);
     for (const tokens of onlyLast ? segments.slice(-1) : segments) matchers.push(matcherFor(label, tokens));
   };
-  add("test_all", "testing full suite", true);
   add("test_one", "testing", true);
+  add("test_all", "testing full suite", true);
   add("check", "building", false);
   add("install", "installing", false);
-  return matchers;
+  return matchers.sort((a, b) => b.tokens.length - a.tokens.length);
 }
 
 function matchesPrefix(tokens: string[], matcher: Matcher): boolean {

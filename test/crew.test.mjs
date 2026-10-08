@@ -322,6 +322,16 @@ describe("activity labels", () => {
     assert.equal(labelOf("composer dump-autoload"), "running composer");
   });
 
+  it("test_one beats an overlapping test_all and bare test_all stays the full suite", () => {
+    const overlap = { test_all: "npm test", test_one: "npm test -- <file>" };
+    assert.equal(labelOf("npm test -- test/a.test.mjs", overlap), "testing");
+    assert.equal(labelOf("npm test", overlap), "testing full suite");
+    assert.equal(labelOf("npm test --silent", overlap), "testing full suite");
+    const taskOverlap = { test_all: "task test", test_one: "task test -- <file>" };
+    assert.equal(labelOf("task test -- spec/a.rb", taskOverlap), "testing");
+    assert.equal(labelOf("task test", taskOverlap), "testing full suite");
+  });
+
   it("quoted prose and unmatched commands never guess test or commit", () => {
     assert.equal(labelOf('echo "npm test"', { test_all: "npm test" }), "running echo");
     assert.equal(labelOf("printf 'git commit -m x'"), "running printf");
