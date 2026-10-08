@@ -8,6 +8,7 @@ import { NEEDS_HUMAN_TAG } from "./portfolio.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
 import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
+import { reportsAgentStateLog } from "./stateProvenance.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";
 import {
   SKILL_TOOL,
@@ -450,7 +451,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     if (row.agent_state === "waiting") {
       if (snapshot === undefined) snapshot = liveTargets();
       const owned = rowOwnership(row, snapshot) === "live";
-      if (owned && paneClassifierFor(row.command)?.choiceCheck(row.tmux_target).awaitingChoice === true) {
+      if (owned && reportsAgentStateLog({ kind: "agent", command: row.command }) && paneClassifierFor(row.command)?.choiceCheck(row.tmux_target).awaitingChoice === true) {
         state = "blocked";
         activity = { label: "blocked", since: null, lower_bound: false };
       }

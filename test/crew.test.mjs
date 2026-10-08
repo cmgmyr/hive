@@ -24,6 +24,7 @@ const { addProject } = await import("../dist/context.js");
 const { classifyActivity, collectCrew, readCommitsAhead } = await import("../dist/crew.js");
 const { sessionName } = await import("../dist/tmux.js");
 const { readRecentToolCalls } = await import("../dist/transcript.js");
+const { harnessFor, registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
 migrate();
 
 after(() => {
@@ -507,6 +508,18 @@ describe("collectCrew worker facts", () => {
     waiting("unknown-pid", { tmux_target: dialogPane, pane_pid: "" });
     waiting("foreign-socket", { tmux_target: dialogPane, pane_pid: pid(dialogPane), tmux_socket: "/nonexistent/tmux-1/default" });
     waiting("gone-pane", { tmux_target: "%987654", pane_pid: "5" });
+    const claude = harnessFor("claude");
+    registerHarness({
+      ...claude,
+      name: "stateless",
+      matches: (command) => command.trim().split(/\s+/)[0] === "stateless",
+      stateSource: false,
+      briefDelivery: null,
+      classifiesPaneScreen: true,
+      supportsRename: false,
+      contextRecord: null,
+    });
+    waiting("no-state-source", { command: "stateless", tmux_target: dialogPane, pane_pid: pid(dialogPane) });
     agent({ name: "idle-on-dialog", agent_state: "idle", command: "claude", tmux_socket: socket, tmux_target: dialogPane, pane_pid: pid(dialogPane) });
     agent({ name: "idle-first", agent_state: "idle", resumed_at: "2026-10-08 11:00:00" });
     agent({ name: "idle-real", agent_state: "idle" });
@@ -515,7 +528,8 @@ describe("collectCrew worker facts", () => {
     const byName = Object.fromEntries(collectCrew(project, NOW).lanes.map((l) => [l.worker.name, l.worker]));
     assert.equal(byName["dialog-owned"].state, "blocked");
     assert.deepEqual(byName["dialog-owned"].activity, { label: "blocked", since: null, lower_bound: false });
-    for (const name of ["no-dialog", "reissued", "unknown-pid", "foreign-socket", "gone-pane"]) {
+    unregisterHarness("stateless");
+    for (const name of ["no-dialog", "reissued", "unknown-pid", "foreign-socket", "gone-pane", "no-state-source"]) {
       assert.equal(byName[name].state, "waiting", name);
     }
     assert.equal(byName["idle-on-dialog"].state, "idle", "only a stored waiting row is ever captured");
