@@ -146,14 +146,24 @@ export function missMessage(messageId: number, kind: MissKind): string {
 // also covers format characters. The head comes from outside, and a raw control byte in it reaches tmux
 // as a keystroke rather than as text, submitting this pointer early and splitting it. The sender's name
 // is flattened by senderTag when it builds the tag ahead of this marker - the tag is who, this is what.
-export function leadPointerMarker(id: number, text: string): string {
-  return `[message #${id}, ${text.length} chars]`;
+export function leadPointerMarker(id: number, text: string, redelivered = false): string {
+  return `[message #${id}, ${text.length} chars${redelivered ? ", re-delivered" : ""}]`;
 }
 
-export function renderLeadPointer(id: number, text: string, tag: string): string {
+const redeliveredLead = (id: number, redelivered: boolean): string =>
+  redelivered ? ` If you already handled message #${id}, ignore this.` : "";
+
+export function renderLeadPointer(id: number, text: string, tag: string, redelivered = false): string {
   const flat = flatten(text);
   const head = flat.length > HEAD_BUDGET ? cutToUnitBudget(flat, HEAD_BUDGET) + ELLIPSIS : flat;
-  return `${tag}${leadPointerMarker(id, text)} ${head} agent_message_get(${id}) for the full text.`;
+  return `${tag}${leadPointerMarker(id, text, redelivered)}${redeliveredLead(id, redelivered)} ${head} agent_message_get(${id}) for the full text.`;
+}
+
+// A short message carries its id too, so a quiet send has a marker its confirmation can match.
+export function renderLeadMessage(id: number, text: string, tag: string, redelivered = false): string {
+  return text.length > LEAD_MESSAGE_THRESHOLD
+    ? renderLeadPointer(id, text, tag, redelivered)
+    : `${tag}${leadPointerMarker(id, text, redelivered)}${redeliveredLead(id, redelivered)} ${text}`;
 }
 
 export function shortenedSendNote(id: number, deliveredChars: number, channel: "pane" | "socket" = "pane"): string {
