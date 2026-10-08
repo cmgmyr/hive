@@ -730,7 +730,14 @@ export function checkConfirmations(): void {
     stmt(
       `UPDATE wakes SET confirmed_at = (${confirmationQuery})
        WHERE ${sentAt} IS NOT NULL AND confirmed_at IS NULL AND ${sentAt} >= datetime('now', ?)
+         AND NOT (${REPEATING_SOCKET_FIRING})
          AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
+    ).run(LOG_RETENTION);
+    stmt(
+      `UPDATE wakes SET confirmed_at = (${repeatingEvidenceSql("MIN(ev.created_at)")})
+       WHERE ${REPEATING_SOCKET_FIRING} AND socket_attempt_at IS NOT NULL AND confirmed_at IS NULL
+         AND socket_attempt_at >= datetime('now', ?)
+         AND EXISTS (${repeatingEvidenceSql("1")})`,
     ).run(LOG_RETENTION);
   } catch {
 
@@ -842,16 +849,19 @@ function forgetPaneAnswers(pane: string, choices: ChoiceCache): void {
   noDialogUntil.delete(pane);
 }
 
-function holdTimer(timer: Pick<TimerRow, "id" | "due_at">, reason: string): void {
+function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRow, "fire_count">>, reason: string): void {
+  const count = timer.fire_count ?? null;
   bestEffortRun(
     `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
      WHERE id = ? AND cancelled_at IS NULL
-       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ?)
+       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ? AND (? IS NULL OR fire_count = ?))
          OR (${socketAwaitingWhere()}))`,
     reason,
     timer.id,
     timer.due_at,
+    count,
+    count,
   );
 }
 
@@ -2281,6 +2291,7 @@ async function fireDelay(
     );
     return;
   }
+  if (timer.repeat_every_ms != null && repeatingFiringPending(timer.id)) return;
   await withPaneClaim(timer, () => fireDelayClaimed(timer, snapshot, choices));
 }
 
@@ -2291,23 +2302,27 @@ async function fireDelayClaimed(
 ): Promise<boolean> {
   const decision = deliverable(timer, snapshot, choices);
   if (!decision.ok) return false;
-  let claimed: boolean;
+  let firing = timer;
   if (timer.repeat_every_ms != null) {
     const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
-
-    claimed =
-      stmt(
-        `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
-           fired_at = datetime('now'), fire_count = fire_count + 1,
-           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
-           typed_seen = NULL, first_held_at = NULL
-         WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
-      ).run(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1;
-  } else {
-    claimed = claimOneShot(timer);
+    const claimed = stmt(
+      `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
+         fired_at = datetime('now'), fire_count = fire_count + 1,
+         typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+         typed_seen = NULL, first_held_at = NULL,
+         socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL
+         AND fire_count = ? AND NOT COALESCE((${REPEATING_FIRING_PENDING}), 0)
+       RETURNING fire_count, fired_at`,
+    ).get(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms, timer.fire_count) as
+      | { fire_count: number; fired_at: string }
+      | undefined;
+    if (claimed === undefined) return false;
+    firing = { ...timer, fire_count: claimed.fire_count, fired_at: claimed.fired_at, socket_attempt_at: null, socket_delivery_note: null, delivery_method: null };
+  } else if (!claimOneShot(timer)) {
+    return false;
   }
-  if (!claimed) return false;
-  await deliver(timer, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+  await deliver(firing, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
   return true;
 }
 
@@ -2636,21 +2651,48 @@ export function shortRenderForLeadDelivery(timer: TimerRow): string | null {
 }
 
 // The claim already happened, so this records why and never re-arms or replays the wake.
-function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string): void {
+function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string, firing: number | null = null): void {
   bestEffortRun(
     `UPDATE wakes SET held_reason = ?,
        typed_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE typed_at END,
        cancelled_at = CASE WHEN repeat_every_ms IS NULL THEN datetime('now') ELSE cancelled_at END
-     WHERE id = ?`,
+     WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
     HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM + why + (pasted ? " The body was pasted; no Enter was sent." : ""),
     pasted ? 1 : 0,
     timer.id,
+    firing,
+    firing,
   );
 }
 
-export const DELIVERY_METHOD = { socket: "socket", pty: "pty", ptyAfterSocketTimeout: "pty-after-socket-timeout" } as const;
+export const DELIVERY_METHOD = {
+  socket: "socket",
+  socketRepeating: "socket-repeating",
+  pty: "pty",
+  ptyAfterSocketTimeout: "pty-after-socket-timeout",
+} as const;
 export const socketAwaitingWhere = (prefix = ""): string =>
   `${prefix}delivery_method = '${DELIVERY_METHOD.socket}' AND ${prefix}confirmed_at IS NULL AND ${prefix}typed_at IS NULL AND ${prefix}cancelled_at IS NULL`;
+// An attempt older than the row's latest claim belongs to an earlier firing (an old-build claim leaves it behind).
+const currentAttempt = (p: string): string =>
+  `${p}socket_attempt_at IS NOT NULL AND ${p}confirmed_at IS NULL AND ${p}typed_at IS NULL AND ${p}cancelled_at IS NULL
+   AND ${p}fired_at IS NOT NULL AND ${p}socket_attempt_at >= ${p}fired_at`;
+const repeatingSocketAwaitingWhere = (prefix = ""): string =>
+  `${prefix}delivery_method = '${DELIVERY_METHOD.socketRepeating}' AND ${currentAttempt(prefix)}`;
+const repeatingFallbackClaimedWhere = (prefix = ""): string =>
+  `${prefix}repeat_every_ms IS NOT NULL AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}`;
+const REPEATING_FIRING_PENDING = `(${repeatingSocketAwaitingWhere()}) OR (${repeatingFallbackClaimedWhere()})`;
+const REPEATING_SOCKET_FIRING = `repeat_every_ms IS NOT NULL AND COALESCE(delivery_method, '') IN ('${DELIVERY_METHOD.socketRepeating}', '${DELIVERY_METHOD.ptyAfterSocketTimeout}')`;
+
+function repeatingFiringPending(id: number): boolean {
+  try {
+    return stmt(`SELECT 1 AS hit FROM wakes WHERE id = ? AND (${REPEATING_FIRING_PENDING})`).get(id) !== undefined;
+  } catch {
+    return true;
+  }
+}
+
+const firingMarker = (timer: Pick<TimerRow, "id" | "fire_count">): string => `[hive wake #${timer.id} firing #${timer.fire_count}`;
 const SOCKET_CONFIRM_GRACE_SECONDS = 60;
 const withReDelivered = (note: string | null): string => (note ? `${note}, re-delivered` : "re-delivered");
 
@@ -2660,16 +2702,36 @@ const promptEvidenceSql = (lowerBound: string): string => `
           AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
                OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
 
+const ENVELOPE_OPEN = '<cross-session-message from="';
+const ENVELOPE_SENDER_CLOSE = '" from-name="hive">';
+const EV_PROMPT =
+  "(CASE WHEN json_valid(ev.payload) THEN COALESCE(json_extract(ev.payload, '$.prompt'), '') ELSE ev.payload END)";
+const EV_MARKER = "('[hive wake #' || wakes.id || ' firing #' || wakes.fire_count)";
+const markerAt = (start: string): string =>
+  `substr(${EV_PROMPT}, ${start}, length(${EV_MARKER}) + 1) IN (${EV_MARKER} || ']', ${EV_MARKER} || ',')`;
+const EV_HEADER_END = `instr(${EV_PROMPT}, char(10))`;
+
+// The current firing's exact marker, at prompt offset 0 (typed) or opening hive's envelope body (socket).
+const repeatingEvidenceSql = (select: string): string => `
+       SELECT ${select} FROM agent_state_log ev
+        WHERE ev.actor_id = wakes.deliver_actor AND ev.event = 'prompt' AND ev.created_at >= wakes.socket_attempt_at
+          AND (${markerAt("1")}
+               OR (${EV_HEADER_END} > ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length}
+                   AND substr(${EV_PROMPT}, 1, ${ENVELOPE_OPEN.length}) = '${ENVELOPE_OPEN}'
+                   AND substr(${EV_PROMPT}, ${EV_HEADER_END} - ${ENVELOPE_SENDER_CLOSE.length}, ${ENVELOPE_SENDER_CLOSE.length}) = '${ENVELOPE_SENDER_CLOSE}'
+                   AND instr(substr(${EV_PROMPT}, ${ENVELOPE_OPEN.length + 1}, ${EV_HEADER_END} - ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length + 1}), '"') = 0
+                   AND ${markerAt(`${EV_HEADER_END} + 1`)}
+                   AND instr(${EV_PROMPT}, char(10) || '${CROSS_SESSION_CLOSE}') > ${EV_HEADER_END}))`;
+
 function quietMessagingOn(projectId: number): boolean {
   const project = stmt("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
   return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
 }
 
-// Only a one-shot wake to a live, row-owned Claude lead whose socket was registered by this pane epoch.
+// Only a wake to a live, row-owned Claude lead whose socket was registered by this pane epoch.
 function socketRoute(timer: TimerRow, owner: DeliveryOwner | null): boolean {
   return (
     owner !== null &&
-    timer.repeat_every_ms == null &&
     isLeadActorId(timer.deliver_actor) &&
     harnessFor(timer.deliver_command).name === "claude" &&
     timer.deliver_messaging_socket !== "" &&
@@ -2686,7 +2748,10 @@ function socketStillRegistered(timer: TimerRow, owner: DeliveryOwner): boolean {
     `SELECT claude_messaging_socket AS socket, claude_messaging_pane_pid AS pid, pane_pid FROM agents
       WHERE id = ? AND status = 'running' AND kind = 'lead'`,
   ).get(owner.rowId) as { socket: string; pid: string; pane_pid: string } | undefined;
-  const wake = stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL").get(timer.id);
+  const wake =
+    timer.repeat_every_ms == null
+      ? stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL").get(timer.id)
+      : stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fire_count = ?").get(timer.id, timer.fire_count);
   return (
     wake !== undefined &&
     row !== undefined &&
@@ -2694,6 +2759,43 @@ function socketStillRegistered(timer: TimerRow, owner: DeliveryOwner): boolean {
     row.pid === timer.deliver_messaging_pane_pid &&
     row.pid === row.pane_pid
   );
+}
+
+// A failed stamp means the firing was cancelled or superseded, so nothing is posted.
+function stampRepeatingAttempt(timer: TimerRow, note: string, firstHeldAt: string | null): boolean {
+  try {
+    return (
+      stmt(
+        `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
+           delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+         WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL AND typed_at IS NULL AND socket_attempt_at IS NULL`,
+      ).run(note, DELIVERY_METHOD.socketRepeating, firstHeldAt, timer.id, timer.fire_count).changes === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+// At most one fallback per (id, firing): the method leaves socket-repeating here and never returns to it.
+function claimRepeatingFallback(timer: TimerRow): boolean {
+  try {
+    return (
+      stmt(
+        `UPDATE wakes SET delivery_method = ?
+          WHERE id = ? AND fire_count = ? AND ${repeatingSocketAwaitingWhere()}
+            AND NOT EXISTS (${repeatingEvidenceSql("1")})`,
+      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id, timer.fire_count).changes === 1
+    );
+  } catch {
+    return false;
+  }
+}
+
+class FiringSuperseded extends Error {}
+
+function requireCurrentFiring(id: number, firing: number): void {
+  const row = stmt("SELECT 1 AS hit FROM wakes WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL").get(id, firing);
+  if (row === undefined) throw new FiringSuperseded(`wake #${id} firing #${firing} was superseded`);
 }
 
 async function deliver(
@@ -2710,18 +2812,28 @@ async function deliver(
   const body = (isLeadActorId(timer.deliver_actor) ? shortRenderForLeadDelivery(timer) : null) ?? timer.body;
   const staleness = noticeStalenessNote(timer);
 
+  // A repeating wake that took the socket keeps its firing number in every marker and every write.
+  let firing = fallback && timer.delivery_method === DELIVERY_METHOD.socketRepeating ? timer.fire_count : null;
+
   if (!fallback && socketRoute(timer, owner)) {
-    const text = `[hive wake #${timer.id}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
+    const repeating = timer.repeat_every_ms != null;
+    const head = repeating ? firingMarker(timer) : `[hive wake #${timer.id}`;
+    const text = `${head}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
     if (!text.includes(CROSS_SESSION_CLOSE)) {
-      bestEffortRun(
-        `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-           delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
-         WHERE id = ?`,
-        note,
-        DELIVERY_METHOD.socket,
-        firstHeldAt,
-        timer.id,
-      );
+      if (repeating) {
+        if (!stampRepeatingAttempt(timer, note, firstHeldAt)) return;
+        firing = timer.fire_count;
+      } else {
+        bestEffortRun(
+          `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
+             delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+           WHERE id = ?`,
+          note,
+          DELIVERY_METHOD.socket,
+          firstHeldAt,
+          timer.id,
+        );
+      }
       const posted = await postClaudeWake({
         socketPath: timer.deliver_messaging_socket,
         senderAddress: senderAddress(join(dataDir, "wake-sender.sock")),
@@ -2732,14 +2844,15 @@ async function deliver(
         forgetPaneAnswers(timer.deliver_pane, choices);
         return;
       }
+      if (firing !== null && !claimRepeatingFallback(timer)) return;
       note = withReDelivered(note);
       fallback = true;
     }
   }
 
+  const named = firing === null ? `wake #${timer.id}` : `wake #${timer.id} firing #${firing}`;
   const prefix =
-    `[hive wake #${timer.id}${note ? `, ${note}` : ""}] ` +
-    (fallback ? `If you already handled wake #${timer.id}, ignore this.\n` : "");
+    `[hive ${named}${note ? `, ${note}` : ""}] ` + (fallback ? `If you already handled ${named}, ignore this.\n` : "");
   const method = fallback ? DELIVERY_METHOD.ptyAfterSocketTimeout : DELIVERY_METHOD.pty;
 
   let typedBusy: number | null;
@@ -2755,12 +2868,14 @@ async function deliver(
       `UPDATE wakes SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
          typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, delivery_method = ?,
          confirmed_at = CASE WHEN socket_attempt_at IS NULL THEN NULL ELSE confirmed_at END
-       WHERE id = ?`,
+       WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
       typedBusy,
       typedSeen,
       firstHeldAt,
       method,
       timer.id,
+      firing,
+      firing,
     );
 
   const box = cacheEntry(timer.deliver_pane, choices).box;
@@ -2776,14 +2891,20 @@ async function deliver(
         if (strandedTextWouldHold) recordTyped();
       },
       undefined,
-      owner ? () => requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`) : undefined,
+      owner || firing !== null
+        ? () => {
+            if (owner) requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`);
+            if (firing !== null) requireCurrentFiring(timer.id, firing);
+          }
+        : undefined,
     );
   } catch (err) {
-    if (fallback && !pasted) {
+    if (fallback && !pasted && firing === null) {
       bestEffortRun("UPDATE wakes SET delivery_method = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, timer.id);
     }
+    if (err instanceof FiringSuperseded) return;
     if (!(err instanceof PaneOwnershipLost)) throw err;
-    recordLostAfterClaim(timer, pasted, err.message);
+    recordLostAfterClaim(timer, pasted, err.message, firing);
     return;
   } finally {
 
@@ -2817,11 +2938,13 @@ async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, 
   const decision = deliverable(timer, snapshot, choices);
   if (!decision.ok) return false;
   const claimed =
-    stmt(
-      `UPDATE wakes SET delivery_method = ?
-        WHERE id = ? AND ${socketAwaitingWhere()}
-          AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
-    ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id).changes === 1;
+    timer.delivery_method === DELIVERY_METHOD.socketRepeating
+      ? claimRepeatingFallback(timer)
+      : stmt(
+          `UPDATE wakes SET delivery_method = ?
+            WHERE id = ? AND ${socketAwaitingWhere()}
+              AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
+        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id).changes === 1;
   if (!claimed) return false;
   await deliver(timer, withReDelivered(timer.socket_delivery_note), choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
   return true;
@@ -2831,7 +2954,7 @@ async function retryUnconfirmedSocketWakes(snapshot: AliveSnapshot | null, choic
   const awaiting = stmt(
     `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
        FROM wakes ${DELIVER_SOCKET_JOIN}
-      WHERE ${socketAwaitingWhere("wakes.")}
+      WHERE ((${socketAwaitingWhere("wakes.")}) OR (${repeatingSocketAwaitingWhere("wakes.")}))
         AND wakes.socket_attempt_at >= datetime('now', ?)`,
   ).all(LOG_RETENTION) as TimerRow[];
   for (const timer of awaiting) {
