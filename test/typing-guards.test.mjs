@@ -466,3 +466,52 @@ describe(
     });
   },
 );
+
+describe(
+  "a submitting agent_send reports the box it read before the paste (todo 1782)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    const spawned = [];
+    after(async () => {
+      for (const agent_id of spawned) await mcp.call("agent_close", { agent_id }).catch(() => {});
+    });
+
+    async function sendShowing(name, file) {
+      const spawn = await spawnShowing(name, replayFixture(file));
+      spawned.push(spawn.agent_id);
+      return mcp.call("agent_send", { name, text: "hello", wait_ms: 250 });
+    }
+
+    it("carries state, the box rows and the prompt's SGR run for an empty box", async () => {
+      const receipt = await sendShowing("before-empty", "ready-idle.txt");
+      assert.equal(receipt.sent, true);
+      assert.equal(receipt.input_box_before.state, "empty");
+      assert.ok(receipt.input_box_before.rows.some((row) => row.startsWith("❯")), "the prompt row is in the rows");
+      assert.ok(receipt.input_box_before.rows.length <= 10);
+      assert.match(receipt.input_box_before.rows[0], /^─×\d+/, "a rule is reported as a collapsed run, not 200 dashes");
+    });
+
+    it("omits a ghost suggestion's text and rows, as input_box does, but keeps the SGR run that made it a ghost", async () => {
+      const receipt = await sendShowing("before-ghost", "ghost-suggestion.txt");
+      assert.equal(receipt.input_box_before.state, "ghost");
+      assert.ok(!("text" in receipt.input_box_before));
+      assert.ok(!("rows" in receipt.input_box_before));
+      assert.equal(receipt.input_box_before.prompt_sgr, "[2m");
+    });
+
+    it("reports an unclassifiable box as unknown with the rows it could not read", async () => {
+      const receipt = await sendShowing("before-unknown", "drifted-prompt-glyph.txt");
+      assert.equal(receipt.sent, true);
+      assert.equal(receipt.input_box_before.state, "unknown");
+      assert.ok(receipt.input_box_before.rows.length > 0);
+    });
+
+    it("is absent from a refusal, whose input_box already is the read it refused on", async () => {
+      const spawn = await spawnShowing("before-refused", replayFixture("real-input.txt"));
+      spawned.push(spawn.agent_id);
+      const receipt = await mcp.call("agent_send", { name: "before-refused", text: "x", wait_ms: 250 });
+      assert.equal(receipt.sent, false);
+      assert.ok(!("input_box_before" in receipt));
+    });
+  },
+);
