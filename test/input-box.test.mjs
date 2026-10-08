@@ -43,6 +43,25 @@ const CASES = [
     expect: { state: "pending", text: "REAL INPUT AFTER DIM RESET" },
   },
 
+  {
+    file: "truecolor-led-pending.txt",
+    name: "truecolor-led",
+    marker: "TRUECOLOR LED PENDING",
+    expect: { state: "pending", text: "TRUECOLOR LED PENDING" },
+  },
+  {
+    file: "color256-led-pending.txt",
+    name: "color256-led",
+    marker: "COLOR256 LED PENDING",
+    expect: { state: "pending", text: "COLOR256 LED PENDING" },
+  },
+
+  {
+    file: "faint-truecolor-ghost.txt",
+    name: "faint-truecolor",
+    marker: "FAINT TRUECOLOR GHOST",
+    expect: { state: "ghost", text: "FAINT TRUECOLOR GHOST" },
+  },
   { file: "folder-trust-dialog.txt", name: "trust-dialog", marker: "trust this folder", expect: null },
   { file: "model-picker-dialog.txt", name: "model-dialog", marker: "Select model", expect: null },
   {

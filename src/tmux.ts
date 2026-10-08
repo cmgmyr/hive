@@ -1053,7 +1053,12 @@ function leadingRunIsFaint(s: string): boolean {
       faint = false;
       continue;
     }
-    for (const p of params) {
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (p === "38" || p === "48" || p === "58") {
+        i += params[i + 1] === "5" ? 2 : params[i + 1] === "2" ? 4 : 0;
+        continue;
+      }
       if (p === "0") faint = false;
       else if (p === "2") faint = true;
       else if (p === "22") faint = false;

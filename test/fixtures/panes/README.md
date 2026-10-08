@@ -586,3 +586,7 @@ substring, and the anchor never matched.
   CODEX_HOME and Hive's production launch flags. Typed text remains in the
   input box without Enter; the final footer row is right-aligned and the
   shortcuts text is absent. The classifier reads it as pending.
+
+## Derived fixtures (edited, not captured)
+
+`truecolor-led-pending.txt`, `color256-led-pending.txt` and `faint-truecolor-ghost.txt` are `real-input.txt` / `ghost-suggestion.txt` with the prompt row's text re-styled by hand: a truecolor (`38;2;R;G;B`) and a 256-color (`38;5;N`) foreground on typed text, and a faint+truecolor suggestion (`2;38;2;...`). They pin that `leadingRunIsFaint` reads only a real SGR faint parameter, never a color's sub-parameter (todo 1782).
