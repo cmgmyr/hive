@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
+import { clearHiveEnv, fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux, hasTmux } = isolateTmux("the portfolio tests");
 clearHiveEnv();
@@ -429,6 +429,23 @@ describe("portfolio panes", () => {
     agent(withWake, { kind: "lead", target: "%dead" });
     wake(withWake);
     assert.equal(row(withWake).lane, "stuck");
+  });
+
+  it("reads a live lead as unknown, never dead_pane, when tmux cannot be connected to", { skip }, () => {
+    const p = project();
+    const id = agent(p, { kind: "lead", state: "idle", target: livePane() });
+    todo(p, { status: "in_progress", updated: at("-1 hour") });
+    assert.equal(row(p).lead.state, "alive");
+
+    const dir = fakeFailingTmux({ failOn: "list-panes", stderr: "error connecting to /tmp/tmux-501/default (Operation not permitted)" });
+    const saved = process.env.PATH;
+    process.env.PATH = `${dir}:${saved}`;
+    try {
+      assert.deepEqual(row(p).lead, { state: "unknown", agent_id: id, turn: "unknown" });
+      assert.ok(!row(p).reasons.includes("dead_lead_pane"));
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 
   it("reads a lead whose pane id was reissued to a different pid as dead_pane, and a matching pid as alive", { skip }, () => {
