@@ -556,7 +556,7 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
     assert.equal(sinkText(target), "");
   });
 
-  it("wake_get marks a current firing as older-build delivery after the literal pre-field repeat claim", needsTmux, async () => {
+  it("wake_get names an older claim after the literal pre-field repeat claim", needsTmux, async () => {
     const { pid, id } = await firstFiring();
     const previous = wake(id);
     assert.equal(previous.delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #1`);
@@ -577,9 +577,36 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
       const current = await client.call("wake_get", { wake_id: id });
       assert.equal(current.fire_count, 2);
       assert.equal(current.delivered_by, previous.delivered_by, "the literal old claim leaves the prior identity untouched");
-      assert.equal(current.delivered_by_note, "the current firing was delivered by a hive build older than this field");
+      assert.equal(
+        current.delivered_by_note,
+        "firing #2 was claimed by a hive build older than this field; " +
+          "that build types it into the pane and does not record delivered_by",
+      );
     } finally {
       await client.close();
+    }
+  });
+
+  it("a repeat claim clears the prior identity when its socket stamp is rejected", needsTmux, async () => {
+    const { id, sock } = await firstFiring();
+    assert.equal(wake(id).delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #1`);
+    db.prepare("UPDATE wakes SET confirmed_at = datetime('now') WHERE id = ?").run(id);
+    makeDue(id);
+    db.exec(`
+      CREATE TRIGGER reject_repeating_socket_stamp
+      BEFORE UPDATE OF socket_attempt_at ON wakes
+      WHEN NEW.fire_count = OLD.fire_count AND NEW.socket_attempt_at IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'reject repeat attempt stamp'); END
+    `);
+    try {
+      await tick();
+      const next = wake(id);
+      assert.equal(next.fire_count, 2);
+      assert.equal(next.delivery_method, null);
+      assert.equal(next.delivered_by, null);
+      assert.equal(sock.received.length, 1, "the rejected stamp posts no second firing");
+    } finally {
+      db.exec("DROP TRIGGER reject_repeating_socket_stamp");
     }
   });
 

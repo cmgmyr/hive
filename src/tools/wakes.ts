@@ -166,8 +166,9 @@ function deliveredByNote(t: TimerRow): string | null {
   if (t.delivered_by === null) return "delivered by a hive build older than this field";
   if (t.repeat_every_ms === null) return null;
   const firing = t.delivered_by.match(/, firing #(\d+)$/);
-  return firing === null || Number(firing[1]) !== t.fire_count
-    ? "the current firing was delivered by a hive build older than this field"
+  return firing !== null && Number(firing[1]) !== t.fire_count
+    ? `firing #${t.fire_count} was claimed by a hive build older than this field; ` +
+      "that build types it into the pane and does not record delivered_by"
     : null;
 }
 
@@ -679,7 +680,9 @@ export function registerWakes(server: McpServer): void {
         "pty-after-socket-timeout), delivered_by (the pid and build of the server that last set the delivery method, " +
         "plus the firing number for repeating wakes), " +
         "and socket_attempt_at, set when a wake was posted to a Claude lead's socket; " +
-        "for a repeating wake both describe its current firing (fire_count).",
+        "for a repeating wake both describe its current firing (fire_count). An older repeat claim is " +
+        "identified in delivered_by_note as a claim; the older build types the firing into the pane " +
+        "without recording delivered_by.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
