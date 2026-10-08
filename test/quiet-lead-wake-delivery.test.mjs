@@ -871,6 +871,62 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
     assert.equal(wake(quoted.id).confirmed_at, null, "new code does not reproduce it");
   });
 
+  it("a lead restart that stops the fallback before its paste drops that firing, and the next one reaches the new pane", needsTmux, async () => {
+    const pid = project(true);
+    const path = join(socketDir, `restart-${servers.length}.sock`);
+    const received = [];
+    let target;
+    let next;
+    const server = createServer((conn) => {
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(next.pane, next.pid, target.rowId);
+      let buf = "";
+      conn.on("data", (c) => (buf += c));
+      conn.on("end", () => received.push(buf));
+    });
+    server.listen(path);
+    servers.push(server);
+    target = lead(pid, { socket: path });
+    next = sinkPane();
+    const id = dueWake(pid, target, BODY, { repeatMs: HOUR });
+
+    await tick();
+    await sleep(500);
+    let row = wake(id);
+    assert.equal(row.fire_count, 1);
+    assert.equal(row.delivery_method, "pty-after-socket-timeout", "the claimed fallback never returns to a retryable method");
+    assert.equal(row.typed_at, null);
+    assert.equal(row.socket_delivery_note, "dropped");
+    assert.match(row.held_reason ?? "", /Firing #1 was not delivered/);
+    assert.equal(received.join(""), "", "the refused post wrote nothing");
+
+    db.prepare(
+      `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+        WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?`,
+    ).run(next.pane, target.actorId);
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => readFileSync(next.sink, "utf8").includes("third, indented"), 3000), "the next firing is not deferred");
+    assert.equal(readFileSync(next.sink, "utf8"), `[hive wake #${id}] ${BODY}\n`);
+    assert.equal(wake(id).fire_count, 2);
+
+    backdateFiring(id, 61);
+    for (let i = 0; i < 2; i++) await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), "");
+    assert.ok(!readFileSync(next.sink, "utf8").includes("re-delivered"), "firing 1 is never replayed");
+  });
+
+  it("a repeating firing pending past log retention stops deferring the next one", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    backdateFiring(id, 8 * 86_400);
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => sock.received.length === 2, 3000), "firing 2 is posted");
+    assert.equal(wake(id).fire_count, 2);
+    assert.equal(content(sock.received[1]), envelope(firingText(id, 2)));
+    assert.equal(sinkText(target), "");
+  });
+
   it("repeating cancellation and lead re-point preserve firing identity", needsTmux, async () => {
     const cancelled = await firstFiring();
     db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(cancelled.id);

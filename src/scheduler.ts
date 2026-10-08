@@ -2679,9 +2679,13 @@ const currentAttempt = (p: string): string =>
    AND ${p}fired_at IS NOT NULL AND ${p}socket_attempt_at >= ${p}fired_at`;
 const repeatingSocketAwaitingWhere = (prefix = ""): string =>
   `${prefix}delivery_method = '${DELIVERY_METHOD.socketRepeating}' AND ${currentAttempt(prefix)}`;
+const FIRING_DROPPED_NOTE = "dropped";
 const repeatingFallbackClaimedWhere = (prefix = ""): string =>
-  `${prefix}repeat_every_ms IS NOT NULL AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}`;
-const REPEATING_FIRING_PENDING = `(${repeatingSocketAwaitingWhere()}) OR (${repeatingFallbackClaimedWhere()})`;
+  `${prefix}repeat_every_ms IS NOT NULL AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}
+   AND ${prefix}socket_delivery_note IS NOT '${FIRING_DROPPED_NOTE}'`;
+// Bounded like retry and confirmation: past retention neither can settle it, so it must stop deferring.
+const REPEATING_FIRING_PENDING = `((${repeatingSocketAwaitingWhere()}) OR (${repeatingFallbackClaimedWhere()}))
+  AND socket_attempt_at >= datetime('now', '${LOG_RETENTION}')`;
 const REPEATING_SOCKET_FIRING = `repeat_every_ms IS NOT NULL AND COALESCE(delivery_method, '') IN ('${DELIVERY_METHOD.socketRepeating}', '${DELIVERY_METHOD.ptyAfterSocketTimeout}')`;
 
 function repeatingFiringPending(id: number): boolean {
@@ -2793,6 +2797,21 @@ function claimRepeatingFallback(timer: TimerRow): boolean {
 
 class FiringSuperseded extends Error {}
 
+// Nothing reached the pane, so this firing is settled as dropped: the next one delivers, nothing replays it.
+// The marker lives in socket_delivery_note because hive lead's re-point clears held_reason.
+function dropRepeatingFiring(timer: TimerRow, firing: number, err: unknown): void {
+  const why = err instanceof Error ? err.message : String(err);
+  bestEffortRun(
+    `UPDATE wakes SET socket_delivery_note = ?, held_reason = ?
+      WHERE id = ? AND fire_count = ? AND delivery_method = ? AND typed_at IS NULL`,
+    FIRING_DROPPED_NOTE,
+    `${HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM}${why} Firing #${firing} was not delivered; the next firing goes out on schedule.`,
+    timer.id,
+    firing,
+    DELIVERY_METHOD.ptyAfterSocketTimeout,
+  );
+}
+
 function requireCurrentFiring(id: number, firing: number): void {
   const row = stmt("SELECT 1 AS hit FROM wakes WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL").get(id, firing);
   if (row === undefined) throw new FiringSuperseded(`wake #${id} firing #${firing} was superseded`);
@@ -2903,8 +2922,9 @@ async function deliver(
       bestEffortRun("UPDATE wakes SET delivery_method = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, timer.id);
     }
     if (err instanceof FiringSuperseded) return;
+    if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
     if (!(err instanceof PaneOwnershipLost)) throw err;
-    recordLostAfterClaim(timer, pasted, err.message, firing);
+    if (firing === null || pasted) recordLostAfterClaim(timer, pasted, err.message, firing);
     return;
   } finally {
 
