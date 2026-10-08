@@ -86,6 +86,7 @@ describe("classify: denies every pkill and killall, tmux or not", () => {
     "sudo pkill x",
     'bash -c "pkill -f x"',
     "cd /tmp && pkill x",
+    "killall5",
   ];
   for (const command of cases) {
     it(command, () => {
@@ -107,12 +108,36 @@ describe("classify: denies a kill fed by pgrep", () => {
     "pgrep x |\n  xargs kill",
     "for p in $(pgrep x); do kill $p; done",
     "pgrep x | while read p; do kill $p; done",
+    "for p in $(pgrep -f foo); do\n  kill $p\ndone",
+    "pids=$(pgrep -f node); kill $pids",
+    "pids=$(pgrep -f foo)\nkill $pids",
+    "pids=$(pgrep x) && kill $pids",
+    "pgrep x | sudo xargs kill",
+    "xargs kill < <(pgrep x)",
+    "while read p; do kill $p; done < <(pgrep x)",
+    "x=$(pgrep -f node); kill 1234",
   ];
   for (const command of cases) {
     it(command, () => {
       const result = classify(command);
       assert.equal(result.deny, true, command);
       assert.equal(result.kind, "pattern-kill", command);
+      assert.match(result.reason, /pgrep/);
+    });
+  }
+});
+
+describe("classify: denies a kill fed by a piped ps", () => {
+  const cases = [
+    "kill $(ps aux | grep node | awk '{print $2}')",
+    "ps aux | grep node | awk '{print $2}' | xargs kill",
+  ];
+  for (const command of cases) {
+    it(command, () => {
+      const result = classify(command);
+      assert.equal(result.deny, true, command);
+      assert.equal(result.kind, "pattern-kill", command);
+      assert.match(result.reason, /a kill fed by ps selects processes by pattern/);
     });
   }
 });
@@ -140,6 +165,9 @@ describe("classify: allows a kill by recorded pid, a process-group kill and a re
     "kill -- -4321",
     "pgrep -lf node",
     "ps -ax | grep node",
+    "ps aux | grep node",
+    "ps -p 1234; kill 1234",
+    "kill 2>/dev/null -1 1234",
     "x=$(pgrep -f node); echo $x",
     "tmux kill-session -t scratch-1",
     "cd /repo/.agents/worktrees/1787-pkill-guard && git status",

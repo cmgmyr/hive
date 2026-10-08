@@ -12,13 +12,9 @@ const KILL_SERVER_RE = /\bkill-server\b/;
 
 const EXPLICIT_S_RE = /(^|[\s'"`])-S/;
 const PKILL_KILLALL_RE = /(?<![\w-])(pkill|killall5?)(?![\w-])/;
-const PGREP_SUBST = "(?:\\$\\(|`)\\s*(?:\\S*\\/)?pgrep\\b";
-const KILL_FED_BY_PGREP_RES = [
-  new RegExp(`\\bkill\\b[^;&|\\n]*${PGREP_SUBST}`),
-  new RegExp(`\\bin\\s+${PGREP_SUBST}[^\\n]*\\bkill\\b`),
-  /\bpgrep\b[^\n]*\|\s*xargs\b[^;&|\n]*\bkill\b/,
-  /\bpgrep\b[^\n]*\|\s*while\b[\s\S]*\bkill\b/,
-];
+const PGREP_RE = /(?<![\w-])pgrep(?![\w-])/;
+const PIPED_PS_RE = /(?<![\w-])ps(?![\w-])[^\n]*\|/;
+const KILL_RE = /(?<![\w-])kill(?![\w-])/;
 const KILL_ARGS_RE = /(?:^|[\s(`'"/])kill\s+(.*)$/;
 
 function killsPidMinusOne(segment) {
@@ -39,8 +35,13 @@ export function classify(command) {
   if (PKILL_KILLALL_RE.test(command)) {
     return { deny: true, kind: "pattern-kill", reason: "pkill/killall selects processes by pattern" };
   }
-  if (KILL_FED_BY_PGREP_RES.some((re) => re.test(command))) {
-    return { deny: true, kind: "pattern-kill", reason: "a kill fed by pgrep selects processes by pattern" };
+  if (KILL_RE.test(command)) {
+    if (PGREP_RE.test(command)) {
+      return { deny: true, kind: "pattern-kill", reason: "a kill fed by pgrep selects processes by pattern" };
+    }
+    if (PIPED_PS_RE.test(command)) {
+      return { deny: true, kind: "pattern-kill", reason: "a kill fed by ps selects processes by pattern" };
+    }
   }
 
   for (const segment of splitSegments(command)) {
