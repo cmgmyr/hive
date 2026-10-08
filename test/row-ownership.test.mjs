@@ -76,7 +76,7 @@ describe("tmuxSaysNothingThere: only a connect failure that proves no server is 
   const table = [
     ["no server running", "no server running on /tmp/tmux-501/default", true],
     ["a missing socket", connect("No such file or directory"), true],
-    ["a stale socket nobody listens on", connect("Connection refused"), true],
+    ["Connection refused, kept for older tmux wording", connect("Connection refused"), true],
     ["a socket the process may not open (EACCES)", connect("Permission denied"), false],
     ["a connect a sandbox refuses (EPERM)", connect("Operation not permitted"), false],
     ["a socket path over the length limit", connect("File name too long"), false],
