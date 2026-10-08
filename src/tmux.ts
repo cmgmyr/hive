@@ -151,7 +151,12 @@ function tmuxWithin(timeoutMs: number, ...args: string[]): string {
   }
 }
 
-const NOTHING_THERE = /no server running|error connecting to|no current target|can't find (pane|window|session)/;
+const NOTHING_THERE = /no server running|no current target|can't find (pane|window|session)/;
+
+// A connect failure is an empty server only when the errno proves nothing listens; EACCES/EPERM
+// (a sandboxed caller) and any unreadable reason mean nobody answered.
+const CONNECT_FAILED = /error connecting to .*\(([^)]*)\)\s*$/;
+const NO_LISTENER = /^(No such file or directory|Connection refused)$/;
 
 // "no server running" is tmux ANSWERING that the socket is empty. A missing binary is nobody
 // answering at all, and the two must never read the same to anything that reports a death.
@@ -165,6 +170,8 @@ export function tmuxSaysNothingThere(e: unknown): boolean {
   if (!(e instanceof TmuxError)) return false;
 
   if (e.notInstalled) return true;
+  const reason = CONNECT_FAILED.exec(e.stderr)?.[1];
+  if (reason !== undefined) return NO_LISTENER.test(reason);
   return NOTHING_THERE.test(e.stderr);
 }
 
