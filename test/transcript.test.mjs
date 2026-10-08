@@ -95,14 +95,15 @@ describe("readRecentToolCalls", () => {
     const claude = join(scratch, "claude-map.jsonl");
     writeFileSync(claude, lines(
       claudeCall("Edit", { file_path: "/a" }, "2026-10-08T10:00:00Z"),
-      { type: "user", message: { content: [{ type: "tool_result", content: "tool_use Bash $cg-review" }] } },
-      claudeText("> $cg-review quoted from the user"),
-      claudeText("starting\n$cg-review --effort=medium"),
+      { type: "user", message: { content: [{ type: "tool_result", content: "tool_use Bash $code-review" }] } },
+      claudeText("> $code-review quoted from the user"),
+      claudeText("starting\n$code-review --effort=medium"),
       claudeCall("Bash", { command: "npm test" }),
     ));
-    const fromClaude = readRecentToolCalls("claude", worker(claude)).calls;
+    const fromClaude = readRecentToolCalls("claude", worker(claude), { reviewSkill: "code-review" }).calls;
+    assert.deepEqual(readRecentToolCalls("claude", worker(claude)).calls.map((c) => c.name), ["Edit", "Bash"], "no review_skill, no marker");
     assert.deepEqual(fromClaude.map((c) => c.name), ["Edit", "Skill", "Bash"]);
-    assert.equal(fromClaude[1].input.skill, "cg-review");
+    assert.equal(fromClaude[1].input.skill, "code-review");
     assert.equal(fromClaude[0].at, "2026-10-08T10:00:00Z");
     assert.equal(fromClaude[2].at, null);
 
@@ -112,11 +113,11 @@ describe("readRecentToolCalls", () => {
       codexCall("write_stdin", { session_id: 1, chars: "" }),
       { type: "response_item", payload: { type: "custom_tool_call", name: "apply_patch", input: "*** Begin Patch" } },
       { type: "response_item", payload: { type: "function_call_output", output: "git commit" } },
-      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "$cg-review" }] } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "$code-review" }] } },
       codexCall("functions.exec", { source: "await tools.exec_command({cmd: 'git commit'})" }),
       codexCall("mcp__hive__todo_update", { todo_id: 1 }),
     ));
-    const fromCodex = readRecentToolCalls("codex", worker(codex)).calls;
+    const fromCodex = readRecentToolCalls("codex", worker(codex), { reviewSkill: "code-review" }).calls;
     assert.deepEqual(fromCodex.map((c) => c.name), ["Bash", "apply_patch", "exec", "todo_update"]);
     assert.deepEqual(fromCodex[0].input, { command: "git status" });
     assert.equal(fromCodex[2].input.source.includes("git commit"), true, "the orchestration source is carried as text, never run or unpacked");

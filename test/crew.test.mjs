@@ -23,6 +23,7 @@ const { db, migrate } = await import("../dist/db.js");
 const { addProject } = await import("../dist/context.js");
 const { classifyActivity, collectCrew, readCommitsAhead } = await import("../dist/crew.js");
 const { sessionName } = await import("../dist/tmux.js");
+const { readRecentToolCalls } = await import("../dist/transcript.js");
 migrate();
 
 after(() => {
@@ -389,8 +390,11 @@ describe("activity labels", () => {
     assert.equal(one(call("mcp__hive__todo_list")), "reading");
     assert.equal(one(call("mcp__hive__todo_update")), "running todo_update");
     assert.equal(one(call("functions.exec", { source: "git commit; npm test" })), "running exec", "orchestration source is never read");
-    assert.equal(one(call("Skill", { skill: "cg-review" })), "reviewing");
-    assert.equal(one(call("Skill", { skill: "other" })), "running Skill");
+    const withSkill = (c) => classifyActivity([c], { review_skill: "code-review" }).label;
+    assert.equal(withSkill(call("Skill", { skill: "code-review" })), "reviewing");
+    assert.equal(withSkill(call("Skill", { skill: "other" })), "running Skill");
+    assert.equal(one(call("Skill", { skill: "code-review" })), "running Skill", "no review_skill var means no skill-name matcher");
+    assert.equal(classifyActivity([call("Skill", { skill: "x" })], { review_skill: "  " }).label, "running Skill");
     assert.equal(one(call("Agent", { subagent_type: "code-reviewer" })), "reviewing");
     assert.equal(one(call("Task", { subagent_type: "review-agent" })), "reviewing");
     assert.equal(one(call("Agent", { subagent_type: "Explore" })), "running Agent");
@@ -398,20 +402,48 @@ describe("activity labels", () => {
   });
 });
 
+const jsonl = (...records) => records.map((r) => JSON.stringify(r)).join("\n") + "\n";
+const codexWorker = (path) => ({ actor_id: "agent:1", cwd: "/work/cwd", session_id: "", transcript_path: path });
+const codexCallRecord = (name, args, timestamp) => ({
+  type: "response_item",
+  timestamp,
+  payload: { type: "function_call", name, arguments: JSON.stringify(args), call_id: "c1" },
+});
+
+describe("review marker end to end", () => {
+  it("a Codex assistant review marker is read from the transcript and classified as reviewing end to end", () => {
+    const file = join(dirs.tmp, "codex-review.jsonl");
+    const message = (role, text) => ({ type: "response_item", timestamp: "2026-10-08T11:00:01Z", payload: { type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }] } });
+    writeFileSync(file, jsonl(
+      codexCallRecord("exec_command", { cmd: "git status" }, "2026-10-08T11:00:00Z"),
+      message("assistant", "Running the pass.\n$code-review --effort=medium"),
+      codexCallRecord("exec_command", { cmd: "rg foo src" }, "2026-10-08T11:00:02Z"),
+    ));
+    const calls = readRecentToolCalls("codex", codexWorker(file), { reviewSkill: "code-review" }).calls;
+    assert.deepEqual(calls.map((c) => c.name), ["Bash", "Skill", "Bash"]);
+    assert.deepEqual(classifyActivity(calls, { review_skill: "code-review" }), { label: "reviewing", since: "2026-10-08T11:00:01.000Z", lower_bound: false });
+    assert.equal(classifyActivity(calls, {}).label, "reading", "absent review_skill: no skill-name matcher");
+    const user = join(dirs.tmp, "codex-review-user.jsonl");
+    writeFileSync(user, jsonl(message("user", "$code-review"), message("assistant", "ok $code-review inline"), message("assistant", "$code-reviewer")));
+    assert.deepEqual(readRecentToolCalls("codex", codexWorker(user), { reviewSkill: "code-review" }).calls, [], "user text, mid-line mentions and longer names are not markers");
+  });
+});
+
 describe("activity timing", () => {
   const at = (n) => `2026-10-08T10:00:${String(n).padStart(2, "0")}.000Z`;
 
   it("review reading timing and editing transition follow bounded evidence", () => {
-    const review = [call("Skill", { skill: "cg-review" }, at(1)), call("Read", {}, at(2)), call("Grep", {}, at(3))];
-    assert.deepEqual(classifyActivity(review, {}), { label: "reviewing", since: at(1), lower_bound: true });
+    const reviewVars = { review_skill: "code-review" };
+    const review = [call("Skill", { skill: "code-review" }, at(1)), call("Read", {}, at(2)), call("Grep", {}, at(3))];
+    assert.deepEqual(classifyActivity(review, reviewVars), { label: "reviewing", since: at(1), lower_bound: true });
     const ended = [...review, call("Edit", {}, at(4))];
-    assert.deepEqual(classifyActivity(ended, {}), { label: "editing", since: at(4), lower_bound: false });
+    assert.deepEqual(classifyActivity(ended, reviewVars), { label: "editing", since: at(4), lower_bound: false });
     const afterTest = [...review, bash("npm test", at(4)), call("Read", {}, at(5))];
-    assert.deepEqual(classifyActivity(afterTest, {}), { label: "reading", since: at(5), lower_bound: false }, "a test ends the review window");
+    assert.deepEqual(classifyActivity(afterTest, reviewVars), { label: "reading", since: at(5), lower_bound: false }, "a test ends the review window");
     const readFirst = [call("Read", {}, at(1)), call("Grep", {}, at(2)), call("Read", {}, at(3))];
     assert.equal(classifyActivity(readFirst, {}).label, "reading", "reading with no review marker stays reading");
     const mcp = [...review, call("mcp__hive__todo_update", {}, at(4)), call("Read", {}, at(5))];
-    assert.equal(classifyActivity(mcp, {}).label, "reading", "an other-tool call ends the review window");
+    assert.equal(classifyActivity(mcp, reviewVars).label, "reading", "an other-tool call ends the review window");
   });
 
   it("since is the oldest stamp of the trailing run and carries a lower bound only at the window edge", () => {

@@ -10,6 +10,8 @@ import { parseTags } from "./result.js";
 import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";
 import {
+  SKILL_TOOL,
+  lastComponent,
   readContextFill,
   readRecentToolCalls,
   type ContextFill,
@@ -118,6 +120,11 @@ export function readCommitsAhead(cwd: string, projectRoot: string): number | nul
 }
 
 type Vars = Record<string, string>;
+
+export function reviewSkillOf(vars: Vars): string | undefined {
+  const value = vars.review_skill;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
 
 function heredocDelimiter(command: string, at: number): { delimiter: string; stripTabs: boolean; end: number } | null {
   let i = at + 2;
@@ -356,26 +363,27 @@ function commandLabel(command: string, matchers: Matcher[]): string {
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "read_file", "view_image"]);
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch"]);
 
-function callLabel(call: TranscriptToolCall, matchers: Matcher[]): string {
+function callLabel(call: TranscriptToolCall, matchers: Matcher[], reviewSkill: string | undefined): string {
   const { name, input } = call;
   if (READ_TOOLS.has(name)) return "reading";
   if (EDIT_TOOLS.has(name)) return "editing";
-  if (name === "Skill") return input.skill === "cg-review" ? "reviewing" : "running Skill";
+  if (name === SKILL_TOOL) return reviewSkill && input.skill === reviewSkill ? "reviewing" : `running ${SKILL_TOOL}`;
   if ((name === "Agent" || name === "Task") && typeof input.subagent_type === "string" && /review/i.test(input.subagent_type)) {
     return "reviewing";
   }
   if (name === "Bash") return typeof input.command === "string" ? commandLabel(input.command, matchers) : "running shell";
   if (/_(get|read|list)$/.test(name)) return "reading";
-  return `running ${name.split(/__|[.:/]/).filter(Boolean).pop() ?? name}`;
+  return `running ${lastComponent(name)}`;
 }
 
 export function classifyActivity(calls: TranscriptToolCall[], vars: Vars): CrewActivity {
   if (calls.length === 0) return { label: "", since: null, lower_bound: false };
   const matchers = configuredMatchers(vars);
+  const reviewSkill = reviewSkillOf(vars);
   const labels: string[] = [];
   let reviewing = false;
   for (const call of calls) {
-    let label = callLabel(call, matchers);
+    let label = callLabel(call, matchers, reviewSkill);
     if (label === "reviewing") reviewing = true;
     else if (label === "reading" && reviewing) label = "reviewing";
     else reviewing = false;
@@ -434,7 +442,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     const harness = harnessFor(row.command);
     const kind = harness.contextRecord;
     const worker = { actor_id: row.actor_id, cwd: row.cwd, session_id: row.session_id, transcript_path: row.transcript_path };
-    const calls = kind ? readRecentToolCalls(kind, worker).calls : [];
+    const calls = kind ? readRecentToolCalls(kind, worker, { reviewSkill: reviewSkillOf(vars) }).calls : [];
     let state = row.agent_state;
     let activity = classifyActivity(calls, vars);
     if (activity.label === "") activity = { label: state, since: null, lower_bound: false };

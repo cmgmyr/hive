@@ -150,9 +150,13 @@ export interface TranscriptToolCall {
 
 export const RECENT_TOOL_CALLS = 8;
 
-const REVIEW_INVOCATION = /^\s*\$cg-review\b/m;
+export const SKILL_TOOL = "Skill";
 
-function lastComponent(name: string): string {
+export interface ToolCallOptions {
+  reviewSkill?: string;
+}
+
+export function lastComponent(name: string): string {
   return name.split(/__|[.:/]/).filter(Boolean).pop() ?? name;
 }
 
@@ -160,13 +164,15 @@ function timestamp(record: JsonRecord): string | null {
   return typeof record.timestamp === "string" && record.timestamp !== "" ? record.timestamp : null;
 }
 
-function reviewMarker(texts: unknown[], at: string | null): TranscriptToolCall[] {
-  return texts.some((text) => typeof text === "string" && REVIEW_INVOCATION.test(text))
-    ? [{ name: "Skill", input: { skill: "cg-review" }, at }]
+function reviewMarker(texts: unknown[], at: string | null, skill: string | undefined): TranscriptToolCall[] {
+  if (!skill) return [];
+  const invocation = new RegExp(`^\\s*\\$${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "m");
+  return texts.some((text) => typeof text === "string" && invocation.test(text))
+    ? [{ name: SKILL_TOOL, input: { skill }, at }]
     : [];
 }
 
-function claudeToolCalls(record: JsonRecord): TranscriptToolCall[] {
+function claudeToolCalls(record: JsonRecord, options: ToolCallOptions): TranscriptToolCall[] {
   if (record.type !== "assistant") return [];
   const content = object(record.message)?.content;
   if (!Array.isArray(content)) return [];
@@ -178,19 +184,19 @@ function claudeToolCalls(record: JsonRecord): TranscriptToolCall[] {
     if (block.type === "tool_use" && typeof block.name === "string") {
       calls.push({ name: block.name, input: object(block.input) ?? {}, at });
     } else if (block.type === "text") {
-      calls.push(...reviewMarker([block.text], at));
+      calls.push(...reviewMarker([block.text], at, options.reviewSkill));
     }
   }
   return calls;
 }
 
-function codexToolCalls(record: JsonRecord): TranscriptToolCall[] {
+function codexToolCalls(record: JsonRecord, options: ToolCallOptions): TranscriptToolCall[] {
   const payload = object(record.payload);
   if (record.type !== "response_item" || !payload) return [];
   const at = timestamp(record);
   if (payload.type === "message") {
     if (payload.role !== "assistant" || !Array.isArray(payload.content)) return [];
-    return reviewMarker(payload.content.map((part) => object(part)?.text), at);
+    return reviewMarker(payload.content.map((part) => object(part)?.text), at, options.reviewSkill);
   }
   if (typeof payload.name !== "string") return [];
   const name = lastComponent(payload.name);
@@ -212,6 +218,7 @@ function codexToolCalls(record: JsonRecord): TranscriptToolCall[] {
 export function readRecentToolCalls(
   kind: ContextRecordKind,
   worker: ContextWorker,
+  options: ToolCallOptions = {},
 ): { calls: TranscriptToolCall[]; truncated: boolean } {
   const path = worker.transcript_path || (kind === "claude" && worker.session_id
     ? join(transcriptDir(worker.cwd), `${worker.session_id}.jsonl`) : "");
@@ -220,7 +227,7 @@ export function readRecentToolCalls(
   const newestFirst: TranscriptToolCall[] = [];
   let capped = false;
   for (const record of records) {
-    const calls = (kind === "claude" ? claudeToolCalls : codexToolCalls)(record);
+    const calls = (kind === "claude" ? claudeToolCalls : codexToolCalls)(record, options);
     for (let i = calls.length - 1; i >= 0; i--) {
       if (newestFirst.length === RECENT_TOOL_CALLS) {
         capped = true;
