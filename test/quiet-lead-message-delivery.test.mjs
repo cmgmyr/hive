@@ -287,7 +287,6 @@ describe("a socket-posted message is confirmed by its own prompt and nothing els
     const receipt = await send(proj.id, from, target, "short report");
     const id = receipt.message_id;
     assert.ok(await until(() => sock.received.length === 1, 3000));
-    assert.equal(message(id).target_session_id, "s-real");
     const content = JSON.parse(sock.received[0]).message.content;
     const log = (actor, prompt, session = "s-real", ago = 0) =>
       insertStateLogRow(db, actor, "prompt", "working", ago, JSON.stringify({ session_id: session, prompt }));
@@ -295,11 +294,10 @@ describe("a socket-posted message is confirmed by its own prompt and nothing els
     db.prepare("UPDATE agent_state_log SET payload = ? WHERE actor_id = ?").run(JSON.stringify({ session_id: "s-real", prompt: content }), target.actorId);
     log(target.actorId, content.replace(`[message #${id},`, `[message #${id + 1},`));
     log(stranger.actorId, content);
-    log(target.actorId, content, "s-other");
     log(target.actorId, `a human quoting it: ${content}`);
     log(target.actorId, JSON.stringify({ quoted: content }), "s-real");
     await tick();
-    assert.equal(message(id).confirmed_at, null, "a pre-post prompt, another id, actor or session, or a quotation never confirms");
+    assert.equal(message(id).confirmed_at, null, "a pre-post prompt, another id or actor, or a quotation never confirms");
     assert.equal(message(id).delivery_status, "socket-pending");
 
     await promptHook(target, content, "s-real");
@@ -312,6 +310,26 @@ describe("a socket-posted message is confirmed by its own prompt and nothing els
     await tick();
     await sleep(300);
     assert.equal(sinkText(target), "", "a confirmed message is never typed");
+  });
+
+  it("a lead's first prompt after /clear confirms a message sent while its turn state still named the old session", needsTmux, async () => {
+    const proj = project(true);
+    const sock = listener();
+    const target = lead(proj.id, { socket: sock.path });
+    const from = worker(proj.id);
+    db.prepare("INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state) VALUES (?, ?, 's-old', 'unknown')").run(target.rowId, target.pid);
+    const { message_id: id } = await send(proj.id, from, target, "report after clear");
+    assert.ok(await until(() => sock.received.length === 1, 3000));
+
+    await promptHook(target, JSON.parse(sock.received[0]).message.content, "s-new");
+    await tick();
+    assert.ok(message(id).confirmed_at, "the new session reading the envelope confirms it");
+    assert.equal(message(id).delivery_status, "complete");
+    backdateAttempt(id, 600);
+    insertStateLogRow(db, target.actorId, "stop", "idle", 300);
+    await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), "", "a message the lead already read is never re-typed");
   });
 
   it("busy lead starts fallback grace at its first stop", needsTmux, async () => {
@@ -480,6 +498,44 @@ describe("a pane fallback holds, fails or stays uncertain by name", () => {
     assert.equal(message(ids[4]).delivery_status, "fallback-pending");
   });
 
+  it("a wake-pane lease another delivery holds keeps the fallback off the pane until it is released", needsTmux, async () => {
+    const proj = project(true);
+    const target = lead(proj.id, { socket: refusedSocket() });
+    const from = worker(proj.id);
+    db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES ('hive:scheduler', 'hive scheduler', 'scheduler')").run();
+    db.prepare(
+      "INSERT INTO leases (project_id, lock_key, owner, expires_at) VALUES (?, ?, 'hive:scheduler', datetime('now', '+60 seconds'))",
+    ).run(proj.id, `wake-pane:${ownSocket}:${target.pane}`);
+
+    const receipt = await send(proj.id, from, target, "waits for the lease");
+    assert.equal(receipt.sent, false);
+    assert.equal(receipt.pending, true);
+    assert.match(message(receipt.message_id).delivery_note, /another delivery holds the lead's pane/);
+    await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), "", "nothing is pasted while a wake holds the pane");
+
+    db.prepare("DELETE FROM leases WHERE project_id = ?").run(proj.id);
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("waits for the lease"), 3000));
+    assert.equal(markerCount(sinkText(target), receipt.message_id), 1);
+  });
+
+  it("a registration change between the row update and the connect refuses the post and types once instead", needsTmux, async () => {
+    const proj = project(true);
+    const sock = listener();
+    const target = lead(proj.id, { socket: sock.path });
+    const from = worker(proj.id);
+    const pending = send(proj.id, from, target, "registration moved");
+    db.prepare("UPDATE agents SET claude_messaging_socket = ? WHERE id = ?").run(refusedSocket(), target.rowId);
+    const receipt = await pending;
+    await sleep(300);
+    assert.deepEqual(sock.received.filter((frame) => frame !== ""), [], "the connect is dropped before any byte is written");
+    assert.equal(receipt.delivery_method, "pty-after-socket-timeout");
+    assert.ok(await until(() => sinkText(target).includes("registration moved"), 3000));
+    assert.equal(markerCount(sinkText(target), receipt.message_id), 1);
+  });
+
   it("socket delivery bypasses pending human input unchanged", needsTmux, async () => {
     const proj = project(true);
     const sock = listener();
@@ -565,9 +621,9 @@ describe("a pane fallback holds, fails or stays uncertain by name", () => {
     const { id: crashedId } = db
       .prepare(
         `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, delivery_method,
-           socket_attempt_at, fallback_claimed_at, target_identity, target_session_id, sender_tag)
+           socket_attempt_at, fallback_claimed_at, target_identity, sender_tag)
          VALUES (?, ?, 'w', ?, 'claimed before a crash', 'fallback-claimed', 'pty-after-socket-timeout',
-           strftime('%Y-%m-%d %H:%M:%f', 'now', '-300 seconds'), strftime('%Y-%m-%d %H:%M:%f', 'now', '-200 seconds'), ?, '', ?)
+           strftime('%Y-%m-%d %H:%M:%f', 'now', '-300 seconds'), strftime('%Y-%m-%d %H:%M:%f', 'now', '-200 seconds'), ?, ?)
          RETURNING id`,
       )
       .get(proj.id, from.actorId, crashed.rowId, JSON.stringify({ tmux_target: crashed.pane, tmux_socket: ownSocket, pane_pid: crashed.pid }), from.tag);
@@ -637,14 +693,14 @@ describe("the retry pass contains its own failures", () => {
     const target = lead(proj.id);
     db.prepare(
       `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, delivery_method,
-         target_identity, target_session_id, sender_tag)
-       VALUES (?, ?, 'w', ?, 'broken', 'fallback-pending', 'pty', 'not json', '', ?)`,
+         target_identity, sender_tag)
+       VALUES (?, ?, 'w', ?, 'broken', 'fallback-pending', 'pty', 'not json', ?)`,
     ).run(proj.id, from.actorId, broken.rowId, from.tag);
     const { id } = db
       .prepare(
         `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, delivery_method,
-           target_identity, target_session_id, sender_tag)
-         VALUES (?, ?, 'w', ?, 'still delivered', 'fallback-pending', 'pty', ?, '', ?) RETURNING id`,
+           target_identity, sender_tag)
+         VALUES (?, ?, 'w', ?, 'still delivered', 'fallback-pending', 'pty', ?, ?) RETURNING id`,
       )
       .get(proj.id, from.actorId, target.rowId, JSON.stringify({ tmux_target: target.pane, tmux_socket: ownSocket, pane_pid: target.pid }), from.tag);
     await retryQuietLeadMessages(liveTargets());

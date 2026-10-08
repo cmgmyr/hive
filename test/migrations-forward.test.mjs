@@ -113,7 +113,7 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
   it("delivery columns migrate forward as null without changing existing message text", () => {
     const after = db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(messageId);
     const fields = ["delivery_status", "delivery_method", "socket_attempt_at", "confirmed_at", "fallback_claimed_at",
-      "typed_at", "delivery_note", "target_identity", "target_session_id", "sender_tag"];
+      "typed_at", "delivery_note", "target_identity", "sender_tag"];
     const rest = { ...after };
     for (const field of fields) {
       assert.ok(field in after, field);

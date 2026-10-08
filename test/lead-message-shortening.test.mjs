@@ -301,8 +301,8 @@ describe("todo 1767: delivery metadata is readable on a delivery row and absent 
     const { id } = db
       .prepare(
         `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status,
-           delivery_method, socket_attempt_at, delivery_note, target_identity, target_session_id, sender_tag)
-         VALUES (?, 'agent:q', 'quiet', 1, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?, 's-1',
+           delivery_method, socket_attempt_at, delivery_note, target_identity, sender_tag)
+         VALUES (?, 'agent:q', 'quiet', 1, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?,
            '[hive:worker quiet] ') RETURNING id`,
       )
       .get(projectId, text, identity);
@@ -318,7 +318,6 @@ describe("todo 1767: delivery metadata is readable on a delivery row and absent 
     assert.equal(got.typed_at, null);
     assert.equal(got.delivery_note, null);
     assert.equal(got.target_identity, identity);
-    assert.equal(got.target_session_id, "s-1");
     assert.equal(got.sender_tag, "[hive:worker quiet] ");
     db.prepare("DELETE FROM agent_messages WHERE id = ?").run(id);
   });

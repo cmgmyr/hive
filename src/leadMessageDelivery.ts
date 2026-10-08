@@ -73,8 +73,6 @@ const messageEvidenceSql = (select: string): string => `
    WHERE ev.actor_id = (SELECT a.actor_id FROM agents a WHERE a.id = agent_messages.to_agent_id)
      AND ev.event = 'prompt'
      AND ev.created_at >= COALESCE(agent_messages.socket_attempt_at, agent_messages.created_at)
-     AND (COALESCE(agent_messages.target_session_id, '') = ''
-          OR (json_valid(ev.payload) AND json_extract(ev.payload, '$.session_id') IS agent_messages.target_session_id))
      AND (substr(${EV_PROMPT}, 1, length(${EV_MARKER})) = ${EV_MARKER}
           OR (${EV_HEADER_END} > ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length}
               AND substr(${EV_PROMPT}, 1, ${ENVELOPE_OPEN.length}) = '${ENVELOPE_OPEN}'
@@ -322,13 +320,12 @@ export async function sendQuietLeadMessage(options: {
   // One statement makes the row visible to the scheduler, already in its route's status.
   db.prepare(
     `UPDATE agent_messages SET delivery_status = ?, delivery_method = ?, socket_attempt_at = ${skip === null ? NOW : "NULL"},
-       delivery_note = ?, target_identity = ?, target_session_id = ?, sender_tag = ? WHERE id = ?`,
+       delivery_note = ?, target_identity = ?, sender_tag = ? WHERE id = ?`,
   ).run(
     skip === null ? MESSAGE_STATUS.socketPending : MESSAGE_STATUS.fallbackPending,
     skip === null ? MESSAGE_METHOD.socket : MESSAGE_METHOD.pty,
     skip,
     JSON.stringify(identity),
-    session,
     tag,
     id,
   );

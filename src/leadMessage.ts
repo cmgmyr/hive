@@ -35,7 +35,6 @@ export interface StoredLeadMessage {
   typed_at: string | null;
   delivery_note: string | null;
   target_identity: string | null;
-  target_session_id: string | null;
   sender_tag: string | null;
 }
 
@@ -48,7 +47,6 @@ export const DELIVERY_FIELDS = [
   "typed_at",
   "delivery_note",
   "target_identity",
-  "target_session_id",
   "sender_tag",
 ] as const;
 

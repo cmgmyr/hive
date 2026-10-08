@@ -460,7 +460,6 @@ ALTER TABLE agent_messages ADD COLUMN fallback_claimed_at TEXT;
 ALTER TABLE agent_messages ADD COLUMN typed_at TEXT;
 ALTER TABLE agent_messages ADD COLUMN delivery_note TEXT;
 ALTER TABLE agent_messages ADD COLUMN target_identity TEXT;
-ALTER TABLE agent_messages ADD COLUMN target_session_id TEXT;
 ALTER TABLE agent_messages ADD COLUMN sender_tag TEXT;
 CREATE INDEX idx_agent_messages_delivery ON agent_messages(delivery_status, id) WHERE delivery_status IS NOT NULL;
 `,
