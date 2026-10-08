@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, beforeEach, describe, it } from "node:test";
 
 import {
@@ -29,6 +30,7 @@ await assertScratchStore();
 const { db, migrate } = await import("../dist/db.js");
 const { tick, DELIVER_SOCKET_JOIN, ACTIVE_TIMER_WHERE, socketAwaitingWhere } = await import("../dist/scheduler.js");
 const { postClaudeWake, senderAddress } = await import("../dist/claudeWake.js");
+const { versionInfo } = await import("../dist/version.js");
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
@@ -116,6 +118,19 @@ async function promptHook(target, prompt) {
 
 const BODY = "first line of the wake\nsecond line\n  third, indented";
 
+async function tickFromSecondServer() {
+  const script = join(tmp, "tick-from-second-server.mjs");
+  writeFileSync(
+    script,
+    `import { tick } from ${JSON.stringify(pathToFileURL(join(DIST, "scheduler.js")).href)};\n` +
+      `import { versionInfo } from ${JSON.stringify(pathToFileURL(join(DIST, "version.js")).href)};\n` +
+      `await tick();\nconsole.log(JSON.stringify({ pid: process.pid, line: versionInfo().line }));\n`,
+  );
+  const result = await runNode(script, [], { dataDir, tmp });
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout.trim());
+}
+
 beforeEach(() => db.exec("DELETE FROM wakes; DELETE FROM agent_state_log; DELETE FROM lead_turn_state; DELETE FROM leases;"));
 
 describe("a one-shot wake to an opted-in Claude lead goes by socket", () => {
@@ -139,6 +154,7 @@ describe("a one-shot wake to an opted-in Claude lead goes by socket", () => {
     );
     const row = wake(id);
     assert.equal(row.delivery_method, "socket");
+    assert.equal(row.delivered_by, `pid ${process.pid}, ${versionInfo().line}`);
     assert.ok(row.socket_attempt_at);
     assert.equal(row.typed_at, null);
     assert.equal(row.confirmed_at, null);
@@ -175,13 +191,14 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     const id = dueWake(pid, target, BODY);
     await tick();
     await until(() => sock.received.length === 1, 3000);
+    const postedBy = wake(id).delivered_by;
 
     backdateAttempt(id, 50);
     await tick();
     assert.equal(wake(id).typed_at, null, "not yet past the 60 s bound");
 
     backdateAttempt(id, 61);
-    await tick();
+    const secondServer = await tickFromSecondServer();
     await until(() => sinkText(target).includes("third, indented"), 3000);
     assert.equal(
       sinkText(target),
@@ -189,6 +206,8 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     );
     const row = wake(id);
     assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.equal(row.delivered_by, `pid ${secondServer.pid}, ${secondServer.line}`);
+    assert.notEqual(row.delivered_by, postedBy, "fallback records the server that typed it");
     assert.ok(row.typed_at);
     assert.equal(row.fire_count, 1);
     assert.equal(row.body, BODY);
@@ -414,6 +433,7 @@ describe("everything outside the socket route keeps today's PTY delivery", () =>
     assert.equal(sinkText(target), `[hive wake #${id}] ${body}\n`, "byte-identical to main's PTY delivery");
     const row = wake(id);
     assert.equal(row.delivery_method, "pty");
+    assert.equal(row.delivered_by, `pid ${process.pid}, ${versionInfo().line}`);
     assert.equal(row.socket_attempt_at, null);
     await sleep(200);
     assert.deepEqual(sock.received, []);

@@ -1,5 +1,5 @@
 import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
-import { runningBuildChange, runningBuildNotice } from "./version.js";
+import { runningBuildChange, runningBuildNotice, versionInfo } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -116,6 +116,7 @@ export interface TimerRow {
   deliver_messaging_pane_pid: string;
 
   delivery_method: string | null;
+  delivered_by: string | null;
   socket_attempt_at: string | null;
   socket_delivery_note: string | null;
 
@@ -125,6 +126,7 @@ export interface TimerRow {
 }
 
 export const WATCH_SCOPE_PROJECT = "project";
+const DELIVERED_BY = `pid ${process.pid}, ${versionInfo().line}`;
 
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
@@ -2310,7 +2312,7 @@ async function fireDelayClaimed(
          fired_at = datetime('now'), fire_count = fire_count + 1,
          typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
          typed_seen = NULL, first_held_at = NULL,
-         socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL
+         socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL
          AND fire_count = ? AND NOT COALESCE((${REPEATING_FIRING_PENDING}), 0)
        RETURNING fire_count, fired_at`,
@@ -2771,9 +2773,9 @@ function stampRepeatingAttempt(timer: TimerRow, note: string, firstHeldAt: strin
     return (
       stmt(
         `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-           delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+           delivery_method = ?, delivered_by = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
          WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL AND typed_at IS NULL AND socket_attempt_at IS NULL`,
-      ).run(note, DELIVERY_METHOD.socketRepeating, firstHeldAt, timer.id, timer.fire_count).changes === 1
+      ).run(note, DELIVERY_METHOD.socketRepeating, DELIVERED_BY, firstHeldAt, timer.id, timer.fire_count).changes === 1
     );
   } catch {
     return false;
@@ -2785,10 +2787,10 @@ function claimRepeatingFallback(timer: TimerRow): boolean {
   try {
     return (
       stmt(
-        `UPDATE wakes SET delivery_method = ?
+        `UPDATE wakes SET delivery_method = ?, delivered_by = ?
           WHERE id = ? AND fire_count = ? AND ${repeatingSocketAwaitingWhere()}
             AND NOT EXISTS (${repeatingEvidenceSql("1")})`,
-      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id, timer.fire_count).changes === 1
+      ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, DELIVERED_BY, timer.id, timer.fire_count).changes === 1
     );
   } catch {
     return false;
@@ -2845,10 +2847,11 @@ async function deliver(
       } else {
         bestEffortRun(
           `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-             delivery_method = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+             delivery_method = ?, delivered_by = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
            WHERE id = ?`,
           note,
           DELIVERY_METHOD.socket,
+          DELIVERED_BY,
           firstHeldAt,
           timer.id,
         );
@@ -2885,13 +2888,14 @@ async function deliver(
   const recordTyped = () =>
     bestEffortRun(
       `UPDATE wakes SET typed_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), typed_busy = ?,
-         typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, delivery_method = ?,
+         typed_seen = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, delivery_method = ?, delivered_by = ?,
          confirmed_at = CASE WHEN socket_attempt_at IS NULL THEN NULL ELSE confirmed_at END
        WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
       typedBusy,
       typedSeen,
       firstHeldAt,
       method,
+      DELIVERED_BY,
       timer.id,
       firing,
       firing,
@@ -2919,7 +2923,7 @@ async function deliver(
     );
   } catch (err) {
     if (fallback && !pasted && firing === null) {
-      bestEffortRun("UPDATE wakes SET delivery_method = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, timer.id);
+      bestEffortRun("UPDATE wakes SET delivery_method = ?, delivered_by = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, DELIVERED_BY, timer.id);
     }
     if (err instanceof FiringSuperseded) return;
     if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
@@ -2961,10 +2965,10 @@ async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, 
     timer.delivery_method === DELIVERY_METHOD.socketRepeating
       ? claimRepeatingFallback(timer)
       : stmt(
-          `UPDATE wakes SET delivery_method = ?
+          `UPDATE wakes SET delivery_method = ?, delivered_by = ?
             WHERE id = ? AND ${socketAwaitingWhere()}
               AND NOT EXISTS (${promptEvidenceSql("wakes.socket_attempt_at").replace("MIN(created_at)", "1")})`,
-        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, timer.id).changes === 1;
+        ).run(DELIVERY_METHOD.ptyAfterSocketTimeout, DELIVERED_BY, timer.id).changes === 1;
   if (!claimed) return false;
   await deliver(timer, withReDelivered(timer.socket_delivery_note), choices, decision.typedSeen, decision.firstHeldAt, decision.owner, true);
   return true;
