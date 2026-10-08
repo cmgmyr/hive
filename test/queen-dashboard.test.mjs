@@ -177,6 +177,16 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /lead dead/);
   });
 
+  it("queen dashboard renders a dormant lead neutrally and a dead pane as lead dead", () => {
+    const dormant = proj(5, "quiet", { lead: { state: "dormant", agent_id: 5, turn: "unknown", ended_at: "2026-10-08 12:34:56" } });
+    const dead = proj(6, "stuck", { lead: { state: "dead_pane", agent_id: 6, turn: "unknown", ended_at: null } });
+    const html = renderQueenDashboard(report([dormant, dead]), { kind: "missing" }, noLinks);
+    assert.equal((html.match(/lead dormant/g) ?? []).length, 2);
+    assert.match(html, /<span class="status status-off">lead dormant<\/span>/);
+    assert.match(html, /lead dead/);
+    assert.doesNotMatch(html, /status-fail">lead dormant/);
+  });
+
   it("shows the report's turn beside lead up on a card and a grid row, and nothing when unknown", () => {
     const ended = renderQueenDashboard(report([proj(1, "moving", { lead: { state: "alive", agent_id: 1, turn: "turn_ended" } })]), { kind: "missing" }, noLinks);
     assert.equal((ended.match(/<span class="turn turn-end">turn ended<\/span>/g) ?? []).length, 2);

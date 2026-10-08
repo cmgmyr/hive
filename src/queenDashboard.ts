@@ -181,6 +181,8 @@ function leadPill(p: PortfolioProject): string {
       return `<span class="status status-ok">lead up</span>${turnPill(p)}`;
     case "dead_pane":
       return '<span class="status status-fail">lead dead</span>';
+    case "dormant":
+      return '<span class="status status-off">lead dormant</span>';
     case "unknown":
       return '<span class="status status-off">lead unknown</span>';
     default:
@@ -283,7 +285,7 @@ function quietList(
     '<section class="card"><ul class="quiet-list">' +
     list
       .map((p) => {
-        const sub = `${p.lead.state === "alive" ? (turnText(p) ? `lead up, ${turnText(p)}` : "lead up") : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
+        const sub = `${p.lead.state === "alive" ? (turnText(p) ? `lead up, ${turnText(p)}` : "lead up") : p.lead.state === "dead_pane" ? "lead dead" : p.lead.state === "dormant" ? "lead dormant" : p.lead.state === "unknown" ? "lead unknown" : "no lead"}, ${p.todos.open} open`;
         return (
           `<li data-project="${p.id}"><span>${projectLink(p, href)}` +
           `<a class="sub" href="#row-${p.id}" data-jump="${p.id}">${esc(sub)}</a></span>` +

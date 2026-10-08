@@ -3,7 +3,7 @@ import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
-import { readLeadTurnState } from "./leadState.js";
+import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
@@ -53,7 +53,7 @@ export interface PortfolioProject {
   root_exists: boolean;
   lane: PortfolioLane;
   reasons: PortfolioReason[];
-  lead: { state: "alive" | "dead_pane" | "none" | "unknown"; agent_id: number | null; turn: PortfolioLeadTurn };
+  lead: { state: "alive" | "dead_pane" | "dormant" | "none" | "unknown"; agent_id: number | null; turn: PortfolioLeadTurn; ended_at: string | null };
   workers: {
     working: number;
     idle: number;
@@ -162,14 +162,17 @@ function projectRow(
   const workers = { working: 0, idle: 0, needs_input: 0, other: 0, unreachable: 0, unconfirmed: 0 };
   let liveWorking = 0;
   let liveWaiting = 0;
-  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown" };
+  let lead: PortfolioProject["lead"] = { state: "none", agent_id: null, turn: "unknown", ended_at: null };
   for (const a of agents) {
     if (a.kind === "lead") {
-      const live = liveness(a);
+      const ownership = rowOwnership(a, snapshot);
+      const live = ownershipLiveness(ownership);
+      const ended = leadSessionEnded(a, ownership);
       lead = {
-        state: live === true ? "alive" : live === false ? "dead_pane" : "unknown",
+        state: live === true ? "alive" : live === false ? (ended ? "dormant" : "dead_pane") : "unknown",
         agent_id: a.id,
         turn: live === true ? leadTurnFor(a.id, a.pane_pid) : "unknown",
+        ended_at: ended?.ended_at ?? null,
       };
       continue;
     }
@@ -211,7 +214,7 @@ function projectRow(
 
   const found = new Set<PortfolioReason>();
   if (tagged.length > 0) found.add("needs_human");
-  if (lead.state === "dead_pane" && (todos.in_progress > 0 || wakeCounts.pending > 0)) found.add("dead_lead_pane");
+  if ((lead.state === "dead_pane" || lead.state === "dormant") && (todos.in_progress > 0 || wakeCounts.pending > 0)) found.add("dead_lead_pane");
   if (!rootExists && (activeTodos > 0 || wakeCounts.pending > 0)) found.add("missing_root_with_work");
   if (liveWaiting > 0) found.add("worker_needs_input");
   if (wakeCounts.overdue_grace > 0) found.add("wake_overdue_5m");

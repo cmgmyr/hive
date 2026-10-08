@@ -63,6 +63,7 @@ import {
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
+import { leadSessionEnded } from "../leadState.js";
 import {
   capturePane,
   captureFinalScreen,
@@ -510,7 +511,6 @@ function nextWorkerName(projectId: number): string {
 const PANE_READY_MS = Number(process.env.HIVE_SPAWN_READY_MS ?? 45_000);
 
 export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): Liveness {
-
   if (row.status !== "running") return false;
   return ownershipLiveness(rowOwnership(row, snapshot));
 }
@@ -568,7 +568,7 @@ function paneField(row: AgentRow, alive: Liveness): { pane: string } | Record<st
 }
 
 function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
-  const alive = summaryLiveness(row, snapshot);
+  const { alive, dormant } = row.kind === LEAD_KIND ? leadSummaryLiveness(row, snapshot) : { alive: summaryLiveness(row, snapshot), dormant: null };
 
   const { state, ...provenance } = deriveProvenance(row, alive);
   return {
@@ -593,9 +593,9 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     cwd: row.cwd,
     parent_actor_id: row.parent_actor_id,
     created_at: row.created_at,
+    ...(dormant ? { dormant_since: dormant.ended_at } : {}),
   };
 }
-
 export function contextCheckpointEnv(config: ProjectYml | null): Record<string, string> {
   const value = config?.context_checkpoint_percent;
   return value == null ? {} : { HIVE_CONTEXT_CHECKPOINT_PERCENT: String(value) };
@@ -2041,4 +2041,10 @@ function readInputBox(classifier: PaneClassifier, target: string): InputBoxSnaps
   if (classifier.inputBoxSnapshot) return classifier.inputBoxSnapshot(target);
   const box = classifier.inputBoxState(target);
   return box === null ? null : { box };
+}
+
+function leadSummaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null): { alive: Liveness; dormant: { ended_at: string } | null } {
+  const ownership = row.status === "running" ? rowOwnership(row, snapshot) : null;
+  const alive = ownership === null ? false : ownershipLiveness(ownership);
+  return { alive, dormant: ownership === null ? null : leadSessionEnded(row, ownership) };
 }
