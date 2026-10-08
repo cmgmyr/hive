@@ -69,7 +69,81 @@ describe("classify: allows ordinary tmux commands", () => {
 });
 
 describe("classify: allows commands with no tmux in them", () => {
-  const cases = ["echo hello", "ls -la", "git status", "npm test", "pkill -f some-other-process"];
+  const cases = ["echo hello", "ls -la", "git status", "npm test"];
+  for (const command of cases) {
+    it(command, () => {
+      assert.equal(classify(command).deny, false, command);
+    });
+  }
+});
+
+describe("classify: denies every pkill and killall, tmux or not", () => {
+  const cases = [
+    "pkill -f some-other-process",
+    'pkill -f "tail -f /dev/null" -P 1',
+    "killall node",
+    "/usr/bin/pkill x",
+    "sudo pkill x",
+    'bash -c "pkill -f x"',
+    "cd /tmp && pkill x",
+  ];
+  for (const command of cases) {
+    it(command, () => {
+      const result = classify(command);
+      assert.equal(result.deny, true, command);
+      assert.equal(result.kind, "pattern-kill", command);
+    });
+  }
+});
+
+describe("classify: denies a kill fed by pgrep", () => {
+  const cases = [
+    "kill $(pgrep -f x)",
+    "kill -9 $(pgrep x)",
+    "kill `pgrep x`",
+    "pgrep -f x | xargs kill",
+    "pgrep x | xargs -r kill -9",
+    'kill "$(pgrep x)"',
+    "pgrep x |\n  xargs kill",
+    "for p in $(pgrep x); do kill $p; done",
+    "pgrep x | while read p; do kill $p; done",
+  ];
+  for (const command of cases) {
+    it(command, () => {
+      const result = classify(command);
+      assert.equal(result.deny, true, command);
+      assert.equal(result.kind, "pattern-kill", command);
+    });
+  }
+});
+
+describe("classify: denies kill to pid -1", () => {
+  const cases = ["kill -9 -1", "kill -TERM -1", "kill -s KILL -1", "kill -- -1", "cd /tmp && kill -9 -1 2>/dev/null", 'sh -c "kill -9 -1"'];
+  for (const command of cases) {
+    it(command, () => {
+      const result = classify(command);
+      assert.equal(result.deny, true, command);
+      assert.equal(result.kind, "pattern-kill", command);
+    });
+  }
+});
+
+describe("classify: allows a kill by recorded pid, a process-group kill and a read-only pgrep", () => {
+  const cases = [
+    "kill 1234",
+    "kill -9 1234",
+    "kill $!",
+    'kill "$pid"',
+    "kill $(cat /tmp/x/rig.pid)",
+    "kill -0 1234",
+    "kill -1 1234",
+    "kill -- -4321",
+    "pgrep -lf node",
+    "ps -ax | grep node",
+    "x=$(pgrep -f node); echo $x",
+    "tmux kill-session -t scratch-1",
+    "cd /repo/.agents/worktrees/1787-pkill-guard && git status",
+  ];
   for (const command of cases) {
     it(command, () => {
       assert.equal(classify(command).deny, false, command);
@@ -165,6 +239,21 @@ describe("wrapper: denies via exit code 2 + stderr, never stdout", () => {
     const result = runGuard("tmux kill-server");
     assert.match(result.stderr, /\$TMUX/);
     assert.match(result.stderr, /even if the directory exists/);
+  });
+
+  it("the hook script denies a pkill with the pattern-kill message, not the tmux one", () => {
+    const result = runGuard('pkill -f "tail -f /dev/null" -P 1');
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /BLOCKED/);
+    assert.match(result.stderr, /every process of yours whose argv contains the text/);
+    assert.match(result.stderr, /option typed after it/);
+    assert.match(result.stderr, /pid=\$!/);
+    assert.match(result.stderr, /kill "\$pid"/);
+    assert.match(result.stderr, /git commit -F <file>/);
+    assert.match(result.stderr, /gh pr create --body-file <path>/);
+    assert.doesNotMatch(result.stderr, /TMUX_TMPDIR/);
+    assert.doesNotMatch(result.stderr, /kill-server/);
   });
 
   it("a multi-line block reaching the guard via the real stdin wrapper, not just classify() directly", () => {

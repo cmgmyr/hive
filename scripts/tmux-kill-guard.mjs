@@ -11,17 +11,41 @@ const TMUX_INVOCATION_RE = /(\S*\/)?\btmux\b/;
 const KILL_SERVER_RE = /\bkill-server\b/;
 
 const EXPLICIT_S_RE = /(^|[\s'"`])-S/;
-const PKILL_KILLALL_RE = /\b(pkill|killall)\b/;
-const NAMES_TMUX_RE = /\btmux\b/;
+const PKILL_KILLALL_RE = /(?<![\w-])(pkill|killall5?)(?![\w-])/;
+const PGREP_SUBST = "(?:\\$\\(|`)\\s*(?:\\S*\\/)?pgrep\\b";
+const KILL_FED_BY_PGREP_RES = [
+  new RegExp(`\\bkill\\b[^;&|\\n]*${PGREP_SUBST}`),
+  new RegExp(`\\bin\\s+${PGREP_SUBST}[^\\n]*\\bkill\\b`),
+  /\bpgrep\b[^\n]*\|\s*xargs\b[^;&|\n]*\bkill\b/,
+  /\bpgrep\b[^\n]*\|\s*while\b[\s\S]*\bkill\b/,
+];
+const KILL_ARGS_RE = /(?:^|[\s(`'"/])kill\s+(.*)$/;
+
+function killsPidMinusOne(segment) {
+  const match = KILL_ARGS_RE.exec(segment);
+  if (!match) return false;
+  const tokens = match[1]
+    .split(/\s+/)
+    .filter((token) => token !== "" && !/^\d*[<>]/.test(token))
+    .map((token) => token.replace(/^["'`(]+|["'`)]+$/g, ""));
+  return tokens.slice(1).includes("-1");
+}
 
 export function classify(command) {
   if (typeof command !== "string" || command.length === 0) {
     return { deny: false };
   }
 
+  if (PKILL_KILLALL_RE.test(command)) {
+    return { deny: true, kind: "pattern-kill", reason: "pkill/killall selects processes by pattern" };
+  }
+  if (KILL_FED_BY_PGREP_RES.some((re) => re.test(command))) {
+    return { deny: true, kind: "pattern-kill", reason: "a kill fed by pgrep selects processes by pattern" };
+  }
+
   for (const segment of splitSegments(command)) {
-    if (PKILL_KILLALL_RE.test(segment) && NAMES_TMUX_RE.test(segment)) {
-      return { deny: true, reason: "pkill/killall naming tmux is the same catastrophe spelled differently" };
+    if (killsPidMinusOne(segment)) {
+      return { deny: true, kind: "pattern-kill", reason: "kill to pid -1 signals every process you own" };
     }
 
     const tmuxMatch = TMUX_INVOCATION_RE.exec(segment);
@@ -31,6 +55,7 @@ export function classify(command) {
     if (KILL_SERVER_RE.test(invocation) && !EXPLICIT_S_RE.test(invocation)) {
       return {
         deny: true,
+        kind: "tmux",
         reason: "tmux kill-server without an explicit -S can fall back to the shared socket",
       };
     }
@@ -41,9 +66,32 @@ export function classify(command) {
 
 const SAFE_FORM = 'tmux -S "$TMUX_TMPDIR/tmux-$(id -u)/default" kill-server';
 
-function denialMessage(reason) {
+const PROSE_ESCAPE =
+  "Writing ABOUT this guard (a commit message, a PR title or body) can trip it too --\n" +
+  "it reads the whole Bash command string with no way to tell prose from a real\n" +
+  "invocation, and is not meant to try. Put the text on disk instead:\n" +
+  "  git commit -F <file>\n" +
+  "  gh pr create --body-file <path>\n";
+
+function patternKillMessage(reason) {
   return (
     `❌ BLOCKED: ${reason}.\n` +
+    "A pattern kill signals every process of yours whose argv contains the text, which\n" +
+    "is usually more than you meant. On macOS the pattern tool stops reading options at\n" +
+    "the first pattern, so an option typed after it (-P 1) becomes another pattern and\n" +
+    'matches everything with a "1" in its argv, hive leads and servers included. kill\n' +
+    "to pid -1 signals everything you own.\n" +
+    "Kill a process you started by the pid you recorded when you started it:\n" +
+    "  your-command & pid=$!\n" +
+    '  kill "$pid"\n' +
+    PROSE_ESCAPE
+  );
+}
+
+function denialMessage(result) {
+  if (result.kind === "pattern-kill") return patternKillMessage(result.reason);
+  return (
+    `❌ BLOCKED: ${result.reason}.\n` +
     "TMUX_TMPDIR names a directory tmux must be able to reach, not a pinned server; " +
     "an unreachable one (removed, or never created) falls back to /tmp, the machine's " +
     "shared socket, and a bare kill-server there takes down every hive lead and worker " +
@@ -53,11 +101,7 @@ function denialMessage(reason) {
     "shared server. Only -S overrides $TMUX.\n" +
     "Use the safe form instead, which has nothing to fall back to:\n" +
     `  ${SAFE_FORM}\n` +
-    "Writing ABOUT this guard (a commit message, a PR title or body) can trip it too --\n" +
-    "it reads the whole Bash command string with no way to tell prose from a real\n" +
-    "invocation, and is not meant to try. Put the text on disk instead:\n" +
-    "  git commit -F <file>\n" +
-    "  gh pr create --body-file <path>\n"
+    PROSE_ESCAPE
   );
 }
 
@@ -72,7 +116,7 @@ function main() {
 
   const result = classify(command);
   if (result.deny) {
-    process.stderr.write(denialMessage(result.reason));
+    process.stderr.write(denialMessage(result));
     process.exit(2);
   }
   process.exit(0);
