@@ -332,6 +332,14 @@ describe("activity labels", () => {
     assert.equal(labelOf("task test", taskOverlap), "testing full suite");
   });
 
+  it("file is a wildcard only in test_one and literal in every other var", () => {
+    assert.equal(labelOf("node --test a.mjs", { test_all: "node --test <file>" }), "testing", "generic node --test, not a full-suite match");
+    assert.equal(labelOf("./all.sh <file>", { test_all: "./all.sh <file>" }), "testing full suite", "the literal text still matches itself");
+    assert.equal(labelOf("./all.sh a.mjs", { test_all: "./all.sh <file>" }), "running all.sh");
+    assert.equal(labelOf("./chk.sh a.mjs", { check: "./chk.sh <file>" }), "running chk.sh");
+    assert.equal(labelOf("./one.sh a.mjs", { test_one: "./one.sh <file>" }), "testing");
+  });
+
   it("quoted prose and unmatched commands never guess test or commit", () => {
     assert.equal(labelOf('echo "npm test"', { test_all: "npm test" }), "running echo");
     assert.equal(labelOf("printf 'git commit -m x'"), "running printf");

@@ -197,11 +197,12 @@ interface Matcher {
   tokens: RegExp[];
 }
 
-function matcherFor(label: string, tokens: string[]): Matcher {
-  return {
-    label,
-    tokens: tokens.map((t) => new RegExp(`^${t.split("<file>").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".+")}$`)),
-  };
+const escapeRegex = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function matcherFor(label: string, tokens: string[], wildcard: boolean): Matcher {
+  const pattern = (token: string): string =>
+    wildcard ? token.split("<file>").map(escapeRegex).join(".+") : escapeRegex(token);
+  return { label, tokens: tokens.map((t) => new RegExp(`^${pattern(t)}$`)) };
 }
 
 function configuredMatchers(vars: Vars): Matcher[] {
@@ -210,7 +211,7 @@ function configuredMatchers(vars: Vars): Matcher[] {
     const value = vars[key];
     if (typeof value !== "string" || value.trim() === "") return;
     const segments = segmentsOf(value);
-    for (const tokens of onlyLast ? segments.slice(-1) : segments) matchers.push(matcherFor(label, tokens));
+    for (const tokens of onlyLast ? segments.slice(-1) : segments) matchers.push(matcherFor(label, tokens, key === "test_one"));
   };
   add("test_one", "testing", true);
   add("test_all", "testing full suite", true);
