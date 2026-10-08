@@ -6,6 +6,7 @@ paths:
   - "src/tools/agents.ts"
   - "src/cli.ts"
   - "src/leadMessage.ts"
+  - "src/leadMessageDelivery.ts"
   - "src/harnesses.ts"
   - "src/processes.ts"
   - "scripts/restart-lead.sh"

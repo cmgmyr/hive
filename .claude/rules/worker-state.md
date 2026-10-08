@@ -10,6 +10,7 @@ paths:
   - "src/processes.ts"
   - "src/leadState.ts"
   - "src/leadWatch.ts"
+  - "src/leadMessageDelivery.ts"
 ---
 
 # Worker state, and why it has an append-only log
