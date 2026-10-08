@@ -356,11 +356,28 @@ describe("activity labels", () => {
     assert.equal(labelOf("sed -i s/a/b/ file"), "running sed");
     assert.equal(labelOf("rg foo src | head"), "reading");
     assert.equal(labelOf("npm run"), "running npm");
+    assert.equal(labelOf("cat > t.sh <<'EOF'\nnpm test\nEOF", { test_all: "npm test" }), "editing", "a heredoc body is prose");
+    assert.equal(labelOf("cat <<EOF\ngit commit -m x\nEOF"), "reading", "a bare delimiter is skipped too");
+    assert.equal(labelOf("cat > t.sh <<-'EOF'\n\tnpm test\n\tEOF\nls"), "editing");
+    assert.equal(labelOf("cat > f <<'EOF'\nnpm test\nEOF\ngit commit -am x"), "committing", "commands after the terminator still count");
+    assert.equal(labelOf("cat <<A <<B\nnpm test\nA\nnpm run build\nB\nls -la"), "reading", "two heredocs on one line");
+    assert.equal(labelOf('git commit -m "$(cat <<\'EOF\'\nnpm test passes\nEOF\n)"'), "committing");
+    assert.equal(labelOf("cat <<EOF"), "reading", "an unterminated heredoc swallows nothing it cannot see");
     assert.equal(labelOf("npm   test"), "testing");
     assert.equal(labelOf("npm 'test'"), "testing");
     assert.equal(labelOf('"npm test"'), "running npm test", "a quoted whole command is one word, not two");
     assert.equal(labelOf(""), "running shell");
     assert.equal(classifyActivity([call("Bash", {})], {}).label, "running shell");
+  });
+
+  it("a redirect makes a read an edit and a null redirect does not", () => {
+    assert.equal(labelOf("cat >> notes.md"), "editing");
+    assert.equal(labelOf("cat a > b"), "editing");
+    assert.equal(labelOf("git diff > out.patch"), "editing");
+    assert.equal(labelOf("rg foo 2>/dev/null"), "reading");
+    assert.equal(labelOf("rg foo 2>&1 | head"), "reading");
+    assert.equal(labelOf("cat 'a>b'"), "reading", "a quoted > is not a redirect");
+    assert.equal(labelOf("npm test > out.log", { test_all: "npm test" }), "testing full suite", "only a read is turned into an edit");
   });
 
   it("other tools map to reading editing reviewing or running their last name component", () => {

@@ -119,8 +119,34 @@ export function readCommitsAhead(cwd: string, projectRoot: string): number | nul
 
 type Vars = Record<string, string>;
 
+function heredocDelimiter(command: string, at: number): { delimiter: string; stripTabs: boolean; end: number } | null {
+  let i = at + 2;
+  if (command[i] === "<") return null;
+  const stripTabs = command[i] === "-";
+  if (stripTabs) i++;
+  while (command[i] === " " || command[i] === "\t") i++;
+  const quote = command[i] === "'" || command[i] === '"' ? command[i] : "";
+  if (quote) i++;
+  const start = i;
+  while (i < command.length && (quote ? command[i] !== quote : /[\w.-]/.test(command[i]))) i++;
+  if (i === start) return null;
+  return { delimiter: command.slice(start, i), stripTabs, end: quote ? i + 1 : i };
+}
+
+function skipHeredocBody(command: string, from: number, heredoc: { delimiter: string; stripTabs: boolean }): number {
+  let i = from;
+  while (i < command.length) {
+    const eol = command.indexOf("\n", i);
+    const line = command.slice(i, eol === -1 ? command.length : eol);
+    i = eol === -1 ? command.length : eol + 1;
+    if ((heredoc.stripTabs ? line.replace(/^\t+/, "") : line) === heredoc.delimiter) break;
+  }
+  return i;
+}
+
 function splitSegments(command: string): string[] {
   const segments: string[] = [];
+  const pending: { delimiter: string; stripTabs: boolean }[] = [];
   let current = "";
   let quote: string | null = null;
   for (let i = 0; i < command.length; i++) {
@@ -134,16 +160,52 @@ function splitSegments(command: string): string[] {
     } else if (ch === "'" || ch === '"') {
       quote = ch;
       current += ch;
+    } else if (ch === "<" && command[i + 1] === "<") {
+      const heredoc = heredocDelimiter(command, i);
+      if (heredoc) {
+        pending.push(heredoc);
+        current += command.slice(i, heredoc.end);
+        i = heredoc.end - 1;
+      } else {
+        current += ch;
+      }
     } else if (ch === ";" || ch === "\n" || (ch === "&" && command[i + 1] === "&")) {
       if (ch === "&") i++;
       segments.push(current);
       current = "";
+      if (ch === "\n") {
+        for (const heredoc of pending.splice(0)) i = skipHeredocBody(command, i + 1, heredoc) - 1;
+      }
     } else {
       current += ch;
     }
   }
   segments.push(current);
   return segments;
+}
+
+function writesToFile(segment: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') i++;
+      else if (ch === quote) quote = null;
+    } else if (ch === "\\") {
+      i++;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === ">") {
+      let j = i + 1;
+      if (segment[j] === ">") j++;
+      if (segment[j] === "&") continue;
+      while (segment[j] === " " || segment[j] === "\t") j++;
+      const target = /^\S*/.exec(segment.slice(j))?.[0] ?? "";
+      if (target !== "/dev/null") return true;
+      i = j + target.length - 1;
+    }
+  }
+  return false;
 }
 
 function tokenize(segment: string): string[] {
@@ -178,16 +240,21 @@ function tokenize(segment: string): string[] {
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-function commandTokens(segment: string): string[] {
+interface Segment {
+  tokens: string[];
+  writes: boolean;
+}
+
+function toSegment(segment: string): Segment {
   const tokens = tokenize(segment);
   let start = 0;
   while (start < tokens.length && ENV_ASSIGNMENT.test(tokens[start])) start++;
   const rest = tokens.slice(start);
-  return rest[0] === "cd" ? [] : rest;
+  return { tokens: rest[0] === "cd" ? [] : rest, writes: writesToFile(segment) };
 }
 
-function segmentsOf(command: string): string[][] {
-  return splitSegments(command).map(commandTokens).filter((t) => t.length > 0);
+function segmentsOf(command: string): Segment[] {
+  return splitSegments(command).map(toSegment).filter((s) => s.tokens.length > 0);
 }
 
 const basename = (token: string): string => token.split("/").pop() ?? token;
@@ -211,7 +278,7 @@ function configuredMatchers(vars: Vars): Matcher[] {
     const value = vars[key];
     if (typeof value !== "string" || value.trim() === "") return;
     const segments = segmentsOf(value);
-    for (const tokens of onlyLast ? segments.slice(-1) : segments) matchers.push(matcherFor(label, tokens, key === "test_one"));
+    for (const { tokens } of onlyLast ? segments.slice(-1) : segments) matchers.push(matcherFor(label, tokens, key === "test_one"));
   };
   add("test_one", "testing", true);
   add("test_all", "testing full suite", true);
@@ -270,10 +337,10 @@ function genericLabel(tokens: string[]): string | null {
   return null;
 }
 
-function segmentLabel(tokens: string[], matchers: Matcher[]): string | null {
+function segmentLabel({ tokens, writes }: Segment, matchers: Matcher[]): string | null {
   for (const matcher of matchers) if (matchesPrefix(tokens, matcher)) return matcher.label;
   const direct = genericLabel(tokens);
-  if (direct) return direct;
+  if (direct) return direct === "reading" && writes ? "editing" : direct;
   const unwrapped = unwrap(tokens);
   return unwrapped !== tokens && unwrapped.length > 0 ? genericLabel(unwrapped) : null;
 }
@@ -281,9 +348,9 @@ function segmentLabel(tokens: string[], matchers: Matcher[]): string | null {
 function commandLabel(command: string, matchers: Matcher[]): string {
   const segments = segmentsOf(command);
   let recognized: string | null = null;
-  for (const tokens of segments) recognized = segmentLabel(tokens, matchers) ?? recognized;
+  for (const segment of segments) recognized = segmentLabel(segment, matchers) ?? recognized;
   if (recognized) return recognized;
-  return segments.length > 0 ? `running ${basename(segments[0][0])}` : "running shell";
+  return segments.length > 0 ? `running ${basename(segments[0].tokens[0])}` : "running shell";
 }
 
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "read_file", "view_image"]);
