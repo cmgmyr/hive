@@ -49,6 +49,11 @@ function sessionEnd(id, pid = "saved-pane", event = "session_end") {
 }
 
 const leadLine = (stdout, name) => stdout.split("\n").find((line) => line.includes(`lead   ${name}`)) ?? "";
+const localTime = (utc) => {
+  const date = new Date(`${utc.replace(" ", "T")}Z`);
+  const pad2 = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+};
 
 describe("dormant lead display", () => {
   it("status labels a cleanly ended lead dormant with its end time", { skip }, async () => {
@@ -59,7 +64,7 @@ describe("dormant lead display", () => {
     const result = await runCli(["status"], { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp });
     assert.equal(result.code, 0, result.stderr);
     assert.match(leadLine(result.stdout, "ended-status"), /dormant \(session ended/);
-    assert.ok(leadLine(result.stdout, "ended-status").includes(new Date(`${endedAt.replace(" ", "T")}Z`).toLocaleString()));
+    assert.ok(leadLine(result.stdout, "ended-status").includes(localTime(endedAt)));
     assert.match(leadLine(result.stdout, "reissued-ended-status"), /dormant \(session ended/);
   });
 

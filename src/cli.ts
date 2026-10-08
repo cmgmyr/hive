@@ -100,7 +100,8 @@ import {
   transcriptStaleness,
   wasHeldForPaneIdentity,
 } from "./scheduler.js";
-import { readTurnCount } from "./turnCount.js"; import { leadSessionEnded } from "./leadState.js";
+import { readTurnCount } from "./turnCount.js";
+import { leadSessionEnded } from "./leadState.js";
 import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
@@ -443,7 +444,6 @@ async function ensureTrusted(
   ).run(projectId, name, hash);
   return true;
 }
-
 function isTrusted(
   projectId: number,
   name: string,
@@ -2051,6 +2051,8 @@ const LEAD_OWNERSHIP_LABEL: Record<RowOwnership, string> = {
   unknown: "pane identity unknown",
 };
 
+function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string { const ended = leadSessionEnded(row, ownership); return ended ? `dormant (session ended ${formatLeadEndedAt(ended.ended_at)})` : LEAD_OWNERSHIP_LABEL[ownership]; }
+
 function cmdStatus(): void {
   janitor();
   let anyOutput = false;
@@ -2074,7 +2076,8 @@ function cmdStatus(): void {
     const agents = db
       .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY kind DESC, id")
       .all(project.id) as (ProvenanceRow & {
-      id: number; kind: string;
+      id: number;
+      kind: string;
       name: string;
       tmux_target: string;
       tmux_socket: string;
@@ -2144,13 +2147,11 @@ function cmdStatus(): void {
   }
   if (!anyOutput) console.log("Nothing running and no open work in any project.");
 }
-
 const report = (level: string, label: string, lines: string[]) => {
   console.log(`  ${level}  ${label}: ${lines[0]}`);
   for (const line of lines.slice(1)) console.log(`        ${line}`);
 };
 const info = (label: string, ...lines: string[]) => report("info", label, lines);
-
 let warnings = 0;
 let gatingWarnings = 0;
 const warn = (label: string, ...lines: string[]) => {
@@ -2170,7 +2171,6 @@ type VerboseOnlyCheck = "worker live state";
 const verboseInfo = (_check: VerboseOnlyCheck, label: string, ...lines: string[]) => {
   if (doctorVerbose) report("info", label, lines);
 };
-
 function cmdUpgrade(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--check", "--run"] });
   rejectUnknownFlags("upgrade", parsed, "--check, --run");
@@ -4249,6 +4249,13 @@ if (!COMMANDS.includes(command)) {
 }
 if (command !== "upgrade") migrate();
 
+function formatLeadEndedAt(utc: string): string {
+  const date = new Date(`${utc.replace(" ", "T")}Z`);
+  if (Number.isNaN(date.getTime())) return utc;
+  const pad2 = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+}
+
 try {
   switch (command) {
     case "lead":
@@ -4343,11 +4350,4 @@ try {
 } catch (e) {
   console.log(errorMessage(e));
   process.exit(1);
-}
-
-function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string {
-  const ended = leadSessionEnded(row, ownership);
-  return ended
-    ? `dormant (session ended ${new Date(`${ended.ended_at.replace(" ", "T")}Z`).toLocaleString()})`
-    : LEAD_OWNERSHIP_LABEL[ownership];
 }

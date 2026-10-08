@@ -166,7 +166,7 @@ function projectRow(
   for (const a of agents) {
     if (a.kind === "lead") {
       const ownership = rowOwnership(a, snapshot);
-      const live = ownership === "live" ? true : ownership === "unknown" ? null : false;
+      const live = ownershipLiveness(ownership);
       const ended = leadSessionEnded(a, ownership);
       lead = {
         state: live === true ? "alive" : live === false ? (ended ? "dormant" : "dead_pane") : "unknown",
