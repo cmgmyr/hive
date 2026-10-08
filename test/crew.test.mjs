@@ -21,7 +21,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 const { addProject } = await import("../dist/context.js");
-const { classifyActivity, collectCrew, readCommitsAhead } = await import("../dist/crew.js");
+const { classifyActivity, collectCrew, readCommitsAhead, reviewSkillsOf } = await import("../dist/crew.js");
 const { sessionName } = await import("../dist/tmux.js");
 const { readRecentToolCalls } = await import("../dist/transcript.js");
 const { harnessFor, registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
@@ -433,11 +433,19 @@ describe("activity labels", () => {
     assert.equal(one(call("mcp__hive__todo_list")), "reading");
     assert.equal(one(call("mcp__hive__todo_update")), "running todo_update");
     assert.equal(one(call("functions.exec", { source: "git commit; npm test" })), "running exec", "orchestration source is never read");
-    const withSkill = (c) => classifyActivity([c], { review_skill: "code-review" }).label;
+    const withSkill = (c) => classifyActivity([c], { review_skills: "code-review" }).label;
     assert.equal(withSkill(call("Skill", { skill: "code-review" })), "reviewing");
     assert.equal(withSkill(call("Skill", { skill: "other" })), "running Skill");
-    assert.equal(one(call("Skill", { skill: "code-review" })), "running Skill", "no review_skill var means no skill-name matcher");
-    assert.equal(classifyActivity([call("Skill", { skill: "x" })], { review_skill: "  " }).label, "running Skill");
+    assert.equal(one(call("Skill", { skill: "code-review" })), "running Skill", "no review_skills var means no skill-name matcher");
+    assert.equal(classifyActivity([call("Skill", { skill: "x" })], { review_skills: "  " }).label, "running Skill");
+    const two = { review_skills: " code-review ,, arch-review , " };
+    assert.equal(classifyActivity([call("Skill", { skill: "code-review" })], two).label, "reviewing");
+    assert.equal(classifyActivity([call("Skill", { skill: "arch-review" })], two).label, "reviewing");
+    assert.equal(classifyActivity([call("Skill", { skill: "other-review" })], two).label, "running Skill", "an unlisted skill is not a review");
+    assert.equal(classifyActivity([call("Skill", { skill: "" })], two).label, "running Skill", "a blank list item matches nothing");
+    assert.deepEqual(reviewSkillsOf(two), ["code-review", "arch-review"]);
+    assert.deepEqual(reviewSkillsOf({ review_skills: ",  ," }), []);
+    assert.deepEqual(reviewSkillsOf({}), []);
     assert.equal(one(call("Agent", { subagent_type: "code-reviewer" })), "reviewing");
     assert.equal(one(call("Task", { subagent_type: "review-agent" })), "reviewing");
     assert.equal(one(call("Agent", { subagent_type: "Explore" })), "running Agent");
@@ -462,13 +470,18 @@ describe("review marker end to end", () => {
       message("assistant", "Running the pass.\n$code-review --effort=medium"),
       codexCallRecord("exec_command", { cmd: "rg foo src" }, "2026-10-08T11:00:02Z"),
     ));
-    const calls = readRecentToolCalls("codex", codexWorker(file), { reviewSkill: "code-review" }).calls;
+    const calls = readRecentToolCalls("codex", codexWorker(file), { reviewSkills: ["code-review"] }).calls;
     assert.deepEqual(calls.map((c) => c.name), ["Bash", "Skill", "Bash"]);
-    assert.deepEqual(classifyActivity(calls, { review_skill: "code-review" }), { label: "reviewing", since: "2026-10-08T11:00:01.000Z", lower_bound: false });
-    assert.equal(classifyActivity(calls, {}).label, "reading", "absent review_skill: no skill-name matcher");
+    assert.deepEqual(classifyActivity(calls, { review_skills: "code-review" }), { label: "reviewing", since: "2026-10-08T11:00:01.000Z", lower_bound: false });
+    assert.equal(classifyActivity(calls, {}).label, "reading", "absent review_skillss: no skill-name matcher");
+    const second = join(dirs.tmp, "codex-review-second.jsonl");
+    writeFileSync(second, jsonl(message("assistant", "$arch-review")));
+    const secondCalls = readRecentToolCalls("codex", codexWorker(second), { reviewSkills: ["code-review", "arch-review"] }).calls;
+    assert.deepEqual(secondCalls.map((c) => c.input.skill), ["arch-review"], "the second listed name marks too");
+    assert.equal(classifyActivity(secondCalls, { review_skills: "code-review, arch-review" }).label, "reviewing");
     const user = join(dirs.tmp, "codex-review-user.jsonl");
     writeFileSync(user, jsonl(message("user", "$code-review"), message("assistant", "ok $code-review inline"), message("assistant", "$code-reviewer")));
-    assert.deepEqual(readRecentToolCalls("codex", codexWorker(user), { reviewSkill: "code-review" }).calls, [], "user text, mid-line mentions and longer names are not markers");
+    assert.deepEqual(readRecentToolCalls("codex", codexWorker(user), { reviewSkills: ["code-review"] }).calls, [], "user text, mid-line mentions and longer names are not markers");
   });
 });
 
@@ -476,7 +489,7 @@ describe("activity timing", () => {
   const at = (n) => `2026-10-08T10:00:${String(n).padStart(2, "0")}.000Z`;
 
   it("review reading timing and editing transition follow bounded evidence", () => {
-    const reviewVars = { review_skill: "code-review" };
+    const reviewVars = { review_skills: "code-review" };
     const review = [call("Skill", { skill: "code-review" }, at(1)), call("Read", {}, at(2)), call("Grep", {}, at(3))];
     assert.deepEqual(classifyActivity(review, reviewVars), { label: "reviewing", since: at(1), lower_bound: true });
     const ended = [...review, call("Edit", {}, at(4))];

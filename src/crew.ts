@@ -122,9 +122,9 @@ export function readCommitsAhead(cwd: string, projectRoot: string): number | nul
 
 type Vars = Record<string, string>;
 
-export function reviewSkillOf(vars: Vars): string | undefined {
-  const value = vars.review_skill;
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+export function reviewSkillsOf(vars: Vars): string[] {
+  const value = vars.review_skills;
+  return typeof value === "string" ? value.split(",").map((name) => name.trim()).filter((name) => name !== "") : [];
 }
 
 function heredocDelimiter(command: string, at: number): { delimiter: string; stripTabs: boolean; end: number } | null {
@@ -364,11 +364,11 @@ function commandLabel(command: string, matchers: Matcher[]): string {
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "read_file", "view_image"]);
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "apply_patch"]);
 
-function callLabel(call: TranscriptToolCall, matchers: Matcher[], reviewSkill: string | undefined): string {
+function callLabel(call: TranscriptToolCall, matchers: Matcher[], reviewSkills: string[]): string {
   const { name, input } = call;
   if (READ_TOOLS.has(name)) return "reading";
   if (EDIT_TOOLS.has(name)) return "editing";
-  if (name === SKILL_TOOL) return reviewSkill && input.skill === reviewSkill ? "reviewing" : `running ${SKILL_TOOL}`;
+  if (name === SKILL_TOOL) return typeof input.skill === "string" && reviewSkills.includes(input.skill) ? "reviewing" : `running ${SKILL_TOOL}`;
   if ((name === "Agent" || name === "Task") && typeof input.subagent_type === "string" && /review/i.test(input.subagent_type)) {
     return "reviewing";
   }
@@ -380,11 +380,11 @@ function callLabel(call: TranscriptToolCall, matchers: Matcher[], reviewSkill: s
 export function classifyActivity(calls: TranscriptToolCall[], vars: Vars): CrewActivity {
   if (calls.length === 0) return { label: "", since: null, lower_bound: false };
   const matchers = configuredMatchers(vars);
-  const reviewSkill = reviewSkillOf(vars);
+  const reviewSkills = reviewSkillsOf(vars);
   const labels: string[] = [];
   let reviewing = false;
   for (const call of calls) {
-    let label = callLabel(call, matchers, reviewSkill);
+    let label = callLabel(call, matchers, reviewSkills);
     if (label === "reviewing") reviewing = true;
     else if (label === "reading" && reviewing) label = "reviewing";
     else reviewing = false;
@@ -443,7 +443,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     const harness = harnessFor(row.command);
     const kind = harness.contextRecord;
     const worker = { actor_id: row.actor_id, cwd: row.cwd, session_id: row.session_id, transcript_path: row.transcript_path };
-    const calls = kind ? readRecentToolCalls(kind, worker, { reviewSkill: reviewSkillOf(vars) }).calls : [];
+    const calls = kind ? readRecentToolCalls(kind, worker, { reviewSkills: reviewSkillsOf(vars) }).calls : [];
     let state = row.agent_state;
     let activity = classifyActivity(calls, vars);
     if (activity.label === "") activity = { label: state, since: null, lower_bound: false };

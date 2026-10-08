@@ -100,8 +100,8 @@ describe("readRecentToolCalls", () => {
       claudeText("starting\n$code-review --effort=medium"),
       claudeCall("Bash", { command: "npm test" }),
     ));
-    const fromClaude = readRecentToolCalls("claude", worker(claude), { reviewSkill: "code-review" }).calls;
-    assert.deepEqual(readRecentToolCalls("claude", worker(claude)).calls.map((c) => c.name), ["Edit", "Bash"], "no review_skill, no marker");
+    const fromClaude = readRecentToolCalls("claude", worker(claude), { reviewSkills: ["code-review"] }).calls;
+    assert.deepEqual(readRecentToolCalls("claude", worker(claude)).calls.map((c) => c.name), ["Edit", "Bash"], "no review_skills, no marker");
     assert.deepEqual(fromClaude.map((c) => c.name), ["Edit", "Skill", "Bash"]);
     assert.equal(fromClaude[1].input.skill, "code-review");
     assert.equal(fromClaude[0].at, "2026-10-08T10:00:00Z");
@@ -117,7 +117,7 @@ describe("readRecentToolCalls", () => {
       codexCall("functions.exec", { source: "await tools.exec_command({cmd: 'git commit'})" }),
       codexCall("mcp__hive__todo_update", { todo_id: 1 }),
     ));
-    const fromCodex = readRecentToolCalls("codex", worker(codex), { reviewSkill: "code-review" }).calls;
+    const fromCodex = readRecentToolCalls("codex", worker(codex), { reviewSkills: ["code-review"] }).calls;
     assert.deepEqual(fromCodex.map((c) => c.name), ["Bash", "apply_patch", "exec", "todo_update"]);
     assert.deepEqual(fromCodex[0].input, { command: "git status" });
     assert.equal(fromCodex[2].input.source.includes("git commit"), true, "the orchestration source is carried as text, never run or unpacked");

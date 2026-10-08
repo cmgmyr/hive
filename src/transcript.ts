@@ -153,7 +153,7 @@ export const RECENT_TOOL_CALLS = 8;
 export const SKILL_TOOL = "Skill";
 
 export interface ToolCallOptions {
-  reviewSkill?: string;
+  reviewSkills?: string[];
 }
 
 export function lastComponent(name: string): string {
@@ -164,12 +164,14 @@ function timestamp(record: JsonRecord): string | null {
   return typeof record.timestamp === "string" && record.timestamp !== "" ? record.timestamp : null;
 }
 
-function reviewMarker(texts: unknown[], at: string | null, skill: string | undefined): TranscriptToolCall[] {
-  if (!skill) return [];
-  const invocation = new RegExp(`^\\s*\\$${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "m");
-  return texts.some((text) => typeof text === "string" && invocation.test(text))
-    ? [{ name: SKILL_TOOL, input: { skill }, at }]
-    : [];
+function reviewMarker(texts: unknown[], at: string | null, skills: string[]): TranscriptToolCall[] {
+  for (const skill of skills) {
+    const invocation = new RegExp(`^\\s*\\$${skill.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "m");
+    if (texts.some((text) => typeof text === "string" && invocation.test(text))) {
+      return [{ name: SKILL_TOOL, input: { skill }, at }];
+    }
+  }
+  return [];
 }
 
 function claudeToolCalls(record: JsonRecord, options: ToolCallOptions): TranscriptToolCall[] {
@@ -184,7 +186,7 @@ function claudeToolCalls(record: JsonRecord, options: ToolCallOptions): Transcri
     if (block.type === "tool_use" && typeof block.name === "string") {
       calls.push({ name: block.name, input: object(block.input) ?? {}, at });
     } else if (block.type === "text") {
-      calls.push(...reviewMarker([block.text], at, options.reviewSkill));
+      calls.push(...reviewMarker([block.text], at, options.reviewSkills ?? []));
     }
   }
   return calls;
@@ -196,7 +198,7 @@ function codexToolCalls(record: JsonRecord, options: ToolCallOptions): Transcrip
   const at = timestamp(record);
   if (payload.type === "message") {
     if (payload.role !== "assistant" || !Array.isArray(payload.content)) return [];
-    return reviewMarker(payload.content.map((part) => object(part)?.text), at, options.reviewSkill);
+    return reviewMarker(payload.content.map((part) => object(part)?.text), at, options.reviewSkills ?? []);
   }
   if (typeof payload.name !== "string") return [];
   const name = lastComponent(payload.name);
