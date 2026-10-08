@@ -100,7 +100,7 @@ import {
   transcriptStaleness,
   wasHeldForPaneIdentity,
 } from "./scheduler.js";
-import { readTurnCount } from "./turnCount.js";
+import { readTurnCount } from "./turnCount.js"; import { leadSessionEnded } from "./leadState.js";
 import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
@@ -2074,7 +2074,7 @@ function cmdStatus(): void {
     const agents = db
       .prepare("SELECT * FROM agents WHERE project_id = ? AND status = 'running' ORDER BY kind DESC, id")
       .all(project.id) as (ProvenanceRow & {
-      kind: string;
+      id: number; kind: string;
       name: string;
       tmux_target: string;
       tmux_socket: string;
@@ -2121,7 +2121,7 @@ function cmdStatus(): void {
         a.kind === "agent"
           ? describeForHuman(deriveProvenance(a, null))
           : a.kind === LEAD_KIND
-            ? LEAD_OWNERSHIP_LABEL[rowOwnership(a, statusSnapshot())]
+            ? leadStatusLabel(a, rowOwnership(a, statusSnapshot()))
             : (whereIs.get(a.name) ?? "running");
 
       const label = a.kind === "command" ? "cmd  " : a.kind === LEAD_KIND ? "lead " : "agent";
@@ -4343,4 +4343,11 @@ try {
 } catch (e) {
   console.log(errorMessage(e));
   process.exit(1);
+}
+
+function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string {
+  const ended = leadSessionEnded(row, ownership);
+  return ended
+    ? `dormant (session ended ${new Date(`${ended.ended_at.replace(" ", "T")}Z`).toLocaleString()})`
+    : LEAD_OWNERSHIP_LABEL[ownership];
 }

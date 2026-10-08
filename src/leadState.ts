@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
+import type { RowOwnership } from "./tmux.js";
 
 export type LeadTurn = "unknown" | "working" | "idle";
 
@@ -20,6 +21,15 @@ interface LeadHookPayload {
 
 export function readLeadTurnState(agentId: number): LeadTurnState | null {
   return (db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(agentId) as LeadTurnState | undefined) ?? null;
+}
+
+export function leadSessionEnded(
+  row: { id: number; pane_pid: string },
+  ownership: RowOwnership,
+): { ended_at: string } | null {
+  if ((ownership !== "gone" && ownership !== "reissued") || row.pane_pid === "") return null;
+  const turn = readLeadTurnState(row.id);
+  return turn?.last_event === "session_end" && turn.pane_pid === row.pane_pid ? { ended_at: turn.changed_at } : null;
 }
 
 function isHiveFirstMessage(payload: LeadHookPayload): boolean {
