@@ -10,7 +10,7 @@ lead_sidebar: true
 
 Restart the lead (`hive lead`). A Claude lead then starts with `--plugin-dir` pointing at the bundled `claude-plugin/crew` mod, which resolves relative to the installed `dist/`, so it follows the version you installed. Codex leads, lead commands hive does not recognise as Claude, and workers never get the flag. `false` and `null` both mean off. A value that is not a boolean warns and keeps the previous value.
 
-The pane docks at the right of a terminal 110 columns wide or more. Narrower, run `/hive-crew` in the lead to open it above the prompt. Inline, the pane clips after about twelve rows, so the header line carries the needs-you count and the next wake, and a failed read shows right under it.
+At session start the pane opens by itself only in a terminal 144 columns wide or more, because Claude Code places an unasked pane from that width. Run `/hive-crew` in the lead to open it from 110 columns; it then docks at the right. Below 110 columns it opens inline above the prompt. Inline, the pane clips after about twelve rows (about five lanes), so the header line carries the needs-you count and the next wake, and a failed read shows right under it. A crew larger than that loses its lower rows inline; docked, it has the full height. The zoomed layout was not machine-captured; check it by eye.
 
 ## What a row shows
 
@@ -35,6 +35,6 @@ It prints one object: `schema_version` (1), `project`, `read_at`, `lanes`, `need
 
 ## The mod
 
-`claude-plugin/crew/model.mjs` holds all logic and is tested under `node:test`. `hooks/register.tsx` only owns the pane state, the clock and the JSX. The mod reads nothing but one `hive crew --json` call every five seconds (4000 ms timeout, run in the session's working directory) and a start-up check of `HIVE_LEAD`; if that is not `1` the mod registers nothing, so a global install of the plugin does nothing inside a worker. A failed, slow or malformed read keeps the last good rows and adds a `read failed` line. A schema version other than 1 is a failed read.
+`claude-plugin/crew/model.mjs` holds all logic and is tested under `node:test`. `hooks/register.tsx` only owns the pane state, the clock and the JSX. The mod reads nothing but one `hive crew --json` call every five seconds (4000 ms timeout, run in the session's working directory) and a start-up check of `HIVE_LEAD`; if that is not `1` the mod registers no command and never polls or opens a pane, so a global install of the plugin does nothing inside a worker. A failed, slow or malformed read keeps the last good rows and adds a `read failed` line. If the very first read fails there are no rows to keep, so the pane shows only the `read failed` line and `no data yet`. A schema version other than 1 is a failed read.
 
 Older servers: `agent_spawn` refuses the `todo_id` parameter until the MCP server restarts onto the new build.
