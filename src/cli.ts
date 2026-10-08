@@ -779,6 +779,9 @@ async function cmdLead(argv: string[]): Promise<void> {
         leadCommand += ` --name ${shellQuote(project.name)}`;
       }
       leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
+      if (config?.lead_sidebar === true && leadHarness.name === "claude") {
+        leadCommand += ` ${["--plugin-dir", crewPluginDir()].map(shellQuote).join(" ")}`;
+      }
       if (renderedPosture !== null) {
         const posturePath = writeProjectPosture(project.id, renderedPosture);
         leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(posturePath).map(shellQuote).join(" ")}`;
@@ -1136,6 +1139,8 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
+
+# lead_sidebar: true            # a crew pane in a claude lead (default: false; restart the lead)
 
 # quiet_messaging: true        # wakes and worker messages reach a claude lead as one row (default: false; restart the lead)
 
@@ -1689,6 +1694,10 @@ function cmdProfile(argv: string[]): void {
     }
     throw e;
   }
+}
+
+function crewPluginDir(): string {
+  return join(checkoutRoot, "claude-plugin", "crew");
 }
 
 const DASHBOARD_OPENED_KV_KEY = "hive:dashboard_opened";

@@ -42,6 +42,7 @@ export interface ProjectYml {
   context_checkpoint_percent: number | null;
   lead_turn_budget: { warn: number; stop: number } | null;
   dashboard: boolean;
+  lead_sidebar: boolean;
   quiet_messaging: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
@@ -58,6 +59,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
+  lead_sidebar: false,
   quiet_messaging: false,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
@@ -269,6 +271,17 @@ function applyLayer(
       config.dashboard = value;
       sources.dashboard = source;
     } else warn(`dashboard must be true or false; ignoring "${String(value)}".`);
+  }
+
+  if (has("lead_sidebar")) {
+    const value = root.lead_sidebar;
+    if (value == null) {
+      config.lead_sidebar = false;
+      sources.lead_sidebar = source;
+    } else if (typeof value === "boolean") {
+      config.lead_sidebar = value;
+      sources.lead_sidebar = source;
+    } else warn(`lead_sidebar must be true or false; ignoring "${String(value)}".`);
   }
 
   if (has("quiet_messaging")) {

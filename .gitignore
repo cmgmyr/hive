@@ -21,3 +21,7 @@ dist/
 
 # maintainer-local leak scan; runs here, never ships
 /test/no-local-leaks.test.mjs
+
+# Claude Code scaffolds these into a mod directory when it loads the mod
+/claude-plugin/crew/tsconfig.json
+/claude-plugin/crew/.claude-plugin/types/

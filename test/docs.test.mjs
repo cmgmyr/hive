@@ -669,7 +669,7 @@ describe("docs/security.md cites every source file that can touch the network, s
     dns: "network",
     "dns/promises": "network",
   };
-  const CODE_FILE = /\.(ts|mjs|cjs|js|json)$/;
+  const CODE_FILE = /\.(ts|tsx|mjs|cjs|js|json)$/;
 
   function strip(source) {
     let noComments = "";
@@ -726,6 +726,7 @@ describe("docs/security.md cites every source file that can touch the network, s
     }
     if (/\bfetch\s*\(/.test(blanked)) add("network", "fetch");
     if (/\bnew\s+WebSocket\b/.test(blanked)) add("network", "WebSocket");
+    if (/\.process\.(?:run|spawn)\s*\(/.test(blanked)) add("process", "$.process.run");
     return hits;
   }
 
@@ -739,7 +740,7 @@ describe("docs/security.md cites every source file that can touch the network, s
 
   function citedFiles() {
     const page = readRepo("docs/security.md");
-    return new Set([...page.matchAll(/\b((?:src|claude-plugin)\/[\w./-]+\.(?:ts|mjs|js|json)):\d+/g)].map((m) => m[1]));
+    return new Set([...page.matchAll(/\b((?:src|claude-plugin)\/[\w./-]+\.(?:ts|tsx|mjs|js|json)):\d+/g)].map((m) => m[1]));
   }
 
   function uncitedFindings(files, readFile, cited) {
@@ -815,6 +816,16 @@ describe("docs/security.md cites every source file that can touch the network, s
     assert.ok(findings.some((l) => l.startsWith("src/plant-multiline.ts calls rmSync (write)")));
     assert.ok(findings.some((l) => l.startsWith("src/plant-alias.ts calls spawnSync (process)")));
     assert.ok(findings.some((l) => l.startsWith("src/plant-fetch.ts calls fetch (network)")));
+  });
+
+  it("uncited TSX mod process call is caught", () => {
+    const files = ["claude-plugin/plant/hooks/register.tsx"];
+    const read = () => "const out = await $.process.run(['sh', '-c', 'id'])";
+
+    assert.ok(CODE_FILE.test(files[0]));
+    assert.match(uncitedFindings(files, read, new Set())[0], /calls \$\.process\.run \(process\)/);
+    assert.deepEqual(uncitedFindings(files, read, new Set(files)), []);
+    assert.deepEqual(scanSource(files[0], "// $.process.run(x)\nconst s = \"$.process.run(x)\""), []);
   });
 
   it("stays quiet on harmless text: comments, string contents, type imports and read-only fs imports", () => {

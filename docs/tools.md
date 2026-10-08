@@ -69,6 +69,8 @@ Conventions borrowed from tools that got this right:
 
 ## Read-only workers
 
+`agent_spawn` takes an optional `todo_id`: a non-archived todo in the same project, stored as the worker's link and shown by `agent_list`, `agent_status` and [the crew sidebar](crew.md). It changes no todo status, and `agent_resume` keeps it. A session whose MCP server started before this parameter existed refuses it as an unknown argument until it restarts.
+
 Use `agent_spawn(name: "reader", harness: "claude", read_only: true)` to keep a worker from editing local files or running shell commands that write files. It can still write Hive pads and todo comments through MCP. The spawn receipt reports `read_only: true`; `agent_status` and `agent_list` show the stored mode. `agent_resume` preserves it.
 
 Claude workers disable Edit, Write and NotebookEdit and use Claude Code's filesystem sandbox with writes denied at the filesystem root and unsandboxed retries disabled. If the sandbox is unavailable, the worker fails to start. Codex workers use `--sandbox read-only` with approvals disabled and a generated approval override for the Hive MCP server only. Other MCP servers receive no override.

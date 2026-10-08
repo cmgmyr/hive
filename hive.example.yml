@@ -23,6 +23,7 @@ profile: orchestration          # standing instructions (hive profile list)
 lead_branches: [main]           # where the session-start kickoff fires
 # first_message: "..."         # a lead's first turn; absent or "" sends none
 dashboard: true                 # write .hive/dashboard.html (hive dogfoods its own feature)
+# lead_sidebar: true           # a crew pane in a claude lead (docs/crew.md); restart the lead after changing
 # quiet_messaging: true        # wakes and worker messages reach a claude lead as one row; restart the lead after changing
 
 vars:
