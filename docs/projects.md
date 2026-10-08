@@ -133,7 +133,7 @@ A stop that cannot finish says so rather than pretending. If the process survive
 
 ### Quiet messaging
 
-By default hive types every wake into the lead's pane, so each one shows up as a block of pasted text. With `quiet_messaging: true`, a one-shot wake to a running Claude Code lead goes to that session's cross-session message socket instead. Claude Code draws it as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. The setting is off unless you turn it on.
+By default hive types every wake into the lead's pane, so each one shows up as a block of pasted text. With `quiet_messaging: true`, a wake to a running Claude Code lead goes to that session's cross-session message socket instead. Claude Code draws it as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. The setting is off unless you turn it on.
 
 **Turn it on.** Add the key to your global `~/.hive/hive.yml` to cover every project, or to one project's `hive.yml` to cover only that project:
 
@@ -149,11 +149,15 @@ Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mo
 
 **Check that it works.** The next wake to the lead, a worker's finish notice for example, appears as one `Message from @hive` row instead of a pasted block. Then read the wake back with `wake_get(<wake id>)` or `wake_list`:
 
-- `delivery_method: "socket"` means hive posted it to the socket.
+- `delivery_method: "socket"` means hive posted it to the socket. A repeating wake shows `"socket-repeating"` for its current firing.
 - `confirmation: "confirmed"` means the lead's prompt hook saw it, so the lead read it.
-- `delivery_method: "pty"` means hive typed it as before. That is expected for a repeating wake, a wake to a worker, a Codex lead, a lead started before you turned the setting on, and a body containing `</cross-session-message>`.
+- `delivery_method: "pty"` means hive typed it as before. That is expected for a wake to a worker, a Codex lead, a lead started before you turned the setting on, and a body containing `</cross-session-message>`.
 
 **If a message does not arrive.** A socket write succeeding does not prove the lead read the message, so hive waits for the prompt hook. When the lead was busy, the clock starts at the end of the lead's first turn after the post, because a busy session reads the message only then. If there is still no confirmation 60 seconds after that turn end, or 60 seconds after the post when no turn was running, hive types the same wake into the pane once. It starts `[hive wake #N, re-delivered] If you already handled wake #N, ignore this.` and `wake_get` shows `delivery_method: "pty-after-socket-timeout"`. A socket that refuses the connection, or a write that does not finish within one second, gets the same re-delivery straight away. A timed-out write may still have reached the lead, so that case can duplicate. The worst case is that the lead sees one wake twice, and the second copy says so.
+
+**Repeating wakes.** Each firing of a repeating wake goes to the socket on its own and is marked with its firing number: `[hive wake #N firing #F] ...`. `wake_get` and `wake_list` describe the current firing only, so `fire_count` is F and `delivery_method`, `socket_attempt_at` and `confirmation` belong to that firing. Only the prompt for that exact firing confirms it, so a late reply to an earlier firing never confirms a newer one. While a firing is unconfirmed and not yet re-delivered, the next firing waits, even past its interval. Once the current firing is confirmed or typed, one overdue firing goes out and the next is scheduled from then; missed intervals are not caught up. A re-delivered firing starts `[hive wake #N firing #F, re-delivered] If you already handled wake #N firing #F, ignore this.`, and each firing is re-delivered at most once. If a re-delivery was claimed but never typed, for example because the hive server stopped mid-delivery, `wake_get` keeps showing `delivery_method: "pty-after-socket-timeout"` with no `typed_at`, and the wake waits until that firing is confirmed. If it does not recover, cancel the wake and set a new one.
+
+**Restart older hive sessions.** Every session with hive loaded runs its own scheduler, and a session still running a hive version without per-firing socket delivery keeps its old behaviour. It types repeating wakes into the pane, does not wait for an unsettled firing, and its claim of the next firing makes the newer servers drop the earlier firing's pending re-delivery. It can also mark a repeating firing confirmed when that wake's own body quotes `[hive wake #N]`. After upgrading, restart every session with hive loaded, or reconnect hive with `/mcp`.
 
 **Turn it off.** Set `quiet_messaging: false`, or remove the key, in the file where you turned it on, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
 

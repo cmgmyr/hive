@@ -63,7 +63,7 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
 - You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1093`; `agent_resume`, `src/tools/agents.ts:920`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:973`).
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2812`; `noteStalledCrew`, `src/scheduler.ts:1971`; `transcriptStaleness`, `src/scheduler.ts:1889`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2812`; `noteStalledCrew`, `src/scheduler.ts:1981`; `transcriptStaleness`, `src/scheduler.ts:1899`).
 - Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:551-553`).
 - Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:309`).
 
@@ -169,7 +169,7 @@ Setup and doctor report interpreter and server-path drift for registrations hive
 
 If npm fails, the package may be partially changed. Follow the printed install retry and explicit setup command. If setup fails after npm succeeds, the package is new but the dispatcher has not been confirmed re-pinned. Run the printed command naming the absolute interpreter and new `dist/cli.js`, then `hive doctor --strict`. Checkout failures name the failed step and list the remaining steps as not run. Repair that step before continuing.
 
-**Restart every Claude Code or Codex session that has hive loaded after upgrading or completing a repair.** Existing sessions keep running old in-memory code even after the files change.
+**Restart every Claude Code or Codex session that has hive loaded after upgrading or completing a repair.** Existing sessions keep running old in-memory code even after the files change, and each one keeps running its own scheduler; [Quiet messaging](projects.md#quiet-messaging) says what an old scheduler does to a repeating wake.
 
 `npm install` deciding a package is up to date is not proof the addon file is still there, and this is measured rather than assumed: delete `node_modules/better-sqlite3/prebuilds/<platform>-<arch>.node`, run a plain `npm install`, and it prints `up to date` without restoring it. The repair is to make npm reinstall the package rather than re-examine it:
 
