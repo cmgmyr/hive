@@ -27,7 +27,7 @@ process.env.HIVE_DATA_DIR = dataDir;
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
-const { tick } = await import("../dist/scheduler.js");
+const { tick, DELIVER_SOCKET_JOIN, ACTIVE_TIMER_WHERE, socketAwaitingWhere } = await import("../dist/scheduler.js");
 const { postClaudeWake, senderAddress } = await import("../dist/claudeWake.js");
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
@@ -420,13 +420,537 @@ describe("everything outside the socket route keeps today's PTY delivery", () =>
   }
 
   it("the key off", needsTmux, () => assertPty(false, {}));
-  it("a repeating wake to an opted-in lead", needsTmux, () => assertPty(true, {}, { repeatMs: 3_600_000 }));
+  it("a repeating wake with the key off", needsTmux, () => assertPty(false, {}, { repeatMs: 3_600_000 }));
   it("a codex lead", needsTmux, () => assertPty(true, { command: "codex" }));
   it("a worker recipient", needsTmux, () => assertPty(true, { kind: "agent" }));
   it("a registration from another pane epoch", needsTmux, () => assertPty(true, { registeredPid: "1" }));
   it("no registration", needsTmux, () => assertPty(true, { socket: "" }));
   it("a body carrying the envelope's closing delimiter", needsTmux, () =>
     assertPty(true, {}, { body: "quoting </cross-session-message> verbatim" }));
+});
+
+describe("a repeating wake to an opted-in Claude lead goes by socket on every firing", () => {
+  const HOUR = 3_600_000;
+  const FOOTER = "Automated hive wake. Do not reply to this sender.";
+  const SENDER = senderAddress(join(dataDir, "wake-sender.sock"));
+  const envelope = (text, sender = SENDER, name = "hive") =>
+    `<cross-session-message from="${sender}" from-name="${name}">\n${text}\n</cross-session-message>`;
+  const firingText = (id, n, body = BODY) => `[hive wake #${id} firing #${n}] ${body}\n\n${FOOTER}`;
+  const fallbackBytes = (id, n, body = BODY) =>
+    `[hive wake #${id} firing #${n}, re-delivered] If you already handled wake #${id} firing #${n}, ignore this.\n${body}\n`;
+  const content = (frame) => JSON.parse(frame).message.content;
+  const makeDue = (id, seconds = 1) => db.prepare("UPDATE wakes SET due_at = datetime('now', ?) WHERE id = ?").run(`-${seconds} seconds`, id);
+  const projectPath = (pid) => db.prepare("SELECT path FROM projects WHERE id = ?").get(pid).path;
+  const setKey = (pid, yml) => writeFileSync(join(projectPath(pid), "hive.yml"), yml);
+  const backdateFiring = (id, seconds) =>
+    db.prepare(
+      `UPDATE wakes SET fired_at = datetime('now', ?), socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', ?) WHERE id = ?`,
+    ).run(`-${seconds + 1} seconds`, `-${seconds} seconds`, id);
+
+  const LEGACY_REPEAT_CLAIM = `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
+           fired_at = datetime('now'), fire_count = fire_count + 1,
+           typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+           typed_seen = NULL, first_held_at = NULL
+         WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`;
+  const legacyRepeatClaim = (id) => {
+    const row = wake(id);
+    return db.prepare(LEGACY_REPEAT_CLAIM).run(Math.max(1, Math.round(row.repeat_every_ms / 1000)), id, row.due_at, row.body, row.repeat_every_ms).changes;
+  };
+  const legacyEvidence = (lowerBound) => `
+       SELECT MIN(created_at) FROM agent_state_log
+        WHERE actor_id = wakes.deliver_actor AND event = 'prompt' AND created_at >= ${lowerBound}
+          AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
+               OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
+  const LEGACY_SENT_AT = "COALESCE(wakes.socket_attempt_at, wakes.typed_at)";
+  const LEGACY_PENDING = `SELECT 1 AS hit FROM wakes
+        WHERE ${LEGACY_SENT_AT} IS NOT NULL AND confirmed_at IS NULL AND ${LEGACY_SENT_AT} >= datetime('now', ?) LIMIT 1`;
+  const LEGACY_CONFIRM = `UPDATE wakes SET confirmed_at = (${legacyEvidence(LEGACY_SENT_AT)})
+       WHERE ${LEGACY_SENT_AT} IS NOT NULL AND confirmed_at IS NULL AND ${LEGACY_SENT_AT} >= datetime('now', ?)
+         AND EXISTS (${legacyEvidence(LEGACY_SENT_AT).replace("MIN(created_at)", "1")})`;
+  const LEGACY_RETRY = `SELECT wakes.* FROM wakes ${DELIVER_SOCKET_JOIN}
+      WHERE wakes.delivery_method = 'socket' AND wakes.confirmed_at IS NULL AND wakes.typed_at IS NULL AND wakes.cancelled_at IS NULL
+        AND wakes.socket_attempt_at >= datetime('now', ?)`;
+
+  async function firstFiring({ repeatMs = HOUR, body = BODY, sock = listener() } = {}) {
+    const pid = project(true);
+    const target = lead(pid, { socket: sock.path });
+    const id = dueWake(pid, target, body, { repeatMs });
+    await tick();
+    assert.ok(await until(() => sock.received.length === 1, 3000), "firing 1 was posted");
+    return { pid, target, id, sock };
+  }
+
+  async function slowRetryAhead() {
+    const sock = listener();
+    const pid = project(true);
+    const other = lead(pid, { socket: sock.path });
+    const id = dueWake(pid, other, "an earlier fallback that holds the retry pass");
+    await tick();
+    assert.ok(await until(() => sock.received.length === 1, 3000));
+    return { other, id };
+  }
+
+  async function racedRetry(mutate) {
+    const ahead = await slowRetryAhead();
+    const f = await firstFiring();
+    backdateFiring(ahead.id, 61);
+    backdateFiring(f.id, 61);
+    setTimeout(() => mutate(f), 150);
+    await tick();
+    assert.ok(await until(() => sinkText(ahead.other).includes("holds the retry pass"), 3000), "the earlier fallback typed first");
+    await sleep(300);
+    return f;
+  }
+
+  it("three repeating firings post distinct markers and no pane bytes", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    for (let n = 1; n <= 3; n++) {
+      if (n > 1) {
+        makeDue(id);
+        await tick();
+        assert.ok(await until(() => sock.received.length === n, 3000), `firing ${n} was posted`);
+      }
+      assert.equal(
+        sock.received[n - 1],
+        JSON.stringify({ type: "user", from: SENDER, message: { role: "user", content: envelope(firingText(id, n)) } }) + "\n",
+      );
+      const posted = wake(id);
+      assert.equal(posted.fire_count, n);
+      assert.equal(posted.delivery_method, "socket-repeating");
+      assert.ok(posted.socket_attempt_at >= posted.fired_at);
+      assert.equal(posted.typed_at, null);
+      assert.equal(posted.confirmed_at, null);
+
+      await promptHook(target, content(sock.received[n - 1]));
+      await tick();
+      const confirmed = wake(id);
+      assert.ok(confirmed.confirmed_at, `firing ${n} is confirmed by its own prompt`);
+      assert.equal(confirmed.fire_count, n);
+    }
+    await sleep(300);
+    assert.equal(sinkText(target), "");
+  });
+
+  it("key-off repeating wakes preserve exact legacy pane bytes after an earlier socket firing", needsTmux, async () => {
+    for (const off of ["dashboard: false\n", "quiet_messaging: false\n"]) {
+      const { pid, target, id, sock } = await firstFiring();
+      await promptHook(target, content(sock.received[0]));
+      await tick();
+      assert.ok(wake(id).confirmed_at);
+
+      setKey(pid, off);
+      makeDue(id);
+      await tick();
+      assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+      assert.equal(sinkText(target), `[hive wake #${id}] ${BODY}\n`);
+      const row = wake(id);
+      assert.equal(row.fire_count, 2);
+      assert.equal(row.delivery_method, "pty");
+      assert.equal(row.socket_attempt_at, null);
+      assert.equal(row.socket_delivery_note, null);
+      await sleep(200);
+      assert.equal(sock.received.length, 1);
+    }
+  });
+
+  it("worker and Codex repeating recipients remain on PTY", needsTmux, async () => {
+    for (const options of [{ kind: "agent" }, { command: "codex" }]) {
+      const sock = listener();
+      const pid = project(true);
+      const target = lead(pid, { socket: sock.path, ...options });
+      const id = dueWake(pid, target, BODY, { repeatMs: HOUR });
+      await tick();
+      assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+      assert.equal(sinkText(target), `[hive wake #${id}] ${BODY}\n`);
+      assert.equal(wake(id).delivery_method, "pty");
+      await sleep(200);
+      assert.deepEqual(sock.received, []);
+    }
+  });
+
+  it("late firing N prompt cannot confirm firing N+1", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    backdateFiring(id, 61);
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => sock.received.length === 2, 3000));
+    assert.equal(content(sock.received[1]), envelope(firingText(id, 2)));
+
+    await promptHook(target, content(sock.received[0]));
+    await promptHook(target, fallbackBytes(id, 1).trimEnd());
+    await tick();
+    assert.equal(wake(id).confirmed_at, null, "firing 1's prompts never confirm firing 2");
+    assert.equal(wake(id).fire_count, 2);
+
+    await promptHook(target, content(sock.received[1]));
+    await tick();
+    assert.ok(wake(id).confirmed_at);
+  });
+
+  it("wrong or quoted firing evidence never confirms", needsTmux, async () => {
+    const { target, id } = await firstFiring();
+    const other = lead(project(true));
+    const exact = envelope(firingText(id, 1));
+    const wrong = [
+      () => promptHook(target, envelope(firingText(id, 2))),
+      () => promptHook(target, envelope(firingText(id, 11))),
+      () => promptHook(other, exact),
+      () => insertStateLogRow(db, target.actorId, "prompt", "working", 30, JSON.stringify({ prompt: exact })),
+      () => insertStateLogRow(db, target.actorId, "prompt", "working", 0, JSON.stringify({ prompt: "hello", quoted: exact })),
+      () => insertStateLogRow(db, target.actorId, "prompt", "working", 0, JSON.stringify({ note: `[hive wake #${id} firing #1] x` })),
+      () => promptHook(target, `look at [hive wake #${id} firing #1] later`),
+      () => promptHook(target, envelope(`a worker said: [hive wake #${id} firing #1] ${BODY}`)),
+      () => promptHook(target, envelope(firingText(id, 1), "uds:/x", "bob")),
+      () => promptHook(target, envelope(firingText(id, 1), `uds:/x" from-name="bob`)),
+      () => promptHook(target, `<cross-session-message from="uds:/x" from-name="hive">\n[hive wake #${id} firing #1] no closing tag`),
+    ];
+    for (const [i, insert] of wrong.entries()) {
+      await insert();
+      await tick();
+      assert.equal(wake(id).confirmed_at, null, `wrong evidence #${i} must not confirm`);
+    }
+
+    await promptHook(target, exact);
+    await tick();
+    assert.ok(wake(id).confirmed_at, "the exact envelope confirms");
+
+    db.prepare("UPDATE wakes SET confirmed_at = NULL WHERE id = ?").run(id);
+    db.exec("DELETE FROM agent_state_log");
+    await promptHook(target, fallbackBytes(id, 1).trimEnd());
+    await tick();
+    assert.ok(wake(id).confirmed_at, "the typed firing prefix at offset 0 confirms");
+  });
+
+  it("two schedulers claim one repeating fallback", needsTmux, async () => {
+    const { target, id } = await firstFiring();
+    backdateFiring(id, 61);
+    await raceProcesses(
+      `const { tick } = await import(${JSON.stringify(join(DIST, "scheduler.js"))});\nawait tick();\nprocess.stdout.write("{}");\n`,
+      [[], []],
+      { env: { HIVE_DATA_DIR: dataDir } },
+    );
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    await sleep(500);
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+    const row = wake(id);
+    assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.equal(row.fire_count, 1);
+  });
+
+  it("a losing repeating fallback claim types nothing and keeps the winner's method", needsTmux, async () => {
+    const f = await racedRetry(({ id }) =>
+      db.prepare("UPDATE wakes SET delivery_method = 'pty-after-socket-timeout' WHERE id = ?").run(id),
+    );
+    assert.equal(sinkText(f.target), "");
+    const row = wake(f.id);
+    assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.equal(row.typed_at, null);
+    assert.equal(row.fire_count, 1);
+  });
+
+  it("busy repeating firing waits for first stop plus grace", needsTmux, async () => {
+    const sock = listener();
+    const pid = project(true);
+    const target = lead(pid, { socket: sock.path });
+    db.prepare("INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state) VALUES (?, ?, 's1', 'working')").run(target.rowId, target.pid);
+    const id = dueWake(pid, target, BODY, { repeatMs: HOUR });
+    await tick();
+    assert.ok(await until(() => sock.received.length === 1, 3000));
+
+    backdateFiring(id, 600);
+    await tick();
+    assert.equal(wake(id).typed_at, null, "busy with no turn end is not a timeout");
+    insertStateLogRow(db, target.actorId, "stop", "idle", 30);
+    await tick();
+    assert.equal(wake(id).typed_at, null, "30 s after the turn end is inside the bound");
+
+    db.exec("DELETE FROM agent_state_log");
+    insertStateLogRow(db, target.actorId, "stop", "idle", 61);
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+  });
+
+  it("late repeating confirmation defeats fallback claim", needsTmux, async () => {
+    const f = await racedRetry(({ target, id }) =>
+      insertStateLogRow(db, target.actorId, "prompt", "working", 0, JSON.stringify({ prompt: envelope(firingText(id, 1)) })),
+    );
+    assert.equal(sinkText(f.target), "", "the claim saw the prompt and typed nothing");
+    assert.equal(wake(f.id).delivery_method, "socket-repeating");
+    await tick();
+    assert.ok(wake(f.id).confirmed_at);
+  });
+
+  it("held repeating fallback resumes once without advancing its firing", needsTmux, async () => {
+    const { target, id } = await firstFiring();
+    backdateFiring(id, 61);
+
+    insertStateLogRow(db, target.actorId, "prompt", "working", 5, JSON.stringify({ prompt: "a human is talking to the lead" }));
+    await tick();
+    await sleep(300);
+    assert.match(wake(id).held_reason ?? "", /a human talked to this lead/);
+    db.prepare("DELETE FROM agent_state_log WHERE actor_id = ? AND payload LIKE '%a human is talking%'").run(target.actorId);
+
+    execFileSync("tmux", ["copy-mode", "-t", target.pane]);
+    await tick();
+    await sleep(300);
+    assert.match(wake(id).held_reason ?? "", /copy mode/);
+    execFileSync("tmux", ["send-keys", "-t", target.pane, "-X", "cancel"]);
+
+    assert.equal(sinkText(target), "");
+    assert.equal(wake(id).delivery_method, "socket-repeating");
+    assert.equal(wake(id).fire_count, 1);
+
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+    const row = wake(id);
+    assert.equal(row.fire_count, 1);
+    assert.equal(row.held_reason, null);
+  });
+
+  it("next interval defers until the current firing settles", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring({ repeatMs: 5_000 });
+    for (let i = 0; i < 3; i++) {
+      makeDue(id, 120);
+      const due = wake(id).due_at;
+      await tick();
+      await sleep(200);
+      assert.equal(sock.received.length, 1, "no second post while firing 1 is unsettled");
+      assert.equal(wake(id).fire_count, 1);
+      assert.equal(wake(id).due_at, due);
+    }
+    await promptHook(target, content(sock.received[0]));
+    await tick();
+    await tick();
+    assert.ok(await until(() => sock.received.length === 2, 3000));
+    await tick();
+    await sleep(300);
+    assert.equal(sock.received.length, 2, "one overdue claim, no catch-up");
+    const row = wake(id);
+    assert.equal(row.fire_count, 2);
+    assert.ok(db.prepare("SELECT ? > datetime('now') AS later").get(row.due_at).later, "scheduled from the claim time");
+  });
+
+  it("a key flipped off while a firing is pending keeps its fallback, then types the next firing as before", needsTmux, async () => {
+    const { pid, target, id, sock } = await firstFiring({ repeatMs: 5_000 });
+    setKey(pid, "quiet_messaging: false\n");
+    makeDue(id, 120);
+    await tick();
+    await sleep(200);
+    assert.equal(wake(id).fire_count, 1);
+    assert.equal(sinkText(target), "");
+
+    backdateFiring(id, 61);
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => sinkText(target).split("third, indented").length === 3, 3000));
+    assert.equal(sinkText(target), fallbackBytes(id, 1) + `[hive wake #${id}] ${BODY}\n`);
+    assert.equal(wake(id).delivery_method, "pty");
+    assert.equal(sock.received.length, 1);
+  });
+
+  it("post-fallback-claim crash is readable and never pasted again", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    db.prepare("UPDATE wakes SET delivery_method = 'pty-after-socket-timeout', due_at = datetime('now', '-60 seconds') WHERE id = ?").run(id);
+    backdateFiring(id, 120);
+    for (let i = 0; i < 3; i++) await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), "");
+    let row = wake(id);
+    assert.equal(row.fire_count, 1, "the unresolved fallback defers the next firing");
+    assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.equal(row.typed_at, null);
+
+    await promptHook(target, content(sock.received[0]));
+    await tick();
+    assert.ok(await until(() => sock.received.length === 2, 3000), "a late exact confirmation settles it and the next firing proceeds");
+    assert.equal(wake(id).fire_count, 2);
+    assert.equal(sinkText(target), "");
+  });
+
+  it("failed repeating post falls back immediately exactly once", needsTmux, async () => {
+    const pid = project(true);
+    const target = lead(pid, { socket: join(socketDir, "nobody-listens-repeat.sock") });
+    const id = dueWake(pid, target, BODY, { repeatMs: HOUR });
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes("third, indented"), 3000));
+    for (let i = 0; i < 3; i++) await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), fallbackBytes(id, 1));
+    const row = wake(id);
+    assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.ok(row.socket_attempt_at);
+    assert.ok(row.typed_at);
+    assert.equal(row.fire_count, 1);
+  });
+
+  it("old repeating claim within the attempt's own second invalidates the stale fallback", needsTmux, async () => {
+    const f = await racedRetry(({ id }) => {
+      assert.equal(legacyRepeatClaim(id), 1);
+      db.prepare("UPDATE wakes SET fired_at = substr(socket_attempt_at, 1, 19) WHERE id = ?").run(id);
+    });
+    assert.equal(sinkText(f.target), "", "firing 1's fallback is dropped, not replayed into firing 2");
+    const row = wake(f.id);
+    assert.equal(row.delivery_method, "socket-repeating", "the count-guarded claim changed nothing");
+    assert.equal(row.fire_count, 2);
+    assert.equal(row.typed_at, null);
+    assert.equal(row.held_reason, null);
+  });
+
+  it("an old claim between the fallback's paste and its Enter stops the Enter", needsTmux, async () => {
+    const { target, id } = await firstFiring();
+    backdateFiring(id, 61);
+    let bumped = false;
+    const watch = setInterval(() => {
+      if (!bumped && sinkText(target).includes("second line")) {
+        bumped = legacyRepeatClaim(id) === 1;
+      }
+    }, 10);
+    await tick();
+    clearInterval(watch);
+    await sleep(300);
+    assert.ok(bumped, "the paste landed and the old claim ran before the Enter");
+    assert.ok(!sinkText(target).includes("third, indented"), "no Enter for a superseded firing");
+    const row = wake(id);
+    assert.equal(row.fire_count, 2);
+    assert.equal(row.typed_at, null, "nothing is recorded onto the newer firing");
+    assert.equal(row.held_reason, null);
+  });
+
+  it("an old repeat claim's fired_at rejects the previous socket attempt", needsTmux, async () => {
+    const fresh = await firstFiring();
+    backdateFiring(fresh.id, 61);
+    assert.equal(legacyRepeatClaim(fresh.id), 1);
+    const stale = wake(fresh.id);
+    assert.equal(stale.delivery_method, "socket-repeating", "the old claim leaves firing 1's socket fields behind");
+    assert.ok(stale.socket_attempt_at < stale.fired_at);
+    for (let i = 0; i < 2; i++) await tick();
+    await sleep(300);
+    assert.equal(sinkText(fresh.target), "", "a fresh retry sees no eligible row");
+
+    const f = await racedRetry(({ id }) => {
+      assert.equal(legacyRepeatClaim(id), 1);
+      db.prepare("UPDATE wakes SET fire_count = fire_count - 1 WHERE id = ?").run(id);
+    });
+    assert.equal(sinkText(f.target), "", "the claim stamp rejects the attempt even when the count matches");
+    assert.equal(wake(f.id).typed_at, null);
+
+    const control = await firstFiring();
+    backdateFiring(control.id, 61);
+    await tick();
+    assert.ok(await until(() => sinkText(control.target).includes("third, indented"), 3000));
+    assert.equal(sinkText(control.target), fallbackBytes(control.id, 1), "an attempt at or after the claim stamp falls back once");
+  });
+
+  it("legacy confirm and retry SQL ignore a clean repeating socket marker", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    await promptHook(target, content(sock.received[0]));
+    assert.ok(db.prepare(LEGACY_PENDING).get("-7 days"), "the legacy pending probe still sees the row");
+    assert.equal(db.prepare(LEGACY_CONFIRM).run("-7 days").changes, 0);
+    assert.equal(db.prepare(LEGACY_RETRY).all("-7 days").length, 0);
+    await tick();
+    assert.ok(wake(id).confirmed_at, "new code confirms the exact marker");
+
+    const quoted = await firstFiring();
+    await promptHook(quoted.target, envelope(firingText(quoted.id, 7, `quoting [hive wake #${quoted.id}] from an old note`)));
+    db.exec("SAVEPOINT legacy");
+    assert.equal(db.prepare(LEGACY_CONFIRM).run("-7 days").changes, 1, "the documented old-build uncertainty: a body quote fools the old matcher");
+    db.exec("ROLLBACK TO legacy; RELEASE legacy");
+    await tick();
+    assert.equal(wake(quoted.id).confirmed_at, null, "new code does not reproduce it");
+  });
+
+  it("a lead restart that stops the fallback before its paste drops that firing, and the next one reaches the new pane", needsTmux, async () => {
+    const pid = project(true);
+    const path = join(socketDir, `restart-${servers.length}.sock`);
+    const received = [];
+    let target;
+    let next;
+    const server = createServer((conn) => {
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(next.pane, next.pid, target.rowId);
+      let buf = "";
+      conn.on("data", (c) => (buf += c));
+      conn.on("end", () => received.push(buf));
+    });
+    server.listen(path);
+    servers.push(server);
+    target = lead(pid, { socket: path });
+    next = sinkPane();
+    const id = dueWake(pid, target, BODY, { repeatMs: HOUR });
+
+    await tick();
+    await sleep(500);
+    let row = wake(id);
+    assert.equal(row.fire_count, 1);
+    assert.equal(row.delivery_method, "pty-after-socket-timeout", "the claimed fallback never returns to a retryable method");
+    assert.equal(row.typed_at, null);
+    assert.equal(row.socket_delivery_note, "dropped");
+    assert.match(row.held_reason ?? "", /Firing #1 was not delivered/);
+    assert.equal(received.join(""), "", "the refused post wrote nothing");
+
+    db.prepare(
+      `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+        WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?`,
+    ).run(next.pane, target.actorId);
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => readFileSync(next.sink, "utf8").includes("third, indented"), 3000), "the next firing is not deferred");
+    assert.equal(readFileSync(next.sink, "utf8"), `[hive wake #${id}] ${BODY}\n`);
+    assert.equal(wake(id).fire_count, 2);
+
+    backdateFiring(id, 61);
+    for (let i = 0; i < 2; i++) await tick();
+    await sleep(300);
+    assert.equal(sinkText(target), "");
+    assert.ok(!readFileSync(next.sink, "utf8").includes("re-delivered"), "firing 1 is never replayed");
+  });
+
+  it("a repeating firing pending past log retention stops deferring the next one", needsTmux, async () => {
+    const { target, id, sock } = await firstFiring();
+    backdateFiring(id, 8 * 86_400);
+    makeDue(id);
+    await tick();
+    assert.ok(await until(() => sock.received.length === 2, 3000), "firing 2 is posted");
+    assert.equal(wake(id).fire_count, 2);
+    assert.equal(content(sock.received[1]), envelope(firingText(id, 2)));
+    assert.equal(sinkText(target), "");
+  });
+
+  it("repeating cancellation and lead re-point preserve firing identity", needsTmux, async () => {
+    const cancelled = await firstFiring();
+    db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(cancelled.id);
+    backdateFiring(cancelled.id, 61);
+    await tick();
+    await sleep(300);
+    assert.equal(sinkText(cancelled.target), "");
+    assert.equal(wake(cancelled.id).fire_count, 1);
+    assert.equal(wake(cancelled.id).delivery_method, "socket-repeating");
+
+    const { target, id } = await firstFiring();
+    const next = sinkPane();
+    db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(next.pane, next.pid, target.rowId);
+    db.prepare(
+      `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
+        WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?`,
+    ).run(next.pane, target.actorId);
+    backdateFiring(id, 61);
+    await tick();
+    assert.ok(await until(() => readFileSync(next.sink, "utf8").includes("third, indented"), 3000));
+    assert.equal(readFileSync(next.sink, "utf8"), fallbackBytes(id, 1), "the restarted lead gets firing 1's fallback");
+    assert.equal(sinkText(target), "");
+    assert.equal(wake(id).fire_count, 1);
+  });
 });
 
 describe("postClaudeWake", () => {

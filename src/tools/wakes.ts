@@ -663,8 +663,9 @@ export function registerWakes(server: McpServer): void {
       description:
         "Read one wake-up by id, in this project, with its UNTRUNCATED body. wake_list truncates " +
         "body at 120 chars; use this to see exactly what a wake will say, or to confirm what " +
-        "wake_update just changed. Its delivery state includes delivery_method (socket, pty or " +
-        "pty-after-socket-timeout) and socket_attempt_at, set when a wake was posted to a Claude lead's socket.",
+        "wake_update just changed. Its delivery state includes delivery_method (socket, socket-repeating, pty or " +
+        "pty-after-socket-timeout) and socket_attempt_at, set when a wake was posted to a Claude lead's socket; " +
+        "for a repeating wake both describe its current firing (fire_count).",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

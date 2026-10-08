@@ -435,3 +435,28 @@ describe("control bytes in a wake body (issue #150)", () => {
     );
   });
 });
+
+describe("a repeating wake's current socket firing", () => {
+  it("wake_get and wake_list both report the current firing's count, method and attempt", async () => {
+    for (const method of ["socket-repeating", "pty-after-socket-timeout"]) {
+      const seeded = seedTimer({ repeatEveryMs: 60_000 });
+      const attempt = db
+        .prepare(
+          `UPDATE wakes SET fire_count = 3, fired_at = datetime('now', '-10 seconds'), delivery_method = ?,
+             socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-9 seconds')
+           WHERE id = ? RETURNING socket_attempt_at`,
+        )
+        .get(method, seeded.id).socket_attempt_at;
+
+      const got = await mcp.call("wake_get", { wake_id: seeded.id });
+      const listed = (await mcp.call("wake_list")).wakes.find((w) => w.wake_id === seeded.id);
+      for (const view of [got, listed]) {
+        assert.equal(view.fire_count, 3);
+        assert.equal(view.delivery_method, method);
+        assert.equal(view.socket_attempt_at, attempt);
+        assert.equal(view.typed_at, null);
+        assert.notEqual(view.confirmation, "confirmed");
+      }
+    }
+  });
+});
