@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { isolateTmux, liveAgentRow, makeFakeClaude, McpClient, REPO, scratchDirs, seedLeadRow, sleep, until } from "./helpers.mjs";
@@ -504,6 +505,67 @@ describe(
       assert.equal(receipt.sent, true);
       assert.equal(receipt.input_box_before.state, "unknown");
       assert.ok(receipt.input_box_before.rows.length > 0);
+    });
+
+    it("reads the box once before the paste, so the refusal decision and the receipt share one read", async () => {
+      const name = "before-one-read";
+      const spawn = await spawnShowing(name, replayFixture("ready-idle.txt"));
+      spawned.push(spawn.agent_id);
+      const realTmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim();
+      const shimDir = join(dirs.tmp, "count-captures");
+      const log = join(shimDir, "calls.log");
+      mkdirSync(shimDir, { recursive: true });
+      writeFileSync(
+        join(shimDir, "tmux"),
+        `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(realTmux)} "$@"\n`,
+      );
+      chmodSync(join(shimDir, "tmux"), 0o755);
+      writeFileSync(log, "");
+
+      const counting = new McpClient({
+        cwd: dirs.projectDir,
+        dataDir: dirs.dataDir,
+        env: { PATH: `${shimDir}:${process.env.PATH}` },
+      });
+      await counting.start();
+      let receipt;
+      try {
+        receipt = await counting.call("agent_send", { name, text: "hello", wait_ms: 250 });
+      } finally {
+        await counting.close();
+      }
+
+      const calls = readFileSync(log, "utf8").split("\n").filter(Boolean);
+      const paste = calls.findIndex((line) => /(^| )paste-buffer( |$)/.test(line));
+      assert.ok(paste > 0, `no paste-buffer call reached tmux: ${JSON.stringify(calls)}`);
+      const boxReads = calls.slice(0, paste).filter((line) => /(^| )capture-pane( |$)/.test(line) && /(^| )-e( |$)/.test(line));
+      assert.equal(boxReads.length, 1, `the box was read ${boxReads.length} times before the paste: ${JSON.stringify(boxReads)}`);
+      assert.equal(receipt.input_box_before.state, "empty");
+    });
+
+    it("omits rows from input_box_before when the classifier has no snapshot (codex)", async () => {
+      const name = "before-codex";
+      const created = execFileSync(
+        "tmux",
+        [
+          "new-window", "-d", "-P", "-F", "#{pane_id} #{pane_pid}", "-t", `=${sessionName()}`,
+          `cat '${fixturePath("codex-idle-empty-e.txt")}'; sleep 600`,
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      const [pane, panePid] = created.split(" ");
+      await until(() => execFileSync("tmux", ["capture-pane", "-p", "-t", pane], { encoding: "utf8" }).trim() !== "");
+      const row = db
+        .prepare(
+          `INSERT INTO agents (project_id, actor_id, name, tmux_target, pane_pid, command, cwd, status, agent_state)
+           VALUES (?, 'agent:before-codex', ?, ?, ?, 'codex', '/tmp', 'running', 'idle') RETURNING id`,
+        )
+        .get(projectId, name, pane, panePid);
+      spawned.push(row.id);
+      const receipt = await mcp.call("agent_send", { name, text: "hello", wait_ms: 250 });
+      assert.equal(receipt.sent, true, JSON.stringify(receipt));
+      assert.equal(receipt.input_box_before.state, "empty");
+      assert.ok(!("rows" in receipt.input_box_before), "a classifier with no snapshot has no rows to report");
     });
 
     it("is absent from a refusal, whose input_box already is the read it refused on", async () => {

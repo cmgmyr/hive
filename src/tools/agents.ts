@@ -2000,14 +2000,15 @@ type InputBoxBefore = {
 function inputBoxBefore(snapshot: InputBoxSnapshot | null): InputBoxBefore {
   if (snapshot === null) return { state: "unreadable" };
   const { box, rows, promptSgr } = snapshot;
-  const sgr = promptSgr === "" ? {} : { prompt_sgr: promptSgr };
-  if (box === null) return { state: "not_found", rows, ...sgr };
+  const sgr = promptSgr ? { prompt_sgr: promptSgr } : {};
+  const withRows = rows === undefined ? {} : { rows };
+  if (box === null) return { state: "not_found", ...withRows, ...sgr };
   if (box.state === "ghost") return { state: "ghost", ...sgr };
-  return { state: box.state, text: box.text, rows, ...sgr };
+  return { state: box.state, text: box.text, ...withRows, ...sgr };
 }
 
 function readInputBox(classifier: PaneClassifier, target: string): InputBoxSnapshot | null {
   if (classifier.inputBoxSnapshot) return classifier.inputBoxSnapshot(target);
   const box = classifier.inputBoxState(target);
-  return box === null ? null : { box, rows: [], promptSgr: "" };
+  return box === null ? null : { box };
 }

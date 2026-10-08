@@ -1147,8 +1147,8 @@ function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: num
 
 export interface InputBoxSnapshot {
   box: InputBoxState | null;
-  rows: string[];
-  promptSgr: string;
+  rows?: string[];
+  promptSgr?: string;
 }
 
 const SNAPSHOT_ROWS = 10;

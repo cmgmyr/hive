@@ -62,6 +62,18 @@ const CASES = [
     marker: "FAINT TRUECOLOR GHOST",
     expect: { state: "ghost", text: "FAINT TRUECOLOR GHOST" },
   },
+  {
+    file: "truecolor-last-component-2-pending.txt",
+    name: "truecolor-last-2",
+    marker: "LAST COMPONENT TWO",
+    expect: { state: "pending", text: "LAST COMPONENT TWO" },
+  },
+  {
+    file: "faint-truecolor-last-component-0-ghost.txt",
+    name: "faint-truecolor-last-0",
+    marker: "FAINT LAST COMPONENT ZERO",
+    expect: { state: "ghost", text: "FAINT LAST COMPONENT ZERO" },
+  },
   { file: "folder-trust-dialog.txt", name: "trust-dialog", marker: "trust this folder", expect: null },
   { file: "model-picker-dialog.txt", name: "model-dialog", marker: "Select model", expect: null },
   {
@@ -222,7 +234,7 @@ describe("footer-slot-taken.txt carries the bytes the slot-taken case actually n
 });
 
 describe(
-  "inputBoxSnapshot is the same read as inputBoxState (todo 1782)",
+  "inputBoxSnapshot carries the box, its rows and the prompt SGR run (todo 1782)",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     const session = `hive-inputbox-snap-${process.pid}`;
@@ -246,10 +258,17 @@ describe(
       return { target, snap: inputBoxSnapshot(target) };
     }
 
-    it("returns the box inputBoxState returns, and the rows between the rules", async () => {
+    it("returns the box's state and the rows between the rules, capped", async () => {
+      const expected = {
+        "real-input.txt": "pending",
+        "multiline-pending.txt": "pending",
+        "truecolor-led-pending.txt": "pending",
+        "ghost-suggestion.txt": "ghost",
+        "folder-trust-dialog.txt": null,
+      };
       for (const file of FILES) {
-        const { target, snap } = await snapshotOf(file);
-        assert.deepEqual(snap.box, inputBoxState(target), file);
+        const { snap } = await snapshotOf(file);
+        assert.equal(snap.box?.state ?? null, expected[file], file);
         assert.ok(snap.rows.length <= 10, file);
       }
       const { snap } = await snapshotOf("multiline-pending.txt");
