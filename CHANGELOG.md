@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.9.1 - 2026-10-08
+
+- With `quiet_messaging` on, a worker's `agent_send` to a running Claude Code lead now arrives as one dim `Message from @hive` row instead of typed text, the same way one-shot wakes do since 1.9.0. A message over 300 characters still arrives as a one-line pointer you read with `agent_message_get`. The send receipt says `pending` until the lead confirms it, and `agent_message_get` reports the delivery state. A message the lead does not confirm in time is typed into the pane once. With the setting off, nothing changes. See [Quiet messaging](docs/projects.md#quiet-messaging).
+- With `quiet_messaging` on, repeating wakes to a Claude Code lead also arrive as a `Message from @hive` row, on every firing, marked `[hive wake #N firing #F]`. `delivery_method` reads `socket-repeating`.
+- `wake_get` and `wake_list` report `delivered_by`: the process id, version and build of the hive server that delivered each wake. An older hive server that delivered a wake leaves it empty.
+- A submitting `agent_send` with `wait_ms` returns `input_box_before`, the target's input box as hive read it just before the paste, next to the existing `input_box` read after it.
+- A prompt row drawn in a 256-color or truecolor style is now read as typed text, not as Claude's dim suggestion. Before, text in such a row did not hold a wake and did not stop `agent_send`.
+- When hive cannot connect to the tmux socket at all (for example, permission denied from a sandboxed shell), it now treats the state as unknown instead of as an empty server. `hive portfolio` no longer reports every lead as a dead pane from such a shell.
+- A Claude Code task notification no longer counts as you talking to the lead, so it no longer holds the lead's wakes.
+- The CLI exits quietly when the reader of its output closes the connection with `ENOTCONN`, as it already did for `EPIPE`.
+- The store migrates to schema 36 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.9.0 - 2026-10-07
 
 - New opt-in setting `quiet_messaging`. With `quiet_messaging: true` in your global `~/.hive/hive.yml` or a project's `hive.yml`, a one-shot wake to a running Claude Code lead arrives as one dim `Message from @hive` row instead of a block of pasted text. Press ctrl+o to expand it. It is off unless you set it, and a project's `false` overrides a global `true`. Restart the lead with `/exit` and `hive lead` after changing it. See [Quiet messaging](docs/projects.md#quiet-messaging).
