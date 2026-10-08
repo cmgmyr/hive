@@ -27,6 +27,7 @@ import { ensureWorkerHooksFile } from "../hooks.js";
 import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
   classifyMiss,
+  DELIVERY_FIELDS,
   LEAD_MESSAGE_THRESHOLD,
   leadPointerMarker,
   missMessage,
@@ -36,6 +37,7 @@ import {
   shortenedSendNote,
   storeLeadMessage,
 } from "../leadMessage.js";
+import { sendQuietLeadMessage } from "../leadMessageDelivery.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
@@ -128,6 +130,8 @@ export interface AgentRow {
   exit_tail: string;
   model: string | null;
   extra_args: string | null;
+  claude_messaging_socket: string;
+  claude_messaging_pane_pid: string;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -1497,7 +1501,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. With quiet_messaging on, a worker's submitted text to a Claude lead is stored with a message id and posted over the lead's messaging socket instead of typed (the same pointer when over 300 characters): the receipt says pending until the lead's prompt confirms it, hive types it into the pane once if no confirmation comes, and the socket post skips the pane checks below; do not resend a pending send. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1560,6 +1564,29 @@ export function registerAgents(server: McpServer): void {
                 "turning a text call into a keys call. Tab and newline are the only control characters " +
                 'allowed. To send an actual keystroke on purpose, use keys instead (e.g. keys: ["C-c"]).',
             );
+          }
+          const quiet = await sendQuietLeadMessage({
+            projectId: project.id,
+            fromActor: currentActor(),
+            target: agent,
+            text: args.text,
+            submit: args.submit !== false,
+          });
+          if (quiet !== null) {
+            if (quiet.sent) {
+              confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
+            }
+            if (args.wait_ms == null) return quiet;
+            await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+            try {
+              if (observeOwnership(agent) !== "live") throw new Error("not live");
+              return { ...quiet, tail: capturePane(target, 15) };
+            } catch {
+              return {
+                ...quiet,
+                tail_note: "The terminal tail could not be read after the wait (the pane may have died or changed owner).",
+              };
+            }
           }
           if (!screenClassifiable(agent.command)) {
             return {
@@ -1741,7 +1768,7 @@ export function registerAgents(server: McpServer): void {
     "agent_message_get",
     {
       description:
-        "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here only when it shortens one: text over 300 characters sent to a lead by someone who is not that lead. Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
+        "Read one agent-to-lead message in full, by the id in a \"[hive:worker NAME] [message #N ...]\" pointer line. hive stores a message here when it shortens one (text over 300 characters sent to a lead by someone who is not that lead) and, with quiet_messaging on, for every submitted worker send to a Claude lead, whose result then also carries its delivery state (delivery_status, delivery_method, socket_attempt_at, confirmed_at, fallback_claimed_at, typed_at, delivery_note and the accepted target). Every other send is typed with its sender tag and stores nothing, so there is no id to read. Messages are pruned after 7 days, and a lookup for a pruned id says so rather than reporting it missing.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -1768,6 +1795,9 @@ export function registerAgents(server: McpServer): void {
           chars: row.text.length,
           created_at: row.created_at,
           text: row.text,
+          ...(row.delivery_status === null
+            ? {}
+            : Object.fromEntries(DELIVERY_FIELDS.map((field) => [field, row[field]]))),
         };
       }),
   );

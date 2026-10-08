@@ -34,6 +34,7 @@ import {
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
 import { readLeadTurnState } from "./leadState.js";
+import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
 import {
@@ -792,6 +793,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
       else await maybeFireIdle(timer, snapshot, now, choices);
     }
     await retryUnconfirmedSocketWakes(snapshot, choices);
+    await retryQuietLeadMessages(snapshot);
   } catch {
 
   } finally {
@@ -992,6 +994,7 @@ function conversationHoldsWake(timer: TimerRow, snapshot: AliveSnapshot | null):
       `SELECT 1 AS hit FROM agent_state_log
         WHERE actor_id = ? AND event = 'prompt' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '%[hive wake #%' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '[hive:%'
           AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '<task-notification>%'
+          AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '<cross-session-message from="%" from-name="hive">' || char(10) || '[hive:worker %] [message #%,%' || char(10) || '</cross-session-message>%'
           AND created_at >= datetime('now', ?)
         ORDER BY id DESC LIMIT 1`,
     ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined

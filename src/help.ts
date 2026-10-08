@@ -151,9 +151,13 @@ runbook (fork it first), not a pad write.`,
     Text is prefixed with the sender tag.
     Text over 300 chars sent to a LEAD by anyone but that lead is stored and
     delivered as a one-line pointer, so the human's own pane stays readable;
-    the receipt says shortened and names the message id.
-  agent_message_get(message_id) — the full text behind a pointer line. Kept
-    7 days; a lookup for a pruned id says it expired, not that it is missing.
+    the receipt says shortened and names the message id. With quiet_messaging
+    on, a worker's submitted text to a Claude lead is stored with an id and
+    posted to the lead's messaging socket instead; the receipt says pending
+    until the lead's prompt confirms it, and hive types it into the pane once
+    if nothing does. Do not resend a pending send.
+  agent_message_get(message_id) — the full text behind a pointer line, plus
+    the delivery state of a quiet message. Kept 7 days; a lookup for a pruned id says it expired, not that it is missing.
   agent_output(name|agent_id, lines?) — read the rendered terminal.
   agent_status(name|agent_id, include_brief?) — liveness, current command,
     short tail, and the path to the brief this worker was given

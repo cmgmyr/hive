@@ -6,6 +6,7 @@ paths:
   - "src/tools/agents.ts"
   - "src/cli.ts"
   - "src/leadMessage.ts"
+  - "src/leadMessageDelivery.ts"
   - "src/harnesses.ts"
   - "src/processes.ts"
   - "scripts/restart-lead.sh"
@@ -123,10 +124,13 @@ sends no markers there and the following Enter is eaten by the mode instead of
 submitting. Both tmux calls exit 0. That restores the head loss above AND
 strands what survives, unsubmitted, with every receipt reporting success.
 
-- **Both typing sites check it, and both must keep checking it.** `agent_send`'s
-  text path REFUSES with a retriable note; `deliverable()` HOLDS, exactly like
-  the dialog and unsubmitted-text checks, and delivers once the pane leaves copy
-  mode. One predicate, `paneInCopyMode` (`src/tmux.ts`).
+- **Every typing site checks it, and every one must keep checking it.**
+  `agent_send`'s text path REFUSES with a retriable note; `deliverable()` HOLDS,
+  exactly like the dialog and unsubmitted-text checks, and delivers once the pane
+  leaves copy mode; a quiet worker message's pane fallback HOLDS the same way
+  (`paneFallback`, `src/leadMessageDelivery.ts`). One predicate, `paneInCopyMode`
+  (`src/tmux.ts`). Only the socket post skips it, because it never writes into
+  the pane.
 - **The predicate is `#{pane_in_mode}`, never `#{bracket_paste_flag}`.** The flag
   answers the question more directly, but reads 0 for a legitimate shell pane,
   so refusing on it refuses panes that are fine.
@@ -146,6 +150,7 @@ strands what survives, unsubmitted, with every receipt reporting success.
 - **Do not shorten at write time.** The row must store the FULL text and the pointer must be rendered at delivery, or the lookup the pointer names reads something that was never written.
 - **Every field interpolated into the pointer goes through `flatten`** (`src/slug.ts`), the sender's name included. A raw control byte in any of it reaches tmux as a keystroke and submits the pointer early.
 - **A lookup that misses must say WHICH miss it is.** The pointer outlives its row, so `pruned`, `never-issued` and `other-project` are distinct answers. Do not collapse them into "not found".
+- **The quiet socket hop changes the transport, not the shortening.** With `quiet_messaging` on, a submitted worker send to a Claude lead is stored at every length and posted to the lead's socket (`sendQuietLeadMessage`, `src/leadMessageDelivery.ts`); over 300 characters it is still the 140-character pointer, never the full text. The post skips the copy-mode, dialog and input-box checks because it cannot reach the human's box. Its pane fallback must not: it holds on every one of them, runs under the `wake-pane:` lease, claims the row with a CAS before the paste, and never pastes twice. Never type a fallback into a pane whose identity differs from the one the row was accepted for.
 
 ## A pane with unsubmitted human text holds its wake too
 

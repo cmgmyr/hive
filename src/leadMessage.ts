@@ -27,7 +27,28 @@ export interface StoredLeadMessage {
   to_agent_id: number;
   text: string;
   created_at: string;
+  delivery_status: string | null;
+  delivery_method: string | null;
+  socket_attempt_at: string | null;
+  confirmed_at: string | null;
+  fallback_claimed_at: string | null;
+  typed_at: string | null;
+  delivery_note: string | null;
+  target_identity: string | null;
+  sender_tag: string | null;
 }
+
+export const DELIVERY_FIELDS = [
+  "delivery_status",
+  "delivery_method",
+  "socket_attempt_at",
+  "confirmed_at",
+  "fallback_claimed_at",
+  "typed_at",
+  "delivery_note",
+  "target_identity",
+  "sender_tag",
+] as const;
 
 function senderName(projectId: number, actorId: string): string {
   const row = db
@@ -74,7 +95,7 @@ export function storeLeadMessage(
 export function readLeadMessage(projectId: number, messageId: number): StoredLeadMessage | undefined {
   return db
     .prepare(
-      `SELECT id, from_actor, from_name, to_agent_id, text, created_at
+      `SELECT id, from_actor, from_name, to_agent_id, text, created_at, ${DELIVERY_FIELDS.join(", ")}
          FROM agent_messages WHERE id = ? AND project_id = ?`,
     )
     .get(messageId, projectId) as StoredLeadMessage | undefined;
@@ -123,20 +144,33 @@ export function missMessage(messageId: number, kind: MissKind): string {
 // also covers format characters. The head comes from outside, and a raw control byte in it reaches tmux
 // as a keystroke rather than as text, submitting this pointer early and splitting it. The sender's name
 // is flattened by senderTag when it builds the tag ahead of this marker - the tag is who, this is what.
-export function leadPointerMarker(id: number, text: string): string {
-  return `[message #${id}, ${text.length} chars]`;
+export function leadPointerMarker(id: number, text: string, redelivered = false): string {
+  return `[message #${id}, ${text.length} chars${redelivered ? ", re-delivered" : ""}]`;
 }
 
-export function renderLeadPointer(id: number, text: string, tag: string): string {
+const redeliveredLead = (id: number, redelivered: boolean): string =>
+  redelivered ? ` If you already handled message #${id}, ignore this.` : "";
+
+export function renderLeadPointer(id: number, text: string, tag: string, redelivered = false): string {
   const flat = flatten(text);
   const head = flat.length > HEAD_BUDGET ? cutToUnitBudget(flat, HEAD_BUDGET) + ELLIPSIS : flat;
-  return `${tag}${leadPointerMarker(id, text)} ${head} agent_message_get(${id}) for the full text.`;
+  return `${tag}${leadPointerMarker(id, text, redelivered)}${redeliveredLead(id, redelivered)} ${head} agent_message_get(${id}) for the full text.`;
 }
 
-export function shortenedSendNote(id: number, deliveredChars: number): string {
+// A short message carries its id too, so a quiet send has a marker its confirmation can match.
+export function renderLeadMessage(id: number, text: string, tag: string, redelivered = false): string {
+  return text.length > LEAD_MESSAGE_THRESHOLD
+    ? renderLeadPointer(id, text, tag, redelivered)
+    : `${tag}${leadPointerMarker(id, text, redelivered)}${redeliveredLead(id, redelivered)} ${text}`;
+}
+
+export function shortenedSendNote(id: number, deliveredChars: number, channel: "pane" | "socket" = "pane"): string {
   return (
-    `Over ${LEAD_MESSAGE_THRESHOLD} characters to a LEAD, so that pane got a ${deliveredChars}-character ` +
-    `pointer instead of this text: a lead's pane is a human's own window and hive keeps it quiet. Nothing ` +
+    `Over ${LEAD_MESSAGE_THRESHOLD} characters to a LEAD, so ` +
+    (channel === "pane"
+      ? `that pane got a ${deliveredChars}-character pointer instead of this text`
+      : `hive delivers a ${deliveredChars}-character pointer instead of this text, over the lead's messaging socket or, failing that, typed once into its pane`) +
+    `: a lead's pane is a human's own window and hive keeps it quiet. Nothing ` +
     `was lost - the full text is stored as message ${id} and the pointer names agent_message_get(${id}) - ` +
     `but the lead reads the rest only if it chooses to. Put whatever must be ACTED on in the first ` +
     `${HEAD_BUDGET} characters, or on the todo, where it is durable. Worker-bound sends are never shortened.`

@@ -18,6 +18,7 @@ export const ALLOWLIST = [
   { path: "src/tools/agents.ts", marker: "`/rename ${newName}`" },
   { path: "src/tools/agents.ts", marker: "target,\n              outgoing" },
   { path: "src/scheduler.ts", marker: "prefix + body + staleness + tail" },
+  { path: "src/leadMessageDelivery.ts", marker: "renderLeadMessage(row.id, row.text, row.sender_tag" },
 ];
 
 export function sendTextSites(contents, path) {
@@ -58,7 +59,7 @@ describe("agent_send sender tags cover every sendText site", () => {
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { senderTag } = await import("../dist/leadMessage.js");
+const { renderLeadMessage, senderTag } = await import("../dist/leadMessage.js");
 const { sessionName } = await import("../dist/tmux.js");
 migrate();
 
@@ -139,5 +140,17 @@ describe("todo 914 A2: an ordinary short worker-bound send opens with the tag on
       unwrapped.includes("[hive:lead]shortassignment,wellunderthethreshold"),
       `an ordinary (non-shortened) worker-bound send must open with the tag, got: ${JSON.stringify(output)}`,
     );
+  });
+});
+
+describe("todo 1767: a quiet message's pane fallback opens with its saved sender tag", () => {
+  it("renderLeadMessage puts the tag at offset 0 for short, long and re-delivered text", () => {
+    const tag = "[hive:worker cg-1767] ";
+    for (const text of ["short", "x".repeat(900)]) {
+      for (const redelivered of [false, true]) {
+        const rendered = renderLeadMessage(42, text, tag, redelivered);
+        assert.ok(rendered.startsWith(`${tag}[message #42, ${text.length} chars`), JSON.stringify(rendered.slice(0, 80)));
+      }
+    }
   });
 });

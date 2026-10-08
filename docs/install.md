@@ -62,9 +62,9 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 
 A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
-- You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1093`; `agent_resume`, `src/tools/agents.ts:920`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:973`).
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2812`; `noteStalledCrew`, `src/scheduler.ts:1985`; `transcriptStaleness`, `src/scheduler.ts:1903`).
-- Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:551-553`).
+- You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:182`; `agent_park`, `src/tools/agents.ts:1097`; `agent_resume`, `src/tools/agents.ts:924`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:645`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:977`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2812`; `noteStalledCrew`, `src/scheduler.ts:1988`; `transcriptStaleness`, `src/scheduler.ts:1906`).
+- Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:108-133`; `contextFillField`, `src/tools/agents.ts:555-557`).
 - Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:309`).
 
 `agents:` is accident prevention, not a security boundary: the gate matches on the command's basename, so it stops an ordinary spawn, not someone deliberately working around it. See [docs/projects.md](projects.md#project-commands-hiveyml).
@@ -87,7 +87,7 @@ With the default `auto` attach mode (or `control`), set these once per machine u
 
 - Check "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
 - Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
-- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server, not the display.
+- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with `quiet_messaging`, the lead's own socket), not the display.
 
 None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 

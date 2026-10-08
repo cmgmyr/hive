@@ -25,7 +25,14 @@ const agentId = db
      RETURNING id`,
   )
   .get(projectId).id;
+const messageId = db
+  .prepare(
+    `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text)
+     VALUES (?, 'actor:v30', 'shipped', ?, 'a pointer row written before delivery metadata') RETURNING id`,
+  )
+  .get(projectId, agentId).id;
 const before = {
+  message: db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(messageId),
   versions: db.prepare("SELECT MAX(version) AS v FROM migrations").get().v,
   agent: db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId),
 };
@@ -101,5 +108,18 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     } finally {
       prior.close();
     }
+  });
+
+  it("delivery columns migrate forward as null without changing existing message text", () => {
+    const after = db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(messageId);
+    const fields = ["delivery_status", "delivery_method", "socket_attempt_at", "confirmed_at", "fallback_claimed_at",
+      "typed_at", "delivery_note", "target_identity", "sender_tag"];
+    const rest = { ...after };
+    for (const field of fields) {
+      assert.ok(field in after, field);
+      assert.equal(after[field], null, field);
+      delete rest[field];
+    }
+    assert.deepEqual(rest, before.message);
   });
 });

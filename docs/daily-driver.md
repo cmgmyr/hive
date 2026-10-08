@@ -70,8 +70,10 @@ You get who sent it, how much you are not being shown, the first 140 characters,
 Three things about it are deliberate:
 
 - **Only messages to a lead are shortened, and only from someone who is not that lead.** Text sent to a worker is typed exactly as written at any length, because there the message IS the assignment, and a truncated assignment is a broken one.
-- **A short message is never touched.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
+- **A short message is never shortened.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
 - **The sender is told.** `agent_send`'s receipt comes back with `shortened: true`, the message id, and a note saying to put whatever needs acting on in the first 140 characters or on the todo. A worker cannot keep writing 900-byte reports believing you read them.
+
+With `quiet_messaging` on, a worker's message arrives as one dim `Message from @hive` row instead of typed text, short ones included, and every one carries its id (`[message #7, 42 chars]`), so `agent_message_get` also tells you whether it was confirmed. See [Quiet messaging](projects.md#quiet-messaging).
 
 Messages are kept for 7 days. The pointer line stays in your scrollback longer than that, so a lookup for an expired id tells you it expired rather than reporting it missing, and points you at the todo or pad the sender wrote instead.
 

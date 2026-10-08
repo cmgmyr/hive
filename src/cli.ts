@@ -1134,7 +1134,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
 
-# quiet_messaging: true        # wakes reach a claude lead as one row (default: false; restart the lead)
+# quiet_messaging: true        # wakes and worker messages reach a claude lead as one row (default: false; restart the lead)
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

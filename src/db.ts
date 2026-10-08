@@ -450,6 +450,19 @@ ALTER TABLE wakes ADD COLUMN socket_attempt_at TEXT;
 ALTER TABLE wakes ADD COLUMN socket_delivery_note TEXT;
 `,
   `ALTER TABLE wakes ADD COLUMN delivered_by TEXT;`,
+
+  `
+ALTER TABLE agent_messages ADD COLUMN delivery_status TEXT;
+ALTER TABLE agent_messages ADD COLUMN delivery_method TEXT;
+ALTER TABLE agent_messages ADD COLUMN socket_attempt_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN confirmed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN fallback_claimed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN typed_at TEXT;
+ALTER TABLE agent_messages ADD COLUMN delivery_note TEXT;
+ALTER TABLE agent_messages ADD COLUMN target_identity TEXT;
+ALTER TABLE agent_messages ADD COLUMN sender_tag TEXT;
+CREATE INDEX idx_agent_messages_delivery ON agent_messages(delivery_status, id) WHERE delivery_status IS NOT NULL;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
