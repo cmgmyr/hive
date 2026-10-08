@@ -19,7 +19,7 @@ import {
   commandHead,
   harnessFor,
   harnessNames, readOnlyExtraArgsAllowed,
-  paneClassifierFor,
+  paneClassifierFor, type PaneClassifier,
   resolvedCommandPrefix,
   screenClassifiable,
 } from "../harnesses.js";
@@ -89,7 +89,7 @@ import {
   TmuxTimeoutError,
   WINDOW_LAYOUTS,
   type AliveSnapshot,
-  type InputBoxState,
+  type InputBoxSnapshot, type InputBoxState,
   type Liveness,
   type RowOwnership,
 } from "../tmux.js";
@@ -1524,6 +1524,7 @@ export function registerAgents(server: McpServer): void {
         const auditIdentity = captureQueenWriteIdentity(project.id);
         let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
+        let boxBefore: InputBoxBefore | null = null;
         const withShortened = <T extends Record<string, unknown> & { note?: string }>(receipt: T) =>
           shortened === null
             ? receipt
@@ -1618,7 +1619,9 @@ export function registerAgents(server: McpServer): void {
           }
 
           if (submitting) {
-            const box = sendClassifier.inputBoxState(target);
+            const snapshot = readInputBox(sendClassifier, target);
+            const box = snapshot?.box ?? null;
+            boxBefore = inputBoxBefore(snapshot);
             if (holdsHumanInput(box)) {
               return {
                 agent_id: agent.id,
@@ -1726,6 +1729,7 @@ export function registerAgents(server: McpServer): void {
             ...tailField,
 
             ...inputBoxField(agent.command, target),
+            ...(boxBefore === null ? {} : { input_box_before: boxBefore }),
           });
         }
 
@@ -1984,4 +1988,27 @@ export function registerAgents(server: McpServer): void {
         };
       }),
   );
+}
+
+type InputBoxBefore = {
+  state: InputBoxState["state"] | "not_found" | "unreadable";
+  text?: string;
+  rows?: string[];
+  prompt_sgr?: string;
+};
+
+function inputBoxBefore(snapshot: InputBoxSnapshot | null): InputBoxBefore {
+  if (snapshot === null) return { state: "unreadable" };
+  const { box, rows, promptSgr } = snapshot;
+  const sgr = promptSgr ? { prompt_sgr: promptSgr } : {};
+  const withRows = rows === undefined ? {} : { rows };
+  if (box === null) return { state: "not_found", ...withRows, ...sgr };
+  if (box.state === "ghost") return { state: "ghost", ...sgr };
+  return { state: box.state, text: box.text, ...withRows, ...sgr };
+}
+
+function readInputBox(classifier: PaneClassifier, target: string): InputBoxSnapshot | null {
+  if (classifier.inputBoxSnapshot) return classifier.inputBoxSnapshot(target);
+  const box = classifier.inputBoxState(target);
+  return box === null ? null : { box };
 }

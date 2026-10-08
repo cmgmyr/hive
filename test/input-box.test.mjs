@@ -8,7 +8,7 @@ import { REPO, isolateTmux, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the input-box fixture tests");
 
-const { inputBoxState, holdsHumanInput } = await import("../dist/tmux.js");
+const { inputBoxState, inputBoxSnapshot, holdsHumanInput } = await import("../dist/tmux.js");
 
 const FIXTURES = join(REPO, "test", "fixtures", "panes");
 
@@ -43,6 +43,37 @@ const CASES = [
     expect: { state: "pending", text: "REAL INPUT AFTER DIM RESET" },
   },
 
+  {
+    file: "truecolor-led-pending.txt",
+    name: "truecolor-led",
+    marker: "TRUECOLOR LED PENDING",
+    expect: { state: "pending", text: "TRUECOLOR LED PENDING" },
+  },
+  {
+    file: "color256-led-pending.txt",
+    name: "color256-led",
+    marker: "COLOR256 LED PENDING",
+    expect: { state: "pending", text: "COLOR256 LED PENDING" },
+  },
+
+  {
+    file: "faint-truecolor-ghost.txt",
+    name: "faint-truecolor",
+    marker: "FAINT TRUECOLOR GHOST",
+    expect: { state: "ghost", text: "FAINT TRUECOLOR GHOST" },
+  },
+  {
+    file: "truecolor-last-component-2-pending.txt",
+    name: "truecolor-last-2",
+    marker: "LAST COMPONENT TWO",
+    expect: { state: "pending", text: "LAST COMPONENT TWO" },
+  },
+  {
+    file: "faint-truecolor-last-component-0-ghost.txt",
+    name: "faint-truecolor-last-0",
+    marker: "FAINT LAST COMPONENT ZERO",
+    expect: { state: "ghost", text: "FAINT LAST COMPONENT ZERO" },
+  },
   { file: "folder-trust-dialog.txt", name: "trust-dialog", marker: "trust this folder", expect: null },
   { file: "model-picker-dialog.txt", name: "model-dialog", marker: "Select model", expect: null },
   {
@@ -201,3 +232,58 @@ describe("footer-slot-taken.txt carries the bytes the slot-taken case actually n
     });
   }
 });
+
+describe(
+  "inputBoxSnapshot carries the box, its rows and the prompt SGR run (todo 1782)",
+  { skip: hasTmux ? false : "tmux is not installed" },
+  () => {
+    const session = `hive-inputbox-snap-${process.pid}`;
+    const FILES = ["real-input.txt", "multiline-pending.txt", "truecolor-led-pending.txt", "ghost-suggestion.txt", "folder-trust-dialog.txt"];
+
+    before(() => {
+      FILES.forEach((file, i) => {
+        const cmd = `cat '${join(FIXTURES, file)}'; sleep 600`;
+        const args = i === 0
+          ? ["new-session", "-d", "-s", session, "-n", file.replace(".txt", ""), "-x", "220", "-y", "50", cmd]
+          : ["new-window", "-d", "-t", `=${session}`, "-n", file.replace(".txt", ""), cmd];
+        execFileSync("tmux", args, { stdio: "ignore" });
+      });
+    });
+    after(() => cleanup(session));
+
+    async function snapshotOf(file) {
+      const target = `${session}:${file.replace(".txt", "")}`;
+      await until(() => execFileSync("tmux", ["capture-pane", "-p", "-t", target]).toString().trim() !== "");
+      await new Promise((r) => setTimeout(r, 300));
+      return { target, snap: inputBoxSnapshot(target) };
+    }
+
+    it("returns the box's state and the rows between the rules, capped", async () => {
+      const expected = {
+        "real-input.txt": "pending",
+        "multiline-pending.txt": "pending",
+        "truecolor-led-pending.txt": "pending",
+        "ghost-suggestion.txt": "ghost",
+        "folder-trust-dialog.txt": null,
+      };
+      for (const file of FILES) {
+        const { snap } = await snapshotOf(file);
+        assert.equal(snap.box?.state ?? null, expected[file], file);
+        assert.ok(snap.rows.length <= 10, file);
+      }
+      const { snap } = await snapshotOf("multiline-pending.txt");
+      assert.ok(snap.rows.some((row) => row.includes("SECOND LINE OF PENDING")));
+    });
+
+    it("keeps the SGR run that follows the prompt glyph, so a misread of the style is visible", async () => {
+      assert.equal((await snapshotOf("truecolor-led-pending.txt")).snap.promptSgr, "[38;2;215;119;87m");
+      assert.equal((await snapshotOf("ghost-suggestion.txt")).snap.promptSgr, "[2m");
+    });
+
+    it("answers box null with the screen tail when there is no box to anchor on", async () => {
+      const { snap } = await snapshotOf("folder-trust-dialog.txt");
+      assert.equal(snap.box, null);
+      assert.ok(snap.rows.some((row) => row.includes("trust this folder")));
+    });
+  },
+);

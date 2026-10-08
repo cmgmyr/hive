@@ -1053,7 +1053,12 @@ function leadingRunIsFaint(s: string): boolean {
       faint = false;
       continue;
     }
-    for (const p of params) {
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (p === "38" || p === "48" || p === "58") {
+        i += params[i + 1] === "5" ? 2 : params[i + 1] === "2" ? 4 : 0;
+        continue;
+      }
       if (p === "0") faint = false;
       else if (p === "2") faint = true;
       else if (p === "22") faint = false;
@@ -1140,17 +1145,53 @@ function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: num
   return { state: text === "" ? "empty" : dim ? "ghost" : "pending", text };
 }
 
-export function inputBoxState(target: string): InputBoxState | null {
+export interface InputBoxSnapshot {
+  box: InputBoxState | null;
+  rows?: string[];
+  promptSgr?: string;
+}
+
+const SNAPSHOT_ROWS = 10;
+const SNAPSHOT_ROW_CHARS = 120;
+
+const snapshotRow = (row: string): string =>
+  stripControlBytes(stripSgr(row))
+    .trimEnd()
+    .replace(/─{4,}/g, (run) => `─×${run.length}`)
+    .slice(0, SNAPSHOT_ROW_CHARS);
+
+function snapshotRows(rows: string[], anchor: InputBoxAnchor | null): string[] {
+  if (anchor === null) {
+    return rows.map(snapshotRow).filter((row) => row !== "").slice(-SNAPSHOT_ROWS);
+  }
+  return rows.slice(anchor.top, anchor.bottom + 1).map(snapshotRow).slice(0, SNAPSHOT_ROWS);
+}
+
+function promptSgrOf(rows: string[], anchor: InputBoxAnchor | null): string {
+  if (anchor === null || anchor.prompt === null) return "";
+  const row = rows[anchor.prompt];
+  const after = row.slice(row.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
+  return (/^(?:\x1b\[[0-9;]*m)*/.exec(after)?.[0] ?? "").replace(/\x1b/g, "").slice(0, 60);
+}
+
+export function inputBoxSnapshot(target: string): InputBoxSnapshot | null {
   try {
     const raw = tmux("capture-pane", "-p", "-e", "-t", target, "-S", `-${tailCaptureLines()}`);
     const rows = raw.split("\n");
-    const box = findInputBox(rows);
-    if (box === null) return null;
-    return box.prompt === null ? { state: "unknown", text: "" } : classifyInputBox(rows, box.prompt, box.bottom);
+    const anchor = findInputBox(rows);
+    const box =
+      anchor === null
+        ? null
+        : anchor.prompt === null
+          ? { state: "unknown" as const, text: "" }
+          : classifyInputBox(rows, anchor.prompt, anchor.bottom);
+    return { box, rows: snapshotRows(rows, anchor), promptSgr: promptSgrOf(rows, anchor) };
   } catch {
     return null;
   }
 }
+
+export const inputBoxState = (target: string): InputBoxState | null => inputBoxSnapshot(target)?.box ?? null;
 
 const NOISE_ROW = /^[\s\u2500-\u257F\u2580-\u259F\u2800-\u28FF]*$/;
 const FOOTER_KEEP =

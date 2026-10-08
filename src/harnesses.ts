@@ -5,10 +5,10 @@ import {
   codexTrailerView,
   codexPaneChoiceCheck,
   codexPaneHasInputBox,
-  inputBoxState,
+  inputBoxSnapshot, inputBoxState,
   paneChoiceCheck,
   paneHasInputBox,
-  type InputBoxState,
+  type InputBoxSnapshot, type InputBoxState,
   type TrailerView,
 } from "./tmux.js";
 
@@ -30,7 +30,7 @@ export interface PaneChoiceCheck {
 // Resolved once at the call site, never threaded as a command string into tmux.ts's primitives.
 export interface PaneClassifier {
   choiceCheck(target: string): PaneChoiceCheck;
-  inputBoxState(target: string): InputBoxState | null;
+  inputBoxState(target: string): InputBoxState | null; inputBoxSnapshot?(target: string): InputBoxSnapshot | null;
   hasInputBox(target: string): boolean | null;
   trailerView(target: string): TrailerView | null;
 }
@@ -147,7 +147,7 @@ const claudeHarness: HarnessCapabilities = {
   supportsRename: true,
 
   classifiesPaneScreen: true,
-  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
+  paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, inputBoxSnapshot, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
 
   hasScopes: true,
 
