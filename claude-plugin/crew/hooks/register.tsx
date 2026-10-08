@@ -51,6 +51,14 @@ export const register: Register = on => {
     const { Box, Text } = $.ui.resolve(e)
     const c = await read($, crew)
     if (!c) return <Text dimColor>reading the hive crew…</Text>
+    if (c.noData) {
+      return (
+        <Box flexDirection="column">
+          <Text color="red" wrap="truncate-end">read failed: {c.error}</Text>
+          <Text dimColor>no data yet</Text>
+        </Box>
+      )
+    }
     return (
       <Box flexDirection="column">
         <Text bold wrap="truncate-end">{c.header}</Text>
@@ -59,7 +67,7 @@ export const register: Register = on => {
         {c.rows.map(r => (
           <Box flexDirection="column">
             <Text wrap="truncate-end"><Text color={r.color}>● </Text>{r.id} <Text dimColor>{r.slug}</Text></Text>
-            <Text wrap="truncate-end" dimColor>  {r.model}{r.model ? ' · ' : ''}{r.activity}{r.ctx ? ' · ' : ''}<Text color={r.ctxAmber ? 'yellow' : undefined}>{r.ctx}</Text>{r.rest ? ' · ' : ''}{r.rest}</Text>
+            <Text wrap="truncate-end" dimColor>  {r.parts.map(p => <Text color={p.amber ? 'yellow' : undefined}>{p.text}</Text>)}</Text>
           </Box>
         ))}
         <Text> </Text>

@@ -51,22 +51,50 @@ describe("readCrew", () => {
     await assert.rejects(readCrew(async () => { throw new Error("timed out"); }, "/c"), /did not answer: timed out/);
   });
 
-  it("real hive crew --json output builds a view", async () => {
+  it("real hive crew --json over staffed unstaffed wake and needs-you shapes builds a view whose fixtures share its key sets", async () => {
     const project = addProject(dirs.projectDir, "mod-proj");
-    const t = db.prepare("INSERT INTO todos (project_id, title, status, slug) VALUES (?, 't', 'in_progress', 'real lane') RETURNING id").get(project.id).id;
+    const todo = (slug, status, tags = "[]") =>
+      db.prepare("INSERT INTO todos (project_id, title, status, slug, tags) VALUES (?, ?, ?, ?, ?) RETURNING id").get(project.id, slug, status, slug, tags).id;
+    const laneId = todo("real lane", "in_progress");
+    todo("bare lane", "in_progress");
+    todo("ask human", "open", '["needs-human"]');
     db.prepare(
       `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status, agent_state, model, todo_id)
        VALUES (?, 'agent:real', 'real-w', '%999', 'claude', ?, 'agent', 'running', 'working', 'opus', ?)`,
-    ).run(project.id, dirs.projectDir, t);
+    ).run(project.id, dirs.projectDir, laneId);
+    const wake = db.prepare(
+      `INSERT INTO wakes (project_id, owner, body, kind, due_at, deliver_actor, deliver_pane, watch_scope, max_wait_at)
+       VALUES (?, 'lead', ?, ?, ?, 'lead', '%0', ?, ?)`,
+    );
+    wake.run(project.id, "check the lane", "delay", "2099-01-01 00:00:00", null, null);
+    wake.run(project.id, "standing watch", "idle_any", null, "project", "2099-01-01 00:00:00");
     const run = async (argv, init) => {
       const r = await runCli(argv.slice(1), { cwd: init.cwd, dataDir: dirs.dataDir, tmp: dirs.tmp });
       return { exitCode: r.code, stdout: r.stdout, stderr: r.stderr };
     };
-    const view = buildCrewView(await readCrew(run, dirs.projectDir), null, Date.now());
-    assert.equal(view.header, "mod-proj · 1 worker");
-    assert.equal(view.rows[0].id, String(t));
-    assert.equal(view.rows[0].slug, "real lane");
-    assert.equal(view.rows[0].model, "opus");
+    const real = await readCrew(run, dirs.projectDir);
+    const view = buildCrewView(real, null, Date.now());
+    assert.equal(view.header.split(" · ").slice(0, 2).join(" · "), "mod-proj · 1 worker");
+    assert.deepEqual(view.rows.map((r) => [r.id, r.slug]), [[String(laneId), "real lane"], [String(laneId + 1), "bare lane"]]);
+    assert.match(view.rows[0].detail, /^opus · /);
+    assert.equal(view.rows[1].detail, "unstaffed");
+    assert.deepEqual(view.needsYou, [{ id: String(laneId + 2), slug: "ask human" }]);
+    assert.match(view.footer[0], /^next in \d+[hm]\d*m?: check the lane$/);
+    assert.deepEqual(view.footer.slice(1), ["watching: standing watch"]);
+
+    const keys = (o) => Object.keys(o).sort();
+    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null }, watching: [{ id: 2, label: "w" }] } });
+    const staffed = real.lanes.find((l) => l.worker);
+    assert.deepEqual(keys(fixture), keys(real));
+    assert.deepEqual(keys(fixture.project), keys(real.project));
+    assert.deepEqual(keys(fixture.lanes[0]), keys(staffed));
+    assert.deepEqual(keys(fixture.lanes[0].todo), keys(staffed.todo));
+    assert.deepEqual(keys(fixture.lanes[0].worker), keys(staffed.worker));
+    assert.deepEqual(keys(fixture.lanes[0].worker.activity), keys(staffed.worker.activity));
+    assert.deepEqual(keys(fixture.needs_you[0]), keys(real.needs_you[0]));
+    assert.deepEqual(keys(fixture.wakes), keys(real.wakes));
+    assert.deepEqual(keys(fixture.wakes.next), keys(real.wakes.next));
+    assert.deepEqual(keys(fixture.wakes.watching[0]), keys(real.wakes.watching[0]));
   });
 });
 
@@ -74,8 +102,8 @@ describe("buildCrewView", () => {
   it("two-line rows retain id model activity timing age and ctx", () => {
     const view = buildCrewView(snapshot({ lanes: [lane(todoOf(1798, "crew mod"), worker({ commits_ahead: 3 }))] }), null, NOW);
     assert.deepEqual(view.rows[0], {
-      key: "w7", color: "green", id: "1798", slug: "crew mod", model: "opus", activity: "editing 2m",
-      ctx: "ctx 41%", rest: "2h0m · +3 commits", ctxAmber: false,
+      key: "w7", color: "green", id: "1798", slug: "crew mod", detail: "opus · editing 2m · ctx 41% · 2h0m · +3 commits",
+      parts: [{ text: "opus · editing 2m · " }, { text: "ctx 41%", amber: false }, { text: " · 2h0m · +3 commits" }],
     });
     assert.equal(ago(59), "59s");
     assert.equal(ago(-5), "0s");
@@ -97,8 +125,8 @@ describe("buildCrewView", () => {
     assert.deepEqual(view.rows.map((r) => r.key), ["w1", "w2", "w3", "t9"]);
     assert.equal(view.rows[2].id, "--");
     assert.equal(view.rows[2].slug, "loose unlinked");
-    assert.equal(view.rows[2].model, "codex");
-    assert.equal(view.rows[3].activity, "unstaffed");
+    assert.match(view.rows[2].detail, /^codex · /);
+    assert.equal(view.rows[3].detail, "unstaffed");
     assert.equal(view.rows[3].color, "gray");
     assert.equal(view.header, "proj · 3 workers");
   });
@@ -124,14 +152,14 @@ describe("buildCrewView", () => {
       NOW,
     );
     const [hot, turn, dialog, cool] = view.rows;
-    assert.equal(hot.ctxAmber, true);
-    assert.equal(cool.ctxAmber, false);
+    const amberOf = (row) => row.parts.find((p) => p.text.startsWith("ctx"))?.amber;
+    assert.equal(amberOf(hot), true);
+    assert.equal(amberOf(cool), false);
     assert.equal(turn.color, "yellow");
-    assert.equal(turn.ctx, "ctx ?");
-    assert.equal(turn.ctxAmber, false);
-    assert.match(turn.activity, /^your turn /);
+    assert.match(turn.detail, /^opus · your turn 10m · ctx \? · /);
+    assert.equal(amberOf(turn), false);
     assert.equal(dialog.color, "red");
-    assert.match(dialog.activity, /^blocked ~0s$/);
+    assert.match(dialog.detail, /^opus · blocked ~0s · ctx 41% · /);
     assert.equal(cool.color, "gray");
     assert.deepEqual(view.needsYou, [{ id: "12", slug: "decide" }]);
     assert.deepEqual(view.footer, ["next in 5m: check lanes", "watching: idle watch"]);
@@ -145,21 +173,47 @@ describe("buildCrewView", () => {
     const blocked = (session) =>
       snapshot({ lanes: [lane(todoOf(1, "l"), worker({ state: "blocked", session_id: session, activity: activity({ label: "blocked", since: null }) }))] });
     const first = buildCrewView(blocked("s1"), null, NOW);
-    assert.equal(first.rows[0].activity, "blocked ~0s");
+    assert.equal(first.rows[0].detail.split(" · ")[1], "blocked ~0s");
     const later = buildCrewView(blocked("s1"), first, NOW + 90_000);
-    assert.equal(later.rows[0].activity, "blocked ~1m");
+    assert.equal(later.rows[0].detail.split(" · ")[1], "blocked ~1m");
     const reset = buildCrewView(blocked("s2"), later, NOW + 120_000);
-    assert.equal(reset.rows[0].activity, "blocked ~0s");
+    assert.equal(reset.rows[0].detail.split(" · ")[1], "blocked ~0s");
     const bound = buildCrewView(
       snapshot({ lanes: [lane(todoOf(1, "l"), worker({ activity: activity({ lower_bound: true }) }))] }),
       later,
       NOW,
     );
-    assert.equal(bound.rows[0].activity, "editing >=2m");
+    assert.equal(bound.rows[0].detail.split(" · ")[1], "editing >=2m");
+  });
+});
+
+describe("next wake text", () => {
+  it("header and footer share one next-wake text for wake-less and wake-bearing snapshots", () => {
+    const wakeless = buildCrewView(snapshot({ needs_you: [{ id: 3, slug: "x" }] }), null, NOW);
+    assert.deepEqual(wakeless.footer, ["next: none"]);
+    assert.equal(wakeless.header, "proj · 0 workers · 1 need you");
+    const bearing = buildCrewView(
+      snapshot({ wakes: { pending: 1, next: { id: 1, label: "next: none", due_at: "2026-10-08T12:00:30.000Z" }, watching: [] } }),
+      null,
+      NOW,
+    );
+    assert.deepEqual(bearing.footer, ["next in 30s: next: none"]);
+    assert.equal(bearing.header, "proj · 0 workers · next in 30s: next: none");
+    const undated = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "later", due_at: null }, watching: [] } }), null, NOW);
+    assert.equal(undated.header, "proj · 0 workers · next: later");
   });
 });
 
 describe("failedView", () => {
+  it("failed first read with no prior view says no data, never no lanes", () => {
+    const first = failedView(null, "exit 1: boom");
+    assert.equal(first.noData, true);
+    assert.equal(first.error, "exit 1: boom");
+    assert.deepEqual(first.rows, []);
+    assert.equal(buildCrewView(snapshot(), first, NOW).noData, false);
+    assert.equal(failedView(buildCrewView(snapshot(), null, NOW), "x").noData, false);
+  });
+
   it("failed poll preserves last good rows", () => {
     const good = buildCrewView(snapshot({ lanes: [lane(todoOf(1, "kept"), worker())] }), null, NOW);
     const failed = failedView(good, "hive crew exited 1");

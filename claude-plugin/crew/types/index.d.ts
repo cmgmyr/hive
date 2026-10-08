@@ -1,4 +1,5 @@
-export type Row = { key: string; color: string; id: string; slug: string; model: string; activity: string; ctx: string; rest: string; ctxAmber: boolean }
+export type Part = { text: string; amber?: boolean }
+export type Row = { key: string; color: string; id: string; slug: string; detail: string; parts: Part[] }
 export type CrewView = {
   header: string
   rows: Row[]
@@ -6,6 +7,7 @@ export type CrewView = {
   footer: string[]
   error: string
   memory: Record<string, number>
+  noData: boolean
 }
 
 declare module 'claude-code' {
