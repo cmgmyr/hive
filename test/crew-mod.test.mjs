@@ -45,9 +45,9 @@ describe("readCrew", () => {
     await assert.rejects(readCrew(async () => ({ exitCode: 0, stdout: "not json", stderr: "" }), "/c"), /invalid JSON/);
     await assert.rejects(
       readCrew(async () => ({ exitCode: 1, stdout: "", stderr: "\nhive crew: unknown project\nmore" }), "/c"),
-      /hive crew: unknown project/,
+      /exit 1: hive crew: unknown project/,
     );
-    await assert.rejects(readCrew(async () => ({ exitCode: 2, stdout: "", stderr: "" }), "/c"), /exited 2/);
+    await assert.rejects(readCrew(async () => ({ exitCode: 2, stdout: "", stderr: "" }), "/c"), /^Error: exit 2$/);
     await assert.rejects(readCrew(async () => { throw new Error("timed out"); }, "/c"), /did not answer: timed out/);
   });
 
@@ -134,9 +134,11 @@ describe("buildCrewView", () => {
     assert.match(dialog.activity, /^blocked ~0s$/);
     assert.equal(cool.color, "gray");
     assert.deepEqual(view.needsYou, [{ id: "12", slug: "decide" }]);
-    assert.deepEqual(view.footer, ["next: check lanes in 5m", "watching: idle watch"]);
+    assert.deepEqual(view.footer, ["next in 5m: check lanes", "watching: idle watch"]);
     const none = buildCrewView(snapshot(), null, NOW);
     assert.deepEqual(none.footer, ["next: none"]);
+    assert.equal(view.header, "proj · 4 workers · 1 need you · next in 5m: check lanes");
+    assert.equal(none.header, "proj · 0 workers");
   });
 
   it("observed duration resets on session change", () => {

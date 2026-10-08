@@ -54,6 +54,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column">
         <Text bold wrap="truncate-end">{c.header}</Text>
+        {c.error && <Text color="red" wrap="truncate-end">read failed: {c.error}</Text>}
         {c.rows.length === 0 && <Text dimColor>  no lanes</Text>}
         {c.rows.map(r => (
           <Box flexDirection="column">
@@ -67,7 +68,6 @@ export const register: Register = on => {
         {c.needsYou.map(t => <Text wrap="truncate-end">  {t.id} <Text dimColor>{t.slug}</Text></Text>)}
         <Text> </Text>
         {c.footer.map(line => <Text dimColor wrap="truncate-end">{line}</Text>)}
-        {c.error && <Text color="red" wrap="truncate-end">read failed: {c.error}</Text>}
       </Box>
     )
   })

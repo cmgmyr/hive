@@ -18,7 +18,7 @@ export async function readCrew(run, cwd) {
   }
   if (res.exitCode !== 0) {
     const line = String(res.stderr ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "");
-    throw new Error(line ? line.slice(0, 120) : `hive crew exited ${res.exitCode}`);
+    throw new Error(`exit ${res.exitCode}${line ? `: ${line.slice(0, 120)}` : ""}`);
   }
   let snap;
   try {
@@ -93,12 +93,16 @@ export function buildCrewView(snapshot, previousView, nowMs) {
   const footer = [];
   if (wakes.next) {
     const due = wakes.next.due_at ? Date.parse(wakes.next.due_at) : NaN;
-    footer.push(`next: ${wakes.next.label}${Number.isFinite(due) ? ` in ${ago((due - nowMs) / 1000)}` : ""}`);
+    footer.push(`next${Number.isFinite(due) ? ` in ${ago((due - nowMs) / 1000)}` : ""}: ${wakes.next.label}`);
   } else footer.push("next: none");
   if (wakes.watching.length > 0) footer.push(`watching: ${wakes.watching.map((x) => x.label).join(", ")}`);
   const workers = snapshot.lanes.filter((l) => l.worker).length;
   return {
-    header: `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
+    header: [
+      `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
+      snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} need you` : "",
+      footer[0] !== "next: none" ? footer[0] : "",
+    ].filter(Boolean).join(" · "),
     rows,
     needsYou: snapshot.needs_you.map((t) => ({ id: String(t.id), slug: t.slug })),
     footer,
