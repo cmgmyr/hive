@@ -197,7 +197,7 @@ import {
   waitForPaneEstablished,
   windowLayout,
 } from "./tmux.js";
-import { describeVisibility, processCounts } from "./dashboard.js";
+import { describeVisibility, formatLocal, processCounts } from "./dashboard.js";
 import {
   runningCommandRow,
   runningCommandRows,
@@ -2051,7 +2051,10 @@ const LEAD_OWNERSHIP_LABEL: Record<RowOwnership, string> = {
   unknown: "pane identity unknown",
 };
 
-function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string { const ended = leadSessionEnded(row, ownership); return ended ? `dormant (session ended ${formatLeadEndedAt(ended.ended_at)})` : LEAD_OWNERSHIP_LABEL[ownership]; }
+function leadStatusLabel(row: { id: number; pane_pid: string }, ownership: RowOwnership): string {
+  const ended = leadSessionEnded(row, ownership);
+  return ended ? `dormant (session ended ${formatLocal(ended.ended_at)})` : LEAD_OWNERSHIP_LABEL[ownership];
+}
 
 function cmdStatus(): void {
   janitor();
@@ -2084,7 +2087,6 @@ function cmdStatus(): void {
       pane_pid: string;
       cwd: string;
     })[];
-
     const todos = (
       db
         .prepare(
@@ -2092,13 +2094,11 @@ function cmdStatus(): void {
         )
         .get(project.id) as { n: number }
     ).n;
-
     const { wakes, heldWakes } = db
       .prepare(
         `SELECT COUNT(*) AS wakes, COUNT(held_at) AS heldWakes FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}`,
       )
       .get(project.id) as { wakes: number; heldWakes: number };
-
     const parked = db
       .prepare(
         "SELECT id, name, parked_at, parked_branch, cwd FROM agents " +
@@ -4248,13 +4248,6 @@ if (!COMMANDS.includes(command)) {
   }
 }
 if (command !== "upgrade") migrate();
-
-function formatLeadEndedAt(utc: string): string {
-  const date = new Date(`${utc.replace(" ", "T")}Z`);
-  if (Number.isNaN(date.getTime())) return utc;
-  const pad2 = (value: number): string => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
-}
 
 try {
   switch (command) {

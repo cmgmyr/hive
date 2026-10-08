@@ -86,7 +86,7 @@ function formatDate(d: Date): string {
   );
 }
 
-function formatLocal(utc: string | null): string {
+export function formatLocal(utc: string | null): string {
   if (!utc) return "-";
   const d = new Date(`${utc.replace(" ", "T")}Z`);
   if (Number.isNaN(d.getTime())) return utc;
