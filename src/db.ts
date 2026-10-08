@@ -463,6 +463,8 @@ ALTER TABLE agent_messages ADD COLUMN target_identity TEXT;
 ALTER TABLE agent_messages ADD COLUMN sender_tag TEXT;
 CREATE INDEX idx_agent_messages_delivery ON agent_messages(delivery_status, id) WHERE delivery_status IS NOT NULL;
 `,
+
+  `ALTER TABLE agents ADD COLUMN todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL;`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

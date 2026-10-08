@@ -86,6 +86,8 @@ export interface LaunchSpec {
   extraArgs?: string[];
   readOnly?: boolean;
 
+  todoId?: number;
+
   // The codexHome.ts key, if this worker needs a per-worker CODEX_HOME (harness.needsHome). Written
   // into the SAME INSERT that creates the row, before ensureCodexHome's mkdirSync ever runs - see
   // reapCodexHomeForClosedAgent below for why that ordering is load-bearing for reaping.
@@ -315,8 +317,8 @@ export function launchAgent(spec: LaunchSpec): {
     info = db
       .prepare(
 
-        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, codex_home, model, extra_args) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agents (project_id, name, command, cwd, kind, parent_actor_id, tmux_socket, session_id, codex_home, model, extra_args, todo_id) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         spec.projectId,
@@ -333,6 +335,7 @@ export function launchAgent(spec: LaunchSpec): {
         spec.readOnly
           ? JSON.stringify({ args: spec.extraArgs ?? [], read_only: true })
           : spec.extraArgs ? JSON.stringify(spec.extraArgs) : null,
+        spec.todoId ?? null,
       );
   } catch (e) {
 

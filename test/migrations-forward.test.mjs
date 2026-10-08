@@ -68,12 +68,13 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
 
   it("keeps the pre-existing agent row, reading its new launch-flag columns as null", () => {
     const after = db.prepare("SELECT * FROM agents WHERE id = ?").get(agentId);
-    const { model, extra_args: extraArgs, claude_messaging_socket: socket, claude_messaging_pane_pid: socketPid, ...rest } = after;
+    const { model, extra_args: extraArgs, claude_messaging_socket: socket, claude_messaging_pane_pid: socketPid, todo_id: todoId, ...rest } = after;
     assert.deepEqual(rest, before.agent);
     assert.equal(model, null);
     assert.equal(extraArgs, null);
     assert.equal(socket, "");
     assert.equal(socketPid, "");
+    assert.equal(todoId, null);
   });
 
   it("adds the socket delivery columns to wakes, null on rows written before them", () => {
