@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -70,6 +71,35 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
 
   it("adds the socket delivery columns to wakes, null on rows written before them", () => {
     const columns = db.prepare("SELECT name FROM pragma_table_info('wakes')").all().map((c) => c.name);
-    for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note"]) assert.ok(columns.includes(name), name);
+    for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note", "delivered_by"]) assert.ok(columns.includes(name), name);
+  });
+
+  it("appending delivered_by leaves a pre-existing wake unchanged", () => {
+    const prior = new Database(join(dirs.dataDir, "pre-delivered-by.db"));
+    try {
+      prior.pragma("foreign_keys = ON");
+      prior.exec("CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
+      for (const [index, migration] of MIGRATIONS.slice(0, -1).entries()) {
+        prior.exec(migration);
+        prior.prepare("INSERT INTO migrations (version) VALUES (?)").run(index + 1);
+      }
+      const legacyProject = prior.prepare("INSERT INTO projects (name, path) VALUES ('legacy-wake', '/tmp/legacy-wake') RETURNING id").get().id;
+      const legacyWake = prior.prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, fired_at, fire_count)
+         VALUES (?, 'user:legacy', 'old wake body', 'delay', '[]', 'user:legacy', '%1', datetime('now'), datetime('now'), 1)
+         RETURNING id`,
+      ).get(legacyProject).id;
+      const beforeWake = prior.prepare("SELECT * FROM wakes WHERE id = ?").get(legacyWake);
+      prior.exec(MIGRATIONS.at(-1));
+      const afterWake = prior.prepare("SELECT * FROM wakes WHERE id = ?").get(legacyWake);
+      assert.deepEqual(
+        Object.fromEntries(Object.keys(beforeWake).map((key) => [key, afterWake[key]])),
+        beforeWake,
+        "the appended column leaves existing wake fields unchanged",
+      );
+      assert.equal(afterWake.delivered_by, null, "pre-existing wakes have no server identity");
+    } finally {
+      prior.close();
+    }
   });
 });

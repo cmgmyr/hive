@@ -99,6 +99,20 @@ describe("wake_get / wake_update", () => {
     assert.ok(got.cancelled_at, "a cancelled wake must still be readable, with its cancellation visible");
   });
 
+  it("reports delivered_by for recent deliveries and explains a pre-field delivery", async () => {
+    const legacy = seedTimer({ fired: true });
+    db.prepare("UPDATE wakes SET delivery_method = 'pty', delivered_by = NULL WHERE id = ?").run(legacy.id);
+    const old = await mcp.call("wake_get", { wake_id: legacy.id });
+    assert.equal(old.delivered_by, null);
+    assert.equal(old.delivered_by_note, "delivered by a hive build older than this field");
+
+    const current = seedTimer({ fired: true });
+    db.prepare("UPDATE wakes SET delivery_method = 'pty', delivered_by = 'pid 42, hive 1.9.0 (abc1234)' WHERE id = ?").run(current.id);
+    const listed = await mcp.call("wake_list");
+    const recent = listed.recently_delivered.find((w) => w.wake_id === current.id);
+    assert.equal(recent.delivered_by, "pid 42, hive 1.9.0 (abc1234)");
+  });
+
   it("edits in place: the wake keeps its id, and no second row is created", async () => {
     const seeded = seedTimer();
     const before = db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ?").get(projectId).n;

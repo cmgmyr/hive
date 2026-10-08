@@ -449,6 +449,7 @@ ALTER TABLE wakes ADD COLUMN delivery_method TEXT;
 ALTER TABLE wakes ADD COLUMN socket_attempt_at TEXT;
 ALTER TABLE wakes ADD COLUMN socket_delivery_note TEXT;
 `,
+  `ALTER TABLE wakes ADD COLUMN delivered_by TEXT;`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

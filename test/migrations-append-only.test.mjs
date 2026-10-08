@@ -45,6 +45,7 @@ const SHIPPED = [
   "7b578d260ab037fb",
   "5bd03014166fe805",
   "d8f7d70c9b3beb73",
+  "5d9bb5bca05bf311",
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -70,5 +71,9 @@ describe("MIGRATIONS is append-only", () => {
       SHIPPED.length,
       `append to SHIPPED, in order: ${MIGRATIONS.slice(SHIPPED.length).map((s) => JSON.stringify(hash(s))).join(", ")}`,
     );
+  });
+
+  it("appends only the nullable delivered_by column to wakes", () => {
+    assert.equal(MIGRATIONS.at(-1), "ALTER TABLE wakes ADD COLUMN delivered_by TEXT;");
   });
 });

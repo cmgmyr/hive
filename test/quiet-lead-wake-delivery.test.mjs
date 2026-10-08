@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { after, beforeEach, describe, it } from "node:test";
 
 import {
@@ -12,6 +13,7 @@ import {
   clearHiveEnv,
   insertStateLogRow,
   isolateTmux,
+  McpClient,
   raceProcesses,
   runNode,
   scratchDirs,
@@ -29,6 +31,7 @@ await assertScratchStore();
 const { db, migrate } = await import("../dist/db.js");
 const { tick, DELIVER_SOCKET_JOIN, ACTIVE_TIMER_WHERE, socketAwaitingWhere } = await import("../dist/scheduler.js");
 const { postClaudeWake, senderAddress } = await import("../dist/claudeWake.js");
+const { versionInfo } = await import("../dist/version.js");
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
@@ -116,6 +119,19 @@ async function promptHook(target, prompt) {
 
 const BODY = "first line of the wake\nsecond line\n  third, indented";
 
+async function tickFromSecondServer() {
+  const script = join(tmp, "tick-from-second-server.mjs");
+  writeFileSync(
+    script,
+    `import { tick } from ${JSON.stringify(pathToFileURL(join(DIST, "scheduler.js")).href)};\n` +
+      `import { versionInfo } from ${JSON.stringify(pathToFileURL(join(DIST, "version.js")).href)};\n` +
+      `await tick();\nconsole.log(JSON.stringify({ pid: process.pid, line: versionInfo().line }));\n`,
+  );
+  const result = await runNode(script, [], { dataDir, tmp });
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(result.stdout.trim());
+}
+
 beforeEach(() => db.exec("DELETE FROM wakes; DELETE FROM agent_state_log; DELETE FROM lead_turn_state; DELETE FROM leases;"));
 
 describe("a one-shot wake to an opted-in Claude lead goes by socket", () => {
@@ -139,6 +155,7 @@ describe("a one-shot wake to an opted-in Claude lead goes by socket", () => {
     );
     const row = wake(id);
     assert.equal(row.delivery_method, "socket");
+    assert.equal(row.delivered_by, `pid ${process.pid}, ${versionInfo().line}`);
     assert.ok(row.socket_attempt_at);
     assert.equal(row.typed_at, null);
     assert.equal(row.confirmed_at, null);
@@ -175,13 +192,14 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     const id = dueWake(pid, target, BODY);
     await tick();
     await until(() => sock.received.length === 1, 3000);
+    const postedBy = wake(id).delivered_by;
 
     backdateAttempt(id, 50);
     await tick();
     assert.equal(wake(id).typed_at, null, "not yet past the 60 s bound");
 
     backdateAttempt(id, 61);
-    await tick();
+    const secondServer = await tickFromSecondServer();
     await until(() => sinkText(target).includes("third, indented"), 3000);
     assert.equal(
       sinkText(target),
@@ -189,6 +207,8 @@ describe("an unconfirmed socket wake falls back to PTY once, measured from the l
     );
     const row = wake(id);
     assert.equal(row.delivery_method, "pty-after-socket-timeout");
+    assert.equal(row.delivered_by, `pid ${secondServer.pid}, ${secondServer.line}`);
+    assert.notEqual(row.delivered_by, postedBy, "fallback records the server that typed it");
     assert.ok(row.typed_at);
     assert.equal(row.fire_count, 1);
     assert.equal(row.body, BODY);
@@ -414,6 +434,10 @@ describe("everything outside the socket route keeps today's PTY delivery", () =>
     assert.equal(sinkText(target), `[hive wake #${id}] ${body}\n`, "byte-identical to main's PTY delivery");
     const row = wake(id);
     assert.equal(row.delivery_method, "pty");
+    assert.equal(
+      row.delivered_by,
+      `pid ${process.pid}, ${versionInfo().line}${repeatMs == null ? "" : ", firing #1"}`,
+    );
     assert.equal(row.socket_attempt_at, null);
     await sleep(200);
     assert.deepEqual(sock.received, []);
@@ -517,6 +541,7 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
       const posted = wake(id);
       assert.equal(posted.fire_count, n);
       assert.equal(posted.delivery_method, "socket-repeating");
+      assert.equal(posted.delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #${n}`);
       assert.ok(posted.socket_attempt_at >= posted.fired_at);
       assert.equal(posted.typed_at, null);
       assert.equal(posted.confirmed_at, null);
@@ -529,6 +554,60 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
     }
     await sleep(300);
     assert.equal(sinkText(target), "");
+  });
+
+  it("wake_get names an older claim after the literal pre-field repeat claim", needsTmux, async () => {
+    const { pid, id } = await firstFiring();
+    const previous = wake(id);
+    assert.equal(previous.delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #1`);
+    const seconds = Math.max(1, Math.round(previous.repeat_every_ms / 1000));
+    const oldClaim = db.prepare(
+      `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
+         fired_at = datetime('now'), fire_count = fire_count + 1,
+         typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
+         typed_seen = NULL, first_held_at = NULL
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL`,
+    );
+    assert.equal(oldClaim.run(seconds, id, previous.due_at, previous.body, previous.repeat_every_ms).changes, 1);
+
+    const projectDir = db.prepare("SELECT path FROM projects WHERE id = ?").get(pid).path;
+    const client = new McpClient({ cwd: projectDir, dataDir });
+    await client.start();
+    try {
+      const current = await client.call("wake_get", { wake_id: id });
+      assert.equal(current.fire_count, 2);
+      assert.equal(current.delivered_by, previous.delivered_by, "the literal old claim leaves the prior identity untouched");
+      assert.equal(
+        current.delivered_by_note,
+        "firing #2 was claimed by a hive build older than this field; " +
+          "that build types it into the pane and does not record delivered_by",
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("a repeat claim clears the prior identity when its socket stamp is rejected", needsTmux, async () => {
+    const { id, sock } = await firstFiring();
+    assert.equal(wake(id).delivered_by, `pid ${process.pid}, ${versionInfo().line}, firing #1`);
+    db.prepare("UPDATE wakes SET confirmed_at = datetime('now') WHERE id = ?").run(id);
+    makeDue(id);
+    db.exec(`
+      CREATE TRIGGER reject_repeating_socket_stamp
+      BEFORE UPDATE OF socket_attempt_at ON wakes
+      WHEN NEW.fire_count = OLD.fire_count AND NEW.socket_attempt_at IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'reject repeat attempt stamp'); END
+    `);
+    try {
+      await tick();
+      const next = wake(id);
+      assert.equal(next.fire_count, 2);
+      assert.equal(next.delivery_method, null);
+      assert.equal(next.delivered_by, null);
+      assert.equal(sock.received.length, 1, "the rejected stamp posts no second firing");
+    } finally {
+      db.exec("DROP TRIGGER reject_repeating_socket_stamp");
+    }
   });
 
   it("key-off repeating wakes preserve exact legacy pane bytes after an earlier socket firing", needsTmux, async () => {
