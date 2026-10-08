@@ -695,6 +695,12 @@
         "read_only": {
           "description": "Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only bare claude/codex executables. Extra args allow codex -c model_reasoning_effort=low|medium|high|xhigh, or claude --effort low|medium|high|xhigh|max; all other arguments are refused.",
           "type": "boolean"
+        },
+        "todo_id": {
+          "description": "The todo this worker is on, recorded as a link (a non-archived todo in the same project). Changes no todo status.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
         }
       },
       "type": "object"

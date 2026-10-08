@@ -133,6 +133,7 @@ export interface AgentRow {
   extra_args: string | null;
   claude_messaging_socket: string;
   claude_messaging_pane_pid: string;
+  todo_id: number | null;
 }
 
 const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";
@@ -592,6 +593,7 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     command: row.command,
     cwd: row.cwd,
     parent_actor_id: row.parent_actor_id,
+    todo_id: row.todo_id,
     created_at: row.created_at,
     ...(dormant ? { dormant_since: dormant.ended_at } : {}),
   };
@@ -641,6 +643,9 @@ export function registerAgents(server: McpServer): void {
           ),
         extra_args: z.array(z.string()).optional().describe("Extra CLI arguments."),
         read_only: z.boolean().optional().describe("Prevent local file writes and mutating shell commands while allowing Hive MCP tools. Only bare claude/codex executables. Extra args allow codex -c model_reasoning_effort=low|medium|high|xhigh, or claude --effort low|medium|high|xhigh|max; all other arguments are refused."),
+        todo_id: idParam
+          .optional()
+          .describe("The todo this worker is on, recorded as a link (a non-archived todo in the same project). Changes no todo status."),
         cwd: z
           .string()
           .optional()
@@ -699,6 +704,14 @@ export function registerAgents(server: McpServer): void {
               `cwd ${cwd} belongs to project "${cwdProject.name}" (id ${cwdProject.id}), but this spawn resolved to project "${project.name}" (id ${project.id}). ${remedy}`,
             );
           }
+        }
+
+        if (args.todo_id !== undefined) {
+          const linked = db
+            .prepare("SELECT archived_at FROM todos WHERE id = ? AND project_id = ?")
+            .get(args.todo_id, project.id) as { archived_at: string | null } | undefined;
+          if (!linked) throw new Error(`todo_id ${args.todo_id} is not a todo in project "${project.name}" (id ${project.id}).`);
+          if (linked.archived_at != null) throw new Error(`todo_id ${args.todo_id} is archived; unarchive it or link another todo.`);
         }
 
         const name = args.name != null
@@ -809,6 +822,7 @@ export function registerAgents(server: McpServer): void {
             model: args.model,
             extraArgs: args.extra_args,
             readOnly: args.read_only,
+            todoId: args.todo_id,
             retainOnExit: harness.classifiesPaneScreen,
           });
         } catch (e) {

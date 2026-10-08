@@ -31,4 +31,5 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive posture` | Print the posture your lead is running with |
 | `hive profile list` | Show the profiles hive can see |
 | `hive kickoff --explain` | Check whether a session here gets the session-start injection |
+| `hive crew --json` | Print one JSON snapshot of this project's workers, todos and wakes. Read-only: it runs no janitor and writes nothing. |
 | `hive statusline` | One-line store summary for Claude Code's status line |

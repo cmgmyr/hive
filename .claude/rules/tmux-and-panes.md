@@ -5,6 +5,7 @@ paths:
   - "src/scheduler.ts"
   - "src/tools/agents.ts"
   - "src/cli.ts"
+  - "src/crew.ts"
   - "src/leadMessage.ts"
   - "src/leadMessageDelivery.ts"
   - "src/harnesses.ts"
