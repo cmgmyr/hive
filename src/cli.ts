@@ -197,6 +197,7 @@ import {
   waitForPaneEstablished,
   windowLayout,
 } from "./tmux.js";
+import { collectCrew, crewStoreProblem } from "./crew.js";
 import { describeVisibility, formatLocal, processCounts } from "./dashboard.js";
 import {
   runningCommandRow,
@@ -297,6 +298,8 @@ Usage:
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
   hive status                overview of agents, todos, and wake-ups everywhere
+  hive crew --json           this project's workers, todos and wakes as one JSON
+                             snapshot; read-only, writes nothing
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
   hive queen-audit           confirmed queen writes, newest first; 30-day history
@@ -3717,6 +3720,30 @@ function cmdQueenAudit(argv: string[]): void {
   }
 }
 
+function cmdCrew(argv: string[]): void {
+  if (argv.length !== 1 || argv[0] !== "--json") {
+    console.error("hive crew: usage: hive crew --json. It prints one JSON snapshot of this project's workers, todos and wakes.");
+    process.exit(1);
+  }
+  const problem = crewStoreProblem();
+  if (problem) {
+    console.error(`hive crew: ${problem}. Run any other hive command once (for example hive status) to migrate it, then retry.`);
+    process.exit(1);
+  }
+  let project: Project | null;
+  try {
+    project = pinnedOrCwdProject();
+  } catch (e) {
+    console.error(`hive crew: ${errorMessage(e)}`);
+    process.exit(1);
+  }
+  if (!project) {
+    console.error("hive crew: this directory is not a registered hive project. cd to a registered checkout, or run `hive init` here to register it.");
+    process.exit(1);
+  }
+  console.log(JSON.stringify(collectCrew(project, new Date())));
+}
+
 function cmdPortfolio(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--json"] });
   if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
@@ -4231,7 +4258,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "crew", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   "pads", "pad", "todos", "todo", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
@@ -4247,7 +4274,7 @@ if (!COMMANDS.includes(command)) {
     usage();
   }
 }
-if (command !== "upgrade") migrate();
+if (command !== "upgrade" && command !== "crew") migrate();
 
 try {
   switch (command) {
@@ -4283,6 +4310,9 @@ try {
       break;
     case "portfolio":
       cmdPortfolio(rest);
+      break;
+    case "crew":
+      cmdCrew(rest);
       break;
     case "queen-audit":
       cmdQueenAudit(rest);

@@ -58,6 +58,10 @@ function usageTokens(record: JsonRecord): number | null {
 }
 
 function tailRecords(path: string): JsonRecord[] {
+  return tailRead(path).records;
+}
+
+function tailRead(path: string): { records: JsonRecord[]; clipped: boolean } {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");
@@ -74,9 +78,9 @@ function tailRecords(path: string): JsonRecord[] {
         if (record) records.push(record);
       } catch {}
     }
-    return records;
+    return { records, clipped: start > 0 };
   } catch {
-    return [];
+    return { records: [], clipped: false };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -136,4 +140,95 @@ export function readContextFill(kind: ContextRecordKind, worker: ContextWorker):
 export function readContextTokens(cwd: string, sessionId: string, explicitPath = ""): number | null {
   if (!sessionId && !explicitPath) return null;
   return claudeTokens(tailRecords(transcriptPath(cwd, sessionId, explicitPath)));
+}
+
+export interface TranscriptToolCall {
+  name: string;
+  input: Record<string, unknown>;
+  at: string | null;
+}
+
+export const RECENT_TOOL_CALLS = 8;
+
+const REVIEW_INVOCATION = /^\s*\$cg-review\b/m;
+
+function lastComponent(name: string): string {
+  return name.split(/__|[.:/]/).filter(Boolean).pop() ?? name;
+}
+
+function timestamp(record: JsonRecord): string | null {
+  return typeof record.timestamp === "string" && record.timestamp !== "" ? record.timestamp : null;
+}
+
+function reviewMarker(texts: unknown[], at: string | null): TranscriptToolCall[] {
+  return texts.some((text) => typeof text === "string" && REVIEW_INVOCATION.test(text))
+    ? [{ name: "Skill", input: { skill: "cg-review" }, at }]
+    : [];
+}
+
+function claudeToolCalls(record: JsonRecord): TranscriptToolCall[] {
+  if (record.type !== "assistant") return [];
+  const content = object(record.message)?.content;
+  if (!Array.isArray(content)) return [];
+  const at = timestamp(record);
+  const calls: TranscriptToolCall[] = [];
+  for (const part of content) {
+    const block = object(part);
+    if (!block) continue;
+    if (block.type === "tool_use" && typeof block.name === "string") {
+      calls.push({ name: block.name, input: object(block.input) ?? {}, at });
+    } else if (block.type === "text") {
+      calls.push(...reviewMarker([block.text], at));
+    }
+  }
+  return calls;
+}
+
+function codexToolCalls(record: JsonRecord): TranscriptToolCall[] {
+  const payload = object(record.payload);
+  if (record.type !== "response_item" || !payload) return [];
+  const at = timestamp(record);
+  if (payload.type === "message") {
+    if (payload.role !== "assistant" || !Array.isArray(payload.content)) return [];
+    return reviewMarker(payload.content.map((part) => object(part)?.text), at);
+  }
+  if (typeof payload.name !== "string") return [];
+  const name = lastComponent(payload.name);
+  if (payload.type === "custom_tool_call") {
+    return [{ name, input: typeof payload.input === "string" ? { input: payload.input } : {}, at }];
+  }
+  if (payload.type !== "function_call") return [];
+  if (name === "write_stdin") return [];
+  let args: Record<string, unknown> = {};
+  if (typeof payload.arguments === "string") {
+    try {
+      args = object(JSON.parse(payload.arguments)) ?? {};
+    } catch {}
+  }
+  if (name === "exec_command") return typeof args.cmd === "string" ? [{ name: "Bash", input: { command: args.cmd }, at }] : [];
+  return [{ name, input: args, at }];
+}
+
+export function readRecentToolCalls(
+  kind: ContextRecordKind,
+  worker: ContextWorker,
+): { calls: TranscriptToolCall[]; truncated: boolean } {
+  const path = worker.transcript_path || (kind === "claude" && worker.session_id
+    ? join(transcriptDir(worker.cwd), `${worker.session_id}.jsonl`) : "");
+  if (!path) return { calls: [], truncated: false };
+  const { records, clipped } = tailRead(path);
+  const newestFirst: TranscriptToolCall[] = [];
+  let capped = false;
+  for (const record of records) {
+    const calls = (kind === "claude" ? claudeToolCalls : codexToolCalls)(record);
+    for (let i = calls.length - 1; i >= 0; i--) {
+      if (newestFirst.length === RECENT_TOOL_CALLS) {
+        capped = true;
+        break;
+      }
+      newestFirst.push(calls[i]);
+    }
+    if (capped) break;
+  }
+  return { calls: newestFirst.reverse(), truncated: clipped || capped };
 }
