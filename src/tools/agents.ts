@@ -27,6 +27,7 @@ import { ensureWorkerHooksFile } from "../hooks.js";
 import { activeProfile, allowedAgents, loadProjectYml, type ProjectYml } from "../projectYml.js";
 import {
   classifyMiss,
+  DELIVERY_FIELDS,
   LEAD_MESSAGE_THRESHOLD,
   leadPointerMarker,
   missMessage,
@@ -1768,6 +1769,9 @@ export function registerAgents(server: McpServer): void {
           chars: row.text.length,
           created_at: row.created_at,
           text: row.text,
+          ...(row.delivery_status === null
+            ? {}
+            : Object.fromEntries(DELIVERY_FIELDS.map((field) => [field, row[field]]))),
         };
       }),
   );

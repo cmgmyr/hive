@@ -27,7 +27,30 @@ export interface StoredLeadMessage {
   to_agent_id: number;
   text: string;
   created_at: string;
+  delivery_status: string | null;
+  delivery_method: string | null;
+  socket_attempt_at: string | null;
+  confirmed_at: string | null;
+  fallback_claimed_at: string | null;
+  typed_at: string | null;
+  delivery_note: string | null;
+  target_identity: string | null;
+  target_session_id: string | null;
+  sender_tag: string | null;
 }
+
+export const DELIVERY_FIELDS = [
+  "delivery_status",
+  "delivery_method",
+  "socket_attempt_at",
+  "confirmed_at",
+  "fallback_claimed_at",
+  "typed_at",
+  "delivery_note",
+  "target_identity",
+  "target_session_id",
+  "sender_tag",
+] as const;
 
 function senderName(projectId: number, actorId: string): string {
   const row = db
@@ -74,7 +97,7 @@ export function storeLeadMessage(
 export function readLeadMessage(projectId: number, messageId: number): StoredLeadMessage | undefined {
   return db
     .prepare(
-      `SELECT id, from_actor, from_name, to_agent_id, text, created_at
+      `SELECT id, from_actor, from_name, to_agent_id, text, created_at, ${DELIVERY_FIELDS.join(", ")}
          FROM agent_messages WHERE id = ? AND project_id = ?`,
     )
     .get(messageId, projectId) as StoredLeadMessage | undefined;
@@ -133,10 +156,13 @@ export function renderLeadPointer(id: number, text: string, tag: string): string
   return `${tag}${leadPointerMarker(id, text)} ${head} agent_message_get(${id}) for the full text.`;
 }
 
-export function shortenedSendNote(id: number, deliveredChars: number): string {
+export function shortenedSendNote(id: number, deliveredChars: number, channel: "pane" | "socket" = "pane"): string {
   return (
-    `Over ${LEAD_MESSAGE_THRESHOLD} characters to a LEAD, so that pane got a ${deliveredChars}-character ` +
-    `pointer instead of this text: a lead's pane is a human's own window and hive keeps it quiet. Nothing ` +
+    `Over ${LEAD_MESSAGE_THRESHOLD} characters to a LEAD, so ` +
+    (channel === "pane"
+      ? `that pane got a ${deliveredChars}-character pointer instead of this text`
+      : `hive delivers a ${deliveredChars}-character pointer instead of this text, over the lead's messaging socket or, failing that, typed once into its pane`) +
+    `: a lead's pane is a human's own window and hive keeps it quiet. Nothing ` +
     `was lost - the full text is stored as message ${id} and the pointer names agent_message_get(${id}) - ` +
     `but the lead reads the rest only if it chooses to. Put whatever must be ACTED on in the first ` +
     `${HEAD_BUDGET} characters, or on the todo, where it is durable. Worker-bound sends are never shortened.`

@@ -292,6 +292,47 @@ describe("todo 475: a pointer outlives its message, so a lookup that misses says
   });
 });
 
+describe("todo 1767: delivery metadata is readable on a delivery row and absent on a historical pointer", () => {
+  it("quiet short message metadata reads back without changing full text", NEEDS_TMUX, async () => {
+    const projectId = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs.projectDir)?.id;
+    assert.ok(projectId, "the MCP server registered this project");
+    const text = "short report\nwith a second line";
+    const identity = JSON.stringify({ tmux_target: "%9", tmux_socket: "/tmp/s", pane_pid: "42" });
+    const { id } = db
+      .prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status,
+           delivery_method, socket_attempt_at, delivery_note, target_identity, target_session_id, sender_tag)
+         VALUES (?, 'agent:q', 'quiet', 1, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?, 's-1',
+           '[hive:worker quiet] ') RETURNING id`,
+      )
+      .get(projectId, text, identity);
+
+    const got = await mcp.call("agent_message_get", { message_id: id });
+    assert.equal(got.text, text);
+    assert.equal(got.chars, text.length);
+    assert.equal(got.delivery_status, "socket-pending");
+    assert.equal(got.delivery_method, "socket");
+    assert.equal(got.socket_attempt_at, "2026-10-08 01:02:03.456");
+    assert.equal(got.confirmed_at, null);
+    assert.equal(got.fallback_claimed_at, null);
+    assert.equal(got.typed_at, null);
+    assert.equal(got.delivery_note, null);
+    assert.equal(got.target_identity, identity);
+    assert.equal(got.target_session_id, "s-1");
+    assert.equal(got.sender_tag, "[hive:worker quiet] ");
+    db.prepare("DELETE FROM agent_messages WHERE id = ?").run(id);
+  });
+
+  it("historical pointer row has no delivery metadata in the tool result", NEEDS_TMUX, async () => {
+    const name = "t1767-historic";
+    await spawnLead(name);
+    const receipt = await mcp.call("agent_send", { name, text: bodyOf(900) });
+    const got = await mcp.call("agent_message_get", { message_id: receipt.message_id });
+    assert.deepEqual(Object.keys(got).sort(), ["chars", "created_at", "from", "from_actor", "message_id", "text", "to_agent_id"]);
+    assert.equal(db.prepare("SELECT delivery_status FROM agent_messages WHERE id = ?").get(receipt.message_id).delivery_status, null);
+  });
+});
+
 describe("todo 475: the pointer is typed into a pane, so its head is flattened", () => {
   it("collapses newlines and tabs out of the head", () => {
     const line = renderLeadPointer(7, `first\nline\r\nsecond\ttab ${"b".repeat(400)}`, "");
