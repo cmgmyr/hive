@@ -728,16 +728,16 @@ export function checkConfirmations(): void {
     ).get(LOG_RETENTION);
     if (!pending) return;
     stmt(
-      `UPDATE wakes SET confirmed_at = (${confirmationQuery})
-       WHERE ${sentAt} IS NOT NULL AND confirmed_at IS NULL AND ${sentAt} >= datetime('now', ?)
-         AND NOT (${REPEATING_SOCKET_FIRING})
-         AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
-    ).run(LOG_RETENTION);
-    stmt(
       `UPDATE wakes SET confirmed_at = (${repeatingEvidenceSql("MIN(ev.created_at)")})
        WHERE ${REPEATING_SOCKET_FIRING} AND socket_attempt_at IS NOT NULL AND confirmed_at IS NULL
          AND socket_attempt_at >= datetime('now', ?)
          AND EXISTS (${repeatingEvidenceSql("1")})`,
+    ).run(LOG_RETENTION);
+    stmt(
+      `UPDATE wakes SET confirmed_at = (${confirmationQuery})
+       WHERE ${sentAt} IS NOT NULL AND confirmed_at IS NULL AND ${sentAt} >= datetime('now', ?)
+         AND NOT (${REPEATING_SOCKET_FIRING})
+         AND EXISTS (${confirmationQuery.replace("MIN(created_at)", "1")})`,
     ).run(LOG_RETENTION);
   } catch {
 
