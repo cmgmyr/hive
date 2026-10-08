@@ -15,9 +15,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
 import { versionInfo } from "./version.js";
 import { claudeConfigDir } from "./claudeDir.js";
@@ -1697,7 +1697,7 @@ function cmdProfile(argv: string[]): void {
 }
 
 function crewPluginDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "claude-plugin", "crew");
+  return join(checkoutRoot, "claude-plugin", "crew");
 }
 
 const DASHBOARD_OPENED_KV_KEY = "hive:dashboard_opened";
