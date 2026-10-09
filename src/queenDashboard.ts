@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { db } from "./db.js";
-import { SECTION_STYLE, SPRITE, renderBoardPadsTodos, sectionScript } from "./dashboard.js";
+import { SECTION_STYLE, SPRITE, chevron, renderBoardPadsTodos, sectionScript } from "./dashboard.js";
 import type { QueenAuditRow } from "./queenAudit.js";
 import type { PortfolioLane, PortfolioProject, PortfolioReason, PortfolioReport } from "./portfolio.js";
 
@@ -538,13 +538,16 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .turn { font-size: 0.75rem; color: var(--fg-muted); }
 .turn-work { color: var(--live); }
-.c-audit { margin-top: 1.5rem; padding-bottom: 0.85rem; }
+.c-audit { margin-top: 1.5rem; }
+.c-audit[open] { padding-bottom: 0.85rem; }
+details.card:not([open]) > .card-head { padding-bottom: 0.9rem; }
 .c-audit .audit-list, .c-audit .brief-empty { padding: 0 1.1rem; }
 .audit-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.8125rem; }
 .audit-list li { display: flex; flex-wrap: wrap; gap: 0.15rem 0.75rem; align-items: baseline; }
 .audit-op { font-weight: 600; }
 .audit-sum { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
 .d-grid { margin-top: 1.5rem; }
+.card-head > .chev { margin-left: auto; }
 .home { margin-top: 1.5rem; }
 .home-head { padding: 0 0.2rem 0.6rem; }
 .d-grid .g-row:not(.g-head) { box-shadow: inset 3px 0 0 var(--lane, transparent); }
@@ -567,6 +570,8 @@ const SCRIPT = `(function () {
     var row = document.getElementById("row-" + j.getAttribute("data-jump"));
     if (!row) return;
     e.preventDefault();
+    var box = row.closest("details");
+    if (box) box.open = true;
     var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     row.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
     row.classList.add("is-flash");
@@ -599,7 +604,7 @@ function auditSection(audit: QueenAuditRow[], report: PortfolioReport): string {
         .join("") +
       "</ul>"
     : '<p class="brief-empty">No queen actions recorded yet.</p>';
-  return `<section class="card c-audit"><div class="card-head"><h2>Recent queen actions</h2><span class="card-sub">the newest writes the queen made into other projects</span></div>${body}</section>`;
+  return `<details class="card c-audit" id="queen-recent-actions" open><summary class="card-head"><h2>Recent queen actions</h2><span class="card-sub">the newest writes the queen made into other projects</span>${chevron()}</summary>${body}</details>`;
 }
 
 export function renderQueenDashboard(
@@ -646,12 +651,11 @@ export function renderQueenDashboard(
     n === 0
       ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card no-projects"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
       : `${briefSection(briefState, report, href, queenHomeId)}<div class="lanes">${lanes}</div>` +
-        `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
-        '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
+        `<details class="card d-grid" id="queen-every-project" open><summary class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
+        `<span class="card-sub">in lane order; a name opens that project’s dashboard</span>${chevron()}</summary>` +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +
-        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></section>' +
-        auditSection(audit, report);
-  const page = main + home;
+        '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></details>';
+  const page = main + home + (n === 0 ? "" : auditSection(audit, report));
 
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +

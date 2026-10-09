@@ -865,7 +865,7 @@ function renderCappedList(
   );
 }
 
-function chevron(): string {
+export function chevron(): string {
   return `<span class="chev">${icon("chevron")}</span>`;
 }
 
