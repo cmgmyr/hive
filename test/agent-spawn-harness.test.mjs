@@ -49,6 +49,21 @@ after(async () => {
 });
 
 describe("agent_spawn: harness parameter", () => {
+  it(
+    "warns when todo_id is omitted while the project has an in-progress todo",
+    { skip: hasTmux ? false : "tmux is not installed" },
+    async () => {
+      const todo = await mcp.call("todo_create", { title: "unlinked spawn lane" });
+      await mcp.call("todo_update", { todo_id: todo.todo_id, status: "in_progress" });
+      const receipt = await mcp.call("agent_spawn", { name: "unlinked-lane-worker", harness: "codex" });
+      assert.match(receipt.note, /todo_id was omitted/i);
+      assert.deepEqual(Object.keys(receipt).sort(), [
+        "actor_id", "agent_id", "codex_home", "codex_instructions", "instructions", "name", "note", "ready", "tmux_target",
+      ]);
+      await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    },
+  );
+
   it("rejects an unrecognized harness name, naming the known set", async () => {
     await assert.rejects(
       mcp.call("agent_spawn", { name: "bad-harness", harness: "aider" }),
