@@ -44,6 +44,7 @@ export interface CrewWorker {
 
 export interface CrewLane {
   todo: { id: number; slug: string; status: string } | null;
+  pad?: string;
   worker: CrewWorker | null;
 }
 
@@ -458,6 +459,17 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
   const todoStmt = db.prepare(
     "SELECT id, slug, status FROM todos WHERE id = ? AND project_id = ? AND archived_at IS NULL",
   );
+  const inferredTodoStmt = db.prepare(
+    `SELECT t.id, t.slug, t.status FROM todo_comments c
+       JOIN todos t ON t.id = c.todo_id
+      WHERE c.author = ? AND t.project_id = ? AND t.archived_at IS NULL
+      GROUP BY t.id
+      ORDER BY (t.status = 'in_progress') DESC, MAX(c.created_at) DESC, t.id DESC
+      LIMIT 1`,
+  );
+  const inferredPadStmt = db.prepare(
+    "SELECT name FROM pads WHERE project_id = ? AND updated_by = ? AND archived = 0 ORDER BY updated_at DESC, id DESC LIMIT 1",
+  );
 
   let snapshot: AliveSnapshot | null | undefined;
   const commitsByCwd = new Map<string, number | null>();
@@ -466,8 +478,11 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
 
   for (const row of rows) {
     const todo = row.todo_id === null
-      ? null
+      ? (inferredTodoStmt.get(row.actor_id, project.id) as { id: number; slug: string; status: string } | undefined) ?? null
       : (todoStmt.get(row.todo_id, project.id) as { id: number; slug: string; status: string } | undefined) ?? null;
+    const pad = row.todo_id === null && !todo
+      ? (inferredPadStmt.get(project.id, row.actor_id) as { name: string } | undefined)?.name
+      : undefined;
     if (todo) staffed.add(todo.id);
 
     const harness = harnessFor(row.command);
@@ -490,6 +505,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     if (!commitsByCwd.has(row.cwd)) commitsByCwd.set(row.cwd, readCommitsAhead(row.cwd, project.path));
     lanes.push({
       todo,
+      ...(pad ? { pad } : {}),
       worker: {
         id: row.id,
         name: row.name,

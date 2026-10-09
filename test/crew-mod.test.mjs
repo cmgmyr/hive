@@ -131,6 +131,16 @@ describe("buildCrewView", () => {
     assert.equal(view.header, "proj · 3 workers");
   });
 
+  it("renders a pad link without showing a todo id", () => {
+    const view = buildCrewView(
+      snapshot({ lanes: [lane(null, worker({ id: 4, name: "pad-worker" }))].map((entry) => ({ ...entry, pad: "shared board" })) }),
+      null,
+      NOW,
+    );
+    assert.equal(view.rows[0].id, "--");
+    assert.equal(view.rows[0].slug, "pad shared board");
+  });
+
   it("threshold your-turn watch and metric tokens follow JSON evidence", () => {
     const view = buildCrewView(
       snapshot({

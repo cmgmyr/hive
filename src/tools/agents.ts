@@ -713,6 +713,11 @@ export function registerAgents(server: McpServer): void {
           if (!linked) throw new Error(`todo_id ${args.todo_id} is not a todo in project "${project.name}" (id ${project.id}).`);
           if (linked.archived_at != null) throw new Error(`todo_id ${args.todo_id} is archived; unarchive it or link another todo.`);
         }
+        const omittedTodoWarning = args.todo_id === undefined && db
+          .prepare("SELECT 1 FROM todos WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL LIMIT 1")
+          .get(project.id)
+          ? "todo_id was omitted while this project has an in-progress todo; the crew view may infer a link from this worker's comments or pad updates."
+          : undefined;
 
         const name = args.name != null
           ? normalizeAgentName(args.name, "name")
@@ -877,7 +882,7 @@ export function registerAgents(server: McpServer): void {
 
         const codexInstructions = codexHomeKey ? codexInstructionsPhrase(codexInstructionLayers) : undefined;
 
-        return {
+        const receipt: Record<string, unknown> = {
           agent_id: agentId,
           ...(args.read_only ? { read_only: true } : {}),
           actor_id: actorId,
@@ -931,6 +936,11 @@ export function registerAgents(server: McpServer): void {
                     "Wakes aimed at this worker are refused for the same reason.",
                 }),
         };
+        if (omittedTodoWarning) {
+          const existingNote = typeof receipt.note === "string" ? receipt.note : "";
+          receipt.note = existingNote ? `${existingNote} ${omittedTodoWarning}` : omittedTodoWarning;
+        }
+        return receipt;
       }),
   );
 

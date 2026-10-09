@@ -223,6 +223,38 @@ describe("hive crew --json schema v1", () => {
 });
 
 describe("collectCrew rows", () => {
+  it("infers unlinked workers from their latest in-progress todo comment and then their last pad update", (t) => {
+    const older = todo({ status: "in_progress", slug: "older" });
+    const newest = todo({ status: "in_progress", slug: "newest" });
+    const open = todo({ status: "open", slug: "open-comment" });
+    const actorId = "agent:inferred";
+    db.prepare("INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, ?, 'a', ?)").run(older, actorId, "2026-10-08 10:00:00");
+    db.prepare("INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, ?, 'b', ?)").run(newest, actorId, "2026-10-08 11:00:00");
+    db.prepare("INSERT INTO todo_comments (todo_id, author, body, created_at) VALUES (?, ?, 'c', ?)").run(open, actorId, "2026-10-08 12:00:00");
+    const workerId = agent({ name: "w-inferred", actor_id: actorId });
+    const padActor = "agent:pad-only";
+    db.prepare("INSERT INTO pads (project_id, name, content, updated_by, updated_at) VALUES (?, 'old-pad', 'x', ?, '2026-10-08 10:00:00')").run(project.id, padActor);
+    db.prepare("INSERT INTO pads (project_id, name, content, updated_by, updated_at) VALUES (?, 'last-pad', 'y', ?, '2026-10-08 11:00:00')").run(project.id, padActor);
+    const padWorkerId = agent({ name: "w-pad-only", actor_id: padActor });
+    const explicitId = agent({ name: "w-explicit", actor_id: actorId, todo_id: older });
+    t.after(() => {
+      db.prepare("DELETE FROM agents").run();
+      db.prepare("DELETE FROM pads").run();
+      db.prepare("DELETE FROM todo_comments").run();
+      db.prepare("DELETE FROM todos").run();
+    });
+
+    const before = db.prepare("SELECT todo_id FROM agents WHERE id IN (?, ?, ?) ORDER BY id").all(workerId, padWorkerId, explicitId);
+    const lanes = collectCrew(project, NOW).lanes;
+    const byName = Object.fromEntries(lanes.filter((l) => l.worker).map((l) => [l.worker.name, l]));
+    assert.equal(byName["w-inferred"].todo.slug, "newest");
+    assert.equal(byName["w-pad-only"].todo, null);
+    assert.equal(byName["w-pad-only"].pad, "last-pad");
+    assert.equal(byName["w-explicit"].todo.slug, "older");
+    assert.equal(lanes.some((l) => l.todo?.id === newest && !l.worker), false);
+    assert.deepEqual(db.prepare("SELECT todo_id FROM agents WHERE id IN (?, ?, ?) ORDER BY id").all(workerId, padWorkerId, explicitId), before);
+  });
+
   it("project-safe joins retain unlinked duplicate staffed and unstaffed rows", () => {
     const mine = todo({ status: "in_progress", slug: "mine" });
     const shared = todo({ status: "in_progress", slug: "shared" });
