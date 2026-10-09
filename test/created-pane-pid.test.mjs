@@ -62,3 +62,21 @@ describe("a worker whose command exits immediately", () => {
     },
   );
 });
+
+describe("a non-classifying spawn whose command exits at once", () => {
+  for (const placement of ["split", "window"]) {
+    it(
+      `is refused, not recorded (${placement} placement)`,
+      { skip: hasTmux ? false : "tmux is not installed" },
+      async () => {
+        const name = `instant-false-${placement}`;
+        await assert.rejects(
+          mcp.call("agent_spawn", { name, command: "false", placement }),
+          /exited immediately/,
+        );
+        const { agents } = await mcp.call("agent_list", { include_closed: true });
+        assert.deepEqual(agents.filter((a) => a.name === name), []);
+      },
+    );
+  }
+});

@@ -14,6 +14,7 @@ import {
   findProcessesWindow,
   findProjectWindow,
   isPaneTarget,
+  paneProcessExited,
   paneWindow,
   PROCESSES_LAYOUT,
   processesPaneTitle,
@@ -136,6 +137,17 @@ function recordPane(agentId: number, target: string, socket: string, pid: string
         "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ? WHERE id = ? AND status = 'running'",
       )
       .run(target, socket, pid, agentId).changes > 0
+  );
+}
+
+// The creation pid proves the pane existed, not that its process still runs. A retained pane is
+// left to the caller's readiness wait, which reports the exit with its tail.
+function refuseIfExitedImmediately(target: string, retained: boolean): void {
+  if (retained || paneProcessExited(target) !== true) return;
+  discardOrphanedPane(target);
+  throw new Error(
+    `The command exited immediately, so its pane ${target} was discarded rather than recorded as running. ` +
+      "Check the command and its arguments, then retry.",
   );
 }
 
@@ -377,6 +389,7 @@ export function launchAgent(spec: LaunchSpec): {
     });
     const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
     const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, spec.retainOnExit ?? false);
     paneUp = true;
 
     if (!recordPane(agentId, target, socket, pid)) {
@@ -493,6 +506,7 @@ export function resumeAgent(
     const placed = placeAgentPane(session, spec, envFlags, spec.commandString, title);
     const { target, landedInProjectId } = placed;
     const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, false);
     paneUp = true;
 
     if (!recordPane(spec.agentId, target, socket, pid)) {
