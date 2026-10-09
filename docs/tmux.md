@@ -2,7 +2,7 @@
 
 hive configures the tmux windows it creates and sets the options it needs on each one. This file separates the one global recommendation from settings that merely make the workflow pleasant, because hive has no business prescribing your terminal.
 
-Everything here was measured on tmux 3.7b with Claude Code 2.1.221. Where a default surprised us, the measurement is written down next to it.
+Everything here was measured on tmux 3.7b with Claude Code 2.1.221. hive's CI tests the two newest tmux releases, built from source: 3.8 and 3.7c today. The pair is the `tmux` field of the ubuntu legs in `.github/workflows/ci.yml`. The macOS leg installs whatever `brew install tmux` gives, so Homebrew users get the newest release. Where a default surprised us, the measurement is written down next to it.
 
 Almost all of this applies to **raw attach mode** (`hive setup --attach raw`). Under iTerm control mode (`-CC`) iTerm renders tmux windows as native tabs and panes, so it supplies most of this itself.
 
