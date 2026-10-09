@@ -484,6 +484,22 @@ describe("activity labels", () => {
     assert.equal(classifyActivity([call("Bash", {})], {}).label, "running shell");
   });
 
+  it("an unrecognized command after a leading printf is labelled by the command, not printf", () => {
+    assert.equal(labelOf("printf 'hello\\n'; sleep 45"), "running sleep");
+  });
+
+  it("a command made only of printf and echo keeps the first segment's label", () => {
+    assert.equal(labelOf("printf a; echo b"), "running printf");
+  });
+
+  it("a recognized command after a leading printf still reads testing", () => {
+    assert.equal(labelOf("printf 'hello\\n'; node --test x"), "testing");
+  });
+
+  it("printf into a file keeps its existing fallback label", () => {
+    assert.equal(labelOf("printf x > f"), "running printf");
+  });
+
   it("a redirect makes a read an edit and a null redirect does not", () => {
     assert.equal(labelOf("cat >> notes.md"), "editing");
     assert.equal(labelOf("cat a > b"), "editing");

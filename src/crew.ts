@@ -331,6 +331,7 @@ function matchesPrefix(tokens: string[], matcher: Matcher): boolean {
 }
 
 const READING_EXES = new Set(["rg", "grep", "cat", "head", "tail", "sed"]);
+const FALLBACK_SKIP = new Set(["printf", "echo", "true", ":"]);
 const NODE_RUNNERS = new Set(["npm", "pnpm", "yarn"]);
 const TEST_BINARIES = new Set(["pest", "phpunit", "vitest", "jest"]);
 const BUILD_BINARIES = new Set(["pint", "phpstan"]);
@@ -389,7 +390,8 @@ function commandLabel(command: string, matchers: Matcher[]): string {
   let recognized: string | null = null;
   for (const segment of segments) recognized = segmentLabel(segment, matchers) ?? recognized;
   if (recognized) return recognized;
-  return segments.length > 0 ? `running ${basename(segments[0].tokens[0])}` : "running shell";
+  const fallback = segments.find((segment) => !FALLBACK_SKIP.has(basename(segment.tokens[0]))) ?? segments[0];
+  return fallback ? `running ${basename(fallback.tokens[0])}` : "running shell";
 }
 
 const READ_TOOLS = new Set(["Read", "Glob", "Grep", "read_file", "view_image"]);
