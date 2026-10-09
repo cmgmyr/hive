@@ -18,7 +18,7 @@ One row per running worker in this project, in worker id order, then one row per
 
 The dot is red when the worker is blocked on a dialog, yellow when it is your turn, green when it is working, gray otherwise. `ctx` turns amber at `context_checkpoint_percent`. A worker with no todo link shows `--` and `<name> unlinked`; the mod never guesses a todo from a worker's name. Pass `todo_id` to `agent_spawn` so the link exists. Without it you see the worker as unlinked and its todo as unstaffed. Two workers on one todo are two rows.
 
-The footer is built from the wake's fields, not its free-prose body. `next in 12m: <label>` shows the next wake with its countdown, a wake that a standing watch generated reads `crew notice`, and a held wake reads `held (talking)` or another short reason instead of a countdown. `watching: all workers · standing · until 02:35` shows a standing watch. When workers are running and no standing watch exists, an amber `unwatched` line says so. A standing watch is never counted as pending.
+The footer is built from the wake's fields, not its free-prose body. `next in 12m: <label>` shows the next wake with its countdown, a notice from a watch or wake (a wake with a parent) reads `crew notice`, and a held wake reads `held (talking)` or another short reason instead of a countdown. `watching: all workers · standing · until 02:35` shows a standing watch. When workers are running and neither a standing watch nor a pending one-shot idle wake covers any of them, an amber `unwatched` line says so. A standing watch is never counted as pending.
 
 ## `hive crew --json`
 

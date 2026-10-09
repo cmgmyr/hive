@@ -90,6 +90,11 @@ function nextLine(next, nowMs) {
   return `next${due}: ${label}`;
 }
 
+function covered(snapshot) {
+  const ids = new Set(snapshot.wakes.watched_worker_ids ?? []);
+  return snapshot.lanes.some((l) => l.worker && ids.has(l.worker.id));
+}
+
 function watchText(w) {
   const parts = [w.scope === "project" ? "all workers" : w.scope || w.label, "standing"];
   const until = w.max_wait_at ? new Date(w.max_wait_at) : null;
@@ -115,7 +120,7 @@ export function buildCrewView(snapshot, previousView, nowMs) {
   const workers = snapshot.lanes.filter((l) => l.worker).length;
   const footer = [{ text: nextLine(wakes.next, nowMs) }];
   if (wakes.watching.length > 0) footer.push({ text: `watching: ${wakes.watching.map(watchText).join(", ")}` });
-  else if (workers > 0) footer.push({ text: "unwatched: no standing watch on running workers", amber: true });
+  else if (workers > 0 && !covered(snapshot)) footer.push({ text: "unwatched: no standing watch on running workers", amber: true });
   return {
     header: [
       `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,

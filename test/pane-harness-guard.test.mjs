@@ -512,8 +512,8 @@ const CLI_SRC = () => readFileSync(new URL("../dist/cli.js", import.meta.url), "
 
 describe("a hold nothing lifts on its own says 'needs you', and cannot mask a newer one (todo 507, ADV 5)", () => {
   it("labels it 'needs you', matching the docs definition, rather than falling through to 'blocked'", () => {
-    const fn = /function heldReasonLabel\([\s\S]*?\n\}/.exec(CLI_SRC());
-    assert.ok(fn, "heldReasonLabel not found in dist/cli.js");
+    const fn = /function heldReasonLabel\([\s\S]*?\n\}/.exec(readFileSync(new URL("../dist/heldLabel.js", import.meta.url), "utf8"));
+    assert.ok(fn, "heldReasonLabel not found in dist/heldLabel.js");
     assert.match(
       fn[0],
       /isUnclassifiablePaneHold\(heldReason\)/,

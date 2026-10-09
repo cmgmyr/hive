@@ -3,19 +3,12 @@ import type Database from "better-sqlite3";
 import { db } from "./db.js";
 import { type Project, isLinkedWorktree } from "./context.js";
 import { awaitingFirstPrompt } from "./firstPrompt.js";
+import { heldReasonLabel } from "./heldLabel.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import { NEEDS_HUMAN_TAG } from "./portfolio.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
-import {
-  ACTIVE_TIMER_WHERE,
-  HELD_REASON_CONVERSATION,
-  HELD_REASON_LEAD_PANE_DEAD,
-  isLeadRowClosedHold,
-  isUnclassifiablePaneHold,
-  isUnsubmittedInputHold,
-  wasHeldForPaneIdentity,
-} from "./scheduler.js";
+import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
 import { reportsAgentStateLog } from "./stateProvenance.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";
 import {
@@ -64,6 +57,7 @@ export interface CrewSnapshot {
     pending: number;
     next: { id: number; label: string; due_at: string | null; generated: boolean; held: string | null } | null;
     watching: { id: number; label: string; kind: string; scope: string; max_wait_at: string | null }[];
+    watched_worker_ids: number[];
   };
   context_checkpoint_percent: number | null;
 }
@@ -104,21 +98,23 @@ interface WakeRow {
   held_at: string | null;
   held_reason: string | null;
   parent_wake_id: number | null;
+  watch: string;
+  deliver_actor: string;
   due: string | null;
 }
 
-// Same four labels as heldReasonLabel in cli.ts, which crew.ts cannot import (importing cli runs the CLI).
-function heldLabel(reason: string | null): string {
-  if (isUnsubmittedInputHold(reason)) return "typing";
-  if (
-    reason === HELD_REASON_LEAD_PANE_DEAD ||
-    wasHeldForPaneIdentity(reason) ||
-    isLeadRowClosedHold(reason) ||
-    isUnclassifiablePaneHold(reason)
-  ) {
-    return "needs you";
-  }
-  return reason === HELD_REASON_CONVERSATION ? "talking" : "blocked";
+// Worker ids named by pending one-shot idle wakes that report to the lead; notices (parent set) watch nothing.
+function oneShotWatched(pending: WakeRow[]): number[] {
+  return pending
+    .filter((w) => w.kind !== "delay" && w.parent_wake_id === null && w.deliver_actor.startsWith("lead:"))
+    .flatMap((w) => {
+      try {
+        const ids: unknown = JSON.parse(w.watch);
+        return Array.isArray(ids) ? ids.filter((x): x is number => typeof x === "number") : [];
+      } catch {
+        return [];
+      }
+    });
 }
 
 function stripped(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -532,7 +528,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
   const wakeRows = db
     .prepare(
       `SELECT id, body, kind, watch_scope, max_wait_at, held_at, held_reason, parent_wake_id,
-              COALESCE(due_at, max_wait_at) AS due FROM wakes
+              watch, deliver_actor, COALESCE(due_at, max_wait_at) AS due FROM wakes
        WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY due IS NULL, due, id`,
     )
@@ -554,9 +550,10 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
             label: wakeLabel(pending[0].body),
             due_at: isoUtc(pending[0].due),
             generated: pending[0].parent_wake_id !== null,
-            held: pending[0].held_at ? heldLabel(pending[0].held_reason) : null,
+            held: pending[0].held_at ? heldReasonLabel(pending[0].held_reason) : null,
           }
         : null,
+      watched_worker_ids: [...new Set(oneShotWatched(pending))].sort((a, b) => a - b),
       watching: standing.map((w) => ({
         id: w.id,
         label: wakeLabel(w.body),

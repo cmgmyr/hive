@@ -26,7 +26,7 @@ const lane = (todo, w) => ({ todo, worker: w });
 const todoOf = (id, slug) => ({ id, slug, status: "in_progress" });
 const snapshot = (o = {}) => ({
   schema_version: 1, project: { id: 1, name: "proj" }, read_at: "2026-10-08T12:00:00.000Z",
-  lanes: [], needs_you: [], wakes: { pending: 0, next: null, watching: [] }, context_checkpoint_percent: null, ...o,
+  lanes: [], needs_you: [], wakes: { pending: 0, next: null, watching: [], watched_worker_ids: [] }, context_checkpoint_percent: null, ...o,
 });
 const runOk = (snap) => async () => ({ exitCode: 0, stdout: JSON.stringify(snap), stderr: "" });
 
@@ -83,7 +83,7 @@ describe("readCrew", () => {
     assert.match(view.footer[1].text, /^watching: all workers · standing · until \d\d:\d\d$/);
 
     const keys = (o) => Object.keys(o).sort();
-    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null, generated: false, held: null }, watching: [{ id: 2, label: "w", kind: "idle_any", scope: "project", max_wait_at: null }] } });
+    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null, generated: false, held: null }, watching: [{ id: 2, label: "w", kind: "idle_any", scope: "project", max_wait_at: null }], watched_worker_ids: [] } });
     const staffed = real.lanes.find((l) => l.worker);
     assert.deepEqual(keys(fixture), keys(real));
     assert.deepEqual(keys(fixture.project), keys(real.project));
@@ -146,6 +146,7 @@ describe("buildCrewView", () => {
           pending: 2,
           next: { id: 3, label: "check lanes", due_at: "2026-10-08T12:05:00.000Z", generated: false, held: null },
           watching: [{ id: 4, label: "idle watch", kind: "idle_any", scope: "project", max_wait_at: null }],
+          watched_worker_ids: [],
         },
       }),
       null,
@@ -224,6 +225,14 @@ describe("footer from structured wake fields", () => {
     const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
     assert.equal(text, `watching: all workers · standing · until ${hhmm}`);
     assert.equal(watchOf([standing])[1].text, "watching: all workers · standing");
+  });
+
+  it("a pending one-shot idle wake covering a running worker is watched, so no unwatched line", () => {
+    const lanes = [lane(todoOf(1, "t"), worker({ id: 7 }))];
+    const view = (ids) => buildCrewView(snapshot({ lanes, wakes: { pending: 1, next: null, watching: [], watched_worker_ids: ids } }), null, NOW).footer;
+    assert.equal(view([7]).some((l) => l.amber), false);
+    assert.equal(view([9]).some((l) => l.amber), true);
+    assert.equal(view([]).some((l) => l.amber), true);
   });
 
   it("running workers with no watch get an amber unwatched line and no workers or a watch get none", () => {
