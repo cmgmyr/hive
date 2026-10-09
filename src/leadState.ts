@@ -78,7 +78,8 @@ const applyInTransaction = db.transaction(
       cur.pane_pid === next.pane_pid &&
       cur.session_id === next.session_id &&
       cur.state === next.state &&
-      cur.idle_seq === next.idle_seq
+      cur.idle_seq === next.idle_seq &&
+      (event !== "session_end" || cur.last_event === "session_end")
     ) {
       return;
     }
