@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
-import { DIST, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs } from "./helpers.mjs";
+import { DIST, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runCli, runNode, scratchDirs } from "./helpers.mjs";
 
 isolateTmux("the lead turn state tests");
 const { dataDir } = scratchDirs();
@@ -113,6 +113,22 @@ describe("a lead's turn state comes from its own hooks", () => {
 
     await hook("prompt", PROMPT, lead.actor, true, marker);
     assert.equal(turn(lead.id).state, "working");
+  });
+
+  it("records session_end after hive's first message so status reads the lead dormant", async () => {
+    const lead = seedAgent("lead", "l3d");
+    const firstMessage = "Wait for the next task.";
+    const marker = { HIVE_LEAD_FIRST_MESSAGE_SHA: firstMessageDigest(firstMessage) };
+
+    await hook("prompt", withField(PROMPT, "prompt", firstMessage), lead.actor, true, marker);
+    assert.equal(turn(lead.id).state, "unknown");
+
+    await hook("session_end", withField(CLEAR, "session_id", SESSION), lead.actor, true, marker);
+
+    assert.equal(turn(lead.id).last_event, "session_end");
+    const status = await runCli(["status"], { cwd: dataDir, dataDir });
+    assert.equal(status.code, 0, status.stderr);
+    assert.match(status.stdout, /dormant \(session ended/);
   });
 
   it("the same text without hive's launch marker is a real prompt", async () => {
