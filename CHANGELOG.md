@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.10.1 - 2026-10-09
+
+- hive works correctly with tmux 3.8. tmux 3.8 stopped reporting a pane's process id once the process exits, so a worker whose command failed at startup produced a "did not report a process id" error and lost its crash output. hive now reads the process id when it creates the pane, and works the same on tmux 3.7c and 3.8. A Claude Code or Codex worker that exits during startup is reported as exited, with its last output.
+- A spawn that fails after hive set the window to keep exited panes now always clears that setting. Before, later exits in the lead's window could stay on screen as dead panes.
+- A worker spawned with a plain command that exits immediately is now refused with "the command exited immediately". It is no longer recorded as running.
+- In the crew sidebar, an idle or waiting worker's row now shows its last activity, for example `your turn 12s · editing`.
+- After upgrading, restart every hive session.
+
 ## 1.10.0 - 2026-10-09
 
 - New opt-in setting `lead_sidebar`. With `lead_sidebar: true` in `~/.hive/hive.yml` or a project's `hive.yml`, `hive lead` adds a crew pane to a Claude Code lead. The pane lists each running worker with its todo, state, current activity, run time and context use. It also lists todos tagged `needs-human` under "todos waiting on you", shows the next wake once in its footer, and warns in amber when workers are running with no standing watch. It is off unless you set it. Restart the lead after changing it. See [Crew sidebar](docs/crew.md).
