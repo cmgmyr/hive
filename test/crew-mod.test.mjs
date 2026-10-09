@@ -165,7 +165,7 @@ describe("buildCrewView", () => {
     assert.deepEqual(view.footer, ["next in 5m: check lanes", "watching: idle watch"]);
     const none = buildCrewView(snapshot(), null, NOW);
     assert.deepEqual(none.footer, ["next: none"]);
-    assert.equal(view.header, "proj · 4 workers · 1 need you · next in 5m: check lanes");
+    assert.equal(view.header, "proj · 4 workers · 1 need you");
     assert.equal(none.header, "proj · 0 workers");
   });
 
@@ -188,21 +188,21 @@ describe("buildCrewView", () => {
 });
 
 describe("next wake text", () => {
-  it("header and footer share one next-wake text for wake-less and wake-bearing snapshots", () => {
+  const wakeOf = (label, due_at) => snapshot({ wakes: { pending: 1, next: { id: 1, label, due_at }, watching: [] } });
+  const occurrences = (view, needle) => [view.header, ...view.footer].join("\n").split(needle).length - 1;
+
+  it("next wake text appears exactly once across header and footer, in the footer, for wake-less and wake-bearing snapshots", () => {
     const wakeless = buildCrewView(snapshot({ needs_you: [{ id: 3, slug: "x" }] }), null, NOW);
     assert.deepEqual(wakeless.footer, ["next: none"]);
     assert.equal(wakeless.header, "proj · 0 workers · 1 need you");
-    const bearing = buildCrewView(
-      snapshot({ wakes: { pending: 1, next: { id: 1, label: "next: none", due_at: "2026-10-08T12:00:30.000Z" }, watching: [] } }),
-      null,
-      NOW,
-    );
-    assert.deepEqual(bearing.footer, ["next in 30s: next: none"]);
-    assert.equal(bearing.header, "proj · 0 workers · next in 30s: next: none");
-    const undated = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "later", due_at: null }, watching: [] } }), null, NOW);
-    assert.equal(undated.header, "proj · 0 workers · next: later");
-    const collides = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "none", due_at: null }, watching: [] } }), null, NOW);
-    assert.equal(collides.header, "proj · 0 workers · next: none");
+    assert.equal(occurrences(wakeless, "next"), 1);
+    const bearing = buildCrewView(wakeOf("check the lane", "2026-10-08T12:00:30.000Z"), null, NOW);
+    assert.deepEqual(bearing.footer, ["next in 30s: check the lane"]);
+    assert.equal(bearing.header, "proj · 0 workers");
+    assert.equal(occurrences(bearing, "check the lane"), 1);
+    const undated = buildCrewView(wakeOf("later", null), null, NOW);
+    assert.deepEqual(undated.footer, ["next: later"]);
+    assert.equal(occurrences(undated, "later"), 1);
   });
 });
 

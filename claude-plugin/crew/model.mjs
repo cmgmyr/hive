@@ -105,7 +105,6 @@ export function buildCrewView(snapshot, previousView, nowMs) {
     header: [
       `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
       snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} need you` : "",
-      next ?? "",
     ].filter(Boolean).join(" · "),
     rows,
     needsYou: snapshot.needs_you.map((t) => ({ id: String(t.id), slug: t.slug })),
