@@ -1260,7 +1260,7 @@ ${SECTION_STYLE}`;
 
 export const sectionScript = (key: string, between = ""): string => `
     var KEY = "${key}";
-        function load() {
+    function load() {
       try { return JSON.parse(sessionStorage.getItem(KEY) || "{}"); } catch (e) { return {}; }
     }
     function save(state) {
@@ -1340,7 +1340,6 @@ export const sectionScript = (key: string, between = ""): string => `
         s.filterCaret = filterInput.selectionStart;
         save(s);
         applyFilter(filterInput.value);
-        onActivity();
       });
     }
 
@@ -1425,7 +1424,6 @@ const NAV_SCRIPT = `
 
 const SCRIPT = `
   (function () {
-    function onActivity() { paintStamp(); deferReload(); }
 ${sectionScript("hive-dashboard-state", NAV_SCRIPT)}
     // Live toggle. Replaces <meta http-equiv="refresh">, which the browser
     // schedules at PARSE TIME - removing the tag afterward does not cancel it,
@@ -1473,6 +1471,9 @@ ${sectionScript("hive-dashboard-state", NAV_SCRIPT)}
     if (toggle) toggle.checked = live;
     paintStamp();
     deferReload();
+    if (filterInput) {
+      filterInput.addEventListener("input", function () { paintStamp(); deferReload(); });
+    }
     var items = document.querySelectorAll(itemSel);
     for (var ii = 0; ii < items.length; ii++) {
       items[ii].addEventListener("toggle", function () { paintStamp(); deferReload(); });

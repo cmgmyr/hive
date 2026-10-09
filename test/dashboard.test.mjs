@@ -1569,7 +1569,7 @@ describe("renderDashboard: the todo filter (dashboard v2) - client-side, session
     if (storedState !== undefined) sessionData["hive-dashboard-state"] = JSON.stringify(storedState);
 
     const rows = rowTexts.map((text) => ({ textContent: text, hidden: false }));
-    const filterInput = { value: "", listeners: {}, addEventListener(t, fn) { this.listeners[t] = fn; } };
+    const filterInput = { value: "", listeners: {}, addEventListener(t, fn) { const prev = this.listeners[t]; this.listeners[t] = () => { if (prev) prev(); fn(); }; } };
     const countEl = { textContent: "" };
     const noneEl = { hidden: true };
     const navCountEl = { textContent: "" };
@@ -1765,7 +1765,7 @@ describe("renderDashboard: the review round's fixes (lead triage on 645f53c)", (
 
     let armed = 0;
     let cleared = 0;
-    const filterInput = { value: "", selectionStart: 0, handlers: {}, addEventListener(t, fn) { this.handlers[t] = fn; } };
+    const filterInput = { value: "", selectionStart: 0, handlers: {}, addEventListener(t, fn) { const prev = this.handlers[t]; this.handlers[t] = () => { if (prev) prev(); fn(); }; } };
     const sessionData = {};
     const elementsById = {
       "todo-filter": filterInput,

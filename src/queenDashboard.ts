@@ -575,7 +575,6 @@ const SCRIPT = `(function () {
 })();`;
 
 const SECTIONS_SCRIPT = `(function () {
-  function onActivity() {}
 ${sectionScript("hive-queen-state")}
 })();`;
 

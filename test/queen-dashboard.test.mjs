@@ -68,6 +68,11 @@ const brief = (over = {}) => ({
 });
 const ready = (b) => ({ kind: "ready", brief: b });
 const count = (html, needle) => html.split(needle).length - 1;
+const queenScripts = (html) => {
+  const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const at = script.lastIndexOf("(function () {", script.indexOf("hive-queen-state"));
+  return { reload: script.slice(0, at), sections: script.slice(at) };
+};
 
 describe("parseQueenBrief", () => {
   it("accepts the v1 shape, including empty picks", () => {
@@ -389,7 +394,7 @@ describe("renderQueenDashboard", () => {
 
   it("starts the reload timer by default, stops it when stored off, and re-arms on toggle", () => {
     const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
-    const script = html.match(/<script>([\s\S]*)<\/script>/)[1].split("\n(function () {\n  function onActivity")[0];
+    const script = queenScripts(html).reload;
     const run = (stored) => {
       const timers = [];
       const listeners = {};
@@ -437,7 +442,8 @@ describe("renderQueenDashboard", () => {
 });
 
 describe("renderQueenDashboard home project sections", () => {
-  const sectionOf = (html, id) => html.match(new RegExp(`<details class="section" id="section-${id}"[\\s\\S]*?</details></div></details>|<details class="section" id="section-${id}"[\\s\\S]*?(?=<details class="section"|$)`))?.[0] ?? "";
+  const sectionOf = (html, id) =>
+    html.match(new RegExp(`<details class="section" id="section-${id}"[\\s\\S]*?(?=<details class="section" |</main>)`))?.[0] ?? "";
   const mkProject = (name) => {
     const dir = join(dirs.tmp, name);
     mkdirSync(dir, { recursive: true });
@@ -502,6 +508,45 @@ describe("renderQueenDashboard home project sections", () => {
     assert.match(html, /id="todo-filter"/);
     assert.match(html, /id="i-inbox"/, "the icon sprite the sections reference is on the page");
     assert.match(html, /id="autoreload"/);
+  });
+
+  it("pins id=topbar on the queen header, which the shared script measures", () => {
+    assert.match(render(null), /<header class="topbar" id="topbar">/);
+  });
+
+  it("runs the sections script: filters todos on input, persists the filter and measures the header", () => {
+    const q = mkProject("home-sections-vm-q");
+    seedTodo(q.id, "alpha todo");
+    seedTodo(q.id, "beta todo");
+    const { sections } = queenScripts(render(q.id));
+    const listeners = {};
+    const row = (text) => ({ textContent: text, hidden: false });
+    const rows = [row("alpha todo"), row("beta todo")];
+    const els = {
+      "todo-filter": { value: "", selectionStart: 0, addEventListener: (e, f) => (listeners[e] = f) },
+      "todo-filter-count": { textContent: "" },
+      "todo-filter-none": { hidden: true },
+      "todo-list": { querySelectorAll: () => rows },
+      topbar: { getBoundingClientRect: () => ({ top: 0, height: 64 }) },
+    };
+    const store = new Map();
+    const props = [];
+    vm.runInNewContext(sections, {
+      document: {
+        getElementById: (id) => els[id] ?? null,
+        querySelectorAll: () => [],
+        documentElement: { style: { setProperty: (k, v) => props.push([k, v]) } },
+      },
+      sessionStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) },
+      window: { scrollY: 0, scrollTo() {}, addEventListener() {} },
+    });
+    assert.equal(els["todo-filter-count"].textContent, "2 shown");
+    assert.deepEqual(props, [["--header-offset", "64px"]]);
+    els["todo-filter"].value = "alpha";
+    listeners.input();
+    assert.deepEqual(rows.map((r) => r.hidden), [false, true]);
+    assert.equal(els["todo-filter-count"].textContent, "1 of 2 shown");
+    assert.equal(JSON.parse(store.get("hive-queen-state")).filter, "alpha");
   });
 });
 
