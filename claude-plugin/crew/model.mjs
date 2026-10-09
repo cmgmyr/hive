@@ -36,7 +36,7 @@ export async function readCrew(run, cwd) {
 }
 
 export function emptyView() {
-  return { header: "", rows: [], needsYou: [], footer: [], error: "", memory: {}, noData: true };
+  return { header: "", rows: [], needsLabel: "", needsYou: [], footer: [], error: "", memory: {}, noData: true };
 }
 
 export function failedView(previousView, message) {
@@ -125,9 +125,10 @@ export function buildCrewView(snapshot, previousView, nowMs) {
   return {
     header: [
       `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
-      snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} need you` : "",
+      snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} todo${snapshot.needs_you.length === 1 ? "" : "s"} for you` : "",
     ].filter(Boolean).join(" · "),
     rows,
+    needsLabel: snapshot.needs_you.length > 0 ? `todos waiting on you (${snapshot.needs_you.length})` : "todos waiting on you",
     needsYou: snapshot.needs_you.map((t) => ({ id: String(t.id), slug: t.slug })),
     footer,
     error: "",
