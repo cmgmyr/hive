@@ -59,6 +59,14 @@ describe("agent_spawn: harness parameter", () => {
       assert.match(receipt.note, /todo_id was omitted/i);
       assert.equal(receipt.todo_id, undefined, "the warning reuses the existing note field instead of widening the receipt");
       await mcp.call("agent_close", { agent_id: receipt.agent_id });
+
+      const linkedReceipt = await mcp.call("agent_spawn", {
+        name: "linked-lane-worker",
+        harness: "codex",
+        todo_id: todo.todo_id,
+      });
+      assert.doesNotMatch(linkedReceipt.note ?? "", /todo_id was omitted/i);
+      await mcp.call("agent_close", { agent_id: linkedReceipt.agent_id });
     },
   );
 
