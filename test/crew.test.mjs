@@ -248,7 +248,8 @@ describe("collectCrew rows", () => {
     const lanes = collectCrew(project, NOW).lanes;
     const byName = Object.fromEntries(lanes.filter((l) => l.worker).map((l) => [l.worker.name, l]));
     assert.equal(byName["w-inferred"].todo.slug, "newest");
-    assert.equal(byName["w-pad-only"].todo.slug, "pad last-pad");
+    assert.equal(byName["w-pad-only"].todo, null);
+    assert.equal(byName["w-pad-only"].pad, "last-pad");
     assert.equal(byName["w-explicit"].todo.slug, "older");
     assert.equal(lanes.some((l) => l.todo?.id === newest && !l.worker), false);
     assert.deepEqual(db.prepare("SELECT todo_id FROM agents WHERE id IN (?, ?, ?) ORDER BY id").all(workerId, padWorkerId, explicitId), before);
