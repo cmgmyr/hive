@@ -57,6 +57,7 @@ function workerRow(lane, snapshot, nowMs, memory, nextMemory) {
   const w = lane.worker;
   const checkpoint = snapshot.context_checkpoint_percent;
   const todo = lane.todo;
+  const linkLabel = todo ? todo.slug : lane.pad ? `pad ${lane.pad}` : `${w.name} unlinked`;
   const state = w.state === "blocked" ? "blocked" : w.your_turn ? "your turn" : w.state;
   const color = state === "blocked" ? "red" : state === "your turn" ? "yellow" : state === "working" ? "green" : "gray";
   const fill = w.context_fill;
@@ -73,7 +74,7 @@ function workerRow(lane, snapshot, nowMs, memory, nextMemory) {
     key: `w${w.id}`,
     color,
     id: todo ? String(todo.id) : "--",
-    slug: todo ? todo.slug : `${w.name} unlinked`,
+    slug: linkLabel,
     parts: [
       { text: `${head.join(" · ")} · ` },
       { text: fill ? `ctx ${Math.round(fill.used_percent)}%` : "ctx ?", amber },
