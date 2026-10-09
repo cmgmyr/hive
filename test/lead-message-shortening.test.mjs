@@ -293,7 +293,7 @@ describe("todo 475: a pointer outlives its message, so a lookup that misses says
 });
 
 describe("todo 1767: delivery metadata is readable on a delivery row and absent on a historical pointer", () => {
-  it("quiet short message metadata reads back without changing full text", NEEDS_TMUX, async () => {
+  it("quiet short message metadata reads back unchanged after a scheduler tick, because the fixture names no agent the sweep can act on", NEEDS_TMUX, async () => {
     const projectId = db.prepare("SELECT id FROM projects WHERE path = ?").get(dirs.projectDir)?.id;
     assert.ok(projectId, "the MCP server registered this project");
     const text = "short report\nwith a second line";
@@ -302,11 +302,13 @@ describe("todo 1767: delivery metadata is readable on a delivery row and absent 
       .prepare(
         `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status,
            delivery_method, socket_attempt_at, delivery_note, target_identity, sender_tag)
-         VALUES (?, 'agent:q', 'quiet', 1, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?,
+         VALUES (?, 'agent:q', 'quiet', 999999, ?, 'socket-pending', 'socket', '2026-10-08 01:02:03.456', NULL, ?,
            '[hive:worker quiet] ') RETURNING id`,
       )
       .get(projectId, text, identity);
 
+    const { tick } = await import("../dist/scheduler.js");
+    await tick(null);
     const got = await mcp.call("agent_message_get", { message_id: id });
     assert.equal(got.text, text);
     assert.equal(got.chars, text.length);
