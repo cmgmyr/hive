@@ -31,10 +31,12 @@ jobs:
           - os: ubuntu-latest
             node: "22.14.0"
             alt: 24
+            tmux: "3.7c"
             skipped: 28
           - os: ubuntu-latest
             node: 24
             alt: 22
+            tmux: "3.8"
             skipped: 28
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
@@ -47,11 +49,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - name: install tmux (bounded, retried)
+      # tmux is built from the release tarball at the version in matrix.tmux (latest and latest-1).
+      # Bump the two matrix values to move the pair; never fall back to apt's tmux.
+      - name: install tmux build dependencies (bounded, retried)
         timeout-minutes: 10
         run: |
           for attempt in 1 2 3; do
-            sudo timeout 2m bash -c 'apt-get update && apt-get install -y tmux' && exit 0
+            sudo timeout 2m bash -c 'apt-get update && apt-get install -y build-essential libevent-dev libncurses-dev bison pkg-config' && exit 0
             if [ "$attempt" -lt 3 ]; then
               echo "::warning::apt install attempt $attempt/3 failed, retrying in 10s"
               sleep 10
@@ -59,8 +63,34 @@ jobs:
           done
           echo "::error::apt install failed after 3 attempts"
           exit 1
-      # Preflight proves tmux installation ran before tests can silently skip tmux cases.
-      - run: tmux -V
+      - name: cache tmux ${{ matrix.tmux }}
+        id: tmux-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/tmux-${{ matrix.tmux }}
+          key: tmux-${{ runner.os }}-${{ runner.arch }}-${{ matrix.tmux }}
+      - name: build tmux ${{ matrix.tmux }} from the release tarball
+        if: steps.tmux-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        env:
+          TMUX_VERSION: ${{ matrix.tmux }}
+        run: |
+          src="$(mktemp -d)"
+          curl -fsSL --retry 3 --retry-delay 5 --max-time 120 -o "$src/tmux.tar.gz" \
+            "https://github.com/tmux/tmux/releases/download/${TMUX_VERSION}/tmux-${TMUX_VERSION}.tar.gz"
+          tar -xzf "$src/tmux.tar.gz" -C "$src"
+          cd "$src/tmux-${TMUX_VERSION}"
+          ./configure --prefix="$HOME/tmux-${TMUX_VERSION}"
+          make -j"$(nproc)"
+          make install
+      - run: echo "$HOME/tmux-${{ matrix.tmux }}/bin" >> "$GITHUB_PATH"
+      # Preflight proves the pinned tmux is the one on PATH before tests can silently skip tmux cases.
+      - name: tmux is exactly the version this leg is pinned to
+        env:
+          TMUX_VERSION: ${{ matrix.tmux }}
+        run: |
+          tmux -V
+          tmux -V | grep -qx "tmux ${TMUX_VERSION}" || { echo "::error::tmux is not ${TMUX_VERSION}"; exit 1; }
       - run: node -e "console.log('availableParallelism', require('os').availableParallelism(), 'cpus', require('os').cpus().length)"
       - run: npm ci
       - run: npm run build
