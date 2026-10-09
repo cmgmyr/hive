@@ -14,7 +14,7 @@ process.env.HIVE_DATA_DIR = join(unitRoot, "data");
 const { addProject } = await import("../dist/context.js");
 const { db, migrate } = await import("../dist/db.js");
 migrate();
-const { resumeAgent } = await import("../dist/spawn.js");
+const { createdPidOrDiscard, resumeAgent } = await import("../dist/spawn.js");
 const { targetLive } = await import("../dist/tmux.js");
 
 const shimDir = mkdtempSync(join(unitRoot, "shim-"));
@@ -72,33 +72,32 @@ const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 describe("a pane hive just created is never recorded with an empty pid", () => {
   beforeEach(() => writeFileSync(budgetFile, "0"));
 
-  it("retries one failed pid read and records the pane's real pid", needsTmux, () => {
+  it("records a resumed pane's pid from tmux's creation output even when every later pid read fails", needsTmux, () => {
     const row = parkedRow();
-    writeFileSync(budgetFile, "1");
+    writeFileSync(budgetFile, "1000");
     const { target } = resume(row);
-    assert.equal(readFileSync(budgetFile, "utf8").trim(), "0", "setup bug: the shim never failed a pid read");
     const recorded = db.prepare("SELECT status, tmux_target, pane_pid FROM agents WHERE id = ?").get(row.id);
     assert.equal(recorded.status, "running");
     assert.equal(recorded.tmux_target, target);
-    assert.match(recorded.pane_pid, /^\d+$/);
+    const actual = execFileSync(realTmux, ["display-message", "-p", "-t", target, "#{pane_pid}"], { encoding: "utf8" }).trim();
+    assert.match(actual, /^\d+$/);
+    assert.equal(recorded.pane_pid, actual);
+    assert.equal(readFileSync(budgetFile, "utf8").trim(), "1000", "the spawn path asked list-panes for the pid again");
     execFileSync(realTmux, ["kill-pane", "-t", target]);
   });
 
-  it("discards the pane and fails the resume when both pid reads fail, leaving the row as it was", needsTmux, () => {
-    const row = parkedRow();
-    writeFileSync(budgetFile, "2");
-    let threw = null;
-    try {
-      resume(row);
-    } catch (e) {
-      threw = e;
+  it("discards a created pane and refuses to record it when the creation output carries no digit pid", needsTmux, () => {
+    const pane = execFileSync(
+      realTmux,
+      ["new-session", "-d", "-P", "-F", "#{pane_id}", "-s", "recordpane-nopid", "sleep 600"],
+      { encoding: "utf8" },
+    ).trim();
+    for (const pid of ["", " ", "12a"]) {
+      assert.throws(() => createdPidOrDiscard("%999999", pid), /did not report a process id for the new pane %999999 when it created it/);
     }
-    assert.match(threw?.message ?? "", /did not report a process id for the new pane (%\d+) \(asked twice\)/);
-    const pane = /new pane (%\d+)/.exec(threw.message)[1];
-    assert.equal(targetLive(pane), false, "the pane whose pid could not be read must not be left running");
-    const after = db.prepare("SELECT status, tmux_target, pane_pid FROM agents WHERE id = ?").get(row.id);
-    assert.equal(after.status, "closed");
-    assert.equal(after.tmux_target, "%old");
+    assert.throws(() => createdPidOrDiscard(pane, ""), /did not report a process id for the new pane %\d+ when it created it/);
+    assert.equal(targetLive(pane), false, "the pane whose pid was missing must not be left running");
+    assert.equal(createdPidOrDiscard("%999999", "4242"), "4242");
   });
 
   it("hive lead discards a fresh lead pane whose pid tmux will not report, recording no lead row on it", needsTmux, async () => {
