@@ -269,6 +269,8 @@ export function isolateTmux(suite) {
   delete process.env.TMUX_PANE;
 
   const socket = tmuxSocketUnder(tmuxTmp);
+  // `tmux -S` skips the tmux-<uid> mkdir that a bare call makes, so tmux() as a file's first call needs it.
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
 
   recordScratchTmuxSocket(socket);
 
