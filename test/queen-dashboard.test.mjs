@@ -257,6 +257,21 @@ describe("renderQueenDashboard", () => {
   it("renders neither collapsible card with zero projects", () => {
     const html = renderQueenDashboard(report([]), { kind: "missing" }, noLinks, [], 1);
     assert.ok(!html.includes("queen-every-project") && !html.includes("queen-recent-actions"));
+    assert.ok(html.includes('<div class="home">'));
+  });
+
+  it("jump handler opens the row's enclosing details before scrolling", () => {
+    const { reload } = queenScripts(renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks));
+    const open = reload.indexOf('row.closest("details")');
+    assert.ok(open > 0, "handler never looks up the enclosing details");
+    assert.ok(reload.indexOf(".open = true", open) > open);
+    assert.ok(reload.indexOf(".open = true", open) < reload.indexOf("row.scrollIntoView"));
+  });
+
+  it("collapsed cards drop the bottom padding that only an open card needs", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.match(html, /\.c-audit\[open\] \{ padding-bottom/);
+    assert.match(html, /details\.card:not\(\[open\]\) > \.card-head \{ padding-bottom/);
   });
 
   it("shows an empty state line when there are no queen actions", () => {

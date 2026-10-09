@@ -538,7 +538,9 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .turn { font-size: 0.75rem; color: var(--fg-muted); }
 .turn-work { color: var(--live); }
-.c-audit { margin-top: 1.5rem; padding-bottom: 0.85rem; }
+.c-audit { margin-top: 1.5rem; }
+.c-audit[open] { padding-bottom: 0.85rem; }
+details.card:not([open]) > .card-head { padding-bottom: 0.9rem; }
 .c-audit .audit-list, .c-audit .brief-empty { padding: 0 1.1rem; }
 .audit-list { list-style: none; margin: 0.5rem 0 0; padding: 0; display: grid; gap: 0.4rem; font-size: 0.8125rem; }
 .audit-list li { display: flex; flex-wrap: wrap; gap: 0.15rem 0.75rem; align-items: baseline; }
@@ -568,6 +570,8 @@ const SCRIPT = `(function () {
     var row = document.getElementById("row-" + j.getAttribute("data-jump"));
     if (!row) return;
     e.preventDefault();
+    var box = row.closest("details");
+    if (box) box.open = true;
     var still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     row.scrollIntoView({ behavior: still ? "auto" : "smooth", block: "center" });
     row.classList.add("is-flash");
