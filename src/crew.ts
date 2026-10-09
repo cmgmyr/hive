@@ -7,7 +7,15 @@ import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import { NEEDS_HUMAN_TAG } from "./portfolio.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
-import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  HELD_REASON_CONVERSATION,
+  HELD_REASON_LEAD_PANE_DEAD,
+  isLeadRowClosedHold,
+  isUnclassifiablePaneHold,
+  isUnsubmittedInputHold,
+  wasHeldForPaneIdentity,
+} from "./scheduler.js";
 import { reportsAgentStateLog } from "./stateProvenance.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";
 import {
@@ -54,8 +62,8 @@ export interface CrewSnapshot {
   needs_you: { id: number; slug: string }[];
   wakes: {
     pending: number;
-    next: { id: number; label: string; due_at: string | null } | null;
-    watching: { id: number; label: string }[];
+    next: { id: number; label: string; due_at: string | null; generated: boolean; held: string | null } | null;
+    watching: { id: number; label: string; kind: string; scope: string; max_wait_at: string | null }[];
   };
   context_checkpoint_percent: number | null;
 }
@@ -85,6 +93,32 @@ const WAKE_LABEL_MAX = 60;
 function wakeLabel(body: string): string {
   const line = body.split("\n").map((l) => l.trim()).find((l) => l !== "") ?? "";
   return line.slice(0, WAKE_LABEL_MAX);
+}
+
+interface WakeRow {
+  id: number;
+  body: string;
+  kind: string;
+  watch_scope: string | null;
+  max_wait_at: string | null;
+  held_at: string | null;
+  held_reason: string | null;
+  parent_wake_id: number | null;
+  due: string | null;
+}
+
+// Same four labels as heldReasonLabel in cli.ts, which crew.ts cannot import (importing cli runs the CLI).
+function heldLabel(reason: string | null): string {
+  if (isUnsubmittedInputHold(reason)) return "typing";
+  if (
+    reason === HELD_REASON_LEAD_PANE_DEAD ||
+    wasHeldForPaneIdentity(reason) ||
+    isLeadRowClosedHold(reason) ||
+    isUnclassifiablePaneHold(reason)
+  ) {
+    return "needs you";
+  }
+  return reason === HELD_REASON_CONVERSATION ? "talking" : "blocked";
 }
 
 function stripped(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -497,11 +531,12 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
 
   const wakeRows = db
     .prepare(
-      `SELECT id, body, watch_scope, COALESCE(due_at, max_wait_at) AS due FROM wakes
+      `SELECT id, body, kind, watch_scope, max_wait_at, held_at, held_reason, parent_wake_id,
+              COALESCE(due_at, max_wait_at) AS due FROM wakes
        WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY due IS NULL, due, id`,
     )
-    .all(project.id) as { id: number; body: string; watch_scope: string | null; due: string | null }[];
+    .all(project.id) as WakeRow[];
   const standing = wakeRows.filter((w) => w.watch_scope);
   const pending = wakeRows.filter((w) => !w.watch_scope);
 
@@ -514,9 +549,21 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     wakes: {
       pending: pending.length,
       next: pending[0]
-        ? { id: pending[0].id, label: wakeLabel(pending[0].body), due_at: isoUtc(pending[0].due) }
+        ? {
+            id: pending[0].id,
+            label: wakeLabel(pending[0].body),
+            due_at: isoUtc(pending[0].due),
+            generated: pending[0].parent_wake_id !== null,
+            held: pending[0].held_at ? heldLabel(pending[0].held_reason) : null,
+          }
         : null,
-      watching: standing.map((w) => ({ id: w.id, label: wakeLabel(w.body) })),
+      watching: standing.map((w) => ({
+        id: w.id,
+        label: wakeLabel(w.body),
+        kind: w.kind,
+        scope: w.watch_scope ?? "",
+        max_wait_at: isoUtc(w.max_wait_at),
+      })),
     },
     context_checkpoint_percent: config?.context_checkpoint_percent ?? null,
   };

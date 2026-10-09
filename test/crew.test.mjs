@@ -214,8 +214,8 @@ describe("hive crew --json schema v1", () => {
     assert.deepEqual(keys(staffed.worker.activity), ["label", "lower_bound", "since"]);
     assert.deepEqual(keys(snap.needs_you[0]), ["id", "slug"]);
     assert.deepEqual(keys(snap.wakes), ["next", "pending", "watching"]);
-    assert.deepEqual(keys(snap.wakes.next), ["due_at", "id", "label"]);
-    assert.deepEqual(keys(snap.wakes.watching[0]), ["id", "label"]);
+    assert.deepEqual(keys(snap.wakes.next), ["due_at", "generated", "held", "id", "label"]);
+    assert.deepEqual(keys(snap.wakes.watching[0]), ["id", "kind", "label", "max_wait_at", "scope"]);
     db.prepare("DELETE FROM agents").run();
     db.prepare("DELETE FROM wakes").run();
     db.prepare("DELETE FROM todos").run();
@@ -296,11 +296,11 @@ describe("collectCrew wakes", () => {
     const wakes = collectCrew(project, NOW).wakes;
     assert.equal(wakes.pending, 4, "later, sooner, idle wait and the repeating wake; never the watch");
     assert.equal(wakes.next.id, repeating, "earliest by COALESCE(due_at, max_wait_at), ties by id");
-    assert.deepEqual(wakes.watching, [{ id: watch, label: "project watch" }]);
+    assert.deepEqual(wakes.watching.map((w) => [w.id, w.label, w.scope]), [[watch, "project watch", "project"]]);
 
     db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(repeating);
     const next = collectCrew(project, NOW).wakes.next;
-    assert.deepEqual(next, { id: sooner, label: "x".repeat(60), due_at: "2026-10-08T13:00:00.250Z" });
+    assert.deepEqual(next, { id: sooner, label: "x".repeat(60), due_at: "2026-10-08T13:00:00.250Z", generated: false, held: null });
     assert.equal(collectCrew(project, NOW).wakes.pending, 3);
     assert.equal(later > 0, true);
     db.prepare("DELETE FROM wakes").run();
@@ -309,10 +309,24 @@ describe("collectCrew wakes", () => {
 
   it("an undated idle wake is last and its next due_at comes from max_wait_at", () => {
     const idle = wake({ body: "idle", kind: "idle_any", max_wait_at: "2026-10-08 18:00:00" });
-    assert.deepEqual(collectCrew(project, NOW).wakes.next, { id: idle, label: "idle", due_at: "2026-10-08T18:00:00.000Z" });
+    assert.deepEqual(collectCrew(project, NOW).wakes.next, { id: idle, label: "idle", due_at: "2026-10-08T18:00:00.000Z", generated: false, held: null });
     const dated = wake({ body: "dated", due_at: "2026-10-09 18:00:00" });
     assert.equal(collectCrew(project, NOW).wakes.next.id, idle);
     assert.equal(dated > idle, true);
+    db.prepare("DELETE FROM wakes").run();
+  });
+
+  it("next carries generated for a watch notice and a short held label from the hold reason", async () => {
+    const { HELD_REASON_CONVERSATION } = await import("../dist/scheduler.js");
+    const parent = wake({ body: "watch", kind: "idle_any", watch_scope: "project", max_wait_at: "2026-10-08 18:00:00" });
+    const notice = wake({ body: "crew notice body\nmore", due_at: "2026-10-08 12:00:00" });
+    db.prepare("UPDATE wakes SET parent_wake_id = ?, held_at = datetime('now'), held_reason = ? WHERE id = ?").run(parent, HELD_REASON_CONVERSATION, notice);
+    const next = collectCrew(project, NOW).wakes.next;
+    assert.equal(next.generated, true);
+    assert.equal(next.held, "talking");
+    db.prepare("UPDATE wakes SET held_at = NULL, held_reason = NULL WHERE id = ?").run(notice);
+    assert.equal(collectCrew(project, NOW).wakes.next.held, null);
+    assert.equal(collectCrew(project, NOW).wakes.watching[0].max_wait_at, "2026-10-08T18:00:00.000Z");
     db.prepare("DELETE FROM wakes").run();
   });
 });

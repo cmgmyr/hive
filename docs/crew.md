@@ -10,7 +10,7 @@ lead_sidebar: true
 
 Restart the lead (`hive lead`). A Claude lead then starts with `--plugin-dir` pointing at the bundled `claude-plugin/crew` mod, which resolves relative to the installed `dist/`, so it follows the version you installed. Codex leads, lead commands hive does not recognise as Claude, and workers never get the flag. `false` and `null` both mean off. A value that is not a boolean warns and keeps the previous value.
 
-At session start the pane opens by itself only in a terminal 144 columns wide or more, because Claude Code places an unasked pane from that width. Run `/hive-crew` in the lead to open it from 110 columns; it then docks at the right. Below 110 columns it opens inline above the prompt. Inline, the pane clips after about twelve rows (about five lanes), so the header line carries the needs-you count and the next wake, and a failed read shows right under it. A crew larger than that loses its lower rows inline; docked, it has the full height. The zoomed layout was not machine-captured; check it by eye.
+At session start the pane opens by itself only in a terminal 144 columns wide or more, because Claude Code places an unasked pane from that width. Run `/hive-crew` in the lead to open it from 110 columns; it then docks at the right. Below 110 columns it opens inline above the prompt. Inline, the pane clips after about twelve rows (about five lanes), so the header line carries the needs-you count, and a failed read shows right under it. The footer, with the next wake, can fall below the clip inline. A crew larger than that loses its lower rows inline; docked, it has the full height. The zoomed layout was not machine-captured; check it by eye.
 
 ## What a row shows
 
@@ -18,7 +18,7 @@ One row per running worker in this project, in worker id order, then one row per
 
 The dot is red when the worker is blocked on a dialog, yellow when it is your turn, green when it is working, gray otherwise. `ctx` turns amber at `context_checkpoint_percent`. A worker with no todo link shows `--` and `<name> unlinked`; the mod never guesses a todo from a worker's name. Pass `todo_id` to `agent_spawn` so the link exists. Without it you see the worker as unlinked and its todo as unstaffed. Two workers on one todo are two rows.
 
-The footer lists the next labeled wake with its countdown and any standing watch as `watching`. A standing watch is never counted as pending.
+The footer is built from the wake's fields, not its free-prose body. `next in 12m: <label>` shows the next wake with its countdown, a wake that a standing watch generated reads `crew notice`, and a held wake reads `held (talking)` or another short reason instead of a countdown. `watching: all workers · standing · until 02:35` shows a standing watch. When workers are running and no standing watch exists, an amber `unwatched` line says so. A standing watch is never counted as pending.
 
 ## `hive crew --json`
 

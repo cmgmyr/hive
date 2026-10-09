@@ -4,7 +4,7 @@ export type CrewView = {
   header: string
   rows: Row[]
   needsYou: { id: string; slug: string }[]
-  footer: string[]
+  footer: { text: string; amber?: boolean }[]
   error: string
   memory: Record<string, number>
   noData: boolean

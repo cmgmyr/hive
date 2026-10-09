@@ -75,7 +75,7 @@ export const register: Register = on => {
         {c.needsYou.length === 0 && <Text dimColor>  nothing</Text>}
         {c.needsYou.map(t => <Text wrap="truncate-end">  {t.id} <Text dimColor>{t.slug}</Text></Text>)}
         <Text> </Text>
-        {c.footer.map(line => <Text dimColor wrap="truncate-end">{line}</Text>)}
+        {c.footer.map(line => <Text dimColor={!line.amber} color={line.amber ? 'yellow' : undefined} wrap="truncate-end">{line.text}</Text>)}
       </Box>
     )
   })
