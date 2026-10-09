@@ -192,6 +192,37 @@ function claudeToolCalls(record: JsonRecord, options: ToolCallOptions): Transcri
   return calls;
 }
 
+function stringLiteral(text: string): string | null {
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'") return null;
+  const json = quote === '"' ? text : `"${text.slice(1, -1).replace(/\\'/g, "'").replace(/(\\.)|"/g, (m, esc) => esc ?? '\\"')}"`;
+  try {
+    const value: unknown = JSON.parse(json);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function execInnerCalls(source: string, at: string | null): TranscriptToolCall[] | null {
+  const marks = [...source.matchAll(/\btools\.([A-Za-z_]\w*)\s*\(/g)];
+  if (marks.length === 0) return null;
+  const calls: TranscriptToolCall[] = [];
+  marks.forEach((mark, i) => {
+    const name = lastComponent(mark[1]);
+    if (name === "write_stdin") return;
+    if (name === "exec_command") {
+      const span = source.slice(mark.index + mark[0].length, marks[i + 1]?.index ?? source.length);
+      const cmd = /["']?\bcmd["']?\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/.exec(span);
+      const command = cmd ? stringLiteral(cmd[1]) : null;
+      if (command !== null) calls.push({ name: "Bash", input: { command }, at });
+      return;
+    }
+    calls.push({ name, input: {}, at });
+  });
+  return calls;
+}
+
 function codexToolCalls(record: JsonRecord, options: ToolCallOptions): TranscriptToolCall[] {
   const payload = object(record.payload);
   if (record.type !== "response_item" || !payload) return [];
@@ -203,10 +234,14 @@ function codexToolCalls(record: JsonRecord, options: ToolCallOptions): Transcrip
   if (typeof payload.name !== "string") return [];
   const name = lastComponent(payload.name);
   if (payload.type === "custom_tool_call") {
+    if (name === "exec" && typeof payload.input === "string") {
+      const inner = execInnerCalls(payload.input, at);
+      if (inner) return inner;
+    }
     return [{ name, input: typeof payload.input === "string" ? { input: payload.input } : {}, at }];
   }
   if (payload.type !== "function_call") return [];
-  if (name === "write_stdin") return [];
+  if (name === "write_stdin" || name === "sleep") return [];
   let args: Record<string, unknown> = {};
   if (typeof payload.arguments === "string") {
     try {
