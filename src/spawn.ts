@@ -14,7 +14,7 @@ import {
   findProcessesWindow,
   findProjectWindow,
   isPaneTarget,
-  panePidForRecord,
+  paneProcessExited,
   paneWindow,
   PROCESSES_LAYOUT,
   processesPaneTitle,
@@ -23,6 +23,7 @@ import {
   rowLive,
   sessionName,
   setPaneTitle,
+  setRemainOnExit,
   makeProcessesWindow,
   tmux,
   tmuxSocketPath,
@@ -139,13 +140,23 @@ function recordPane(agentId: number, target: string, socket: string, pid: string
   );
 }
 
-function readPidOrDiscard(target: string): string {
-  const pid = panePidForRecord(target);
-  if (pid !== "") return pid;
+// The creation pid proves the pane existed, not that its process still runs. A retained pane is
+// left to the caller's readiness wait, which reports the exit with its tail.
+function refuseIfExitedImmediately(target: string, retained: boolean): void {
+  if (retained || paneProcessExited(target) !== true) return;
   discardOrphanedPane(target);
   throw new Error(
-    `tmux did not report a process id for the new pane ${target} (asked twice), so it was discarded rather than ` +
-      "recorded: a row with no pane pid can never be verified as owning its pane. Retry.",
+    `The command exited immediately, so its pane ${target} was discarded rather than recorded as running. ` +
+      "Check the command and its arguments, then retry.",
+  );
+}
+
+export function createdPidOrDiscard(target: string, pid: string): string {
+  if (/^\d+$/.test(pid)) return pid;
+  discardOrphanedPane(target);
+  throw new Error(
+    `tmux did not report a process id for the new pane ${target} when it created it, so it was discarded rather ` +
+      "than recorded: a row with no pane pid can never be verified as owning its pane. Retry.",
   );
 }
 
@@ -241,10 +252,12 @@ function placeAgentPane(
   envFlags: string[],
   commandString: string,
   title: string,
-): { target: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
+  onRetainArmed: (window: string) => void = () => {},
+): { target: string; pid: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
   let landedInProjectId: number | null = null;
   let layoutApplied = false;
   let inProcessesWindow = false;
+  let pid = "";
   const target = withWindowClaim((): string => {
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
@@ -254,14 +267,17 @@ function placeAgentPane(
 
       // Deliberate for placement "processes" too: this pane IS the new session's initial window, so it
       // takes that window rather than a tile. The caller reports it; `hive hide` moves it in later.
+      pid = started.pid;
       return claimInitialWindow(started, windowName, windowOwnerId).pane;
     }
     const splitInto = (window: string, layout: WindowLayout): string => {
-      const pane = tmux(
-        "split-window", "-d", "-P", "-F", "#{pane_id}",
+      const [pane, created = ""] = tmux(
+        "split-window", "-d", "-P", "-F", "#{pane_id}\t#{pane_pid}",
         "-t", window, "-c", spec.cwd, ...envFlags, commandString,
         ...(spec.retainOnExit ? retainOnExitArgs(window) : []),
-      );
+      ).split("\t");
+      pid = created;
+      if (spec.retainOnExit) onRetainArmed(window);
       applyLayout(window, layout);
       layoutApplied = true;
       return pane;
@@ -276,6 +292,8 @@ function placeAgentPane(
           session, processesWindowName(spec.projectName), spec.cwd, envFlags, commandString, null, true,
           spec.retainOnExit ?? false,
         );
+        pid = made.pid;
+        if (spec.retainOnExit) onRetainArmed(made.window);
         makeProcessesWindow(made.window, spec.projectId);
         pane = made.pane;
       }
@@ -292,12 +310,15 @@ function placeAgentPane(
         return pane;
       }
     }
-    return createWindow(
+    const made = createWindow(
       session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true,
       spec.retainOnExit ?? false,
-    ).pane;
+    );
+    pid = made.pid;
+    if (spec.retainOnExit) onRetainArmed(made.window);
+    return made.pane;
   });
-  return { target, landedInProjectId, layoutApplied, inProcessesWindow };
+  return { target, pid, landedInProjectId, layoutApplied, inProcessesWindow };
 }
 
 export function launchAgent(spec: LaunchSpec): {
@@ -307,6 +328,7 @@ export function launchAgent(spec: LaunchSpec): {
   landedInProjectId: number | null;
   layoutApplied: boolean;
   inProcessesWindow: boolean;
+  retainedWindow: string | null;
 } {
 
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
@@ -345,6 +367,7 @@ export function launchAgent(spec: LaunchSpec): {
   const actorId = `${spec.kind}:${agentId}`;
 
   let paneUp = false;
+  let retainedWindow: string | null = null;
   try {
     const commandString =
       typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
@@ -361,18 +384,21 @@ export function launchAgent(spec: LaunchSpec): {
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placeAgentPane(
-      session, spec, envFlags, commandString, title,
-    );
-    const pid = readPidOrDiscard(target);
+    const placed = placeAgentPane(session, spec, envFlags, commandString, title, (window) => {
+      retainedWindow = window;
+    });
+    const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
+    const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, spec.retainOnExit ?? false);
     paneUp = true;
 
     if (!recordPane(agentId, target, socket, pid)) {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
-    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow };
+    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow, retainedWindow };
   } catch (e) {
+    if (retainedWindow) setRemainOnExit(retainedWindow, false);
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
     throw e;
@@ -477,8 +503,10 @@ export function resumeAgent(
     });
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
-    const { target, landedInProjectId } = placeAgentPane(session, spec, envFlags, spec.commandString, title);
-    const pid = readPidOrDiscard(target);
+    const placed = placeAgentPane(session, spec, envFlags, spec.commandString, title);
+    const { target, landedInProjectId } = placed;
+    const pid = createdPidOrDiscard(target, placed.pid);
+    refuseIfExitedImmediately(target, false);
     paneUp = true;
 
     if (!recordPane(spec.agentId, target, socket, pid)) {

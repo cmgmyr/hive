@@ -197,7 +197,7 @@ export function crossServerRefusal(action: string): Error {
   );
 }
 
-export type SessionStart = { created: true; pane: string; window: string } | { created: false };
+export type SessionStart = { created: true; pane: string; window: string; pid: string } | { created: false };
 
 export type InitialPane = { envFlags: string[]; command: string } | { bare: true };
 
@@ -220,16 +220,20 @@ function unsetAtSessionScope(name: string, envFlags: string[]): void {
   }
 }
 
+// The pid is read from the creating call because tmux 3.8 reports an empty #{pane_pid} once a pane's
+// process has exited, so a later list-panes can lose the race against a command that dies at once.
+export const CREATED_PANE_FORMAT = "#{pane_id}\t#{session_name}:#{window_id}\t#{pane_pid}";
+
 export function ensureSession(name: string, cwd: string, initial: InitialPane): SessionStart {
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
-    const [pane, window] = tmux(
-      "new-session", "-d", "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}", "-s", name, "-c", cwd,
+    const [pane, window, pid = ""] = tmux(
+      "new-session", "-d", "-P", "-F", CREATED_PANE_FORMAT, "-s", name, "-c", cwd,
       ...(initial && "command" in initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
     if (initial && "command" in initial) unsetAtSessionScope(name, initial.envFlags);
-    return { created: true, pane, window };
+    return { created: true, pane, window, pid };
   } catch (e) {
     if (!isDuplicateSession(e)) throw e;
     return { created: false };
@@ -449,7 +453,7 @@ export function targetLiveProbe(target: string): PaneProbe {
     const rows = tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_pid}")
       .split("\n")
       .map((line) => line.split(" "));
-    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] ?? null) : null;
+    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] || null) : null;
     return { live: true, pid };
   } catch (e) {
     return { live: tmuxSaysNothingThere(e) ? false : null, pid: null };
@@ -868,15 +872,15 @@ export function createWindow(
 
   detach = false,
   retainOnExit = false,
-): { pane: string; window: string } {
+): { pane: string; window: string; pid: string } {
   const created = tmux(
-    "new-window", ...(detach ? ["-d"] : []), "-P", "-F", "#{pane_id}\t#{session_name}:#{window_id}",
+    "new-window", ...(detach ? ["-d"] : []), "-P", "-F", CREATED_PANE_FORMAT,
     "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
     ...(retainOnExit ? retainOnExitArgs(`=${session}:${windowName}`) : []),
   );
-  const [pane, window] = created.split("\t");
+  const [pane, window, pid = ""] = created.split("\t");
   configureHiveWindow(window, true, projectId);
-  return { pane, window };
+  return { pane, window, pid };
 }
 
 function viewSessionChain(session: string, view: string): string[] {
