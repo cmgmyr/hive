@@ -26,7 +26,7 @@ const lane = (todo, w) => ({ todo, worker: w });
 const todoOf = (id, slug) => ({ id, slug, status: "in_progress" });
 const snapshot = (o = {}) => ({
   schema_version: 1, project: { id: 1, name: "proj" }, read_at: "2026-10-08T12:00:00.000Z",
-  lanes: [], needs_you: [], wakes: { pending: 0, next: null, watching: [] }, context_checkpoint_percent: null, ...o,
+  lanes: [], needs_you: [], wakes: { pending: 0, next: null, watching: [], watched_worker_ids: [] }, context_checkpoint_percent: null, ...o,
 });
 const runOk = (snap) => async () => ({ exitCode: 0, stdout: JSON.stringify(snap), stderr: "" });
 
@@ -79,11 +79,11 @@ describe("readCrew", () => {
     assert.match(view.rows[0].detail, /^opus · /);
     assert.equal(view.rows[1].detail, "unstaffed");
     assert.deepEqual(view.needsYou, [{ id: String(laneId + 2), slug: "ask human" }]);
-    assert.match(view.footer[0], /^next in \d+[hm]\d*m?: check the lane$/);
-    assert.deepEqual(view.footer.slice(1), ["watching: standing watch"]);
+    assert.match(view.footer[0].text, /^next in \d+[hm]\d*m?: check the lane$/);
+    assert.match(view.footer[1].text, /^watching: all workers · standing · until \d\d:\d\d$/);
 
     const keys = (o) => Object.keys(o).sort();
-    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null }, watching: [{ id: 2, label: "w" }] } });
+    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null, generated: false, held: null }, watching: [{ id: 2, label: "w", kind: "idle_any", scope: "project", max_wait_at: null }], watched_worker_ids: [] } });
     const staffed = real.lanes.find((l) => l.worker);
     assert.deepEqual(keys(fixture), keys(real));
     assert.deepEqual(keys(fixture.project), keys(real.project));
@@ -144,8 +144,9 @@ describe("buildCrewView", () => {
         needs_you: [{ id: 12, slug: "decide" }],
         wakes: {
           pending: 2,
-          next: { id: 3, label: "check lanes", due_at: "2026-10-08T12:05:00.000Z" },
-          watching: [{ id: 4, label: "idle watch" }],
+          next: { id: 3, label: "check lanes", due_at: "2026-10-08T12:05:00.000Z", generated: false, held: null },
+          watching: [{ id: 4, label: "idle watch", kind: "idle_any", scope: "project", max_wait_at: null }],
+          watched_worker_ids: [],
         },
       }),
       null,
@@ -162,10 +163,10 @@ describe("buildCrewView", () => {
     assert.match(dialog.detail, /^opus · blocked ~0s · ctx 41% · /);
     assert.equal(cool.color, "gray");
     assert.deepEqual(view.needsYou, [{ id: "12", slug: "decide" }]);
-    assert.deepEqual(view.footer, ["next in 5m: check lanes", "watching: idle watch"]);
+    assert.deepEqual(view.footer, [{ text: "next in 5m: check lanes" }, { text: "watching: all workers · standing" }]);
     const none = buildCrewView(snapshot(), null, NOW);
-    assert.deepEqual(none.footer, ["next: none"]);
-    assert.equal(view.header, "proj · 4 workers · 1 need you · next in 5m: check lanes");
+    assert.deepEqual(none.footer, [{ text: "next: none" }]);
+    assert.equal(view.header, "proj · 4 workers · 1 need you");
     assert.equal(none.header, "proj · 0 workers");
   });
 
@@ -188,21 +189,57 @@ describe("buildCrewView", () => {
 });
 
 describe("next wake text", () => {
-  it("header and footer share one next-wake text for wake-less and wake-bearing snapshots", () => {
+  const wakeOf = (label, due_at) => snapshot({ wakes: { pending: 1, next: { id: 1, label, due_at }, watching: [] } });
+  const occurrences = (view, needle) => [view.header, ...view.footer.map((l) => l.text)].join("\n").split(needle).length - 1;
+
+  it("next wake text appears exactly once across header and footer, in the footer, for wake-less and wake-bearing snapshots", () => {
     const wakeless = buildCrewView(snapshot({ needs_you: [{ id: 3, slug: "x" }] }), null, NOW);
-    assert.deepEqual(wakeless.footer, ["next: none"]);
+    assert.deepEqual(wakeless.footer, [{ text: "next: none" }]);
     assert.equal(wakeless.header, "proj · 0 workers · 1 need you");
-    const bearing = buildCrewView(
-      snapshot({ wakes: { pending: 1, next: { id: 1, label: "next: none", due_at: "2026-10-08T12:00:30.000Z" }, watching: [] } }),
-      null,
-      NOW,
-    );
-    assert.deepEqual(bearing.footer, ["next in 30s: next: none"]);
-    assert.equal(bearing.header, "proj · 0 workers · next in 30s: next: none");
-    const undated = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "later", due_at: null }, watching: [] } }), null, NOW);
-    assert.equal(undated.header, "proj · 0 workers · next: later");
-    const collides = buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "none", due_at: null }, watching: [] } }), null, NOW);
-    assert.equal(collides.header, "proj · 0 workers · next: none");
+    assert.equal(occurrences(wakeless, "next"), 1);
+    const bearing = buildCrewView(wakeOf("check the lane", "2026-10-08T12:00:30.000Z"), null, NOW);
+    assert.deepEqual(bearing.footer, [{ text: "next in 30s: check the lane" }]);
+    assert.equal(bearing.header, "proj · 0 workers");
+    assert.equal(occurrences(bearing, "check the lane"), 1);
+    const undated = buildCrewView(wakeOf("later", null), null, NOW);
+    assert.deepEqual(undated.footer, [{ text: "next: later" }]);
+    assert.equal(occurrences(undated, "later"), 1);
+  });
+});
+
+describe("footer from structured wake fields", () => {
+  const nextOf = (next) => buildCrewView(snapshot({ wakes: { pending: 1, next: { id: 1, label: "body line", due_at: "2026-10-08T12:00:00.000Z", generated: false, held: null, ...next }, watching: [] } }), null, NOW).footer[0].text;
+  const watchOf = (watching, lanes = []) => buildCrewView(snapshot({ lanes, wakes: { pending: 0, next: null, watching } }), null, NOW).footer;
+  const standing = { id: 2, label: "Standing watch over the crew. Prose body that must never be printed.", kind: "idle_any", scope: "project", max_wait_at: null };
+
+  it("a generated notice reads crew notice and a held wake says held with its short reason never next in 0s", () => {
+    assert.equal(nextOf({ generated: true, label: "Crew notice: w1 finished. Long prose." }), "next in 0s: crew notice");
+    assert.equal(nextOf({ generated: true, held: "talking" }), "held (talking): crew notice");
+    assert.equal(nextOf({ held: "typing" }), "held (typing): body line");
+    assert.equal(nextOf({}), "next in 0s: body line");
+  });
+
+  it("a standing watch renders scope standing and until from max_wait_at never its body", () => {
+    const text = watchOf([{ ...standing, max_wait_at: "2026-10-08T12:35:00.000Z" }])[1].text;
+    const until = new Date("2026-10-08T12:35:00.000Z");
+    const hhmm = `${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`;
+    assert.equal(text, `watching: all workers · standing · until ${hhmm}`);
+    assert.equal(watchOf([standing])[1].text, "watching: all workers · standing");
+  });
+
+  it("a pending one-shot idle wake covering a running worker is watched, so no unwatched line", () => {
+    const lanes = [lane(todoOf(1, "t"), worker({ id: 7 }))];
+    const view = (ids) => buildCrewView(snapshot({ lanes, wakes: { pending: 1, next: null, watching: [], watched_worker_ids: ids } }), null, NOW).footer;
+    assert.equal(view([7]).some((l) => l.amber), false);
+    assert.equal(view([9]).some((l) => l.amber), true);
+    assert.equal(view([]).some((l) => l.amber), true);
+  });
+
+  it("running workers with no watch get an amber unwatched line and no workers or a watch get none", () => {
+    const lanes = [lane(todoOf(1, "t"), worker())];
+    assert.deepEqual(watchOf([], lanes)[1], { text: "unwatched: no standing watch on running workers", amber: true });
+    assert.equal(watchOf([], []).length, 1);
+    assert.equal(watchOf([standing], lanes).some((l) => l.amber), false);
   });
 });
 

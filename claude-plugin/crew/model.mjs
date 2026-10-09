@@ -82,6 +82,28 @@ function workerRow(lane, snapshot, nowMs, memory, nextMemory) {
   });
 }
 
+function nextLine(next, nowMs) {
+  if (!next) return "next: none";
+  const label = next.generated ? "crew notice" : next.label;
+  if (next.held) return `held (${next.held}): ${label}`;
+  const due = next.due_at && Number.isFinite(Date.parse(next.due_at)) ? ` in ${ago((Date.parse(next.due_at) - nowMs) / 1000)}` : "";
+  return `next${due}: ${label}`;
+}
+
+function covered(snapshot) {
+  const ids = new Set(snapshot.wakes.watched_worker_ids ?? []);
+  return snapshot.lanes.some((l) => l.worker && ids.has(l.worker.id));
+}
+
+function watchText(w) {
+  const parts = [w.scope === "project" ? "all workers" : w.scope || w.label, "standing"];
+  const until = w.max_wait_at ? new Date(w.max_wait_at) : null;
+  if (until && Number.isFinite(until.getTime())) {
+    parts.push(`until ${String(until.getHours()).padStart(2, "0")}:${String(until.getMinutes()).padStart(2, "0")}`);
+  }
+  return parts.join(" · ");
+}
+
 function rowOf(row) {
   return { ...row, detail: row.parts.map((p) => p.text).join("") };
 }
@@ -95,17 +117,14 @@ export function buildCrewView(snapshot, previousView, nowMs) {
       : rowOf({ key: `t${lane.todo.id}`, color: "gray", id: String(lane.todo.id), slug: lane.todo.slug, parts: [{ text: "unstaffed" }] }),
   );
   const { wakes } = snapshot;
-  const next = wakes.next
-    ? `next${wakes.next.due_at && Number.isFinite(Date.parse(wakes.next.due_at)) ? ` in ${ago((Date.parse(wakes.next.due_at) - nowMs) / 1000)}` : ""}: ${wakes.next.label}`
-    : null;
-  const footer = [next ?? "next: none"];
-  if (wakes.watching.length > 0) footer.push(`watching: ${wakes.watching.map((x) => x.label).join(", ")}`);
   const workers = snapshot.lanes.filter((l) => l.worker).length;
+  const footer = [{ text: nextLine(wakes.next, nowMs) }];
+  if (wakes.watching.length > 0) footer.push({ text: `watching: ${wakes.watching.map(watchText).join(", ")}` });
+  else if (workers > 0 && !covered(snapshot)) footer.push({ text: "unwatched: no standing watch on running workers", amber: true });
   return {
     header: [
       `${snapshot.project.name} · ${workers} worker${workers === 1 ? "" : "s"}`,
       snapshot.needs_you.length > 0 ? `${snapshot.needs_you.length} need you` : "",
-      next ?? "",
     ].filter(Boolean).join(" · "),
     rows,
     needsYou: snapshot.needs_you.map((t) => ({ id: String(t.id), slug: t.slug })),

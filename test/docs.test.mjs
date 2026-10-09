@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, globSync, readFileSync, readlinkSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import { parseRulePaths } from "../scripts/covering-rules.mjs";
 import { CLI, isolateTmux, registeredToolNames, runCli, scratchDirs, toolRegistrationsByFile } from "./helpers.mjs";
@@ -264,17 +264,17 @@ describe("docs keep up with the CLI", () => {
 });
 
 describe("docs enumerate every statusline hold label the CLI can print", () => {
-  const cli = readFileSync(CLI, "utf8");
+  const cli = readFileSync(join(dirname(CLI), "heldLabel.js"), "utf8");
 
   const DECLARED = (() => {
     const decl = /HELD_REASON_LABELS = \[([\s\S]*?)\]/.exec(cli);
-    assert.ok(decl, "HELD_REASON_LABELS not found in dist/cli.js");
+    assert.ok(decl, "HELD_REASON_LABELS not found in dist/heldLabel.js");
     return [...decl[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   })();
 
   const RETURNED = (() => {
     const fn = /function heldReasonLabel\([\s\S]*?\n\}/.exec(cli);
-    assert.ok(fn, "heldReasonLabel not found in dist/cli.js");
+    assert.ok(fn, "heldReasonLabel not found in dist/heldLabel.js");
     return [...fn[0].matchAll(/return "([^"]+)"/g)].map((m) => m[1]);
   })();
 

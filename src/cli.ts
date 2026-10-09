@@ -87,21 +87,16 @@ import {
   socketAwaitingWhere,
   dashboardFileContained,
   describeStall,
-  HELD_REASON_CONVERSATION,
-  HELD_REASON_LEAD_PANE_DEAD,
   HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
-  isLeadRowClosedHold,
-  isUnclassifiablePaneHold,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
-  isUnsubmittedInputHold,
   janitor,
   resolveDashboardFile,
   generateQueenDashboardNow,
   transcriptStaleness,
-  wasHeldForPaneIdentity,
 } from "./scheduler.js";
 import { readTurnCount } from "./turnCount.js";
 import { leadSessionEnded } from "./leadState.js";
+import { heldReasonLabel } from "./heldLabel.js";
 import { collectPortfolio, leadText, type PortfolioProject } from "./portfolio.js";
 import { STALL_BOUND_SECONDS } from "./backgroundTasks.js";
 import {
@@ -3573,24 +3568,6 @@ function cmdStatusline(): void {
     parts.push(`${color}turns ${turns}${color ? "\x1b[0m" : ""}`);
   }
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
-}
-
-// test/docs.test.mjs fails if a label here is missing from docs/install.md. It checks
-// presence only: docs/install.md also counts the set in prose, and nothing guards that number.
-export const HELD_REASON_LABELS = ["typing", "talking", "needs you", "blocked"] as const;
-
-export function heldReasonLabel(heldReason: string | null): (typeof HELD_REASON_LABELS)[number] {
-  if (isUnsubmittedInputHold(heldReason)) return "typing";
-  if (
-    heldReason === HELD_REASON_LEAD_PANE_DEAD ||
-    wasHeldForPaneIdentity(heldReason) ||
-    isLeadRowClosedHold(heldReason) ||
-    isUnclassifiablePaneHold(heldReason)
-  ) {
-    return "needs you";
-  }
-  if (heldReason === HELD_REASON_CONVERSATION) return "talking";
-  return "blocked";
 }
 
 function padSlug(name: string): string {
