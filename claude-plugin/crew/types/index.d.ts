@@ -3,6 +3,7 @@ export type Row = { key: string; color: string; id: string; slug: string; detail
 export type CrewView = {
   header: string
   rows: Row[]
+  needsLabel: string
   needsYou: { id: string; slug: string }[]
   footer: { text: string; amber?: boolean }[]
   error: string

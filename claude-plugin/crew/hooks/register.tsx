@@ -71,8 +71,8 @@ export const register: Register = on => {
           </Box>
         ))}
         <Text> </Text>
-        <Text bold color={c.needsYou.length ? 'red' : undefined}>needs you</Text>
-        {c.needsYou.length === 0 && <Text dimColor>  nothing</Text>}
+        <Text bold color={c.needsYou.length ? 'red' : undefined}>{c.needsLabel}</Text>
+        {c.needsYou.length === 0 && <Text dimColor>  none</Text>}
         {c.needsYou.map(t => <Text wrap="truncate-end">  {t.id} <Text dimColor>{t.slug}</Text></Text>)}
         <Text> </Text>
         {c.footer.map(line => <Text dimColor={!line.amber} color={line.amber ? 'yellow' : undefined} wrap="truncate-end">{line.text}</Text>)}

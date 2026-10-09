@@ -176,8 +176,13 @@ describe("buildCrewView", () => {
     assert.deepEqual(view.footer, [{ text: "next in 5m: check lanes" }, { text: "watching: all workers · standing" }]);
     const none = buildCrewView(snapshot(), null, NOW);
     assert.deepEqual(none.footer, [{ text: "next: none" }]);
-    assert.equal(view.header, "proj · 4 workers · 1 need you");
+    assert.equal(view.header, "proj · 4 workers · 1 todo for you");
     assert.equal(none.header, "proj · 0 workers");
+    assert.equal(view.needsLabel, "todos waiting on you (1)");
+    assert.equal(none.needsLabel, "todos waiting on you");
+    const several = buildCrewView(snapshot({ needs_you: [{ id: 1, slug: "a" }, { id: 2, slug: "b" }] }), null, NOW);
+    assert.equal(several.needsLabel, "todos waiting on you (2)");
+    assert.equal(several.header, "proj · 0 workers · 2 todos for you");
   });
 
   it("observed duration resets on session change", () => {
@@ -205,7 +210,7 @@ describe("next wake text", () => {
   it("next wake text appears exactly once across header and footer, in the footer, for wake-less and wake-bearing snapshots", () => {
     const wakeless = buildCrewView(snapshot({ needs_you: [{ id: 3, slug: "x" }] }), null, NOW);
     assert.deepEqual(wakeless.footer, [{ text: "next: none" }]);
-    assert.equal(wakeless.header, "proj · 0 workers · 1 need you");
+    assert.equal(wakeless.header, "proj · 0 workers · 1 todo for you");
     assert.equal(occurrences(wakeless, "next"), 1);
     const bearing = buildCrewView(wakeOf("check the lane", "2026-10-08T12:00:30.000Z"), null, NOW);
     assert.deepEqual(bearing.footer, [{ text: "next in 30s: check the lane" }]);
