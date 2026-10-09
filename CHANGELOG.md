@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.10.0 - 2026-10-09
+
+- New opt-in setting `lead_sidebar`. With `lead_sidebar: true` in `~/.hive/hive.yml` or a project's `hive.yml`, `hive lead` adds a crew pane to a Claude Code lead. The pane lists each running worker with its todo, state, current activity, run time and context use. It also lists todos tagged `needs-human` under "todos waiting on you", shows the next wake once in its footer, and warns in amber when workers are running with no standing watch. It is off unless you set it. Restart the lead after changing it. See [Crew sidebar](docs/crew.md).
+- New `hive crew --json` prints the same crew snapshot as read-only JSON. It writes nothing to the store.
+- `agent_spawn` records the worker's todo when you pass `todo_id`. If you omit it while a todo is in progress, the receipt says so, and the crew view links the worker to the todo it comments on. A worker that only writes a pad shows that pad instead.
+- The crew view labels what a worker is doing: testing, editing, reading, building, committing, reviewing or `running <command>`. For Codex workers it reads the tool calls inside `codex exec`, and a command that starts with `printf` or `echo` is labelled by the real command after it.
+- A lead that ended its session cleanly now shows as dormant, not dead, in `hive status`, `hive portfolio` and the queen dashboard. This also covers a lead that never received a typed prompt.
+- The queen dashboard shows the queen's own board, todos and pads below the portfolio. "Every project" and "Recent queen actions" now collapse, and the page remembers the choice across reloads. "Recent queen actions" moves to the end of the page.
+- The store migrates to schema 37 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.9.1 - 2026-10-08
 
 - With `quiet_messaging` on, a worker's `agent_send` to a running Claude Code lead now arrives as one dim `Message from @hive` row instead of typed text, the same way one-shot wakes do since 1.9.0. A message over 300 characters still arrives as a one-line pointer you read with `agent_message_get`. The send receipt says `pending` until the lead confirms it, and `agent_message_get` reports the delivery state. A message the lead does not confirm in time is typed into the pane once. With the setting off, nothing changes. See [Quiet messaging](docs/projects.md#quiet-messaging).
