@@ -150,3 +150,46 @@ describe("readRecentToolCalls", () => {
     assert.deepEqual(readRecentToolCalls("claude", worker(file)).calls.map((c) => c.at), ["2026-10-08T10:00:00Z", null]);
   });
 });
+
+const execCall = (input) => ({ type: "response_item", payload: { type: "custom_tool_call", name: "exec", input, call_id: "c1" } });
+const namesOf = (path) => readRecentToolCalls("codex", worker(path)).calls;
+
+describe("codex exec custom_tool_call unwrapping", () => {
+  it("exec yields exec_command as Bash with the parsed cmd, apply_patch, and mcp tools by tool name, in order", () => {
+    const file = join(scratch, "exec-inner.jsonl");
+    writeFileSync(file, lines(execCall([
+      "const a = await tools.mcp__hive__todo_get({todo_id:1});",
+      "const r=await tools.exec_command({workdir:\"/w\",cmd:\"npm test > \\\"x.log\\\" 2>&1\"});",
+      "await tools.apply_patch({input:\"*** Begin Patch\"});",
+      "await tools.write_stdin({session_id:1});",
+      "await tools.exec_command({cmd:'git status'}); text(r);",
+    ].join("\n"))));
+    const calls = namesOf(file);
+    assert.deepEqual(calls.map((c) => c.name), ["todo_get", "Bash", "apply_patch", "Bash"]);
+    assert.equal(calls[1].input.command, 'npm test > "x.log" 2>&1');
+    assert.equal(calls[3].input.command, "git status");
+  });
+
+  it("exec with no tools call or an unparseable cmd keeps today's behaviour or skips the call, never throws", () => {
+    const file = join(scratch, "exec-odd.jsonl");
+    writeFileSync(file, lines(
+      execCall("text(ALL_TOOLS.length);"),
+      execCall("await tools.exec_command({cmd: `template ${x}`});"),
+      execCall("await tools.exec_command({cmd:\"unterminated"),
+      execCall("await tools.exec_command({cmd:\"\\u12\"}); tools.exec_command(((("),
+      { type: "response_item", payload: { type: "custom_tool_call", name: "exec", input: 5 } },
+    ));
+    const calls = namesOf(file);
+    assert.deepEqual(calls.map((c) => c.name), ["exec", "exec"], "no tools call falls back to exec; unparseable cmds are skipped");
+    assert.deepEqual(calls[0].input, { input: "text(ALL_TOOLS.length);" });
+  });
+
+  it("function_call sleep is skipped like write_stdin so the label of the waited-on command stays", () => {
+    const file = join(scratch, "sleep.jsonl");
+    writeFileSync(file, lines(
+      codexCall("exec_command", { cmd: "npm test" }),
+      { type: "response_item", payload: { type: "function_call", name: "sleep", namespace: "clock", arguments: "{\"duration_ms\":30000}" } },
+    ));
+    assert.deepEqual(namesOf(file).map((c) => c.name), ["Bash"]);
+  });
+});

@@ -523,6 +523,30 @@ describe("review marker end to end", () => {
   });
 });
 
+describe("codex exec wrapper classification", () => {
+  const execRecord = (input) => ({ type: "response_item", timestamp: "2026-10-08T11:00:00Z", payload: { type: "custom_tool_call", name: "exec", input, call_id: "c1" } });
+  const labelFor = (name, ...records) => {
+    const file = join(dirs.tmp, `${name}.jsonl`);
+    writeFileSync(file, jsonl(...records));
+    return classifyActivity(readRecentToolCalls("codex", codexWorker(file)).calls, {}).label;
+  };
+
+  it("an exec-wrapped npm test classifies testing, apply_patch editing, todo_get reading", () => {
+    assert.equal(labelFor("x-test", execRecord('const r=await tools.exec_command({cmd:"npm test > run.log 2>&1",workdir:"/w"}); text(JSON.stringify(r));')), "testing");
+    assert.equal(labelFor("x-patch", execRecord('await tools.apply_patch({input:"*** Begin Patch"});')), "editing");
+    assert.equal(labelFor("x-mcp", execRecord("const r = await tools.mcp__hive__todo_get({todo_id:1}); text(r);")), "reading");
+  });
+
+  it("write_stdin and sleep after an exec-wrapped npm test keep testing", () => {
+    assert.equal(labelFor(
+      "x-wait",
+      execRecord('await tools.exec_command({cmd:"npm test"});'),
+      execRecord("await tools.write_stdin({session_id:1,chars:\"\"});"),
+      { type: "response_item", payload: { type: "function_call", name: "sleep", arguments: "{}" } },
+    ), "testing");
+  });
+});
+
 describe("activity timing", () => {
   const at = (n) => `2026-10-08T10:00:${String(n).padStart(2, "0")}.000Z`;
 
