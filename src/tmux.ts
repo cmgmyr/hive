@@ -453,7 +453,7 @@ export function targetLiveProbe(target: string): PaneProbe {
     const rows = tmux("list-panes", "-t", target, "-F", "#{pane_id} #{pane_pid}")
       .split("\n")
       .map((line) => line.split(" "));
-    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] ?? null) : null;
+    const pid = isPaneTarget(target) ? (rows.find(([id]) => id === target)?.[1] || null) : null;
     return { live: true, pid };
   } catch (e) {
     return { live: tmuxSaysNothingThere(e) ? false : null, pid: null };
