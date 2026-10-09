@@ -66,6 +66,7 @@ function workerRow(lane, snapshot, nowMs, memory, nextMemory) {
   else {
     const since = state === "blocked" ? null : w.state_changed_at;
     head.push(`${state} ${duration(w, { label: state, since, lower_bound: false }, nowMs, memory, nextMemory)}`);
+    if (state !== "blocked" && w.activity?.label) head.push(w.activity.label);
   }
   const tail = [ago(w.age_seconds)];
   if (w.commits_ahead !== null && w.commits_ahead !== undefined) tail.push(`+${w.commits_ahead} commits`);

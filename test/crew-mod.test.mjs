@@ -167,7 +167,7 @@ describe("buildCrewView", () => {
     assert.equal(amberOf(hot), true);
     assert.equal(amberOf(cool), false);
     assert.equal(turn.color, "yellow");
-    assert.match(turn.detail, /^opus · your turn 10m · ctx \? · /);
+    assert.match(turn.detail, /^opus · your turn 10m · idle · ctx \? · /);
     assert.equal(amberOf(turn), false);
     assert.equal(dialog.color, "red");
     assert.match(dialog.detail, /^opus · blocked ~0s · ctx 41% · /);
@@ -183,6 +183,28 @@ describe("buildCrewView", () => {
     const several = buildCrewView(snapshot({ needs_you: [{ id: 1, slug: "a" }, { id: 2, slug: "b" }] }), null, NOW);
     assert.equal(several.needsLabel, "todos waiting on you (2)");
     assert.equal(several.header, "proj · 0 workers · 2 todos for you");
+  });
+
+  it("your-turn and waiting rows show activity while blocked or missing activity rows do not", () => {
+    const view = buildCrewView(
+      snapshot({
+        lanes: [
+          lane(todoOf(1, "turn"), worker({ state: "idle", your_turn: true })),
+          lane(todoOf(2, "waiting"), worker({ state: "waiting" })),
+          lane(todoOf(3, "blocked"), worker({ state: "blocked" })),
+          lane(todoOf(4, "absent"), worker({ state: "idle", activity: null })),
+          lane(todoOf(5, "empty"), worker({ state: "idle", activity: activity({ label: "" }) })),
+        ],
+      }),
+      null,
+      NOW,
+    );
+
+    assert.match(view.rows[0].detail, /^opus · your turn 10m · editing · ctx /);
+    assert.match(view.rows[1].detail, /^opus · waiting 10m · editing · ctx /);
+    assert.match(view.rows[2].detail, /^opus · blocked ~0s · ctx /);
+    assert.match(view.rows[3].detail, /^opus · idle 10m · ctx /);
+    assert.match(view.rows[4].detail, /^opus · idle 10m · ctx /);
   });
 
   it("observed duration resets on session change", () => {
