@@ -22,6 +22,7 @@ import {
   rowLive,
   sessionName,
   setPaneTitle,
+  setRemainOnExit,
   makeProcessesWindow,
   tmux,
   tmuxSocketPath,
@@ -239,6 +240,7 @@ function placeAgentPane(
   envFlags: string[],
   commandString: string,
   title: string,
+  onRetainArmed: (window: string) => void = () => {},
 ): { target: string; pid: string; landedInProjectId: number | null; layoutApplied: boolean; inProcessesWindow: boolean } {
   let landedInProjectId: number | null = null;
   let layoutApplied = false;
@@ -263,6 +265,7 @@ function placeAgentPane(
         ...(spec.retainOnExit ? retainOnExitArgs(window) : []),
       ).split("\t");
       pid = created;
+      if (spec.retainOnExit) onRetainArmed(window);
       applyLayout(window, layout);
       layoutApplied = true;
       return pane;
@@ -278,6 +281,7 @@ function placeAgentPane(
           spec.retainOnExit ?? false,
         );
         pid = made.pid;
+        if (spec.retainOnExit) onRetainArmed(made.window);
         makeProcessesWindow(made.window, spec.projectId);
         pane = made.pane;
       }
@@ -299,6 +303,7 @@ function placeAgentPane(
       spec.retainOnExit ?? false,
     );
     pid = made.pid;
+    if (spec.retainOnExit) onRetainArmed(made.window);
     return made.pane;
   });
   return { target, pid, landedInProjectId, layoutApplied, inProcessesWindow };
@@ -311,6 +316,7 @@ export function launchAgent(spec: LaunchSpec): {
   landedInProjectId: number | null;
   layoutApplied: boolean;
   inProcessesWindow: boolean;
+  retainedWindow: string | null;
 } {
 
   if (untrustedTmuxServer()) throw crossServerRefusal("spawn");
@@ -349,6 +355,7 @@ export function launchAgent(spec: LaunchSpec): {
   const actorId = `${spec.kind}:${agentId}`;
 
   let paneUp = false;
+  let retainedWindow: string | null = null;
   try {
     const commandString =
       typeof spec.commandString === "string" ? spec.commandString : spec.commandString({ agentId, actorId });
@@ -365,7 +372,9 @@ export function launchAgent(spec: LaunchSpec): {
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const placed = placeAgentPane(session, spec, envFlags, commandString, title);
+    const placed = placeAgentPane(session, spec, envFlags, commandString, title, (window) => {
+      retainedWindow = window;
+    });
     const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
     const pid = createdPidOrDiscard(target, placed.pid);
     paneUp = true;
@@ -374,8 +383,9 @@ export function launchAgent(spec: LaunchSpec): {
       discardOrphanedPane(target);
       throw paneRacedRetirement(agentId);
     }
-    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow };
+    return { agentId, actorId, target, landedInProjectId, layoutApplied, inProcessesWindow, retainedWindow };
   } catch (e) {
+    if (retainedWindow) setRemainOnExit(retainedWindow, false);
     if (paneUp) throw e;
     db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
     throw e;

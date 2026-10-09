@@ -79,7 +79,6 @@ import {
   ownershipLiveness,
   paneCurrentCommand,
   paneInCopyMode,
-  paneWindow,
   pollPaneReadiness,
   rowLive,
   rowOwnership,
@@ -838,46 +837,45 @@ export function registerAgents(server: McpServer): void {
           if (codexHomeKey) rmSync(codexHomeDir(codexHomeKey), { recursive: true, force: true });
           throw e;
         }
-        const { agentId, actorId, target, landedInProjectId, layoutApplied } = spawned;
-        ensureAttached(sessionName());
+        const { agentId, actorId, target, landedInProjectId, layoutApplied, retainedWindow } = spawned;
 
         let ready = false;
         let dialogTail: string | undefined;
         let exited = false;
         let exitTail: string | undefined;
-        if (harness.classifiesPaneScreen) {
-          const classifier = harness.paneClassifier!;
-          // Captured before anything below can kill the pane: remain-on-exit is a WINDOW option,
-          // and the pane id itself stops being addressable once discardOrphanedPane has run.
-          const windowTarget = paneWindow(target) ?? target;
-          try {
-            const outcome = await pollPaneReadiness(target, PANE_READY_MS, classifier.hasInputBox);
-            if (outcome === "gone") {
-              // remain-on-exit held the pane so its final screen is still readable; capture it,
-              // persist it onto the row (the pane below is about to be killed), then release it.
-              // Never run choiceCheck against a retained-but-dead pane: it is frozen content, not
-              // a live dialog, and choiceCheck's own capture is tuned to read a live screen.
-              exited = true;
-              exitTail = captureFinalScreen(target, 30);
-              db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(exitTail, agentId);
-              discardOrphanedPane(target);
-            } else {
-              const { awaitingChoice, tail } = classifier.choiceCheck(target);
-              if (awaitingChoice === true) {
-                dialogTail = tail;
-              } else if (outcome === "ready") {
-                ready = true;
+        try {
+          ensureAttached(sessionName());
+          if (harness.classifiesPaneScreen) {
+            const classifier = harness.paneClassifier!;
+            try {
+              const outcome = await pollPaneReadiness(target, PANE_READY_MS, classifier.hasInputBox);
+              if (outcome === "gone") {
+                // remain-on-exit held the pane so its final screen is still readable; capture it,
+                // persist it onto the row (the pane below is about to be killed), then release it.
+                // Never run choiceCheck against a retained-but-dead pane: it is frozen content, not
+                // a live dialog, and choiceCheck's own capture is tuned to read a live screen.
+                exited = true;
+                exitTail = captureFinalScreen(target, 30);
+                db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(exitTail, agentId);
+                discardOrphanedPane(target);
+              } else {
+                const { awaitingChoice, tail } = classifier.choiceCheck(target);
+                if (awaitingChoice === true) {
+                  dialogTail = tail;
+                } else if (outcome === "ready") {
+                  ready = true;
+                }
               }
-            }
-          } catch {
+            } catch {
 
-            ready = false;
-          } finally {
-            // Unconditional: every early return, throw, or timeout between arming remain-on-exit
-            // and here must still clear it, or the shared window (the default split placement's)
-            // is left silently retaining every later exit in it, not just this one.
-            setRemainOnExit(windowTarget, false);
+              ready = false;
+            }
           }
+        } finally {
+          // Unconditional: every early return, throw, or timeout between arming remain-on-exit
+          // and here must still clear it, or the shared window (the default split placement's)
+          // is left silently retaining every later exit in it, not just this one.
+          if (retainedWindow) setRemainOnExit(retainedWindow, false);
         }
 
         const codexInstructions = codexHomeKey ? codexInstructionsPhrase(codexInstructionLayers) : undefined;
