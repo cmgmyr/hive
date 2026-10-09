@@ -224,6 +224,41 @@ describe("renderQueenDashboard", () => {
     assert.match(hostile, /<span class="proj">project #777<\/span>/);
   });
 
+  it("every project card is a details element open by default", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.match(html, /<details class="card d-grid" id="queen-every-project" open><summary class="card-head"><h2>Every project /);
+    assert.equal(count(html, 'id="queen-every-project"'), 1);
+  });
+
+  it("recent queen actions card is a details element open by default", () => {
+    const row = { id: 1, actor_id: "a", home_project_id: 9, target_project_id: 1, operation: "todo_comment", resource_type: "todo", resource_id: 42, summary: "s", created_at: "2026-09-29 11:00:00" };
+    for (const audit of [[], [row]]) {
+      const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks, audit);
+      assert.match(html, /<details class="card c-audit" id="queen-recent-actions" open><summary class="card-head"><h2>Recent queen actions<\/h2>/);
+      assert.equal(count(html, 'id="queen-recent-actions"'), 1);
+    }
+  });
+
+  it("recent queen actions renders after the queen home project", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks, [], 1);
+    const home = html.indexOf('<div class="home">');
+    assert.ok(home > 0, "home block missing");
+    assert.ok(html.indexOf('class="card c-audit"') > home, "audit card precedes the home block");
+    assert.ok(html.indexOf('id="queen-every-project"') < home);
+  });
+
+  it("recent queen actions renders last without a queen home project", () => {
+    const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
+    assert.ok(!html.includes('<div class="home">'));
+    assert.ok(html.indexOf('class="card c-audit"') > html.indexOf('id="queen-every-project"'));
+    assert.ok(html.indexOf('class="card c-audit"') > html.indexOf('class="grid"'));
+  });
+
+  it("renders neither collapsible card with zero projects", () => {
+    const html = renderQueenDashboard(report([]), { kind: "missing" }, noLinks, [], 1);
+    assert.ok(!html.includes("queen-every-project") && !html.includes("queen-recent-actions"));
+  });
+
   it("shows an empty state line when there are no queen actions", () => {
     const html = renderQueenDashboard(report([proj(1, "moving")]), { kind: "missing" }, noLinks);
     assert.match(html, /No queen actions recorded yet/);
