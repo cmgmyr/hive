@@ -16,6 +16,7 @@ const { db, migrate } = await import("../dist/db.js");
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { parseQueenBrief, readQueenBrief, renderQueenDashboard, QUEEN_BRIEF_KEY } = await import("../dist/queenDashboard.js");
+const { renderDashboard } = await import("../dist/dashboard.js");
 const { tick, generateQueenDashboardNow } = await import("../dist/scheduler.js");
 
 after(() => {
@@ -388,7 +389,7 @@ describe("renderQueenDashboard", () => {
 
   it("starts the reload timer by default, stops it when stored off, and re-arms on toggle", () => {
     const html = renderQueenDashboard(report(oneEach()), { kind: "missing" }, noLinks);
-    const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+    const script = html.match(/<script>([\s\S]*)<\/script>/)[1].split("\n(function () {\n  function onActivity")[0];
     const run = (stored) => {
       const timers = [];
       const listeners = {};
@@ -432,6 +433,75 @@ describe("renderQueenDashboard", () => {
     assert.doesNotMatch(viaSymlink, /<a class="proj"/, "a .hive symlinked outside the project root must not be linked");
     const without = renderQueenDashboard(report([proj(1, "quiet", { root: join(dirs.tmp, "nolink") })]), { kind: "missing" });
     assert.doesNotMatch(without, /<a class="proj"/);
+  });
+});
+
+describe("renderQueenDashboard home project sections", () => {
+  const sectionOf = (html, id) => html.match(new RegExp(`<details class="section" id="section-${id}"[\\s\\S]*?</details></div></details>|<details class="section" id="section-${id}"[\\s\\S]*?(?=<details class="section"|$)`))?.[0] ?? "";
+  const mkProject = (name) => {
+    const dir = join(dirs.tmp, name);
+    mkdirSync(dir, { recursive: true });
+    return addProject(dir, name);
+  };
+  const seedPad = (pid, name, content) => db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, ?)").run(pid, name, content);
+  const seedTodo = (pid, title, status = "open") =>
+    db.prepare("INSERT INTO todos (project_id, title, priority, status, body, slug) VALUES (?, ?, 'medium', ?, '', '') RETURNING id").get(pid, title, status).id;
+  const render = (id) => renderQueenDashboard(report([proj(1, "quiet")]), { kind: "missing" }, noLinks, [], id);
+
+  it("renders the queen home project's Board, Pads and Todos below the portfolio", () => {
+    const q = mkProject("home-sections-q");
+    seedPad(q.id, "board", "WIND-DOWN: tomorrow we stop");
+    seedPad(q.id, "plan", "plan pad text");
+    seedPad(q.id, "notes", "notes pad text");
+    const blocker = seedTodo(q.id, "the blocker");
+    const blocked = seedTodo(q.id, "blocked work");
+    seedTodo(q.id, "finished work", "completed");
+    db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(blocked, blocker);
+    const html = render(q.id);
+    assert.ok(html.indexOf('id="section-board"') > html.indexOf('class="d-grid'), "sections sit below the portfolio");
+    assert.match(sectionOf(html, "board"), /WIND-DOWN: tomorrow we stop/);
+    const pads = sectionOf(html, "pads");
+    assert.match(pads, /2 pads/);
+    assert.match(pads, /id="pad-plan"/);
+    assert.match(pads, /id="pad-notes"/);
+    assert.doesNotMatch(pads, /WIND-DOWN/, "the board is not repeated in Pads");
+    const todos = sectionOf(html, "todos");
+    assert.match(todos, /2 open, 1 blocked/);
+    assert.match(todos, /blocked work/);
+    assert.match(todos, /chip-blocked/);
+    assert.doesNotMatch(todos, /finished work/);
+  });
+
+  it("an empty queen project renders the project dashboard's own empty states", () => {
+    const q = mkProject("home-sections-empty-q");
+    const project = renderDashboard(q.id);
+    const queen = render(q.id);
+    for (const id of ["board", "todos", "pads"]) {
+      const want = sectionOf(project, id).match(/<div class="empty">[\s\S]*?<\/div>/)?.[0];
+      assert.ok(want, `${id}: the project dashboard shows an empty state`);
+      assert.ok(sectionOf(queen, id).includes(want), `${id}: the queen page shows the identical empty state`);
+    }
+  });
+
+  it("reads only the queen's own project, never another project's board", () => {
+    const q = mkProject("home-sections-own-q");
+    const other = mkProject("home-sections-own-other");
+    seedPad(other.id, "board", "OTHER PROJECT BOARD");
+    seedTodo(other.id, "other project todo");
+    const html = render(q.id);
+    assert.doesNotMatch(html, /OTHER PROJECT BOARD|other project todo/);
+  });
+
+  it("emits no sections without a queen home id, and keeps one script element carrying the state restore", () => {
+    assert.doesNotMatch(render(null), /id="section-board"/);
+    const q = mkProject("home-sections-script-q");
+    seedTodo(q.id, "filterable");
+    const html = render(q.id);
+    assert.equal(count(html, "<script"), 1);
+    assert.match(html, /hive-queen-state/);
+    assert.match(html, /id="todo-filter"/);
+    assert.match(html, /id="i-inbox"/, "the icon sprite the sections reference is on the page");
+    assert.match(html, /id="autoreload"/);
   });
 });
 

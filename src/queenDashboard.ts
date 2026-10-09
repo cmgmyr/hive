@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { db } from "./db.js";
+import { SECTION_STYLE, SPRITE, renderBoardPadsTodos, sectionScript } from "./dashboard.js";
 import type { QueenAuditRow } from "./queenAudit.js";
 import type { PortfolioLane, PortfolioProject, PortfolioReason, PortfolioReport } from "./portfolio.js";
 
@@ -397,7 +398,7 @@ function briefSection(
   );
 }
 
-const CSS = `
+const CSS = `${SECTION_STYLE}
 :root { color-scheme: light;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -409,7 +410,7 @@ const CSS = `
   --accent: #1f5fd0; --focus: #1f5fd0; --hover: #f1f4f8;
   --shadow: 0 1px 2px rgba(19, 26, 38, 0.06), 0 2px 8px rgba(19, 26, 38, 0.05);
   --card-border: transparent; --r-card: 14px; --r-ctl: 9px; --r-pill: 999px;
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); }
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --header-offset: 5rem; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) { color-scheme: dark;
     --bg: #101317; --panel: #171b21; --panel-sunken: #1c2129;
@@ -544,10 +545,12 @@ a.sub:hover { color: var(--accent); text-decoration: underline; text-underline-o
 .audit-op { font-weight: 600; }
 .audit-sum { color: var(--fg-muted); min-width: 0; overflow-wrap: anywhere; }
 .d-grid { margin-top: 1.5rem; }
+.home { margin-top: 1.5rem; }
+.home-head { padding: 0 0.2rem 0.6rem; }
 .d-grid .g-row:not(.g-head) { box-shadow: inset 3px 0 0 var(--lane, transparent); }
 .d-grid .g-row { scroll-margin-top: 6rem; transition: background-color 600ms ease; }
 .d-grid .g-row.is-flash { background: var(--live-bg); transition: none; }
-.empty { margin-top: 1.25rem; padding: 1.25rem 1.1rem; color: var(--fg-muted); }
+.no-projects { margin-top: 1.25rem; padding: 1.25rem 1.1rem; color: var(--fg-muted); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
@@ -569,6 +572,11 @@ const SCRIPT = `(function () {
     row.classList.add("is-flash");
     setTimeout(function () { row.classList.remove("is-flash"); }, 900);
   });
+})();`;
+
+const SECTIONS_SCRIPT = `(function () {
+  function onActivity() {}
+${sectionScript("hive-queen-state")}
 })();`;
 
 const MARK =
@@ -630,26 +638,33 @@ export function renderQueenDashboard(
     );
   }).join("");
 
+  const home =
+    queenHomeId === null
+      ? ""
+      : `<div class="home"><div class="home-head"><h2>Queen home project</h2></div>${renderBoardPadsTodos(queenHomeId)}</div>`;
+
   const main =
     n === 0
-      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card empty"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
+      ? `${briefSection(briefState, report, href, queenHomeId)}<section class="card no-projects"><h2>No projects registered</h2><p>Run <code>hive lead</code> in a project folder to register it, and it will appear here.</p></section>`
       : `${briefSection(briefState, report, href, queenHomeId)}<div class="lanes">${lanes}</div>` +
         `<section class="card d-grid"><div class="card-head"><h2>Every project <span class="count">${n}</span></h2>` +
         '<span class="card-sub">in lane order; a name opens that project’s dashboard</span></div>' +
         `<div class="grid" role="table">${GRID_HEAD}${ordered.map((p) => gridRow(p, asOf, href)).join("")}</div>` +
         '<p class="freshnote">Every row here is read from the store when the page is written. Only the picks are written by a model, which is why they carry a time.</p></section>' +
         auditSection(audit, report);
+  const page = main + home;
 
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
     '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">' +
     `<title>All projects</title><style>${CSS}</style></head><body>` +
+    SPRITE +
     `<svg style="position:absolute;width:0;height:0" aria-hidden="true"><defs>${MARK}</defs></svg>` +
-    '<header class="topbar"><div class="wrap topbar-inner"><div class="brand">' +
+    '<header class="topbar" id="topbar"><div class="wrap topbar-inner"><div class="brand">' +
     '<svg class="mark" role="img" aria-label="hive"><use href="#mark"/></svg><div><h1>All projects</h1>' +
     `<p class="generated" ${QUEEN_GENERATED_MARKER}>Live rows as of ${esc(asOf)} UTC. ${n} project${n === 1 ? "" : "s"} on this machine.</p></div></div>` +
     '<label class="live-toggle" title="Off stops this page reloading. The scheduler still rewrites the file.">' +
     '<input type="checkbox" id="autoreload"> Reload every minute</label></div></header>' +
-    `<main class="wrap">${main}</main><script>${SCRIPT}</script></body></html>\n`
+    `<main class="wrap">${page}</main><script>${SCRIPT}\n${SECTIONS_SCRIPT}</script></body></html>\n`
   );
 }

@@ -136,12 +136,13 @@ The queen has its own dashboard, separate from the [per-project dashboard](dashb
 
 `hive queen` writes it once at start, and the scheduler rewrites it when the content changes. On macOS `hive queen` opens it in your browser, and it opens at most once per interval, the same throttle a project dashboard uses. `--no-dashboard` skips the open.
 
-The page is titled "All projects". It shows:
+The page is titled "All projects". It reloads every minute, and it keeps which sections are open, your scroll position and the todo filter across a reload. It shows:
 
 - A "Picks today" card from the queen's brief, with a "Since the brief" line naming projects that changed lane after it was written.
 - One section per lane, in the order waiting on you, stuck, moving, quiet. Active projects are cards with their reasons, lead state and workers; quiet ones are a short list. A project name opens that project's own dashboard when it has one.
 - An "Every project" grid with one row per project.
 - A "Recent queen actions" card from the audit trail.
+- The queen home project's own Board, Todos and Pads sections, below the portfolio. They are the same sections the [per-project dashboard](dashboard.md) draws, with the same empty states, and they read only the queen's own project, not every project's. A project's board and todos live on that project's dashboard, which its card links to.
 
 The brief is the one piece of content the queen writes for the page. It is a JSON value in the queen home's kv under the key `queen:brief`, written with `kv_set`. The page reads it and shows "No queen brief yet." when the key is missing, and a plain error line when the value does not parse:
 
