@@ -134,7 +134,7 @@ The `post_tool_use` branch (`src/hook.ts:288-315`) runs before the ordinary stat
 
 ### Lead auto-handoff
 
-With `lead_turn_budget.auto_handoff: true`, a Claude lead past its turn budget is replaced by a fresh session in the same pane and on the same lead row, so its wakes, workers and standing watches carry over. The lead's own MCP server decides when (`driveLeadHandoff`, `src/leadHandoff.ts:485`), one request per (lead, pane pid, session) epoch. Each pass loosens what counts as a quiet moment (`passPolicy`, `src/leadHandoff.ts:43`).
+With `lead_turn_budget.auto_handoff: true`, a Claude lead past its turn budget is replaced by a fresh session in the same pane and on the same lead row, so its wakes, workers and standing watches carry over. The lead's own MCP server decides when (`driveLeadHandoff`, `src/leadHandoff.ts:486`), one request per (lead, pane pid, session) epoch. Each pass loosens what counts as a quiet moment (`passPolicy`, `src/leadHandoff.ts:43`).
 
 ```mermaid
 stateDiagram-v2
@@ -155,7 +155,7 @@ stateDiagram-v2
 
 Every server holds automated lead deliveries through one predicate (`readHandoffGate`, `src/leadHandoff.ts:133`; `handoffHoldsWake`, `src/leadHandoff.ts:146`), checked before a held notice can age out (`fireDelay`, `src/scheduler.ts:2300`) and before a message's pane fallback (`paneFallback`, `src/leadMessageDelivery.ts:248`). Respawn safety is separate from idleness: any live background task, a Stop without evidence, or a prompt newer than the last Stop vetoes it. Live subagents count through the Stop payload's `background_tasks`, because a lead's hooks receive no SubagentStart or SubagentStop (`backgroundVeto`, `src/leadHandoff.ts:195`). The store enforces the same hold for every build: trigger `fence_handoff_held_claim` (`src/db.ts:527`) makes any build's claim of a held lead's wake change no row, so a server built before the handoff feature cannot claim a wake for a held lead. `agent_messages` are not fenced, and a claim won before the hold starts still delivers.
 
-The lead writes the `hive-lead-handoff` pad and runs `hive lead-handoff` (`cmdLeadHandoff`, `src/leadHandoff.ts:654`), which hands the grace to one detached owner (`runHandoffGrace`, `src/leadHandoff.ts:845`). That owner respawns the pane into a bootstrap that publishes the new pid by CAS and then execs Claude (`runHandoffStart`, `src/leadHandoff.ts:934`), launched the way `hive lead` launches it (`appendClaudeLeadArgs`, `src/leadLaunch.ts:44`). The successor's SessionStart carries the pad in full (`handoffInjection`, `src/leadHandoff.ts:988`), and its first completed turn archives that exact revision (`completeHandoffOnStop`, `src/leadHandoff.ts:1072`).
+The lead writes the `hive-lead-handoff` pad and runs `hive lead-handoff` (`cmdLeadHandoff`, `src/leadHandoff.ts:655`), which hands the grace to one detached owner (`runHandoffGrace`, `src/leadHandoff.ts:846`). That owner respawns the pane into a bootstrap that publishes the new pid by CAS and then execs Claude (`runHandoffStart`, `src/leadHandoff.ts:935`), launched the way `hive lead` launches it (`appendClaudeLeadArgs`, `src/leadLaunch.ts:44`). The successor's SessionStart carries the pad in full (`handoffInjection`, `src/leadHandoff.ts:989`), and its first completed turn archives that exact revision (`completeHandoffOnStop`, `src/leadHandoff.ts:1073`).
 
 ## 6. Identity and project scoping
 
