@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { db } from "./db.js";
 import { harnessFor } from "./harnesses.js";
 import { type LeadSafetySnapshot, type LeadTurnState, readLeadSafetySnapshot } from "./leadState.js";
@@ -5,6 +6,8 @@ import type { LeadTurnBudget } from "./projectYml.js";
 import { readTurnCount } from "./turnCount.js";
 
 export const HANDOFF_PAD_NAME = "hive-lead-handoff";
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 export type HandoffReason = "warn" | "stop";
 export type HandoffState =
@@ -67,6 +70,9 @@ export interface HandoffRow {
   human_prompt_baseline: number | null;
   pad_id: number | null;
   pad_revision: number | null;
+  pad_length: number | null;
+  pad_sha256: string | null;
+  respawn_claimed_at: string | null;
   predecessor_turns: number | null;
   hold_since: string | null;
   hold_released_at: string | null;
@@ -699,6 +705,8 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
       human_prompt_baseline: snapshot!.human_prompt_seq,
       pad_id: pad!.id,
       pad_revision: pad!.revision,
+      pad_length: pad!.content.length,
+      pad_sha256: sha256(pad!.content),
       predecessor_turns: readTurnCount(snapshot!.transcript_path),
       hold_since: row.hold_since ?? nowSql(),
       hold_released_at: null,
@@ -908,7 +916,7 @@ async function graceLoop(argv: string[]): Promise<number> {
       });
       return 0;
     }
-    if (!casHandoff(row.id, ["grace"], { state: "respawning", owner_pid: process.pid }, { attempt, owner_token: token })) return 0;
+    if (!casHandoff(row.id, ["grace"], { state: "respawning", owner_pid: process.pid, respawn_claimed_at: nowSql() }, { attempt, owner_token: token })) return 0;
     try {
       tmux("respawn-pane", "-k", "-t", row.pane_target, "-c", lead!.path, ...launch.env, launch.launch);
     } catch (e) {
@@ -987,8 +995,13 @@ export function handoffInjection(leadActor: string): string | null {
     .get(lead.project_id, HANDOFF_PAD_NAME) as { id: number; revision: number; content: string; updated_at: string } | undefined;
   if (pad === undefined) return null;
   const row = db
-    .prepare("SELECT * FROM lead_handoffs WHERE lead_agent_id = ? ORDER BY id DESC LIMIT 1")
-    .get(lead.id) as HandoffRow | undefined;
+    .prepare(
+      `SELECT * FROM lead_handoffs WHERE lead_agent_id = ? AND pad_id = ?
+         AND (state IN ('started', 'ambiguous') OR (state = 'failed' AND respawn_claimed_at IS NOT NULL))
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(lead.id, pad.id) as HandoffRow | undefined;
+  if (row === undefined) return null;
   const workers = db
     .prepare("SELECT name, agent_state FROM agents WHERE project_id = ? AND kind = 'agent' AND status = 'running' ORDER BY id")
     .all(lead.project_id) as { name: string; agent_state: string }[];
@@ -1008,7 +1021,7 @@ export function handoffInjection(leadActor: string): string | null {
       .get(lead.id) as { n: number }
   ).n;
   const lines = [`[hive] LEAD HANDOFF: pad "${HANDOFF_PAD_NAME}" #${pad.id} revision ${pad.revision}, written ${pad.updated_at} UTC.`];
-  if (row !== undefined && row.pad_id === pad.id) {
+  {
     lines.push(
       `Handed off by session ${row.predecessor_session_id} at turn ${row.predecessor_turns ?? "?"} (${row.reason}, pass ${row.pass})` +
         `${row.started_at ? ` at ${row.started_at} UTC` : ""}; handoff #${row.id} is ${row.state}.`,
@@ -1017,30 +1030,42 @@ export function handoffInjection(leadActor: string): string | null {
   lines.push(
     workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
     `Wakes pending for this lead: ${pending}. Held for the handoff and released to you now: ${heldWakes} wake(s), ${heldMessages} message(s).`,
-    `hive archives this pad after your first completed turn. In your next turn append one line to it with ` +
-      `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`,
+    row.state === "started"
+      ? `hive archives this pad after your first completed turn. Then append one line to it with ` +
+        `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`
+      : `This handoff did not complete (${row.state}${row.failure ? `: ${row.failure}` : ""}), so hive will not archive the pad; ` +
+        `archive it with pad_archive(pad_id: ${pad.id}) once you have taken it over.`,
     "",
     pad.content,
   );
   return lines.join("\n");
 }
 
+// An appended line (the successor's gaps note) keeps the delivered text as a prefix and still archives.
+function stillDelivered(row: HandoffRow): { revision: number } | null {
+  if (row.pad_id === null || row.pad_revision === null || row.pad_length === null || row.pad_sha256 === null) return null;
+  const pad = readPad(row.pad_id);
+  if (pad === undefined || pad.archived !== 0 || pad.name !== HANDOFF_PAD_NAME || pad.revision < row.pad_revision) return null;
+  return sha256(pad.content.slice(0, row.pad_length)) === row.pad_sha256 ? { revision: pad.revision } : null;
+}
+
 const completeTransaction = db.transaction((row: HandoffRow, sessionId: string): void => {
+  const current = stillDelivered(row);
   const archived =
-    row.pad_id !== null &&
+    current !== null &&
     db
       .prepare(
         `UPDATE pads SET archived = 1, revision = revision + 1, updated_by = 'hive', updated_at = datetime('now')
           WHERE id = ? AND revision = ? AND archived = 0 AND name = ?`,
       )
-      .run(row.pad_id, row.pad_revision, HANDOFF_PAD_NAME).changes === 1;
+      .run(row.pad_id, current.revision, HANDOFF_PAD_NAME).changes === 1;
   casHandoff(row.id, ["started"], {
     state: "completed",
     successor_session_id: sessionId,
     completed_at: nowSql(),
     delivered_pad_id: archived ? row.pad_id : null,
     delivered_pad_revision: archived ? row.pad_revision : null,
-    failure: archived ? null : "the handoff pad changed after the command, so it was left active",
+    failure: archived ? null : "the delivered handoff text was edited after the command, so the pad was left active",
   });
 });
 

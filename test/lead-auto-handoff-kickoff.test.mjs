@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
@@ -37,10 +38,10 @@ function seed({ padContent = BIG } = {}) {
   const id = db
     .prepare(
       `INSERT INTO lead_handoffs (project_id, lead_agent_id, pane_target, predecessor_pane_pid, predecessor_session_id, reason, state,
-         pass, pad_id, pad_revision, predecessor_turns, successor_pane_pid, started_at)
-       VALUES (?, ?, '%1', '100', ?, 'stop', 'started', 2, ?, ?, 612, '200', datetime('now')) RETURNING id`,
+         pass, pad_id, pad_revision, pad_length, pad_sha256, respawn_claimed_at, predecessor_turns, successor_pane_pid, started_at)
+       VALUES (?, ?, '%1', '100', ?, 'stop', 'started', 2, ?, ?, ?, ?, datetime('now'), 612, '200', datetime('now')) RETURNING id`,
     )
-    .get(project, lead.id, PREDECESSOR, pad.id, pad.revision).id;
+    .get(project, lead.id, PREDECESSOR, pad.id, pad.revision, padContent.length, createHash("sha256").update(padContent).digest("hex")).id;
   return { lead, pad, id };
 }
 
@@ -75,6 +76,22 @@ describe("lead auto-handoff successor start", () => {
     assert.ok(!plain.stdout.includes("LEAD HANDOFF"), "a session hive did not start as a lead gets none");
   });
 
+  it("a reserved-name pad no handoff delivered injects nothing", async () => {
+    const { id } = seed();
+    db.prepare("DELETE FROM lead_handoffs WHERE id = ?").run(id);
+    const lead = await kickoff({ HIVE_AGENT_ID: "lead:k", HIVE_LEAD: "1" });
+    assert.ok(!lead.stdout.includes("LEAD HANDOFF"));
+  });
+
+  it("the successor's appended gaps note still archives the delivered pad", async () => {
+    const { pad: p, id } = seed({ padContent: "IN FLIGHT\nnone" });
+    db.prepare("UPDATE pads SET content = content || char(10) || 'missing from the handoff: none', revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(p.id);
+    await prompt(SUCCESSOR);
+    await stop(SUCCESSOR);
+    assert.equal(handoff.readHandoff(id).state, "completed");
+    assert.equal(pad(p.id).archived, 1);
+  });
+
   it("only successor first completed turn archives its delivered pad, even with a monitor or shell left running", async () => {
     const { pad: p, id } = seed({ padContent: "IN FLIGHT\nnone" });
     await prompt(PREDECESSOR);
@@ -94,9 +111,9 @@ describe("lead auto-handoff successor start", () => {
     assert.equal(handoff.readHandoffGate(done.lead_agent_id), null, "holds release on completion");
   });
 
-  it("a changed pad revision completes the handoff but stays active", async () => {
+  it("an edited delivered text completes the handoff but stays active", async () => {
     const { pad: p, id } = seed({ padContent: "IN FLIGHT\nnone" });
-    db.prepare("UPDATE pads SET revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(p.id);
+    db.prepare("UPDATE pads SET content = 'IN FLIGHT' || char(10) || 'rewritten', revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(p.id);
     await prompt(SUCCESSOR);
     await stop(SUCCESSOR);
     assert.equal(handoff.readHandoff(id).state, "completed");
