@@ -97,10 +97,10 @@ export function readActiveHandoff(leadAgentId: number): HandoffRow | null {
 export function handoffHoldsAutomation(row: HandoffRow): boolean {
   switch (row.state) {
     case "grace":
-    case "respawning":
-    case "started":
-    case "ambiguous":
       return true;
+    case "respawning":
+    case "ambiguous":
+      return row.hold_released_at === null;
     case "wind_down":
       return row.hold_released_at === null;
     case "requested":
@@ -286,8 +286,10 @@ export function casHandoff(
 
 // Definite failure before the destructive transition: record why, and the gate stops holding.
 // The epoch's unique key means the scheduler never re-requests it.
-const failTransaction = db.transaction((id: number, failure: string, from: readonly HandoffState[]): boolean => {
-  if (!casHandoff(id, from, { state: "failed", failure, owner_token: null, owner_pid: null })) return false;
+type Binding = Partial<Record<keyof HandoffRow, string | number | null>>;
+
+const failTransaction = db.transaction((id: number, failure: string, from: readonly HandoffState[], where: Binding): boolean => {
+  if (!casHandoff(id, from, { state: "failed", failure, owner_token: null, owner_pid: null }, where)) return false;
   db.prepare(
     `UPDATE wakes SET cancelled_at = datetime('now'), held_reason = ?
       WHERE id = (SELECT request_wake_id FROM lead_handoffs WHERE id = ?) AND fired_at IS NULL AND cancelled_at IS NULL`,
@@ -295,8 +297,34 @@ const failTransaction = db.transaction((id: number, failure: string, from: reado
   return true;
 });
 
-export function failHandoff(id: number, failure: string, from: readonly HandoffState[] = PRE_RESPAWN_STATES): boolean {
-  return failTransaction.immediate(id, failure, from);
+export function failHandoff(
+  id: number,
+  failure: string,
+  from: readonly HandoffState[] = PRE_RESPAWN_STATES,
+  where: Binding = {},
+): boolean {
+  return failTransaction.immediate(id, failure, from, where);
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+// After the destructive claim nothing is retried: a successor the row no longer names fails the row,
+// and a respawn that never settled releases its holds after the cap.
+function settleAfterRespawn(row: HandoffRow, lead: { pane_pid: string }): void {
+  if (row.state === "started" && row.successor_pane_pid !== null && lead.pane_pid !== row.successor_pane_pid) {
+    casHandoff(row.id, ["started"], { state: "failed", failure: "the lead pane no longer runs the successor this handoff started" });
+    return;
+  }
+  if ((row.state === "respawning" || row.state === "ambiguous") && row.hold_released_at === null && olderThan(row.updated_at, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(row.id, [row.state], { hold_released_at: nowSql(), blocked_reason: row.failure ?? "the respawn never settled" });
+  }
 }
 
 export const REQUEST_BODY_PREFIX = "hive lead handoff request #";
@@ -471,7 +499,10 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     row = readActiveHandoff(lead.id);
     if (row === null) return;
   }
-  if (!PRE_RESPAWN_STATES.includes(row.state)) return;
+  if (!PRE_RESPAWN_STATES.includes(row.state)) {
+    settleAfterRespawn(row, lead);
+    return;
+  }
   if (budget?.auto_handoff !== true) {
     failHandoff(row.id, "lead_turn_budget.auto_handoff is no longer on");
     return;
@@ -480,7 +511,17 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     failHandoff(row.id, "the lead's pane or session changed before the handoff (a restart, /clear or /resume)");
     return;
   }
-  if (row.state === "grace") return;
+  if (row.state === "grace") {
+    const deadline = (row.grace_seconds ?? 120) + RESPAWN_WAIT_LIMIT_SECONDS + 120;
+    const dead = row.owner_pid !== null && !processAlive(row.owner_pid);
+    if (dead || olderThan(row.grace_started_at, deadline)) {
+      failHandoff(row.id, dead ? "the grace owner process died" : "the grace ran far past its deadline", ["grace"], {
+        attempt: row.attempt,
+        owner_token: row.owner_token,
+      });
+    }
+    return;
+  }
   const eligibility = handoffEligibility(lead, budget, snapshot);
   if (eligibility.eligible && eligibility.reason === "stop" && row.reason === "warn") {
     casHandoff(row.id, [row.state], { reason: "stop", ...(row.state === "pending" ? { state: "wind_down" } : {}) }, { reason: "warn" });
@@ -677,7 +718,10 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
     if (child.pid === undefined) throw new Error("no process id");
     casHandoff(row.id, ["grace"], { owner_pid: child.pid }, { attempt, owner_token: token });
   } catch (e) {
-    failHandoff(row.id, `the grace owner could not start: ${e instanceof Error ? e.message : String(e)}`, ["grace"]);
+    failHandoff(row.id, `the grace owner could not start: ${e instanceof Error ? e.message : String(e)}`, ["grace"], {
+      attempt,
+      owner_token: token,
+    });
     return refuse("the grace owner could not start, so the handoff failed");
   }
   if (pad!.content.length > HANDOFF_PAD_SOFT_CAP) {
@@ -793,6 +837,23 @@ const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)
 // `hive lead-handoff-grace`: the one detached owner of an attempt. It never outlives a changed
 // attempt or token, and after it claims the respawn it never repeats the kill.
 export async function runHandoffGrace(argv: string[]): Promise<number> {
+  try {
+    return await graceLoop(argv);
+  } catch (e) {
+    const parsed = flags(argv, ["request", "attempt", "token"]);
+    const id = typeof parsed === "string" ? null : intFlag(parsed.request);
+    const attempt = typeof parsed === "string" ? null : intFlag(parsed.attempt);
+    if (id !== null && attempt !== null && typeof parsed !== "string") {
+      failHandoff(id, `the grace owner failed: ${e instanceof Error ? e.message : String(e)}`, ["grace"], {
+        attempt,
+        owner_token: parsed.token,
+      });
+    }
+    return 1;
+  }
+}
+
+async function graceLoop(argv: string[]): Promise<number> {
   const { loadProjectYml } = await import("./projectYml.js");
   const { tmux, TmuxTimeoutError } = await import("./tmux.js");
   const parsed = flags(argv, ["request", "attempt", "token"]);
@@ -820,7 +881,7 @@ export async function runHandoffGrace(argv: string[]): Promise<number> {
     const budget = lead === undefined ? null : (loadProjectYml(lead.path).config?.lead_turn_budget ?? null);
     const verdict = await respawnVerdict(row, lead, budget);
     if ("fail" in verdict) {
-      failHandoff(row.id, verdict.fail, ["grace"]);
+      failHandoff(row.id, verdict.fail, ["grace"], { attempt, owner_token: token });
       return 0;
     }
     if ("postpone" in verdict) {
@@ -841,7 +902,10 @@ export async function runHandoffGrace(argv: string[]): Promise<number> {
     try {
       launch = await successorLaunch(row, lead!, attempt, token);
     } catch (e) {
-      failHandoff(row.id, `the successor launch could not be prepared: ${e instanceof Error ? e.message : String(e)}`, ["grace"]);
+      failHandoff(row.id, `the successor launch could not be prepared: ${e instanceof Error ? e.message : String(e)}`, ["grace"], {
+        attempt,
+        owner_token: token,
+      });
       return 0;
     }
     if (!casHandoff(row.id, ["grace"], { state: "respawning", owner_pid: process.pid }, { attempt, owner_token: token })) return 0;
@@ -852,7 +916,7 @@ export async function runHandoffGrace(argv: string[]): Promise<number> {
       if (e instanceof TmuxTimeoutError) {
         casHandoff(row.id, ["respawning"], { state: "ambiguous", failure: `respawn-pane timed out; the pane's owner is unknown: ${detail}` }, { attempt, owner_token: token });
       } else {
-        failHandoff(row.id, `respawn-pane refused: ${detail}`, ["respawning"]);
+        failHandoff(row.id, `respawn-pane refused: ${detail}`, ["respawning"], { attempt, owner_token: token });
       }
     }
     return 0;
@@ -995,7 +1059,7 @@ export function completeHandoffOnStop(actorId: string): boolean {
     snapshot.session_id === row.predecessor_session_id ||
     snapshot.stop_prompt_seq === null ||
     snapshot.stop_prompt_seq < 1 ||
-    backgroundVeto(snapshot) !== null
+    snapshot.stop_prompt_seq !== snapshot.prompt_seq
   ) {
     return false;
   }

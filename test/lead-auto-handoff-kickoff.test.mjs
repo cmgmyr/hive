@@ -75,7 +75,7 @@ describe("lead auto-handoff successor start", () => {
     assert.ok(!plain.stdout.includes("LEAD HANDOFF"), "a session hive did not start as a lead gets none");
   });
 
-  it("only successor first completed turn archives its delivered pad", async () => {
+  it("only successor first completed turn archives its delivered pad, even with a monitor or shell left running", async () => {
     const { pad: p, id } = seed({ padContent: "IN FLIGHT\nnone" });
     await prompt(PREDECESSOR);
     await stop(PREDECESSOR);
@@ -85,9 +85,6 @@ describe("lead auto-handoff successor start", () => {
     assert.equal(pad(p.id).archived, 0, "a startup-only Stop is not a completed turn");
     await prompt(SUCCESSOR);
     await stop(SUCCESSOR, "stop-shell-running.json");
-    assert.equal(pad(p.id).archived, 0, "background work holds completion");
-    await prompt(SUCCESSOR);
-    await stop(SUCCESSOR);
     const done = handoff.readHandoff(id);
     assert.equal(done.state, "completed");
     assert.equal(done.successor_session_id, SUCCESSOR);
