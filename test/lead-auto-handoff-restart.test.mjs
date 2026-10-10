@@ -24,7 +24,8 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 const handoff = await import("../dist/leadHandoff.js");
-const { tmuxSocketPath } = await import("../dist/tmux.js");
+const { holdsHumanInput, tmuxSocketPath } = await import("../dist/tmux.js");
+const { paneClassifierFor } = await import("../dist/harnesses.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -154,6 +155,7 @@ describe("lead auto-handoff restart", () => {
     db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes')");
     assert.equal((await command(ctx, { revision: 2 })).code, 0);
     ctx.pane.typeIntoBox();
+    assert.ok(await until(() => holdsHumanInput(paneClassifierFor("claude").inputBoxState(ctx.pane.pane)), 8000), "the typed text reached the lead's screen");
     endGrace(ctx.requestId);
     assert.ok(await until(() => row(ctx.requestId).state === "postponed", 8000));
     assert.match(row(ctx.requestId).blocked_reason, /unsubmitted text/);
