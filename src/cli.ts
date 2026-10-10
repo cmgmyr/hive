@@ -59,6 +59,7 @@ import { dataDir, db, migrate, storeSchemaAhead } from "./db.js";
 import { cacheIsStale, queryUpdate, readCachedUpdate, refreshUpdate, shouldAutoRefresh, updateLine } from "./updateCheck.js";
 import { checkoutUpgradeSteps, detectInstallShape, globalUpgradeSteps, type UpgradeStep } from "./upgrade.js";
 import { isLowHeadroom, orphanLoginShellDetails, ptyHeadroom } from "./ptys.js";
+import { staleHiveServers } from "./staleServers.js";
 import {
   addProject,
   agentProjectPin,
@@ -2957,6 +2958,25 @@ function cmdDoctor(argv: string[]): void {
       );
     }
     return `${dataDir} (schema v${n})`;
+  });
+  check("stale hive servers", () => {
+    const { applied_at: appliedAt } = db.prepare("SELECT MAX(applied_at) AS applied_at FROM migrations").get() as {
+      applied_at: string | null;
+    };
+    const result = staleHiveServers(appliedAt, dataDir);
+    if ("skipped" in result) {
+      info("stale hive servers", `check skipped: ${result.skipped}`);
+      return "check skipped";
+    }
+    for (const server of result.servers) {
+      warn(
+        "stale hive server",
+        `pid ${server.pid} started ${server.startedAt} (parent pid ${server.ppid}: ${server.parentCommand ?? "unknown"})`,
+        `command: ${server.command}`,
+        "restart that session to load the current build",
+      );
+    }
+    return `${result.servers.length} stale server${result.servers.length === 1 ? "" : "s"}`;
   });
   check("hooks file", () => ensureHooksFile());
 
