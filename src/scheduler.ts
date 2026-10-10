@@ -33,6 +33,7 @@ import {
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
+import { driveLeadHandoff, handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoff.js";
 import { readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
@@ -749,6 +750,17 @@ export function checkConfirmations(): void {
   }
 }
 
+// Only the lead's own server drives its handoff; every server honours the hold it produces.
+function driveOwnLeadHandoff(): void {
+  const actor = process.env.HIVE_AGENT_ID;
+  if (!actor || !isLeadActorId(actor)) return;
+  try {
+    driveLeadHandoff(actor, (path) => loadProjectYml(path).config?.lead_turn_budget ?? null);
+  } catch {
+
+  }
+}
+
 export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   if (ticking) return;
   ticking = true;
@@ -763,6 +775,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     if (snapshot === undefined) snapshot = liveTargets();
     janitor(snapshot);
     if (snapshot) reportRunningBuildChange(snapshot);
+    driveOwnLeadHandoff();
 
     checkConfirmations();
     pruneStateLog();
@@ -2184,6 +2197,11 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     owner = { rowId: row.deliver_row_id!, identity: deliveryIdentity(row) };
   }
 
+  if (handoffHoldsWake(timer.id, row.deliver_row_id)) {
+    holdTimer(timer, HELD_REASON_HANDOFF);
+    return { ok: false };
+  }
+
   // Above both pane reads: this population must not be captured at all, and the verdicts would be
   // wrong in opposite directions if they were.
   if (!screenClassifiable(timer.deliver_command)) {
@@ -2281,6 +2299,10 @@ async function fireDelay(
   choices: ChoiceCache,
 ): Promise<void> {
 
+  if (handoffHoldsWake(timer.id, timer.deliver_row_id)) {
+    holdTimer(timer, HELD_REASON_HANDOFF);
+    return;
+  }
   const disposition = noticeDisposition(timer);
   if (disposition === "aged") {
     try {

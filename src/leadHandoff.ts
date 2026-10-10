@@ -112,10 +112,30 @@ export function handoffHoldsAutomation(row: HandoffRow): boolean {
   }
 }
 
+export interface HandoffGate {
+  requestId: number;
+  requestWakeId: number | null;
+  holdAutomation: boolean;
+}
+
 // The one predicate every automated lead delivery consults before it writes to the lead.
-export function readHandoffGate(leadAgentId: number): { requestId: number; holdAutomation: boolean } | null {
+export function readHandoffGate(leadAgentId: number): HandoffGate | null {
   const row = readActiveHandoff(leadAgentId);
-  return row === null ? null : { requestId: row.id, holdAutomation: handoffHoldsAutomation(row) };
+  return row === null
+    ? null
+    : { requestId: row.id, requestWakeId: row.request_wake_id, holdAutomation: handoffHoldsAutomation(row) };
+}
+
+export const HELD_REASON_HANDOFF =
+  "the lead is winding down for an automatic handoff; held so nothing interrupts it, and delivered to the " +
+  "lead row (its successor, once it starts) when the handoff completes, fails or releases its hold";
+
+// A wake addressed to a lead row is held while that lead's handoff holds automation, except the
+// current request wake itself, which still passes every human-input and ownership guard.
+export function handoffHoldsWake(wakeId: number, deliverRowId: number | null): boolean {
+  if (deliverRowId === null) return false;
+  const gate = readHandoffGate(deliverRowId);
+  return gate !== null && gate.holdAutomation && gate.requestWakeId !== wakeId;
 }
 
 export interface LeadForHandoff {
@@ -277,4 +297,218 @@ const failTransaction = db.transaction((id: number, failure: string, from: reado
 
 export function failHandoff(id: number, failure: string, from: readonly HandoffState[] = PRE_RESPAWN_STATES): boolean {
   return failTransaction.immediate(id, failure, from);
+}
+
+export const REQUEST_BODY_PREFIX = "hive lead handoff request #";
+
+export const HANDOFF_HEADINGS = [
+  "IN FLIGHT",
+  "WAITING ON",
+  "QUEUED NEXT",
+  "OPEN QUESTIONS FOR THE HUMAN",
+  "HUMAN INSTRUCTIONS THIS SESSION",
+  "HUMAN'S LAST REQUEST",
+  "VERIFY ON ARRIVAL",
+  "DON'T REDO",
+  "SESSION WORK TO RESTORE",
+] as const;
+
+export function requestBody(row: Pick<HandoffRow, "id" | "pass" | "reason">, turns: number | null): string {
+  const policy = passPolicy(row.pass, row.reason);
+  return [
+    `${REQUEST_BODY_PREFIX}${row.id} (pass ${row.pass}, ${row.reason === "stop" ? "stop" : "warn"} budget` +
+      `${turns === null ? "" : `, ${turns} turns`}). hive will replace this session with a fresh one in the same pane.`,
+    "",
+    "1. Finish or park any write you have in progress, so the project's own records are current.",
+    `2. Write the pad "${HANDOFF_PAD_NAME}" with exactly these headings, in this order. "none" is a valid entry; ` +
+      "point into the store rather than copying it, and keep it under about 8,000 characters:",
+    ...HANDOFF_HEADINGS.map((h) => `   ${h}`),
+    "   Under SESSION WORK TO RESTORE list every /loop, cron, ScheduleWakeup, monitor or in-session task list " +
+      "and how to re-arm it; none of them survive the new session. Re-arm what you can as hive wakes now.",
+    "3. Read the pad back and note its id and revision.",
+    `4. Tell the human in plain words: "I will hand off after ${policy.graceSeconds} quiet seconds. Human input postpones it."`,
+    `5. Run: hive lead-handoff --request ${row.id} --pad <pad id> --revision <revision>`,
+    "",
+    "If you cannot write the pad, say so and do not run the command; this session stays as it is.",
+  ].join("\n");
+}
+
+const NOW_SQL = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
+
+function olderThan(ts: string | null, seconds: number): boolean {
+  if (ts === null) return true;
+  return (db.prepare("SELECT (julianday('now') - julianday(?)) * 86400 >= ? AS old").get(ts, seconds) as { old: number }).old === 1;
+}
+
+// Automated deliveries to the lead other than the handoff's own request wakes.
+export function automationBlocker(lead: { id: number; actor_id: string }, seconds: number | null): string | null {
+  const inFlight = db
+    .prepare(
+      `SELECT 1 AS hit FROM agent_messages WHERE to_agent_id = ? AND delivery_status IN ('socket-pending', 'fallback-claimed')
+        AND created_at >= datetime('now', '-7 days')
+       UNION ALL
+       SELECT 1 FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ? AND fired_at IS NOT NULL AND cancelled_at IS NULL
+        AND delivery_method LIKE 'socket%' AND confirmed_at IS NULL AND socket_attempt_at >= datetime('now', '-7 days')
+       LIMIT 1`,
+    )
+    .get(lead.id, lead.actor_id, `${REQUEST_BODY_PREFIX}%`);
+  if (inFlight !== undefined) return "a delivery to the lead is still in flight";
+  if (seconds === null) return null;
+  const window = `-${seconds} seconds`;
+  const recent = db
+    .prepare(
+      `SELECT 1 AS hit FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ?
+         AND (fired_at >= datetime('now', ?) OR typed_at >= datetime('now', ?) OR socket_attempt_at >= datetime('now', ?))
+       UNION ALL
+       SELECT 1 FROM agent_messages WHERE to_agent_id = ? AND created_at >= datetime('now', ?)
+       LIMIT 1`,
+    )
+    .get(lead.actor_id, `${REQUEST_BODY_PREFIX}%`, window, window, window, lead.id, window);
+  return recent === undefined ? null : `an automated delivery reached the lead in the last ${seconds} s`;
+}
+
+interface Blocker {
+  reason: string;
+  background: boolean;
+}
+
+function requestBlocker(
+  lead: { id: number; actor_id: string },
+  row: HandoffRow,
+  snapshot: (LeadTurnState & LeadSafetySnapshot) | null,
+): Blocker | null {
+  if (snapshot === null || snapshot.state !== "idle") return { reason: "the lead's turn has not ended", background: false };
+  const background = backgroundVeto(snapshot);
+  if (background !== null) return { reason: background, background: true };
+  const policy = passPolicy(row.pass, row.reason);
+  if (!policy.requestNeedsQuiet) return null;
+  if (!olderThan(snapshot.human_prompt_at, policy.humanQuietSeconds)) {
+    return { reason: `a human prompt arrived in the last ${policy.humanQuietSeconds} s`, background: false };
+  }
+  const automation = automationBlocker(lead, policy.automationQuietSeconds);
+  return automation === null ? null : { reason: automation, background: false };
+}
+
+const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; actor_id: string; tmux_target: string }, turns: number | null): boolean => {
+  const current = readHandoff(row.id);
+  if (current === null || current.state !== row.state || current.pass !== row.pass) return false;
+  const waiting = current.request_wake_id === null
+    ? undefined
+    : (db
+        .prepare("SELECT id FROM wakes WHERE id = ? AND due_at IS NULL AND fired_at IS NULL AND cancelled_at IS NULL")
+        .get(current.request_wake_id) as { id: number } | undefined);
+  let wakeId: number;
+  if (waiting !== undefined) {
+    db.prepare("UPDATE wakes SET due_at = datetime('now'), body = ? WHERE id = ?").run(requestBody(current, turns), waiting.id);
+    wakeId = waiting.id;
+  } else {
+    wakeId = (
+      db
+        .prepare(
+          `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+           VALUES (?, ?, ?, 'delay', ?, ?, datetime('now')) RETURNING id`,
+        )
+        .get(current.project_id, lead.actor_id, requestBody(current, turns), lead.actor_id, lead.tmux_target) as { id: number }
+    ).id;
+  }
+  const holds = passPolicy(current.pass, current.reason).holdsFromRequest;
+  return casHandoff(
+    current.id,
+    [current.state],
+    {
+      state: "requested",
+      request_wake_id: wakeId,
+      hold_released_at: null,
+      hold_since: holds ? (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now : null,
+      blocked_reason: null,
+    },
+    { pass: current.pass },
+  );
+});
+
+function maintainHold(row: HandoffRow, reason: string | null): void {
+  const holds = handoffHoldsAutomation(row);
+  if (holds && row.hold_since === null) {
+    casHandoff(row.id, [row.state], { hold_since: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now }, { hold_since: null });
+    return;
+  }
+  if (holds && row.state !== "grace" && olderThan(row.hold_since, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(
+      row.id,
+      [row.state],
+      { hold_released_at: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now, blocked_reason: reason ?? "no quiet moment" },
+      { hold_released_at: null },
+    );
+    return;
+  }
+  if (reason !== row.blocked_reason && reason !== null) casHandoff(row.id, [row.state], { blocked_reason: reason });
+}
+
+// The scheduler's WHEN: arm at warn, wind down at stop, request at the pass's quiet moment, escalate
+// a pass that found none in 10 minutes, and release a hold that has lasted 15. Never touches a pane.
+export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: string) => LeadTurnBudget | null): void {
+  const lead = db
+    .prepare(
+      `SELECT a.id, a.project_id, a.actor_id, a.command, a.pane_pid, a.tmux_target, a.tmux_socket, p.path
+         FROM agents a JOIN projects p ON p.id = a.project_id
+        WHERE a.actor_id = ? AND a.kind = 'lead' AND a.status = 'running'`,
+    )
+    .get(actorId) as (LeadForHandoff & { actor_id: string; path: string }) | undefined;
+  if (lead === undefined) return;
+  const budget = budgetFor(lead.path);
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  let row = readActiveHandoff(lead.id);
+  if (row === null) {
+    const eligibility = handoffEligibility(lead, budget, snapshot);
+    if (!eligibility.eligible) return;
+    armHandoffRequest({
+      lead,
+      ownerActor: lead.actor_id,
+      reason: eligibility.reason,
+      epoch: eligibility.epoch,
+      requestBody: (id) => requestBody({ id, pass: 1, reason: eligibility.reason }, eligibility.turns),
+    });
+    row = readActiveHandoff(lead.id);
+    if (row === null) return;
+  }
+  if (!PRE_RESPAWN_STATES.includes(row.state)) return;
+  if (budget?.auto_handoff !== true) {
+    failHandoff(row.id, "lead_turn_budget.auto_handoff is no longer on");
+    return;
+  }
+  if (lead.pane_pid !== row.predecessor_pane_pid || snapshot?.session_id !== row.predecessor_session_id) {
+    failHandoff(row.id, "the lead's pane or session changed before the handoff (a restart, /clear or /resume)");
+    return;
+  }
+  if (row.state === "grace") return;
+  const eligibility = handoffEligibility(lead, budget, snapshot);
+  if (eligibility.eligible && eligibility.reason === "stop" && row.reason === "warn") {
+    casHandoff(row.id, [row.state], { reason: "stop", ...(row.state === "pending" ? { state: "wind_down" } : {}) }, { reason: "warn" });
+    row = readHandoff(row.id)!;
+  }
+  const blocker = requestBlocker(lead, row, snapshot);
+  if (row.state === "requested") {
+    maintainHold(row, blocker?.reason ?? null);
+    return;
+  }
+  if (blocker === null) {
+    requestTransaction.immediate(row, lead, eligibility.eligible ? eligibility.turns : null);
+    return;
+  }
+  if (!blocker.background && olderThan(row.pass_started_at, PASS_TIMEOUT_SECONDS)) {
+    casHandoff(
+      row.id,
+      [row.state],
+      {
+        pass: row.pass + 1,
+        pass_started_at: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now,
+        hold_since: null,
+        hold_released_at: null,
+        blocked_reason: blocker.reason,
+      },
+      { pass: row.pass },
+    );
+    return;
+  }
+  maintainHold(row, blocker.reason);
 }

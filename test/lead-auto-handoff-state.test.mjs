@@ -154,7 +154,9 @@ describe("lead auto-handoff state", () => {
       });
     const first = arm();
     assert.equal(first.created, true);
-    assert.deepEqual(handoff.readHandoffGate(lead.id), { requestId: first.requestId, holdAutomation: true });
+    const gate = handoff.readHandoffGate(lead.id);
+    assert.equal(gate.requestId, first.requestId);
+    assert.equal(gate.holdAutomation, true);
     assert.equal(handoff.casHandoff(first.requestId, ["grace"], { state: "respawning" }), false);
     assert.equal(handoff.readHandoff(first.requestId).state, "wind_down");
 
