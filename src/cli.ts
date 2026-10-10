@@ -219,8 +219,8 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
-import { handoffStatusSegment } from "./leadHandoff.js";
-import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { cmdLeadHandoff, handoffStatusSegment, runHandoffGrace, runHandoffStart } from "./leadHandoff.js";
+import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import {
@@ -4267,13 +4267,13 @@ try {
       cmdLeadPaneExited(rest);
       break;
     case "lead-handoff":
-      process.exitCode = await (await import("./leadHandoff.js")).cmdLeadHandoff(rest);
+      process.exitCode = await cmdLeadHandoff(rest);
       break;
     case LEAD_HANDOFF_GRACE_VERB:
-      process.exitCode = await (await import("./leadHandoff.js")).runHandoffGrace(rest);
+      process.exitCode = await runHandoffGrace(rest);
       break;
     case LEAD_HANDOFF_START_VERB:
-      process.exitCode = await (await import("./leadHandoff.js")).runHandoffStart(rest);
+      process.exitCode = await runHandoffStart(rest);
       break;
     case "show":
       cmdShow(rest);

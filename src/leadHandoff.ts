@@ -355,7 +355,7 @@ export const HANDOFF_HEADINGS = [
 export function requestBody(row: Pick<HandoffRow, "id" | "pass" | "reason">, turns: number | null): string {
   const policy = passPolicy(row.pass, row.reason);
   return [
-    `${REQUEST_BODY_PREFIX}${row.id} (pass ${row.pass}, ${row.reason === "stop" ? "stop" : "warn"} budget` +
+    `${REQUEST_BODY_PREFIX}${row.id} (pass ${row.pass}, ${row.reason} budget` +
       `${turns === null ? "" : `, ${turns} turns`}). hive will replace this session with a fresh one in the same pane.`,
     "",
     "1. Finish or park any write you have in progress, so the project's own records are current.",
