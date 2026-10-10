@@ -24,7 +24,7 @@ import { type LeadSafetySnapshot, type LeadTurnState, readLeadSafetySnapshot } f
 import type { LeadTurnBudget } from "./projectYml.js";
 import { readTurnCount } from "./turnCount.js";
 
-// Tests and cli.ts read these through this module; the leaf owns them.
+// Tests read these through this module; the leaf owns them.
 export {
   casHandoff,
   HELD_REASON_HANDOFF,
