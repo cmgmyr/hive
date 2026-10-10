@@ -168,13 +168,16 @@ describe("the handoff hold fence in the store", () => {
     assert.notEqual(after.typed_at, null);
   });
 
-  it("a worker wake and a raw-pane wake are claimable during a lead's hold", () => {
-    seedHandoff(leadId, { state: "grace" });
+  it("a worker wake, another lead's wake and a raw-pane wake are claimable during a lead's hold", () => {
+    db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM agents;");
     seedAgent("worker:fence", "agent");
-    const worker = seedWake("worker:fence");
-    const raw = seedWake("raw:no-agents-row");
-    assert.equal(oneShot(db, worker).changes, 1);
-    assert.equal(oneShot(db, raw).changes, 1);
+    seedAgent("lead:other", "lead");
+    leadId = seedAgent("lead:fence", "lead");
+    seedHandoff(leadId, { state: "grace" });
+    assert.equal(oneShot(db, seedWake("worker:fence")).changes, 1);
+    assert.equal(oneShot(db, seedWake("lead:other")).changes, 1);
+    assert.equal(oneShot(db, seedWake("raw:no-agents-row")).changes, 1);
+    assert.equal(oneShot(db, seedWake("lead:fence")).changes, 0, "the held lead's own wake stays fenced");
   });
 
   it("a held lead wake is claimable again once the handoff completes", () => {
