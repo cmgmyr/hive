@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
@@ -319,6 +320,32 @@ describe("lead auto-handoff hold lifetime", () => {
       assert.doesNotMatch(text, /released to you now/);
     } finally {
       db.prepare("DELETE FROM pads WHERE id = ?").run(padId);
+    }
+  });
+
+  it("a completed handoff records its hold release and clears blocked_reason", async () => {
+    for (const padCase of ["archived", "edited"]) {
+      reset();
+      const lead = seedLead();
+      const { requestId } = handoff.armHandoffRequest({
+        lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "100", session_id: "s-1" }, requestBody: () => "req",
+      });
+      const content = "pad body";
+      const pad = db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, ?) RETURNING id, revision").get(project, handoff.HANDOFF_PAD_NAME, content);
+      const sha = createHash("sha256").update(padCase === "archived" ? content : "other body").digest("hex");
+      db.prepare(
+        `UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', started_at = datetime('now'),
+           predecessor_session_id = 'old-session', blocked_reason = ?, pad_id = ?, pad_revision = ?, pad_length = ?, pad_sha256 = ? WHERE id = ?`,
+      ).run(handoff.SUCCESSOR_NOT_READY, pad.id, pad.revision, content.length, sha, requestId);
+
+      await completedTurn();
+
+      const row = handoff.readHandoff(requestId);
+      assert.equal(row.state, "completed", padCase);
+      assert.ok(row.completed_at, padCase);
+      assert.equal(row.hold_released_at, row.completed_at, padCase);
+      assert.equal(row.blocked_reason, null, padCase);
+      assert.equal(row.failure === null, padCase === "archived", padCase);
     }
   });
 

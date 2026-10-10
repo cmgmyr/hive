@@ -405,7 +405,16 @@ try {
       db.prepare("UPDATE actors SET last_seen_at = datetime('now') WHERE id = ?").run(actorId);
     }
 
-    record(actorId, event, state ?? UNCHANGED);
+    let logState = state ?? UNCHANGED;
+    if (event === "prompt" && process.env.HIVE_LEAD === "1") {
+      try {
+        const { isHiveFirstMessage, FIRST_MESSAGE_LOG_STATE } = await import("./leadState.js");
+        if (isHiveFirstMessage(readPayload())) logState = FIRST_MESSAGE_LOG_STATE;
+      } catch {
+
+      }
+    }
+    record(actorId, event, logState);
   }
 } catch {
 

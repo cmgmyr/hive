@@ -115,6 +115,18 @@ describe("a lead's turn state comes from its own hooks", () => {
     assert.equal(turn(lead.id).state, "working");
   });
 
+  it("the hook labels hive's first message in the prompt log and leaves a human prompt labelled working", async () => {
+    const lead = seedAgent("lead", "l3f");
+    const firstMessage = "Wait for the next task.";
+    const marker = { HIVE_LEAD_FIRST_MESSAGE_SHA: firstMessageDigest(firstMessage) };
+    const states = () => db.prepare("SELECT state FROM agent_state_log WHERE actor_id = ? AND event = 'prompt' ORDER BY id").all(lead.actor).map((r) => r.state);
+
+    await hook("prompt", withField(PROMPT, "prompt", firstMessage), lead.actor, true, marker);
+    await hook("prompt", PROMPT, lead.actor, true, marker);
+
+    assert.deepEqual(states(), ["first_message", "working"]);
+  });
+
   it("records session_end after hive's first message so status reads the lead dormant", async () => {
     const lead = seedAgent("lead", "l3d");
     const firstMessage = "Wait for the next task.";
