@@ -391,6 +391,8 @@ export function automationBlocker(lead: { id: number; actor_id: string }, second
     .prepare(
       `SELECT 1 AS hit FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ?
          AND (fired_at >= datetime('now', ?) OR typed_at >= datetime('now', ?) OR socket_attempt_at >= datetime('now', ?))
+         AND NOT (kind IN ('idle_any', 'idle_all') AND watch_scope IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM wakes p WHERE p.id = wakes.parent_wake_id AND p.watch_scope IS NOT NULL)
        UNION ALL
        SELECT 1 FROM agent_messages WHERE to_agent_id = ? AND created_at >= datetime('now', ?)
        LIMIT 1`,

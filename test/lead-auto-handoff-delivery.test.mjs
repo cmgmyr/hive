@@ -139,6 +139,74 @@ describe("lead auto-handoff delivery", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE body LIKE 'hive lead handoff request #%'").get().n, 1);
   });
 
+  async function armedQuietLead() {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    drive();
+    await stop();
+    quietHuman();
+    return lead;
+  }
+  const seedWake = (cols, values = []) =>
+    db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane, due_at, fired_at, ${cols})
+         VALUES (?, 'lead:d', 'crew notice', 'lead:d', '%9800', datetime('now'), datetime('now'), ${cols.split(",").map(() => "?").join(",")}) RETURNING id`,
+      )
+      .get(project, ...values).id;
+  const watchWake = () =>
+    db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, watch_scope)
+         VALUES (?, 'lead:d', 'watch', 'idle_any', 'lead:d', '%9800', 'project') RETURNING id`,
+      )
+      .get(project).id;
+
+  it("a standing-watch finish notice inside the quiet window does not hold a warn request", async () => {
+    const lead = await armedQuietLead();
+    const parent = watchWake();
+    const notice = seedWake("kind, parent_wake_id", ["delay", parent]);
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+
+    db.prepare("UPDATE wakes SET delivery_method = 'socket', confirmed_at = NULL, socket_attempt_at = datetime('now') WHERE id = ?").run(notice);
+    drive();
+    assert.equal(active(lead.id).state, "requested", "already requested; in-flight leg checked via blocker below");
+    assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight");
+  });
+
+  it("a one-shot idle watch firing inside the quiet window does not hold a warn request", async () => {
+    const lead = await armedQuietLead();
+    seedWake("kind", ["idle_any"]);
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+  });
+
+  it("a hold notice about a one-shot wake still holds a warn request", async () => {
+    const lead = await armedQuietLead();
+    const parent = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane)
+         VALUES (?, 'lead:d', 'one-shot', 'idle_any', 'lead:d', '%9800') RETURNING id`,
+      )
+      .get(project).id;
+    seedWake("kind, parent_wake_id", ["delay", parent]);
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+  });
+
+  it("a worker message inside the quiet window still holds a warn request", async () => {
+    const lead = await armedQuietLead();
+    const worker = seedWorker();
+    db.prepare(
+      `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status)
+       VALUES (?, ?, 'w', ?, 'hi', 'complete')`,
+    ).run(project, worker.actor_id, lead.id);
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+  });
+
   it("stop holds automation and keeps the warn request and human turn", async () => {
     const lead = seedLead();
     turns(5);
