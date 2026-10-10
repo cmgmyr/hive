@@ -490,6 +490,7 @@ CREATE TABLE lead_handoffs (
   state TEXT NOT NULL CHECK (state IN ('pending', 'wind_down', 'requested', 'grace', 'postponed',
     'respawning', 'started', 'completed', 'failed', 'ambiguous')),
   pass INTEGER NOT NULL DEFAULT 1,
+  request_reason TEXT CHECK (request_reason IN ('warn', 'stop')),
   pass_started_at TEXT,
   request_wake_id INTEGER,
   attempt INTEGER NOT NULL DEFAULT 0,

@@ -87,7 +87,7 @@ async function readyLead({ stop = "lead-claude-stop.json" } = {}) {
   const { requestId } = handoff.armHandoffRequest({
     lead, ownerActor: "lead:r", reason: "warn", epoch: { pane_pid: pane.pid, session_id: SESSION }, requestBody: () => "req",
   });
-  handoff.casHandoff(requestId, ["pending"], { state: "requested" });
+  handoff.casHandoff(requestId, ["pending"], { state: "requested", request_reason: "warn" });
   const padRow = db
     .prepare(`INSERT INTO pads (project_id, name, content) VALUES (?, 'hive-lead-handoff', ?) RETURNING id, revision`)
     .get(project, PAD);
@@ -117,12 +117,13 @@ describe("lead auto-handoff restart", () => {
     assert.equal(row(ctx.requestId).state, "requested");
 
     db.prepare("UPDATE pads SET content = ?, updated_at = datetime('now') WHERE id = ?").run(PAD, ctx.padId);
+    db.prepare("UPDATE lead_handoffs SET reason = 'stop' WHERE id = ?").run(ctx.requestId);
     const ok = await command(ctx);
     assert.equal(ok.code, 0, ok.stderr);
     assert.match(ok.stdout, /Handoff #\d+ armed \(attempt 1/);
     const armed = row(ctx.requestId);
     assert.equal(armed.state, "grace");
-    assert.equal(armed.grace_seconds, 120);
+    assert.equal(armed.grace_seconds, 120, "the grace the warn request announced survives a stop upgrade");
     assert.equal(armed.pad_revision, 1);
     assert.equal(armed.predecessor_turns, 5);
     assert.ok(await until(() => row(ctx.requestId).owner_pid !== null && alive(row(ctx.requestId).owner_pid), 3000));

@@ -36,6 +36,10 @@ export interface PassPolicy {
   requestNeedsQuiet: boolean;
 }
 
+// The policy the request body quoted, never one recomputed after a warn->stop upgrade.
+export const quotedPolicy = (row: Pick<HandoffRow, "pass" | "reason" | "request_reason">): PassPolicy =>
+  passPolicy(row.pass, row.request_reason ?? row.reason);
+
 export function passPolicy(pass: number, reason: HandoffReason): PassPolicy {
   if (reason === "stop" || pass >= 4) {
     return { graceSeconds: 45, humanQuietSeconds: 60, automationQuietSeconds: null, holdsFromRequest: true, requestNeedsQuiet: false };
@@ -60,6 +64,7 @@ export interface HandoffRow {
   reason: HandoffReason;
   state: HandoffState;
   pass: number;
+  request_reason: HandoffReason | null;
   pass_started_at: string | null;
   request_wake_id: number | null;
   attempt: number;
@@ -451,6 +456,7 @@ const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; 
     [current.state],
     {
       state: "requested",
+      request_reason: current.reason,
       request_wake_id: wakeId,
       hold_released_at: null,
       hold_since: holds ? (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now : null,
@@ -692,7 +698,7 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
   if (inFlight !== null) return refuse(`${inFlight}; run this command again in a minute`);
 
   const token = randomUUID();
-  const policy = passPolicy(row.pass, row.reason);
+  const policy = quotedPolicy(row);
   const claimed = casHandoff(
     row.id,
     ["requested"],
@@ -786,7 +792,7 @@ async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, bu
   if (padProblem(pad, lead.project_id, row.pad_revision ?? -1) !== null) {
     return { postpone: "the handoff pad changed after the command", escalate: false };
   }
-  const policy = passPolicy(row.pass, row.reason);
+  const policy = quotedPolicy(row);
   if (!olderThan(snapshot.human_prompt_at, policy.humanQuietSeconds)) {
     return { wait: `a human prompt arrived in the last ${policy.humanQuietSeconds} s` };
   }
