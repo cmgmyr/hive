@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
@@ -259,6 +260,36 @@ describe("lead auto-handoff delivery", () => {
     assert.match(handoff.readHandoff(row.id).failure, /pane or session changed/);
     assert.equal(handoff.readHandoffGate(lead.id), null);
     assert.notEqual(wake(row.request_wake_id).cancelled_at, null);
+  });
+
+  it("a held lead gets no socket post even with a registered messaging socket", needsTmux, async () => {
+    const sink = sinkPane();
+    const lead = seedLead({ pane: sink.pane, pid: sink.pid });
+    const worker = seedWorker();
+    const sockPath = join(mkdtempSync(join("/tmp", "lahs-")), "s.sock");
+    const received = [];
+    const server = createServer((conn) => {
+      let buf = "";
+      conn.on("data", (c) => (buf += c));
+      conn.on("end", () => received.push(buf));
+    });
+    await new Promise((resolve) => server.listen(sockPath, resolve));
+    try {
+      db.prepare("UPDATE agents SET claude_messaging_socket = ?, claude_messaging_pane_pid = ? WHERE id = ?").run(sockPath, sink.pid, lead.id);
+      turns(12);
+      await prompt();
+      drive();
+      assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+      const receipt = await sendQuietLeadMessage({
+        projectId: project, fromActor: worker.actor_id, target: db.prepare("SELECT * FROM agents WHERE id = ?").get(lead.id),
+        text: "not over the socket", submit: true,
+      });
+      assert.equal(receipt.sent, false);
+      assert.equal(await until(() => received.length > 0, 1500), false, "nothing reached the socket");
+      assert.equal(readFileSync(sink.sink, "utf8"), "");
+    } finally {
+      server.close();
+    }
   });
 
   it("held wakes and messages reach the handed-off successor once and never the predecessor", needsTmux, async () => {
