@@ -13,7 +13,6 @@ import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } fr
 import {
   automationBlocker,
   failHandoff,
-  HANDOFF_PAD_SOFT_CAP,
   missingHeadings,
   padProblem,
   readPad,
@@ -30,6 +29,7 @@ import { readTurnCount } from "./turnCount.js";
 import { harnessFor } from "./harnesses.js";
 
 const POLL_MS = 1_000;
+const HANDOFF_PAD_SOFT_CAP = 8_000;
 
 function flags(argv: string[], names: readonly string[]): Record<string, string> | string {
   const out: Record<string, string> = {};

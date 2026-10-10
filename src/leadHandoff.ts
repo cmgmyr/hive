@@ -428,7 +428,6 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
   maintainHold(row, blocker.reason);
 }
 
-export const HANDOFF_PAD_SOFT_CAP = 8_000;
 export const RESPAWN_WAIT_LIMIT_SECONDS = 10 * 60;
 
 export function missingHeadings(content: string): string[] {
