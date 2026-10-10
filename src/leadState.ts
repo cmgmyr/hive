@@ -1,6 +1,7 @@
 import { liveBackgroundTasks } from "./backgroundTasks.js";
 import { db } from "./db.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
+import { postponeGrace, readActiveHandoff } from "./leadHandoffState.js";
 import type { RowOwnership } from "./tmux.js";
 
 export type LeadTurn = "unknown" | "working" | "idle";
@@ -138,11 +139,10 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
         snap.human_prompt_seq += 1;
         snap.human_prompt_at = now;
         // A human prompt during grace postpones that attempt at once; the grace owner sees it too.
-        db.prepare(
-          `UPDATE lead_handoffs SET state = 'postponed', pass = pass + 1, pass_started_at = ?, owner_token = NULL,
-             owner_pid = NULL, blocked_reason = 'a human prompt arrived during grace', updated_at = ?
-           WHERE lead_agent_id = ? AND state = 'grace' AND predecessor_session_id = ?`,
-        ).run(now, now, agentId, sessionId);
+        const active = readActiveHandoff(agentId);
+        if (active?.state === "grace" && active.predecessor_session_id === sessionId) {
+          postponeGrace(active, { predecessor_session_id: sessionId }, "a human prompt arrived during grace", true);
+        }
       }
       break;
     case "stop":

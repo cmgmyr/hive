@@ -366,4 +366,38 @@ describe("lead auto-handoff hold lifetime", () => {
     assert.match(row.failure, /grace owner process died/);
     assert.equal(handoff.readHandoffGate(lead.id), null);
   });
+
+  const armInGrace = async (session) => {
+    const lead = seedLead();
+    writeTranscript(5);
+    await completedTurn();
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "warn", epoch: { pane_pid: "4242", session_id: session }, requestBody: () => "req",
+    });
+    db.prepare(
+      "UPDATE lead_handoffs SET state = 'grace', attempt = 1, owner_token = 't', owner_pid = 4242, grace_seconds = 120, grace_started_at = datetime('now') WHERE id = ?",
+    ).run(requestId);
+    return requestId;
+  };
+
+  it("a human prompt during grace postpones the attempt and escalates the pass", async () => {
+    const requestId = await armInGrace(SESSION);
+    const before = handoff.readHandoff(requestId);
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: "please look at this" }));
+    const row = handoff.readHandoff(requestId);
+    assert.equal(row.state, "postponed");
+    assert.equal(row.pass, before.pass + 1);
+    assert.equal(row.owner_token, null);
+    assert.equal(row.owner_pid, null);
+    assert.equal(row.blocked_reason, "a human prompt arrived during grace");
+  });
+
+  it("a human prompt for another session does not postpone the handoff", async () => {
+    const requestId = await armInGrace("some-other-session");
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: "please look at this" }));
+    const row = handoff.readHandoff(requestId);
+    assert.equal(row.state, "grace");
+    assert.equal(row.pass, 1);
+    assert.equal(row.owner_token, "t");
+  });
 });
