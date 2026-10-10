@@ -91,7 +91,7 @@ function quietMessagingOn(projectId: number): boolean {
 
 const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
 
-const HANDOFF_HOLD_NOTE = "the lead is handing off to a fresh session";
+const HANDOFF_HOLD_NOTE = "the lead is handing off to a fresh session; held until the successor completes its first turn";
 
 function eligible(options: { projectId: number; fromActor: string; target: AgentRow; submit: boolean }): boolean {
   const { projectId, fromActor, target, submit } = options;
