@@ -10,7 +10,8 @@ import {
   storeLeadMessage,
   type StoredLeadMessage,
 } from "./leadMessage.js";
-import { readLeadTurnState } from "./leadState.js";
+import { readHandoffGate } from "./leadHandoff.js";
+import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
 import { loadProjectYml } from "./projectYml.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
 import {
@@ -88,10 +89,15 @@ function quietMessagingOn(projectId: number): boolean {
   return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
 }
 
+const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
+
+const HANDOFF_HOLD_NOTE = "the lead is handing off to a fresh session";
+
 function eligible(options: { projectId: number; fromActor: string; target: AgentRow; submit: boolean }): boolean {
   const { projectId, fromActor, target, submit } = options;
   if (!submit || target.kind !== "lead" || target.status !== "running" || target.actor_id === fromActor) return false;
   if (harnessFor(target.command).name !== "claude") return false;
+  if (handoffHolds(target.id)) return true;
   const sender = db
     .prepare("SELECT 1 AS hit FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running' AND kind = 'agent'")
     .get(projectId, fromActor);
@@ -204,8 +210,44 @@ function pasteFailure(err: unknown, pasted: boolean, buffered: boolean): string 
   return `nothing was pasted: ${why}`;
 }
 
+// A message accepted for a predecessor whose pane the same lead row now holds as a handed-off
+// successor is re-pointed at that successor, once, rather than failed as a replacement pane.
+function retargetAfterHandoff(row: DeliveryRow): DeliveryRow {
+  let accepted: Partial<RowPaneIdentity>;
+  try {
+    accepted = JSON.parse(row.target_identity ?? "{}") as Partial<RowPaneIdentity>;
+  } catch {
+    return row;
+  }
+  const lead = db.prepare("SELECT * FROM agents WHERE id = ? AND kind = 'lead' AND status = 'running'").get(row.to_agent_id) as
+    | AgentRow
+    | undefined;
+  if (lead === undefined || accepted.pane_pid === lead.pane_pid || accepted.tmux_target !== lead.tmux_target) return row;
+  const handedOff = db
+    .prepare(
+      `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND pane_target = ? AND predecessor_pane_pid = ?
+         AND successor_pane_pid = ? AND state IN ${HANDED_OFF_STATES_SQL}`,
+    )
+    .get(lead.id, lead.tmux_target, accepted.pane_pid ?? "", lead.pane_pid);
+  if (handedOff === undefined) return row;
+  const identity = JSON.stringify(paneIdentity(lead));
+  try {
+    db.prepare("UPDATE agent_messages SET target_identity = ? WHERE id = ? AND target_identity IS ? AND delivery_status = ?").run(
+      identity,
+      row.id,
+      row.target_identity,
+      MESSAGE_STATUS.fallbackPending,
+    );
+  } catch {
+
+  }
+  return readRow(row.id) ?? row;
+}
+
 // One guarded pane attempt. The claim is the CAS that makes it at most one per message.
-async function paneFallback(row: DeliveryRow, snapshot?: AliveSnapshot | null): Promise<FallbackOutcome> {
+async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | null): Promise<FallbackOutcome> {
+  if (handoffHolds(original.to_agent_id)) return hold(original, HANDOFF_HOLD_NOTE);
+  const row = retargetAfterHandoff(original);
   let identity: RowPaneIdentity;
   try {
     identity = paneIdentity(JSON.parse(row.target_identity ?? "") as RowPaneIdentity);
@@ -312,7 +354,9 @@ export async function sendQuietLeadMessage(options: {
     long ? ` ${shortenedSendNote(id, renderLeadMessage(id, text, tag, redelivered).length, channel)}` : "";
 
   const body = socketText(id, text, tag);
-  const skip = !registeredSocket(target)
+  const skip = handoffHolds(target.id)
+    ? HANDOFF_HOLD_NOTE
+    : !registeredSocket(target)
     ? "no messaging socket registered for this lead pane"
     : body.includes(CROSS_SESSION_CLOSE)
       ? "the text contains the envelope's closing tag"

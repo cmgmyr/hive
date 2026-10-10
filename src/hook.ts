@@ -205,6 +205,14 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
     .prepare("SELECT project_id, command FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
     .get(actorId) as { project_id: number; command: string } | undefined;
   if (!row) return;
+  // A deliberate handoff's predecessor ending is not the lead ending; its successor keeps the crew.
+  const lead = db.prepare("SELECT id FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'").get(actorId) as
+    | { id: number }
+    | undefined;
+  if (lead !== undefined) {
+    const { predecessorFence } = await import("./leadState.js");
+    if (predecessorFence(lead.id, payload.session_id)) return;
+  }
 
   // Imported here and nowhere above: harnesses.ts itself pulls tmux at module scope, and every
   // other event in this file runs on every turn of every session without needing any of it.
@@ -349,10 +357,27 @@ try {
     if (!guarded) state = applyWorkerTransition(actorId, event);
 
     // A lead's turn state is its own table; agents.agent_state stays worker-only.
-    if (process.env.HIVE_LEAD === "1" && (event === "prompt" || event === "stop" || event === "session_end")) {
+    if (
+      process.env.HIVE_LEAD === "1" &&
+      ["prompt", "stop", "session_end"].includes(event)
+    ) {
       try {
         const { applyLeadHook } = await import("./leadState.js");
         applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
+      } catch {
+
+      }
+    }
+
+    if (event === "stop" && process.env.HIVE_LEAD === "1") {
+      try {
+        const started = db
+          .prepare(
+            `SELECT 1 AS hit FROM lead_handoffs h JOIN agents a ON a.id = h.lead_agent_id
+              WHERE a.actor_id = ? AND a.kind = 'lead' AND h.state = 'started'`,
+          )
+          .get(actorId);
+        if (started !== undefined) (await import("./leadHandoff.js")).completeHandoffOnStop(actorId);
       } catch {
 
       }

@@ -177,3 +177,26 @@ describe("a killed lead pane takes its project's processes with it (todo 765)", 
     );
   });
 });
+
+describe("a deliberate respawn is not a pane exit", () => {
+  it("respawn-pane -k fires no global pane-exited hook, while a pane whose process exits does", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const marker = join(scratchDirs().tmp, "pane-exited.log");
+    writeFileSync(marker, "");
+    const name = `r10b-${process.pid}`;
+    execFileSync("tmux", ["new-session", "-d", "-s", name, "sleep 600"], { stdio: "ignore" });
+    try {
+      const pane = execFileSync("tmux", ["list-panes", "-t", `=${name}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+      execFileSync("tmux", ["set-hook", "-ga", "pane-exited", `run-shell "echo #{hook_pane} >> '${marker}'"`]);
+      execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "sleep 601"]);
+      assert.equal(await until(() => readFileSync(marker, "utf8").includes(pane), 1500), false, "no hook for a respawn");
+      execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "true"]);
+      assert.equal(await until(() => readFileSync(marker, "utf8").includes(pane), 5000), true, "the hook is armed: a real exit fires it");
+    } finally {
+      try {
+        execFileSync("tmux", ["kill-session", "-t", `=${name}`], { stdio: "ignore" });
+      } catch {}
+    }
+  });
+});

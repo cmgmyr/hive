@@ -141,6 +141,19 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   return truncate(lines.join("\n"), CONTEXT_BUDGET);
 }
 
+// Lead-only: a worker returned above, and a session hive did not start as a lead gets nothing.
+async function leadHandoffText(): Promise<string | null> {
+  const actor = process.env.HIVE_AGENT_ID;
+  if (process.env.HIVE_LEAD !== "1" || !actor) return null;
+  try {
+    const { migrate } = await import("./db.js");
+    migrate();
+    return (await import("./leadHandoff.js")).handoffInjection(actor);
+  } catch {
+    return null;
+  }
+}
+
 export type KickoffGate =
   | { ok: true; config: ProjectYml; warnings: string[]; sources: Record<string, ConfigSource>; profile: string }
   | { ok: false; reason: string; warnings: string[] };
@@ -179,12 +192,21 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
     return { fired: false, reason: "cwd does not exist" };
   }
 
+  const handoff = await leadHandoffText();
+  const handoffOnly = (warnings: string[]): KickoffResult => ({
+    fired: true,
+    payload: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: handoff } }),
+    warnings,
+  });
+
   const gate = await kickoffGate(dir);
-  if (!gate.ok) return { fired: false, reason: gate.reason, warnings: gate.warnings };
+  if (!gate.ok) return handoff === null ? { fired: false, reason: gate.reason, warnings: gate.warnings } : handoffOnly(gate.warnings);
   const { config, warnings, sources, profile } = gate;
 
   const context = await digest(dir, profile, warnings);
-  if (context == null) return { fired: false, reason: "not a registered hive project root", warnings };
+  if (context == null) {
+    return handoff === null ? { fired: false, reason: "not a registered hive project root", warnings } : handoffOnly(warnings);
+  }
 
   // Codex's SessionStartHookSpecificOutputWire is additionalProperties:false and permits only
   // hookEventName/additionalContext - initialUserMessage inside it fails the whole payload
@@ -197,14 +219,16 @@ export async function evaluate(cwd: string, opts: { forCodex?: boolean } = {}): 
     JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "SessionStart",
-        additionalContext: text,
+        additionalContext: handoff === null ? text : `${text}\n\n${handoff}`,
         ...(hookMessage === null ? {} : { initialUserMessage: hookMessage }),
       },
     });
   let payload = build(context);
-  if (payload.length > OUTPUT_BUDGET) {
+  // The handoff rides outside the digest budget: only the digest is ever cut to fit.
+  const budget = OUTPUT_BUDGET + (handoff === null ? 0 : JSON.stringify(handoff).length);
+  if (payload.length > budget) {
 
-    const overflow = payload.length - OUTPUT_BUDGET;
+    const overflow = payload.length - budget;
     payload = build(truncate(context, Math.max(0, context.length - overflow - 32)));
   }
   return { fired: true, payload, warnings, firstMessage: first };

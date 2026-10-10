@@ -53,6 +53,9 @@ use that key, because the restart and registration notices ride there.
   writes shared STATE that the store owns.**
 - **CLI commands are how a HUMAN at a real terminal (or a script standing
   in for one) operates the ENVIRONMENT hive runs in.**
+- **One deliberate exception: `hive lead-handoff` is run by a lead model**,
+  not a human, because it hands its own pane to a detached process that
+  replaces the session; it writes only that lead's own handoff row.
 
 Anything
 an MCP tool needs to read has to be stored config (`hive.yml`, the

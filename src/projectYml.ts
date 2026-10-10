@@ -40,12 +40,18 @@ export interface ProjectYml {
   first_message: string | null;
 
   context_checkpoint_percent: number | null;
-  lead_turn_budget: { warn: number; stop: number } | null;
+  lead_turn_budget: LeadTurnBudget | null;
   dashboard: boolean;
   lead_sidebar: boolean;
   quiet_messaging: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
+}
+
+export interface LeadTurnBudget {
+  warn: number;
+  stop: number;
+  auto_handoff?: boolean;
 }
 
 export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
@@ -255,7 +261,12 @@ function applyLayer(
       sources.lead_turn_budget = source;
     } else if (isMapping(value) && typeof value.warn === "number" && Number.isInteger(value.warn) && value.warn > 0 &&
       typeof value.stop === "number" && Number.isInteger(value.stop) && value.stop > value.warn) {
-      config.lead_turn_budget = { warn: value.warn, stop: value.stop };
+      const budget: LeadTurnBudget = { warn: value.warn, stop: value.stop };
+      if (value.auto_handoff !== undefined) {
+        if (typeof value.auto_handoff === "boolean") budget.auto_handoff = value.auto_handoff;
+        else warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+      }
+      config.lead_turn_budget = budget;
       sources.lead_turn_budget = source;
     } else {
       warn("lead_turn_budget must contain positive integer warn and stop values, with stop greater than warn; ignoring it.");

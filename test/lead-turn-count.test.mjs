@@ -46,6 +46,18 @@ test("lead_turn_budget requires positive ordered integer thresholds", () => {
   assert.match(invalid.warnings[0], /lead_turn_budget/);
 });
 
+test("lead_turn_budget.auto_handoff is opt-in, and a non-boolean warns and stays off", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hive-lead-auto-handoff-"));
+  writeFileSync(join(dir, "hive.yml"), "lead_turn_budget: {warn: 300, stop: 600, auto_handoff: true}\n");
+  assert.deepEqual(loadProjectYml(dir).config.lead_turn_budget, { warn: 300, stop: 600, auto_handoff: true });
+  writeFileSync(join(dir, "hive.yml"), "lead_turn_budget: {warn: 300, stop: 600}\n");
+  assert.equal("auto_handoff" in loadProjectYml(dir).config.lead_turn_budget, false);
+  writeFileSync(join(dir, "hive.yml"), "lead_turn_budget: {warn: 300, stop: 600, auto_handoff: yes please}\n");
+  const invalid = loadProjectYml(dir);
+  assert.deepEqual(invalid.config.lead_turn_budget, { warn: 300, stop: 600 });
+  assert.match(invalid.warnings[0], /auto_handoff must be true or false/);
+});
+
 function assistantLines(count) {
   return Array.from({ length: count }, (_, i) => JSON.stringify({
     type: "assistant", message: { id: `turn-${i}`, model: "claude" },

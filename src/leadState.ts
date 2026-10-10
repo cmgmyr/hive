@@ -1,3 +1,4 @@
+import { liveBackgroundTasks } from "./backgroundTasks.js";
 import { db } from "./db.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import type { RowOwnership } from "./tmux.js";
@@ -14,9 +15,25 @@ export interface LeadTurnState {
   changed_at: string;
 }
 
+// The current epoch's safety evidence, kept beside the turn state. A handoff reads it to decide
+// that nothing in the session would die with a respawn; it is never a source of working/idle.
+export interface LeadSafetySnapshot {
+  snapshot_pane_pid: string;
+  snapshot_session_id: string;
+  prompt_seq: number;
+  human_prompt_seq: number;
+  human_prompt_at: string | null;
+  transcript_path: string;
+  stop_prompt_seq: number | null;
+  stop_background: string | null;
+  stop_at: string | null;
+}
+
 interface LeadHookPayload {
   session_id?: unknown;
   prompt?: unknown;
+  transcript_path?: unknown;
+  background_tasks?: unknown;
 }
 
 export function readLeadTurnState(agentId: number): LeadTurnState | null {
@@ -30,6 +47,23 @@ export function leadSessionEnded(
   if ((ownership !== "gone" && ownership !== "reissued") || row.pane_pid === "") return null;
   const turn = readLeadTurnState(row.id);
   return turn?.last_event === "session_end" && turn.pane_pid === row.pane_pid ? { ended_at: turn.changed_at } : null;
+}
+
+// The hive-authored prompt shapes conversationHoldsWake excludes, as SQL over an agent_state_log
+// payload column. isHumanPrompt below is its JS twin; a parity test keeps them in step.
+export function humanPromptSql(col: string): string {
+  const p = `CASE WHEN json_valid(${col}) THEN COALESCE(json_extract(${col}, '$.prompt'), ${col}) ELSE ${col} END`;
+  return (
+    `${p} NOT LIKE '%[hive wake #%' AND ${p} NOT LIKE '[hive:%' AND ${p} NOT LIKE '<task-notification>%' ` +
+    `AND ${p} NOT LIKE '<cross-session-message from="%" from-name="hive">' || char(10) || '[hive:worker %] [message #%,%' || char(10) || '</cross-session-message>%'`
+  );
+}
+
+// Includes SQLite LIKE's ASCII case-insensitivity.
+export function isHumanPrompt(prompt: string): boolean {
+  const p = prompt.toLowerCase();
+  if (p.includes("[hive wake #") || p.startsWith("[hive:") || p.startsWith("<task-notification>")) return false;
+  return !/^<cross-session-message from="[\s\S]*" from-name="hive">\n\[hive:worker [\s\S]*\] \[message #[\s\S]*,[\s\S]*\n<\/cross-session-message>/.test(p);
 }
 
 function isHiveFirstMessage(payload: LeadHookPayload): boolean {
@@ -68,35 +102,118 @@ export function nextLeadTurn(
   }
 }
 
+export function readLeadSafetySnapshot(agentId: number): (LeadTurnState & LeadSafetySnapshot) | null {
+  return (
+    (db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(agentId) as
+      | (LeadTurnState & LeadSafetySnapshot)
+      | undefined) ?? null
+  );
+}
+
+function applySnapshot(agentId: number, panePid: string, event: string, payload: LeadHookPayload): void {
+  const row = readLeadSafetySnapshot(agentId);
+  const sessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+  if (row === null || sessionId === "" || row.pane_pid !== panePid || row.session_id !== sessionId) return;
+  const fresh = row.snapshot_pane_pid !== panePid || row.snapshot_session_id !== sessionId;
+  const snap = {
+    prompt_seq: fresh ? 0 : row.prompt_seq,
+    human_prompt_seq: fresh ? 0 : row.human_prompt_seq,
+    human_prompt_at: fresh ? null : row.human_prompt_at,
+    transcript_path: fresh ? "" : row.transcript_path,
+    stop_prompt_seq: fresh ? null : row.stop_prompt_seq,
+    stop_background: fresh ? null : row.stop_background,
+    stop_at: fresh ? null : row.stop_at,
+  };
+  if (typeof payload.transcript_path === "string" && payload.transcript_path !== "") {
+    snap.transcript_path = payload.transcript_path;
+  }
+  const now = (db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now') AS now").get() as { now: string }).now;
+  switch (event) {
+    case "prompt":
+      snap.prompt_seq += 1;
+      if (typeof payload.prompt === "string" && !isHiveFirstMessage(payload) && isHumanPrompt(payload.prompt.trim())) {
+        snap.human_prompt_seq += 1;
+        snap.human_prompt_at = now;
+        // A human prompt during grace postpones that attempt at once; the grace owner sees it too.
+        db.prepare(
+          `UPDATE lead_handoffs SET state = 'postponed', pass = pass + 1, pass_started_at = ?, owner_token = NULL,
+             owner_pid = NULL, blocked_reason = 'a human prompt arrived during grace', updated_at = ?
+           WHERE lead_agent_id = ? AND state = 'grace' AND predecessor_session_id = ?`,
+        ).run(now, now, agentId, sessionId);
+      }
+      break;
+    case "stop":
+      snap.stop_prompt_seq = snap.prompt_seq;
+      snap.stop_at = now;
+      // No background_tasks in the payload is unknown evidence, never an empty list.
+      snap.stop_background = payload.background_tasks === undefined
+        ? null
+        : JSON.stringify(liveBackgroundTasks(payload.background_tasks));
+      break;
+  }
+  db.prepare(
+    `UPDATE lead_turn_state SET snapshot_pane_pid = ?, snapshot_session_id = ?, prompt_seq = ?, human_prompt_seq = ?,
+       human_prompt_at = ?, transcript_path = ?, stop_prompt_seq = ?, stop_background = ?, stop_at = ?
+     WHERE agent_id = ?`,
+  ).run(
+    panePid, sessionId, snap.prompt_seq, snap.human_prompt_seq, snap.human_prompt_at, snap.transcript_path,
+    snap.stop_prompt_seq, snap.stop_background, snap.stop_at, agentId,
+  );
+}
+
+// The states after a respawn claim, in which the predecessor's session is no longer the lead.
+export const HANDED_OFF_STATES_SQL = "('respawning', 'started', 'completed', 'ambiguous')";
+
+// A predecessor-session hook is fenced from the respawn claim until the handoff completes or fails;
+// the pane pid cannot tell a dying predecessor from an in-pane /resume, so the row's state decides.
+export function predecessorFence(agentId: number, sessionId: unknown): boolean {
+  if (typeof sessionId !== "string" || sessionId === "") return false;
+  return (
+    db
+      .prepare(
+        `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
+           AND state IN ('respawning', 'started', 'ambiguous')`,
+      )
+      .get(agentId, sessionId) !== undefined
+  );
+}
+
 const applyInTransaction = db.transaction(
-  (agentId: number, panePid: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean): void => {
+  (agentId: number, panePid: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean, fenced: boolean): void => {
+    if (fenced) return;
     const cur = readLeadTurnState(agentId);
     const next = nextLeadTurn(cur, panePid, event, payload, subagentsLive);
-    if (next === null) return;
-    if (
-      cur !== null &&
-      cur.pane_pid === next.pane_pid &&
-      cur.session_id === next.session_id &&
-      cur.state === next.state &&
-      cur.idle_seq === next.idle_seq &&
-      (event !== "session_end" || cur.last_event === "session_end")
-    ) {
-      return;
+    const unchanged =
+      next === null ||
+      (cur !== null &&
+        cur.pane_pid === next.pane_pid &&
+        cur.session_id === next.session_id &&
+        cur.state === next.state &&
+        cur.idle_seq === next.idle_seq &&
+        (event !== "session_end" || cur.last_event === "session_end"));
+    if (!unchanged) {
+      db.prepare(
+        `INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at)
+         VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+         ON CONFLICT(agent_id) DO UPDATE SET pane_pid = excluded.pane_pid, session_id = excluded.session_id,
+           state = excluded.state, idle_seq = excluded.idle_seq, last_event = excluded.last_event,
+           changed_at = excluded.changed_at`,
+      ).run(agentId, next.pane_pid, next.session_id, next.state, next.idle_seq, event);
     }
-    db.prepare(
-      `INSERT INTO lead_turn_state (agent_id, pane_pid, session_id, state, idle_seq, last_event, changed_at)
-       VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))
-       ON CONFLICT(agent_id) DO UPDATE SET pane_pid = excluded.pane_pid, session_id = excluded.session_id,
-         state = excluded.state, idle_seq = excluded.idle_seq, last_event = excluded.last_event,
-         changed_at = excluded.changed_at`,
-    ).run(agentId, next.pane_pid, next.session_id, next.state, next.idle_seq, event);
+    applySnapshot(agentId, panePid, event, payload);
   },
 );
 
-export function applyLeadHook(actorId: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean): void {
+export function applyLeadHook(
+  actorId: string,
+  event: string,
+  payload: LeadHookPayload,
+  subagentsLive: () => boolean,
+): void {
   const lead = db
     .prepare("SELECT id, pane_pid FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actorId) as { id: number; pane_pid: string } | undefined;
   if (!lead) return;
-  applyInTransaction.immediate(lead.id, lead.pane_pid, event, payload, subagentsLive);
+  const fenced = predecessorFence(lead.id, payload.session_id);
+  applyInTransaction.immediate(lead.id, lead.pane_pid, event, payload, subagentsLive, fenced);
 }

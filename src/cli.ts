@@ -218,8 +218,9 @@ import {
   resolveFirstMessage,
   type YmlProcess,
 } from "./projectYml.js";
-import { writeProjectPosture } from "./brief.js";
-import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
+import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
+import { cmdLeadHandoff, handoffStatusSegment, runHandoffGrace, runHandoffStart } from "./leadHandoff.js";
+import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import {
@@ -332,6 +333,7 @@ Usage:
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
   hive profile [list|path|fork|create|read]  standing instructions shared across projects
   hive statusline            one-line store summary; silent outside hive projects
+  hive lead-handoff          a lead confirms its persisted handoff pad (run from a handoff request)
 
 hive lead reads hive.yml from the project root when present; hive init
 writes this starter file (uncomment what you need):
@@ -441,18 +443,6 @@ async function ensureTrusted(
     "INSERT OR IGNORE INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)",
   ).run(projectId, name, hash);
   return true;
-}
-function isTrusted(
-  projectId: number,
-  name: string,
-  command: string,
-  dir: string | null,
-  env: Record<string, string>,
-): boolean {
-  const hash = configHash(name, command, dir, env);
-  return !!db
-    .prepare("SELECT 1 FROM command_trust WHERE project_id = ? AND name = ? AND config_hash = ?")
-    .get(projectId, name, hash);
 }
 
 function startYmlCommand(project: Project, name: string, proc: YmlProcess, config: ProjectYml): string {
@@ -747,17 +737,9 @@ async function cmdLead(argv: string[]): Promise<void> {
     // Posture is rendered once, then delivered through whichever channel this harness has: a
     // claude lead gets it as --append-system-prompt-file below; a codex lead gets the identical
     // text as config.toml's developer_instructions, built after ensureLeadRow (it needs leadActorId).
-    const profile = activeProfile(config);
-    let renderedPosture: string | null = null;
-    let postureSource: string | undefined;
-    if (profile) {
-      const posture = resolveProfileFile(profile, "posture.md");
-      if (!posture) {
-        console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
-      } else {
-        renderedPosture = renderProfileFile(profile, "posture.md", mergedProjectVars(config)) ?? "";
-        postureSource = posture.source;
-      }
+    const { profile, rendered: renderedPosture, source: postureSource } = renderLeadPosture(config);
+    if (profile && renderedPosture === null) {
+      console.log(`! profile "${profile}" has no posture.md on this machine; starting without it.`);
     }
 
     if (leadHarness.needsHome) {
@@ -770,20 +752,18 @@ async function cmdLead(argv: string[]): Promise<void> {
         console.log(`! lead command is not claude; skipping profile "${profile}" posture.`);
       }
     } else {
-      if (!carriesNameFlag(leadCommand.trim().split(/\s+/))) {
-        leadCommand += ` --name ${shellQuote(project.name)}`;
-      }
-      leadCommand += ` ${leadHarness.briefDelivery.settingsArgs(hooksPath).map(shellQuote).join(" ")}`;
-      if (config?.lead_sidebar === true && leadHarness.name === "claude") {
-        leadCommand += ` ${["--plugin-dir", crewPluginDir()].map(shellQuote).join(" ")}`;
-      }
+      ({ command: leadCommand, promptSuffix } = appendClaudeLeadArgs({
+        command: leadCommand,
+        harness: leadHarness,
+        projectId: project.id,
+        projectName: project.name,
+        hooksPath,
+        sidebarPluginDir: config?.lead_sidebar === true && leadHarness.name === "claude" ? crewPluginDir() : null,
+        posture: renderedPosture,
+        firstMessage,
+      }));
       if (renderedPosture !== null) {
-        const posturePath = writeProjectPosture(project.id, renderedPosture);
-        leadCommand += ` ${leadHarness.briefDelivery.systemPromptArgs(posturePath).map(shellQuote).join(" ")}`;
         console.log(`- profile: ${profile} (${postureSource} posture; see it with: hive posture)`);
-      }
-      if (leadHarness.initialPromptArgs && firstMessage !== "") {
-        promptSuffix = ` ${leadHarness.initialPromptArgs(firstMessage).map(shellQuote).join(" ")}`;
       }
     }
 
@@ -807,14 +787,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     // actually starts under it) and correct regardless of whether this invocation ends up creating
     // a pane or adopting one. Which home ends up orphaned - this one, or the previous invocation's -
     // is decided after createdPane is known, below.
-    const leadEnv = {
-      HIVE_AGENT_ID: leadActorId,
-      HIVE_AGENT_NAME: LEAD_NAME,
-      HIVE_LEAD: "1",
-      HIVE_DATA_DIR: dataDir,
-      HIVE_PROJECT_LOCK: "",
-      HIVE_PROJECT_PATH: "",
-    };
+    const leadEnv = leadIdentityEnv(leadActorId);
     let newCodexHomeKey: string | undefined;
     if (leadHarness.needsHome) {
       newCodexHomeKey = randomUUID();
@@ -1691,9 +1664,6 @@ function cmdProfile(argv: string[]): void {
   }
 }
 
-function crewPluginDir(): string {
-  return join(checkoutRoot, "claude-plugin", "crew");
-}
 
 const DASHBOARD_OPENED_KV_KEY = "hive:dashboard_opened";
 
@@ -1861,6 +1831,8 @@ function resolveNamedProcess(
 
 const LEAD_PANE_EXITED_HOOK = "pane-exited";
 const LEAD_PANE_EXITED_VERB = "lead-pane-exited";
+const LEAD_HANDOFF_GRACE_VERB = "lead-handoff-grace";
+const LEAD_HANDOFF_START_VERB = "lead-handoff-start";
 
 // tmux runs a hook with the SERVER's environment and no login shell, so a bare `hive` resolves to
 // nothing (the iTerm rule in .claude/rules/tmux-and-panes.md) and HIVE_DATA_DIR is not there at all
@@ -3543,13 +3515,15 @@ function cmdStatusline(): void {
   if (schemaAhead) parts.push("store ahead (update hive)");
   let turns: number | null = null;
   let budget: { warn: number; stop: number } | null = null;
+  let handoff: string | null = null;
   try {
     const actorId = process.env.HIVE_AGENT_ID;
     if (actorId) {
       const lead = db.prepare(
-        "SELECT 1 AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
+        "SELECT id AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
       ).get(project.id, actorId) as { lead: number } | undefined;
       if (lead) {
+        handoff = handoffStatusSegment(lead.lead);
         let inputPath = "";
         if (!process.stdin.isTTY) {
           try {
@@ -3567,6 +3541,7 @@ function cmdStatusline(): void {
     const color = budget === null ? "" : turns >= budget.stop ? "\x1b[31m" : turns >= budget.warn ? "\x1b[33m" : "";
     parts.push(`${color}turns ${turns}${color ? "\x1b[0m" : ""}`);
   }
+  if (handoff !== null) parts.push(handoff);
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
 }
 
@@ -4249,6 +4224,9 @@ if (command === "--version" || command === "-v") {
 const COMMANDS = [
   "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "crew", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
+  LEAD_HANDOFF_GRACE_VERB,
+  LEAD_HANDOFF_START_VERB,
+  "lead-handoff",
   "pads", "pad", "todos", "todo", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
@@ -4287,6 +4265,15 @@ try {
       break;
     case LEAD_PANE_EXITED_VERB:
       cmdLeadPaneExited(rest);
+      break;
+    case "lead-handoff":
+      process.exitCode = await cmdLeadHandoff(rest);
+      break;
+    case LEAD_HANDOFF_GRACE_VERB:
+      process.exitCode = await runHandoffGrace(rest);
+      break;
+    case LEAD_HANDOFF_START_VERB:
+      process.exitCode = await runHandoffStart(rest);
       break;
     case "show":
       cmdShow(rest);

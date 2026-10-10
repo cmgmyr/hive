@@ -250,6 +250,9 @@ Delivery contract:
   and the next action. Plain English, no markup.
   Waking your OWN lead pane is the exception: it is not cold, so carry the
   action and the ids and point at where the detail lives.
+  With lead_turn_budget.auto_handoff on, a lead past its warn budget gets
+  a "hive lead handoff request #N" wake: follow its steps, then run
+  hive lead-handoff. A human prompt during the grace postpones it.
 
 Receiving wake-ups:
   Spawned workers can always receive (deliver_to their name or id).

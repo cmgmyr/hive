@@ -465,6 +465,63 @@ CREATE INDEX idx_agent_messages_delivery ON agent_messages(delivery_status, id) 
 `,
 
   `ALTER TABLE agents ADD COLUMN todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL;`,
+
+  `
+ALTER TABLE lead_turn_state ADD COLUMN snapshot_pane_pid TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN snapshot_session_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN prompt_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE lead_turn_state ADD COLUMN human_prompt_seq INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE lead_turn_state ADD COLUMN human_prompt_at TEXT;
+ALTER TABLE lead_turn_state ADD COLUMN transcript_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE lead_turn_state ADD COLUMN stop_prompt_seq INTEGER;
+ALTER TABLE lead_turn_state ADD COLUMN stop_background TEXT;
+ALTER TABLE lead_turn_state ADD COLUMN stop_at TEXT;
+
+CREATE TABLE lead_handoffs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lead_agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  pane_target TEXT NOT NULL,
+  tmux_socket TEXT NOT NULL DEFAULT '',
+  predecessor_pane_pid TEXT NOT NULL,
+  predecessor_session_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('warn', 'stop')),
+  state TEXT NOT NULL CHECK (state IN ('pending', 'wind_down', 'requested', 'grace', 'postponed',
+    'respawning', 'started', 'completed', 'failed', 'ambiguous')),
+  pass INTEGER NOT NULL DEFAULT 1,
+  request_reason TEXT CHECK (request_reason IN ('warn', 'stop')),
+  pass_started_at TEXT,
+  request_wake_id INTEGER,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  owner_token TEXT,
+  owner_pid INTEGER,
+  grace_seconds INTEGER,
+  grace_started_at TEXT,
+  human_prompt_baseline INTEGER,
+  pad_id INTEGER,
+  pad_revision INTEGER,
+  pad_length INTEGER,
+  pad_sha256 TEXT,
+  respawn_claimed_at TEXT,
+  predecessor_turns INTEGER,
+  hold_since TEXT,
+  hold_released_at TEXT,
+  blocked_reason TEXT,
+  successor_pane_pid TEXT,
+  successor_session_id TEXT,
+  delivered_pad_id INTEGER,
+  delivered_pad_revision INTEGER,
+  started_at TEXT,
+  completed_at TEXT,
+  failure TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+CREATE UNIQUE INDEX idx_lead_handoffs_epoch
+  ON lead_handoffs(project_id, lead_agent_id, predecessor_pane_pid, predecessor_session_id);
+CREATE UNIQUE INDEX idx_lead_handoffs_active
+  ON lead_handoffs(lead_agent_id) WHERE state NOT IN ('completed', 'failed');
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
