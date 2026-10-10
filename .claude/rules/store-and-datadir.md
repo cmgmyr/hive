@@ -99,6 +99,8 @@ Never edit an existing entry in `MIGRATIONS`; add a new one. Pinned by `test/mig
 
 **A trigger migration adds a standing constraint on every migration after it.** Any future migration that rewrites `pads.content`, `todos.title`/`body`, or `kv.value` for existing rows must stamp `updated_at` in the same `UPDATE` statement, or it aborts against its own trigger. This cannot be relaxed retroactively once a store has applied the migration.
 
+**`fence_handoff_held_claim` skips a held lead's wake claims in every build.** A later migration that bumps `wakes.fire_count` or sets `wakes.delivery_method` on existing rows is silently skipped for the wakes of a lead whose handoff holds automation (`RAISE(IGNORE)`, never ABORT: a throw out of an old build's claim starves every later wake on that server). Changing `handoffHoldsAutomation` or `handoffHoldsWake` needs a NEW migration that drops and recreates the trigger; never edit migration 39.
+
 ## The store's write lock now also excludes something that is not a store write
 
 Two rules on what may live inside a `withWindowClaim` section:
