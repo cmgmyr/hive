@@ -133,8 +133,7 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
         // A human prompt during grace postpones that attempt at once; the grace owner sees it too.
         db.prepare(
           `UPDATE lead_handoffs SET state = 'postponed', pass = pass + 1, pass_started_at = ?, owner_token = NULL,
-             owner_pid = NULL, blocked_reason = 'a human prompt arrived during grace', hold_since = NULL,
-             hold_released_at = NULL, updated_at = ?
+             owner_pid = NULL, blocked_reason = 'a human prompt arrived during grace', updated_at = ?
            WHERE lead_agent_id = ? AND state = 'grace' AND predecessor_session_id = ?`,
         ).run(now, now, agentId, sessionId);
       }

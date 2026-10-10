@@ -459,7 +459,8 @@ const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; 
       request_reason: current.reason,
       request_wake_id: wakeId,
       hold_released_at: null,
-      hold_since: holds ? (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now : null,
+      // The stop-hold clock runs across passes; only re-arming a released hold restarts it.
+      hold_since: !holds ? null : current.hold_released_at !== null || current.hold_since === null ? nowSql() : current.hold_since,
       blocked_reason: null,
     },
     { pass: current.pass },
@@ -469,14 +470,14 @@ const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; 
 function maintainHold(row: HandoffRow, reason: string | null): void {
   const holds = handoffHoldsAutomation(row);
   if (holds && row.hold_since === null) {
-    casHandoff(row.id, [row.state], { hold_since: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now }, { hold_since: null });
+    casHandoff(row.id, [row.state], { hold_since: nowSql() }, { hold_since: null });
     return;
   }
   if (holds && row.state !== "grace" && olderThan(row.hold_since, STOP_HOLD_CAP_SECONDS)) {
     casHandoff(
       row.id,
       [row.state],
-      { hold_released_at: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now, blocked_reason: reason ?? "no quiet moment" },
+      { hold_released_at: nowSql(), blocked_reason: reason ?? "no quiet moment" },
       { hold_released_at: null },
     );
     return;
@@ -554,9 +555,7 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
       [row.state],
       {
         pass: row.pass + 1,
-        pass_started_at: (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now,
-        hold_since: null,
-        hold_released_at: null,
+        pass_started_at: nowSql(),
         blocked_reason: blocker.reason,
       },
       { pass: row.pass },
@@ -759,8 +758,6 @@ function postpone(row: HandoffRow, token: string, reason: string, escalate: bool
       owner_token: null,
       owner_pid: null,
       blocked_reason: reason,
-      hold_since: null,
-      hold_released_at: null,
     },
     { attempt: row.attempt, owner_token: token },
   );

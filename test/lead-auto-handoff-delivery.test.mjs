@@ -211,6 +211,23 @@ describe("lead auto-handoff delivery", () => {
     assert.equal(released.state, "wind_down", "the epoch stays armed; only the hold is released");
   });
 
+  it("a stop hold blocked by a working lead releases after 15 minutes across pass escalations", async () => {
+    const lead = seedLead();
+    turns(12);
+    await prompt();
+    drive();
+    const row = active(lead.id);
+    assert.equal(row.state, "wind_down");
+    db.prepare("UPDATE lead_handoffs SET hold_since = datetime('now', '-16 minutes'), pass_started_at = datetime('now', '-11 minutes') WHERE id = ?").run(row.id);
+    drive();
+    assert.equal(handoff.readHandoff(row.id).pass, 2);
+    drive();
+    const released = handoff.readHandoff(row.id);
+    assert.notEqual(released.hold_released_at, null);
+    assert.match(released.blocked_reason, /turn has not ended/);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+  });
+
   it("postponed handoff requests a fresh attempt wake at its next quiet moment", async () => {
     const lead = seedLead();
     turns(5);
