@@ -28,6 +28,7 @@ export const PASS_TIMEOUT_SECONDS = 10 * 60;
 export const STOP_HOLD_CAP_SECONDS = 15 * 60;
 // The fence trigger's ceiling on lead_handoffs.updated_at age (src/db.ts); change both together.
 export const HOLD_CEILING_SECONDS = 3600;
+export const SUCCESSOR_NOT_READY = "the successor has not completed its first turn";
 
 export interface PassPolicy {
   graceSeconds: number;
@@ -328,6 +329,10 @@ function processAlive(pid: number): boolean {
 function settleAfterRespawn(row: HandoffRow, lead: { pane_pid: string }): void {
   if (row.state === "started" && row.successor_pane_pid !== null && lead.pane_pid !== row.successor_pane_pid) {
     casHandoff(row.id, ["started"], { state: "failed", failure: "the lead pane no longer runs the successor this handoff started" });
+    return;
+  }
+  if (row.state === "started" && row.blocked_reason !== SUCCESSOR_NOT_READY && olderThan(row.started_at, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(row.id, ["started"], { blocked_reason: SUCCESSOR_NOT_READY });
     return;
   }
   if ((row.state === "respawning" || row.state === "ambiguous") && row.hold_released_at === null && olderThan(row.updated_at, STOP_HOLD_CAP_SECONDS)) {
@@ -1032,7 +1037,8 @@ export function handoffInjection(leadActor: string): string | null {
   }
   lines.push(
     workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
-    `Wakes pending for this lead: ${pending}. Held for the handoff and released to you now: ${heldWakes} wake(s), ${heldMessages} message(s).`,
+    `Wakes pending for this lead: ${pending}. Held for the handoff and ${row.state === "started" ? "delivered to you once your first turn ends" : "released to you now"}: ` +
+      `${heldWakes} wake(s), ${heldMessages} message(s).`,
     row.state === "started" && row.successor_pane_pid === lead.pane_pid
       ? `hive archives this pad after your first completed turn. Then append one line to it with ` +
         `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`
@@ -1100,6 +1106,7 @@ export function handoffStatusSegment(leadAgentId: number): string | null {
   if (row !== null) {
     if (row.hold_released_at !== null) return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
     if (row.state === "grace") return "handoff in grace";
+    if (row.state === "started" && row.blocked_reason === SUCCESSOR_NOT_READY) return `handoff started: ${SUCCESSOR_NOT_READY}`;
     return `handoff ${row.state.replace("_", " ")}`;
   }
   const done = db

@@ -236,6 +236,55 @@ describe("lead auto-handoff hold lifetime", () => {
     assert.equal(handoff.readHandoffGate(lead.id), null);
   });
 
+  it("a never-ready successor is named from started_at, then released at the ceiling", () => {
+    const lead = seedLead();
+    const budget = () => ({ warn: 3, stop: 10, auto_handoff: true });
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "100", session_id: "s-1" }, requestBody: () => "req",
+    });
+    db.prepare(
+      `UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', blocked_reason = 'a stale grace reason',
+         started_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-14 minutes') WHERE id = ?`,
+    ).run(requestId);
+    const wake = db
+      .prepare("INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at) VALUES (?, 'x', 'roster', 'delay', 'lead:h', '%9800', datetime('now', '-1 minute')) RETURNING id")
+      .get(project).id;
+    const claim = () => db.prepare("UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1 WHERE id = ? AND fired_at IS NULL").run(wake).changes;
+
+    handoff.driveLeadHandoff("lead:h", budget);
+    assert.equal(handoff.readHandoff(requestId).blocked_reason, "a stale grace reason", "14 minutes after started_at is not yet named");
+    assert.equal(handoff.handoffStatusSegment(lead.id), "handoff started");
+
+    db.prepare("UPDATE lead_handoffs SET started_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-16 minutes') WHERE id = ?").run(requestId);
+    handoff.driveLeadHandoff("lead:h", budget);
+    const named = handoff.readHandoff(requestId);
+    assert.equal(named.state, "started");
+    assert.equal(named.blocked_reason, handoff.SUCCESSOR_NOT_READY);
+    assert.equal(handoff.handoffStatusSegment(lead.id), `handoff started: ${handoff.SUCCESSOR_NOT_READY}`);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    assert.equal(claim(), 0, "the store fence still refuses the claim once the reason is named");
+
+    db.prepare("UPDATE lead_handoffs SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-3601 seconds') WHERE id = ?").run(requestId);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+    assert.equal(claim(), 1, "past the ceiling the held wake is claimable");
+  });
+
+  it("the successor's injection says held deliveries arrive once its first turn ends", () => {
+    const lead = seedLead();
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "100", session_id: "s-1" }, requestBody: () => "req",
+    });
+    const padId = db.prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, 'pad body') RETURNING id").get(project, handoff.HANDOFF_PAD_NAME).id;
+    db.prepare("UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', pad_id = ?, started_at = datetime('now') WHERE id = ?").run(padId, requestId);
+    try {
+      const text = handoff.handoffInjection("lead:h");
+      assert.match(text, /Held for the handoff and delivered to you once your first turn ends: 0 wake\(s\), 0 message\(s\)\./);
+      assert.doesNotMatch(text, /released to you now/);
+    } finally {
+      db.prepare("DELETE FROM pads WHERE id = ?").run(padId);
+    }
+  });
+
   it("a grace whose owner process is dead fails and releases its holds", async () => {
     const lead = seedLead();
     writeTranscript(5);
