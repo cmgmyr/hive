@@ -181,6 +181,8 @@ describe("lead auto-handoff restart", () => {
   });
 
   it("grace owner respawns once and refuses changed or unknown ownership", needsTmux, async () => {
+    const launchedBefore = existsSync(launched) ? readFileSync(launched, "utf8").length : 0;
+    const ownLaunches = () => (existsSync(launched) ? readFileSync(launched, "utf8").slice(launchedBefore) : "");
     const ctx = await readyLead({ stop: "stop-shell-running.json" });
     const worker = db
       .prepare(
@@ -204,8 +206,8 @@ describe("lead auto-handoff restart", () => {
     await hook("stop", payload("lead-claude-stop.json"));
     assert.ok(await until(() => row(ctx.requestId).state === "started", 10000), JSON.stringify(row(ctx.requestId)));
     const started = row(ctx.requestId);
-    assert.ok(await until(() => existsSync(launched) && readFileSync(launched, "utf8").includes("Took over from session"), 5000));
-    const record = readFileSync(launched, "utf8");
+    assert.ok(await until(() => ownLaunches().includes("Took over from session"), 5000));
+    const record = ownLaunches();
     const successorPid = record.split(" ")[0];
     assert.equal(panePid(ctx.pane.pane), successorPid, "the shell exec'd claude in the same pane process");
     assert.equal(started.successor_pane_pid, successorPid);
@@ -216,7 +218,7 @@ describe("lead auto-handoff restart", () => {
     assert.deepEqual({ ...crew }, { status: "running", parent_actor_id: "lead:r" }, "the crew and its parent link survive");
     const standing = db.prepare("SELECT cancelled_at, deliver_actor FROM wakes WHERE id = ?").get(watch);
     assert.deepEqual({ ...standing }, { cancelled_at: null, deliver_actor: "lead:r" }, "the standing watch survives on the same lead row");
-    assert.equal(readFileSync(launched, "utf8").split("Took over from session").length - 1, 1, "respawned exactly once");
+    assert.equal(ownLaunches().split("Took over from session").length - 1, 1, "respawned exactly once");
 
     db.exec("DELETE FROM lead_handoffs; DELETE FROM agents; DELETE FROM lead_turn_state; DELETE FROM pads;");
     const moved = await readyLead();
