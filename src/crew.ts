@@ -278,6 +278,9 @@ function tokenize(segment: string): string[] {
 }
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const SHELL_PREFIX_KEYWORDS = new Set(["if", "elif", "while", "until", "do", "then", "else", "!", "{"]);
+const SHELL_HEADER_KEYWORDS = new Set(["for", "select", "case"]);
+const SHELL_CLOSING_KEYWORDS = new Set(["done", "fi", "esac", "}"]);
 
 interface Segment {
   tokens: string[];
@@ -288,7 +291,16 @@ function toSegment(segment: string): Segment {
   const tokens = tokenize(segment);
   let start = 0;
   while (start < tokens.length && ENV_ASSIGNMENT.test(tokens[start])) start++;
-  const rest = tokens.slice(start);
+  let rest = tokens.slice(start);
+  while (rest.length > 0) {
+    if (SHELL_HEADER_KEYWORDS.has(rest[0]) || SHELL_CLOSING_KEYWORDS.has(rest[0])) {
+      rest = [];
+      break;
+    }
+    if (!SHELL_PREFIX_KEYWORDS.has(rest[0])) break;
+    rest = rest.slice(1);
+    while (rest.length > 0 && ENV_ASSIGNMENT.test(rest[0])) rest = rest.slice(1);
+  }
   return { tokens: rest[0] === "cd" ? [] : rest, writes: writesToFile(segment) };
 }
 
@@ -331,7 +343,7 @@ function matchesPrefix(tokens: string[], matcher: Matcher): boolean {
 }
 
 const READING_EXES = new Set(["rg", "grep", "cat", "head", "tail", "sed"]);
-const FALLBACK_SKIP = new Set(["printf", "echo", "true", ":"]);
+const FALLBACK_SKIP = new Set(["printf", "echo", "true", ":", "[", "[[", "test"]);
 const NODE_RUNNERS = new Set(["npm", "pnpm", "yarn"]);
 const TEST_BINARIES = new Set(["pest", "phpunit", "vitest", "jest"]);
 const BUILD_BINARIES = new Set(["pint", "phpstan"]);

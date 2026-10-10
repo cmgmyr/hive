@@ -500,6 +500,27 @@ describe("activity labels", () => {
     assert.equal(labelOf("printf x > f"), "running printf");
   });
 
+  it("a shell until loop waiting on sleep skips keywords only at segment heads", () => {
+    assert.equal(labelOf("SECONDS=0; until [ $SECONDS -ge 25 ]; do sleep 2; done; echo waited $SECONDS"), "running sleep");
+    assert.equal(labelOf("echo done"), "running echo");
+    assert.equal(labelOf("grep -r until src"), "reading");
+    assert.equal(labelOf("./do build"), "running do");
+  });
+
+  it("a for loop header is skipped and its command body is recognized", () => {
+    assert.equal(labelOf("for f in a b; do npm test; done"), "testing");
+    assert.equal(labelOf("for f in a b; do sleep 1; done"), "running sleep");
+  });
+
+  it("a while loop closing keyword does not become the fallback command", () => {
+    assert.equal(labelOf("while true; do make; done"), "running make");
+  });
+
+  it("a loop of only fallback skip words keeps the existing first-segment fallback", () => {
+    assert.equal(labelOf("while true; do :; done"), "running true");
+    assert.equal(labelOf("done"), "running shell");
+  });
+
   it("a redirect makes a read an edit and a null redirect does not", () => {
     assert.equal(labelOf("cat >> notes.md"), "editing");
     assert.equal(labelOf("cat a > b"), "editing");
