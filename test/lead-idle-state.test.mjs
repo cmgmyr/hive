@@ -250,6 +250,38 @@ describe("a lead's turn state comes from its own hooks", () => {
     assert.equal(turn(lead.id).state, "working");
   });
 
+  it("the handoff snapshot counts every prompt while working and only human ones as conversation", async () => {
+    const lead = seedAgent("lead", "snap1");
+    const TASK = fixture("prompt-task-notification.json");
+    await hook("prompt", PROMPT, lead.actor);
+    await hook("prompt", withField(PROMPT, "prompt", "[hive wake #12] check the board"), lead.actor);
+    await hook("prompt", withField(TASK, "session_id", SESSION), lead.actor);
+    await hook("prompt", withField(PROMPT, "prompt", "[hive:worker w1] done"), lead.actor);
+    const row = turn(lead.id);
+    assert.equal(row.state, "working");
+    assert.equal(row.prompt_seq, 4);
+    assert.equal(row.human_prompt_seq, 1);
+    assert.notEqual(row.human_prompt_at, null);
+    assert.equal(row.transcript_path, JSON.parse(PROMPT).transcript_path);
+    assert.equal(row.stop_prompt_seq, null);
+    await hook("stop", STOP, lead.actor);
+    assert.equal(turn(lead.id).stop_prompt_seq, 4);
+    assert.equal(turn(lead.id).stop_background, "[]");
+  });
+
+  it("/clear starts a fresh handoff snapshot for the new session", async () => {
+    const lead = seedAgent("lead", "snap2");
+    await hook("prompt", PROMPT, lead.actor);
+    await hook("stop", STOP, lead.actor);
+    await hook("session_end", CLEAR, lead.actor);
+    await hook("prompt", PROMPT_AFTER_CLEAR, lead.actor);
+    const row = turn(lead.id);
+    assert.equal(row.snapshot_session_id, SESSION_AFTER_CLEAR);
+    assert.equal(row.prompt_seq, 1);
+    assert.equal(row.stop_prompt_seq, null);
+    assert.equal(row.stop_background, null);
+  });
+
   it("a late SessionEnd from a superseded session does not reset the new session's turn", async () => {
     const lead = seedAgent("lead", "l13");
 

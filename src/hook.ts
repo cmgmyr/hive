@@ -349,7 +349,10 @@ try {
     if (!guarded) state = applyWorkerTransition(actorId, event);
 
     // A lead's turn state is its own table; agents.agent_state stays worker-only.
-    if (process.env.HIVE_LEAD === "1" && (event === "prompt" || event === "stop" || event === "session_end")) {
+    if (
+      process.env.HIVE_LEAD === "1" &&
+      ["prompt", "stop", "session_end", "subagent_start", "subagent_stop"].includes(event)
+    ) {
       try {
         const { applyLeadHook } = await import("./leadState.js");
         applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
