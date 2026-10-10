@@ -1026,10 +1026,10 @@ export function handoffInjection(leadActor: string): string | null {
   lines.push(
     workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
     `Wakes pending for this lead: ${pending}. Held for the handoff and released to you now: ${heldWakes} wake(s), ${heldMessages} message(s).`,
-    row.state === "started"
+    row.state === "started" && row.successor_pane_pid === lead.pane_pid
       ? `hive archives this pad after your first completed turn. Then append one line to it with ` +
         `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`
-      : `This handoff did not complete (${row.state}${row.failure ? `: ${row.failure}` : ""}), so hive will not archive the pad; ` +
+      : `This handoff did not complete (${row.state === "started" ? "its successor is gone" : row.state}${row.failure ? `: ${row.failure}` : ""}), so hive will not archive the pad; ` +
         `archive it with pad_archive(pad_id: ${pad.id}) once you have taken it over.`,
     "",
     pad.content,

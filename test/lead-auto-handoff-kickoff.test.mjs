@@ -78,6 +78,14 @@ describe("lead auto-handoff successor start", () => {
     assert.ok(!plain.stdout.includes("LEAD HANDOFF"), "a session hive did not start as a lead gets none");
   });
 
+  it("a recovery lead whose pane is not the started successor is told the handoff did not complete", async () => {
+    seed();
+    db.prepare("UPDATE agents SET pane_pid = '999' WHERE actor_id = 'lead:k'").run();
+    const text = contextOf((await kickoff({ HIVE_AGENT_ID: "lead:k", HIVE_LEAD: "1" })).stdout);
+    assert.match(text, /This handoff did not complete \(its successor is gone\)/);
+    assert.doesNotMatch(text, /hive archives this pad/);
+  });
+
   it("a reserved-name pad no handoff delivered injects nothing", async () => {
     const { id } = seed();
     db.prepare("DELETE FROM lead_handoffs WHERE id = ?").run(id);
