@@ -49,8 +49,17 @@ export function leadSessionEnded(
   return turn?.last_event === "session_end" && turn.pane_pid === row.pane_pid ? { ended_at: turn.changed_at } : null;
 }
 
-// Mirrors the exclusions conversationHoldsWake applies to agent_state_log (src/scheduler.ts),
-// including SQLite LIKE's ASCII case-insensitivity.
+// The hive-authored prompt shapes conversationHoldsWake excludes, as SQL over an agent_state_log
+// payload column. isHumanPrompt below is its JS twin; a parity test keeps them in step.
+export function humanPromptSql(col: string): string {
+  const p = `CASE WHEN json_valid(${col}) THEN COALESCE(json_extract(${col}, '$.prompt'), ${col}) ELSE ${col} END`;
+  return (
+    `${p} NOT LIKE '%[hive wake #%' AND ${p} NOT LIKE '[hive:%' AND ${p} NOT LIKE '<task-notification>%' ` +
+    `AND ${p} NOT LIKE '<cross-session-message from="%" from-name="hive">' || char(10) || '[hive:worker %] [message #%,%' || char(10) || '</cross-session-message>%'`
+  );
+}
+
+// Includes SQLite LIKE's ASCII case-insensitivity.
 export function isHumanPrompt(prompt: string): boolean {
   const p = prompt.toLowerCase();
   if (p.includes("[hive wake #") || p.startsWith("[hive:") || p.startsWith("<task-notification>")) return false;

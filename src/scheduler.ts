@@ -34,7 +34,7 @@ import {
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
 import { driveLeadHandoff, handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoff.js";
-import { readLeadTurnState } from "./leadState.js";
+import { humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
@@ -1005,9 +1005,7 @@ function conversationHoldsWake(timer: TimerRow, snapshot: AliveSnapshot | null):
   return (
     stmt(
       `SELECT 1 AS hit FROM agent_state_log
-        WHERE actor_id = ? AND event = 'prompt' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '%[hive wake #%' AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '[hive:%'
-          AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '<task-notification>%'
-          AND CASE WHEN json_valid(payload) THEN COALESCE(json_extract(payload, '$.prompt'), payload) ELSE payload END NOT LIKE '<cross-session-message from="%" from-name="hive">' || char(10) || '[hive:worker %] [message #%,%' || char(10) || '</cross-session-message>%'
+        WHERE actor_id = ? AND event = 'prompt' AND ${humanPromptSql("payload")}
           AND created_at >= datetime('now', ?)
         ORDER BY id DESC LIMIT 1`,
     ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined

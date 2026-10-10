@@ -293,3 +293,27 @@ describe("a lead's turn state comes from its own hooks", () => {
     assert.equal(turn(lead.id).session_id, SESSION_AFTER_CLEAR);
   });
 });
+
+describe("the human-prompt predicate", () => {
+  it("isHumanPrompt agrees with conversationHoldsWake's SQL over every hive marker shape", async () => {
+    const { humanPromptSql, isHumanPrompt } = await import("../dist/leadState.js");
+    const envelope = (name, body) => `<cross-session-message from="x" from-name="${name}">\n${body}\n</cross-session-message>`;
+    const samples = [
+      "what is the status?",
+      "[hive wake #12] check the board",
+      "please look at [hive wake #3] again",
+      "[hive:worker w1] done",
+      "[HIVE:lead other] hi",
+      "<task-notification>finished</task-notification>",
+      envelope("hive", "[hive:worker w1] [message #4, 20 chars] done"),
+      envelope("peer", "[hive:worker w1] [message #4, 20 chars] done"),
+      envelope("hive", "a human quoting hive"),
+    ];
+    const sql = db.prepare(`WITH t(payload) AS (SELECT ?) SELECT (${humanPromptSql("payload")}) AS human FROM t`);
+    for (const prompt of samples) {
+      const fromSql = sql.get(JSON.stringify({ prompt })).human === 1;
+      assert.equal(isHumanPrompt(prompt), fromSql, prompt);
+    }
+    assert.equal(isHumanPrompt(samples[0]), true, "positive control: a plain prompt is human");
+  });
+});
