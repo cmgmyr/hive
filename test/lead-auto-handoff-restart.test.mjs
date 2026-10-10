@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 
@@ -10,9 +10,33 @@ const { dataDir, tmp } = scratchDirs();
 const fakeBin = join(tmp, "bin");
 mkdirSync(fakeBin);
 const launched = join(tmp, "launched.txt");
+const delayed = {
+  flag: join(tmp, "delayed-successor.flag"),
+  exec: join(tmp, "delayed-exec.txt"),
+  dropped: join(tmp, "delayed-dropped.txt"),
+  received: join(tmp, "delayed-received.txt"),
+  prompt: join(tmp, "delayed-prompt.json"),
+  stop: join(tmp, "delayed-stop.json"),
+};
+const successorHook = (event, file) => `HIVE_AGENT_ID=lead:r HIVE_LEAD=1 '${process.execPath}' '${join(DIST, "hook.js")}' ${event} < '${file}'`;
 writeFileSync(
   join(fakeBin, "claude"),
-  `#!/bin/sh\necho "$$ $*" >> '${launched}'\nexec sleep 600\n`,
+  [
+    "#!/bin/bash",
+    `if [ -f '${delayed.flag}' ]; then`,
+    `  rm -f '${delayed.flag}'`,
+    `  date +%s > '${delayed.exec}'`,
+    "  sleep 2",
+    `  while read -t 1 -r line; do printf '%s\\n' "$line" >> '${delayed.dropped}'; done`,
+    `  cat '${join(REPO, "test", "fixtures", "panes", "ready-idle.txt")}'`,
+    `  ${successorHook("prompt", delayed.prompt)}`,
+    `  ${successorHook("stop", delayed.stop)}`,
+    `  exec cat >> '${delayed.received}'`,
+    "fi",
+    `echo "$$ $*" >> '${launched}'`,
+    "exec sleep 600",
+    "",
+  ].join("\n"),
 );
 chmodSync(join(fakeBin, "claude"), 0o755);
 process.env.PATH = `${fakeBin}:${process.env.PATH}`;
@@ -26,6 +50,7 @@ const { db, migrate } = await import("../dist/db.js");
 const handoff = await import("../dist/leadHandoff.js");
 const { holdsHumanInput, tmuxSocketPath } = await import("../dist/tmux.js");
 const { paneClassifierFor } = await import("../dist/harnesses.js");
+const { tick } = await import("../dist/scheduler.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -103,6 +128,7 @@ const command = (ctx, overrides = {}, env = {}) =>
 const row = (id) => handoff.readHandoff(id);
 const endGrace = (id) => db.prepare("UPDATE lead_handoffs SET grace_started_at = datetime('now', '-10 minutes') WHERE id = ?").run(id);
 
+beforeEach(() => rmSync(delayed.flag, { force: true }));
 beforeEach(() => db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM pads; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM agents;"));
 
 describe("lead auto-handoff restart", () => {
@@ -319,6 +345,64 @@ describe("lead auto-handoff restart", () => {
     handoff.driveLeadHandoff("lead:r", () => ({ warn: 3, stop: 10, auto_handoff: true }));
     assert.equal(row(ctx.requestId).state, "ambiguous");
     assert.equal(handoff.readHandoffGate(ctx.lead.id).holdAutomation, true, "the delivery fence stays up");
+  });
+
+  it("a delayed successor receives the held roster and one-shot only after its first Stop", needsTmux, async () => {
+    const ctx = await readyLead();
+    const SUCCESSOR = "delayed-successor-session";
+    writeFileSync(delayed.stop, payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
+    writeFileSync(delayed.flag, "");
+    assert.equal((await command(ctx)).code, 0);
+    assert.equal(row(ctx.requestId).state, "grace");
+    writeFileSync(delayed.prompt, payload("lead-claude-prompt.json", { session_id: SUCCESSOR, prompt: handoff.successorPrompt(row(ctx.requestId)) }));
+
+    const watch = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, watch_scope)
+         VALUES (?, 'lead:r', 'standing watch', 'idle_any', 'lead:r', ?, 'project') RETURNING id`,
+      )
+      .get(project, ctx.pane.pane).id;
+    const pending = (body, parent) =>
+      db
+        .prepare(
+          `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, parent_wake_id)
+           VALUES (?, 'lead:r', ?, 'delay', 'lead:r', ?, datetime('now', '-16 minutes'), ?) RETURNING id`,
+        )
+        .get(project, body, ctx.pane.pane, parent).id;
+    const roster = pending("ROSTER-1848 crew [idle]", watch);
+    const oneShot = pending("ONESHOT-1848 check the crew", null);
+    const wake = (id) => db.prepare("SELECT fired_at, typed_at FROM wakes WHERE id = ?").get(id);
+
+    endGrace(ctx.requestId);
+    const typedBeforeCompleted = [];
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && row(ctx.requestId).state !== "completed") {
+      await tick();
+      for (const id of [roster, oneShot]) {
+        if (wake(id).typed_at !== null && row(ctx.requestId).completed_at === null) typedBeforeCompleted.push({ id, state: row(ctx.requestId).state });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const done = row(ctx.requestId);
+    assert.equal(done.state, "completed", JSON.stringify(done));
+    assert.deepEqual(typedBeforeCompleted, [], "nothing is typed while the handoff is short of completed");
+
+    const exec = Number(readFileSync(delayed.exec, "utf8").trim());
+    assert.ok(Date.parse(`${done.completed_at.replace(" ", "T")}Z`) / 1000 >= exec + 1.5, "the successor's first Stop lagged its exec");
+
+    assert.ok(
+      await until(async () => {
+        await tick();
+        return wake(roster).typed_at !== null && wake(oneShot).typed_at !== null;
+      }, 10_000),
+      JSON.stringify([db.prepare("SELECT * FROM wakes").all(), db.prepare("SELECT id, status, pane_pid, tmux_target, agent_state FROM agents").all(), handoff.readHandoffGate(ctx.lead.id)]),
+    );
+    for (const id of [roster, oneShot]) {
+      assert.ok(wake(id).fired_at >= done.completed_at.slice(0, 19), `wake ${id} claimed at ${wake(id).fired_at}, completed ${done.completed_at}`);
+      assert.ok(wake(id).typed_at >= done.completed_at, `wake ${id} typed at ${wake(id).typed_at}, completed ${done.completed_at}`);
+    }
+    assert.ok(await until(() => existsSync(delayed.received) && /ROSTER-1848/.test(readFileSync(delayed.received, "utf8")) && /ONESHOT-1848/.test(readFileSync(delayed.received, "utf8")), 5000));
+    assert.equal(existsSync(delayed.dropped) ? readFileSync(delayed.dropped, "utf8") : "", "", "nothing reached the successor before it was ready");
   });
 
   it("handoff fences predecessor exit but retains successor cleanup", async () => {

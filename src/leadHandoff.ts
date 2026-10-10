@@ -26,6 +26,9 @@ export const PRE_RESPAWN_STATES: readonly HandoffState[] = ["pending", "wind_dow
 
 export const PASS_TIMEOUT_SECONDS = 10 * 60;
 export const STOP_HOLD_CAP_SECONDS = 15 * 60;
+// The fence trigger's ceiling on lead_handoffs.updated_at age (src/db.ts); change both together.
+export const HOLD_CEILING_SECONDS = 3600;
+export const SUCCESSOR_NOT_READY = "the successor has not completed its first turn";
 
 export interface PassPolicy {
   graceSeconds: number;
@@ -109,6 +112,8 @@ export function handoffHoldsAutomation(row: HandoffRow): boolean { // mirrored b
   switch (row.state) {
     case "grace":
       return true;
+    case "started":
+      return !olderThan(row.updated_at, HOLD_CEILING_SECONDS);
     case "respawning":
     case "ambiguous":
       return row.hold_released_at === null;
@@ -138,8 +143,8 @@ export function readHandoffGate(leadAgentId: number): HandoffGate | null {
 }
 
 export const HELD_REASON_HANDOFF =
-  "the lead is winding down for an automatic handoff; held so nothing interrupts it, and delivered to the " +
-  "lead row (its successor, once it starts) when the handoff completes, fails or releases its hold";
+  "the lead is handing off to a fresh session; held through the wind-down and the successor's boot, and delivered to " +
+  "the lead row once the successor completes its first turn, or when the handoff fails or releases its hold";
 
 // A wake addressed to a lead row is held while that lead's handoff holds automation, except the
 // current request wake itself, which still passes every human-input and ownership guard.
@@ -324,6 +329,10 @@ function processAlive(pid: number): boolean {
 function settleAfterRespawn(row: HandoffRow, lead: { pane_pid: string }): void {
   if (row.state === "started" && row.successor_pane_pid !== null && lead.pane_pid !== row.successor_pane_pid) {
     casHandoff(row.id, ["started"], { state: "failed", failure: "the lead pane no longer runs the successor this handoff started" });
+    return;
+  }
+  if (row.state === "started" && row.blocked_reason !== SUCCESSOR_NOT_READY && olderThan(row.started_at, STOP_HOLD_CAP_SECONDS)) {
+    casHandoff(row.id, ["started"], { blocked_reason: SUCCESSOR_NOT_READY });
     return;
   }
   if ((row.state === "respawning" || row.state === "ambiguous") && row.hold_released_at === null && olderThan(row.updated_at, STOP_HOLD_CAP_SECONDS)) {
@@ -1028,7 +1037,8 @@ export function handoffInjection(leadActor: string): string | null {
   }
   lines.push(
     workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
-    `Wakes pending for this lead: ${pending}. Held for the handoff and released to you now: ${heldWakes} wake(s), ${heldMessages} message(s).`,
+    `Wakes pending for this lead: ${pending}. Held for the handoff and ${row.state === "started" ? "delivered to you once your first turn ends" : "released to you now"}: ` +
+      `${heldWakes} wake(s), ${heldMessages} message(s).`,
     row.state === "started" && row.successor_pane_pid === lead.pane_pid
       ? `hive archives this pad after your first completed turn. Then append one line to it with ` +
         `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`
@@ -1094,6 +1104,7 @@ export function completeHandoffOnStop(actorId: string): boolean {
 export function handoffStatusSegment(leadAgentId: number): string | null {
   const row = readActiveHandoff(leadAgentId);
   if (row !== null) {
+    if (row.state === "started") return row.blocked_reason === SUCCESSOR_NOT_READY ? `handoff started: ${SUCCESSOR_NOT_READY}` : "handoff started";
     if (row.hold_released_at !== null) return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
     if (row.state === "grace") return "handoff in grace";
     return `handoff ${row.state.replace("_", " ")}`;
