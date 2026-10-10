@@ -164,19 +164,18 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
 // The states after a respawn claim, in which the predecessor's session is no longer the lead.
 export const HANDED_OFF_STATES_SQL = "('respawning', 'started', 'completed', 'ambiguous')";
 
-// A hook from a handed-off predecessor session is fenced only while it still comes from the
-// predecessor's pane process; a later resume of that session in a new process is the lead again.
-export function predecessorFence(agentId: number, sessionId: unknown, hookPanePid: () => string): boolean {
+// A predecessor-session hook is fenced from the respawn claim until the handoff completes or fails;
+// the pane pid cannot tell a dying predecessor from an in-pane /resume, so the row's state decides.
+export function predecessorFence(agentId: number, sessionId: unknown): boolean {
   if (typeof sessionId !== "string" || sessionId === "") return false;
-  const rows = db
-    .prepare(
-      `SELECT predecessor_pane_pid FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
-         AND state IN ${HANDED_OFF_STATES_SQL}`,
-    )
-    .all(agentId, sessionId) as { predecessor_pane_pid: string }[];
-  if (rows.length === 0) return false;
-  const pid = hookPanePid();
-  return pid === "" || rows.some((r) => r.predecessor_pane_pid === pid);
+  return (
+    db
+      .prepare(
+        `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
+           AND state IN ('respawning', 'started', 'ambiguous')`,
+      )
+      .get(agentId, sessionId) !== undefined
+  );
 }
 
 const applyInTransaction = db.transaction(
@@ -210,12 +209,11 @@ export function applyLeadHook(
   event: string,
   payload: LeadHookPayload,
   subagentsLive: () => boolean,
-  hookPanePid: () => string,
 ): void {
   const lead = db
     .prepare("SELECT id, pane_pid FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actorId) as { id: number; pane_pid: string } | undefined;
   if (!lead) return;
-  const fenced = predecessorFence(lead.id, payload.session_id, hookPanePid);
+  const fenced = predecessorFence(lead.id, payload.session_id);
   applyInTransaction.immediate(lead.id, lead.pane_pid, event, payload, subagentsLive, fenced);
 }

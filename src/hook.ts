@@ -211,7 +211,7 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
     | undefined;
   if (lead !== undefined) {
     const { predecessorFence } = await import("./leadState.js");
-    if (predecessorFence(lead.id, payload.session_id, await hookPanePidReader(actorId, payload.session_id))) return;
+    if (predecessorFence(lead.id, payload.session_id)) return;
   }
 
   // Imported here and nowhere above: harnesses.ts itself pulls tmux at module scope, and every
@@ -238,21 +238,6 @@ async function registerLeadMessagingSocket(actorId: string): Promise<void> {
   db.prepare(
     "UPDATE agents SET claude_messaging_socket = ?, claude_messaging_pane_pid = ? WHERE actor_id = ? AND kind = 'lead' AND status = 'running'",
   ).run(socket, pid, actorId);
-}
-
-// The pid of the pane this hook runs in, read only when a fence needs it.
-async function hookPanePidReader(actorId: string, sessionId: unknown): Promise<() => string> {
-  const pane = process.env.TMUX_PANE ?? "";
-  const candidate =
-    typeof sessionId === "string" &&
-    db
-      .prepare(
-        "SELECT 1 AS hit FROM lead_handoffs h JOIN agents a ON a.id = h.lead_agent_id WHERE a.actor_id = ? AND h.predecessor_session_id = ?",
-      )
-      .get(actorId, sessionId) !== undefined;
-  if (pane === "" || !candidate) return () => "";
-  const { panePidForRecord } = await import("./tmux.js");
-  return () => panePidForRecord(pane);
 }
 
 function reconcileSessionId(actorId: string, payload: HookPayload): void {
@@ -378,7 +363,7 @@ try {
     ) {
       try {
         const { applyLeadHook } = await import("./leadState.js");
-        applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()), await hookPanePidReader(actorId, readPayload().session_id));
+        applyLeadHook(actorId, event, readPayload(), () => waitingOnSubagents(actorId, readPayload()));
       } catch {
 
       }

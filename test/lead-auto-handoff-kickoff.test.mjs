@@ -113,17 +113,24 @@ describe("lead auto-handoff successor start", () => {
     assert.equal(handoff.readHandoffGate(done.lead_agent_id), null, "holds release on completion");
   });
 
-  it("a resumed predecessor session in a new pane process is not fenced", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
-    seed({ padContent: "IN FLIGHT\nnone" });
+  it("a predecessor SessionEnd read from the same pane while the row is started leaves the crew and processes alone", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    const { id } = seed({ padContent: "IN FLIGHT\nnone" });
     execFileSync("tmux", ["new-session", "-d", "-s", `lak-${process.pid}`, "sleep 600"], { stdio: "ignore" });
     const pane = execFileSync("tmux", ["list-panes", "-t", `=lak-${process.pid}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
-    db.prepare("UPDATE agents SET pane_pid = '100' WHERE actor_id = 'lead:k'").run();
+    const proc = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status)
+         VALUES (?, 'cmd:dev', 'dev', 'command', '%77777', '1', 'sleep', '/tmp', 'running') RETURNING id`,
+      )
+      .get(project).id;
+    const end = { ...fixture("session-end-prompt-input-exit.json"), session_id: PREDECESSOR };
+    await hook("session_end", end, { TMUX_PANE: pane });
+    assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(proc).status, "running");
+    assert.equal(db.prepare("SELECT status FROM agents WHERE name = 'k1'").get().status, "running");
+
+    db.prepare("UPDATE lead_handoffs SET state = 'completed' WHERE id = ?").run(id);
     await hook("prompt", { ...fixture("lead-claude-prompt.json"), session_id: PREDECESSOR }, { TMUX_PANE: pane });
-    const turn = db.prepare("SELECT session_id, prompt_seq FROM lead_turn_state").get();
-    assert.equal(turn.session_id, PREDECESSOR, "the resumed session's prompt is recorded");
-    await hook("prompt", { ...fixture("lead-claude-prompt.json"), session_id: "other" });
-    await hook("stop", { ...fixture("lead-claude-stop.json"), session_id: PREDECESSOR });
-    assert.equal(db.prepare("SELECT session_id FROM lead_turn_state").get().session_id, "other", "without the new pane's pid it stays fenced");
+    assert.equal(db.prepare("SELECT session_id FROM lead_turn_state").get().session_id, PREDECESSOR, "after completion a resumed session is the lead again");
   });
 
   it("an edited delivered text completes the handoff but stays active", async () => {
