@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { isolateTmux, scratchDirs, SERVER, withEnv, runCli, warningCount, promotedCount } from "./helpers.mjs";
+import { isolateTmux, scratchDirs, SERVER, runCli, warningCount, promotedCount } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the stale hive server tests");
 after(() => cleanup());
@@ -19,7 +19,7 @@ function writePs({ fail = false } = {}) {
     psPath,
     fail
       ? "#!/bin/sh\necho 'ps unavailable' >&2\nexit 127\n"
-      : `#!/bin/sh\ncase "$*" in\n  *"pid=,ppid=,lstart=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\nesac\n`,
+      : `#!/bin/sh\ncase "$*" in\n  *"pid=,ppid=,etime=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\nesac\n`,
     { mode: 0o755 },
   );
   chmodSync(psPath, 0o755);
@@ -29,26 +29,40 @@ function fixtureRow(pid, start, command = `${process.execPath} ${SERVER}`, ppid 
   return `${pid} ${ppid} ${start} ${command}`;
 }
 
-const { parseStaleHiveServers } = await import("../dist/staleServers.js");
+const { elapsedSeconds, parseStaleHiveServers, STALE_SERVER_BOUNDARY_SLACK_MS } = await import("../dist/staleServers.js");
+const observedAt = Date.parse("2026-10-08T10:00:10.000Z");
 
-describe("stale hive server start times", () => {
-  it("names an older macOS ps lstart using local time against SQLite UTC", () => {
-    const output = fixtureRow(50857, "Wed Oct  7 10:00:00 2026") + "\n";
-    const result = withEnv({ TZ: "America/Los_Angeles" }, () =>
-      parseStaleHiveServers(output, "2026-10-07 17:30:00"),
-    );
+describe("stale hive server elapsed times", () => {
+  it("names an older server from a day-prefixed macOS ps etime", () => {
+    const output = fixtureRow(50857, "1-02:03:04") + "\n";
+    const result = parseStaleHiveServers(output, "2026-10-07 08:00:00", Date.parse("2026-10-08T10:00:00.000Z"));
     assert.deepEqual(result.servers.map((server) => server.pid), [50857]);
+    assert.equal(result.servers[0].startedAt, "2026-10-07T07:56:56.000Z");
   });
 
-  it("does not name a Linux ps lstart at or after the newest migration", () => {
+  it("does not name a Linux ps etime at or after the newest migration", () => {
     const output = [
-      fixtureRow(73803, "Wed Oct  7 11:00:00 2026"),
-      fixtureRow(90001, "Wed Oct  7 11:00:00 2026", `${process.execPath} /other/install/dist/index.js`),
+      fixtureRow(73803, "01:00:05"),
+      fixtureRow(90001, "01:00:05", `${process.execPath} /other/install/dist/index.js`),
     ].join("\n");
-    const result = withEnv({ TZ: "America/Los_Angeles" }, () =>
-      parseStaleHiveServers(output, "2026-10-07 17:00:00"),
-    );
+    const result = parseStaleHiveServers(output, "2026-10-08 09:00:00", observedAt);
     assert.deepEqual(result.servers, []);
+  });
+
+  it("uses a three-second boundary slack so a server near migration time is not called stale", () => {
+    const nearBoundary = parseStaleHiveServers(fixtureRow(111, "00:00:12"), "2026-10-08 10:00:00", observedAt);
+    const outsideBoundary = parseStaleHiveServers(fixtureRow(222, "00:00:14"), "2026-10-08 10:00:00", observedAt);
+    assert.equal(STALE_SERVER_BOUNDARY_SLACK_MS, 3000);
+    assert.deepEqual(nearBoundary.servers, []);
+    assert.deepEqual(outsideBoundary.servers.map((server) => server.pid), [222]);
+  });
+
+  it("parses each ps etime shape and rejects malformed elapsed values", () => {
+    assert.equal(elapsedSeconds("03:04"), 184);
+    assert.equal(elapsedSeconds("02:03:04"), 7384);
+    assert.equal(elapsedSeconds("1-02:03:04"), 93784);
+    assert.equal(elapsedSeconds("1-25:03:04"), null);
+    assert.equal(elapsedSeconds("bad"), null);
   });
 
   it("skips all process rows when ps output cannot be parsed", () => {
@@ -76,14 +90,14 @@ describe("hive doctor stale hive server report", () => {
     writeFileSync(
       psRowsPath,
       [
-        fixtureRow(1, "Wed Jan  1 00:00:00 2020", "/sbin/launchd", 0),
-        fixtureRow(50857, "Wed Jan  1 00:00:00 2020"),
-        fixtureRow(73803, "Wed Jan  1 00:00:00 2099"),
+        fixtureRow(1, "3650-00:00:00", "/sbin/launchd", 0),
+        fixtureRow(50857, "3650-00:00:00"),
+        fixtureRow(73803, "00:00:01"),
       ].join("\n") + "\n",
     );
     writePs();
     const result = await runCli(["doctor"], isolated);
-    assert.match(result.stdout, /warn  stale hive server: pid 50857 started Wed Jan 1 00:00:00 2020 \(parent pid 1: \/sbin\/launchd\)/);
+    assert.match(result.stdout, /warn  stale hive server: pid 50857 started \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \(parent pid 1: \/sbin\/launchd\)/);
     assert.match(result.stdout, new RegExp(`command: ${process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} ${SERVER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(result.stdout, /restart that session to load the current build/);
     assert.doesNotMatch(result.stdout, /pid 73803/);
@@ -92,7 +106,7 @@ describe("hive doctor stale hive server report", () => {
   it("stale server warning is not promoted by --strict", async () => {
     writeFileSync(
       psRowsPath,
-      `${fixtureRow(1, "Wed Jan  1 00:00:00 2020", "/sbin/launchd", 0)}\n${fixtureRow(50857, "Wed Jan  1 00:00:00 2020")}\n`,
+      `${fixtureRow(1, "3650-00:00:00", "/sbin/launchd", 0)}\n${fixtureRow(50857, "3650-00:00:00")}\n`,
     );
     writePs();
     const result = await runCli(["doctor", "--strict"], isolated);

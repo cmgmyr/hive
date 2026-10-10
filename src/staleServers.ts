@@ -14,27 +14,32 @@ export type StaleHiveServerReport =
   | { servers: StaleHiveServer[] }
   | { skipped: string };
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export const STALE_SERVER_BOUNDARY_SLACK_MS = 3000;
 
 const serverEntrypoint = resolve(dirname(fileURLToPath(import.meta.url)), "index.js");
 
-function localLstartInstant(weekday: string, month: string, day: string, time: string, year: string): number | null {
-  if (!/^[A-Z][a-z]{2}$/.test(weekday) || !/^\d{1,2}$/.test(day) || !/^\d{4}$/.test(year)) return null;
-  const monthIndex = MONTHS.indexOf(month);
-  const match = /^(\d{2}):(\d{2}):(\d{2})$/.exec(time);
-  if (monthIndex < 0 || !match) return null;
-  const date = new Date(Number(year), monthIndex, Number(day), Number(match[1]), Number(match[2]), Number(match[3]));
-  if (
-    date.getFullYear() !== Number(year) ||
-    date.getMonth() !== monthIndex ||
-    date.getDate() !== Number(day) ||
-    date.getHours() !== Number(match[1]) ||
-    date.getMinutes() !== Number(match[2]) ||
-    date.getSeconds() !== Number(match[3])
-  ) {
+export function elapsedSeconds(value: string): number | null {
+  const dayForm = /^(\d+)-(\d{1,2}):(\d{2}):(\d{2})$/.exec(value);
+  const fields = dayForm ? dayForm.slice(2).map(Number) : value.split(":").map(Number);
+  if ((!dayForm && fields.length !== 2 && fields.length !== 3) || fields.some((field) => !Number.isSafeInteger(field) || field < 0)) {
     return null;
   }
-  return date.getTime();
+
+  let total: number;
+  if (dayForm) {
+    const [hours, minutes, seconds] = fields;
+    if (hours! > 23 || minutes! > 59 || seconds! > 59) return null;
+    total = (Number(dayForm[1]) * 24 + hours!) * 3600 + minutes! * 60 + seconds!;
+  } else if (fields.length === 2) {
+    const [minutes, seconds] = fields;
+    if (seconds! > 59) return null;
+    total = minutes! * 60 + seconds!;
+  } else {
+    const [hours, minutes, seconds] = fields;
+    if (minutes! > 59 || seconds! > 59) return null;
+    total = hours! * 3600 + minutes! * 60 + seconds!;
+  }
+  return Number.isSafeInteger(total) ? total : null;
 }
 
 function appliedAtInstant(appliedAt: string): number | null {
@@ -51,38 +56,37 @@ function runsThisServer(command: string): boolean {
   return /(?:^|[\\/])node(?:\.exe)?$/.test(executable);
 }
 
-export function parseStaleHiveServers(psOutput: string, appliedAt: string): StaleHiveServerReport {
+export function parseStaleHiveServers(psOutput: string, appliedAt: string, observedAt = Date.now()): StaleHiveServerReport {
   const newestMigration = appliedAtInstant(appliedAt);
   if (newestMigration === null) return { skipped: "the newest migration time is unavailable or invalid" };
+  if (!Number.isFinite(observedAt)) return { skipped: "the process snapshot time is invalid" };
 
-  const rows: Array<{ pid: number; ppid: number; startedAt: string; started: number; command: string }> = [];
+  const rows: Array<{ pid: number; ppid: number; elapsed: number; command: string }> = [];
   for (const line of psOutput.split(/\r?\n/)) {
     if (line.trim() === "") continue;
-    const row = /^\s*(\d+)\s+(\d+)\s+([A-Z][a-z]{2})\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})\s+(\d{4})\s+(.+?)\s*$/.exec(line);
+    const row = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
     if (!row) return { skipped: "ps returned a row that could not be parsed" };
-    const started = localLstartInstant(row[3]!, row[4]!, row[5]!, row[6]!, row[7]!);
-    if (started === null) return { skipped: "ps returned an invalid local start time" };
-    const command = row[8]!;
-    rows.push({
-      pid: Number(row[1]),
-      ppid: Number(row[2]),
-      startedAt: `${row[3]} ${row[4]} ${row[5]} ${row[6]} ${row[7]}`,
-      started,
-      command,
-    });
+    const elapsed = elapsedSeconds(row[3]!);
+    if (elapsed === null) return { skipped: "ps returned an invalid elapsed time" };
+    rows.push({ pid: Number(row[1]), ppid: Number(row[2]), elapsed, command: row[4]! });
   }
   const commands = new Map(rows.map((row) => [row.pid, row.command]));
   const servers = rows
-    .filter((row) => row.started < newestMigration && runsThisServer(row.command))
-    .map(({ started: _started, ...row }) => ({ ...row, parentCommand: commands.get(row.ppid) ?? null }));
+    .map((row) => ({ ...row, started: observedAt - row.elapsed * 1000 }))
+    .filter((row) => row.started < newestMigration - STALE_SERVER_BOUNDARY_SLACK_MS && runsThisServer(row.command))
+    .map(({ elapsed: _elapsed, ...row }) => ({
+      ...row,
+      startedAt: new Date(row.started).toISOString(),
+      parentCommand: commands.get(row.ppid) ?? null,
+    }));
   return { servers };
 }
 
 export function staleHiveServers(appliedAt: string | null): StaleHiveServerReport {
   if (appliedAt === null) return { skipped: "the newest migration time is unavailable" };
   try {
-    const psOutput = execFileSync("ps", ["-eo", "pid=,ppid=,lstart=,command="], { encoding: "utf8" });
-    return parseStaleHiveServers(psOutput, appliedAt);
+    const psOutput = execFileSync("ps", ["-eo", "pid=,ppid=,etime=,command="], { encoding: "utf8" });
+    return parseStaleHiveServers(psOutput, appliedAt, Date.now());
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { skipped: `ps could not be run: ${reason}` };
