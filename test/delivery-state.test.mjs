@@ -569,6 +569,7 @@ describe("issue #27: a bookkeeping write that fails costs the record, never the 
           seed(deliveryPane, "ALPHA delivered") +
           seed(deliveryPane, "BETA delivered") +
 
+          `db.exec("DROP TRIGGER fence_handoff_held_claim");\n` +
           `db.exec("ALTER TABLE wakes DROP COLUMN held_at");\n` +
           `db.exec("ALTER TABLE wakes DROP COLUMN typed_at");\n` +
 
