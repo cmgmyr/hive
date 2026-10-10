@@ -179,6 +179,18 @@ describe("lead auto-handoff restart", () => {
 
   it("grace owner respawns once and refuses changed or unknown ownership", needsTmux, async () => {
     const ctx = await readyLead({ stop: "stop-shell-running.json" });
+    const worker = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status, parent_actor_id)
+         VALUES (?, 'agent:crew', 'crew', 'agent', '%4242', '1', 'claude', '/tmp', 'running', 'lead:r') RETURNING id`,
+      )
+      .get(project).id;
+    const watch = db
+      .prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane)
+         VALUES (?, 'lead:r', 'crew finished', 'idle_any', '["crew"]', 'lead:r', ?) RETURNING id`,
+      )
+      .get(project, ctx.pane.pane).id;
     assert.equal((await command(ctx)).code, 0);
     endGrace(ctx.requestId);
     assert.ok(await until(() => /shell/.test(row(ctx.requestId).blocked_reason ?? ""), 8000));
@@ -197,6 +209,10 @@ describe("lead auto-handoff restart", () => {
     assert.equal(db.prepare("SELECT pane_pid FROM agents WHERE id = ?").get(ctx.lead.id).pane_pid, successorPid);
     assert.ok(record.includes("--settings"));
     assert.ok(await until(() => !alive(ctx.pane.pid), 3000), "the predecessor process is gone");
+    const crew = db.prepare("SELECT status, parent_actor_id FROM agents WHERE id = ?").get(worker);
+    assert.deepEqual({ ...crew }, { status: "running", parent_actor_id: "lead:r" }, "the crew and its parent link survive");
+    const standing = db.prepare("SELECT cancelled_at, deliver_actor FROM wakes WHERE id = ?").get(watch);
+    assert.deepEqual({ ...standing }, { cancelled_at: null, deliver_actor: "lead:r" }, "the standing watch survives on the same lead row");
     assert.equal(readFileSync(launched, "utf8").split("Took over from session").length - 1, 1, "respawned exactly once");
 
     db.exec("DELETE FROM lead_handoffs; DELETE FROM agents; DELETE FROM lead_turn_state; DELETE FROM pads;");
@@ -207,6 +223,21 @@ describe("lead auto-handoff restart", () => {
     assert.ok(await until(() => row(moved.requestId).state === "failed", 8000));
     assert.match(row(moved.requestId).failure, /no longer names the pane/);
     assert.equal(panePid(moved.pane.pane), moved.pane.pid, "a changed owner leaves the pane untouched");
+  });
+
+  it("a pass-2 grace waits out its human-quiet window before respawning", needsTmux, async () => {
+    const ctx = await readyLead();
+    db.prepare("UPDATE lead_handoffs SET pass = 2 WHERE id = ?").run(ctx.requestId);
+    db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-100 seconds')");
+    assert.equal((await command(ctx)).code, 0);
+    assert.equal(row(ctx.requestId).grace_seconds, 90);
+    endGrace(ctx.requestId);
+    assert.ok(await until(() => /human prompt arrived in the last 150 s/.test(row(ctx.requestId).blocked_reason ?? ""), 8000));
+    assert.equal(row(ctx.requestId).state, "grace");
+    assert.equal(panePid(ctx.pane.pane), ctx.pane.pid);
+    const owner = row(ctx.requestId).owner_pid;
+    handoff.failHandoff(ctx.requestId, "test over", ["grace"]);
+    assert.ok(await until(() => !alive(owner), 5000));
   });
 
   it("ambiguous respawn cannot kill a successor on retry", needsTmux, async () => {

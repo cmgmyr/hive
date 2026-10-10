@@ -734,8 +734,12 @@ async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, bu
   if (padProblem(pad, lead.project_id, row.pad_revision ?? -1) !== null) {
     return { postpone: "the handoff pad changed after the command", escalate: false };
   }
-  const inFlight = automationBlocker(lead, null);
-  if (inFlight !== null) return { wait: inFlight };
+  const policy = passPolicy(row.pass, row.reason);
+  if (!olderThan(snapshot.human_prompt_at, policy.humanQuietSeconds)) {
+    return { wait: `a human prompt arrived in the last ${policy.humanQuietSeconds} s` };
+  }
+  const automation = automationBlocker(lead, policy.automationQuietSeconds);
+  if (automation !== null) return { wait: automation };
   if (paneInCopyMode(lead.tmux_target) !== false) return { wait: "the lead's pane is in copy mode or unreadable" };
   const classifier = paneClassifierFor(lead.command);
   if (!classifier) return { fail: "hive cannot classify the lead's screen" };
