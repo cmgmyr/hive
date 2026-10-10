@@ -205,6 +205,13 @@ async function stopProcessesForEndedLead(actorId: string, payload: HookPayload):
     .prepare("SELECT project_id, command FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running'")
     .get(actorId) as { project_id: number; command: string } | undefined;
   if (!row) return;
+  // A deliberate handoff's predecessor ending is not the lead ending; its successor keeps the crew.
+  if (typeof payload.session_id === "string" && db
+    .prepare(
+      `SELECT 1 AS hit FROM lead_handoffs h JOIN agents a ON a.id = h.lead_agent_id
+        WHERE a.actor_id = ? AND h.predecessor_session_id = ? AND h.state IN ('respawning', 'started', 'completed', 'ambiguous')`,
+    )
+    .get(actorId, payload.session_id) !== undefined) return;
 
   // Imported here and nowhere above: harnesses.ts itself pulls tmux at module scope, and every
   // other event in this file runs on every turn of every session without needing any of it.

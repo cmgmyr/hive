@@ -130,6 +130,13 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
       if (typeof payload.prompt === "string" && !isHiveFirstMessage(payload) && isHumanPrompt(payload.prompt.trim())) {
         snap.human_prompt_seq += 1;
         snap.human_prompt_at = now;
+        // A human prompt during grace postpones that attempt at once; the grace owner sees it too.
+        db.prepare(
+          `UPDATE lead_handoffs SET state = 'postponed', pass = pass + 1, pass_started_at = ?, owner_token = NULL,
+             owner_pid = NULL, blocked_reason = 'a human prompt arrived during grace', hold_since = NULL,
+             hold_released_at = NULL, updated_at = ?
+           WHERE lead_agent_id = ? AND state = 'grace' AND predecessor_session_id = ?`,
+        ).run(now, now, agentId, sessionId);
       }
       break;
     case "stop":
@@ -157,8 +164,19 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
   );
 }
 
+// A late hook from a handed-off predecessor session must not reset or advance its successor.
+function fromHandedOffPredecessor(agentId: number, payload: LeadHookPayload): boolean {
+  return typeof payload.session_id === "string" && db
+    .prepare(
+      `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
+         AND state IN ('respawning', 'started', 'completed', 'ambiguous')`,
+    )
+    .get(agentId, payload.session_id) !== undefined;
+}
+
 const applyInTransaction = db.transaction(
   (agentId: number, panePid: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean): void => {
+    if (fromHandedOffPredecessor(agentId, payload)) return;
     const cur = readLeadTurnState(agentId);
     const next = nextLeadTurn(cur, panePid, event, payload, subagentsLive);
     const unchanged =
