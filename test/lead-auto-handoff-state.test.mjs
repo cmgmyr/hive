@@ -186,3 +186,40 @@ describe("lead auto-handoff state", () => {
     assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
   });
 });
+
+describe("lead auto-handoff hold lifetime", () => {
+  beforeEach(reset);
+
+  it("respawning and ambiguous hold until released, and started releases at boot", () => {
+    const lead = seedLead();
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "4242", session_id: "s-1" }, requestBody: () => "req",
+    });
+    for (const state of ["respawning", "ambiguous"]) {
+      db.prepare("UPDATE lead_handoffs SET state = ?, hold_released_at = NULL WHERE id = ?").run(state, requestId);
+      assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true, state);
+      db.prepare("UPDATE lead_handoffs SET hold_released_at = datetime('now') WHERE id = ?").run(requestId);
+      assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false, `${state} after release`);
+    }
+    db.prepare("UPDATE lead_handoffs SET state = 'started', hold_released_at = NULL WHERE id = ?").run(requestId);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+  });
+
+  it("a grace whose owner process is dead fails and releases its holds", async () => {
+    const lead = seedLead();
+    writeTranscript(5);
+    await completedTurn();
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "warn", epoch: { pane_pid: "4242", session_id: SESSION }, requestBody: () => "req",
+    });
+    db.prepare(
+      "UPDATE lead_handoffs SET state = 'grace', attempt = 1, owner_token = 't', owner_pid = 2147483646, grace_seconds = 120, grace_started_at = datetime('now') WHERE id = ?",
+    ).run(requestId);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    handoff.driveLeadHandoff("lead:h", () => ({ warn: 3, stop: 10, auto_handoff: true }));
+    const row = handoff.readHandoff(requestId);
+    assert.equal(row.state, "failed");
+    assert.match(row.failure, /grace owner process died/);
+    assert.equal(handoff.readHandoffGate(lead.id), null);
+  });
+});
