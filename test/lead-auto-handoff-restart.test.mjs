@@ -263,6 +263,42 @@ describe("lead auto-handoff restart", () => {
     assert.match((await verdict()).postpone ?? "", /pad changed/);
   });
 
+  it("the bootstrap refuses another pane, a foreign parent process and a moved predecessor pid", needsTmux, async () => {
+    const start = (ctx) => ["lead-handoff-start", "--request", String(ctx.requestId), "--attempt", "1", "--token", "tok"];
+    const respawning = (ctx) =>
+      db.prepare("UPDATE lead_handoffs SET state = 'respawning', attempt = 1, owner_token = 'tok', failure = NULL WHERE id = ?").run(ctx.requestId);
+    const inPane = async (ctx) => {
+      const rc = join(tmp, `rc-${ctx.requestId}`);
+      const cmd = [process.execPath, join(DIST, "cli.js"), ...start(ctx)].map((a) => `'${a}'`).join(" ");
+      execFileSync("tmux", ["respawn-pane", "-k", "-t", ctx.pane.pane, "-e", `HIVE_DATA_DIR=${dataDir}`, `${cmd}; echo $? > '${rc}'; exec sleep 600`]);
+      assert.ok(await until(() => existsSync(rc), 8000));
+      return readFileSync(rc, "utf8").trim();
+    };
+
+    const a = await readyLead();
+    respawning(a);
+    const otherPane = await runCli(start(a), { cwd: projectDir, dataDir, env: { TMUX_PANE: "%999" } });
+    assert.match(otherPane.stderr, /not the pane the handoff respawned/);
+    assert.equal(row(a.requestId).state, "failed");
+
+    respawning(a);
+    const foreignParent = await runCli(start(a), { cwd: projectDir, dataDir, env: { TMUX_PANE: a.pane.pane } });
+    assert.match(foreignParent.stderr, /does not match this bootstrap's shell/);
+    assert.equal(row(a.requestId).state, "failed");
+
+    respawning(a);
+    db.prepare("UPDATE agents SET pane_pid = '1' WHERE id = ?").run(a.lead.id);
+    assert.equal(await inPane(a), "1");
+    assert.match(row(a.requestId).failure, /could not be moved to the new pane process/);
+
+    db.exec("DELETE FROM lead_handoffs; DELETE FROM agents; DELETE FROM lead_turn_state; DELETE FROM pads;");
+    const b = await readyLead();
+    respawning(b);
+    assert.equal(await inPane(b), "0", "positive control: the same bootstrap in its own pane publishes");
+    assert.equal(row(b.requestId).state, "started");
+    assert.equal(db.prepare("SELECT pane_pid FROM agents WHERE id = ?").get(b.lead.id).pane_pid, panePid(b.pane.pane));
+  });
+
   it("ambiguous respawn cannot kill a successor on retry", needsTmux, async () => {
     const ctx = await readyLead();
     assert.equal((await command(ctx)).code, 0);
