@@ -34,7 +34,7 @@ import {
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
 import { driveLeadHandoff, handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoff.js";
-import { humanPromptSql, readLeadTurnState } from "./leadState.js";
+import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
@@ -1005,10 +1005,10 @@ function conversationHoldsWake(timer: TimerRow, snapshot: AliveSnapshot | null):
   return (
     stmt(
       `SELECT 1 AS hit FROM agent_state_log
-        WHERE actor_id = ? AND event = 'prompt' AND ${humanPromptSql("payload")}
+        WHERE actor_id = ? AND event = 'prompt' AND state != ? AND ${humanPromptSql("payload")}
           AND created_at >= datetime('now', ?)
         ORDER BY id DESC LIMIT 1`,
-    ).get(timer.deliver_actor, CONVERSATION_HOLD_TTL) !== undefined
+    ).get(timer.deliver_actor, FIRST_MESSAGE_LOG_STATE, CONVERSATION_HOLD_TTL) !== undefined
   );
 }
 

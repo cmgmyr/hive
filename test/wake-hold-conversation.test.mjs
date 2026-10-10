@@ -221,6 +221,54 @@ describe("todo 455 commit 2: the conversation hold", () => {
   });
 });
 
+describe("todo 1851: hive's own first message does not start the conversation hold", () => {
+  const logRow = (offset, state, prompt) =>
+    `db.prepare("INSERT INTO agent_state_log (actor_id, event, state, payload, created_at) VALUES ('lead:1', 'prompt', ?, ?, datetime('now', ?))")
+       .run(${JSON.stringify(state)}, JSON.stringify({ prompt: ${JSON.stringify(prompt)} }), ${JSON.stringify(offset)});`;
+
+  it("hive's first message to a lead does not start a conversation hold", () => {
+    const result = fixture(
+      "first-message-not-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      ${logRow("-20 seconds", "first_message", "You are taking over as this project's lead")}
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.ok(result.row.fired_at !== null, "the first message is hive's own, not a human talking");
+  });
+
+  it("a human prompt after hive's first message still holds", () => {
+    const result = fixture(
+      "human-after-first-message-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      ${logRow("-60 seconds", "first_message", "You are taking over as this project's lead")}
+      ${logRow("-20 seconds", "working", "what is the status")}
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId) }")}
+      `,
+    );
+    assert.equal(result.row.fired_at, null);
+    assert.match(result.row.held_reason ?? "", /talked to this lead/);
+  });
+
+  it("conversation hold falls back to the prompt log when the lead has no turn snapshot", () => {
+    const held = fixture(
+      "no-snapshot-falls-back-to-log-held",
+      `
+      const wakeId = addWake('lead:1', '%lead');
+      logPrompt('lead:1', '-20 seconds', 'plain claude lead, no first-message env');
+      await tick(snapshot);
+      ${out("{ row: timerRow(wakeId), snapshots: db.prepare('SELECT COUNT(*) AS n FROM lead_turn_state').get().n }")}
+      `,
+    );
+    assert.equal(held.snapshots, 0);
+    assert.equal(held.row.fired_at, null);
+  });
+});
+
 describe("todo 1691: the conversation hold's ceiling reaches one-shot idle wakes", () => {
   const idleSetup = (metOffset) => `
       const workerRow = db.prepare("SELECT id FROM agents WHERE actor_id = 'agent:9'").get().id;

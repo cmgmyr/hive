@@ -66,7 +66,10 @@ export function isHumanPrompt(prompt: string): boolean {
   return !/^<cross-session-message from="[\s\S]*" from-name="hive">\n\[hive:worker [\s\S]*\] \[message #[\s\S]*,[\s\S]*\n<\/cross-session-message>/.test(p);
 }
 
-function isHiveFirstMessage(payload: LeadHookPayload): boolean {
+// The agent_state_log state label on hive's own first message to a lead; conversationHoldsWake skips it.
+export const FIRST_MESSAGE_LOG_STATE = "first_message";
+
+export function isHiveFirstMessage(payload: LeadHookPayload): boolean {
   if (typeof payload.prompt !== "string") return false;
   const prompt = payload.prompt.trim();
   const launched = process.env[FIRST_MESSAGE_SHA_ENV];
