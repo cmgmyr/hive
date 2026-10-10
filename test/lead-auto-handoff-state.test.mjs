@@ -291,6 +291,21 @@ describe("lead auto-handoff hold lifetime", () => {
     assert.equal(claim(), 1, "past the ceiling the held wake is claimable");
   });
 
+  it("a started row that inherited a released respawn hold reads as started, not blocked, while it holds", () => {
+    const lead = seedLead();
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "100", session_id: "s-1" }, requestBody: () => "req",
+    });
+    db.prepare(
+      `UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', started_at = datetime('now'),
+         hold_released_at = datetime('now', '-1 minute'), blocked_reason = 'the respawn never settled' WHERE id = ?`,
+    ).run(requestId);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+    assert.equal(handoff.handoffStatusSegment(lead.id), "handoff started");
+    db.prepare("UPDATE lead_handoffs SET blocked_reason = ? WHERE id = ?").run(handoff.SUCCESSOR_NOT_READY, requestId);
+    assert.equal(handoff.handoffStatusSegment(lead.id), `handoff started: ${handoff.SUCCESSOR_NOT_READY}`);
+  });
+
   it("the successor's injection says held deliveries arrive once its first turn ends", () => {
     const lead = seedLead();
     const { requestId } = handoff.armHandoffRequest({

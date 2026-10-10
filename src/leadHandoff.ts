@@ -143,8 +143,8 @@ export function readHandoffGate(leadAgentId: number): HandoffGate | null {
 }
 
 export const HELD_REASON_HANDOFF =
-  "the lead is winding down for an automatic handoff; held so nothing interrupts it, and delivered to the " +
-  "lead row (its successor, once it starts) when the handoff completes, fails or releases its hold";
+  "the lead is handing off to a fresh session; held through the wind-down and the successor's boot, and delivered to " +
+  "the lead row once the successor completes its first turn, or when the handoff fails or releases its hold";
 
 // A wake addressed to a lead row is held while that lead's handoff holds automation, except the
 // current request wake itself, which still passes every human-input and ownership guard.
@@ -1104,9 +1104,9 @@ export function completeHandoffOnStop(actorId: string): boolean {
 export function handoffStatusSegment(leadAgentId: number): string | null {
   const row = readActiveHandoff(leadAgentId);
   if (row !== null) {
+    if (row.state === "started") return row.blocked_reason === SUCCESSOR_NOT_READY ? `handoff started: ${SUCCESSOR_NOT_READY}` : "handoff started";
     if (row.hold_released_at !== null) return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
     if (row.state === "grace") return "handoff in grace";
-    if (row.state === "started" && row.blocked_reason === SUCCESSOR_NOT_READY) return `handoff started: ${SUCCESSOR_NOT_READY}`;
     return `handoff ${row.state.replace("_", " ")}`;
   }
   const done = db
