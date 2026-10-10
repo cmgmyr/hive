@@ -368,6 +368,20 @@ try {
       }
     }
 
+    if (event === "stop" && process.env.HIVE_LEAD === "1") {
+      try {
+        const started = db
+          .prepare(
+            `SELECT 1 AS hit FROM lead_handoffs h JOIN agents a ON a.id = h.lead_agent_id
+              WHERE a.actor_id = ? AND a.kind = 'lead' AND h.state = 'started'`,
+          )
+          .get(actorId);
+        if (started !== undefined) (await import("./leadHandoff.js")).completeHandoffOnStop(actorId);
+      } catch {
+
+      }
+    }
+
     if (event === "session_start" && process.env.HIVE_LEAD === "1") {
       try {
         await registerLeadMessagingSocket(actorId);

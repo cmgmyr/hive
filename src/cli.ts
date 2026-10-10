@@ -219,6 +219,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
+import { handoffStatusSegment } from "./leadHandoff.js";
 import { carriesNameFlag, harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
@@ -3514,13 +3515,15 @@ function cmdStatusline(): void {
   if (schemaAhead) parts.push("store ahead (update hive)");
   let turns: number | null = null;
   let budget: { warn: number; stop: number } | null = null;
+  let handoff: string | null = null;
   try {
     const actorId = process.env.HIVE_AGENT_ID;
     if (actorId) {
       const lead = db.prepare(
-        "SELECT 1 AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
+        "SELECT id AS lead FROM agents WHERE project_id = ? AND actor_id = ? AND kind = 'lead' AND status = 'running'",
       ).get(project.id, actorId) as { lead: number } | undefined;
       if (lead) {
+        handoff = handoffStatusSegment(lead.lead);
         let inputPath = "";
         if (!process.stdin.isTTY) {
           try {
@@ -3538,6 +3541,7 @@ function cmdStatusline(): void {
     const color = budget === null ? "" : turns >= budget.stop ? "\x1b[31m" : turns >= budget.warn ? "\x1b[33m" : "";
     parts.push(`${color}turns ${turns}${color ? "\x1b[0m" : ""}`);
   }
+  if (handoff !== null) parts.push(handoff);
   console.log(`\x1b[33m⬡\x1b[0m \x1b[2mhive:\x1b[0m ${parts.join(" \x1b[2m·\x1b[0m ")}`);
 }
 

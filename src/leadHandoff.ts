@@ -532,7 +532,8 @@ export function missingHeadings(content: string): string[] {
 export function successorPrompt(row: Pick<HandoffRow, "id" | "predecessor_session_id" | "predecessor_turns" | "reason" | "pass">): string {
   return [
     `You are taking over as this project's lead from session ${row.predecessor_session_id} (hive handoff #${row.id}).`,
-    `Read the "${HANDOFF_PAD_NAME}" handoff hive injected at session start, then the project's durable state.`,
+    `Read the "${HANDOFF_PAD_NAME}" handoff hive injected at session start (if none arrived, pad_read it by name), ` +
+      "then the project's durable state.",
     "Open your first reply with exactly one line:",
     `"Took over from session ${row.predecessor_session_id} at turn ${row.predecessor_turns ?? "?"} (${row.reason}, pass ${row.pass}). ` +
       'Carried over: <a> in flight, <b> queued, <c> questions for you."',
@@ -904,4 +905,113 @@ export async function runHandoffStart(argv: string[]): Promise<number> {
   if (!published) return refuse("the lead row could not be moved to the new pane process", id);
   console.log(`hive: handoff #${id}: starting a fresh lead session in this pane.`);
   return 0;
+}
+
+const MARKER_SECONDS = 30 * 60;
+
+// The SessionStart payload for a starting lead whose project holds an active handoff pad: the pad in
+// full, plus what hive itself knows. Never truncated; never shown to a worker.
+export function handoffInjection(leadActor: string): string | null {
+  const lead = runningLeadByActor(leadActor);
+  if (lead === undefined) return null;
+  const pad = db
+    .prepare("SELECT id, revision, content, updated_at FROM pads WHERE project_id = ? AND name = ? AND archived = 0")
+    .get(lead.project_id, HANDOFF_PAD_NAME) as { id: number; revision: number; content: string; updated_at: string } | undefined;
+  if (pad === undefined) return null;
+  const row = db
+    .prepare("SELECT * FROM lead_handoffs WHERE lead_agent_id = ? ORDER BY id DESC LIMIT 1")
+    .get(lead.id) as HandoffRow | undefined;
+  const workers = db
+    .prepare("SELECT name, agent_state FROM agents WHERE project_id = ? AND kind = 'agent' AND status = 'running' ORDER BY id")
+    .all(lead.project_id) as { name: string; agent_state: string }[];
+  const pending = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND fired_at IS NULL AND cancelled_at IS NULL")
+      .get(lead.actor_id) as { n: number }
+  ).n;
+  const heldWakes = (
+    db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND held_reason = ? AND cancelled_at IS NULL").get(lead.actor_id, HELD_REASON_HANDOFF) as {
+      n: number;
+    }
+  ).n;
+  const heldMessages = (
+    db
+      .prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE to_agent_id = ? AND delivery_status = 'fallback-pending' AND created_at >= datetime('now', '-7 days')")
+      .get(lead.id) as { n: number }
+  ).n;
+  const lines = [`[hive] LEAD HANDOFF: pad "${HANDOFF_PAD_NAME}" #${pad.id} revision ${pad.revision}, written ${pad.updated_at} UTC.`];
+  if (row !== undefined && row.pad_id === pad.id) {
+    lines.push(
+      `Handed off by session ${row.predecessor_session_id} at turn ${row.predecessor_turns ?? "?"} (${row.reason}, pass ${row.pass})` +
+        `${row.started_at ? ` at ${row.started_at} UTC` : ""}; handoff #${row.id} is ${row.state}.`,
+    );
+  }
+  lines.push(
+    workers.length === 0 ? "Workers: none running." : `Workers: ${workers.map((w) => `${w.name} [${w.agent_state}]`).join(", ")}.`,
+    `Wakes pending for this lead: ${pending}. Held for the handoff and released to you now: ${heldWakes} wake(s), ${heldMessages} message(s).`,
+    `hive archives this pad after your first completed turn. In your next turn append one line to it with ` +
+      `pad_append(pad_id: ${pad.id}): "missing from the handoff: <what you had to find yourself>" or "missing from the handoff: none".`,
+    "",
+    pad.content,
+  );
+  return lines.join("\n");
+}
+
+const completeTransaction = db.transaction((row: HandoffRow, sessionId: string): void => {
+  const archived =
+    row.pad_id !== null &&
+    db
+      .prepare(
+        `UPDATE pads SET archived = 1, revision = revision + 1, updated_by = 'hive', updated_at = datetime('now')
+          WHERE id = ? AND revision = ? AND archived = 0 AND name = ?`,
+      )
+      .run(row.pad_id, row.pad_revision, HANDOFF_PAD_NAME).changes === 1;
+  casHandoff(row.id, ["started"], {
+    state: "completed",
+    successor_session_id: sessionId,
+    completed_at: nowSql(),
+    delivered_pad_id: archived ? row.pad_id : null,
+    delivered_pad_revision: archived ? row.pad_revision : null,
+    failure: archived ? null : "the handoff pad changed after the command, so it was left active",
+  });
+});
+
+// The successor's first completed turn: a Stop in a new session on the successor's pane, after at
+// least one prompt there, with no background work. Anything else leaves the pad active.
+export function completeHandoffOnStop(actorId: string): boolean {
+  const lead = runningLeadByActor(actorId);
+  if (lead === undefined) return false;
+  const row = db.prepare("SELECT * FROM lead_handoffs WHERE lead_agent_id = ? AND state = 'started'").get(lead.id) as HandoffRow | undefined;
+  if (row === undefined || lead.pane_pid !== row.successor_pane_pid) return false;
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (
+    snapshot === null ||
+    snapshot.pane_pid !== lead.pane_pid ||
+    snapshot.snapshot_session_id !== snapshot.session_id ||
+    snapshot.session_id === row.predecessor_session_id ||
+    snapshot.stop_prompt_seq === null ||
+    snapshot.stop_prompt_seq < 1 ||
+    backgroundVeto(snapshot) !== null
+  ) {
+    return false;
+  }
+  completeTransaction.immediate(row, snapshot.session_id);
+  return readHandoff(row.id)?.state === "completed";
+}
+
+export function handoffStatusSegment(leadAgentId: number): string | null {
+  const row = readActiveHandoff(leadAgentId);
+  if (row !== null) {
+    if (row.hold_released_at !== null) return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
+    if (row.state === "grace") return "handoff in grace";
+    return `handoff ${row.state.replace("_", " ")}`;
+  }
+  const done = db
+    .prepare(
+      `SELECT CAST((julianday('now') - julianday(completed_at)) * 86400 AS INTEGER) AS age FROM lead_handoffs
+        WHERE lead_agent_id = ? AND state = 'completed' ORDER BY id DESC LIMIT 1`,
+    )
+    .get(leadAgentId) as { age: number } | undefined;
+  if (done === undefined || done.age > MARKER_SECONDS) return null;
+  return `handed off ${done.age < 60 ? `${done.age}s` : `${Math.floor(done.age / 60)}m`} ago`;
 }
