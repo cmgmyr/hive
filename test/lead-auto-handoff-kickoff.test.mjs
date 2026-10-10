@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
+import { after, beforeEach, describe, it } from "node:test";
 
 import { DIST, KICKOFF, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs } from "./helpers.mjs";
 
-isolateTmux("the lead auto-handoff kickoff tests");
+const { hasTmux, cleanup } = isolateTmux("the lead auto-handoff kickoff tests");
+after(() => cleanup(`lak-${process.pid}`));
 const { dataDir, projectDir, tmp } = scratchDirs();
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dataDir;
@@ -47,8 +49,8 @@ function seed({ padContent = BIG } = {}) {
 
 const kickoff = (env) => runNode(KICKOFF, [], { cwd: projectDir, dataDir, tmp, env });
 const contextOf = (stdout) => JSON.parse(stdout).hookSpecificOutput.additionalContext;
-async function hook(event, body) {
-  const { code } = await runNode(HOOK, [event], { dataDir, env: { HIVE_AGENT_ID: "lead:k", HIVE_LEAD: "1" }, stdin: JSON.stringify(body) });
+async function hook(event, body, env = {}) {
+  const { code } = await runNode(HOOK, [event], { dataDir, env: { HIVE_AGENT_ID: "lead:k", HIVE_LEAD: "1", ...env }, stdin: JSON.stringify(body) });
   assert.equal(code, 0);
 }
 const prompt = (session) => hook("prompt", { ...fixture("lead-claude-prompt.json"), session_id: session });
@@ -109,6 +111,19 @@ describe("lead auto-handoff successor start", () => {
     assert.equal(pad(p.id).archived, 1);
     assert.match(handoff.handoffStatusSegment(done.lead_agent_id), /^handed off \d+s ago$/);
     assert.equal(handoff.readHandoffGate(done.lead_agent_id), null, "holds release on completion");
+  });
+
+  it("a resumed predecessor session in a new pane process is not fenced", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    seed({ padContent: "IN FLIGHT\nnone" });
+    execFileSync("tmux", ["new-session", "-d", "-s", `lak-${process.pid}`, "sleep 600"], { stdio: "ignore" });
+    const pane = execFileSync("tmux", ["list-panes", "-t", `=lak-${process.pid}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
+    db.prepare("UPDATE agents SET pane_pid = '100' WHERE actor_id = 'lead:k'").run();
+    await hook("prompt", { ...fixture("lead-claude-prompt.json"), session_id: PREDECESSOR }, { TMUX_PANE: pane });
+    const turn = db.prepare("SELECT session_id, prompt_seq FROM lead_turn_state").get();
+    assert.equal(turn.session_id, PREDECESSOR, "the resumed session's prompt is recorded");
+    await hook("prompt", { ...fixture("lead-claude-prompt.json"), session_id: "other" });
+    await hook("stop", { ...fixture("lead-claude-stop.json"), session_id: PREDECESSOR });
+    assert.equal(db.prepare("SELECT session_id FROM lead_turn_state").get().session_id, "other", "without the new pane's pid it stays fenced");
   });
 
   it("an edited delivered text completes the handoff but stays active", async () => {

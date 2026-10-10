@@ -11,7 +11,7 @@ import {
   type StoredLeadMessage,
 } from "./leadMessage.js";
 import { readHandoffGate } from "./leadHandoff.js";
-import { readLeadTurnState } from "./leadState.js";
+import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
 import { loadProjectYml } from "./projectYml.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
 import {
@@ -226,7 +226,7 @@ function retargetAfterHandoff(row: DeliveryRow): DeliveryRow {
   const handedOff = db
     .prepare(
       `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND pane_target = ? AND predecessor_pane_pid = ?
-         AND successor_pane_pid = ? AND state IN ('started', 'completed')`,
+         AND successor_pane_pid = ? AND state IN ${HANDED_OFF_STATES_SQL}`,
     )
     .get(lead.id, lead.tmux_target, accepted.pane_pid ?? "", lead.pane_pid);
   if (handedOff === undefined) return row;

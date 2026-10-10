@@ -51,7 +51,6 @@ export function leadSessionEnded(
   return turn?.last_event === "session_end" && turn.pane_pid === row.pane_pid ? { ended_at: turn.changed_at } : null;
 }
 
-// Mirrors the exclusions conversationHoldsWake applies to agent_state_log (src/scheduler.ts).
 // Mirrors the exclusions conversationHoldsWake applies to agent_state_log (src/scheduler.ts),
 // including SQLite LIKE's ASCII case-insensitivity.
 export function isHumanPrompt(prompt: string): boolean {
@@ -163,19 +162,27 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
   );
 }
 
-// A late hook from a handed-off predecessor session must not reset or advance its successor.
-function fromHandedOffPredecessor(agentId: number, payload: LeadHookPayload): boolean {
-  return typeof payload.session_id === "string" && db
+// The states after a respawn claim, in which the predecessor's session is no longer the lead.
+export const HANDED_OFF_STATES_SQL = "('respawning', 'started', 'completed', 'ambiguous')";
+
+// A hook from a handed-off predecessor session is fenced only while it still comes from the
+// predecessor's pane process; a later resume of that session in a new process is the lead again.
+export function predecessorFence(agentId: number, sessionId: unknown, hookPanePid: () => string): boolean {
+  if (typeof sessionId !== "string" || sessionId === "") return false;
+  const rows = db
     .prepare(
-      `SELECT 1 AS hit FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
-         AND state IN ('respawning', 'started', 'completed', 'ambiguous')`,
+      `SELECT predecessor_pane_pid FROM lead_handoffs WHERE lead_agent_id = ? AND predecessor_session_id = ?
+         AND state IN ${HANDED_OFF_STATES_SQL}`,
     )
-    .get(agentId, payload.session_id) !== undefined;
+    .all(agentId, sessionId) as { predecessor_pane_pid: string }[];
+  if (rows.length === 0) return false;
+  const pid = hookPanePid();
+  return pid === "" || rows.some((r) => r.predecessor_pane_pid === pid);
 }
 
 const applyInTransaction = db.transaction(
-  (agentId: number, panePid: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean): void => {
-    if (fromHandedOffPredecessor(agentId, payload)) return;
+  (agentId: number, panePid: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean, fenced: boolean): void => {
+    if (fenced) return;
     const cur = readLeadTurnState(agentId);
     const next = nextLeadTurn(cur, panePid, event, payload, subagentsLive);
     const unchanged =
@@ -199,10 +206,17 @@ const applyInTransaction = db.transaction(
   },
 );
 
-export function applyLeadHook(actorId: string, event: string, payload: LeadHookPayload, subagentsLive: () => boolean): void {
+export function applyLeadHook(
+  actorId: string,
+  event: string,
+  payload: LeadHookPayload,
+  subagentsLive: () => boolean,
+  hookPanePid: () => string,
+): void {
   const lead = db
     .prepare("SELECT id, pane_pid FROM agents WHERE actor_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actorId) as { id: number; pane_pid: string } | undefined;
   if (!lead) return;
-  applyInTransaction.immediate(lead.id, lead.pane_pid, event, payload, subagentsLive);
+  const fenced = predecessorFence(lead.id, payload.session_id, hookPanePid);
+  applyInTransaction.immediate(lead.id, lead.pane_pid, event, payload, subagentsLive, fenced);
 }
