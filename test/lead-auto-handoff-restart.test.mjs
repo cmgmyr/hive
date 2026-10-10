@@ -22,7 +22,7 @@ const successorHook = (event, file) => `HIVE_AGENT_ID=lead:r HIVE_LEAD=1 '${proc
 writeFileSync(
   join(fakeBin, "claude"),
   [
-    "#!/bin/sh",
+    "#!/bin/bash",
     `if [ -f '${delayed.flag}' ]; then`,
     `  rm -f '${delayed.flag}'`,
     `  date +%s > '${delayed.exec}'`,
