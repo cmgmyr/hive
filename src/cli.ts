@@ -2963,7 +2963,7 @@ function cmdDoctor(argv: string[]): void {
     const { applied_at: appliedAt } = db.prepare("SELECT MAX(applied_at) AS applied_at FROM migrations").get() as {
       applied_at: string | null;
     };
-    const result = staleHiveServers(appliedAt);
+    const result = staleHiveServers(appliedAt, dataDir);
     if ("skipped" in result) {
       info("stale hive servers", `check skipped: ${result.skipped}`);
       return "check skipped";

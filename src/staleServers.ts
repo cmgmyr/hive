@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_DATA_DIR } from "./dataDir.js";
 
 export interface StaleHiveServer {
   pid: number;
@@ -56,6 +58,23 @@ function runsThisServer(command: string): boolean {
   return /(?:^|[\\/])node(?:\.exe)?$/.test(executable);
 }
 
+function canonicalDataDir(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+export function processUsesDataDir(psOutput: string, dataDir: string): boolean | null {
+  if (psOutput.trim() === "") return false;
+  if (!runsThisServer(psOutput)) return false;
+  const store = /(?:^|\s)HIVE_DATA_DIR=(.*?)(?=\s+[A-Za-z_][A-Za-z0-9_]*=|$)/.exec(psOutput);
+  const path = store ? store[1]!.trim() || DEFAULT_DATA_DIR : /(?:^|\s)PATH=/.test(psOutput) ? DEFAULT_DATA_DIR : null;
+  if (path === null) return null;
+  return canonicalDataDir(path) === canonicalDataDir(dataDir);
+}
+
 export function parseStaleHiveServers(psOutput: string, appliedAt: string, observedAt = Date.now()): StaleHiveServerReport {
   const newestMigration = appliedAtInstant(appliedAt);
   if (newestMigration === null) return { skipped: "the newest migration time is unavailable or invalid" };
@@ -82,11 +101,22 @@ export function parseStaleHiveServers(psOutput: string, appliedAt: string, obser
   return { servers };
 }
 
-export function staleHiveServers(appliedAt: string | null): StaleHiveServerReport {
+export function staleHiveServers(appliedAt: string | null, dataDir = DEFAULT_DATA_DIR): StaleHiveServerReport {
   if (appliedAt === null) return { skipped: "the newest migration time is unavailable" };
   try {
     const psOutput = execFileSync("ps", ["-eo", "pid=,ppid=,etime=,command="], { encoding: "utf8" });
-    return parseStaleHiveServers(psOutput, appliedAt, Date.now());
+    const parsed = parseStaleHiveServers(psOutput, appliedAt, Date.now());
+    if ("skipped" in parsed) return parsed;
+    const servers: StaleHiveServer[] = [];
+    for (const server of parsed.servers) {
+      const envOutput = execFileSync("ps", ["eww", "-p", String(server.pid), "-o", "command="], {
+        encoding: "utf8",
+      });
+      const sameStore = processUsesDataDir(envOutput, dataDir);
+      if (sameStore === null) return { skipped: "ps returned environment output that could not be parsed" };
+      if (sameStore) servers.push(server);
+    }
+    return { servers };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { skipped: `ps could not be run: ${reason}` };

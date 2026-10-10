@@ -19,7 +19,7 @@ function writePs({ fail = false } = {}) {
     psPath,
     fail
       ? "#!/bin/sh\necho 'ps unavailable' >&2\nexit 127\n"
-      : `#!/bin/sh\ncase "$*" in\n  *"pid=,ppid=,etime=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\nesac\n`,
+      : `#!/bin/sh\ncase "$*" in\n  *"pid=,ppid=,etime=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\n  "eww -p 50857 -o command=") printf '%s\\n' ${JSON.stringify(`${process.execPath} ${SERVER} HIVE_DATA_DIR=${dirs.dataDir} PATH=/bin`)} ;;\n  "eww -p 50002 -o command=") printf '%s\\n' ${JSON.stringify(`${process.execPath} ${SERVER} HIVE_DATA_DIR=${join(dirs.tmp, "other-data")} PATH=/bin`)} ;;\n  "eww -p 73803 -o command=") printf '%s\\n' ${JSON.stringify(`${process.execPath} ${SERVER} HIVE_DATA_DIR=${dirs.dataDir} PATH=/bin`)} ;;\nesac\n`,
     { mode: 0o755 },
   );
   chmodSync(psPath, 0o755);
@@ -29,7 +29,7 @@ function fixtureRow(pid, start, command = `${process.execPath} ${SERVER}`, ppid 
   return `${pid} ${ppid} ${start} ${command}`;
 }
 
-const { elapsedSeconds, parseStaleHiveServers, STALE_SERVER_BOUNDARY_SLACK_MS } = await import("../dist/staleServers.js");
+const { elapsedSeconds, parseStaleHiveServers, processUsesDataDir, STALE_SERVER_BOUNDARY_SLACK_MS } = await import("../dist/staleServers.js");
 const observedAt = Date.parse("2026-10-08T10:00:10.000Z");
 
 describe("stale hive server elapsed times", () => {
@@ -65,6 +65,14 @@ describe("stale hive server elapsed times", () => {
     assert.equal(elapsedSeconds("bad"), null);
   });
 
+  it("matches only the store named in the server process environment", () => {
+    const command = `${process.execPath} ${SERVER}`;
+    assert.equal(processUsesDataDir(`${command} HIVE_DATA_DIR=/tmp/one PATH=/bin`, "/tmp/one"), true);
+    assert.equal(processUsesDataDir(`${command} PATH=/bin HIVE_DATA_DIR=/tmp/two`, "/tmp/one"), false);
+    assert.equal(processUsesDataDir(`${command} PATH=/bin`, "/tmp/one"), false);
+    assert.equal(processUsesDataDir(`${command} environment unavailable`, "/tmp/one"), null);
+  });
+
   it("skips all process rows when ps output cannot be parsed", () => {
     assert.deepEqual(parseStaleHiveServers("not a ps row", "2026-10-07 17:30:00"), {
       skipped: "ps returned a row that could not be parsed",
@@ -92,6 +100,7 @@ describe("hive doctor stale hive server report", () => {
       [
         fixtureRow(1, "3650-00:00:00", "/sbin/launchd", 0),
         fixtureRow(50857, "3650-00:00:00"),
+        fixtureRow(50002, "3650-00:00:00"),
         fixtureRow(73803, "00:00:01"),
       ].join("\n") + "\n",
     );
@@ -100,6 +109,7 @@ describe("hive doctor stale hive server report", () => {
     assert.match(result.stdout, /warn  stale hive server: pid 50857 started \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \(parent pid 1: \/sbin\/launchd\)/);
     assert.match(result.stdout, new RegExp(`command: ${process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} ${SERVER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.match(result.stdout, /restart that session to load the current build/);
+    assert.doesNotMatch(result.stdout, /pid 50002/);
     assert.doesNotMatch(result.stdout, /pid 73803/);
   });
 
