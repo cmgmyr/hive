@@ -522,6 +522,35 @@ CREATE UNIQUE INDEX idx_lead_handoffs_epoch
 CREATE UNIQUE INDEX idx_lead_handoffs_active
   ON lead_handoffs(lead_agent_id) WHERE state NOT IN ('completed', 'failed');
 `,
+
+  `
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (h.state = 'grace'
+            OR (h.hold_released_at IS NULL AND (
+                  h.state IN ('respawning', 'ambiguous', 'wind_down')
+                  OR (h.state = 'requested'
+                      AND (h.reason = 'stop' OR h.pass >= 2))
+                  OR (h.state = 'postponed' AND h.reason = 'stop'))))
+       AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
