@@ -190,7 +190,7 @@ describe("lead auto-handoff state", () => {
 describe("lead auto-handoff hold lifetime", () => {
   beforeEach(reset);
 
-  it("respawning and ambiguous hold until released, and started releases at boot", () => {
+  it("respawning and ambiguous hold until released, and started holds through boot", () => {
     const lead = seedLead();
     const { requestId } = handoff.armHandoffRequest({
       lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "4242", session_id: "s-1" }, requestBody: () => "req",
@@ -202,7 +202,38 @@ describe("lead auto-handoff hold lifetime", () => {
       assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false, `${state} after release`);
     }
     db.prepare("UPDATE lead_handoffs SET state = 'started', hold_released_at = NULL WHERE id = ?").run(requestId);
-    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
+    assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
+  });
+
+  it("startup and stale hooks do not release a started hold, and the successor's first completed turn does", async () => {
+    const lead = seedLead();
+    writeTranscript(5);
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "4242", session_id: SESSION }, requestBody: () => "req",
+    });
+    db.prepare("UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', started_at = datetime('now') WHERE id = ?").run(requestId);
+    const held = (step) => {
+      assert.equal(handoff.readHandoff(requestId).state, "started", step);
+      assert.equal(handoff.readHandoffGate(lead.id)?.holdAutomation, true, step);
+    };
+    held("exec");
+
+    const SUCCESSOR = "successor-session";
+    await hook("session_start", payload("lead-claude-prompt.json", { session_id: SUCCESSOR, hook_event_name: "SessionStart", source: "startup" }));
+    held("SessionStart");
+
+    await completedTurn();
+    held("a predecessor-session prompt and Stop");
+
+    await hook("stop", payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
+    held("a successor Stop with no prompt");
+
+    await hook("prompt", payload("lead-claude-prompt.json", { session_id: SUCCESSOR }));
+    held("a successor prompt with its turn still running");
+
+    await hook("stop", payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
+    assert.equal(handoff.readHandoff(requestId).state, "completed");
+    assert.equal(handoff.readHandoffGate(lead.id), null);
   });
 
   it("a grace whose owner process is dead fails and releases its holds", async () => {

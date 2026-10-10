@@ -26,6 +26,8 @@ export const PRE_RESPAWN_STATES: readonly HandoffState[] = ["pending", "wind_dow
 
 export const PASS_TIMEOUT_SECONDS = 10 * 60;
 export const STOP_HOLD_CAP_SECONDS = 15 * 60;
+// The fence trigger's ceiling on lead_handoffs.updated_at age (src/db.ts); change both together.
+export const HOLD_CEILING_SECONDS = 3600;
 
 export interface PassPolicy {
   graceSeconds: number;
@@ -109,6 +111,8 @@ export function handoffHoldsAutomation(row: HandoffRow): boolean { // mirrored b
   switch (row.state) {
     case "grace":
       return true;
+    case "started":
+      return !olderThan(row.updated_at, HOLD_CEILING_SECONDS);
     case "respawning":
     case "ambiguous":
       return row.hold_released_at === null;

@@ -128,7 +128,7 @@ describe("the handoff hold fence in the store", () => {
   });
 
   it("a connection that prepared its claim before the fence existed is still fenced", () => {
-    const trigger = MIGRATIONS.find((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
+    const trigger = MIGRATIONS.findLast((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
     assert.ok(trigger, "the fence migration is in MIGRATIONS");
     const other = new Database(db.name);
     try {
@@ -219,6 +219,34 @@ describe("the handoff hold fence in the store", () => {
     db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(leadId);
     db.prepare("UPDATE agents SET status = 'running' WHERE id = ?").run(stopped);
     assert.equal(oneShot(db, wake).changes, 1, "the closed-then-running pick has no handoff of its own");
+  });
+});
+
+describe("a started handoff holds until its successor completes a turn", () => {
+  const AGES = { fresh: null, "3000 s": "-3000 seconds", "3700 s": "-3700 seconds" };
+  const verdicts = (state, age) => {
+    const wake = seedWake("lead:fence");
+    seedHandoff(leadId, { state });
+    if (AGES[age] !== null) {
+      db.prepare("UPDATE lead_handoffs SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', ?)").run(AGES[age]);
+    }
+    const verdict = { js: handoffHoldsWake(wake.id, leadId), store: oneShot(db, wake).changes === 0 };
+    db.prepare("DELETE FROM wakes WHERE id = ?").run(wake.id);
+    return verdict;
+  };
+
+  it("started holds in the gate and the trigger, completed and a started row past 3600 s release in both", () => {
+    assert.deepEqual(verdicts("started", "fresh"), { js: true, store: true });
+    assert.deepEqual(verdicts("started", "3000 s"), { js: true, store: true });
+    assert.deepEqual(verdicts("started", "3700 s"), { js: false, store: false });
+    assert.deepEqual(verdicts("completed", "fresh"), { js: false, store: false });
+  });
+
+  it("a started hold ignores hold_released_at, as grace does", () => {
+    const wake = seedWake("lead:fence");
+    seedHandoff(leadId, { state: "started", hold_released_at: "2026-01-01 00:00:00.000" });
+    assert.equal(handoffHoldsWake(wake.id, leadId), true);
+    assert.equal(oneShot(db, wake).changes, 0);
   });
 });
 
