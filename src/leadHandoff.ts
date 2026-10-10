@@ -759,7 +759,7 @@ function postpone(row: HandoffRow, token: string, reason: string, escalate: bool
 type Verdict = { go: true } | { wait: string } | { postpone: string; escalate: boolean } | { fail: string };
 
 // The final quiet check. A screen or probe that cannot be read waits; it never establishes quiet.
-async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, budget: LeadTurnBudget | null): Promise<Verdict> {
+export async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, budget: LeadTurnBudget | null): Promise<Verdict> {
   const { rowOwnership, paneInCopyMode, holdsHumanInput, tmuxSocketPath } = await import("./tmux.js");
   const { paneClassifierFor } = await import("./harnesses.js");
   if (budget?.auto_handoff !== true) return { fail: "lead_turn_budget.auto_handoff is no longer on" };

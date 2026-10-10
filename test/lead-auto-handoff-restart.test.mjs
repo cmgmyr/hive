@@ -241,6 +241,28 @@ describe("lead auto-handoff restart", () => {
     assert.ok(await until(() => !alive(owner), 5000));
   });
 
+  it("the final check waits on unknown ownership, fails a moved pane target and postpones a changed pad", needsTmux, async () => {
+    const ctx = await readyLead();
+    const human = db.prepare("SELECT human_prompt_seq FROM lead_turn_state").get().human_prompt_seq;
+    db.prepare("UPDATE lead_handoffs SET pad_id = ?, pad_revision = ?, human_prompt_baseline = ? WHERE id = ?").run(ctx.padId, ctx.revision, human, ctx.requestId);
+    const lead = () => db.prepare("SELECT a.*, p.path, p.name FROM agents a JOIN projects p ON p.id = a.project_id WHERE a.id = ?").get(ctx.lead.id);
+    const budget = { warn: 3, stop: 10, auto_handoff: true };
+    const verdict = () => handoff.respawnVerdict(row(ctx.requestId), lead(), budget);
+
+    assert.deepEqual(await verdict(), { go: true }, "positive control: a quiet lead is clear to respawn");
+    process.env.HIVE_TMUX_TIMEOUT_MS = "1";
+    try {
+      assert.match((await verdict()).wait ?? "", /ownership reads unknown/);
+    } finally {
+      delete process.env.HIVE_TMUX_TIMEOUT_MS;
+    }
+    db.prepare("UPDATE lead_handoffs SET pane_target = '%9999' WHERE id = ?").run(ctx.requestId);
+    assert.match((await verdict()).fail ?? "", /no longer names the pane/);
+    db.prepare("UPDATE lead_handoffs SET pane_target = ? WHERE id = ?").run(ctx.pane.pane, ctx.requestId);
+    db.prepare("UPDATE pads SET content = 'IN FLIGHT', revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(ctx.padId);
+    assert.match((await verdict()).postpone ?? "", /pad changed/);
+  });
+
   it("ambiguous respawn cannot kill a successor on retry", needsTmux, async () => {
     const ctx = await readyLead();
     assert.equal((await command(ctx)).code, 0);
