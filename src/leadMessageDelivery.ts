@@ -10,7 +10,7 @@ import {
   storeLeadMessage,
   type StoredLeadMessage,
 } from "./leadMessage.js";
-import { readHandoffGate } from "./leadHandoff.js";
+import { readHandoffGate } from "./leadHandoffState.js";
 import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
 import { loadProjectYml } from "./projectYml.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";

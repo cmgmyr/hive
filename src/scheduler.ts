@@ -33,7 +33,8 @@ import {
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
-import { driveLeadHandoff, handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoff.js";
+import { driveLeadHandoff } from "./leadHandoff.js";
+import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
 import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";

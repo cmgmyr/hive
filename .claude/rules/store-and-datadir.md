@@ -8,6 +8,7 @@ paths:
   - "src/scheduler.ts"
   - "src/config.ts"
   - "src/globalConfig.ts"
+  - "src/leadHandoffState.ts"
 ---
 
 # The store, the data dir, and what keeps tests off it

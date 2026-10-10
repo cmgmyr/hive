@@ -220,7 +220,8 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
-import { cmdLeadHandoff, handoffStatusSegment, runHandoffGrace, runHandoffStart } from "./leadHandoff.js";
+import { handoffStatusSegment } from "./leadHandoff.js";
+import { cmdLeadHandoff, runHandoffGrace, runHandoffStart } from "./leadHandoffCli.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
 import { codexHomeDir, codexInstructionsPhrase, ensureCodexHome, reapCodexHome } from "./codexHome.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";

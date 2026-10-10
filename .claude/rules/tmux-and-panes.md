@@ -10,6 +10,7 @@ paths:
   - "src/leadMessageDelivery.ts"
   - "src/harnesses.ts"
   - "src/processes.ts"
+  - "src/leadHandoffCli.ts"
   - "scripts/restart-lead.sh"
 ---
 
