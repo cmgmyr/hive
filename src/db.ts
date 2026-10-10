@@ -476,7 +476,6 @@ ALTER TABLE lead_turn_state ADD COLUMN transcript_path TEXT NOT NULL DEFAULT '';
 ALTER TABLE lead_turn_state ADD COLUMN stop_prompt_seq INTEGER;
 ALTER TABLE lead_turn_state ADD COLUMN stop_background TEXT;
 ALTER TABLE lead_turn_state ADD COLUMN stop_at TEXT;
-ALTER TABLE lead_turn_state ADD COLUMN open_subagents TEXT NOT NULL DEFAULT '[]';
 
 CREATE TABLE lead_handoffs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

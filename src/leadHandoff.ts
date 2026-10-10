@@ -190,8 +190,8 @@ export function handoffEligibility(
   };
 }
 
-// Respawn safety, not idleness: any live background task of any type, a Stop without background
-// evidence, a prompt newer than the last Stop, or an unmatched subagent_start vetoes. No expiry.
+// Respawn safety, not idleness: any live background task of any type (live subagents included), a
+// Stop without background evidence, or a prompt newer than the last Stop vetoes. No expiry.
 export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | null): string | null {
   if (snapshot === null || snapshot.snapshot_session_id !== snapshot.session_id || snapshot.session_id === "") {
     return "no background evidence for the current session";
@@ -209,13 +209,6 @@ export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | 
     const types = [...new Set(live.map((t) => t.type || "unknown"))].sort().join(", ");
     return `${live.length} background task${live.length === 1 ? "" : "s"} still live (${types})`;
   }
-  let open: string[];
-  try {
-    open = JSON.parse(snapshot.open_subagents) as string[];
-  } catch {
-    return "the subagent evidence is unreadable";
-  }
-  if (open.length > 0) return `${open.length} subagent${open.length === 1 ? "" : "s"} started and not yet stopped`;
   return null;
 }
 

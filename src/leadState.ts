@@ -27,7 +27,6 @@ export interface LeadSafetySnapshot {
   stop_prompt_seq: number | null;
   stop_background: string | null;
   stop_at: string | null;
-  open_subagents: string;
 }
 
 interface LeadHookPayload {
@@ -35,7 +34,6 @@ interface LeadHookPayload {
   prompt?: unknown;
   transcript_path?: unknown;
   background_tasks?: unknown;
-  agent_id?: unknown;
 }
 
 export function readLeadTurnState(agentId: number): LeadTurnState | null {
@@ -116,13 +114,11 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
     stop_prompt_seq: fresh ? null : row.stop_prompt_seq,
     stop_background: fresh ? null : row.stop_background,
     stop_at: fresh ? null : row.stop_at,
-    open: new Set<string>(fresh ? [] : (JSON.parse(row.open_subagents) as string[])),
   };
   if (typeof payload.transcript_path === "string" && payload.transcript_path !== "") {
     snap.transcript_path = payload.transcript_path;
   }
   const now = (db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now') AS now").get() as { now: string }).now;
-  const subagentId = typeof payload.agent_id === "string" ? payload.agent_id : "";
   switch (event) {
     case "prompt":
       snap.prompt_seq += 1;
@@ -145,20 +141,14 @@ function applySnapshot(agentId: number, panePid: string, event: string, payload:
         ? null
         : JSON.stringify(liveBackgroundTasks(payload.background_tasks));
       break;
-    case "subagent_start":
-      if (subagentId !== "") snap.open.add(subagentId);
-      break;
-    case "subagent_stop":
-      if (subagentId !== "") snap.open.delete(subagentId);
-      break;
   }
   db.prepare(
     `UPDATE lead_turn_state SET snapshot_pane_pid = ?, snapshot_session_id = ?, prompt_seq = ?, human_prompt_seq = ?,
-       human_prompt_at = ?, transcript_path = ?, stop_prompt_seq = ?, stop_background = ?, stop_at = ?, open_subagents = ?
+       human_prompt_at = ?, transcript_path = ?, stop_prompt_seq = ?, stop_background = ?, stop_at = ?
      WHERE agent_id = ?`,
   ).run(
     panePid, sessionId, snap.prompt_seq, snap.human_prompt_seq, snap.human_prompt_at, snap.transcript_path,
-    snap.stop_prompt_seq, snap.stop_background, snap.stop_at, JSON.stringify([...snap.open].sort()), agentId,
+    snap.stop_prompt_seq, snap.stop_background, snap.stop_at, agentId,
   );
 }
 

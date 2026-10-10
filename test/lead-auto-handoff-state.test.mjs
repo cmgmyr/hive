@@ -112,7 +112,7 @@ describe("lead auto-handoff state", () => {
     assert.equal(wakes[0].body, `handoff request #${rows[0].id}`);
   });
 
-  it("idle lead with shell monitor or old open subagent cannot respawn", async () => {
+  it("idle lead with a live shell, monitor, subagent or unknown task cannot respawn", async () => {
     seedLead();
     const lead = db.prepare("SELECT * FROM agents").get();
     const veto = () => handoff.backgroundVeto(readLeadSafetySnapshot(lead.id));
@@ -127,13 +127,9 @@ describe("lead auto-handoff state", () => {
     await completedTurn("lead-claude-stop.json", { background_tasks: [{ type: "telepathy", status: "running" }] });
     assert.match(veto(), /telepathy/);
 
-    await hook("prompt", payload("lead-claude-prompt.json"));
-    await hook("subagent_start", JSON.stringify({ session_id: SESSION, agent_id: "sub-1", hook_event_name: "SubagentStart" }));
-    await hook("stop", payload("lead-claude-stop.json"));
+    await completedTurn("stop-subagents-running.json");
     db.prepare("UPDATE agent_state_log SET created_at = datetime('now', '-2 hours')").run();
-    assert.match(veto(), /subagent started and not yet stopped/);
-    await hook("subagent_stop", JSON.stringify({ session_id: SESSION, agent_id: "sub-1", hook_event_name: "SubagentStop" }));
-    assert.equal(veto(), null);
+    assert.match(veto(), /subagent/, "a live subagent in the Stop payload vetoes, with no latch expiry");
 
     const noEvidence = { ...fixture("lead-claude-stop.json"), session_id: SESSION, transcript_path: TRANSCRIPT };
     delete noEvidence.background_tasks;
