@@ -400,4 +400,14 @@ describe("lead auto-handoff hold lifetime", () => {
     assert.equal(row.pass, 1);
     assert.equal(row.owner_token, "t");
   });
+
+  it("a human prompt while the handoff is not in grace changes nothing", async () => {
+    const requestId = await armInGrace(SESSION);
+    db.prepare("UPDATE lead_handoffs SET state = 'requested' WHERE id = ?").run(requestId);
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: "please look at this" }));
+    const row = handoff.readHandoff(requestId);
+    assert.equal(row.state, "requested");
+    assert.equal(row.pass, 1);
+    assert.equal(row.owner_token, "t");
+  });
 });
