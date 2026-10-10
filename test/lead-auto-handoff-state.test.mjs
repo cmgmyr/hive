@@ -15,6 +15,7 @@ await assertScratchStore();
 const { db, migrate } = await import("../dist/db.js");
 const handoff = await import("../dist/leadHandoff.js");
 const { readLeadSafetySnapshot } = await import("../dist/leadState.js");
+const { sendQuietLeadMessage, retryQuietLeadMessages } = await import("../dist/leadMessageDelivery.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -234,6 +235,27 @@ describe("lead auto-handoff hold lifetime", () => {
     await hook("stop", payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
     assert.equal(handoff.readHandoff(requestId).state, "completed");
     assert.equal(handoff.readHandoffGate(lead.id), null);
+  });
+
+  it("a started handoff holds a worker's message to the lead", async () => {
+    const lead = seedLead();
+    db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, pane_pid, command, cwd, status)
+       VALUES (?, 'agent:w', 'w', 'agent', '%9801', '1', 'claude', '/tmp', 'running')`,
+    ).run(project);
+    const { requestId } = handoff.armHandoffRequest({
+      lead, ownerActor: "lead:h", reason: "stop", epoch: { pane_pid: "100", session_id: "s-1" }, requestBody: () => "req",
+    });
+    db.prepare("UPDATE lead_handoffs SET state = 'started', successor_pane_pid = '4242', started_at = datetime('now') WHERE id = ?").run(requestId);
+    try {
+      const receipt = await sendQuietLeadMessage({ projectId: project, fromActor: "agent:w", target: lead, text: "held through started", submit: true });
+      assert.equal(receipt?.pending, true, JSON.stringify(receipt));
+      assert.match(receipt.note, /handing off/);
+      await retryQuietLeadMessages(null);
+      assert.equal(db.prepare("SELECT delivery_status FROM agent_messages WHERE id = ?").get(receipt.message_id).delivery_status, "fallback-pending");
+    } finally {
+      db.exec("DELETE FROM agent_messages");
+    }
   });
 
   it("a never-ready successor is named from started_at, then released at the ceiling", () => {
