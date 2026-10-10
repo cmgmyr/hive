@@ -1068,10 +1068,13 @@ const completeTransaction = db.transaction((row: HandoffRow, sessionId: string):
           WHERE id = ? AND revision = ? AND archived = 0 AND name = ?`,
       )
       .run(row.pad_id, current.revision, HANDOFF_PAD_NAME).changes === 1;
+  const completedAt = nowSql();
   casHandoff(row.id, ["started"], {
     state: "completed",
     successor_session_id: sessionId,
-    completed_at: nowSql(),
+    completed_at: completedAt,
+    hold_released_at: completedAt,
+    blocked_reason: null,
     delivered_pad_id: archived ? row.pad_id : null,
     delivered_pad_revision: archived ? row.pad_revision : null,
     failure: archived ? null : "the delivered handoff text was edited after the command, so the pad was left active",
