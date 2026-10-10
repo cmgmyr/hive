@@ -552,8 +552,9 @@ BEGIN
 END;
 `,
 
+  `DROP TRIGGER fence_handoff_held_claim;`,
+
   `
-DROP TRIGGER IF EXISTS fence_handoff_held_claim;
 CREATE TRIGGER fence_handoff_held_claim
 BEFORE UPDATE OF fire_count, delivery_method ON wakes
 FOR EACH ROW
