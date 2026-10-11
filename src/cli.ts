@@ -271,6 +271,7 @@ import {
   listActivePads,
   overwritePadContent,
 } from "./tools/pads.js";
+import { answerQuestion, listQuestions } from "./questions.js";
 
 function usage(): never {
   console.log(`hive — run a crew of Claude Code and Codex workers from one lead session
@@ -325,6 +326,9 @@ Usage:
   hive todos [--all] [--status <s>] [--tag <t>]
                              list this project's todos; open work by default
   hive todo <id>             print one todo in full, comments included
+  hive questions [--json]   list pending and defaulted questions
+  hive answer <id> <answer> [--notes <text>]
+                             record an answer to a pending question
   hive backups               list automatic store snapshots
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive project rm <id|path> [--yes]
@@ -4122,6 +4126,65 @@ function cmdTodo(argv: string[]): void {
   }
 }
 
+function cmdQuestions(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("questions", parsed, "--json");
+  const project = resolveProjectForRead("questions");
+  const questions = listQuestions(project.id);
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify({ questions }));
+    return;
+  }
+  if (questions.length === 0) {
+    console.log("No pending or defaulted questions.");
+    return;
+  }
+  for (const q of questions) {
+    console.log(`#${q.id} [${q.state}] ${q.header}`);
+    console.log(`Question: ${q.question}`);
+    console.log(`Default: ${q.default_answer}`);
+    if (q.options) {
+      console.log("Options:");
+      for (const option of q.options) {
+        console.log(`  ${option.label}${option.recommended ? " (Recommended)" : ""}: ${option.description}`);
+      }
+    }
+  }
+}
+
+function cmdAnswer(argv: string[]): void {
+  if (argv.filter((arg) => arg === "--notes").length > 1) {
+    console.error("hive answer: --notes may be passed only once.");
+    process.exit(1);
+  }
+  const parsed = parseArgs(argv, { valued: ["--notes"] });
+  rejectUnknownFlags("answer", parsed, "--notes <text>");
+  requireFlagValues("answer", parsed);
+  if (parsed.values.has("--notes") && parsed.values.get("--notes") === undefined) {
+    console.error("hive answer: --notes requires a value.");
+    process.exit(1);
+  }
+  if (parsed.positional.length !== 2) {
+    console.error("hive answer: usage: hive answer <positive id> <one answer argument> [--notes <text>]");
+    process.exit(1);
+  }
+  const [rawId, answer] = parsed.positional;
+  if (!/^\d+$/.test(rawId) || !Number.isSafeInteger(Number(rawId)) || Number(rawId) <= 0) {
+    console.error(`hive answer: question id must be a positive safe integer, got ${JSON.stringify(rawId)}.`);
+    process.exit(1);
+  }
+  const project = resolveProjectForRead("answer");
+  const id = Number(rawId);
+  const receipt = answerQuestion(project.id, currentActor(), id, answer, parsed.values.get("--notes"));
+  console.log(`Question #${receipt.question_id} answered.`);
+  if (receipt.wake_id === null) {
+    console.log(`No wake queued: ${receipt.wake_skipped ?? "the asking session could not be reached"}.`);
+  } else {
+    console.log(`Wake #${receipt.wake_id} queued for the asking session.`);
+  }
+}
+
 function cmdPads(): void {
   const project = resolveProjectForRead("pads");
   const pads = listActivePads(project.id);
@@ -4248,7 +4311,7 @@ const COMMANDS = [
   LEAD_HANDOFF_GRACE_VERB,
   LEAD_HANDOFF_START_VERB,
   "lead-handoff",
-  "pads", "pad", "todos", "todo", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
+  "pads", "pad", "todos", "todo", "questions", "answer", "backups", "restore", "project", "runbook", "posture", "profile", "kickoff", "statusline",
 ];
 if (!COMMANDS.includes(command)) {
 
@@ -4337,6 +4400,12 @@ try {
       break;
     case "todo":
       cmdTodo(rest);
+      break;
+    case "questions":
+      cmdQuestions(rest);
+      break;
+    case "answer":
+      cmdAnswer(rest);
       break;
     case "backups":
       cmdBackups();
