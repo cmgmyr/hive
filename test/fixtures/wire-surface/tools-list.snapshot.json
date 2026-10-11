@@ -831,7 +831,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, leases.",
+    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, questions, leases.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1830,6 +1830,340 @@
           "type": "integer"
         }
       },
+      "type": "object"
+    }
+  },
+  "question_answer": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Record the human's answer to a pending or defaulted question in this project: a picked option label or free text (any nonblank text is accepted, including one outside the offered labels), plus optional notes. The answer commits first. It then queues one wake to the asking session carrying the question, answer and notes verbatim, unless you ARE the asker (you recorded the human's own pick) or the asker cannot be reached now; either way the receipt says wake_id null and why in wake_skipped, and the answer stays readable with question_get. wake_id means queued, not delivered. An answered or withdrawn question refuses with QUESTION_STATE_CONFLICT.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question_id",
+        "answer"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "wake_id": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "wake_skipped": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "wake_id"
+      ],
+      "type": "object"
+    }
+  },
+  "question_ask": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header of 12 characters or fewer; kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "default_answer": {
+          "description": "What you do if unanswered. For a choice, the recommended label.",
+          "type": "string"
+        },
+        "header": {
+          "description": "12 characters or fewer.",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "choice",
+            "free_text"
+          ],
+          "type": "string"
+        },
+        "options": {
+          "description": "Required for choice, forbidden for free_text.",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "description": "What choosing this means.",
+                "type": "string"
+              },
+              "label": {
+                "description": "Short choice label; distinct within the question.",
+                "type": "string"
+              },
+              "recommended": {
+                "description": "Exactly one option is recommended; it is the default.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "description",
+              "recommended"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "ref": {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "todo",
+                "pr"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "description": "A todo id or PR number. An identifier, not looked up.",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "number"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "kind",
+        "question",
+        "header",
+        "default_answer"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "type": "boolean"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "similar_question_ids": {
+          "items": {
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "question_id",
+        "created",
+        "similar_question_ids"
+      ],
+      "type": "object"
+    }
+  },
+  "question_get": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Read one question in this project by id, in any state, with its answer and notes once answered.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "question_id"
+      ],
+      "type": "object"
+    }
+  },
+  "question_list": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "List this project's pending questions, then its defaulted ones (acted on by default, still open to reversal), oldest first within each group. Answered and withdrawn questions are not listed; read one by id with question_get.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    }
+  },
+  "question_update": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Edit a pending question's text (question, header, options, default_answer; the whole result is revalidated) or move it out of pending with state=defaulted (you acted on your default) or state=withdrawn (moot). A defaulted question can still be withdrawn. Moving state needs the asking session or the human; an answered or withdrawn question cannot be changed. The ref, asker and wake target never change.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "default_answer": {
+          "type": "string"
+        },
+        "header": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "description": "What choosing this means.",
+                "type": "string"
+              },
+              "label": {
+                "description": "Short choice label; distinct within the question.",
+                "type": "string"
+              },
+              "recommended": {
+                "description": "Exactly one option is recommended; it is the default.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label",
+              "description",
+              "recommended"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "question": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "defaulted",
+            "withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "hive_notice": {
+          "type": "string"
+        },
+        "question_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "state": {
+          "enum": [
+            "answered",
+            "defaulted",
+            "pending",
+            "withdrawn"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "state"
+      ],
       "type": "object"
     }
   },

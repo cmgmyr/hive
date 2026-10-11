@@ -67,6 +67,9 @@ function seedProject(name, { agentStatus = "closed" } = {}) {
     .prepare("INSERT INTO wakes (project_id, owner, body, deliver_actor, deliver_pane) VALUES (?, 'x', 'x', 'x', 'x') RETURNING id")
     .get(p).id;
   db.prepare("INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, 'x', 'x')").run(p);
+  db.prepare(
+    "INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by) VALUES (?, 'x', 1, 'free_text', 'x', 'x', 'x', 'x')",
+  ).run(p);
   db.prepare("INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text) VALUES (?, 'a', 'a', ?, 'x')").run(p, agent);
   db.prepare("INSERT INTO lead_idle_subscriptions (wake_id, target_project_id, agent_id, pane_pid) VALUES (?, ?, ?, '1')").run(wake, p, agent);
   return p;

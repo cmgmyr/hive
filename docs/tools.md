@@ -1,4 +1,4 @@
-# Tools (46)
+# Tools (51)
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
@@ -31,6 +31,12 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `wake_get` | Reads one wake-up by id, with its untruncated body | To see exactly what a wake will say, past `wake_list`'s 120-char cap |
 | `wake_update` | Edits a pending wake-up you own in place, keeping its id | To reschedule (`delay_seconds`, relative to now) or edit the body/repeat interval without cancel-and-reset |
 | `wake_cancel` | Cancels a pending wake-up you own | When the plan changes |
+| **questions** | | |
+| `question_ask` | Records an open question for the human, as a choice (2-4 options, one recommended) or free text, each with a header of 12 characters or fewer and a default. A `ref` (todo id or PR number) updates the project's pending question for that ref instead of adding one. The receipt lists similar pending questions. hive stores the question; the asking session puts it to the human | When a decision waits on the human and you have a default to proceed on |
+| `question_get` | Reads one question in this project by id, in any state, with its answer and notes | To read an answer, or the full text of a question another session asked |
+| `question_list` | Lists pending questions, then defaulted ones, oldest first within each group | To see what is open before asking another |
+| `question_update` | Edits a pending question's text (revalidated whole), or marks it `defaulted` (acted on the default) or `withdrawn` (moot). Marking needs the asker or the human | To fix a question, or close one you no longer need answered |
+| `question_answer` | Records the human's answer to a pending or defaulted question and queues one wake to the asker with the answer verbatim. If you are the asker, or the asker is unreachable, the answer is kept and the receipt says why no wake was queued | When the human answers, in whichever session they answered |
 | **pads** | | |
 | `pad_write` | Creates a named pad, or overwrites one with `expected_revision` | Shared plans, findings, the runbook, the board |
 | `pad_read` | Full content plus revision and metadata; optional nonnegative safe-integer UTF-16 code-unit `offset` and `limit`, with no default cap; a surrogate-pair cut moves back one unit, or forward if moving back would return nothing, and the result reports its effective offset | Before editing, and whenever a pad is referenced |

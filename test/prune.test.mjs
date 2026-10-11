@@ -74,6 +74,11 @@ function seedProjectOwnerRow(table, projectId, ownerActorId) {
     case "command_trust":
       db.prepare("INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, 'x', 'x')").run(projectId);
       return;
+    case "questions":
+      db.prepare(
+        "INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by) VALUES (?, 'x', 1, 'free_text', 'x', 'x', 'x', 'x')",
+      ).run(projectId);
+      return;
     default:
       throw new Error(`test/prune.test.mjs has no seed for PROJECT_OWNER_TABLES entry "${table}" - add one`);
   }
@@ -91,6 +96,19 @@ function seedActorOwnerRow(table, column, actorId, homeProjectId, sharedTodoId) 
       db.prepare(
         "INSERT INTO agents (project_id, parent_actor_id, name, command, cwd) VALUES (?, ?, ?, 'sleep', '/tmp')",
       ).run(homeProjectId, actorId, actorId);
+      return;
+    case "questions.asker":
+    case "questions.updated_by":
+    case "questions.answered_by":
+      db.prepare(
+        `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by, answered_by)
+         VALUES (?, ?, 1, 'free_text', 'x', 'x', 'x', ?, ?)`,
+      ).run(
+        homeProjectId,
+        column === "asker" ? actorId : "other",
+        column === "updated_by" ? actorId : "other",
+        column === "answered_by" ? actorId : null,
+      );
       return;
     case "todos.locked_by":
       db.prepare("INSERT INTO todos (project_id, title, locked_by) VALUES (?, 'x', ?)").run(homeProjectId, actorId);
@@ -175,7 +193,7 @@ describe("project_prune", () => {
   it("PROJECT_OWNER_TABLES is exactly the audited list from #97 (todo 235) - a change here must be deliberate", () => {
     assert.deepEqual(
       [...PROJECT_OWNER_TABLES].sort(),
-      ["agents", "command_trust", "kv", "leases", "pads", "todos", "wakes"],
+      ["agents", "command_trust", "kv", "leases", "pads", "questions", "todos", "wakes"],
     );
   });
 
@@ -503,6 +521,9 @@ describe("actor_prune", () => {
         "kv.updated_by",
         "leases.owner",
         "pads.updated_by",
+        "questions.answered_by",
+        "questions.asker",
+        "questions.updated_by",
         "wakes.deliver_actor",
         "wakes.owner",
         "todo_comments.author",
