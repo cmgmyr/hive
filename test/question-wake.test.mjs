@@ -77,13 +77,13 @@ describe("answering a question wakes its asker", () => {
   it("answer and one asker wake commit together", { skip }, () => {
     const asker = agentRow("agent:wake-asker");
     const id = seedQuestion("agent:wake-asker", asker.id);
-    const receipt = answerQuestion(project, "user:chris", id, "Falcon", "Because it is short");
+    const receipt = answerQuestion(project, "user:human", id, "Falcon", "Because it is short");
     assert.deepEqual(Object.keys(receipt).sort(), ["question_id", "wake_id"]);
     const q = questionRow(id);
     assert.equal(q.state, "answered");
     assert.equal(q.answer, "Falcon");
     assert.equal(q.notes, "Because it is short");
-    assert.equal(q.answered_by, "user:chris");
+    assert.equal(q.answered_by, "user:human");
     const wakes = wakesFor(id);
     assert.equal(wakes.length, 1);
     const [w] = wakes;
@@ -102,7 +102,7 @@ describe("answering a question wakes its asker", () => {
     const asker = agentRow("agent:wake-screen");
     const id = seedQuestion("agent:wake-screen", asker.id, { question: "Pick the rollout order for the three regions?" });
     const notes = "First line of notes\n  indented second line\nThird line, with a [bracket] and a $dollar";
-    const { wake_id } = answerQuestion(project, "user:chris", id, "Region B first", notes);
+    const { wake_id } = answerQuestion(project, "user:human", id, "Region B first", notes);
     await tick();
     const stored = db.prepare("SELECT body, fire_count FROM wakes WHERE id = ?").get(wake_id);
     assert.equal(stored.fire_count, 1);
@@ -122,7 +122,7 @@ describe("answering a question wakes its asker", () => {
   it("a defaulted question can be answered as a reversal", { skip }, () => {
     const asker = agentRow("agent:wake-reverse");
     const id = seedQuestion("agent:wake-reverse", asker.id, { state: "defaulted" });
-    const receipt = answerQuestion(project, "user:chris", id, "Reverse it");
+    const receipt = answerQuestion(project, "user:human", id, "Reverse it");
     assert.equal(questionRow(id).state, "answered");
     assert.equal(wakesFor(id).length, 1);
     assert.equal(receipt.wake_id, wakesFor(id)[0].id);
@@ -148,7 +148,7 @@ describe("answering a question wakes its asker", () => {
     const idDead = seedQuestion("agent:wake-dead", deadPane.id);
     const before = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;
     for (const id of [idClosed, noAgent, idDead]) {
-      const receipt = answerQuestion(project, "user:chris", id, "Answer survives");
+      const receipt = answerQuestion(project, "user:human", id, "Answer survives");
       assert.equal(receipt.wake_id, null, `question ${id}`);
       assert.equal(typeof receipt.wake_skipped, "string");
       assert.ok(receipt.wake_skipped.length > 0);
@@ -163,7 +163,7 @@ describe("answering a question wakes its asker", () => {
     const id = seedQuestion("agent:wake-moved", first.id);
     db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(first.id);
     const second = agentRow("agent:wake-moved");
-    const { wake_id } = answerQuestion(project, "user:chris", id, "Delivered after a restart");
+    const { wake_id } = answerQuestion(project, "user:human", id, "Delivered after a restart");
     const w = db.prepare("SELECT deliver_pane, deliver_actor FROM wakes WHERE id = ?").get(wake_id);
     assert.equal(w.deliver_pane, second.pane.id);
     assert.notEqual(w.deliver_pane, first.pane.id);
@@ -176,31 +176,31 @@ describe("answering a question wakes its asker", () => {
     const snapshot = () => JSON.stringify([questionRow(id), db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n]);
     const before = snapshot();
     for (const bad of ["", "   ", "bell\u0007"]) {
-      refused(() => answerQuestion(project, "user:chris", id, bad));
+      refused(() => answerQuestion(project, "user:human", id, bad));
       assert.equal(snapshot(), before);
     }
-    refused(() => answerQuestion(project, "user:chris", id, "fine", "note with \u001b escape"));
+    refused(() => answerQuestion(project, "user:human", id, "fine", "note with \u001b escape"));
     assert.equal(snapshot(), before);
 
-    answerQuestion(project, "user:chris", id, "First");
+    answerQuestion(project, "user:human", id, "First");
     const afterFirst = snapshot();
-    assert.match(refused(() => answerQuestion(project, "user:chris", id, "Second")), /QUESTION_STATE_CONFLICT/);
+    assert.match(refused(() => answerQuestion(project, "user:human", id, "Second")), /QUESTION_STATE_CONFLICT/);
     assert.equal(snapshot(), afterFirst);
 
     const withdrawn = seedQuestion("agent:wake-invalid", asker.id, { state: "withdrawn" });
     const frozen = JSON.stringify(questionRow(withdrawn));
-    assert.match(refused(() => answerQuestion(project, "user:chris", withdrawn, "late")), /QUESTION_STATE_CONFLICT/);
+    assert.match(refused(() => answerQuestion(project, "user:human", withdrawn, "late")), /QUESTION_STATE_CONFLICT/);
     assert.equal(JSON.stringify(questionRow(withdrawn)), frozen);
 
     const other = db.prepare("INSERT INTO projects (name, path) VALUES ('question-wake-other', ?) RETURNING id").get(`${dirs.projectDir}-x`).id;
-    assert.match(refused(() => answerQuestion(other, "user:chris", seedQuestion("agent:wake-invalid", asker.id), "cross")), /No question/);
+    assert.match(refused(() => answerQuestion(other, "user:human", seedQuestion("agent:wake-invalid", asker.id), "cross")), /No question/);
   });
 
   it("failed wake insertion rolls the answer back", { skip }, () => {
     const asker = agentRow("agent:wake-rollback");
     const id = seedQuestion("agent:wake-rollback", asker.id);
     db.exec("CREATE TRIGGER fail_wake_insert BEFORE INSERT ON wakes BEGIN SELECT RAISE(ABORT, 'wake insert refused'); END");
-    assert.match(refused(() => answerQuestion(project, "user:chris", id, "Will not stick")), /wake insert refused/);
+    assert.match(refused(() => answerQuestion(project, "user:human", id, "Will not stick")), /wake insert refused/);
     const q = questionRow(id);
     assert.equal(q.state, "pending");
     assert.equal(q.answer, null);
