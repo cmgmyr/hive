@@ -17,6 +17,7 @@ await assertScratchStore();
 const { db, migrate } = await import("../dist/db.js");
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 const { QUEEN_REACH } = await import("../dist/context.js");
+const { looksSimilar } = await import("../dist/questions.js");
 migrate();
 
 const OWN_SOCKET = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
@@ -321,6 +322,17 @@ describe("question tools, over real MCP", () => {
     assert.match(await refusal(queenMcp, "question_get", { question_id: foreign }), /No question/);
     assert.match(await refusal(queenMcp, "question_get", { question_id: foreign, project_id: away.id }), /project_id/);
     assert.ok(!JSON.stringify(await queenMcp.call("question_list")).includes("Secret away"));
+  });
+});
+
+describe("question similarity", () => {
+  it("matches at Jaccard 0.5 and not below it, however many words are shared", () => {
+    assert.equal(looksSimilar("alpha bravo charlie", "alpha bravo delta"), true, "2 of 4 tokens is exactly 0.5");
+    assert.equal(looksSimilar("alpha bravo", "alpha"), true, "1 of 2 is exactly 0.5");
+    assert.equal(looksSimilar("alpha bravo charlie delta echoes foxtrot", "alpha bravo golf hotel india juliet"), false, "2 shared of 10 is 0.2");
+    assert.equal(looksSimilar("alpha bravo charlie", "alpha"), false, "1 of 3 is below 0.5");
+    assert.equal(looksSimilar("the cat", "a dog"), false, "no token of 4 or more characters on either side");
+    assert.equal(looksSimilar("  Ship   IT? ", "ship it?"), true, "normalized equality needs no long token");
   });
 });
 
