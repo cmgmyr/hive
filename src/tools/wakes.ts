@@ -55,7 +55,7 @@ function refuseUnclassifiableTarget(agent: AgentRow): void {
   );
 }
 
-function resolveDelivery(
+export function resolveWakeDelivery(
   projectId: number,
   deliverTo?: number | string,
 ): { actor: string; pane: string } {
@@ -175,7 +175,7 @@ function deliveredByNote(t: TimerRow): string | null {
 export const truncateBody = (body: string): string =>
   body.length > 120 ? `${cutToUnitBudget(body, 120)}…` : body;
 
-function rejectUnsafeBody(body: string): void {
+export function assertSafeWakeBody(body: string): void {
   const bad = findUnsafeControlChar(body, TEXT_ALLOWED_CONTROL_CHARS);
   if (bad) {
     throw new Error(
@@ -245,7 +245,7 @@ function createStandingWatch(
   projectId: number,
   args: { body: string; max_wait_seconds?: number; deliver_to?: number | string },
 ): Record<string, unknown> {
-  const delivery = resolveDelivery(projectId, args.deliver_to);
+  const delivery = resolveWakeDelivery(projectId, args.deliver_to);
   const maxWait = args.max_wait_seconds ?? STANDING_WATCH_LIFETIME_SECONDS;
   const row = openStandingWatch.immediate(
     projectId,
@@ -368,7 +368,7 @@ function createLeadWatch(
       note: `Project ${leadProjectId}'s lead has already ended its turn; nothing was scheduled. Read it now.`,
     };
   }
-  const delivery = resolveDelivery(home);
+  const delivery = resolveWakeDelivery(home);
   const maxWait = args.max_wait_seconds ?? 900;
   const row = openLeadWatch.immediate(home, args.body, mode, delivery, maxWait, {
     projectId: leadProjectId,
@@ -443,9 +443,9 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        rejectUnsafeBody(args.body);
+        assertSafeWakeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
-        const delivery = resolveDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to);
         return commitQueenStateWrite("wake_set", projectId, args, () => {
           const row = db
             .prepare(
@@ -547,7 +547,7 @@ export function registerWakes(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        rejectUnsafeBody(args.body);
+        assertSafeWakeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
 
         const selectors = [
@@ -587,7 +587,7 @@ export function registerWakes(server: McpServer): void {
               "which only the queen may watch, with lead_project_id=<that lead's project id>.",
           );
         }
-        const delivery = resolveDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to);
 
         const snapshot = liveTargets();
 
@@ -771,7 +771,7 @@ export function registerWakes(server: McpServer): void {
         const params: unknown[] = [];
 
         if (args.body != null) {
-          rejectUnsafeBody(args.body);
+          assertSafeWakeBody(args.body);
           sets.push("body = ?");
           params.push(args.body);
         }
