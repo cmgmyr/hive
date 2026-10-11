@@ -1,9 +1,10 @@
 import { db } from "./db.js";
+import { HUMAN_ACTOR_PREFIX } from "./context.js";
 import { assertSafeWakeBody, resolveWakeDelivery } from "./tools/wakes.js";
 
-export type QuestionRef = { kind: "todo" | "pr"; number: number };
-export type QuestionOption = { label: string; description: string; recommended: boolean };
-export type QuestionState = "pending" | "answered" | "defaulted" | "withdrawn";
+type QuestionRef = { kind: "todo" | "pr"; number: number };
+type QuestionOption = { label: string; description: string; recommended: boolean };
+type QuestionState = "pending" | "answered" | "defaulted" | "withdrawn";
 
 export type QuestionInput =
   | {
@@ -35,7 +36,7 @@ export type QuestionRecord = {
   answered_by: string | null;
 };
 
-export type QuestionPatch = {
+type QuestionPatch = {
   question?: string;
   header?: string;
   options?: QuestionOption[];
@@ -43,11 +44,10 @@ export type QuestionPatch = {
   state?: "defaulted" | "withdrawn";
 };
 
-export const QUESTION_STATE_CONFLICT = "QUESTION_STATE_CONFLICT";
-export const HEADER_MAX_CHARS = 12;
-export const MIN_OPTIONS = 2;
-export const MAX_OPTIONS = 4;
-export const HUMAN_ACTOR_PREFIX = "user:";
+const QUESTION_STATE_CONFLICT = "QUESTION_STATE_CONFLICT";
+const HEADER_MAX_CHARS = 12;
+const MIN_OPTIONS = 2;
+const MAX_OPTIONS = 4;
 
 type Row = Omit<QuestionRecord, "options" | "ref"> & {
   options: string | null;
@@ -141,20 +141,23 @@ function runningAgentOf(projectId: number, actor: string): number | null {
 
 const optionsJson = (input: QuestionInput): string | null => (input.kind === "choice" ? JSON.stringify(input.options) : null);
 
+function pendingIdForRef(projectId: number, ref: QuestionRef): number | undefined {
+  const row = db
+    .prepare("SELECT id FROM questions WHERE project_id = ? AND ref_kind = ? AND ref_number = ? AND state = 'pending'")
+    .get(projectId, ref.kind, ref.number) as { id: number } | undefined;
+  return row?.id;
+}
+
 const upsertQuestion = db.transaction(
   (projectId: number, actor: string, input: QuestionInput, askerChecked: boolean): { id: number; created: boolean } => {
     if (input.ref) {
-      const existing = db
-        .prepare(
-          "SELECT id FROM questions WHERE project_id = ? AND ref_kind = ? AND ref_number = ? AND state = 'pending'",
-        )
-        .get(projectId, input.ref.kind, input.ref.number) as { id: number } | undefined;
-      if (existing) {
+      const existing = pendingIdForRef(projectId, input.ref);
+      if (existing !== undefined) {
         db.prepare(
           `UPDATE questions SET kind = ?, question = ?, header = ?, options = ?, default_answer = ?,
              updated_at = datetime('now'), updated_by = ? WHERE id = ?`,
-        ).run(input.kind, input.question, input.header, optionsJson(input), input.default_answer, actor, existing.id);
-        return { id: existing.id, created: false };
+        ).run(input.kind, input.question, input.header, optionsJson(input), input.default_answer, actor, existing);
+        return { id: existing, created: false };
       }
     }
     if (!askerChecked) {
@@ -188,11 +191,7 @@ export function askQuestion(
   input: QuestionInput,
 ): { question_id: number; created: boolean; similar_question_ids: number[] } {
   validateInput(input);
-  const refTaken =
-    input.ref !== undefined &&
-    db
-      .prepare("SELECT 1 FROM questions WHERE project_id = ? AND ref_kind = ? AND ref_number = ? AND state = 'pending'")
-      .get(projectId, input.ref.kind, input.ref.number) !== undefined;
+  const refTaken = input.ref !== undefined && pendingIdForRef(projectId, input.ref) !== undefined;
   let askerChecked = false;
   if (!refTaken) {
     resolveWakeDelivery(projectId);
@@ -207,10 +206,14 @@ export function askQuestion(
   return { question_id: id, created, similar_question_ids: similarPendingIds(projectId, id, input.question) };
 }
 
-export function getQuestion(projectId: number, id: number): QuestionRecord {
+function fetchRow(projectId: number, id: number): Row {
   const row = db.prepare("SELECT * FROM questions WHERE project_id = ? AND id = ?").get(projectId, id) as Row | undefined;
   if (!row) throw new Error(`No question ${id} in this project. Call question_list.`);
-  return toRecord(row);
+  return row;
+}
+
+export function getQuestion(projectId: number, id: number): QuestionRecord {
+  return toRecord(fetchRow(projectId, id));
 }
 
 export function listQuestions(projectId: number): QuestionRecord[] {
@@ -230,9 +233,7 @@ const TEXT_PATCH_KEYS = ["question", "header", "options", "default_answer"] as c
 
 const patchQuestion = db.transaction(
   (projectId: number, actor: string, id: number, patch: QuestionPatch): { question_id: number; state: QuestionState } => {
-    const row = db.prepare("SELECT * FROM questions WHERE project_id = ? AND id = ?").get(projectId, id) as Row | undefined;
-    if (!row) throw new Error(`No question ${id} in this project. Call question_list.`);
-    const current = toRecord(row);
+    const current = toRecord(fetchRow(projectId, id));
     const editsText = TEXT_PATCH_KEYS.some((k) => patch[k] !== undefined);
     if (editsText && current.state !== "pending") {
       throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is ${current.state}; only a pending question's text can be edited.`);
@@ -318,8 +319,7 @@ const commitAnswer = db.transaction(
     notes: string | null,
     plan: WakePlan,
   ): { question_id: number; wake_id: number | null; wake_skipped?: string } => {
-    const row = db.prepare("SELECT * FROM questions WHERE project_id = ? AND id = ?").get(projectId, id) as Row | undefined;
-    if (!row) throw new Error(`No question ${id} in this project. Call question_list.`);
+    const row = fetchRow(projectId, id);
     if (row.state !== "pending" && row.state !== "defaulted") {
       throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is already ${row.state}.`);
     }
@@ -351,8 +351,7 @@ export function answerQuestion(
   const storedNotes = notes === undefined || notes.trim() === "" ? null : notes;
   assertSafeWakeBody(answer);
   if (storedNotes !== null) assertSafeWakeBody(storedNotes);
-  const row = db.prepare("SELECT * FROM questions WHERE project_id = ? AND id = ?").get(projectId, id) as Row | undefined;
-  if (!row) throw new Error(`No question ${id} in this project. Call question_list.`);
+  const row = fetchRow(projectId, id);
   if (row.state !== "pending" && row.state !== "defaulted") {
     throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is already ${row.state}.`);
   }

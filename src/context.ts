@@ -35,7 +35,7 @@ export function currentActor(): string {
     return cachedActorId;
   }
   const envId = process.env.HIVE_AGENT_ID;
-  const id = envId ?? `user:${userInfo().username}`;
+  const id = envId ?? `${HUMAN_ACTOR_PREFIX}${userInfo().username}`;
   const name = process.env.HIVE_AGENT_NAME ?? id;
   const kind = envId ? "agent" : "human";
   db.prepare(
@@ -513,3 +513,5 @@ function queenRefusal(operation: string, targetProjectId: number | null, problem
       "with `hive lead <path>`, and run project_prune or `hive project rm` on it. Everything else there is its lead's to do.",
   );
 }
+
+export const HUMAN_ACTOR_PREFIX = "user:";
