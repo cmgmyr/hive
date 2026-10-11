@@ -69,13 +69,13 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
   it("adds an empty questions table whose pending refs are unique and whose other states are not", () => {
     assert.deepEqual(db.prepare("SELECT * FROM questions").all(), []);
     const insert = db.prepare(
-      `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, ref_kind, ref_number, state, updated_by)
-       VALUES (?, 'actor:v30', ?, 'free_text', 'q', 'h', 'd', 'todo', 7, ?, 'actor:v30')`,
+      `INSERT INTO questions (project_id, asker, kind, question, header, default_answer, ref_kind, ref_number, state, updated_by)
+       VALUES (?, 'actor:v30', 'free_text', 'q', 'h', 'd', 'todo', 7, ?, 'actor:v30')`,
     );
-    insert.run(projectId, agentId, "pending");
-    assert.throws(() => insert.run(projectId, agentId, "pending"), /UNIQUE/);
-    insert.run(projectId, agentId, "defaulted");
-    insert.run(projectId, agentId, "defaulted");
+    insert.run(projectId, "pending");
+    assert.throws(() => insert.run(projectId, "pending"), /UNIQUE/);
+    insert.run(projectId, "defaulted");
+    insert.run(projectId, "defaulted");
     migrate();
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM questions").get().n, 3, "a second migration leaves question rows alone");
     db.prepare("DELETE FROM questions").run();

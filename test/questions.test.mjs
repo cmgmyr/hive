@@ -342,8 +342,8 @@ describe("the question table's ownership", () => {
     const actor = "agent:question-only";
     db.prepare("INSERT INTO actors (id, name, kind, last_seen_at) VALUES (?, ?, 'agent', datetime('now', '-1 day'))").run(actor, actor);
     db.prepare(
-      `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by)
-       VALUES (?, 'agent:someone', 1, 'free_text', 'q', 'h', 'd', ?)`,
+      `INSERT INTO questions (project_id, asker, kind, question, header, default_answer, updated_by)
+       VALUES (?, 'agent:someone', 'free_text', 'q', 'h', 'd', ?)`,
     ).run(lonely.id, actor);
     const prune = await human.call("project_prune");
     assert.ok(!prune.deleted?.some?.((p) => p.id === lonely.id), JSON.stringify(prune));

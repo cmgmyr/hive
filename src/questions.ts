@@ -20,7 +20,6 @@ export type QuestionRecord = {
   id: number;
   project_id: number;
   asker: string;
-  asker_agent_id: number;
   kind: "choice" | "free_text";
   question: string;
   header: string;
@@ -143,7 +142,7 @@ function runningAgentOf(projectId: number, actor: string): number | null {
 const optionsJson = (input: QuestionInput): string | null => (input.kind === "choice" ? JSON.stringify(input.options) : null);
 
 const upsertQuestion = db.transaction(
-  (projectId: number, actor: string, input: QuestionInput, askerAgentId: number | null): { id: number; created: boolean } => {
+  (projectId: number, actor: string, input: QuestionInput, askerChecked: boolean): { id: number; created: boolean } => {
     if (input.ref) {
       const existing = db
         .prepare(
@@ -158,19 +157,18 @@ const upsertQuestion = db.transaction(
         return { id: existing.id, created: false };
       }
     }
-    if (askerAgentId === null) {
+    if (!askerChecked) {
       throw new Error(`${QUESTION_STATE_CONFLICT}: the pending question for this ref changed while it was being asked; ask again.`);
     }
     const row = db
       .prepare(
-        `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, options, default_answer,
+        `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer,
            ref_kind, ref_number, updated_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .get(
         projectId,
         actor,
-        askerAgentId,
         input.kind,
         input.question,
         input.header,
@@ -195,17 +193,17 @@ export function askQuestion(
     db
       .prepare("SELECT 1 FROM questions WHERE project_id = ? AND ref_kind = ? AND ref_number = ? AND state = 'pending'")
       .get(projectId, input.ref.kind, input.ref.number) !== undefined;
-  let askerAgentId: number | null = null;
+  let askerChecked = false;
   if (!refTaken) {
     resolveWakeDelivery(projectId);
-    askerAgentId = runningAgentOf(projectId, actor);
-    if (askerAgentId === null) {
+    askerChecked = runningAgentOf(projectId, actor) !== null;
+    if (!askerChecked) {
       throw new Error(
         "This session has no running hive agent row, so an answer could never be woken back to it; a question needs an asker that can be woken.",
       );
     }
   }
-  const { id, created } = upsertQuestion.immediate(projectId, actor, input, askerAgentId);
+  const { id, created } = upsertQuestion.immediate(projectId, actor, input, askerChecked);
   return { question_id: id, created, similar_question_ids: similarPendingIds(projectId, id, input.question) };
 }
 

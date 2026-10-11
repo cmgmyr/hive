@@ -76,7 +76,7 @@ function seedProjectOwnerRow(table, projectId, ownerActorId) {
       return;
     case "questions":
       db.prepare(
-        "INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by) VALUES (?, 'x', 1, 'free_text', 'x', 'x', 'x', 'x')",
+        "INSERT INTO questions (project_id, asker, kind, question, header, default_answer, updated_by) VALUES (?, 'x', 'free_text', 'x', 'x', 'x', 'x')",
       ).run(projectId);
       return;
     default:
@@ -101,8 +101,8 @@ function seedActorOwnerRow(table, column, actorId, homeProjectId, sharedTodoId) 
     case "questions.updated_by":
     case "questions.answered_by":
       db.prepare(
-        `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by, answered_by)
-         VALUES (?, ?, 1, 'free_text', 'x', 'x', 'x', ?, ?)`,
+        `INSERT INTO questions (project_id, asker, kind, question, header, default_answer, updated_by, answered_by)
+         VALUES (?, ?, 'free_text', 'x', 'x', 'x', ?, ?)`,
       ).run(
         homeProjectId,
         column === "asker" ? actorId : "other",

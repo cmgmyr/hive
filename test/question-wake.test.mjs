@@ -53,10 +53,10 @@ function agentRow(actor, p = pane(), status = "running") {
 function seedQuestion(asker, agentId, over = {}) {
   return db
     .prepare(
-      `INSERT INTO questions (project_id, asker, asker_agent_id, kind, question, header, default_answer, updated_by, state)
-       VALUES (?, ?, ?, 'free_text', ?, 'Probe', 'the default', ?, ?) RETURNING id`,
+      `INSERT INTO questions (project_id, asker, kind, question, header, default_answer, updated_by, state)
+       VALUES (?, ?, 'free_text', ?, 'Probe', 'the default', ?, ?) RETURNING id`,
     )
-    .get(project, asker, agentId, over.question ?? "Which name should the release carry?", asker, over.state ?? "pending").id;
+    .get(project, asker, over.question ?? "Which name should the release carry?", asker, over.state ?? "pending").id;
 }
 
 const questionRow = (id) => db.prepare("SELECT * FROM questions WHERE id = ?").get(id);

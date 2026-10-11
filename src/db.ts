@@ -587,7 +587,6 @@ CREATE TABLE questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   asker TEXT NOT NULL,
-  asker_agent_id INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('choice', 'free_text')),
   question TEXT NOT NULL CHECK (trim(question) != ''),
   header TEXT NOT NULL CHECK (trim(header) != ''),
