@@ -26,7 +26,7 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
 | `hive todos` / `hive todo <id>` | List todos, or print one in full |
 | `hive questions [--json]` | List pending questions followed by defaulted questions, with their defaults and choices; JSON returns the same records |
-| `hive answer <id> <answer> [--notes <text>]` | Record one answer and notes; report the wake id when queued or the reason delivery was skipped |
+| `hive answer <id> <answer> [--notes <text>]` | Record one answer and notes; use `--` before an answer that starts with a dash; report the wake id when queued or the reason delivery was skipped |
 | `hive backups` / `hive restore <name>` | List store snapshots, or restore one |
 | `hive project rm <id\|path> [--yes]` | Remove another registered project and everything it owns, after a snapshot. Takes an id or an exact registered path, never the project you are in. See [removing a project](projects.md#removing-a-project) |
 | `hive runbook` | Print this project's standing process |

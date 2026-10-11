@@ -329,6 +329,7 @@ Usage:
   hive questions [--json]   list pending and defaulted questions
   hive answer <id> <answer> [--notes <text>]
                              record an answer to a pending question
+                             use -- before an answer that starts with a dash
   hive backups               list automatic store snapshots
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive project rm <id|path> [--yes]
@@ -4154,7 +4155,9 @@ function cmdQuestions(argv: string[]): void {
 }
 
 function cmdAnswer(argv: string[]): void {
-  if (argv.filter((arg) => arg === "--notes").length > 1) {
+  const endOfFlags = argv.indexOf("--");
+  const optionArgs = endOfFlags === -1 ? argv : argv.slice(0, endOfFlags);
+  if (optionArgs.filter((arg) => arg === "--notes").length > 1) {
     console.error("hive answer: --notes may be passed only once.");
     process.exit(1);
   }

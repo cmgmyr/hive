@@ -144,6 +144,18 @@ describe("hive questions", () => {
     assert.match(wake.body, /Answer: Ship North/);
   });
 
+  it("accepts a dash-prefixed answer after the end-of-options marker", async () => {
+    const questionId = insertQuestion({ kind: "free_text", options: null, default_answer: "the current route" });
+    const result = await runCli(["answer", String(questionId), "--", "--ship-north"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    const row = db.prepare("SELECT answer FROM questions WHERE id = ?").get(questionId);
+    assert.deepEqual(row, { answer: "--ship-north" });
+  });
+
   it("rejects malformed, foreign and terminal answers without changing rows", async () => {
     const pending = insertQuestion();
     const foreignProject = db.prepare("INSERT INTO projects (name, path) VALUES ('foreign-question-cli', ?) RETURNING id")
