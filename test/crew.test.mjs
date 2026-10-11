@@ -231,6 +231,12 @@ describe("hive crew --json schema v1", () => {
 });
 
 describe("crew pending question count", () => {
+  it("only defaulted questions do not raise the crew count", () => {
+    question(project.id, { state: "defaulted", question: "defaulted only secret" });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 0 });
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(project.id);
+  });
+
   it("crew snapshot counts only local pending questions", () => {
     question(project.id, { question: "local pending secret" });
     assert.deepEqual(collectCrew(project, NOW).questions, { pending: 1 });

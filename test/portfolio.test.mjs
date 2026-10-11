@@ -119,6 +119,13 @@ describe("portfolio: empty store", () => {
 });
 
 describe("portfolio pending questions", () => {
+  it("only defaulted questions do not raise the portfolio count", () => {
+    const p = project("defaulted-question-count");
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    assert.equal(row(p).questions_pending, 0);
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(p.id);
+  });
+
   it("portfolio reports scoped pending counts without question content", async () => {
     const p = project("question-counts");
     const away = project("other-question-counts");
