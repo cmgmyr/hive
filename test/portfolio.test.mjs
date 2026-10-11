@@ -119,7 +119,7 @@ describe("portfolio: empty store", () => {
 });
 
 describe("portfolio pending questions", () => {
-  it("counts local pending rows without exposing question payloads and prints the count", async () => {
+  it("portfolio reports scoped pending counts without question content", async () => {
     const p = project("question-counts");
     const away = project("other-question-counts");
     question(p, { question: "PRIVATE QUESTION ONE" });

@@ -231,7 +231,7 @@ describe("hive crew --json schema v1", () => {
 });
 
 describe("crew pending question count", () => {
-  it("counts only this project's pending questions and exposes no question content", () => {
+  it("crew snapshot counts only local pending questions", () => {
     question(project.id, { question: "local pending secret" });
     question(project.id, {
       question: "local choice secret",

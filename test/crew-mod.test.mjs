@@ -99,7 +99,7 @@ describe("readCrew", () => {
 });
 
 describe("buildCrewView", () => {
-  it("shows a pending question footer only above zero and reads snapshots without the additive field", () => {
+  it("crew mod renders zero one and many pending questions", () => {
     const oldSnapshot = buildCrewView(snapshot(), null, NOW);
     assert.equal(oldSnapshot.footer.some((line) => line.text.startsWith("questions pending:")), false);
 
