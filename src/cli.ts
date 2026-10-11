@@ -3756,7 +3756,7 @@ function cmdPortfolio(argv: string[]): void {
         `  lead ${leadText(p)}; workers ${w.working} working, ${w.idle} idle, ${w.needs_input} needs input, ` +
         `${w.other} other, ${w.unreachable} unreachable, ${w.unconfirmed} unconfirmed\n` +
         `  todos ${t.open} open, ${t.in_progress} in progress, ${t.blocked} blocked, ${t.high} high; ` +
-        `needs human ${p.needs_human}; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
+        `needs human ${p.needs_human}; questions ${p.questions_pending} pending; wakes ${p.wakes.pending} pending, ${p.wakes.overdue} overdue\n` +
         `  last activity ${p.last_activity_at} UTC`,
     );
   }

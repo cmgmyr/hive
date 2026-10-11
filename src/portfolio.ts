@@ -3,6 +3,7 @@ import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
+import { pendingQuestionCount } from "./questions.js";
 import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
@@ -64,6 +65,7 @@ export interface PortfolioProject {
   };
   todos: { open: number; in_progress: number; blocked: number; blocked_in_progress: number; high: number };
   needs_human: number;
+  questions_pending: number;
   needs_human_items: { todo_id: number; title: string; slug: string | null; updated_at: string }[];
   last_activity_at: string;
   wakes: { pending: number; overdue: number };
@@ -255,6 +257,7 @@ function projectRow(
     workers,
     todos,
     needs_human: tagged.length,
+    questions_pending: pendingQuestionCount(project.id),
     needs_human_items: tagged.slice(0, NEEDS_HUMAN_ITEM_CAP).map((t) => ({
       todo_id: t.id,
       title: t.title,

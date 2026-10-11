@@ -54,6 +54,8 @@ hive portfolio --json   # the same data as one object
 
 It is deterministic and read-only. Each project lands in one of four lanes:
 
+Each project also carries a `questions_pending` count in JSON and a `questions N pending` value in the terminal output. The portfolio exposes counts only; it never reads question text or answer payloads.
+
 | Lane | Meaning |
 |---|---|
 | waiting on you | A todo is tagged `needs-human` and nothing else is moving |
@@ -79,12 +81,12 @@ A sample with two invented projects:
 waiting_on_you api (#1)
   why: needs_human
   lead none; workers 0 working, 0 idle, 0 needs input, 0 other, 0 unreachable, 0 unconfirmed
-  todos 2 open, 0 in progress, 0 blocked, 0 high; needs human 2; wakes 0 pending, 0 overdue
+  todos 2 open, 0 in progress, 0 blocked, 0 high; needs human 2; questions 0 pending; wakes 0 pending, 0 overdue
   last activity 2026-09-30 13:14:10 UTC
 waiting_on_you web (#2)
   why: needs_human
   lead none; workers 0 working, 0 idle, 0 needs input, 0 other, 0 unreachable, 0 unconfirmed
-  todos 1 open, 0 in progress, 0 blocked, 0 high; needs human 1; wakes 0 pending, 0 overdue
+  todos 1 open, 0 in progress, 0 blocked, 0 high; needs human 1; questions 0 pending; wakes 0 pending, 0 overdue
   last activity 2026-09-30 13:14:10 UTC
 
 2 project(s): 2 waiting on you, 0 stuck, 0 moving, 0 quiet

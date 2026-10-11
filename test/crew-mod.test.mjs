@@ -83,7 +83,7 @@ describe("readCrew", () => {
     assert.match(view.footer[1].text, /^watching: all workers · standing · until \d\d:\d\d$/);
 
     const keys = (o) => Object.keys(o).sort();
-    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], wakes: { pending: 1, next: { id: 1, label: "l", due_at: null, generated: false, held: null }, watching: [{ id: 2, label: "w", kind: "idle_any", scope: "project", max_wait_at: null }], watched_worker_ids: [] } });
+    const fixture = snapshot({ lanes: [lane(todoOf(1, "t"), worker())], needs_you: [{ id: 1, slug: "s" }], questions: { pending: 0 }, wakes: { pending: 1, next: { id: 1, label: "l", due_at: null, generated: false, held: null }, watching: [{ id: 2, label: "w", kind: "idle_any", scope: "project", max_wait_at: null }], watched_worker_ids: [] } });
     const staffed = real.lanes.find((l) => l.worker);
     assert.deepEqual(keys(fixture), keys(real));
     assert.deepEqual(keys(fixture.project), keys(real.project));
@@ -99,6 +99,17 @@ describe("readCrew", () => {
 });
 
 describe("buildCrewView", () => {
+  it("shows a pending question footer only above zero and reads snapshots without the additive field", () => {
+    const oldSnapshot = buildCrewView(snapshot(), null, NOW);
+    assert.equal(oldSnapshot.footer.some((line) => line.text.startsWith("questions pending:")), false);
+
+    for (const count of [0, 1, 4]) {
+      const view = buildCrewView(snapshot({ questions: { pending: count } }), null, NOW);
+      const questionLines = view.footer.filter((line) => line.text.startsWith("questions pending:"));
+      assert.deepEqual(questionLines, count === 0 ? [] : [{ text: `questions pending: ${count}` }]);
+    }
+  });
+
   it("two-line rows retain id model activity timing age and ctx", () => {
     const view = buildCrewView(snapshot({ lanes: [lane(todoOf(1798, "crew mod"), worker({ commits_ahead: 3 }))] }), null, NOW);
     assert.deepEqual(view.rows[0], {

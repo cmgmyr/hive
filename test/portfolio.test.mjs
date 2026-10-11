@@ -49,6 +49,13 @@ function todo(p, { title = "t", status = "open", priority = "medium", tags = [],
     .get(p.id, title, status, priority, JSON.stringify(tags), updated, archived ? OLD : null).id;
 }
 
+function question(p, { state = "pending", question: text, answer = null, options = null, defaultAnswer = "private default" } = {}) {
+  db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer, state, answer, notes, updated_by)
+     VALUES (?, 'agent:test', ?, ?, 'Choice', ?, ?, ?, ?, 'private notes', 'agent:test')`,
+  ).run(p.id, options === null ? "free_text" : "choice", text, options, defaultAnswer, state, answer);
+}
+
 const block = (todoId, blockerId) =>
   db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(todoId, blockerId);
 
@@ -108,6 +115,44 @@ describe("portfolio: empty store", () => {
       totals: { projects: 0, lanes: { waiting_on_you: 0, stuck: 0, moving: 0, quiet: 0 } },
       projects: [],
     });
+  });
+});
+
+describe("portfolio pending questions", () => {
+  it("counts local pending rows without exposing question payloads and prints the count", async () => {
+    const p = project("question-counts");
+    const away = project("other-question-counts");
+    question(p, { question: "PRIVATE QUESTION ONE" });
+    question(p, {
+      question: "PRIVATE QUESTION TWO",
+      options: JSON.stringify([
+        { label: "PRIVATE OPTION", description: "PRIVATE DESCRIPTION", recommended: true },
+        { label: "Other", description: "Other", recommended: false },
+      ]),
+      defaultAnswer: "PRIVATE OPTION",
+    });
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    question(p, { state: "answered", question: "PRIVATE ANSWERED", answer: "PRIVATE ANSWER" });
+    question(p, { state: "withdrawn", question: "PRIVATE WITHDRAWN" });
+    question(away, { question: "PRIVATE FOREIGN" });
+
+    const report = collectPortfolio(NOW);
+    const own = report.projects.find((entry) => entry.id === p.id);
+    assert.equal(own.questions_pending, 2);
+    assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
+    const ownJson = JSON.stringify(own);
+    for (const secret of [
+      "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
+      "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
+      "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
+    ]) {
+      assert.equal(ownJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
+    }
+
+    const cli = await runCli(["portfolio"], { cwd: p.path, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /needs human 0; questions 2 pending; wakes 0 pending, 0 overdue/);
+    db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(p.id, away.id);
   });
 });
 
@@ -669,7 +714,7 @@ describe("hive portfolio CLI", () => {
     assert.ok(report.projects.length > 0);
     const p = report.projects[0];
     assert.deepEqual(Object.keys(p), [
-      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human",
+      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human", "questions_pending",
       "needs_human_items", "last_activity_at", "wakes",
     ]);
     assert.deepEqual(Object.keys(p.lead), ["state", "agent_id", "turn", "ended_at"]);
