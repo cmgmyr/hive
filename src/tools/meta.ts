@@ -51,6 +51,9 @@ export const ACTOR_OWNER_COLUMNS: readonly [string, string][] = [
   ["wakes", "owner"],
   ["wakes", "deliver_actor"],
   ["agent_state_log", "actor_id"],
+  ["questions", "asker"],
+  ["questions", "updated_by"],
+  ["questions", "answered_by"],
 ];
 
 function actorOwnsRows(actorId: string): boolean {

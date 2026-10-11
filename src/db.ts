@@ -582,6 +582,33 @@ BEGIN
   SELECT RAISE(IGNORE);
 END;
 `,
+  `
+CREATE TABLE questions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  asker TEXT NOT NULL,
+  asker_agent_id INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('choice', 'free_text')),
+  question TEXT NOT NULL CHECK (trim(question) != ''),
+  header TEXT NOT NULL CHECK (trim(header) != ''),
+  options TEXT,
+  default_answer TEXT NOT NULL CHECK (trim(default_answer) != ''),
+  ref_kind TEXT CHECK (ref_kind IN ('todo', 'pr')),
+  ref_number INTEGER CHECK (ref_number > 0),
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'answered', 'defaulted', 'withdrawn')),
+  answer TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by TEXT NOT NULL,
+  answered_by TEXT,
+  CHECK ((ref_kind IS NULL) = (ref_number IS NULL)),
+  CHECK ((kind = 'choice') = (options IS NOT NULL))
+);
+CREATE UNIQUE INDEX idx_questions_pending_ref ON questions(project_id, ref_kind, ref_number)
+  WHERE state = 'pending' AND ref_kind IS NOT NULL;
+CREATE INDEX idx_questions_project_state ON questions(project_id, state, id);
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

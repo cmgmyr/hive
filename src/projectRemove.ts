@@ -11,6 +11,7 @@ export const PROJECT_OWNER_TABLES = [
   "agents",
   "wakes",
   "command_trust",
+  "questions",
 ] as const;
 
 const COUNTED_TABLES: readonly [string, string][] = [
