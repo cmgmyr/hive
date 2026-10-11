@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
-const { cleanup } = isolateTmux("the questions CLI tests");
+const { hasTmux, cleanup } = isolateTmux("the questions CLI tests");
+const tmuxSkip = !hasTmux && "tmux is not installed";
+const scratchSessions = [];
 const dirs = scratchDirs();
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
-const { addProject } = await import("../dist/context.js");
+const { observeRowOwnership, tmuxSocketPath } = await import("../dist/tmux.js");
+const { addProject, HUMAN_ACTOR_PREFIX } = await import("../dist/context.js");
 migrate();
 const project = addProject(dirs.projectDir);
 
@@ -39,7 +43,27 @@ function insertQuestion(overrides = {}) {
   return row.id;
 }
 
-after(() => cleanup());
+after(() => cleanup(...scratchSessions));
+
+function makeAskingAgent(actor) {
+  const session = `questions-cli-${process.pid}`;
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "cat"], { stdio: "ignore" });
+  scratchSessions.push(session);
+  const pane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
+    encoding: "utf8",
+  }).trim();
+  const panePid = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"], {
+    encoding: "utf8",
+  }).trim();
+  db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(actor, actor);
+  db.prepare(
+    `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status,
+       agent_state, state_changed_at, created_at)
+     VALUES (?, ?, ?, 'agent', ?, ?, ?, 'claude', '/tmp', 'running', 'working', datetime('now'), datetime('now'))`,
+  ).run(project.id, actor, actor, pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), panePid);
+  const row = db.prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE actor_id = ?").get(actor);
+  assert.equal(observeRowOwnership(row), "live", JSON.stringify(row));
+}
 
 describe("hive questions", () => {
   it("reports an empty project in text and JSON forms", async () => {
@@ -91,9 +115,33 @@ describe("hive questions", () => {
     assert.match(result.stdout, new RegExp(`Question #${questionId} answered\\.`));
     assert.match(result.stdout, /No wake queued:/);
     assert.doesNotMatch(result.stdout, /Wake #\d+ queued/);
-    const row = db.prepare("SELECT state, answer, notes FROM questions WHERE id = ?").get(questionId);
-    assert.deepEqual(row, { state: "answered", answer, notes });
+    const row = db.prepare("SELECT state, answer, notes, asker, answered_by FROM questions WHERE id = ?").get(questionId);
+    assert.deepEqual({ state: row.state, answer: row.answer, notes: row.notes, asker: row.asker }, {
+      state: "answered",
+      answer,
+      notes,
+      asker: "agent:unreachable",
+    });
+    assert.ok(row.answered_by.startsWith(HUMAN_ACTOR_PREFIX));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE body LIKE ?").get(`Question #${questionId} answered.%`).n, 0);
+  });
+
+  it("prints the queued wake id when the asking agent is reachable", { skip: tmuxSkip }, async () => {
+    const asker = "agent:questions-cli-reachable";
+    makeAskingAgent(asker);
+    const questionId = insertQuestion({ asker });
+    const result = await runCli(["answer", String(questionId), "Ship North"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`Question #${questionId} answered\\.`));
+    const match = result.stdout.match(/Wake #(\d+) queued for the asking session\./);
+    assert.ok(match, result.stdout);
+    const wake = db.prepare("SELECT deliver_actor, body FROM wakes WHERE id = ?").get(Number(match[1]));
+    assert.equal(wake.deliver_actor, asker);
+    assert.match(wake.body, /Answer: Ship North/);
   });
 
   it("rejects malformed, foreign and terminal answers without changing rows", async () => {
@@ -103,10 +151,12 @@ describe("hive questions", () => {
     const foreign = insertQuestion({ project_id: foreignProject, question: "Foreign question" });
     const terminal = insertQuestion({ state: "answered", question: "Already answered" });
     const before = JSON.stringify(db.prepare("SELECT id, state, answer, notes FROM questions ORDER BY id").all());
+    const wakesBefore = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;
 
     for (const [args, expected] of [
       [["answer", "0", "choice"], /positive safe integer/],
       [["answer", String(pending), ""], /answer cannot be blank/],
+      [["answer", String(pending), "unsafe\u0007answer"], /cannot contain/],
       [["answer", String(pending), "two", "arguments"], /usage: hive answer/],
       [["answer", String(pending), "choice", "--unknown"], /unknown argument/],
       [["answer", String(pending), "choice", "--notes"], /--notes requires a value/],
@@ -120,6 +170,6 @@ describe("hive questions", () => {
     }
 
     assert.equal(JSON.stringify(db.prepare("SELECT id, state, answer, notes FROM questions ORDER BY id").all()), before);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, wakesBefore);
   });
 });
