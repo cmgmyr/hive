@@ -160,7 +160,7 @@ type DeliveryRow = Pick<
   | "deliver_row_target"
 >;
 
-// "raw" is a wake with no agents row behind its actor (resolveDelivery's TMUX_PANE fallback): pane-addressed.
+// "raw" is a wake with no agents row behind its actor (resolveWakeDelivery's TMUX_PANE fallback): pane-addressed.
 type DeliveryOwnership = RowOwnership | "closed" | "raw";
 
 // A row's pid certifies only the pane that row records, never a different deliver_pane.
