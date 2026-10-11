@@ -52,7 +52,7 @@ function todo(p, { title = "t", status = "open", priority = "medium", tags = [],
 function question(p, { state = "pending", question: text, answer = null, options = null, defaultAnswer = "private default" } = {}) {
   db.prepare(
     `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer, state, answer, notes, updated_by)
-     VALUES (?, 'agent:test', ?, ?, 'Choice', ?, ?, ?, ?, 'private notes', 'agent:test')`,
+     VALUES (?, 'agent:test', ?, ?, 'private header', ?, ?, ?, ?, 'private notes', 'agent:test')`,
   ).run(p.id, options === null ? "free_text" : "choice", text, options, defaultAnswer, state, answer);
 }
 
@@ -141,7 +141,7 @@ describe("portfolio pending questions", () => {
     assert.equal(own.questions_pending, 2);
     assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
     const secrets = [
-      "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
+      "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "private header", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
       "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
       "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
     ];
