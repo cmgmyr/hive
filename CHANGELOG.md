@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.11.0 - 2026-10-11
+
+- New question record. A lead records a decision only you can make with `question_ask`, as a choice of two to four options with one recommended, or as free text. Every question carries the default the lead acts on if you never answer. `question_list`, `question_get`, `question_update` and `question_answer` read, edit, close and answer them. Asking again with the same todo or PR `ref` updates the pending question instead of adding one, and the receipt lists similar pending questions. See [Tools](docs/tools.md).
+- New `hive questions` lists a project's pending questions, then the ones the lead already acted on by default, with their options. New `hive answer <id> <answer> [--notes <text>]` answers one from any terminal. The asking session receives your answer as a wake. If the asker is not running, the answer is kept and the command says no wake was queued.
+- The crew sidebar footer shows `questions pending: N` while any are pending, and `hive crew --json` and `hive portfolio` report the count. Neither shows the question text, options or answers.
+- New opt-in setting `lead_turn_budget.auto_handoff`. With `auto_handoff: true`, hive replaces a Claude Code lead that has passed its `warn` turn count with a fresh session in the same pane, on the same lead row, so its wakes, workers and standing watches carry over. At a quiet moment hive asks the lead to write a handoff pad and run the new `hive lead-handoff` command; after a short grace period with no input from you, the pane restarts and the new session receives the pad. Typing in the lead pane postpones it, and background work in the session prevents it. It is off unless you set it. See [Configuration](docs/configuration.md).
+- While a handoff is in progress, the store holds wakes to that lead for every hive build, including servers started from an older version, until the new session finishes its first turn. Restart every hive session before turning `auto_handoff` on, so messages to the lead are held too.
+- hive's own first message to a new lead session no longer counts as you talking to it, so it no longer holds that lead's wakes for 5 minutes.
+- `hive doctor` names hive MCP servers using the same store that started before its latest migration, so you know which sessions still run old code and need a restart. It reports them and stops nothing.
+- The crew sidebar labels a worker's command by the command itself when the shell line starts with a control keyword such as `if`, `for` or `while`.
+- The store migrates to schema 42 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.10.1 - 2026-10-09
 
 - hive works correctly with tmux 3.8. tmux 3.8 stopped reporting a pane's process id once the process exits, so a worker whose command failed at startup produced a "did not report a process id" error and lost its crash output. hive now reads the process id when it creates the pane, and works the same on tmux 3.7c and 3.8. A Claude Code or Codex worker that exits during startup is reported as exited, with its last output.
