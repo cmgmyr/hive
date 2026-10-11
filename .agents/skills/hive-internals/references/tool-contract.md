@@ -73,6 +73,8 @@ current names.
   when the operation does something categorically past "insert a row", the
   way `agent_spawn` starts a process and `lease_acquire` contends for one.
   Name the override for what it does, not to match a neighboring resource.
+  `question_ask` is the third: it upserts on a todo or PR ref and returns similar pending
+  questions, which a plain `question_create` would not, so it is named for the ask.
 - **Read one**: default `<resource>_get`, addressed by id.
 - **List**: default `<resource>_list`.
 - **Update**: default `<resource>_update`, editing any subset of fields. A
