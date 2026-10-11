@@ -66,7 +66,7 @@ function makeAskingAgent(actor) {
 }
 
 describe("hive questions", () => {
-  it("reports an empty project in text and JSON forms", async () => {
+  it("questions CLI reports an empty project", async () => {
     const text = await runCli(["questions"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     assert.equal(text.code, 0);
     assert.equal(text.stdout.trim(), "No pending or defaulted questions.");
@@ -76,7 +76,7 @@ describe("hive questions", () => {
     assert.deepEqual(JSON.parse(json.stdout), { questions: [] });
   });
 
-  it("lists pending before defaulted with full choice details and excludes terminal rows", async () => {
+  it("questions CLI orders pending before defaulted and omits terminals", async () => {
     const pending = insertQuestion({ question: "Which route should the release take?" });
     const defaulted = insertQuestion({ state: "defaulted", question: "Which build should ship?" });
     insertQuestion({ state: "answered", question: "An answered terminal question." });
@@ -126,11 +126,12 @@ describe("hive questions", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE body LIKE ?").get(`Question #${questionId} answered.%`).n, 0);
   });
 
-  it("prints the queued wake id when the asking agent is reachable", { skip: tmuxSkip }, async () => {
+  it("answer CLI stores text and notes and queues the asker wake", { skip: tmuxSkip }, async () => {
     const asker = "agent:questions-cli-reachable";
     makeAskingAgent(asker);
     const questionId = insertQuestion({ asker });
-    const result = await runCli(["answer", String(questionId), "Ship North"], {
+    const notes = "the review is complete";
+    const result = await runCli(["answer", String(questionId), "Ship North", "--notes", notes], {
       cwd: dirs.projectDir,
       dataDir: dirs.dataDir,
     });
@@ -142,6 +143,7 @@ describe("hive questions", () => {
     const wake = db.prepare("SELECT deliver_actor, body FROM wakes WHERE id = ?").get(Number(match[1]));
     assert.equal(wake.deliver_actor, asker);
     assert.match(wake.body, /Answer: Ship North/);
+    assert.match(wake.body, /Notes: the review is complete/);
   });
 
   it("accepts a dash-prefixed answer after the end-of-options marker", async () => {
@@ -156,7 +158,7 @@ describe("hive questions", () => {
     assert.deepEqual(row, { answer: "--ship-north" });
   });
 
-  it("rejects malformed, foreign and terminal answers without changing rows", async () => {
+  it("CLI refuses malformed flags and foreign or terminal ids", async () => {
     const pending = insertQuestion();
     const foreignProject = db.prepare("INSERT INTO projects (name, path) VALUES ('foreign-question-cli', ?) RETURNING id")
       .get(`${dirs.projectDir}-foreign`).id;
