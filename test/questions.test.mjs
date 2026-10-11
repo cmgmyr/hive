@@ -331,7 +331,7 @@ describe("question similarity", () => {
     assert.equal(looksSimilar("alpha bravo", "alpha"), true, "1 of 2 is exactly 0.5");
     assert.equal(looksSimilar("alpha bravo charlie delta echoes foxtrot", "alpha bravo golf hotel india juliet"), false, "2 shared of 10 is 0.2");
     assert.equal(looksSimilar("alpha bravo charlie", "alpha"), false, "1 of 3 is below 0.5");
-    assert.equal(looksSimilar("the cat", "a dog"), false, "no token of 4 or more characters on either side");
+    assert.equal(looksSimilar("the cat sat", "the cat ran"), false, "words under 4 characters are not tokens, however many are shared");
     assert.equal(looksSimilar("  Ship   IT? ", "ship it?"), true, "normalized equality needs no long token");
   });
 });
