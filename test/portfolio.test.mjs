@@ -140,13 +140,13 @@ describe("portfolio pending questions", () => {
     const own = report.projects.find((entry) => entry.id === p.id);
     assert.equal(own.questions_pending, 2);
     assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
-    const ownJson = JSON.stringify(own);
+    const reportJson = JSON.stringify(report);
     for (const secret of [
       "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
       "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
       "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
     ]) {
-      assert.equal(ownJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
+      assert.equal(reportJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
     }
 
     const cli = await runCli(["portfolio"], { cwd: p.path, dataDir: dirs.dataDir, tmp: dirs.tmp });
