@@ -52,6 +52,7 @@ const SHIPPED = [
   "6b4142dc65f6de9d",
   "1d383258c7f20f71",
   "0daab25e0fc7e2c8",
+  "1acfb6d8ef98561b",
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);

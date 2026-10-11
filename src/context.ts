@@ -35,7 +35,7 @@ export function currentActor(): string {
     return cachedActorId;
   }
   const envId = process.env.HIVE_AGENT_ID;
-  const id = envId ?? `user:${userInfo().username}`;
+  const id = envId ?? `${HUMAN_ACTOR_PREFIX}${userInfo().username}`;
   const name = process.env.HIVE_AGENT_NAME ?? id;
   const kind = envId ? "agent" : "human";
   db.prepare(
@@ -383,6 +383,11 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   todo_unblock: "home",
   kv_set: "home",
   kv_delete: "home",
+  question_ask: "home",
+  question_get: "home",
+  question_list: "home",
+  question_update: "home",
+  question_answer: "home",
   lease_acquire: "home",
   lease_release: "home",
   agent_spawn: "home",
@@ -508,3 +513,5 @@ function queenRefusal(operation: string, targetProjectId: number | null, problem
       "with `hive lead <path>`, and run project_prune or `hive project rm` on it. Everything else there is its lead's to do.",
   );
 }
+
+export const HUMAN_ACTOR_PREFIX = "user:";

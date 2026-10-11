@@ -228,17 +228,38 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     agent_close: () => ({ name: "impl" }),
   };
 
+  const noProjectOverride = {
+    question_ask: () => ({ kind: "free_text", question: "Which name?", header: "Name", default_answer: "x" }),
+    question_get: () => ({ question_id: 1 }),
+    question_list: () => ({}),
+    question_update: () => ({ question_id: 1, state: "withdrawn" }),
+    question_answer: () => ({ question_id: 1, answer: "x" }),
+  };
+
   it("refuses every other write into another project by name, and changes nothing there", async () => {
     const reachRefused = Object.entries(QUEEN_REACH)
       .filter(([op, reach]) => reach === "home" && !op.startsWith("hive "))
       .map(([op]) => op)
       .sort();
-    assert.deepEqual(Object.keys(refusedForeign).sort(), reachRefused, "every home-only tool needs a row here");
+    assert.deepEqual(
+      [...Object.keys(refusedForeign), ...Object.keys(noProjectOverride)].sort(),
+      reachRefused,
+      "every home-only tool needs a row here",
+    );
 
     const before = alphaState();
     for (const [tool, args] of Object.entries(refusedForeign)) {
       const text = await refusal(queenMcp, tool, { ...args(), project_id: alpha.id });
       assert.match(text, new RegExp(`^${QUEEN_REFUSAL}: the queen cannot run ${tool} in project ${alpha.id}`), tool);
+    }
+    assert.deepEqual(alphaState(), before);
+  });
+
+  it("gives a question tool no way to name another project, so the queen's foreign call is refused by the schema", async () => {
+    const before = alphaState();
+    for (const [tool, args] of Object.entries(noProjectOverride)) {
+      const text = await refusal(queenMcp, tool, { ...args(), project_id: alpha.id });
+      assert.match(text, /Unrecognized key: "project_id"/, tool);
     }
     assert.deepEqual(alphaState(), before);
   });

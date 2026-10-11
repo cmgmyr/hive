@@ -144,7 +144,7 @@ describe("the delivery-side backstop, for wakes the door could not have caught (
 
   it("lets a target with NO agents row through, which is a plain session waking its own pane", () => {
     const out = tickOne({ command: null, deliverActor: "agent:9" });
-    assert.equal(out.joined, "", "no agents row behind this timer - the shape resolveDelivery's TMUX_PANE fallback makes");
+    assert.equal(out.joined, "", "no agents row behind this timer - the shape resolveWakeDelivery's TMUX_PANE fallback makes");
     assert.doesNotMatch(
       out.held_reason ?? "",
       UNCLASSIFIABLE,

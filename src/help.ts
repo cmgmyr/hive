@@ -40,6 +40,9 @@ KV — small shared status values (with optional TTL)
 LEASES — advisory expiring claims on shared state
   lease_acquire, lease_release
 
+QUESTIONS — open questions for the human, recorded in the store
+  question_ask, question_get, question_list, question_update, question_answer
+
 PROJECTS — scope management
   project_list, project_add, project_select, project_prune
 
@@ -391,6 +394,28 @@ todo_list without marking anything done.`,
 
 Use kv for values another session needs to discover: current branch, a port,
 a phase flag. Use pads for anything longer than a line or two.`,
+
+  questions: `QUESTIONS — open questions for the human, recorded in the store
+
+  question_ask(kind, question, header, default_answer, options?, ref?) —
+    record a question. kind=choice takes 2-4 options (label, description,
+    recommended; exactly one recommended, and default_answer is its label).
+    kind=free_text takes no options. header is 12 characters or fewer. ref
+    ({kind: "todo"|"pr", number}) is the dedupe key: asking again with a ref
+    that has a pending question in this project updates that row. The
+    receipt lists similar pending questions so you can question_update one.
+  question_get(question_id) — one question, any state, with its answer
+  question_list() — pending questions, then defaulted ones, oldest first
+  question_update(question_id, ...) — edit a pending question's text, or set
+    state to defaulted (you acted on your default) or withdrawn (moot)
+  question_answer(question_id, answer, notes?) — record the human's answer
+    to a pending or defaulted question
+
+hive stores the question; it never puts it to the human. Render it in your
+own turn. Answering queues a wake to the asker carrying the question,
+answer and notes, unless the answerer is the asker or the asker cannot be
+reached; the answer is kept either way. Nothing expires or defaults on its
+own: only the asker or the human moves a question out of pending.`,
 
   leases: `LEASES — advisory expiring claims on shared state
 
