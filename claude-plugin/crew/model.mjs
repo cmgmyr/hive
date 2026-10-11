@@ -121,6 +121,8 @@ export function buildCrewView(snapshot, previousView, nowMs) {
   const { wakes } = snapshot;
   const workers = snapshot.lanes.filter((l) => l.worker).length;
   const footer = [{ text: nextLine(wakes.next, nowMs) }];
+  const questionsPending = snapshot.questions?.pending ?? 0;
+  if (questionsPending > 0) footer.push({ text: `questions pending: ${questionsPending}` });
   if (wakes.watching.length > 0) footer.push({ text: `watching: ${wakes.watching.map(watchText).join(", ")}` });
   else if (workers > 0 && !covered(snapshot)) footer.push({ text: "unwatched: no standing watch on running workers", amber: true });
   return {

@@ -21,7 +21,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 const { addProject } = await import("../dist/context.js");
-const { classifyActivity, collectCrew, readCommitsAhead, reviewSkillsOf } = await import("../dist/crew.js");
+const { classifyActivity, collectCrew, crewStoreProblem, readCommitsAhead, reviewSkillsOf } = await import("../dist/crew.js");
 const { sessionName } = await import("../dist/tmux.js");
 const { readRecentToolCalls } = await import("../dist/transcript.js");
 const { harnessFor, registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
@@ -99,6 +99,13 @@ function wake(o = {}) {
       cancelled_at: null,
       ...o,
     }).id;
+}
+
+function question(projectId, { state = "pending", question = "", answer = null, options = null, defaultAnswer = "default secret" } = {}) {
+  return db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer, state, answer, notes, updated_by)
+     VALUES (?, 'agent:question-test', ?, ?, 'private header', ?, ?, ?, ?, 'private notes', 'agent:question-test')`,
+  ).run(projectId, options === null ? "free_text" : "choice", question, options, defaultAnswer, state, answer).lastInsertRowid;
 }
 
 function dumpStore(database) {
@@ -200,7 +207,7 @@ describe("hive crew --json schema v1", () => {
     assert.equal(r.code, 0, r.stderr);
     const snap = JSON.parse(r.stdout);
     const keys = (o) => Object.keys(o).sort();
-    assert.deepEqual(keys(snap), ["context_checkpoint_percent", "lanes", "needs_you", "project", "read_at", "schema_version", "wakes"]);
+    assert.deepEqual(keys(snap), ["context_checkpoint_percent", "lanes", "needs_you", "project", "questions", "read_at", "schema_version", "wakes"]);
     assert.deepEqual(keys(snap.project), ["id", "name"]);
     const staffed = snap.lanes.find((l) => l.worker);
     const unstaffed = snap.lanes.find((l) => !l.worker);
@@ -214,11 +221,53 @@ describe("hive crew --json schema v1", () => {
     assert.deepEqual(keys(staffed.worker.activity), ["label", "lower_bound", "since"]);
     assert.deepEqual(keys(snap.needs_you[0]), ["id", "slug"]);
     assert.deepEqual(keys(snap.wakes), ["next", "pending", "watched_worker_ids", "watching"]);
+    assert.deepEqual(snap.questions, { pending: 0 });
     assert.deepEqual(keys(snap.wakes.next), ["due_at", "generated", "held", "id", "label"]);
     assert.deepEqual(keys(snap.wakes.watching[0]), ["id", "kind", "label", "max_wait_at", "scope"]);
     db.prepare("DELETE FROM agents").run();
     db.prepare("DELETE FROM wakes").run();
     db.prepare("DELETE FROM todos").run();
+  });
+});
+
+describe("crew pending question count", () => {
+  it("only defaulted questions do not raise the crew count", () => {
+    question(project.id, { state: "defaulted", question: "defaulted only secret" });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 0 });
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(project.id);
+  });
+
+  it("crew snapshot counts only local pending questions", () => {
+    question(project.id, { question: "local pending secret" });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 1 });
+    question(project.id, {
+      question: "local choice secret",
+      options: JSON.stringify([
+        { label: "private option", description: "private description", recommended: true },
+        { label: "Other", description: "Other", recommended: false },
+      ]),
+      defaultAnswer: "private option",
+    });
+    question(project.id, { state: "defaulted", question: "local defaulted secret" });
+    question(project.id, { state: "answered", question: "local answered secret", answer: "local answer secret" });
+    question(project.id, { state: "withdrawn", question: "local withdrawn secret" });
+    question(other.id, { question: "foreign pending secret" });
+
+    const snap = collectCrew(project, NOW);
+    assert.deepEqual(snap.questions, { pending: 2 });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 2 });
+    const json = JSON.stringify(snap);
+    for (const secret of ["local pending secret", "local choice secret", "default secret", "private header", "private option", "private description", "private notes", "local defaulted secret", "local answered secret", "local answer secret", "local withdrawn secret", "foreign pending secret"]) {
+      assert.equal(json.includes(secret), false, `${secret} must not appear in crew JSON`);
+    }
+    db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(project.id, other.id);
+  });
+
+  it("reports the questions table as a crew migration requirement", () => {
+    const missing = new Database(join(dirs.tmp, "crew-missing-questions.db"));
+    missing.exec("CREATE TABLE projects (id INTEGER); CREATE TABLE agents (todo_id INTEGER); CREATE TABLE todos (id INTEGER); CREATE TABLE wakes (id INTEGER);");
+    assert.equal(crewStoreProblem(missing), "the store has no questions table");
+    missing.close();
   });
 });
 

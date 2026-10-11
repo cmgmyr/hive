@@ -49,6 +49,13 @@ function todo(p, { title = "t", status = "open", priority = "medium", tags = [],
     .get(p.id, title, status, priority, JSON.stringify(tags), updated, archived ? OLD : null).id;
 }
 
+function question(p, { state = "pending", question: text, answer = null, options = null, defaultAnswer = "private default" } = {}) {
+  db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer, state, answer, notes, updated_by)
+     VALUES (?, 'agent:test', ?, ?, 'private header', ?, ?, ?, ?, 'private notes', 'agent:test')`,
+  ).run(p.id, options === null ? "free_text" : "choice", text, options, defaultAnswer, state, answer);
+}
+
 const block = (todoId, blockerId) =>
   db.prepare("INSERT INTO todo_blockers (todo_id, blocker_id) VALUES (?, ?)").run(todoId, blockerId);
 
@@ -111,11 +118,59 @@ describe("portfolio: empty store", () => {
   });
 });
 
+describe("portfolio pending questions", () => {
+  it("only defaulted questions do not raise the portfolio count", () => {
+    const p = project("defaulted-question-count");
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    assert.equal(row(p).questions_pending, 0);
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(p.id);
+  });
+
+  it("portfolio reports scoped pending counts without question content", async () => {
+    const p = project("question-counts");
+    const away = project("other-question-counts");
+    question(p, { question: "PRIVATE QUESTION ONE" });
+    question(p, {
+      question: "PRIVATE QUESTION TWO",
+      options: JSON.stringify([
+        { label: "PRIVATE OPTION", description: "PRIVATE DESCRIPTION", recommended: true },
+        { label: "Other", description: "Other", recommended: false },
+      ]),
+      defaultAnswer: "PRIVATE OPTION",
+    });
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    question(p, { state: "answered", question: "PRIVATE ANSWERED", answer: "PRIVATE ANSWER" });
+    question(p, { state: "withdrawn", question: "PRIVATE WITHDRAWN" });
+    question(away, { question: "PRIVATE FOREIGN" });
+
+    const report = collectPortfolio(NOW);
+    const own = report.projects.find((entry) => entry.id === p.id);
+    assert.equal(own.questions_pending, 2);
+    assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
+    const secrets = [
+      "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "private header", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
+      "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
+      "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
+    ];
+    const reportJson = JSON.stringify(report);
+    for (const secret of secrets) {
+      assert.equal(reportJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
+    }
+
+    const cli = await runCli(["portfolio"], { cwd: p.path, dataDir: dirs.dataDir, tmp: dirs.tmp });
+    assert.equal(cli.code, 0, cli.stderr);
+    assert.match(cli.stdout, /needs human 0; questions 2 pending; wakes 0 pending, 0 overdue/);
+    for (const secret of secrets) assert.equal(cli.stdout.includes(secret), false, `${secret} must not appear in portfolio text`);
+    db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(p.id, away.id);
+  });
+});
+
 describe("portfolio lanes", () => {
   it("puts an empty project in quiet with the quiet reason and last activity from its creation", () => {
     const p = project();
     const r = row(p);
     assert.equal(r.lane, "quiet");
+    assert.equal(r.questions_pending, 0);
     assert.deepEqual(r.reasons, ["quiet"]);
     assert.equal(r.last_activity_at, OLD);
     assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown", ended_at: null });
@@ -669,7 +724,7 @@ describe("hive portfolio CLI", () => {
     assert.ok(report.projects.length > 0);
     const p = report.projects[0];
     assert.deepEqual(Object.keys(p), [
-      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human",
+      "id", "name", "root", "root_exists", "lane", "reasons", "lead", "workers", "todos", "needs_human", "questions_pending",
       "needs_human_items", "last_activity_at", "wakes",
     ]);
     assert.deepEqual(Object.keys(p.lead), ["state", "agent_id", "turn", "ended_at"]);

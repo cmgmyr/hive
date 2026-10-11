@@ -6,6 +6,7 @@ import { awaitingFirstPrompt } from "./firstPrompt.js";
 import { heldReasonLabel } from "./heldLabel.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import { NEEDS_HUMAN_TAG } from "./portfolio.js";
+import { pendingQuestionCount } from "./questions.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
 import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
@@ -54,6 +55,7 @@ export interface CrewSnapshot {
   read_at: string;
   lanes: CrewLane[];
   needs_you: { id: number; slug: string }[];
+  questions: { pending: number };
   wakes: {
     pending: number;
     next: { id: number; label: string; due_at: string | null; generated: boolean; held: string | null } | null;
@@ -74,6 +76,7 @@ export function crewStoreProblem(database: Database.Database = db): string | nul
   }
   const columns = database.prepare("SELECT name FROM pragma_table_info('agents')").all() as { name: string }[];
   if (!columns.some((c) => c.name === "todo_id")) return "the store predates the worker-to-todo link (agents.todo_id)";
+  if (!tables.has("questions")) return "the store has no questions table";
   return null;
 }
 
@@ -572,6 +575,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
     read_at: now.toISOString(),
     lanes,
     needs_you: needsYou,
+    questions: { pending: pendingQuestionCount(project.id) },
     wakes: {
       pending: pending.length,
       next: pending[0]
