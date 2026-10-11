@@ -233,6 +233,7 @@ describe("hive crew --json schema v1", () => {
 describe("crew pending question count", () => {
   it("crew snapshot counts only local pending questions", () => {
     question(project.id, { question: "local pending secret" });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 1 });
     question(project.id, {
       question: "local choice secret",
       options: JSON.stringify([
@@ -243,12 +244,14 @@ describe("crew pending question count", () => {
     });
     question(project.id, { state: "defaulted", question: "local defaulted secret" });
     question(project.id, { state: "answered", question: "local answered secret", answer: "local answer secret" });
+    question(project.id, { state: "withdrawn", question: "local withdrawn secret" });
     question(other.id, { question: "foreign pending secret" });
 
     const snap = collectCrew(project, NOW);
     assert.deepEqual(snap.questions, { pending: 2 });
+    assert.deepEqual(collectCrew(project, NOW).questions, { pending: 2 });
     const json = JSON.stringify(snap);
-    for (const secret of ["local pending secret", "local choice secret", "default secret", "private header", "private option", "private description", "private notes", "local defaulted secret", "local answered secret", "local answer secret", "foreign pending secret"]) {
+    for (const secret of ["local pending secret", "local choice secret", "default secret", "private header", "private option", "private description", "private notes", "local defaulted secret", "local answered secret", "local answer secret", "local withdrawn secret", "foreign pending secret"]) {
       assert.equal(json.includes(secret), false, `${secret} must not appear in crew JSON`);
     }
     db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(project.id, other.id);

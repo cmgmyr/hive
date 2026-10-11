@@ -140,18 +140,20 @@ describe("portfolio pending questions", () => {
     const own = report.projects.find((entry) => entry.id === p.id);
     assert.equal(own.questions_pending, 2);
     assert.equal(report.projects.find((entry) => entry.id === away.id).questions_pending, 1);
-    const reportJson = JSON.stringify(report);
-    for (const secret of [
+    const secrets = [
       "PRIVATE QUESTION ONE", "PRIVATE QUESTION TWO", "PRIVATE OPTION", "PRIVATE DESCRIPTION",
       "private default", "private notes", "PRIVATE DEFAULTED", "PRIVATE ANSWERED", "PRIVATE ANSWER",
       "PRIVATE WITHDRAWN", "PRIVATE FOREIGN",
-    ]) {
+    ];
+    const reportJson = JSON.stringify(report);
+    for (const secret of secrets) {
       assert.equal(reportJson.includes(secret), false, `${secret} must not appear in portfolio JSON`);
     }
 
     const cli = await runCli(["portfolio"], { cwd: p.path, dataDir: dirs.dataDir, tmp: dirs.tmp });
     assert.equal(cli.code, 0, cli.stderr);
     assert.match(cli.stdout, /needs human 0; questions 2 pending; wakes 0 pending, 0 overdue/);
+    for (const secret of secrets) assert.equal(cli.stdout.includes(secret), false, `${secret} must not appear in portfolio text`);
     db.prepare("DELETE FROM questions WHERE project_id IN (?, ?)").run(p.id, away.id);
   });
 });
@@ -161,6 +163,7 @@ describe("portfolio lanes", () => {
     const p = project();
     const r = row(p);
     assert.equal(r.lane, "quiet");
+    assert.equal(r.questions_pending, 0);
     assert.deepEqual(r.reasons, ["quiet"]);
     assert.equal(r.last_activity_at, OLD);
     assert.deepEqual(r.lead, { state: "none", agent_id: null, turn: "unknown", ended_at: null });
