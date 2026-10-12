@@ -313,7 +313,7 @@ function gridRow(p: PortfolioProject, asOf: string, href: (p: PortfolioProject) 
     `<span class="c-n g-num">${num(t.open)}</span><span class="c-n g-num">${num(t.in_progress)}</span>` +
     `<span class="c-n g-num">${num(t.blocked, "n-blocked")}</span><span class="c-n g-num">${num(t.high, "n-high")}</span>` +
     `<span class="c-n g-num">${num(p.needs_human, "n-needs")}</span>` +
-    `<span class="c-n g-num">${p.questions_pending > 0 ? `<span class="n-questions">${p.questions_pending}</span>` : ""}</span>` +
+    `<span class="c-n g-num">${num(p.questions_pending, "n-questions")}</span>` +
     `<span class="c-n g-num c-wake">${wakesCell(p)}</span>` +
     `<span class="c-last g-num age">${esc(age(p.last_activity_at, asOf))}</span>` +
     '<span class="c-nums">' +
