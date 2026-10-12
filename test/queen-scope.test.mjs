@@ -174,6 +174,42 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     }
   });
 
+  it("accepts the newer live lead by id and name when an older running lead is stale", async () => {
+    const target = project("stale-lead-target", join(dirs.tmp, "stale-lead-target"));
+    agentRow(target.id, { kind: "lead", name: "stale-lead" });
+    const pane = execFileSync(
+      "tmux",
+      ["new-window", "-d", "-P", "-F", "#{pane_id}", "-t", "=qscope-alpha", "sleep", "600"],
+      { encoding: "utf8" },
+    ).trim();
+    const liveLead = agentRow(target.id, {
+      kind: "lead",
+      name: "newer-lead",
+      pane,
+      socket: resolvedTmuxSocket(),
+    });
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run(paneField(pane, "#{pane_pid}"), liveLead.id);
+
+    for (const ref of [liveLead.id, "newer-lead"]) {
+      const wake = await queenMcp.call("wake_set", {
+        delay_seconds: 3600,
+        body: "check the newer lead",
+        deliver_to: ref,
+        project_id: target.id,
+      });
+      assert.equal(wake.deliver_to, liveLead.actorId);
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(wake.wake_id);
+
+      const recipient = typeof ref === "number" ? { agent_id: ref } : { name: ref };
+      const sent = await queenMcp.call("agent_send", {
+        ...recipient,
+        text: "status?",
+        project_id: target.id,
+      });
+      assert.equal(sent.agent_id, liveLead.id);
+    }
+  });
+
   it("refuses wake recipients that resolve to a worker, closed or unowned lead, or no row", async () => {
     const closed = agentRow(alpha.id, { kind: "lead", name: "closed-lead", status: "closed" });
     const gone = agentRow(alpha.id, { kind: "lead", name: "gone-lead", pane: "%gone" });
