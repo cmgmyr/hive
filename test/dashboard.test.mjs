@@ -24,7 +24,9 @@ const {
   fetchPulse,
   PULSE_SQL,
   CHART_DAYS,
+  renderDashboardForWrite,
 } = await import("../dist/dashboard.js");
+const { pendingQuestionCount } = await import("../dist/questions.js");
 const { tick } = await import("../dist/scheduler.js");
 migrate();
 
@@ -229,6 +231,27 @@ function seedWake(projectId, { body, dueInSeconds, kind = "delay", maxWaitInSeco
        VALUES (?, 'user:test', ?, ?, 'user:test', '%1', ${dueAt}, ${maxWaitAt}) RETURNING id, due_at, max_wait_at`,
     )
     .get(projectId, body, kind);
+}
+
+function seedQuestion(projectId, {
+  asker = "agent:question-asker",
+  kind,
+  question,
+  header = "Header",
+  options = null,
+  defaultAnswer = "default answer",
+  refKind = null,
+  refNumber = null,
+  state = "pending",
+  createdAt = "2026-10-01 12:00:00",
+} = {}) {
+  const questionKind = kind ?? (options === null ? "free_text" : "choice");
+  return db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, options, default_answer,
+       ref_kind, ref_number, state, updated_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  ).get(projectId, asker, questionKind, question, header, options === null ? null : JSON.stringify(options), defaultAnswer,
+    refKind, refNumber, state, asker, createdAt).id;
 }
 
 function expectedLocal(utc) {
@@ -1243,6 +1266,77 @@ describe("renderDashboard: escaping is pinned at every sink, not the board pad a
       "the browser tab keeps the full label, escaped",
     );
     assert.ok(html.includes(`<h1>${XSS_ESCAPED}</h1>`), "the heading is the project alone, escaped");
+  });
+});
+
+describe("renderDashboard: pending questions", () => {
+  it("dashboard lists pending questions with every field, in listQuestions order, and excludes answered and withdrawn rows", () => {
+    const project = seedProject("dashboard-questions-fields");
+    const first = seedQuestion(project, {
+      asker: "agent:<script>asker</script>",
+      question: "<script>alert(1)</script>",
+      header: "<script>",
+      options: [
+        { label: "Choice <script>", description: "<script>description</script>", recommended: true },
+        { label: "Other", description: "Another path", recommended: false },
+      ],
+      defaultAnswer: "Choice <script>",
+      refKind: "todo",
+      refNumber: 42,
+      createdAt: "2026-10-01 12:00:00",
+    });
+    const second = seedQuestion(project, { question: "second pending", header: "Second", createdAt: "2026-10-02 12:00:00" });
+    const third = seedQuestion(project, { question: "third pending", header: "Third", createdAt: "2026-10-03 12:00:00" });
+    const defaulted = seedQuestion(project, { question: "defaulted question", header: "Defaulted", state: "defaulted", createdAt: "2026-09-30 12:00:00" });
+    seedQuestion(project, { question: "answered question", state: "answered" });
+    seedQuestion(project, { question: "withdrawn question", state: "withdrawn" });
+
+    assert.equal(pendingQuestionCount(project), 3);
+    const html = renderDashboard(project);
+    const section = html.slice(html.indexOf('id="section-questions"'), html.indexOf('id="section-activity"'));
+    assert.match(section, /Questions<\/span><span class="pb-count">3 pending/);
+    assert.match(html, /data-section="questions"/);
+    for (const id of [first, second, third, defaulted]) assert.ok(section.includes(`#${id}`));
+    assert.ok(section.indexOf(`data-question="${first}"`) < section.indexOf(`data-question="${second}"`));
+    assert.ok(section.indexOf(`data-question="${second}"`) < section.indexOf(`data-question="${third}"`));
+    assert.ok(section.indexOf(`data-question="${third}"`) < section.indexOf(`data-question="${defaulted}"`));
+    assert.match(section, /free text/);
+    assert.match(section, /Choice &lt;script&gt;.*recommended/s);
+    assert.match(section, /default answer/);
+    assert.match(section, /agent:&lt;script&gt;asker&lt;\/script&gt;/);
+    assert.match(section, /todo #42/);
+    assert.match(section, /\d+[dhm] ago|now/);
+    assert.match(section, /hive answer \d+/);
+    assert.match(section, /defaulted - proceeding on the default/);
+    assert.ok(section.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    for (const raw of ["<script>alert(1)</script>", "<script>description</script>", "agent:<script>asker</script>"]) {
+      assert.ok(!section.includes(raw), `raw question field ${raw} must not reach HTML`);
+    }
+    for (const hidden of ["answered question", "withdrawn question"]) assert.ok(!section.includes(hidden));
+
+    const emptyProject = seedProject("dashboard-questions-no-open-rows");
+    seedQuestion(emptyProject, { question: "already answered", state: "answered" });
+    seedQuestion(emptyProject, { question: "already withdrawn", state: "withdrawn" });
+    const emptyHtml = renderDashboard(emptyProject);
+    assert.doesNotMatch(emptyHtml, /id="section-questions"|data-section="questions"/);
+  });
+
+  it("a new pending question changes the dashboard content hash", () => {
+    const project = seedProject("dashboard-questions-hash");
+    const before = renderDashboardForWrite(project);
+    seedQuestion(project, { question: "new question", header: "New" });
+    const after = renderDashboardForWrite(project);
+    assert.notEqual(after.contentHash, before.contentHash);
+    assert.notEqual(after.html, before.html);
+  });
+
+  it("question text wraps at narrow widths", () => {
+    const project = seedProject("dashboard-questions-wrap");
+    const longText = "x".repeat(2000);
+    seedQuestion(project, { question: longText });
+    const html = renderDashboard(project);
+    assert.ok(html.includes(longText), "the full long question is rendered");
+    assert.match(html, /\.prose\s*\{\s*overflow-wrap:\s*anywhere;/);
   });
 });
 

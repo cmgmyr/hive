@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { db } from "./db.js";
 import { getProject } from "./context.js";
 import type { PaneVisibility } from "./tmux.js";
@@ -32,6 +33,8 @@ export function processCounts(procs: ProcessSnapshot[]): {
 import { awaitingFirstPrompt } from "./firstPrompt.js";
 
 import { SLUG_MAX_LEN, cutToUnitBudget } from "./slug.js";
+
+const requireFromHere = createRequire(import.meta.url);
 
 export const TODO_CAP = 100;
 export const AGENT_CAP = 50;
@@ -673,6 +676,53 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
   return section(index, "wakes", "Wakes", `${all.length} pending`, "bell", String(shown.length), body);
 }
 
+function questionAge(createdAt: string): string {
+  const timestamp = Date.parse(`${createdAt.replace(" ", "T")}Z`);
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds >= 60) return `${Math.floor(seconds / 60)}m ago`;
+  return "now";
+}
+
+function renderQuestionsSection(index: SectionMeta[], projectId: number): string {
+  const { listQuestions, pendingQuestionCount } = requireFromHere("./questions.js") as typeof import("./questions.js");
+  const questions = listQuestions(projectId);
+  if (questions.length === 0) return "";
+  const pendingCount = pendingQuestionCount(projectId);
+  const rows = questions.map((question) => {
+    const options = question.kind === "free_text"
+      ? '<p class="question-options">free text</p>'
+      : `<ul class="question-options">${(question.options ?? []).map((option) =>
+          `<li>${prose(option.label)}${option.recommended ? ' <span class="recommended">recommended</span>' : ""}` +
+          `<span class="question-option-description">${prose(option.description)}</span></li>`,
+        ).join("")}</ul>`;
+    const ref = question.ref ? `<span class="question-ref">${question.ref.kind === "todo" ? "todo" : "PR"} #${question.ref.number}</span>` : "";
+    const state = question.state === "defaulted"
+      ? '<span class="question-state">defaulted - proceeding on the default</span>'
+      : '<span class="question-state">pending</span>';
+    return (
+      `<li class="question" data-question="${question.id}"><div class="question-head">${mono(`#${question.id}`)} ` +
+      `<strong>${escapeHtml(question.header)}</strong> ${state}</div>` +
+      `<p class="question-text">${prose(question.question)}</p>${options}` +
+      `<p class="question-default">Default answer: ${prose(question.default_answer)}</p>` +
+      `<p class="question-meta">Asked by ${mono(question.asker)} · ${escapeHtml(questionAge(question.created_at))}` +
+      `${ref ? ` · ${ref}` : ""}</p>` +
+      `<p class="question-answer">To answer: <code>hive answer ${question.id}</code></p></li>`
+    );
+  }).join("\n");
+  return section(
+    index,
+    "questions",
+    "Questions",
+    `${pendingCount} pending`,
+    "inbox",
+    String(pendingCount),
+    `<ul class="question-list">${rows}</ul>`,
+  );
+}
+
 interface ActivityEntry {
   created_at: string;
   html: string;
@@ -1013,6 +1063,15 @@ export const SECTION_STYLE = `
   .priority-low { color: var(--fg-subtle); }
   .blockers { font-size: 0.8125rem; color: var(--fg-muted); margin: 0 0 0.45rem 0.6rem; }
   .wake-body { color: var(--fg); font-size: 0.875rem; overflow-wrap: anywhere; }
+  .question-list { display: grid; gap: 0.85rem; list-style: none; margin: 0; padding: 0; }
+  .question { border-bottom: 1px solid var(--border); padding-bottom: 0.85rem; overflow-wrap: anywhere; }
+  .question:last-child { border-bottom: 0; padding-bottom: 0; }
+  .question-head, .question-meta, .question-answer, .question-default, .question-text, .question-options { margin: 0.2rem 0; }
+  .question-head, .question-meta, .question-answer { font-size: 0.8125rem; }
+  .question-state, .question-ref, .recommended { color: var(--fg-muted); font-size: 0.75rem; }
+  .question-options { padding-left: 1.2rem; }
+  .question-option-description { display: block; padding-left: 0.5rem; color: var(--fg-muted); }
+  .question-text { overflow-wrap: anywhere; white-space: pre-wrap; }
   .activity-body { font-size: 0.8125rem; color: var(--fg-muted); white-space: pre-wrap;
     overflow-wrap: anywhere; margin-top: 0.1rem; }
 
@@ -1512,7 +1571,9 @@ function buildDashboard(projectId: number, procs: ProcessSnapshot[]): {
   const project = fetchProject(projectId);
   const stats = fetchDayStats(projectId);
   const index: SectionMeta[] = [];
+  const questionsSection = renderQuestionsSection(index, projectId);
   const cards = [
+    ...(questionsSection ? [questionsSection] : []),
     renderThroughputSection(index, stats),
     renderBoardSection(index, projectId),
     renderTodosSection(index, projectId),
