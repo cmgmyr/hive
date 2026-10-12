@@ -687,6 +687,7 @@ function questionAge(createdAt: string): string {
 }
 
 function renderQuestionsSection(index: SectionMeta[], projectId: number): string {
+  // A static import of questions.js cycles through tools/wakes.ts and scheduler.ts.
   const { listQuestions, pendingQuestionCount } = requireFromHere("./questions.js") as typeof import("./questions.js");
   const questions = listQuestions(projectId);
   if (questions.length === 0) return "";
