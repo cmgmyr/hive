@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -29,7 +30,7 @@ function fixtureRow(pid, start, command = `${process.execPath} ${SERVER}`, ppid 
   return `${pid} ${ppid} ${start} ${command}`;
 }
 
-const { elapsedSeconds, parseStaleHiveServers, processUsesDataDir, STALE_SERVER_BOUNDARY_SLACK_MS } = await import("../dist/staleServers.js");
+const { elapsedSeconds, parseStaleHiveServers, processUsesDataDir, readProcessEnvironment, staleHiveServers, STALE_SERVER_BOUNDARY_SLACK_MS } = await import("../dist/staleServers.js");
 const observedAt = Date.parse("2026-10-08T10:00:10.000Z");
 
 describe("stale hive server elapsed times", () => {
@@ -77,6 +78,45 @@ describe("stale hive server elapsed times", () => {
     assert.deepEqual(parseStaleHiveServers("not a ps row", "2026-10-07 17:30:00"), {
       skipped: "ps returned a row that could not be parsed",
     });
+  });
+});
+
+describe("stale hive server environment reads", () => {
+  function withPsStub(script, rows, run) {
+    writeFileSync(psRowsPath, `${rows.join("\n")}\n`);
+    writeFileSync(psPath, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    chmodSync(psPath, 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${psDir}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
+    try {
+      return run();
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  }
+
+  it("a candidate that exits before its environment read is skipped, not the whole check", () => {
+    const result = withPsStub(
+      `case "$*" in\n  *"pid=,ppid=,etime=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\n  "eww -p 60001 -o command=") exit 1 ;;\n  "eww -p 60002 -o command=") printf '%s\\n' ${JSON.stringify(`${process.execPath} ${SERVER} HIVE_DATA_DIR=${dirs.dataDir} PATH=/bin`)} ;;\nesac`,
+      [fixtureRow(60001, "3650-00:00:00"), fixtureRow(60002, "3650-00:00:00")],
+      () => staleHiveServers("2099-01-01 00:00:00", dirs.dataDir),
+    );
+    assert.deepEqual(result.servers.map((server) => server.pid), [60002]);
+  });
+
+  it("any other environment read failure still skips the check", () => {
+    const result = withPsStub(
+      `case "$*" in\n  *"pid=,ppid=,etime=,command="*) cat ${JSON.stringify(psRowsPath)} ;;\n  *) echo 'permission denied' >&2; exit 1 ;;\nesac`,
+      [fixtureRow(60003, "3650-00:00:00")],
+      () => staleHiveServers("2099-01-01 00:00:00", dirs.dataDir),
+    );
+    assert.match(result.skipped, /^ps could not be run:/);
+  });
+
+  it("the default environment reader reports an exited pid as gone", () => {
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    assert.equal(child.error, undefined);
+    assert.equal(readProcessEnvironment(child.pid), null);
   });
 });
 
