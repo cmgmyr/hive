@@ -99,7 +99,7 @@ hive next          # attach to that project's lead
 hive next --print  # name the choice, start and attach nothing
 ```
 
-`hive next` picks one project from the portfolio. Projects waiting on you come first, ranked by the combined count of `needs-human` todos and pending questions, then oldest activity, then project id. Other projects with a `needs-human` todo or pending question come next, ranked by that combined count, then blocked in-progress todos, overdue wakes, workers needing input, oldest activity, then project id. It skips the queen home.
+`hive next` picks one project from the portfolio. Projects waiting on you come first, ranked by the combined count of `needs-human` todos and pending questions, then oldest activity, then project id. Stuck projects and moving projects holding either kind of wait are also candidates. Among them, projects with a wait rank before stuck projects without one; candidates with a wait are ranked by the combined count, then blocked in-progress todos, overdue wakes, workers needing input, oldest activity, then project id. It skips the queen home.
 
 `--print` prints the choice as one JSON line and exits, so you can check the ranking without moving your terminal:
 
