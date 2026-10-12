@@ -18,6 +18,21 @@ export type StaleHiveServerReport =
 
 export const STALE_SERVER_BOUNDARY_SLACK_MS = 3000;
 
+export function readProcessEnvironment(pid: number): string | null {
+  try {
+    return execFileSync("ps", ["eww", "-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  } catch (error) {
+    if (
+      typeof error === "object" && error !== null && "status" in error && error.status === 1 &&
+      "stdout" in error && String(error.stdout ?? "").trim() === "" &&
+      "stderr" in error && (String(error.stderr ?? "").trim() === "" || /no such process|process id .* (?:not found|does not exist)/i.test(String(error.stderr)))
+    ) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 const serverEntrypoint = resolve(dirname(fileURLToPath(import.meta.url)), "index.js");
 
 export function elapsedSeconds(value: string): number | null {
@@ -101,7 +116,11 @@ export function parseStaleHiveServers(psOutput: string, appliedAt: string, obser
   return { servers };
 }
 
-export function staleHiveServers(appliedAt: string | null, dataDir = DEFAULT_DATA_DIR): StaleHiveServerReport {
+export function staleHiveServers(
+  appliedAt: string | null,
+  dataDir = DEFAULT_DATA_DIR,
+  readEnvironment = readProcessEnvironment,
+): StaleHiveServerReport {
   if (appliedAt === null) return { skipped: "the newest migration time is unavailable" };
   try {
     const psOutput = execFileSync("ps", ["-eo", "pid=,ppid=,etime=,command="], { encoding: "utf8" });
@@ -109,9 +128,8 @@ export function staleHiveServers(appliedAt: string | null, dataDir = DEFAULT_DAT
     if ("skipped" in parsed) return parsed;
     const servers: StaleHiveServer[] = [];
     for (const server of parsed.servers) {
-      const envOutput = execFileSync("ps", ["eww", "-p", String(server.pid), "-o", "command="], {
-        encoding: "utf8",
-      });
+      const envOutput = readEnvironment(server.pid);
+      if (envOutput === null) continue;
       const sameStore = processUsesDataDir(envOutput, dataDir);
       if (sameStore === null) return { skipped: "ps returned environment output that could not be parsed" };
       if (sameStore) servers.push(server);
