@@ -199,13 +199,17 @@ describe("renderQueenDashboard", () => {
     assert.match(html, /<span class="c-n g-num"><span class="n-questions">3<\/span><\/span>/);
   });
 
-  it("queen dashboard hides the pending-question count at zero", () => {
+  it("zero question count matches sibling zero grid cells and stays out of compact text", () => {
     const html = renderQueenDashboard(
       report([proj(1, "moving", { questions_pending: 0, reasons: ["questions_pending", "worker_working"] })]),
       { kind: "missing" },
       noLinks,
     );
-    assert.doesNotMatch(html, /n-questions|question(?:s)? pending|Pending question/);
+    const zeroCell = '<span class="c-n g-num"><span class="zero">0</span></span>';
+    assert.equal(html.split(zeroCell).length - 1, 4);
+    const compact = html.match(/<span class="c-nums">([\s\S]*?)<\/span><\/div>/)?.[1];
+    assert.ok(compact);
+    assert.doesNotMatch(compact, /n-questions|question(?:s)? pending|Pending question/);
   });
 
   it("pending-question reason label is not duplicated beside the count", () => {
