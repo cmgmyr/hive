@@ -7,7 +7,7 @@ Every tool is project-scoped: it acts on the current working directory's project
 | **identity** | | |
 | `whoami` | Shows your actor id and effective project scope | First call in a new session, or whenever scope looks wrong |
 | `help` | Usage guidance; accepts a topic (`workflow`, `agents`, `wakes`, `pads`, ...) | To learn the lead/worker playbook without reading source |
-| `queen_audit_list` | Lists confirmed queen writes, newest first, with a target filter and a maximum of 100 entries. The queen can read every target; other callers see their own project | To read what the queen did in a project |
+| `queen_audit_list` | Lists confirmed queen writes and refused cross-project guard calls, newest first, with a target filter and a maximum of 100 entries. Refusals include their problem text. The queen can read every target; other callers see their own project | To review queen writes or diagnose a refused cross-project call |
 | **projects** | | |
 | `project_list` | Lists registered projects and which one is selected | To check what this machine knows about |
 | `project_add` | Registers a directory as its own project | To split a worktree or subdirectory off from its parent repo's state |

@@ -301,7 +301,7 @@ Usage:
                              snapshot; read-only, writes nothing
   hive portfolio [--json]    one row per registered project: lane, lead, workers,
                              todos, needs-human count, wakes; read-only
-  hive queen-audit           confirmed queen writes, newest first; 30-day history
+  hive queen-audit           queen writes and refused calls, newest first; 30-day history
     [--project-id <id>]      filter the target project (queen only across projects)
     [--limit <n>] [--json]   default 20, maximum 100; JSON prints one object
   hive next [--print]        attach to the lead of the project that needs you most
@@ -3699,7 +3699,7 @@ function cmdQueenAudit(argv: string[]): void {
     return;
   }
   if (report.entries.length === 0) {
-    console.log("No queen actions recorded.");
+    console.log("No queen audit entries recorded.");
     return;
   }
   for (const entry of report.entries) {

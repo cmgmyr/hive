@@ -5,6 +5,8 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
 import { LEAD_KIND } from "./spawn.js";
+import { rowOwnership } from "./tmux.js";
+import { recordQueenRefusal } from "./queenAudit.js";
 
 export interface Project {
   id: number;
@@ -343,6 +345,51 @@ export function captureQueenWriteIdentity(targetProjectId: number): QueenWriteId
   return { actor_id: process.env.HIVE_AGENT_ID!, home_project_id: home };
 }
 
+interface QueenLeadTarget {
+  id: number;
+  project_id: number;
+  name: string;
+  kind: string;
+  status: string;
+  tmux_target: string;
+  tmux_socket: string;
+  pane_pid: string;
+}
+
+export function resolveQueenLeadTarget<T extends QueenLeadTarget>(
+  operation: string,
+  targetProjectId: number,
+  ref: unknown,
+  resolve: () => T,
+): T {
+  if (!captureQueenWriteIdentity(targetProjectId)) return resolve();
+
+  let agent: T;
+  try {
+    agent = resolve();
+  } catch (e) {
+    throw queenRefusal(
+      operation,
+      targetProjectId,
+      `recipient ${JSON.stringify(ref)} could not be resolved: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  const ownership = rowOwnership(agent);
+  const problem =
+    agent.project_id !== targetProjectId
+      ? `Agent ${agent.id} ("${agent.name}") belongs to project ${agent.project_id}, not project ${targetProjectId}`
+      : agent.kind !== LEAD_KIND
+        ? `Agent ${agent.id} ("${agent.name}") is kind "${agent.kind}", not a lead`
+        : agent.status !== "running"
+          ? `Agent ${agent.id} ("${agent.name}") is ${agent.status}, not running`
+          : ownership !== "live"
+            ? `Agent ${agent.id} ("${agent.name}") does not own a live pane (ownership: ${ownership})`
+            : null;
+  if (problem) throw queenRefusal(operation, targetProjectId, problem);
+  return agent;
+}
+
 // Every MCP tool and every target-bearing CLI verb must appear here; an unlisted one refuses for the
 // queen everywhere, and test/queen-scope.test.mjs fails on any registered tool missing from it.
 type QueenReach = "read" | "home" | "select" | "global" | "todo" | "lead_wake" | "owned_lead_wake" | "lead_text" | "spin_up" | "prune";
@@ -440,7 +487,7 @@ function foreignWriteProblem(
       if (args.scope !== undefined) return "a standing watch in another project belongs to its lead";
       const lead = runningLead(targetProjectId);
       if (!lead) return "that project has no running lead to address";
-      if (!namesLead(args.deliver_to, lead)) {
+      if (args.deliver_to == null) {
         return `deliver_to must name that project's running lead ("${lead.name}" or agent id ${lead.id})`;
       }
       return null;
@@ -460,8 +507,8 @@ function foreignWriteProblem(
       if (args.keys !== undefined) return "keys can interrupt a lead mid-turn; send text instead";
       const lead = runningLead(targetProjectId);
       if (!lead) return "that project has no running lead to address";
-      if (!namesLead(args.agent_id ?? args.name, lead)) {
-        return `the recipient must be that project's running lead ("${lead.name}" or agent id ${lead.id})`;
+      if (args.agent_id == null && args.name == null) {
+        return `the recipient must name that project's running lead ("${lead.name}" or agent id ${lead.id})`;
       }
       return null;
     }
@@ -507,11 +554,22 @@ export function assertQueenToolCall(tool: string, args: Record<string, unknown>)
 function queenRefusal(operation: string, targetProjectId: number | null, problem: string): Error {
   const target = targetProjectId === null ? null : getProject(targetProjectId);
   const where = target ? `in project ${target.id} ("${target.name}")` : "outside the queen's own project";
-  return new Error(
+  const refusal = new Error(
     `${QUEEN_REFUSAL}: the queen cannot run ${operation} ${where}: ${problem}. Into another project the ` +
       "queen may only todo_create, todo_comment, send text or wakes to its running lead, start its lead " +
       "with `hive lead <path>`, and run project_prune or `hive project rm` on it. Everything else there is its lead's to do.",
   );
+  if (targetProjectId !== null) {
+    const identity = captureQueenWriteIdentity(targetProjectId);
+    if (identity) {
+      try {
+        recordQueenRefusal(operation, targetProjectId, problem, identity);
+      } catch {
+        // A refusal must survive an unavailable audit write.
+      }
+    }
+  }
+  return refusal;
 }
 
 export const HUMAN_ACTOR_PREFIX = "user:";

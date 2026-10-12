@@ -96,7 +96,7 @@ it("a losing adopt CAS produces no audit row and does not kill the winner's live
   assert.deepEqual(panes(), before.panes);
   assert.equal(rows().length, before.audit);
 });
-it("refused foreign next, unregistered paths, and ordinary detached lead calls do not audit", needsTmux, async () => {
+it("records a refused foreign next but not unregistered paths or ordinary detached lead calls", needsTmux, async () => {
   const p = foreign();
   db.prepare("INSERT INTO todos (project_id, title, tags) VALUES (?, 'needs human', '[\"needs-human\"]')").run(p.id);
   const before = rows().length;
@@ -111,5 +111,7 @@ it("refused foreign next, unregistered paths, and ordinary detached lead calls d
   assert.equal(db.prepare("SELECT id FROM projects WHERE path = ?").get(fresh), undefined);
   const ordinary = await run(p, { HIVE_AGENT_ID: "" });
   assert.equal(ordinary.code, 0, ordinary.stdout + ordinary.stderr);
-  assert.equal(rows().length, before);
+  assert.equal(rows().length, before + 1);
+  assert.equal(rows().at(-1).operation, "hive next");
+  assert.equal(rows().at(-1).outcome, "refused");
 });
