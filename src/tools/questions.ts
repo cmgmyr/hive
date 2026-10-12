@@ -112,7 +112,7 @@ export function registerQuestions(server: McpServer): void {
     "question_answer",
     {
       description:
-        "Record the human's answer to a pending or defaulted question in this project: a picked option label or free text (any nonblank text is accepted, including one outside the offered labels), plus optional notes. The answer commits first. It then queues one wake to the asking session carrying the question, answer and notes verbatim, unless you ARE the asker (you recorded the human's own pick) or the asker cannot be reached now; either way the receipt says wake_id null and why in wake_skipped, and the answer stays readable with question_get. wake_id means queued, not delivered. An answered or withdrawn question refuses with QUESTION_STATE_CONFLICT.",
+        "Record the human's answer to a pending or defaulted question in this project, plus optional notes; any nonblank answer is accepted. When the asker is running, queue the wake to them; when they have no running row, queue it to the project's running lead and include `wake_rerouted_to` (`wake_id` means queued, not delivered), skipping with `wake_id: null` and `wake_skipped` only when you are the asker, the lead is the answerer, or no lead runs.",
       annotations: writes,
       inputSchema: {
         question_id: idParam,

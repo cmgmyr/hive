@@ -199,7 +199,7 @@ describe("hive questions", () => {
     });
 
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    const match = result.stdout.match(/Wake #(\d+) queued for the asking session \(asker not running; sent to lead:questions-cli-fallback\)\./);
+    const match = result.stdout.match(/Wake #(\d+) queued for lead:questions-cli-fallback; the asker is not running\./);
     assert.ok(match, result.stdout);
     const wake = db.prepare("SELECT deliver_actor, body FROM wakes WHERE id = ?").get(Number(match[1]));
     assert.equal(wake.deliver_actor, leadActor);
