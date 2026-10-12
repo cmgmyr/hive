@@ -107,6 +107,7 @@ const LANE_COLOR: Record<PortfolioLane, string> = {
 };
 const REASON_LABEL: Record<PortfolioReason, string> = {
   needs_human: "Needs-human todo",
+  questions_pending: "Pending question",
   dead_lead_pane: "Lead pane is dead",
   missing_root_with_work: "Project folder is missing",
   worker_needs_input: "A worker is waiting for input",
