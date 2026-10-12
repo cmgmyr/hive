@@ -235,10 +235,13 @@ function footCounts(p: PortfolioProject, asOf: string, rank: number): string {
 }
 
 function movingBadges(p: PortfolioProject): string {
-  if (p.lane !== "moving") return "";
+  const questions = p.questions_pending > 0
+    ? `<span class="n-questions">${p.questions_pending} question${p.questions_pending === 1 ? "" : "s"}</span>`
+    : "";
   return (
-    (p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
-    (p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
+    (p.lane === "moving" && p.needs_human > 0 ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
+    questions +
+    (p.lane === "moving" && p.todos.blocked_in_progress > 0 ? `<span class="n-muted">${p.todos.blocked_in_progress} blocked</span>` : "")
   );
 }
 
@@ -260,7 +263,7 @@ function card(
     items.push(`<li><span class="ref">+${p.needs_human - p.needs_human_items.length} more</span></li>`);
   }
   for (const r of p.reasons) {
-    if (r === "needs_human" || r === "quiet") continue;
+    if (r === "needs_human" || r === "questions_pending" || r === "quiet") continue;
     const cls = REASON_SEVERE.has(r) ? " age-fail" : "";
     items.push(`<li><span class="${cls.trim()}">${esc(REASON_LABEL[r])}</span></li>`);
   }
@@ -309,13 +312,16 @@ function gridRow(p: PortfolioProject, asOf: string, href: (p: PortfolioProject) 
     `<span class="c-work">${workersCell(p)}</span>` +
     `<span class="c-n g-num">${num(t.open)}</span><span class="c-n g-num">${num(t.in_progress)}</span>` +
     `<span class="c-n g-num">${num(t.blocked, "n-blocked")}</span><span class="c-n g-num">${num(t.high, "n-high")}</span>` +
-    `<span class="c-n g-num">${num(p.needs_human, "n-needs")}</span><span class="c-n g-num c-wake">${wakesCell(p)}</span>` +
+    `<span class="c-n g-num">${num(p.needs_human, "n-needs")}</span>` +
+    `<span class="c-n g-num">${p.questions_pending > 0 ? `<span class="n-questions">${p.questions_pending}</span>` : ""}</span>` +
+    `<span class="c-n g-num c-wake">${wakesCell(p)}</span>` +
     `<span class="c-last g-num age">${esc(age(p.last_activity_at, asOf))}</span>` +
     '<span class="c-nums">' +
     `<span>${t.open} open</span><span>${t.in_progress} doing</span>` +
     (t.blocked ? `<span class="n-blocked">${t.blocked} blocked</span>` : "") +
     (t.high ? `<span class="n-high">${t.high} high</span>` : "") +
     (p.needs_human ? `<span class="n-needs">${p.needs_human} need you</span>` : "") +
+    (p.questions_pending ? `<span class="n-questions">${p.questions_pending} question${p.questions_pending === 1 ? "" : "s"}</span>` : "") +
     wakesText(p) +
     "</span></div>"
   );
@@ -324,7 +330,7 @@ function gridRow(p: PortfolioProject, asOf: string, href: (p: PortfolioProject) 
 const GRID_HEAD =
   '<div class="g-row g-head" role="row"><span>Project</span><span>Lead</span><span>Workers</span>' +
   '<span class="g-num">Open</span><span class="g-num">Doing</span><span class="g-num">Blocked</span>' +
-  '<span class="g-num">High</span><span class="g-num">Needs you</span><span class="g-num c-wake">Wakes</span>' +
+  '<span class="g-num">High</span><span class="g-num">Needs you</span><span class="g-num">Questions</span><span class="g-num c-wake">Wakes</span>' +
   '<span class="g-num">Last seen</span></div>';
 
 function laneName(lane: PortfolioLane): string {
@@ -467,7 +473,7 @@ a.proj:hover { color: var(--accent); text-decoration: underline; text-underline-
 .drift { margin: 0.5rem 0 0; grid-column: 1 / -1; padding: 0.55rem 0.75rem; border-radius: var(--r-ctl); background: var(--warn-bg); color: var(--fg); font-size: 0.8125rem; }
 .drift strong { color: var(--warn); font-weight: 650; }
 .grid { display: grid; }
-.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 10.5rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
+.g-row { display: grid; grid-template-columns: minmax(8.5rem, 1.3fr) 10.5rem minmax(8rem, 1.2fr) repeat(4, 3.2rem) 4.6rem 4.6rem 5.2rem 5.6rem; align-items: center; gap: 0.6rem; padding: 0.5rem 1.1rem; border-top: 1px solid var(--border); font-size: 0.875rem; }
 .g-row:hover:not(.g-head) { background: var(--hover); }
 .g-head { font-size: 0.75rem; color: var(--fg-subtle); font-weight: 550; border-top: 0; padding-block: 0.2rem 0.4rem; }
 .g-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
