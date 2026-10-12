@@ -173,10 +173,11 @@ describe("renderQueenDashboard", () => {
 
   it("lists needs-human titles with +N more, and labels reasons from the collector's codes", () => {
     const items = [1, 2].map((i) => ({ todo_id: i, title: `Title ${i}`, slug: null, updated_at: "2026-09-29 11:30:00" }));
-    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, reasons: ["needs_human", "worker_needs_input"] });
+    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, reasons: ["needs_human", "questions_pending", "worker_needs_input"] });
     const html = renderQueenDashboard(report([p, proj(2, "stuck", { reasons: ["dead_lead_pane", "wake_overdue_5m"], lead: { state: "dead_pane", agent_id: 2, turn: "unknown" } })]), { kind: "missing" }, noLinks);
     assert.match(html, /Title 1/);
     assert.match(html, /\+5 more/);
+    assert.match(html, /Pending question/);
     assert.match(html, /A worker is waiting for input/);
     assert.match(html, /Lead pane is dead/);
     assert.match(html, /A wake is overdue/);

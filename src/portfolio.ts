@@ -11,6 +11,7 @@ export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
 
 export const PORTFOLIO_REASONS = [
   "needs_human",
+  "questions_pending",
   "dead_lead_pane",
   "missing_root_with_work",
   "worker_needs_input",
@@ -213,9 +214,11 @@ function projectRow(
   const staleClock = lastActivity(project.id, false);
   const staleBefore = shiftedClock(now, STALE_IN_PROGRESS);
   const activeTodos = todos.open + todos.in_progress;
+  const questionsPending = pendingQuestionCount(project.id);
 
   const found = new Set<PortfolioReason>();
   if (tagged.length > 0) found.add("needs_human");
+  if (questionsPending > 0) found.add("questions_pending");
   if ((lead.state === "dead_pane" || lead.state === "dormant") && (todos.in_progress > 0 || wakeCounts.pending > 0)) found.add("dead_lead_pane");
   if (!rootExists && (activeTodos > 0 || wakeCounts.pending > 0)) found.add("missing_root_with_work");
   if (liveWaiting > 0) found.add("worker_needs_input");
@@ -239,7 +242,7 @@ function projectRow(
   let lane: PortfolioLane;
   if (HARD_STALL.some((r) => found.has(r))) lane = "stuck";
   else if (movingSignal) lane = "moving";
-  else if (found.has("needs_human")) lane = "waiting_on_you";
+  else if (found.has("needs_human") || found.has("questions_pending")) lane = "waiting_on_you";
   else if (TODO_GRAPH.some((r) => found.has(r))) lane = "stuck";
   else {
     lane = "quiet";
@@ -257,7 +260,7 @@ function projectRow(
     workers,
     todos,
     needs_human: tagged.length,
-    questions_pending: pendingQuestionCount(project.id),
+    questions_pending: questionsPending,
     needs_human_items: tagged.slice(0, NEEDS_HUMAN_ITEM_CAP).map((t) => ({
       todo_id: t.id,
       title: t.title,

@@ -119,6 +119,22 @@ describe("portfolio: empty store", () => {
 });
 
 describe("portfolio pending questions", () => {
+  it("a pending question adds the questions_pending reason", () => {
+    const p = project("pending-question-reason");
+    question(p, { question: "PRIVATE QUESTION" });
+    const r = row(p);
+    assert.equal(r.questions_pending, 1);
+    assert.deepEqual(r.reasons, ["questions_pending"]);
+  });
+
+  it("a defaulted question does not make a project waiting on you", () => {
+    const p = project("defaulted-question-lane");
+    question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
+    const r = row(p);
+    assert.equal(r.lane, "quiet");
+    assert.deepEqual(r.reasons, ["quiet"]);
+  });
+
   it("only defaulted questions do not raise the portfolio count", () => {
     const p = project("defaulted-question-count");
     question(p, { state: "defaulted", question: "PRIVATE DEFAULTED" });
@@ -182,6 +198,23 @@ describe("portfolio lanes", () => {
     const r = row(p);
     assert.equal(r.lane, "waiting_on_you");
     assert.deepEqual(r.reasons, ["needs_human"]);
+  });
+
+  it("a project whose only wait is a pending question is waiting on you", () => {
+    const p = project("pending-question-waiting");
+    question(p, { question: "PRIVATE QUESTION" });
+    const r = row(p);
+    assert.equal(r.lane, "waiting_on_you");
+    assert.deepEqual(r.reasons, ["questions_pending"]);
+  });
+
+  it("a pending question does not pull a stuck project out of stuck", () => {
+    const p = project("pending-question-stuck");
+    question(p, { question: "PRIVATE QUESTION" });
+    wake(p, { due: at("-10 minutes") });
+    const r = row(p);
+    assert.equal(r.lane, "stuck");
+    assert.deepEqual(r.reasons, ["questions_pending", "wake_overdue_5m"]);
   });
 
   it("puts an in_progress todo in moving", () => {
@@ -776,6 +809,15 @@ describe("portfolio busy is moving", () => {
     assert.equal(r.needs_human, 1);
     assert.equal(r.needs_human_items.length, 1);
     assert.ok(r.reasons.includes("needs_human"));
+  });
+
+  it("a pending question does not pull a moving project out of moving", { skip }, () => {
+    const p = project();
+    question(p, { question: "PRIVATE QUESTION" });
+    working(p);
+    const r = row(p);
+    assert.equal(r.lane, "moving");
+    assert.deepEqual(r.reasons, ["questions_pending", "worker_working"]);
   });
 
   it("puts needs-human with nothing moving in waiting_on_you", () => {
