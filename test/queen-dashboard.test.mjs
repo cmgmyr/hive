@@ -173,15 +173,49 @@ describe("renderQueenDashboard", () => {
 
   it("lists needs-human titles with +N more, and labels reasons from the collector's codes", () => {
     const items = [1, 2].map((i) => ({ todo_id: i, title: `Title ${i}`, slug: null, updated_at: "2026-09-29 11:30:00" }));
-    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, reasons: ["needs_human", "questions_pending", "worker_needs_input"] });
+    const p = proj(1, "waiting_on_you", { needs_human: 7, needs_human_items: items, questions_pending: 2, reasons: ["needs_human", "questions_pending", "worker_needs_input"] });
     const html = renderQueenDashboard(report([p, proj(2, "stuck", { reasons: ["dead_lead_pane", "wake_overdue_5m"], lead: { state: "dead_pane", agent_id: 2, turn: "unknown" } })]), { kind: "missing" }, noLinks);
     assert.match(html, /Title 1/);
     assert.match(html, /\+5 more/);
-    assert.match(html, /Pending question/);
+    assert.doesNotMatch(html, /Pending question/);
     assert.match(html, /A worker is waiting for input/);
     assert.match(html, /Lead pane is dead/);
     assert.match(html, /A wake is overdue/);
     assert.match(html, /lead dead/);
+  });
+
+  it("queen dashboard shows the pending-question count in card and table views", () => {
+    const html = renderQueenDashboard(
+      report([
+        proj(1, "moving", { needs_human: 1, questions_pending: 1 }),
+        proj(2, "waiting_on_you", { needs_human: 4, questions_pending: 3 }),
+      ]),
+      { kind: "missing" },
+      noLinks,
+    );
+    assert.match(html, /<span class="n-needs">1 need you<\/span><span class="n-questions">1 question<\/span>/);
+    assert.match(html, /<span class="n-needs">4 need you<\/span><span class="n-questions">3 questions<\/span>/);
+    assert.match(html, /<span class="c-n g-num"><span class="n-questions">1<\/span><\/span>/);
+    assert.match(html, /<span class="c-n g-num"><span class="n-questions">3<\/span><\/span>/);
+  });
+
+  it("queen dashboard hides the pending-question count at zero", () => {
+    const html = renderQueenDashboard(
+      report([proj(1, "moving", { questions_pending: 0, reasons: ["questions_pending", "worker_working"] })]),
+      { kind: "missing" },
+      noLinks,
+    );
+    assert.doesNotMatch(html, /n-questions|question(?:s)? pending|Pending question/);
+  });
+
+  it("pending-question reason label is not duplicated beside the count", () => {
+    const html = renderQueenDashboard(
+      report([proj(1, "moving", { questions_pending: 2, reasons: ["questions_pending", "worker_working"] })]),
+      { kind: "missing" },
+      noLinks,
+    );
+    assert.match(html, /<span class="n-questions">2 questions<\/span>/);
+    assert.doesNotMatch(html, /Pending question/);
   });
 
   it("queen dashboard renders a dormant lead neutrally and a dead pane as lead dead", () => {
