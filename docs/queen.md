@@ -54,8 +54,6 @@ hive portfolio --json   # the same data as one object
 
 It is deterministic and read-only. Each project lands in one of four lanes:
 
-Each project also carries a `questions_pending` count in JSON and a `questions N pending` value in the terminal output. The portfolio exposes counts only; it never reads question text or answer payloads.
-
 | Lane | Meaning |
 |---|---|
 | waiting on you | A todo is tagged `needs-human` and nothing else is moving |
@@ -72,6 +70,8 @@ hive decides the lane in this order, and the first step that applies wins:
 5. Otherwise quiet.
 
 So a project with live work stays moving and keeps its `needs-human` count, and a dead lead pane makes a project stuck even when a worker is running. A pending wake never counts as movement, and a held wake is never overdue.
+
+Each project also carries a `questions_pending` count in JSON and `questions N pending` in the terminal output. It is a count only: it never reads question text or answers, and a pending question does not change a project's lane. Only the `needs-human` tag puts a project in waiting on you.
 
 To put a project in front of yourself, tag a todo `needs-human`. A lead or worker sets it with `tags` on `todo_create` or `todo_update`; `todo_update` replaces the whole tag list, so include the tags the todo already has.
 

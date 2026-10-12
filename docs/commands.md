@@ -16,13 +16,13 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive show <name>` | Move a running process's pane beside the lead |
 | `hive hide <name>` | Move it back into the project's `processes` window |
 | `hive status` | Every project's agents, commands, todos, and wake-ups, in one shot |
-| `hive portfolio [--json]` | One row per registered project: lane (waiting on you, stuck, moving, quiet) with its reasons (a project with live work stays moving and keeps its needs-human and blocked counts; a pending wake never counts as movement, and a held wake is never overdue), lead and worker state, todo and wake counts, and the todos tagged `needs-human`. Read-only; `--json` prints the same data as one object. See [the queen guide](queen.md#the-portfolio). |
+| `hive portfolio [--json]` | One row per registered project: lane (waiting on you, stuck, moving, quiet) with its reasons (a project with live work stays moving and keeps its needs-human and blocked counts; a pending wake never counts as movement, and a held wake is never overdue), lead and worker state, todo, pending question and wake counts, and the todos tagged `needs-human`. Read-only; `--json` prints the same data as one object. See [the queen guide](queen.md#the-portfolio). |
 | `hive next [--print]` | Attach to the lead of the one project that needs you most. Projects waiting on you come first, ranked by needs-human count, then oldest activity, then project id. Stuck projects come next, and so do moving projects holding a needs-human item, all ranked by needs-human count first, then in-progress todos that are blocked, overdue wakes, workers needing input, oldest activity, then project id. It skips the project rooted at `<dataDir>/queen`. Every lead state except unknown goes through `hive lead --detach` first, which adopts a live lead and restarts a dead or reissued one. `--print` prints the choice as one JSON line and starts and attaches nothing; with nothing waiting it prints one line saying so and exits 0. See [the queen guide](queen.md#jump-to-the-project-that-needs-you). |
 | `hive upgrade` | Update a global npm install and re-pin; in a checkout, print the recipe only |
 | `hive upgrade --check` | Preview the commands without changing your install or update cache |
 | `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
 | `hive setup` | Pin the `hive` command to the interpreter that built it |
-| `hive doctor` | Check the environment and sweep stale state |
+| `hive doctor` | Check the environment and sweep stale state. It also lists MCP servers using this data dir that started before the store's newest migration, with the pid, start time and parent, and tells you to restart that session. It stops nothing |
 | `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
 | `hive todos` / `hive todo <id>` | List todos, or print one in full |
 | `hive questions [--json]` | List pending questions followed by defaulted questions, with their defaults and choices; JSON returns the same records |
@@ -33,6 +33,6 @@ Every `hive` subcommand, in one table. Run `hive --help` for the same list from 
 | `hive posture` | Print the posture your lead is running with |
 | `hive profile list` | Show the profiles hive can see |
 | `hive kickoff --explain` | Check whether a session here gets the session-start injection |
-| `hive crew --json` | Print one JSON snapshot of this project's workers, todos and wakes. Read-only: it runs no janitor and writes nothing. See [crew.md](crew.md). |
+| `hive crew --json` | Print one JSON snapshot of this project's workers, todos, pending question count and wakes. Read-only: it runs no janitor and writes nothing. See [crew.md](crew.md). |
 | `hive statusline` | One-line store summary for Claude Code's status line |
 | `hive lead-handoff --request <id> --pad <id> --revision <n>` | Run by a lead answering an automatic handoff request (`lead_turn_budget.auto_handoff`): checks the persisted `hive-lead-handoff` pad and arms a short grace period, after which hive restarts the lead's pane with a fresh session. Any human input during the grace postpones it |
