@@ -3596,24 +3596,25 @@ function canonicalPath(path: string): string {
 function nextCandidates(): PortfolioProject[] {
   const queenRoot = canonicalPath(join(storeDir(), "queen"));
   const byCount = (a: number, b: number) => b - a;
+  const waitsOnYou = (p: PortfolioProject) => p.needs_human + p.questions_pending;
   return collectPortfolio()
     .projects.filter(
       (p) =>
-        (p.lane === "waiting_on_you" || p.lane === "stuck" || (p.lane === "moving" && p.needs_human > 0)) &&
+        (p.lane === "waiting_on_you" || p.lane === "stuck" || (p.lane === "moving" && waitsOnYou(p) > 0)) &&
         canonicalPath(p.root) !== queenRoot,
     )
     .sort((a, b) => {
-      const tier = (p: PortfolioProject) => (p.lane === "waiting_on_you" ? 0 : p.needs_human > 0 ? 1 : 2);
+      const tier = (p: PortfolioProject) => (p.lane === "waiting_on_you" ? 0 : waitsOnYou(p) > 0 ? 1 : 2);
       if (tier(a) !== tier(b)) return tier(a) - tier(b);
       if (a.lane === "waiting_on_you") {
         return (
-          byCount(a.needs_human, b.needs_human) ||
+          byCount(waitsOnYou(a), waitsOnYou(b)) ||
           a.last_activity_at.localeCompare(b.last_activity_at) ||
           a.id - b.id
         );
       }
       return (
-        byCount(a.needs_human, b.needs_human) ||
+        byCount(waitsOnYou(a), waitsOnYou(b)) ||
         byCount(a.todos.blocked_in_progress, b.todos.blocked_in_progress) ||
         byCount(a.wakes.overdue, b.wakes.overdue) ||
         byCount(a.workers.needs_input, b.workers.needs_input) ||

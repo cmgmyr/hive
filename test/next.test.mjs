@@ -49,6 +49,13 @@ function todo(p, { status = "open", tags = [], updated = OLD } = {}) {
     .get(p.id, status, JSON.stringify(tags), updated).id;
 }
 
+function question(p, { state = "pending", question: text = "private question", answer = null } = {}) {
+  db.prepare(
+    `INSERT INTO questions (project_id, asker, kind, question, header, default_answer, state, answer, updated_by)
+     VALUES (?, 'agent:test', 'free_text', ?, 'private header', 'private default', ?, ?, 'agent:test')`,
+  ).run(p.id, text, state, answer);
+}
+
 const needsHuman = (p, n = 1, updated = OLD) => {
   for (let i = 0; i < n; i++) todo(p, { tags: ["needs-human"], updated });
 };
@@ -115,6 +122,21 @@ function storeFingerprint() {
 }
 
 describe("hive next --print: selection", () => {
+  it("hive next ranks a pending question like a needs-human todo", async () => {
+    resetStore();
+    const oneTodo = project("one-needs-human");
+    needsHuman(oneTodo, 1);
+    const twoQuestions = project("two-pending-questions");
+    question(twoQuestions, { question: "PRIVATE QUESTION ONE" });
+    question(twoQuestions, { question: "PRIVATE QUESTION TWO" });
+
+    const r = await print();
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(picked(r.stdout).project_id, twoQuestions.id);
+    assert.equal(picked(r.stdout).lane, "waiting_on_you");
+    assert.equal(r.stdout.includes("PRIVATE QUESTION"), false);
+  });
+
   it("prefers waiting_on_you over stuck, and ranks by needs_human, then oldest activity, then id", async () => {
     resetStore();
     const stuck = project("stuck-heavy");
@@ -141,13 +163,13 @@ describe("hive next --print: selection", () => {
     assert.equal(picked(r.stdout).project_id, many.id, "lower id wins a full tie");
   });
 
-  it("picks a moving project with needs_human over a stuck one without, and never a moving one without", async () => {
+  it("picks a moving project with a pending question over a stuck one without, and never a moving one without", async () => {
     resetStore();
     const now = new Date().toISOString().slice(0, 19).replace("T", " ");
     const stuck = project("stuck-no-ask");
     blockedInProgress(stuck, 5);
     const busyAsk = project("busy-with-ask");
-    needsHuman(busyAsk, 1);
+    question(busyAsk);
     todo(busyAsk, { status: "in_progress", updated: now });
     const busyPlain = project("busy-plain");
     todo(busyPlain, { status: "in_progress", updated: now });
@@ -157,6 +179,7 @@ describe("hive next --print: selection", () => {
     assert.equal(picked(r.stdout).project_id, busyAsk.id);
     assert.equal(picked(r.stdout).lane, "moving");
 
+    db.prepare("DELETE FROM questions WHERE project_id = ?").run(busyAsk.id);
     db.prepare("DELETE FROM todos WHERE project_id IN (?, ?)").run(busyAsk.id, stuck.id);
     r = await print();
     assert.equal(r.stdout, "No project needs you: none is waiting, stuck, or holding a needs-human item.\n", "a moving project with no ask is not a candidate");
