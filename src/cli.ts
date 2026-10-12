@@ -4183,6 +4183,8 @@ function cmdAnswer(argv: string[]): void {
   console.log(`Question #${receipt.question_id} answered.`);
   if (receipt.wake_id === null) {
     console.log(`No wake queued: ${receipt.wake_skipped ?? "the asking session could not be reached"}.`);
+  } else if (receipt.wake_rerouted_to) {
+    console.log(`Wake #${receipt.wake_id} queued for ${receipt.wake_rerouted_to}; the asker is not running.`);
   } else {
     console.log(`Wake #${receipt.wake_id} queued for the asking session.`);
   }

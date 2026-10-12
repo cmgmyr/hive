@@ -112,7 +112,7 @@ export function registerQuestions(server: McpServer): void {
     "question_answer",
     {
       description:
-        "Record the human's answer to a pending or defaulted question in this project: a picked option label or free text (any nonblank text is accepted, including one outside the offered labels), plus optional notes. The answer commits first. It then queues one wake to the asking session carrying the question, answer and notes verbatim, unless you ARE the asker (you recorded the human's own pick) or the asker cannot be reached now; either way the receipt says wake_id null and why in wake_skipped, and the answer stays readable with question_get. wake_id means queued, not delivered. An answered or withdrawn question refuses with QUESTION_STATE_CONFLICT.",
+        "Record the human's answer to a pending or defaulted question in this project, plus optional notes. The answer may be a picked option label or free text, including text outside the offered labels. The answer update comes first; the answer and any wake commit together, and the answer stays readable with `question_get`. An answered or withdrawn question refuses with `QUESTION_STATE_CONFLICT`. A queued wake carries the question, answer and notes verbatim. When you are the asker, skip with `wake_id: null` and `wake_skipped`; otherwise, queue a wake to the running asker or, if the asker has no running row, to the project's running lead with `wake_rerouted_to`. Skip that fallback with `wake_id: null` and `wake_skipped` if no lead runs or the lead is the answerer. `wake_id` means queued, not delivered.",
       annotations: writes,
       inputSchema: {
         question_id: idParam,
@@ -123,6 +123,7 @@ export function registerQuestions(server: McpServer): void {
         question_id: idParam,
         wake_id: idParam.nullable(),
         wake_skipped: z.string().optional(),
+        wake_rerouted_to: z.string().optional(),
       },
     },
     (args) =>

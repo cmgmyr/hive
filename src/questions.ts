@@ -139,6 +139,13 @@ function runningAgentOf(projectId: number, actor: string): number | null {
   return row?.id ?? null;
 }
 
+function runningLeadOf(projectId: number): { id: number; actor_id: string } | null {
+  const row = db
+    .prepare("SELECT id, actor_id FROM agents WHERE project_id = ? AND kind = 'lead' AND status = 'running' ORDER BY id DESC LIMIT 1")
+    .get(projectId) as { id: number; actor_id: string } | undefined;
+  return row ?? null;
+}
+
 const optionsJson = (input: QuestionInput): string | null => (input.kind === "choice" ? JSON.stringify(input.options) : null);
 
 function pendingIdForRef(projectId: number, ref: QuestionRef): number | undefined {
@@ -297,12 +304,23 @@ export function answerWakeBody(id: number, question: string, answer: string, not
   return notes !== null && notes.trim() !== "" ? `${head}\nNotes: ${notes}` : head;
 }
 
-type WakePlan = { delivery: { actor: string; pane: string } } | { skipped: string };
+type WakePlan =
+  | { delivery: { actor: string; pane: string }; reroutedFrom?: string }
+  | { skipped: string };
 
 function planAnswerWake(projectId: number, row: Row, actor: string): WakePlan {
   if (actor === row.asker) return { skipped: "answered by the asker" };
   const agentId = runningAgentOf(projectId, row.asker);
-  if (agentId === null) return { skipped: `the asker ${row.asker} has no running agent` };
+  if (agentId === null) {
+    const lead = runningLeadOf(projectId);
+    if (lead === null) return { skipped: `the asker ${row.asker} has no running agent` };
+    if (lead.actor_id === actor) return { skipped: "answered by the lead that would receive it" };
+    try {
+      return { delivery: resolveWakeDelivery(projectId, lead.id), reroutedFrom: row.asker };
+    } catch (e) {
+      return { skipped: e instanceof Error ? e.message : String(e) };
+    }
+  }
   try {
     return { delivery: resolveWakeDelivery(projectId, agentId) };
   } catch (e) {
@@ -318,7 +336,7 @@ const commitAnswer = db.transaction(
     answer: string,
     notes: string | null,
     plan: WakePlan,
-  ): { question_id: number; wake_id: number | null; wake_skipped?: string } => {
+  ): { question_id: number; wake_id: number | null; wake_skipped?: string; wake_rerouted_to?: string } => {
     const row = fetchRow(projectId, id);
     if (row.state !== "pending" && row.state !== "defaulted") {
       throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is already ${row.state}.`);
@@ -328,15 +346,23 @@ const commitAnswer = db.transaction(
          updated_at = datetime('now') WHERE id = ?`,
     ).run(answer, notes, actor, actor, id);
     if ("skipped" in plan) return { question_id: id, wake_id: null, wake_skipped: plan.skipped };
+    const body = answerWakeBody(id, row.question, answer, notes);
+    const wakeBody = "reroutedFrom" in plan && plan.reroutedFrom !== undefined
+      ? `${body}\nAsked by ${plan.reroutedFrom}, which is not running; delivered to this project's lead.`
+      : body;
     const wake = db
       .prepare(
         `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
          VALUES (?, ?, ?, 'delay', ?, ?, datetime('now')) RETURNING id`,
       )
-      .get(projectId, actor, answerWakeBody(id, row.question, answer, notes), plan.delivery.actor, plan.delivery.pane) as {
+      .get(projectId, actor, wakeBody, plan.delivery.actor, plan.delivery.pane) as {
       id: number;
     };
-    return { question_id: id, wake_id: wake.id };
+    return {
+      question_id: id,
+      wake_id: wake.id,
+      ...("reroutedFrom" in plan && plan.reroutedFrom !== undefined ? { wake_rerouted_to: plan.delivery.actor } : {}),
+    };
   },
 );
 
@@ -346,7 +372,7 @@ export function answerQuestion(
   id: number,
   answer: string,
   notes?: string,
-): { question_id: number; wake_id: number | null; wake_skipped?: string } {
+): { question_id: number; wake_id: number | null; wake_skipped?: string; wake_rerouted_to?: string } {
   if (blank(answer)) throw new Error("answer cannot be blank.");
   const storedNotes = notes === undefined || notes.trim() === "" ? null : notes;
   assertSafeWakeBody(answer);

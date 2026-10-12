@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { after, describe, it } from "node:test";
+import { after, afterEach, describe, it } from "node:test";
 
-import { assertScratchStore, clearHiveEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the questions CLI tests");
 const tmuxSkip = !hasTmux && "tmux is not installed";
@@ -44,9 +44,10 @@ function insertQuestion(overrides = {}) {
 }
 
 after(() => cleanup(...scratchSessions));
+afterEach(() => db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND kind = 'lead'").run(project.id));
 
 function makeAskingAgent(actor) {
-  const session = `questions-cli-${process.pid}`;
+  const session = `questions-cli-${process.pid}-${scratchSessions.length}`;
   execFileSync("tmux", ["new-session", "-d", "-s", session, "cat"], { stdio: "ignore" });
   scratchSessions.push(session);
   const pane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
@@ -63,6 +64,27 @@ function makeAskingAgent(actor) {
   ).run(project.id, actor, actor, pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), panePid);
   const row = db.prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE actor_id = ?").get(actor);
   assert.equal(observeRowOwnership(row), "live", JSON.stringify(row));
+  return { pane };
+}
+
+function makeRunningLead(actor) {
+  const session = `questions-cli-lead-${process.pid}-${scratchSessions.length}`;
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "cat"], { stdio: "ignore" });
+  scratchSessions.push(session);
+  const pane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], {
+    encoding: "utf8",
+  }).trim();
+  const panePid = execFileSync("tmux", ["display-message", "-p", "-t", pane, "#{pane_pid}"], {
+    encoding: "utf8",
+  }).trim();
+  db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, ?, 'lead')").run(actor, actor);
+  const result = db.prepare(
+    `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd,
+       status, agent_state, state_changed_at, created_at)
+     VALUES (?, ?, 'lead', 'lead', ?, ?, ?, 'claude', '/tmp', 'running', 'working', datetime('now'), datetime('now'))
+     RETURNING id`,
+  ).get(project.id, actor, pane, tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR), panePid);
+  return result.id;
 }
 
 describe("hive questions", () => {
@@ -144,6 +166,48 @@ describe("hive questions", () => {
     assert.equal(wake.deliver_actor, asker);
     assert.match(wake.body, /Answer: Ship North/);
     assert.match(wake.body, /Notes: the review is complete/);
+  });
+
+  it("hive answer reports a rerouted wake", { skip: tmuxSkip }, async () => {
+    const askerActor = "agent:questions-cli-closed";
+    const asker = makeAskingAgent(askerActor);
+    const askerClient = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { HIVE_AGENT_ID: askerActor },
+    });
+    await askerClient.start();
+    let questionId;
+    try {
+      ({ question_id: questionId } = await askerClient.call("question_ask", {
+        kind: "free_text",
+        question: "Which route should the closed worker take?",
+        header: "Route",
+        default_answer: "North",
+      }));
+    } finally {
+      await askerClient.close();
+    }
+    db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND actor_id = ?").run(project.id, askerActor);
+    execFileSync("tmux", ["kill-pane", "-t", asker.pane], { stdio: "ignore" });
+
+    const leadActor = "lead:questions-cli-fallback";
+    makeRunningLead(leadActor);
+    const result = await runCli(["answer", String(questionId), "Ship North"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+    });
+
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    const match = result.stdout.match(/Wake #(\d+) queued for lead:questions-cli-fallback; the asker is not running\./);
+    assert.ok(match, result.stdout);
+    const wake = db.prepare("SELECT deliver_actor, body FROM wakes WHERE id = ?").get(Number(match[1]));
+    assert.equal(wake.deliver_actor, leadActor);
+    assert.equal(
+      wake.body,
+      `Question #${questionId} answered.\nQuestion: Which route should the closed worker take?\nAnswer: Ship North\n` +
+        `Asked by ${askerActor}, which is not running; delivered to this project's lead.`,
+    );
   });
 
   it("accepts a dash-prefixed answer after the end-of-options marker", async () => {
