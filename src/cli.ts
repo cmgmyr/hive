@@ -4184,7 +4184,8 @@ function cmdAnswer(argv: string[]): void {
   if (receipt.wake_id === null) {
     console.log(`No wake queued: ${receipt.wake_skipped ?? "the asking session could not be reached"}.`);
   } else {
-    console.log(`Wake #${receipt.wake_id} queued for the asking session.`);
+    const rerouted = receipt.wake_rerouted_to ? ` (asker not running; sent to ${receipt.wake_rerouted_to})` : "";
+    console.log(`Wake #${receipt.wake_id} queued for the asking session${rerouted}.`);
   }
 }
 

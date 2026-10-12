@@ -33,7 +33,7 @@ flowchart TB
 
 ## 2. Module layering
 
-`abi` and `dataDir` sit under `db`, because opening the database needs both an addon that loads and a directory it is allowed to open: `src/db.ts:4` imports `guardAbi`, called at `:16` immediately before `new Database(...)` at `:18`, and `src/db.ts:5` imports `guardStoreDir`, called at `:9` first to determine where that database lives. `context` and every tool in `src/tools/*.ts` import `db` directly and sit above it. `src/cli.ts:57` imports `dataDir`, `db`, and `migrate` directly from the same module the MCP entry point uses; it is the store's second door, not a caller of the tool layer. The human-facing `hive questions` and `hive answer` commands share question reads and writes through `listQuestions` and `answerQuestion` (`src/questions.ts:219,343`), with project scope resolved from the CLI's current directory.
+`abi` and `dataDir` sit under `db`, because opening the database needs both an addon that loads and a directory it is allowed to open: `src/db.ts:4` imports `guardAbi`, called at `:16` immediately before `new Database(...)` at `:18`, and `src/db.ts:5` imports `guardStoreDir`, called at `:9` first to determine where that database lives. `context` and every tool in `src/tools/*.ts` import `db` directly and sit above it. `src/cli.ts:57` imports `dataDir`, `db`, and `migrate` directly from the same module the MCP entry point uses; it is the store's second door, not a caller of the tool layer. The human-facing `hive questions` and `hive answer` commands share question reads and writes through `listQuestions` and `answerQuestion` (`src/questions.ts:226,371`), with project scope resolved from the CLI's current directory.
 
 ```mermaid
 flowchart BT

@@ -123,6 +123,7 @@ export function registerQuestions(server: McpServer): void {
         question_id: idParam,
         wake_id: idParam.nullable(),
         wake_skipped: z.string().optional(),
+        wake_rerouted_to: z.string().optional(),
       },
     },
     (args) =>

@@ -50,6 +50,19 @@ function agentRow(actor, p = pane(), status = "running") {
   return { id, pane: p };
 }
 
+function leadRow(actor, p = pane(), projectId = project) {
+  db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, ?, 'lead')").run(actor, actor);
+  const id = db
+    .prepare(
+      `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status,
+         agent_state, state_changed_at, created_at)
+       VALUES (?, ?, ?, 'lead', ?, ?, ?, 'claude', '/tmp', 'running', 'working', datetime('now'),
+         datetime('now')) RETURNING id`,
+    )
+    .get(projectId, actor, actor, p.id, OWN_SOCKET, p.pid).id;
+  return { id, pane: p };
+}
+
 function seedQuestion(asker, agentId, over = {}) {
   return db
     .prepare(
@@ -70,7 +83,10 @@ const refused = (fn) => {
   assert.fail("should have been refused");
 };
 
-afterEach(() => db.exec("DROP TRIGGER IF EXISTS fail_wake_insert"));
+afterEach(() => {
+  db.exec("DROP TRIGGER IF EXISTS fail_wake_insert");
+  db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ? AND kind = 'lead'").run(project);
+});
 after(() => cleanup(...sessions));
 
 describe("answering a question wakes its asker", () => {
@@ -137,6 +153,62 @@ describe("answering a question wakes its asker", () => {
     assert.equal(questionRow(id).state, "answered");
     assert.equal(questionRow(id).answer, "The human picked B");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, before);
+  });
+
+  it("an answer with no asker and no lead running queues nothing", { skip }, () => {
+    const id = seedQuestion("agent:wake-no-lead", 999999);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;
+    const receipt = answerQuestion(project, "user:human", id, "Wait for a lead");
+    assert.deepEqual(receipt, {
+      question_id: id,
+      wake_id: null,
+      wake_skipped: "the asker agent:wake-no-lead has no running agent",
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, before);
+  });
+
+  it("an answer to a closed asker wakes the project's running lead", { skip }, () => {
+    leadRow("lead:wake-fallback-older");
+    const lead = leadRow("lead:wake-fallback-newest");
+    const otherProject = db
+      .prepare("INSERT INTO projects (name, path) VALUES ('question-wake-other-lead', ?) RETURNING id")
+      .get(`${dirs.projectDir}-other-lead`).id;
+    leadRow("lead:wake-fallback-foreign", pane(), otherProject);
+    const asker = agentRow("agent:wake-closed-fallback", pane(), "closed");
+    const id = seedQuestion("agent:wake-closed-fallback", asker.id);
+    const receipt = answerQuestion(project, "user:human", id, "Send this to the lead");
+    assert.equal(receipt.wake_rerouted_to, "lead:wake-fallback-newest");
+    const wake = db.prepare("SELECT * FROM wakes WHERE id = ?").get(receipt.wake_id);
+    assert.equal(wake.deliver_actor, "lead:wake-fallback-newest");
+    assert.equal(wake.deliver_pane, lead.pane.id);
+  });
+
+  it("the lead recording an answer for a closed asker queues nothing", { skip }, () => {
+    const lead = leadRow("lead:wake-self-answer");
+    const asker = agentRow("agent:wake-closed-self-answer", pane(), "closed");
+    const id = seedQuestion("agent:wake-closed-self-answer", asker.id);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;
+    const receipt = answerQuestion(project, "lead:wake-self-answer", id, "The human picked this");
+    assert.deepEqual(receipt, {
+      question_id: id,
+      wake_id: null,
+      wake_skipped: "answered by the lead that would receive it",
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, before);
+    assert.ok(lead.id > 0);
+  });
+
+  it("a rerouted answer wake names the original asker", { skip }, () => {
+    leadRow("lead:wake-body-fallback");
+    const asker = agentRow("agent:wake-body-closed", pane(), "closed");
+    const id = seedQuestion("agent:wake-body-closed", asker.id);
+    const receipt = answerQuestion(project, "user:human", id, "Ship later", "After review");
+    const wake = db.prepare("SELECT body FROM wakes WHERE id = ?").get(receipt.wake_id);
+    assert.equal(
+      wake.body,
+      `${answerWakeBody(id, "Which name should the release carry?", "Ship later", "After review")}\n` +
+        "Asked by agent:wake-body-closed, which is not running; delivered to this project's lead.",
+    );
   });
 
   it("an unreachable asker never loses the answer", { skip }, () => {

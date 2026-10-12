@@ -1890,6 +1890,9 @@
             }
           ]
         },
+        "wake_rerouted_to": {
+          "type": "string"
+        },
         "wake_skipped": {
           "type": "string"
         }
