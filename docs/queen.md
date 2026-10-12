@@ -196,7 +196,7 @@ hive queen-audit --project-id 1      # the queen's pane only, see below
 
 Run it from a terminal inside a registered project and it lists the queen writes into that project. Outside a registered project it prints `hive queen-audit: the cwd is not a registered project. Run this command from a registered project.` and exits 1. `--project-id` for another project belongs to the queen alone; anyone else gets `Queen audit access is limited to your own project` and exit 1.
 
-The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send`, `hive lead`, `project_prune` and `hive project rm`, each with the target project, the resource, and a summary of at most 160 characters.
+The store-wide view is the queen's own `queen_audit_list` tool, which returns the same rows for any target, and the "Recent queen actions" card on the queen dashboard. Every confirmed queen write into another project is recorded: `todo_create`, `todo_comment`, `wake_set`, `wake_when_idle`, `wake_update`, `wake_cancel`, `agent_send`, `hive lead`, `project_prune` and `hive project rm`, each with the target project, the resource, and a summary of at most 160 characters. A cross-project guard refusal also leaves a row with `outcome=refused`, the target project, and the problem text; the summary starts with `refused:`.
 
 Rows are kept for 30 days, with a 20,000-row backstop, and the maximum per call is 100.
 
@@ -205,7 +205,7 @@ One gap is stated on purpose. A crash after a terminal send but before its audit
 With no rows yet, the command prints:
 
 ```text
-No queen actions recorded.
+No queen audit entries recorded.
 ```
 
 ## Make it yours

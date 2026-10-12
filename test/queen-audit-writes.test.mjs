@@ -133,7 +133,7 @@ it("a sweep that removes several projects writes one audit row each, and the row
   assert.deepEqual(rows.map((row) => row.target_project_id).sort(), [...removed].sort());
   for (const row of rows) assert.equal(db.prepare("SELECT id FROM projects WHERE id = ?").get(row.target_project_id), undefined);
 });
-it("refused, invalid, cancelled and already-satisfied calls append no completed rows", needsTmux, async () => {
+it("refused calls leave refusal rows but invalid, cancelled and satisfied calls append no completed rows", needsTmux, async () => {
   const before = trail().length;
   const calls = [
     ["pad_write", { name: "blocked", content: "x" }],
@@ -152,7 +152,10 @@ it("refused, invalid, cancelled and already-satisfied calls append no completed 
   assert.equal((await client.call("wake_update", { wake_id: wake, body: "cancelled noop", project_id: alpha.id })).updated, false);
   assert.equal((await client.call("wake_cancel", { wake_id: wake, project_id: alpha.id })).cancelled, false);
   assert.equal((await client.call("wake_when_idle", { agents: [worker.id], mode: "all", deliver_to: lead.id, body: "already idle", project_id: alpha.id })).status, "already_satisfied");
-  assert.equal(trail().length, before);
+  const added = trail().slice(before);
+  assert.equal(added.filter((row) => row.outcome === "confirmed").length, 0);
+  assert.ok(added.some((row) => row.outcome === "refused"));
+  assert.ok(added.every((row) => row.outcome === "refused"));
 });
 it("blocker validation and audit failures roll back todo, comment touch, wake update and cancel notices", needsTmux, async () => {
   const before = trail().length;
@@ -265,9 +268,10 @@ it("real cross-project writes and adoption are readable through both surfaces an
   assert.equal(trail().length, before + 1);
   assert.match(trail().at(-1).summary, /^adopted/);
   const expected = trail().reverse();
+  const confirmed = expected.filter((row) => row.outcome === "confirmed");
   const all = await client.call("queen_audit_list", { limit: 100 });
   assert.deepEqual(all.entries, expected);
-  assert.deepEqual(new Set(all.entries.map((r) => r.operation)), new Set(Object.keys(fixture)));
+  assert.deepEqual(new Set(confirmed.map((r) => r.operation)), new Set(Object.keys(fixture)));
   assert.ok(all.entries.every((r) => r.actor_id === q.actor_id));
   const filtered = await client.call("queen_audit_list", { project_id: alpha.id, limit: 100 });
   const alphaEntries = expected.filter((r) => r.target_project_id === alpha.id);
@@ -285,5 +289,7 @@ it("real cross-project writes and adoption are readable through both surfaces an
   await client.call("todo_create", { title: "another home todo", project_id: queen.id });
   await assert.rejects(client.call("pad_write", { name: "board", content: "refused", project_id: alpha.id }), /QUEEN_CROSS_PROJECT_WRITE_REFUSED/);
   assert.equal((await client.call("wake_cancel", { wake_id: wake, project_id: alpha.id })).cancelled, false);
-  assert.equal(trail().length, auditBefore);
+  assert.equal(trail().length, auditBefore + 1);
+  assert.equal(trail().at(-1).operation, "pad_write");
+  assert.equal(trail().at(-1).outcome, "refused");
 });

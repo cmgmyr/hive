@@ -608,6 +608,12 @@ CREATE UNIQUE INDEX idx_questions_pending_ref ON questions(project_id, ref_kind,
   WHERE state = 'pending' AND ref_kind IS NOT NULL;
 CREATE INDEX idx_questions_project_state ON questions(project_id, state, id);
 `,
+
+  `
+ALTER TABLE queen_audit ADD COLUMN outcome TEXT NOT NULL DEFAULT 'confirmed'
+  CHECK (outcome IN ('confirmed', 'refused'));
+ALTER TABLE queen_audit ADD COLUMN problem TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

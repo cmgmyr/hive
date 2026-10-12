@@ -102,7 +102,7 @@ it("CLI renders event fields, filtered target and empty state and captures the f
   assert.match(filtered.stdout, new RegExp(`target #${alpha.id}`));
   assert.doesNotMatch(filtered.stdout, new RegExp(`target #${beta.id}`));
   const emptyResult = await run(empty);
-  assert.equal(emptyResult.stdout, "No queen actions recorded.\n");
+  assert.equal(emptyResult.stdout, "No queen audit entries recorded.\n");
   const refused = await run(alpha, ["--project-id", String(beta.id)]);
   const json = await run(queen, ["--json", "--limit", "2"], { HIVE_AGENT_ID: q });
   const captureDir = join(new URL("../node_modules/.cache/queen-audit", import.meta.url).pathname, "captures");

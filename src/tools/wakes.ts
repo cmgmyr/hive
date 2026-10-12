@@ -2,7 +2,14 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { commitQueenStateWrite } from "../queenAudit.js";
-import { currentActor, effectiveProjectId, getProject, isQueenLead } from "../context.js";
+import {
+  captureQueenWriteIdentity,
+  currentActor,
+  effectiveProjectId,
+  getProject,
+  isQueenLead,
+  resolveQueenLeadTarget,
+} from "../context.js";
 import { run } from "../result.js";
 import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "./agents.js";
 import {
@@ -58,9 +65,12 @@ function refuseUnclassifiableTarget(agent: AgentRow): void {
 export function resolveWakeDelivery(
   projectId: number,
   deliverTo?: number | string,
+  queenOperation?: "wake_set" | "wake_when_idle",
 ): { actor: string; pane: string } {
   if (deliverTo != null) {
-    const agent = resolveAgentRef(projectId, deliverTo);
+    const agent = queenOperation
+      ? resolveQueenLeadTarget(queenOperation, projectId, deliverTo, () => resolveAgentRef(projectId, deliverTo))
+      : resolveAgentRef(projectId, deliverTo);
     // Before the liveness probe: the harness is a durable fact about the row, while liveness is a
     // question about right now, so a dead bash worker should say what is actually wrong with it.
     refuseUnclassifiableTarget(agent);
@@ -74,15 +84,22 @@ export function resolveWakeDelivery(
   const own = db
     .prepare("SELECT * FROM agents WHERE actor_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1")
     .get(actor) as AgentRow | undefined;
+  if (queenOperation && !own && captureQueenWriteIdentity(projectId)) {
+    resolveQueenLeadTarget<AgentRow>(queenOperation, projectId, deliverTo, () => {
+      throw new Error("the calling session has no running agent row to receive this wake");
+    });
+  }
   // Checked on the ROW, not behind the liveness probe: isLive is three-state, and letting a null
   // fall through to the TMUX_PANE branch below accepts a wake the scheduler will then hold forever
   // against that same row's command - the never-firing timer this refusal exists to prevent.
-  if (own) refuseUnclassifiableTarget(own);
-  if (own) {
-    const ownership = observeOwnership(own);
-    if (ownership === "live") return { actor, pane: own.tmux_target };
+  const target =
+    own && queenOperation ? resolveQueenLeadTarget(queenOperation, projectId, deliverTo, () => own) : own;
+  if (target) refuseUnclassifiableTarget(target);
+  if (target) {
+    const ownership = observeOwnership(target);
+    if (ownership === "live") return { actor, pane: target.tmux_target };
     // Unknown never falls through to the ambient pane: that would bind this row's actor to a pane it may not own.
-    if (ownership === "unknown") throw notOwnedError(own, ownership);
+    if (ownership === "unknown") throw notOwnedError(target, ownership);
   }
   const pane = process.env.TMUX_PANE;
   if (pane) return { actor, pane };
@@ -445,7 +462,7 @@ export function registerWakes(server: McpServer): void {
       run(() => {
         assertSafeWakeBody(args.body);
         const projectId = effectiveProjectId(args.project_id);
-        const delivery = resolveWakeDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to, "wake_set");
         return commitQueenStateWrite("wake_set", projectId, args, () => {
           const row = db
             .prepare(
@@ -587,7 +604,7 @@ export function registerWakes(server: McpServer): void {
               "which only the queen may watch, with lead_project_id=<that lead's project id>.",
           );
         }
-        const delivery = resolveWakeDelivery(projectId, args.deliver_to);
+        const delivery = resolveWakeDelivery(projectId, args.deliver_to, "wake_when_idle");
 
         const snapshot = liveTargets();
 

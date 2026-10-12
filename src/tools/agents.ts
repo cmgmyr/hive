@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { confirmQueenWrite } from "../queenAudit.js";
-import { captureQueenWriteIdentity } from "../context.js";
+import { captureQueenWriteIdentity, resolveQueenLeadTarget } from "../context.js";
 import {
   agentBriefPath,
   mergedBriefVars,
@@ -1544,7 +1544,9 @@ export function registerAgents(server: McpServer): void {
     (args) =>
       run(async () => {
         const project = resolveProject(args.project_id);
-        const agent = findAgent(project.id, args);
+        const agent = resolveQueenLeadTarget("agent_send", project.id, args.agent_id ?? args.name, () =>
+          findAgent(project.id, args),
+        );
         requireLive(agent);
         const target = agent.tmux_target;
         const auditIdentity = captureQueenWriteIdentity(project.id);
