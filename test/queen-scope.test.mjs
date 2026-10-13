@@ -148,8 +148,8 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     assert.match(missing, /recipient "missing-lead" could not be resolved/);
   });
 
-  it("accepts queen wake and text recipients resolved by id, name, case and unique partial name", async () => {
-    for (const ref of [alphaLead.id, "lead", "LEAD", "lea"]) {
+  it("queen wake_set and agent_send accept a string id and an actor id for the target lead", async () => {
+    for (const ref of [alphaLead.id, String(alphaLead.id), alphaLead.actorId, "lead", "LEAD", "lea"]) {
       const wake = await queenMcp.call("wake_set", {
         delay_seconds: 3600,
         body: "check in",

@@ -216,6 +216,22 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
         `"${ref.name}" matches ${partial.length} running agents: ${candidates}. Use the full name or agent_id.`,
       );
     }
+
+    if (/^\d+$/.test(ref.name)) {
+      const id = Number(ref.name);
+      if (Number.isSafeInteger(id)) {
+        const byId = db
+          .prepare("SELECT * FROM agents WHERE project_id = ? AND id = ? AND status = 'running'")
+          .get(projectId, id) as AgentRow | undefined;
+        if (byId) return byId;
+      }
+    } else if (/^[a-z]+:\d+$/i.test(ref.name)) {
+      const byActorId = db
+        .prepare("SELECT * FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running'")
+        .get(projectId, ref.name) as AgentRow | undefined;
+      if (byActorId) return byActorId;
+    }
+
     throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
   }
   throw new Error("Pass agent_id or name.");
