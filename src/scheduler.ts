@@ -66,6 +66,7 @@ import {
   sleep,
   tmuxSocketPath,
   type AliveSnapshot,
+  type InputBoxSnapshot,
   type InputBoxState,
   type RowOwnership,
   type RowPaneIdentity,
@@ -815,9 +816,13 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   }
 }
 
-type ChoiceCache = Map<string, { choice?: boolean | null; box?: InputBoxState | null }>;
+type ChoiceCache = Map<string, { choice?: boolean | null; box?: InputBoxState | null; snapshot?: InputBoxSnapshot | null }>;
 
-function cacheEntry(pane: string, cache: ChoiceCache): { choice?: boolean | null; box?: InputBoxState | null } {
+function cacheEntry(pane: string, cache: ChoiceCache): {
+  choice?: boolean | null;
+  box?: InputBoxState | null;
+  snapshot?: InputBoxSnapshot | null;
+} {
   let entry = cache.get(pane);
   if (!entry) {
     entry = {};
@@ -886,6 +891,8 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRo
 }
 
 const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
+const LEAD_BOOT_BOX_WAIT_MS = 60_000;
+const HELD_REASON_LEAD_BOOT_INPUT_BOX = "the lead's input box is not on screen yet; holding while its session starts";
 export const HELD_REASON_LEAD_PANE_DEAD =
   "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
   "cancellation for this alone, so it is held rather than lost";
@@ -982,6 +989,38 @@ export const HELD_REASON_CONVERSATION =
   "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +
   "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
   "ceiling is reached, whichever comes first";
+
+function leadBootSessionIsFresh(actorId: string): boolean {
+  const rows = stmt(
+    `SELECT payload, created_at FROM agent_state_log
+      WHERE actor_id = ? AND event = 'session_start' AND created_at >= datetime('now', '-60 seconds')
+      ORDER BY id DESC`,
+  ).all(actorId) as Array<{ payload: string; created_at: string }>;
+  const startedAt = rows.find((row) => {
+    try {
+      return JSON.parse(row.payload).source === "startup";
+    } catch {
+      return false;
+    }
+  })?.created_at;
+  if (!startedAt) return false;
+  const timestamp = Date.parse(`${startedAt.replace(" ", "T")}Z`);
+  return Number.isFinite(timestamp) && Date.now() - timestamp < LEAD_BOOT_BOX_WAIT_MS;
+}
+
+function leadInputBoxObservation(
+  pane: string,
+  command: string,
+  cache: ChoiceCache,
+): { captured: boolean; box: InputBoxState | null } {
+  const entry = cacheEntry(pane, cache);
+  if (entry.snapshot === undefined) {
+    entry.snapshot = paneClassifierFor(command)?.inputBoxSnapshot?.(pane) ?? null;
+  }
+  if (entry.snapshot === null) return { captured: false, box: null };
+  entry.box = entry.snapshot.box;
+  return { captured: true, box: entry.snapshot.box };
+}
 
 // A human message keeps a lead-bound wake held for this long after it lands. Measured deferral rates
 // for this and CONVERSATION_HOLD_MAX are in hive-internals/references/worker-state.md.
@@ -2215,7 +2254,20 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
-  if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
+  const claudeLeadSnapshot =
+    isLeadActorId(timer.deliver_actor) && paneClassifierFor(timer.deliver_command)?.inputBoxSnapshot !== undefined;
+  if (claudeLeadSnapshot) {
+    const observation = leadInputBoxObservation(timer.deliver_pane, timer.deliver_command, choices);
+    if (!observation.captured) return { ok: false };
+    if (holdsHumanInput(observation.box)) {
+      noteUnsubmittedInputHold(timer, snapshot);
+      return { ok: false };
+    }
+    if (observation.box === null && leadBootSessionIsFresh(timer.deliver_actor)) {
+      holdTimer(timer, HELD_REASON_LEAD_BOOT_INPUT_BOX);
+      return { ok: false };
+    }
+  } else if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);
     return { ok: false };
   }
