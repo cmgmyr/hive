@@ -192,6 +192,25 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
     const sameName = rows.filter((r) => r.name.toLowerCase() === needle);
     if (sameName.length === 1) return sameName[0];
 
+    if (/^\d+$/.test(ref.name)) {
+      const id = Number(ref.name);
+      if (Number.isSafeInteger(id)) {
+        const byId = db
+          .prepare("SELECT * FROM agents WHERE project_id = ? AND id = ?")
+          .get(projectId, id) as AgentRow | undefined;
+        if (byId) return byId;
+      }
+      throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
+    }
+
+    if (/^[a-z]+:\d+$/i.test(ref.name)) {
+      const byActorId = db
+        .prepare("SELECT * FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running'")
+        .get(projectId, ref.name) as AgentRow | undefined;
+      if (byActorId) return byActorId;
+      throw new Error(`No running agent matching "${ref.name}" in project ${projectId}. Call agent_list.`);
+    }
+
     const closed = closedAgentNamed(projectId, needle);
     if (closed) {
 
