@@ -25,6 +25,11 @@ export async function resolveCwd(isDir, candidates) {
   throw new Error(`hive crew has no directory to run in (tried ${tried.join(", ") || "none"})`);
 }
 
+export async function pollCrew(run, isDir, state, fallbacks) {
+  state.cwd = await resolveCwd(isDir, [() => state.cwd, ...fallbacks]);
+  return readCrew(run, state.cwd);
+}
+
 export async function readCrew(run, cwd) {
   let res;
   try {

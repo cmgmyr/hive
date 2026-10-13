@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import { REFRESH_MS, buildCrewView, failedView, readCrew, resolveCwd } from '../model.mjs'
+import { REFRESH_MS, buildCrewView, failedView, pollCrew } from '../model.mjs'
 import type { CrewView } from '../types'
 
 const PANE = 'hive-crew'
@@ -12,15 +12,14 @@ let polling = false
 async function startPolling($: EngineInterface) {
   if (polling) return
   polling = true
-  let cwd = await $.session.cwd()
+  const state = { cwd: await $.session.cwd() }
   const isDir = (dir: string) => $.fs.stat(dir).then(s => s.kind === 'dir', () => false)
   let busy = false
   const refresh = async () => {
     if (busy) return
     busy = true
     try {
-      cwd = await resolveCwd(isDir, [() => cwd, () => $.session.cwd(), () => $.session.root()])
-      const snapshot = await readCrew((argv, init) => $.process.run(argv, init), cwd)
+      const snapshot = await pollCrew((argv, init) => $.process.run(argv, init), isDir, state, [() => $.session.cwd(), () => $.session.root()])
       await update($, crew, prev => buildCrewView(snapshot, prev, Date.now()))
     } catch (err) {
       await update($, crew, prev => failedView(prev, String(err instanceof Error ? err.message : err)))

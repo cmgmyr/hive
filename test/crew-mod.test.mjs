@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
-import { ago, buildCrewView, failedView, readCrew, resolveCwd } from "../claude-plugin/crew/model.mjs";
+import { ago, buildCrewView, failedView, pollCrew, readCrew, resolveCwd } from "../claude-plugin/crew/model.mjs";
 
 const { cleanup } = isolateTmux("the crew mod model tests");
 const dirs = scratchDirs();
@@ -43,16 +43,13 @@ describe("crew poll directory", () => {
       if (!(await isDir(init.cwd))) throw new Error("ENOENT: no such file or directory, posix_spawn 'hive'");
       return { exitCode: 0, stdout: JSON.stringify(snapshot()), stderr: "" };
     };
-    let cwd = gone;
-    const poll = async () => {
-      cwd = await resolveCwd(isDir, [() => cwd, () => live]);
-      return readCrew(run, cwd);
-    };
+    const state = { cwd: gone };
+    const poll = () => pollCrew(run, isDir, state, [async () => { throw new Error("no cwd"); }, () => live]);
     assert.equal((await poll()).schema_version, 1);
-    assert.equal(cwd, gone);
+    assert.equal(state.cwd, gone);
     rmSync(gone, { recursive: true });
     assert.equal((await poll()).schema_version, 1);
-    assert.equal(cwd, live);
+    assert.equal(state.cwd, live);
     rmSync(live, { recursive: true });
   });
 
