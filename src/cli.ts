@@ -946,7 +946,8 @@ async function cmdLead(argv: string[]): Promise<void> {
 
         const updated = db
           .prepare(
-            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? " +
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ?, " +
+              "pane_started_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE pane_started_at END " +
               "WHERE id = ? AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND status = 'running'",
           )
           .run(
@@ -955,18 +956,13 @@ async function cmdLead(argv: string[]): Promise<void> {
             recordedPanePid,
             recordedCommand,
             recordedCodexHome,
+            createdPane ? 1 : 0,
             leadAgentId,
             casExpected,
             casSocket,
             casPid,
           ).changes;
         if (updated === 0) return false;
-        if (createdPane) {
-          db.prepare(
-            `INSERT INTO agent_state_log (actor_id, event, state, payload)
-             VALUES (?, 'lead_pane_start', 'unknown', ?)`,
-          ).run(leadActorId, recordedPanePid);
-        }
         db.prepare(
           `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
            WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?

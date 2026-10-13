@@ -54,6 +54,7 @@ const SHIPPED = [
   "0daab25e0fc7e2c8",
   "1acfb6d8ef98561b",
   "c33d4dab459587c3",
+  "eb59a7d3f4851eb5",
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -83,5 +84,9 @@ describe("MIGRATIONS is append-only", () => {
 
   it("migration 35 adds only the nullable delivered_by column to wakes", () => {
     assert.equal(MIGRATIONS[34], "ALTER TABLE wakes ADD COLUMN delivered_by TEXT;");
+  });
+
+  it("the new final migration adds only nullable pane_started_at to agents", () => {
+    assert.equal(MIGRATIONS.at(-1).trim(), "ALTER TABLE agents ADD COLUMN pane_started_at TEXT;");
   });
 });

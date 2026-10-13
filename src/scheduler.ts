@@ -992,12 +992,10 @@ export const HELD_REASON_CONVERSATION =
 
 function leadBootSessionIsFresh(agentId: number, panePid: string): boolean {
   const row = stmt(
-    `SELECT created_at FROM agent_state_log
-      WHERE actor_id = (SELECT actor_id FROM agents WHERE id = ?) AND event = 'lead_pane_start' AND payload = ?
-      ORDER BY id DESC LIMIT 1`,
-  ).get(agentId, panePid) as { created_at: string } | undefined;
-  if (!row) return false;
-  const timestamp = Date.parse(`${row.created_at.replace(" ", "T")}Z`);
+    "SELECT pane_started_at FROM agents WHERE id = ? AND pane_pid = ?",
+  ).get(agentId, panePid) as { pane_started_at: string | null } | undefined;
+  if (!row?.pane_started_at) return false;
+  const timestamp = Date.parse(`${row.pane_started_at.replace(" ", "T")}Z`);
   return Number.isFinite(timestamp) && Date.now() - timestamp < LEAD_BOOT_BOX_WAIT_MS;
 }
 
@@ -1010,7 +1008,10 @@ function leadInputBoxObservation(
   if (entry.snapshot === undefined) {
     entry.snapshot = paneClassifierFor(command)?.inputBoxSnapshot?.(pane) ?? null;
   }
-  if (entry.snapshot === null) return { captured: false, box: null };
+  if (entry.snapshot === null) {
+    entry.box = null;
+    return { captured: false, box: null };
+  }
   entry.box = entry.snapshot.box;
   return { captured: true, box: entry.snapshot.box };
 }
@@ -2250,19 +2251,19 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   const claudeLeadSnapshot =
     isLeadActorId(timer.deliver_actor) && paneClassifierFor(timer.deliver_command)?.inputBoxSnapshot !== undefined;
   if (claudeLeadSnapshot) {
+    const bootWindow = row.deliver_row_id !== null && leadBootSessionIsFresh(row.deliver_row_id, row.deliver_pane_pid);
     const observation = leadInputBoxObservation(timer.deliver_pane, timer.deliver_command, choices);
-    if (!observation.captured) return { ok: false };
-    if (holdsHumanInput(observation.box)) {
-      noteUnsubmittedInputHold(timer, snapshot);
-      return { ok: false };
-    }
-    if (
-      observation.box === null &&
-      row.deliver_row_id !== null &&
-      leadBootSessionIsFresh(row.deliver_row_id, row.deliver_pane_pid)
-    ) {
-      holdTimer(timer, HELD_REASON_LEAD_BOOT_INPUT_BOX);
-      return { ok: false };
+    if (!observation.captured) {
+      if (bootWindow) return { ok: false };
+    } else {
+      if (holdsHumanInput(observation.box)) {
+        noteUnsubmittedInputHold(timer, snapshot);
+        return { ok: false };
+      }
+      if (observation.box === null && bootWindow) {
+        holdTimer(timer, HELD_REASON_LEAD_BOOT_INPUT_BOX);
+        return { ok: false };
+      }
     }
   } else if (inputBoxHoldsWake(timer.deliver_pane, timer.deliver_command, choices)) {
     noteUnsubmittedInputHold(timer, snapshot);

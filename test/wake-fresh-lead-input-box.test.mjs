@@ -56,13 +56,9 @@ function createLeadWake({ command = "claude", ageSeconds = 0, clearAgeSeconds = 
   const projectId = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
     .get(name, cwd).id;
   db.prepare(
-    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status)
-     VALUES (?, ?, 'lead', ?, ?, ?, ?, ?, 'lead', 'running')`,
-  ).run(projectId, actorId, target, socket, panePid, command, cwd);
-  db.prepare(
-    `INSERT INTO agent_state_log (actor_id, event, state, payload, created_at)
-     VALUES (?, 'lead_pane_start', 'unknown', ?, datetime('now', ?))`,
-  ).run(actorId, panePid, `-${ageSeconds} seconds`);
+    `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd, kind, status, pane_started_at)
+     VALUES (?, ?, 'lead', ?, ?, ?, ?, ?, 'lead', 'running', datetime('now', ?))`,
+  ).run(projectId, actorId, target, socket, panePid, command, cwd, `-${ageSeconds} seconds`);
   if (clearAgeSeconds !== null) {
     db.prepare(
       `INSERT INTO agent_state_log (actor_id, event, state, payload, created_at)
@@ -97,10 +93,7 @@ it(
     ).get(projectId, actorId, "fresh lead box marker", actorId, pane).id;
 
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_state_log WHERE actor_id = ? AND event = 'session_start'").get(actorId).n, 0);
-    assert.equal(
-      db.prepare("SELECT payload FROM agent_state_log WHERE actor_id = ? AND event = 'lead_pane_start'").get(actorId).payload,
-      lead.pane_pid,
-    );
+    assert.ok(lead.pane_started_at, "cmdLead records the pane-start timestamp before SessionStart");
 
     await tick();
 
@@ -138,24 +131,38 @@ it("a codex lead keeps its existing no-box delivery behavior", needsTmux, async 
   assert.match(wake.typed_seen, /box=absent/);
 });
 
-it("a Claude lead capture failure skips delivery without stamping typed_at", needsTmux, async () => {
-  const name = `fresh-capture-${process.pid}`;
-  const { wakeId } = createLeadWake({ name });
+async function withCapturePaneFailure(run) {
   const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
   const bin = join(tmp, "failing-tmux-bin");
-  mkdirSync(bin);
+  mkdirSync(bin, { recursive: true });
   const wrapper = join(bin, "tmux");
   writeFileSync(wrapper, `#!/bin/sh\ncase " $* " in *" capture-pane "*) exit 1;; esac\nexec '${realTmux}' "$@"\n`);
   chmodSync(wrapper, 0o755);
   const originalPath = process.env.PATH;
   process.env.PATH = `${bin}:${originalPath}`;
   try {
-    await tick();
+    await run();
   } finally {
     process.env.PATH = originalPath;
   }
+}
+
+it("a Claude lead capture failure skips delivery without stamping typed_at during boot", needsTmux, async () => {
+  const name = `fresh-capture-${process.pid}`;
+  const { wakeId } = createLeadWake({ name });
+  await withCapturePaneFailure(() => tick());
   const wake = db.prepare("SELECT typed_at, held_at, typed_seen FROM wakes WHERE id = ?").get(wakeId);
   assert.equal(wake.typed_at, null, "a failed screen observation must not stamp a delivery");
   assert.equal(wake.held_at, null, "capture failure retries next tick instead of creating a lasting hold");
   assert.equal(wake.typed_seen, null, "an unobserved box must not be recorded as empty or absent");
+});
+
+it("a Claude lead capture failure past boot treats the box as absent and preserves delivery", needsTmux, async () => {
+  const name = `fresh-capture-expired-${process.pid}`;
+  const { wakeId } = createLeadWake({ ageSeconds: 61, name });
+  await withCapturePaneFailure(() => tick());
+  const wake = db.prepare("SELECT typed_at, held_reason, typed_seen FROM wakes WHERE id = ?").get(wakeId);
+  assert.ok(wake.typed_at, "capture failure outside boot preserves the existing delivery behavior");
+  assert.equal(wake.held_reason, null);
+  assert.match(wake.typed_seen, /box=absent/);
 });
