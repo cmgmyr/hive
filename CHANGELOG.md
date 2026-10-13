@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.2 - 2026-10-13
+
+- A wake that comes due while a freshly started Claude Code lead is still booting is no longer lost. hive holds it until the lead's input box appears, for up to 60 seconds after `hive lead` creates the pane, then delivers it. Past that window, delivery works as before. Codex leads and workers are unchanged.
+- The store migrates to schema 44 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.11.1 - 2026-10-12
 
 - Pending questions now count as waiting on you. In `hive portfolio` and on the queen dashboard, a project with a pending question moves to the waiting-on-you lane when nothing more urgent applies, and `hive next` ranks pending questions alongside todos that need you.
