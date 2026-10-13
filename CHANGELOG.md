@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.1 - 2026-10-12
+
+- Pending questions now count as waiting on you. In `hive portfolio` and on the queen dashboard, a project with a pending question moves to the waiting-on-you lane when nothing more urgent applies, and `hive next` ranks pending questions alongside todos that need you.
+- The queen dashboard shows each project's pending-question count in its card and in a new Questions column. The project dashboard lists its pending questions and the ones the lead acted on by default. Neither shows answers.
+- When the session that asked a question has closed, `question_answer` and `hive answer` send the answer to the project's running lead instead, and say so. With no running lead, the answer is kept and no wake is queued.
+- The queen's wakes and messages to another project's lead now go to the same lead delivery would reach, so a stale lead row no longer causes a refusal. Every refusal is recorded with its reason, readable with `queen_audit_list` and `hive queen-audit`.
+- `hive doctor` no longer stops checking for old hive servers when one of them exits while it looks.
+- The store migrates to schema 43 on first open. hive takes a backup before the migration runs.
+- After upgrading, restart every hive session.
+
 ## 1.11.0 - 2026-10-11
 
 - New question record. A lead records a decision only you can make with `question_ask`, as a choice of two to four options with one recommended, or as free text. Every question carries the default the lead acts on if you never answer. `question_list`, `question_get`, `question_update` and `question_answer` read, edit, close and answer them. Asking again with the same todo or PR `ref` updates the pending question instead of adding one, and the receipt lists similar pending questions. See [Tools](docs/tools.md).
