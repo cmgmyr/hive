@@ -43,7 +43,7 @@ This page lists the local commands hive runs, the files it writes, and its netwo
 - When a configured checkpoint threshold is reached, the checkpoint hook creates `<data dir>/context-checkpoints/<encoded actor id>.fired`; it removes that marker after usage drops below threshold (`contextCheckpointAdditionalContext`, `src/contextCheckpoint.ts:6`; `runContextCheckpointHook`, `src/contextCheckpoint.ts:24`).
 - A Claude worker's statusline records a valid context window size at `<data dir>/context-windows/<encoded actor id>.json`, and rewrites it only when the value changes (`claudeWindowPath`, `src/transcript.ts:98`; `recordClaudeWindowSize`, `src/statusline.ts:34`).
 - When enabled in project config, the scheduler writes the dashboard to `<project>/.hive/dashboard.html` when its content changes (`resolveDashboardFile`, `src/scheduler.ts:602`; `maybeGenerateDashboard`, `src/scheduler.ts:618`; `writeDashboardAtomically`, `src/scheduler.ts:581`).
-- `hive pad` can export a pad to a path you choose (`cmdPad`, `src/cli.ts:4211`). Restore and cleanup commands can replace or remove hive-managed files in the data directory, generated Codex homes, or exported pad files (`restoreSnapshot`, `src/backup.ts:454`; `unlinkSync`, `src/cli.ts:4273`; `rmSync`, `src/tools/agents.ts:856`).
+- `hive pad` can export a pad to a path you choose (`cmdPad`, `src/cli.ts:4211`). Restore and cleanup commands can replace or remove hive-managed files in the data directory, generated Codex homes, or exported pad files (`restoreSnapshot`, `src/backup.ts:454`; `unlinkSync`, `src/cli.ts:4273`; `rmSync`, `src/tools/agents.ts:853`).
 
 ## NOT GATED
 

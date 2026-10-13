@@ -16,7 +16,6 @@ const readyScreen = `cat '${join(REPO, "test", "fixtures", "panes", "ready-idle.
 let mcp;
 let projectId;
 let numericTarget;
-let longerTarget;
 
 before(async () => {
   mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "1" } });
@@ -37,13 +36,10 @@ const spawn = async (name) => {
 describe("recipient references through the MCP tools", { skip: hasTmux ? false : "tmux is not installed" }, () => {
   before(async () => {
     numericTarget = await spawn("numeric-target");
-    longerTarget = await spawn("w100000");
   });
 
   after(async () => {
-    for (const agent_id of [numericTarget, longerTarget]) {
-      if (agent_id != null) await mcp.call("agent_close", { agent_id }).catch(() => {});
-    }
+    if (numericTarget != null) await mcp.call("agent_close", { agent_id: numericTarget }).catch(() => {});
   });
 
   it("a digit-only recipient string resolves as the agent id", async () => {
@@ -58,6 +54,11 @@ describe("recipient references through the MCP tools", { skip: hasTmux ? false :
       `agent:${numericTarget}`,
       "the persisted wake must target the requested row, not a name substring",
     );
+  });
+
+  it("a digit recipient matching no name resolves as a running agent id", async () => {
+    const sent = await mcp.call("agent_send", { name: String(numericTarget), text: "digit id recipient" });
+    assert.equal(sent.agent_id, numericTarget);
   });
 
   it("an agent literally named with digits still wins by name", async () => {
@@ -98,10 +99,13 @@ describe("recipient references through the MCP tools", { skip: hasTmux ? false :
     );
   });
 
-  it("a digit recipient does not partial-match a longer name", async () => {
-    await assert.rejects(
-      mcp.call("agent_status", { name: "100000", project_id: projectId }),
-      /No running agent matching/,
-    );
+  it("a digit recipient that partially matches a name still resolves by name", async () => {
+    const partialTarget = await spawn("w100000");
+    try {
+      const resolved = await mcp.call("agent_status", { name: "100000", project_id: projectId });
+      assert.equal(resolved.agent_id, partialTarget);
+    } finally {
+      await mcp.call("agent_close", { agent_id: partialTarget }).catch(() => {});
+    }
   });
 });
