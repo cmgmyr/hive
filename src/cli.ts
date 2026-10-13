@@ -946,7 +946,8 @@ async function cmdLead(argv: string[]): Promise<void> {
 
         const updated = db
           .prepare(
-            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ? " +
+            "UPDATE agents SET tmux_target = ?, tmux_socket = ?, pane_pid = ?, command = ?, codex_home = ?, " +
+              "pane_started_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE pane_started_at END " +
               "WHERE id = ? AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND status = 'running'",
           )
           .run(
@@ -955,6 +956,7 @@ async function cmdLead(argv: string[]): Promise<void> {
             recordedPanePid,
             recordedCommand,
             recordedCodexHome,
+            createdPane ? 1 : 0,
             leadAgentId,
             casExpected,
             casSocket,

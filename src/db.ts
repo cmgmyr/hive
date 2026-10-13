@@ -614,6 +614,9 @@ ALTER TABLE queen_audit ADD COLUMN outcome TEXT NOT NULL DEFAULT 'confirmed'
   CHECK (outcome IN ('confirmed', 'refused'));
 ALTER TABLE queen_audit ADD COLUMN problem TEXT NOT NULL DEFAULT '';
 `,
+  `
+ALTER TABLE agents ADD COLUMN pane_started_at TEXT;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
