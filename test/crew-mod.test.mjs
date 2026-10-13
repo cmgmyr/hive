@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
 import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
-import { ago, buildCrewView, failedView, readCrew } from "../claude-plugin/crew/model.mjs";
+import { ago, buildCrewView, failedView, readCrew, resolveCwd } from "../claude-plugin/crew/model.mjs";
 
 const { cleanup } = isolateTmux("the crew mod model tests");
 const dirs = scratchDirs();
@@ -29,6 +32,47 @@ const snapshot = (o = {}) => ({
   lanes: [], needs_you: [], wakes: { pending: 0, next: null, watching: [], watched_worker_ids: [] }, context_checkpoint_percent: null, ...o,
 });
 const runOk = (snap) => async () => ({ exitCode: 0, stdout: JSON.stringify(snap), stderr: "" });
+
+const isDir = async (d) => { try { return statSync(d).isDirectory(); } catch { return false; } };
+
+describe("crew poll directory", () => {
+  it("the crew poll recovers when its directory is removed", async () => {
+    const gone = mkdtempSync(join(tmpdir(), "crew-cwd-"));
+    const live = mkdtempSync(join(tmpdir(), "crew-cwd-"));
+    const run = async (argv, init) => {
+      if (!(await isDir(init.cwd))) throw new Error("ENOENT: no such file or directory, posix_spawn 'hive'");
+      return { exitCode: 0, stdout: JSON.stringify(snapshot()), stderr: "" };
+    };
+    let cwd = gone;
+    const poll = async () => {
+      cwd = await resolveCwd(isDir, [() => cwd, () => live]);
+      return readCrew(run, cwd);
+    };
+    assert.equal((await poll()).schema_version, 1);
+    assert.equal(cwd, gone);
+    rmSync(gone, { recursive: true });
+    assert.equal((await poll()).schema_version, 1);
+    assert.equal(cwd, live);
+    rmSync(live, { recursive: true });
+  });
+
+  it("a crew poll with no existing directory names it", async () => {
+    const missing = join(tmpdir(), "crew-cwd-never-made");
+    await assert.rejects(
+      resolveCwd(isDir, [() => missing, async () => { throw new Error("no session"); }, () => missing]),
+      (err) => err.message.includes(`tried ${missing})`) && !/ENOENT/.test(err.message),
+    );
+    await assert.rejects(resolveCwd(isDir, []), /tried none/);
+  });
+
+  it("a crew read failure names the command and directory", async () => {
+    const dir = "/work/some/deep/project/dir";
+    await assert.rejects(
+      readCrew(async () => { throw new Error("x".repeat(500)); }, dir),
+      (err) => err.message.startsWith(`hive crew --json in ${dir} did not answer: x`) && err.message.length < dir.length + 160,
+    );
+  });
+});
 
 describe("readCrew", () => {
   it("one crew argv read validates schema and reports failures", async () => {

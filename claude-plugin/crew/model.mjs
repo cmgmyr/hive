@@ -9,12 +9,28 @@ export function ago(seconds) {
   return `${Math.floor(s / 3600)}h${Math.floor((s % 3600) / 60)}m`;
 }
 
+export async function resolveCwd(isDir, candidates) {
+  const tried = [];
+  for (const candidate of candidates) {
+    let dir;
+    try {
+      dir = await candidate();
+    } catch {
+      continue;
+    }
+    if (typeof dir !== "string" || dir === "" || tried.includes(dir)) continue;
+    tried.push(dir);
+    if (await isDir(dir)) return dir;
+  }
+  throw new Error(`hive crew has no directory to run in (tried ${tried.join(", ") || "none"})`);
+}
+
 export async function readCrew(run, cwd) {
   let res;
   try {
     res = await run(["hive", "crew", "--json"], { cwd, timeoutMs: TIMEOUT_MS });
   } catch (err) {
-    throw new Error(`hive crew did not answer: ${String(err instanceof Error ? err.message : err).slice(0, 100)}`);
+    throw new Error(`hive crew --json in ${cwd} did not answer: ${String(err instanceof Error ? err.message : err).slice(0, 100)}`);
   }
   if (res.exitCode !== 0) {
     const line = String(res.stderr ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "");
