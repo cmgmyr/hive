@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.3 - 2026-10-13
+
+- A recipient given as a string agent id (`"41"`) or as an actor id (`"lead:41"`) now reaches that agent in `wake_set`, `wake_when_idle`, `agent_send` and the other agent tools when no running agent's name matches it. Names still come first, exactly as before: an exact name, then a unique partial name, so a ticket number still finds its worker. A number always resolves by id. The queen's wakes and messages to another project's lead use the same lookup, so a lead addressed by a string id is no longer refused.
+- The crew sidebar recovers when the directory it runs `hive crew` from is deleted. Each refresh checks that directory and falls back to the session's current directory, then the one it started in. A failed read now names the command and the directory instead of reporting only `ENOENT` on `hive`.
+- After upgrading, restart every hive session.
+
 ## 1.11.2 - 2026-10-13
 
 - A wake that comes due while a freshly started Claude Code lead is still booting is no longer lost. hive holds it until the lead's input box appears, for up to 60 seconds after `hive lead` creates the pane, then delivers it. Past that window, delivery works as before. Codex leads and workers are unchanged.
