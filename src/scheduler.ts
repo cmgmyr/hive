@@ -990,21 +990,14 @@ export const HELD_REASON_CONVERSATION =
   "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
   "ceiling is reached, whichever comes first";
 
-function leadBootSessionIsFresh(actorId: string): boolean {
-  const rows = stmt(
-    `SELECT payload, created_at FROM agent_state_log
-      WHERE actor_id = ? AND event = 'session_start' AND created_at >= datetime('now', '-60 seconds')
-      ORDER BY id DESC`,
-  ).all(actorId) as Array<{ payload: string; created_at: string }>;
-  const startedAt = rows.find((row) => {
-    try {
-      return JSON.parse(row.payload).source === "startup";
-    } catch {
-      return false;
-    }
-  })?.created_at;
-  if (!startedAt) return false;
-  const timestamp = Date.parse(`${startedAt.replace(" ", "T")}Z`);
+function leadBootSessionIsFresh(agentId: number, panePid: string): boolean {
+  const row = stmt(
+    `SELECT created_at FROM agent_state_log
+      WHERE actor_id = (SELECT actor_id FROM agents WHERE id = ?) AND event = 'lead_pane_start' AND payload = ?
+      ORDER BY id DESC LIMIT 1`,
+  ).get(agentId, panePid) as { created_at: string } | undefined;
+  if (!row) return false;
+  const timestamp = Date.parse(`${row.created_at.replace(" ", "T")}Z`);
   return Number.isFinite(timestamp) && Date.now() - timestamp < LEAD_BOOT_BOX_WAIT_MS;
 }
 
@@ -2263,7 +2256,11 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
       noteUnsubmittedInputHold(timer, snapshot);
       return { ok: false };
     }
-    if (observation.box === null && leadBootSessionIsFresh(timer.deliver_actor)) {
+    if (
+      observation.box === null &&
+      row.deliver_row_id !== null &&
+      leadBootSessionIsFresh(row.deliver_row_id, row.deliver_pane_pid)
+    ) {
       holdTimer(timer, HELD_REASON_LEAD_BOOT_INPUT_BOX);
       return { ok: false };
     }

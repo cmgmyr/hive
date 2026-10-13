@@ -961,6 +961,12 @@ async function cmdLead(argv: string[]): Promise<void> {
             casPid,
           ).changes;
         if (updated === 0) return false;
+        if (createdPane) {
+          db.prepare(
+            `INSERT INTO agent_state_log (actor_id, event, state, payload)
+             VALUES (?, 'lead_pane_start', 'unknown', ?)`,
+          ).run(leadActorId, recordedPanePid);
+        }
         db.prepare(
           `UPDATE wakes SET deliver_pane = ?, held_at = NULL, held_reason = NULL
            WHERE ((${ACTIVE_TIMER_WHERE}) OR (${socketAwaitingWhere()})) AND deliver_actor = ?
