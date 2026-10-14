@@ -5,6 +5,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, u
 import { createHash } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
+import { decodeKvValue } from "./kvValue.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
 import { snapshotProcesses } from "./processes.js";
@@ -662,7 +663,12 @@ const QUEEN_PAGE_CLAIM_KEY = "hive:queen-page-claim";
 const QUEEN_PAGE_MARK_KEY = "hive:queen-page-mark";
 
 function claimQueenPageAttempt(queenId: number): boolean {
-  bestEffortRun("INSERT OR IGNORE INTO kv (project_id, key, value, updated_at) VALUES (?, ?, '', '1970-01-01 00:00:00')", queenId, QUEEN_PAGE_CLAIM_KEY);
+  bestEffortRun(
+    "INSERT OR IGNORE INTO kv (project_id, key, value, updated_at) VALUES (?, ?, ?, '1970-01-01 00:00:00')",
+    queenId,
+    QUEEN_PAGE_CLAIM_KEY,
+    JSON.stringify(""),
+  );
   return (
     stmt(
       `UPDATE kv SET updated_at = datetime('now')
@@ -676,7 +682,9 @@ function readQueenPageMark(queenId: number): string | null {
   const row = stmt("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queenId, QUEEN_PAGE_MARK_KEY) as
     | { value: string }
     | undefined;
-  return row?.value ?? null;
+  if (!row) return null;
+  const value = decodeKvValue(row.value);
+  return typeof value === "string" ? value : row.value;
 }
 
 function publishQueenPage(queenId: number, target: string, page: { html: string; hash: string }): void {
@@ -686,7 +694,7 @@ function publishQueenPage(queenId: number, target: string, page: { html: string;
      ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
     queenId,
     QUEEN_PAGE_MARK_KEY,
-    page.hash,
+    JSON.stringify(page.hash),
   );
 }
 

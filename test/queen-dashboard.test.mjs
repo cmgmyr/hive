@@ -663,6 +663,41 @@ describe("queen dashboard generation", () => {
     assert.match(html, /No queen brief yet/);
   });
 
+  it("queen page markers are JSON while the scheduler still accepts old raw hashes", async () => {
+    db.prepare("DELETE FROM kv WHERE project_id = ? AND key IN (?, ?)").run(
+      queen.id,
+      "hive:queen-page-claim",
+      "hive:queen-page-mark",
+    );
+    await tick(null);
+
+    const read = () =>
+      db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-mark").value;
+    const storedHash = read();
+    const hash = JSON.parse(storedHash);
+    assert.match(hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-claim").value), "");
+
+    const jsonHash = JSON.stringify(hash);
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      jsonHash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    forceClaim();
+    await tick(null);
+    assert.equal(read(), jsonHash);
+
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      hash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    forceClaim();
+    await tick(null);
+    assert.equal(read(), hash);
+  });
+
   it("the generated page carries a real queen_audit row with its target project's name", () => {
     mkdirSync(join(dirs.tmp, "audit-target"), { recursive: true });
     const target = addProject(join(dirs.tmp, "audit-target"), "audit-target");
