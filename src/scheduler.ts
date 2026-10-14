@@ -771,6 +771,18 @@ function driveOwnLeadHandoff(): void {
   }
 }
 
+async function isolated(label: string, task: () => unknown | Promise<unknown>): Promise<void> {
+  try {
+    await task();
+  } catch (err) {
+    try {
+      console.error(`[scheduler] ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+
+    }
+  }
+}
+
 export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   if (ticking) return;
   ticking = true;
@@ -783,16 +795,17 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     }
 
     if (snapshot === undefined) snapshot = liveTargets();
-    janitor(snapshot);
-    if (snapshot) reportRunningBuildChange(snapshot);
-    driveOwnLeadHandoff();
+    const tickSnapshot = snapshot;
+    await isolated("janitor", () => janitor(tickSnapshot));
+    if (tickSnapshot) await isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
+    await isolated("lead handoff", driveOwnLeadHandoff);
 
-    checkConfirmations();
-    pruneStateLog();
+    await isolated("wake confirmations", checkConfirmations);
+    await isolated("state-log pruning", pruneStateLog);
 
-    maybeBackupHourly(db, dataDir);
+    await isolated("hourly backup", () => maybeBackupHourly(db, dataDir));
 
-    maybeGenerateDashboards();
+    await isolated("dashboard generation", maybeGenerateDashboards);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
     const candidates = stmt(
@@ -807,16 +820,18 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     const choices: ChoiceCache = new Map();
     for (const timer of candidates) {
-      if (timer.kind === "delay") {
-        await fireDelay(timer, snapshot, choices);
-        continue;
-      }
-      const leadWatch = leadSubscription(timer.id);
-      if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, snapshot, now, choices);
-      else await maybeFireIdle(timer, snapshot, now, choices);
+      await isolated(`timer ${timer.id}`, async () => {
+        if (timer.kind === "delay") {
+          await fireDelay(timer, tickSnapshot, choices);
+          return;
+        }
+        const leadWatch = leadSubscription(timer.id);
+        if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, tickSnapshot, now, choices);
+        else await maybeFireIdle(timer, tickSnapshot, now, choices);
+      });
     }
-    await retryUnconfirmedSocketWakes(snapshot, choices);
-    await retryQuietLeadMessages(snapshot);
+    await isolated("unconfirmed socket wake retry", () => retryUnconfirmedSocketWakes(tickSnapshot, choices));
+    await isolated("quiet lead message retry", () => retryQuietLeadMessages(tickSnapshot));
   } catch {
 
   } finally {
