@@ -178,6 +178,22 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     assert.equal(receipt.retitled, true);
     assert.equal(receipt.note, undefined);
   });
+
+  it("does not type /rename into a pane in copy mode", async () => {
+    const name = "rename-copy-mode";
+    const spawn = await spawnShowing(name, replayFixture("ready-idle.txt"));
+    spawned.push(spawn.agent_id);
+    const row = await liveAgentRow(mcp, name);
+    execFileSync("tmux", ["copy-mode", "-t", row.tmux_target]);
+
+    const receipt = await mcp.call("agent_rename", { name, new_name: `${name}-renamed` });
+    assert.equal(receipt.retitled, false);
+    assert.match(receipt.note, /copy mode/);
+    assert.match(receipt.note, /leave copy mode|retry/i);
+    assert.equal((await mcp.call("agent_status", { name: `${name}-renamed` })).name, `${name}-renamed`);
+    const { output } = await mcp.call("agent_output", { name: `${name}-renamed` });
+    assert.doesNotMatch(output, /\/rename/);
+  });
 });
 
 describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () => {
