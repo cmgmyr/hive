@@ -51,14 +51,20 @@ describe("legacy kv values", () => {
     );
   });
 
-  it("kv_list prefix treats _ and % literally and matches case-sensitively", async () => {
+  it("kv_list prefix matches wildcard punctuation, backslash, non-ASCII, and case exactly", async () => {
     await mcp.call("kv_set", { key: "tmux_tested_version", value: "exact" });
     await mcp.call("kv_set", { key: "tmuxAtested_version", value: "underscore wildcard" });
     await mcp.call("kv_set", { key: "tmux%tested_version", value: "percent" });
     await mcp.call("kv_set", { key: "TMUX_tested_version", value: "different case" });
+    await mcp.call("kv_set", { key: "tmux\\tested_version", value: "backslash" });
+    await mcp.call("kv_set", { key: "préfix_key", value: "unicode" });
 
     const listed = await mcp.call("kv_list", { prefix: "tmux_" });
+    const backslash = await mcp.call("kv_list", { prefix: "tmux\\" });
+    const unicode = await mcp.call("kv_list", { prefix: "pré" });
 
     assert.deepEqual(listed.entries.map(({ key }) => key), ["tmux_tested_version"]);
+    assert.deepEqual(backslash.entries.map(({ key }) => key), ["tmux\\tested_version"]);
+    assert.deepEqual(unicode.entries.map(({ key }) => key), ["préfix_key"]);
   });
 });
