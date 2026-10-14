@@ -418,9 +418,10 @@ a phase flag. Use pads for anything longer than a line or two.`,
 hive stores the question; it never puts it to the human. Render it in your
 own turn. Answering queues a wake to the asker carrying the question, answer
 and notes, or reroutes it to the project's running lead when the asker has
-no running row. The answer stays readable either way. Nothing expires or
-defaults on its own: only the asker or the human moves a question out of
-pending.`,
+no running row. It skips wake delivery when you are the asker, no eligible
+target is running, or the target cannot be resolved. The answer stays
+readable either way. Nothing expires or defaults on its own: only the asker
+or the human moves a question out of pending.`,
 
   leases: `LEASES — advisory expiring claims on shared state
 
