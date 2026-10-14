@@ -648,7 +648,7 @@ describe("doctor's pty advice respects the installed package contents", () => {
     });
     assert.match(checkout.stdout, /node scripts\/sweep-scratch\.mjs/);
 
-    const install = join(dirs.tmp, "global", "node_modules", "@cmgmyr", "hive");
+    const install = join(dirs.tmp, "global", "node_modules", "@cmgmyr/hive");
     mkdirSync(install, { recursive: true });
     cpSync(join(REPO, "dist"), join(install, "dist"), { recursive: true });
     symlinkSync(join(REPO, "node_modules"), join(install, "node_modules"), "dir");
