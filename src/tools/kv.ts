@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { run } from "../result.js";
+import { decodeKvValue } from "../kvValue.js";
 import { idParam, projectIdParam } from "./params.js";
 
 function purgeExpired(projectId: number): void {
@@ -83,7 +84,7 @@ export function registerKv(server: McpServer): void {
           project_id: projectId,
           key: row.key,
           found: true,
-          value: JSON.parse(row.value),
+          value: decodeKvValue(row.value),
           updated_by: row.updated_by,
           updated_at: row.updated_at,
           expires_at: row.expires_at,
@@ -109,9 +110,9 @@ export function registerKv(server: McpServer): void {
         purgeExpired(projectId);
         let sql = "SELECT * FROM kv WHERE project_id = ?";
         const params: unknown[] = [projectId];
-        if (args.prefix) {
-          sql += " AND key LIKE ?";
-          params.push(`${args.prefix}%`);
+        if (args.prefix !== undefined) {
+          sql += " AND substr(key, 1, length(?)) = ?";
+          params.push(args.prefix, args.prefix);
         }
         sql += " ORDER BY key";
         const rows = db.prepare(sql).all(...params) as {
@@ -125,7 +126,7 @@ export function registerKv(server: McpServer): void {
           project_id: projectId,
           entries: rows.map((r) => ({
             key: r.key,
-            value: JSON.parse(r.value),
+            value: decodeKvValue(r.value),
             updated_by: r.updated_by,
             updated_at: r.updated_at,
             expires_at: r.expires_at,
