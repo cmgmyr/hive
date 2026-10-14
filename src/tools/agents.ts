@@ -1325,6 +1325,7 @@ export function registerAgents(server: McpServer): void {
           const { awaitingChoice, tail } = classifier.choiceCheck(agent.tmux_target);
 
           const box = awaitingChoice === false ? classifier.inputBoxState(agent.tmux_target) : null;
+          const inCopyMode = paneInCopyMode(agent.tmux_target);
           if (awaitingChoice === true) {
             heldNote =
               "Not retitled: the pane is waiting on a choice, so typing /rename would answer it instead of setting the title. Clear the prompt first (agent_send with keys), then retry.";
@@ -1343,6 +1344,10 @@ export function registerAgents(server: McpServer): void {
 
             heldNote =
               `Not retitled: the pane's input box holds unsubmitted text, so /rename would be pasted onto the end of it and submitted as prose rather than run as a command. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Clear the line with agent_send(keys: ["C-a", "C-k"]) once you can attribute the text, then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
+            heldTail = tail;
+          } else if (inCopyMode === true) {
+            heldNote =
+              `Not retitled: the pane is in tmux copy mode, so /rename would not reach its prompt. The row IS renamed - it is "${newName}" now - and only the pane's own title was left alone. Leave copy mode (press q or Escape there), then call agent_rename(name: "${newName}", new_name: "${newName}") to retitle the pane.`;
             heldTail = tail;
           } else {
 
@@ -1565,6 +1570,7 @@ export function registerAgents(server: McpServer): void {
         );
         requireLive(agent);
         const target = agent.tmux_target;
+        const identity = paneIdentity(agent);
         const auditIdentity = captureQueenWriteIdentity(project.id);
         let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
@@ -1617,9 +1623,9 @@ export function registerAgents(server: McpServer): void {
               confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
             }
             if (args.wait_ms == null) return quiet;
-            await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+            await sleep(args.wait_ms);
             try {
-              if (observeOwnership(agent) !== "live") throw new Error("not live");
+              requireStillOwned(agent.id, identity, "agent_send");
               return { ...quiet, tail: capturePane(target, 15) };
             } catch {
               return {
@@ -1728,7 +1734,6 @@ export function registerAgents(server: McpServer): void {
 
           let pasted = false;
           let buffered = false;
-          const identity = paneIdentity(agent);
           try {
             await sendText(
               target,
@@ -1779,10 +1784,11 @@ export function registerAgents(server: McpServer): void {
         }
 
         if (args.wait_ms != null) {
-          await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+          await sleep(args.wait_ms);
 
           let tailField: { tail: string } | { note: string };
           try {
+            requireStillOwned(agent.id, identity, "agent_send");
             tailField = { tail: capturePane(target, 15) };
           } catch {
             tailField = {

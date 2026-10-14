@@ -178,6 +178,22 @@ describe("agent_rename's /rename keystroke", { skip: hasTmux ? false : "tmux is 
     assert.equal(receipt.retitled, true);
     assert.equal(receipt.note, undefined);
   });
+
+  it("does not type /rename into a pane in copy mode", async () => {
+    const name = "rename-copy-mode";
+    const spawn = await spawnShowing(name, replayFixture("ready-idle.txt"));
+    spawned.push(spawn.agent_id);
+    const row = await liveAgentRow(mcp, name);
+    execFileSync("tmux", ["copy-mode", "-t", row.tmux_target]);
+
+    const receipt = await mcp.call("agent_rename", { name, new_name: `${name}-renamed` });
+    assert.equal(receipt.retitled, false);
+    assert.match(receipt.note, /copy mode/);
+    assert.match(receipt.note, /leave copy mode|retry/i);
+    assert.equal((await mcp.call("agent_status", { name: `${name}-renamed` })).name, `${name}-renamed`);
+    const { output } = await mcp.call("agent_output", { name: `${name}-renamed` });
+    assert.doesNotMatch(output, /\/rename/);
+  });
 });
 
 describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () => {
@@ -347,6 +363,37 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
       assert.equal(receipt.sent, true, `keys must reach ${file} unconditionally`);
     }
 
+  });
+
+  it("agent_send wait_ms tail refuses a pane whose ownership changed during the wait", async () => {
+    const name = "send-wait-owner-change";
+    const otherName = "send-wait-foreign-pane";
+    const sent = await spawnShowing(name, replayFixture("ready-idle.txt"));
+    const foreign = await spawnShowing(otherName, replayFixture("ready-idle.txt"));
+    spawned.push(sent.agent_id, foreign.agent_id);
+    const original = db.prepare("SELECT tmux_target, pane_pid FROM agents WHERE id = ?").get(sent.agent_id);
+    const foreignPane = db.prepare("SELECT tmux_target, pane_pid FROM agents WHERE id = ?").get(foreign.agent_id);
+
+    try {
+      const pending = mcp.call("agent_send", { name, keys: ["Escape"], wait_ms: 1000 });
+      await sleep(150);
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(
+        foreignPane.tmux_target,
+        foreignPane.pane_pid,
+        sent.agent_id,
+      );
+
+      const receipt = await pending;
+      assert.equal(receipt.sent, true);
+      assert.equal(receipt.tail, undefined);
+      assert.match(receipt.note, /tail could not be read/);
+    } finally {
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(
+        original.tmux_target,
+        original.pane_pid,
+        sent.agent_id,
+      );
+    }
   });
 
   describe("refuses raw keys to a lead from a non-lead caller (does not touch a peer lead, or text)", () => {
