@@ -202,14 +202,22 @@ describe("interpreter and ABI", () => {
 
   it("keeps re-pin advice from ending in a bare or chained `hive setup`", () => {
     const loops = (text) =>
-      /(?:&&|;)\s*hive setup(?=[`'"])/.test(text) || /^\s*[`'"]\s*hive setup\s*[`'"],?\s*$/m.test(text);
+      /(?:&&|;)\s*hive setup(?=[`'"])/.test(text) ||
+      /^\s*[`'"]\s*hive setup\s*[`'"],?\s*$/m.test(text) ||
+      /\b(?:re-run|rerun|run)\b[^\n]{0,80}?`hive setup`/.test(text);
     for (const command of [
       '"npm run build && hive setup"',
       '"node cli.js setup; hive setup"',
       '"hive setup"',
+      'Advice: re-run `hive setup` now.',
+      'Advice: run `hive setup` now.',
+      'Advice: rerun `hive setup` now.',
     ]) {
       assert.equal(loops(command), true, `must catch ${command}`);
     }
+
+    assert.equal(loops("The ordinary repair (`hive setup`) only re-pins this worktree."), false);
+    assert.equal(loops("Running `hive setup` to repair it just re-pins this worktree."), false);
 
     const advice = globSync("src/**/*.ts", { cwd: REPO })
       .map((file) => readFileSync(join(REPO, file), "utf8"))
