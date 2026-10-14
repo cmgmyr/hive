@@ -539,6 +539,18 @@ describe("hive setup writes a dispatcher", () => {
     assert.match(stdout, /Re-pin after a rebuild: '[^']+' '[^']*dist\/cli\.js' setup/);
   });
 
+  it("doctor gives a named re-pin when a dispatcher has another version's format", async () => {
+    mkdirSync(dirname(dispatcher), { recursive: true });
+    writeFileSync(
+      dispatcher,
+      `#!/bin/sh\n# hive dispatcher\nexec "${process.execPath}" "/legacy/cli.js" "$@"\n`,
+      { mode: 0o755 },
+    );
+    const { stdout } = await runCli(["doctor"], setupOpts);
+    assert.match(stdout, /warn {2}dispatcher: written by another version of hive/);
+    assert.ok(stdout.includes(`'${process.execPath}' '${join(REPO, "dist/cli.js")}' setup`));
+  });
+
   it("doctor points at setup when there is no dispatcher", async () => {
 
     const { stdout } = await runCli(["doctor"], {

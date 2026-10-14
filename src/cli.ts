@@ -2362,7 +2362,11 @@ function reportDispatcher(): void {
   }
   info("dispatcher", `${dispatcher.file} -> ${dispatcher.node ?? "an exec line hive cannot parse"}`);
   if (!dispatcher.node || !dispatcher.cli) {
-    gatingWarn("dispatcher", "written by another version of hive; re-run `hive setup` to refresh it.");
+    gatingWarn(
+      "dispatcher",
+      "written by another version of hive; use this re-pin command to refresh it:",
+      `  ${repinCommand(process.execPath, cliPath())}`,
+    );
   } else if (!existsSync(dispatcher.node)) {
 
     const need = requiredNodeApi();
