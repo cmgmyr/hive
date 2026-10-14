@@ -60,10 +60,12 @@ describe("legacy kv values", () => {
     await mcp.call("kv_set", { key: "préfix_key", value: "unicode" });
 
     const listed = await mcp.call("kv_list", { prefix: "tmux_" });
+    const percent = await mcp.call("kv_list", { prefix: "tmux%" });
     const backslash = await mcp.call("kv_list", { prefix: "tmux\\" });
     const unicode = await mcp.call("kv_list", { prefix: "pré" });
 
     assert.deepEqual(listed.entries.map(({ key }) => key), ["tmux_tested_version"]);
+    assert.deepEqual(percent.entries.map(({ key }) => key), ["tmux%tested_version"]);
     assert.deepEqual(backslash.entries.map(({ key }) => key), ["tmux\\tested_version"]);
     assert.deepEqual(unicode.entries.map(({ key }) => key), ["préfix_key"]);
   });
