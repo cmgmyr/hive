@@ -82,6 +82,19 @@ describe("tick() isolates failures so one timer or step cannot skip delivery", (
     assert.ok(second.fired_at, "a delivery error for the first timer must not skip the next timer");
   });
 
+  it("a post-claim delivery error records the lost wake", NEEDS_TMUX, async () => {
+    const timerId = seedDelayWake(firstPane, "lost-after-claim");
+    process.env.HIVE_TEST_FAIL_PANE = firstPane;
+
+    await tick();
+
+    const timer = db.prepare("SELECT fired_at, fire_count, cancelled_at, held_reason FROM wakes WHERE id = ?").get(timerId);
+    assert.ok(timer.fired_at, "the wake must have been claimed before the injected delivery failure");
+    assert.equal(timer.fire_count, 1, "the failed one-shot wake must not be claimed again");
+    assert.ok(timer.cancelled_at, "a claimed one-shot delivery failure must be terminal");
+    assert.match(timer.held_reason, /^delivery stopped after claim: /, "the failure must leave a reason on the wake");
+  });
+
   it("a throwing janitor does not skip timer delivery", NEEDS_TMUX, async () => {
     delete process.env.HIVE_TEST_FAIL_PANE;
     const timerId = seedDelayWake(firstPane, "after-janitor");
