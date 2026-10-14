@@ -19,7 +19,6 @@ import {
   isLeadActorId,
   LEAD_ACTOR_PREFIX,
   LEAD_KIND,
-  PaneOwnershipLost,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
 } from "./spawn.js";
@@ -3026,8 +3025,9 @@ async function deliver(
     }
     if (err instanceof FiringSuperseded) return;
     if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
-    if (!(err instanceof PaneOwnershipLost)) throw err;
-    if (firing === null || pasted) recordLostAfterClaim(timer, pasted, err.message, firing);
+    if (firing === null || pasted) {
+      recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+    }
     return;
   } finally {
 
