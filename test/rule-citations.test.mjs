@@ -14,10 +14,14 @@ const stripFences = (text) => text.replace(/```[\s\S]*?```/g, (m) => m.replace(/
 
 const SPAN_RE = /`([^`\n]+)`/g;
 const PATH_SPAN_RE = /^(?:\.claude|\.agents|src|test|scripts|docs|claude-plugin)\/[\w.*/-]+$/;
-const LINE_CITATION_RE = /^(?:[\w./-]+\.(?:ts|mjs|js|sh|md|json))?:\d[\d,-]*$/;
+const LINE_CITATION_RE = /^(?:[\w./-]+\.(?:ts|mjs|js|sh|md|json))?(?::L?\d[\d,-]*|#L\d+(?:-L?\d+)?)$/;
 const IDENT = String.raw`[A-Za-z_$][\w$]*`;
 const SYM_RUN_RE = new RegExp(
   String.raw`((?:\x60${IDENT}(?:\(\))?\x60(?:\/|, | and | or )?)+) \(\x60([^\x60\n]+)\x60\)`,
+  "g",
+);
+const IN_PATH_RE = new RegExp(
+  String.raw`((?:\x60${IDENT}(?:\(\))?\x60(?:\/|, | and | or )?)+) in \x60([^\x60\n]+)\x60`,
   "g",
 );
 const POSSESSIVE_RE = new RegExp(String.raw`\x60([^\x60\n]+)\x60's \x60(${IDENT})(?:\(\))?\x60`, "g");
@@ -27,6 +31,13 @@ const EXTERNAL_CALLS = new Set([
   "execFileSync", "spawnSync", "readFileSync", "writeFileSync", "realpath", "lstat", "setTimeout",
   "require", "import", "fetch", "kill", "availableParallelism", "login_tty",
 ]);
+
+const stripComments = (text) =>
+  text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .map((line) => line.replace(/(^|[^:"'`\\])\/\/.*$/, "$1").replace(/^\s*#(?!!).*$/, ""))
+    .join("\n");
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const hasSymbol = (content, symbol) => new RegExp(`(?<![\\w$])${escapeRe(symbol)}(?![\\w$])`).test(content);
@@ -39,7 +50,7 @@ const sourceCorpus = (() => {
     .filter((f) => existsSync(join(REPO, f)))
     .map((f) => {
       try {
-        return readRepo(f);
+        return stripComments(readRepo(f));
       } catch {
         return "";
       }
@@ -72,12 +83,16 @@ function missingSymbols(text) {
   const claim = (symbols, path) => {
     if (!PATH_SPAN_RE.test(path) || path.includes("*") || !existsSync(join(REPO, path))) return;
     if (!/\.(?:ts|mjs|js|sh)$/.test(path)) return;
-    const content = readRepo(path);
+    const content = stripComments(readRepo(path));
     for (const symbol of symbols) {
       if (!hasSymbol(content, symbol)) failures.push(`symbol \`${symbol}\` is not in ${path}`);
     }
   };
   for (const m of prose.matchAll(SYM_RUN_RE)) {
+    const symbols = [...m[1].matchAll(new RegExp(String.raw`\x60(${IDENT})(?:\(\))?\x60`, "g"))].map((s) => s[1]);
+    claim(symbols, m[2]);
+  }
+  for (const m of prose.matchAll(IN_PATH_RE)) {
     const symbols = [...m[1].matchAll(new RegExp(String.raw`\x60(${IDENT})(?:\(\))?\x60`, "g"))].map((s) => s[1]);
     claim(symbols, m[2]);
   }
@@ -112,6 +127,13 @@ describe("rule and reference citations name real files and symbols", () => {
     assert.deepEqual(lineCitations("`attach()` calls it (`src/cli.ts`, `:526`)."), ["line citation `:526`"]);
   });
 
+  it("fails a planted #L12 and :L12 line citation", () => {
+    assert.deepEqual(lineCitations("See `src/tmux.ts#L12` and `src/tmux.ts:L12`."), [
+      "line citation `src/tmux.ts#L12`",
+      "line citation `src/tmux.ts:L12`",
+    ]);
+  });
+
   it("fails a planted path that does not exist", () => {
     assert.deepEqual(missingPaths("See `src/noSuchModule.ts` for it."), ["path `src/noSuchModule.ts` does not exist"]);
   });
@@ -122,6 +144,20 @@ describe("rule and reference citations name real files and symbols", () => {
     ]);
     assert.deepEqual(missingSymbols("`src/tmux.ts`'s `noSuchSymbolAnywhere` does it."), [
       "symbol `noSuchSymbolAnywhere` is not in src/tmux.ts",
+    ]);
+  });
+
+  it("fails a planted symbol in the `fn` in `path` shape", () => {
+    assert.deepEqual(missingSymbols("`launchAgent` and `noSuchSymbolAnywhere` in `src/spawn.ts` do it."), [
+      "symbol `noSuchSymbolAnywhere` is not in src/spawn.ts",
+    ]);
+  });
+
+  it("fails a planted call that only a code comment mentions, because a comment defines nothing", () => {
+    const commentOnly = "isLive";
+    assert.ok(new RegExp(commentOnly).test(readRepo("src/tools/wakes.ts")), "precondition: wakes.ts still mentions isLive in a comment");
+    assert.deepEqual(missingCalls("It calls `isLive()` first."), [
+      "call `isLive()` is not defined anywhere in src/, scripts/ or claude-plugin/",
     ]);
   });
 

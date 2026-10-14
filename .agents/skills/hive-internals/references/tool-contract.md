@@ -326,7 +326,7 @@ these are internal rows, not a general precedent for CLI code to bypass MCP
 tools where a real process boundary would apply. Reserving one key prefix
 for internal rows would make that boundary checkable; nothing does yet.
 
-**The env-var sentence has two older exceptions.** `agent_spawn` and
+**The env-var sentence has one class that is not a setting and two older exceptions.** The class: `src/context.ts` reads `HIVE_AGENT_ID`, `HIVE_AGENT_NAME`, `HIVE_PROJECT_LOCK` and `HIVE_PROJECT_PATH`, and `src/tools/meta.ts` and `src/tools/agents.ts` read `HIVE_PROJECT_LOCK`; hive writes all of them into a spawned pane itself, so they are identity and scoping, not something a person exports. The two exceptions: `agent_spawn` and
 `agent_resume` read `HIVE_SPAWN_PLACEMENT` (placement falls back to it after
 the argument and `hive.yml`), and `agent_spawn` reads `HIVE_SPAWN_READY_MS` at
 import to bound the readiness wait. Both predate the rule. They work in the

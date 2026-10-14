@@ -63,11 +63,14 @@ use that key, because the restart and registration notices ride there.
 Anything
 an MCP tool needs to read has to be stored config (`hive.yml`, the
 database) or an argument the caller passes on every call, never an
-environment variable set in front of a different process. Two reads predate
-that and stay as they are: `agent_spawn` and `agent_resume` read
-`HIVE_SPAWN_PLACEMENT`, and `agent_spawn` reads `HIVE_SPAWN_READY_MS` at
-import. They reach the server only when exported before its session starts.
-Do not add a third.
+environment variable set in front of a different process. That is about
+settings a person exports. The identity and scoping values hive itself writes
+into a spawned pane (`HIVE_AGENT_ID`, `HIVE_AGENT_NAME`, `HIVE_PROJECT_LOCK`,
+`HIVE_PROJECT_PATH`) are read by the server by design and are not the
+precedent this forbids. Two user-facing reads predate the rule and stay as
+they are: `agent_spawn` and `agent_resume` read `HIVE_SPAWN_PLACEMENT`, and
+`agent_spawn` reads `HIVE_SPAWN_READY_MS` at import. They reach the server
+only when exported before its session starts. Do not add a third.
 
 New capability rule: decide which side is being asked for FIRST. A capability
 genuinely needed on both sides

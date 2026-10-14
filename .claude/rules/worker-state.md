@@ -108,7 +108,7 @@ like any other, and reporting it as a crash was the smaller half of that bug.
 
 **A fourth generated notice reports a changed build to the lead whose own server detected it.** `reportRunningBuildChange` must target only its own running `kind='lead'` row and a confirmed-live, classifiable pane. Keep it parentless, with no staleness trailer, and file it once per process per distinct disk `build_id` (a hash of the package version plus `dist/`, so a byte-identical rebuild at one version files nothing), only latching after insertion succeeds. A worker's server files no restart notice. Authored wake bodies stay verbatim.
 
-**A fifth generated addition is the watched-pane trailer, and it rides on every one-shot `wake_when_idle` body.** `watchedTail` (`src/scheduler.ts`) appends the rows above up to three watched workers' input boxes after the body, to a lead or to a worker, whenever the wake watches any agent. It is not a notice and has no author. Your text is still verbatim; it is simply not the only text delivered.
+**A fifth generated addition is the watched-pane trailer, and it rides on every wake that watches an agent, one-shot or standing.** `watchedTail` (`src/scheduler.ts`) appends, for each of up to three watched workers, either that worker's pane tail or a note that its row is closed, on a foreign socket or not confirmed live, after the body, to a lead or to a worker. It is not a notice and has no author. Your text is still verbatim; it is simply not the only text delivered.
 
 **This rule is about WAKE BODIES and nothing else.** `agent_send`'s `text` is a separate channel with its own, differently-shaped shortening for lead-bound messages; do not read either rule as governing the other (`.claude/rules/tmux-and-panes.md`).
 
