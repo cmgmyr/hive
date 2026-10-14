@@ -185,6 +185,20 @@ describe("docs keep up with the CLI", () => {
     }
   });
 
+  it("src/AGENTS.md rule table matches rule frontmatter", () => {
+    const rows = [...readRepo("src/AGENTS.md").matchAll(RULE_ROW_RE)];
+    const ruleFiles = globSync("*.md", { cwd: join(REPO, ".claude/rules") });
+    assert.equal(rows.length, ruleFiles.length, "src/AGENTS.md's table must have one row per rule file");
+
+    for (const [, rulePath, firesOnCell] of rows) {
+      assert.deepEqual(
+        backtickPaths(firesOnCell),
+        parseRulePaths(readRepo(rulePath)).sort(),
+        `${rulePath}: src/AGENTS.md's Fires-on column disagrees with the rule's frontmatter`,
+      );
+    }
+  });
+
   it("would have failed against the real pre-fix row from PR #159 (commit 61b6f6d)", () => {
     const preFixRow =
       "| `.claude/rules/tmux-and-panes.md` | `src/tmux.ts`, `src/spawn.ts`, `src/scheduler.ts`, `src/tools/agents.ts` | " +
