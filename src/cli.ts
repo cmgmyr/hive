@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
@@ -2534,8 +2534,12 @@ function reportPtyHeadroom(orphans: OrphanScratchServers | null): void {
     shellsLine,
     `${scratchHeld} orphaned scratch tmux server(s) still holding a socket (detail in the scratch tmux servers check)`,
     `${livePanes} pane(s) recorded 'running' in hive's own store (leads and workers, this machine)`,
-    "reap the orphaned shells and scratch servers with `node scripts/sweep-scratch.mjs` (dry run by default, " +
-      "`--kill` to act)",
+    ...(existsSync(join(dirname(cliPath()), "..", "scripts", "sweep-scratch.mjs"))
+      ? [
+          "reap the orphaned shells and scratch servers with `node scripts/sweep-scratch.mjs` (dry run by default, " +
+            "`--kill` to act)",
+        ]
+      : []),
   );
 }
 
