@@ -19,6 +19,7 @@ import {
   isLeadActorId,
   LEAD_ACTOR_PREFIX,
   LEAD_KIND,
+  PaneOwnershipLost,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
 } from "./spawn.js";
@@ -770,15 +771,21 @@ function driveOwnLeadHandoff(): void {
   }
 }
 
-async function isolated(label: string, task: () => unknown | Promise<unknown>): Promise<void> {
-  try {
-    await task();
-  } catch (err) {
+function isolated(label: string, task: () => unknown | Promise<unknown>): void | Promise<void> {
+  const report = (err: unknown): void => {
     try {
       console.error(`[scheduler] ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
     } catch {
 
     }
+  };
+  try {
+    const result = task();
+    if (result !== null && typeof result === "object" && "then" in result) {
+      return Promise.resolve(result).then(() => {}, report);
+    }
+  } catch (err) {
+    report(err);
   }
 }
 
@@ -795,16 +802,16 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     if (snapshot === undefined) snapshot = liveTargets();
     const tickSnapshot = snapshot;
-    await isolated("janitor", () => janitor(tickSnapshot));
-    if (tickSnapshot) await isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
-    await isolated("lead handoff", driveOwnLeadHandoff);
+    isolated("janitor", () => janitor(tickSnapshot));
+    if (tickSnapshot) isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
+    isolated("lead handoff", driveOwnLeadHandoff);
 
-    await isolated("wake confirmations", checkConfirmations);
-    await isolated("state-log pruning", pruneStateLog);
+    isolated("wake confirmations", checkConfirmations);
+    isolated("state-log pruning", pruneStateLog);
 
-    await isolated("hourly backup", () => maybeBackupHourly(db, dataDir));
+    isolated("hourly backup", () => maybeBackupHourly(db, dataDir));
 
-    await isolated("dashboard generation", maybeGenerateDashboards);
+    isolated("dashboard generation", maybeGenerateDashboards);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
     const candidates = stmt(
@@ -3025,8 +3032,22 @@ async function deliver(
     }
     if (err instanceof FiringSuperseded) return;
     if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
-    if (firing === null || pasted) {
-      recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+    if (err instanceof PaneOwnershipLost) {
+      if (firing === null || pasted) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
+      return;
+    }
+    if (pasted) {
+      const repairableNotice = stmt(
+        `SELECT 1 FROM wake_idle_notices n JOIN wakes w ON w.id = n.notice_wake_id
+          WHERE n.notice_wake_id = ? AND w.fired_at IS NOT NULL
+            AND COALESCE(w.typed_at, w.socket_attempt_at) IS NULL AND w.cancelled_at IS NULL
+          LIMIT 1`,
+      ).get(timer.id);
+      if (pasted && repairableNotice === undefined) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
     }
     return;
   } finally {
