@@ -192,18 +192,29 @@ describe("interpreter and ABI", () => {
     };
 
     const bare = abiFixLines(mismatch).join("\n");
-    assert.doesNotMatch(bare, /^ *hive setup$/m);
-    assert.match(bare, /<the Node that built it> ".*dist\/cli\.js" setup/);
+    assert.doesNotMatch(bare, /(?:&&|;)\s*hive setup(?:\s|$)/);
+    assert.match(bare, /'<the Node that built it>' '.*dist\/cli\.js' setup/);
+    assert.match(bare, /Global install: npm install -g @cmgmyr\/hive/);
+    assert.match(bare, /Checkout: npm install && npm run build/);
 
-    assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /"\/pinned\/node" ".*cli\.js" setup/);
+    assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /'\/pinned\/node' '.*cli\.js' setup/);
   });
 
   it("keeps re-pin advice from ending in a bare or chained `hive setup`", () => {
+    const loops = (text) =>
+      /(?:&&|;)\s*hive setup(?=[`'"])/.test(text) || /^\s*[`'"]\s*hive setup\s*[`'"],?\s*$/m.test(text);
+    for (const command of [
+      '"npm run build && hive setup"',
+      '"node cli.js setup; hive setup"',
+      '"hive setup"',
+    ]) {
+      assert.equal(loops(command), true, `must catch ${command}`);
+    }
+
     const advice = ["abi.ts", "cli.ts", "dispatcher.ts"]
       .map((file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"))
       .join("\n");
-    assert.doesNotMatch(advice, /(?:&&|;)\s*hive setup(?=[`'"\\]|\s*,|$)/);
-    assert.doesNotMatch(advice, /^\s*hive setup\s*(?:[`'"\\])?\s*,?$/m);
+    assert.equal(loops(advice), false, "no printed re-pin advice may send setup through the stale hive shim");
   });
 
   it("refuses when the interpreter reports no Node-API level, instead of comparing NaN", () => {
@@ -368,6 +379,7 @@ describe("hive setup writes a dispatcher", () => {
       script.includes(`exec '${process.execPath}' '${CLI}' "$@"`),
       `dispatcher should exec this interpreter, got:\n${script}`,
     );
+    assert.ok(script.includes(`# Regenerate after every update: '${process.execPath}' '${CLI}' setup`), script);
 
     assert.ok(stdout.includes(`interpreter  ${process.execPath}`), stdout);
     assert.match(stdout, new RegExp(`NODE_MODULE_VERSION ${process.versions.modules}`));
@@ -516,7 +528,7 @@ describe("hive setup writes a dispatcher", () => {
     );
     const { stdout } = await runCli(["doctor"], setupOpts);
     assert.match(stdout, /warn {2}dispatcher: pinned to a different build/);
-    assert.match(stdout, /npm run build && hive setup/);
+    assert.match(stdout, /Re-pin after a rebuild: '[^']+' '[^']*dist\/cli\.js' setup/);
   });
 
   it("doctor points at setup when there is no dispatcher", async () => {
