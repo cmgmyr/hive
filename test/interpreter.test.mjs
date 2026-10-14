@@ -198,6 +198,14 @@ describe("interpreter and ABI", () => {
     assert.match(abiFixLines(mismatch, "/pinned/node").join("\n"), /"\/pinned\/node" ".*cli\.js" setup/);
   });
 
+  it("keeps re-pin advice from ending in a bare or chained `hive setup`", () => {
+    const advice = ["abi.ts", "cli.ts", "dispatcher.ts"]
+      .map((file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"))
+      .join("\n");
+    assert.doesNotMatch(advice, /(?:&&|;)\s*hive setup(?=[`'"\\]|\s*,|$)/);
+    assert.doesNotMatch(advice, /^\s*hive setup\s*(?:[`'"\\])?\s*,?$/m);
+  });
+
   it("refuses when the interpreter reports no Node-API level, instead of comparing NaN", () => {
 
     const abi = new URL("../dist/abi.js", import.meta.url).href;
