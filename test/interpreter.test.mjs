@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, globSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -211,8 +211,8 @@ describe("interpreter and ABI", () => {
       assert.equal(loops(command), true, `must catch ${command}`);
     }
 
-    const advice = ["abi.ts", "cli.ts", "dispatcher.ts"]
-      .map((file) => readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"))
+    const advice = globSync("src/**/*.ts", { cwd: REPO })
+      .map((file) => readFileSync(join(REPO, file), "utf8"))
       .join("\n");
     assert.equal(loops(advice), false, "no printed re-pin advice may send setup through the stale hive shim");
   });
