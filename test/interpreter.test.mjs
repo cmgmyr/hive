@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
@@ -633,6 +633,34 @@ describe("doctor reads the MCP registration", () => {
     writeUserConfig({ mcpServers: { other: { command: "node", args: ["/somewhere/else.js"] } } });
     const { stdout } = await runCli(["doctor"], { ...doctorOpts, cwd: dirs.tmp });
     assert.match(stdout, /info {2}mcp registration: none found for hive/);
+  });
+});
+
+describe("doctor's pty advice respects the installed package contents", () => {
+  it("names the scratch sweep script only from a checkout", async () => {
+    const checkout = await runCli(["doctor"], {
+      ...doctorOpts,
+      env: {
+        ...doctorOpts.env,
+        HIVE_PTY_HEADROOM_JSON: JSON.stringify({ allocated: 500, max: 511 }),
+        HIVE_PTY_PS_ROWS_JSON: "[]",
+      },
+    });
+    assert.match(checkout.stdout, /node scripts\/sweep-scratch\.mjs/);
+
+    const install = join(dirs.tmp, "global", "node_modules", "@cmgmyr", "hive");
+    mkdirSync(install, { recursive: true });
+    cpSync(join(REPO, "dist"), join(install, "dist"), { recursive: true });
+    symlinkSync(join(REPO, "node_modules"), join(install, "node_modules"), "dir");
+    const global = await runNode(join(install, "dist", "cli.js"), ["doctor"], {
+      ...doctorOpts,
+      env: {
+        ...doctorOpts.env,
+        HIVE_PTY_HEADROOM_JSON: JSON.stringify({ allocated: 500, max: 511 }),
+        HIVE_PTY_PS_ROWS_JSON: "[]",
+      },
+    });
+    assert.doesNotMatch(global.stdout, /scripts\/sweep-scratch\.mjs/);
   });
 });
 
