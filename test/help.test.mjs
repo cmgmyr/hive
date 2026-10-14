@@ -15,8 +15,8 @@ function helpSignatures(text) {
     if (!Object.hasOwn(snapshot, name)) continue;
     const names = params
       .split(",")
-      .flatMap((part) => part.match(/[a-z][a-z0-9_]*/g) ?? [])
-      .filter((part) => part !== "or");
+      .map((part) => part.split("=", 1)[0])
+      .flatMap((part) => part.match(/[a-z][a-z0-9_]*/g) ?? []);
     const current = signatures.get(name) ?? new Set();
     for (const param of names) current.add(param);
     signatures.set(name, current);
@@ -26,7 +26,9 @@ function helpSignatures(text) {
 
 describe("help text follows the registered tool surface", () => {
   it("help overview states there is no single-project fallback", () => {
-    assert.match(helpOverview(), /never falls back to an unrelated project/i);
+    assert.match(helpOverview(), /resolution order is project_id override, session selection, worker pin/i);
+    assert.match(helpOverview(), /worktree or subdirectory resolves to its\s+primary checkout/i);
+    assert.match(helpOverview(), /instead of falling back to an unrelated one/i);
     assert.doesNotMatch(helpOverview(), /auto-selects? a single registered project/i);
   });
 

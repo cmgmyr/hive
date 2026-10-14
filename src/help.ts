@@ -7,10 +7,10 @@ one project-scoped state store: pads, todos, kv, leases.
 Call help(topic="<name>") for details. Topics: ${Object.keys(HELP_TOPICS).join(", ")}.
 
 Scope resolution for project-scoped tools:
-  pass project_id for a one-off override
-  otherwise hive uses the project selected in this session
-  otherwise it auto-detects from the working directory, or auto-selects a
-  single registered project
+  resolution order is project_id override, session selection, worker pin,
+  then working directory; a git worktree or subdirectory resolves to its
+  primary checkout, and an unmatched directory becomes a new project
+  instead of falling back to an unrelated one
 
 Quick start:
   1. whoami — see your actor id and effective project
@@ -45,6 +45,9 @@ QUESTIONS — open questions for the human, recorded in the store
 
 PROJECTS — scope management
   project_list, project_add, project_select, project_prune
+
+QUEEN AUDIT — confirmed queen writes and refused cross-project guard calls
+  queen_audit_list(project_id?, limit?)
 
 ACTORS — who is writing
   actor_prune`;
@@ -134,7 +137,7 @@ runbook (fork it first), not a pad write.`,
 
   agents: `AGENTS — spawn and drive worker sessions in tmux
 
-  agent_spawn(name?, model?, command?, extra_args?, read_only?, cwd?, placement?, layout?) —
+  agent_spawn(name?, model?, command?, extra_args?, harness?, read_only?, cwd?, placement?, layout?, todo_id?) —
     start a worker (default command: claude) in session hive-main.
     placement="split" (default) tiles the worker as a pane in the lead's
     window so the whole crew shares one screen; placement="window" gives it
@@ -172,7 +175,7 @@ runbook (fork it first), not a pad write.`,
     stays agent:N, so older pad writes and todo comments still point here.
     A live claude worker is told to retitle its own session, which arrives as
     a user turn: rename between assignments, not mid-task.
-  agent_park(name|agent_id) — END OF DAY. Kill the pane, mark the row PARKED
+  agent_park(name|agent_id, confirm_self?) — END OF DAY. Kill the pane, mark the row PARKED
     rather than plain closed, record the branch, and hand back a board line
     plus the one call that brings the lane back. Use this instead of
     agent_close whenever the lane is PAUSED rather than finished: "closed"
@@ -182,7 +185,7 @@ runbook (fork it first), not a pad write.`,
     with the same actor_id and its full prior context. It does not send
     the assignment; agent_send it afterwards. Read the pane before
     believing any wake about a worker you just resumed.
-  agent_close(name|agent_id) — kill the worker's pane and mark closed. Capture
+  agent_close(name|agent_id, confirm_self?, row_only?) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how
     you abandon a lane you have decided not to resume. row_only=true marks
@@ -243,8 +246,9 @@ its turn), waiting (needs permission or input). Non-claude commands show
     interval used for firings after this one. Only body can be edited on an
     idle wake (from wake_when_idle); delay_seconds/repeat_every_seconds
     apply to a delay wake (from wake_set) only.
-  wake_cancel(wake_id) — cancel a pending wake-up you own
-  wake_list() — pending wake-ups in this project
+  wake_cancel(wake_id) — cancel a pending wake-up you own, or any pending
+    wake-up in this project when you are a running lead
+  wake_list() — pending wake-ups and recently delivered one-shot wakes
 
 Delivery contract:
   When a wake-up fires, its body is typed into the target session's terminal
@@ -346,7 +350,7 @@ place.`,
   pad_append(pad_id, content, expected_revision?) — add to the end
   pad_edit(pad_id, old_text, new_text, expected_revision?) — replace one
     unique literal occurrence; include enough context to disambiguate
-  pad_list(query?, tags?, include_archived?) — summaries without content;
+  pad_list(query?, tags?, include_archived?, limit?, offset?) — summaries without content;
     query matches names and content and returns a snippet
   pad_archive(pad_id, archived?) — archive frees the name for a new active
     pad; content stays readable by pad_id. archived=false unarchives.
@@ -412,10 +416,11 @@ a phase flag. Use pads for anything longer than a line or two.`,
     to a pending or defaulted question
 
 hive stores the question; it never puts it to the human. Render it in your
-own turn. Answering queues a wake to the asker carrying the question,
-answer and notes, unless the answerer is the asker or the asker cannot be
-reached; the answer is kept either way. Nothing expires or defaults on its
-own: only the asker or the human moves a question out of pending.`,
+own turn. Answering queues a wake to the asker carrying the question, answer
+and notes, or reroutes it to the project's running lead when the asker has
+no running row. The answer stays readable either way. Nothing expires or
+defaults on its own: only the asker or the human moves a question out of
+pending.`,
 
   leases: `LEASES — advisory expiring claims on shared state
 
