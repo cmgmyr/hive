@@ -52,7 +52,10 @@ use that key, because the restart and registration notices ride there.
 - **MCP tools are how a Claude Code session (lead or worker) reads and
   writes shared STATE that the store owns.**
 - **CLI commands are how a HUMAN at a real terminal (or a script standing
-  in for one) operates the ENVIRONMENT hive runs in.**
+  in for one) operates the ENVIRONMENT hive runs in.** They read and write
+  the same store through the same `db` handle, so the CLI also carries
+  `pads`, `todos`, `questions`, `answer` and `queen-audit`, which exist on
+  both surfaces by lane decision.
 - **One deliberate exception: `hive lead-handoff` is run by a lead model**,
   not a human, because it hands its own pane to a detached process that
   replaces the session; it writes only that lead's own handoff row.
@@ -60,21 +63,26 @@ use that key, because the restart and registration notices ride there.
 Anything
 an MCP tool needs to read has to be stored config (`hive.yml`, the
 database) or an argument the caller passes on every call, never an
-environment variable set in front of a different process.
+environment variable set in front of a different process. Two reads predate
+that and stay as they are: `agent_spawn` and `agent_resume` read
+`HIVE_SPAWN_PLACEMENT`, and `agent_spawn` reads `HIVE_SPAWN_READY_MS` at
+import. They reach the server only when exported before its session starts.
+Do not add a third.
 
 New capability rule: decide which side is being asked for FIRST. A capability
 genuinely needed on both sides
 gets built for whichever is asked for first, and the other side is a
 separate, deliberate addition with its own review, never assumed to come
-free because the first half shipped. No CLI command reaches leases or wakes
-today, and no MCP tool reaches backups, restore, profiles, posture, runbook,
-or doctor, with one deliberate exception: `project_prune` with `confirm_name`
+free because the first half shipped. No CLI code touches leases. The CLI does
+reach wakes: `hive answer` queues one, `hive lead` re-points a lead's pending
+ones to its new pane, `hive lead-handoff` inserts them, and `hive status` and
+`hive doctor` cancel the undeliverable ones through the janitor. No MCP tool
+reaches backups, restore, profiles, posture, runbook, or doctor, with one
+deliberate exception: `project_prune` with `confirm_name`
 takes a snapshot before it deletes a project (both surfaces were asked for;
 the snapshot is what makes an irreversible delete recoverable).
 The rest are the split working as intended, not omissions to close.
 
-**Narrowed since, for kv specifically: `cmdAttach`/`cmdLead`'s `maybeOpenDashboard` (`src/cli.ts`) reads and writes one kv row directly, via the same process's `db` handle rather than through `kv_set`/`kv_get`.** Still narrow: this is one CLI
-command touching one table for one purpose, not a general precedent for CLI
-code to bypass MCP tools where a real process boundary would apply.
+**Narrowed since, for kv specifically: CLI and server code read and write a few kv rows directly, via the same process's `db` handle rather than through `kv_set`/`kv_get`:** the dashboard-open row in `openDashboardOnce` (`src/cli.ts`, reached from `cmdAttach`, `cmdLead` and `cmdQueen`), the `stopping:<id>` markers in `src/processes.ts`, the scheduler's `hive:queen-page-*` rows, and the `queen:brief` read in `src/queenDashboard.ts`. Still narrow: these are internal rows with no process boundary between writer and reader, not a general precedent for CLI code to bypass MCP tools where a real process boundary would apply.
 
 See `.claude/skills/hive-internals` for the lifecycle matrix, the naming convention for new tools, and the incident history behind these.

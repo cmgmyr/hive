@@ -1,4 +1,4 @@
-Issue #82. hive exposes 42 MCP tools and 18 CLI commands with no stated
+Issue #82. hive exposes MCP tools and CLI commands with no stated
 contract for what a resource is supposed to have. Read this before adding a
 tool or a command, not after: a rule fires when you open a file it covers,
 which is the moment a new tool gets its name.
@@ -8,8 +8,8 @@ code.** `.claude/rules/tool-contract.md` is a naming convention and a matrix, no
 `test/docs.test.mjs` pins that `.claude/rules/tool-contract.md` exists, that its `paths` globs still match
 a real file, that every path it cites is real, that it stays indexed in
 `CLAUDE.md` and `src/AGENTS.md`, and that `CLAUDE.md`'s table names the exact
-same globs its own frontmatter does - the same five checks every
-rule file gets. None of that pins its CONTENT against the code: nothing
+same globs its own frontmatter does - the same checks every
+rule file gets, plus the citation check in `test/rule-citations.test.mjs`. None of that pins its CONTENT against the code: nothing
 fails if the matrix drifts from what `src/tools/*.ts` actually registers, or
 if the naming convention stops matching what a new tool was actually named.
 Treat the matrix as verified at the time #82 wrote it, not as
@@ -132,7 +132,7 @@ says what state it touches.
 
 ## Every tool rejects an unknown argument key, and you get that for free
 
-PR #125 found this. All 45 tools advertise
+PR #125 found this. Every tool advertises
 `additionalProperties: false` and refuse an undeclared key at runtime with a
 -32602 that names it. Both halves come from `src/strictInput.ts`, which wraps
 `registerTool` once on the single `McpServer` in `src/index.ts` and rebuilds
@@ -147,7 +147,7 @@ in it, so a tool that escaped the wrapper fails there rather than depending
 on anyone reading this paragraph.
 
 **Three ways to write a tool that is NOT strict**, listed because this
-section fires when you open `src/tools/*.ts` to write the 43rd one, which is
+section fires when you open `src/tools/*.ts` to write a new one, which is
 exactly when they apply:
 
 - **Omit `inputSchema` entirely.** The SDK then skips `validateToolInput`
@@ -204,7 +204,7 @@ reads which key was wrong and corrects it.
 
 ## A tool that declares outputSchema must always return a JSON object
 
-Todo 462 added `outputSchema` to hive's 28 write tools. The MCP SDK requires
+Todo 462 added `outputSchema` to hive's write tools (28 at the time). The MCP SDK requires
 `structuredContent` on the result whenever a tool's registered config carries
 `outputSchema` - confirmed by driving a minimal server built in complete
 isolation from hive's own `dist/` (a bare `McpServer` with one tool, no hive
@@ -264,13 +264,18 @@ already holds, stated as a rule:
 
 - **MCP tools are how a Claude Code session (lead or worker) reads and
   writes shared STATE that the store owns**: pads, todos, kv, leases,
-  agents, wakes, and project/actor rows. A session calls these mid-turn,
+  agents, wakes, questions, and project/actor rows. A session calls these mid-turn,
   gets a slim JSON receipt back, and keeps working.
 - **CLI commands are how a HUMAN at a real terminal (or a script standing
   in for one) operates the ENVIRONMENT hive runs in**: starting and
   attaching to sessions (`lead`, `attach`, `start`), local file surfaces
   (`backups`, `restore`, `profile`, `posture`, `runbook`), diagnostics
   (`doctor`, `status`, `statusline`), and initial setup (`init`, `setup`).
+  The CLI also reads and writes the store directly for lifecycle and
+  reporting: it writes `agents`, `wakes`, `command_trust`, `pads` (`hive
+  init`, `hive pad --save`) and kv rows, and reads `todos`; `pads`, `todos`,
+  `questions`, `answer` and `queen-audit` exist on both surfaces by lane
+  decision, not by this rule.
 
 The reason the split holds is mechanical, not stylistic: an MCP tool runs
 inside the MCP server process, which Claude Code starts from its own
@@ -289,20 +294,44 @@ tool. If it is a human standing up or tearing down the environment hive
 runs in, it is a CLI command. A capability genuinely needed on both sides
 gets built for whichever is asked for first, and the other side is a
 separate, deliberate addition with its own review, never assumed to come
-free because the first half shipped. No CLI command reaches leases or wakes
-today, and no MCP tool reaches backups, restore, profiles, posture, runbook,
-or doctor, with one deliberate exception: `project_prune` with `confirm_name`
+free because the first half shipped. No CLI code touches leases. The CLI does
+reach wakes (checked against the code, 2026-10-14, because the earlier
+sentence "no CLI command reaches leases or wakes" had gone false): `hive
+answer` calls `answerQuestion`, which inserts a wake; `hive lead` re-points a
+lead's pending wakes to its new pane inside the restart transaction; `hive
+lead-handoff` inserts wakes; and `hive status` and `hive doctor` run the
+janitor, which cancels undeliverable ones. Several more commands only read
+them (`status`, `statusline`, `portfolio`, `next`, `crew`). No MCP tool
+reaches backups, restore, profiles, posture, runbook, or doctor, with one
+deliberate exception: `project_prune` with `confirm_name`
 takes a snapshot before it deletes a project (both surfaces were asked for;
 the snapshot is what makes an irreversible delete recoverable).
 The rest are the split working as intended, not omissions to close.
 
-**Narrowed since, for kv specifically.** `cmdAttach`/`cmdLead`'s
-`maybeOpenDashboard` (`src/cli.ts`) reads and writes one kv row directly, via
-the same process's `db` handle rather than through `kv_set`/`kv_get`. This is
-not the gap the mechanical reasoning above warns about: that reasoning is
-about a value set in ONE process (a shell env var, a CLI flag) failing to
-reach a DIFFERENT process (the MCP server), and there is no process boundary
-here at all - the CLI and every `kv_*` tool already share one `db` handle
-onto the same sqlite file in the same process. Still narrow: this is one CLI
-command touching one table for one purpose, not a general precedent for CLI
-code to bypass MCP tools where a real process boundary would apply.
+**Narrowed since, for kv specifically.** More than one command writes kv rows
+directly, via the same process's `db` handle rather than through
+`kv_set`/`kv_get`: `openDashboardOnce` (`src/cli.ts`) writes and deletes the
+dashboard-open row and is reached from `maybeOpenDashboard` (called by
+`cmdAttach` and `cmdLead`) and `maybeOpenQueenDashboard` (called by
+`cmdQueen`); `stopProcess` (`src/processes.ts`) writes, reads and deletes the
+`stopping:<id>` marker for `hive stop`, `hive lead` and the MCP agent tools;
+the scheduler writes `hive:queen-page-claim` and `hive:queen-page-mark`; and
+`src/queenDashboard.ts` reads `queen:brief`, a row the queen writes through
+`kv_set`. This is not the gap the mechanical reasoning above warns about:
+that reasoning is about a value set in ONE process (a shell env var, a CLI
+flag) failing to reach a DIFFERENT process (the MCP server), and there is no
+process boundary here at all - the CLI and every `kv_*` tool already share
+one `db` handle onto the same sqlite file in the same process. Still narrow:
+these are internal rows, not a general precedent for CLI code to bypass MCP
+tools where a real process boundary would apply. Reserving one key prefix
+for internal rows would make that boundary checkable; nothing does yet.
+
+**The env-var sentence has two older exceptions.** `agent_spawn` and
+`agent_resume` read `HIVE_SPAWN_PLACEMENT` (placement falls back to it after
+the argument and `hive.yml`), and `agent_spawn` reads `HIVE_SPAWN_READY_MS` at
+import to bound the readiness wait. Both predate the rule. They work in the
+common case, because a Claude Code pane's environment is inherited by the MCP
+server it starts, and fail exactly as the rule measured when the variable is
+exported after the session began. Moving them to stored config would change
+what existing setups do, so it needs the maintainer's call first; the rule
+only forbids adding a third.
