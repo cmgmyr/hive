@@ -678,3 +678,9 @@ That version has exactly three redirectable paths: `sqlite_home`, `log_dir`, `mo
 - **`model_catalog_json` is the only genuinely safe share and is not worth it.** It is 192-309k of OpenAI's public model list with no per-worker content - under 1% of a home's footprint, for an extra moving part.
 
 So the answer the section above left open is that the disk cost cannot be shrunk by redirection in this version. Reaping the whole home when the agent closes is the fix instead: `reapCodexHomeForClosedAgent` in `src/spawn.ts`.
+
+## Session-scope environment and `remain-on-exit` ride around the creating call
+
+`new-session -e` sets the SESSION's environment, not the new pane's, and the session is shared by every project on the machine. So `unsetAtSessionScope` (`src/tmux.ts`) removes each key with `set-environment -u` right after creation, chained into one tmux invocation. The unset is swallowed on failure: the session and its pane are already live, and throwing there strands a running worker to tidy an environment. The cost is real: a failure leaves `HIVE_PROJECT_LOCK` and `HIVE_PROJECT_PATH` at session scope, silently, for that session's whole life. `test/pane-created-with-its-command.test.mjs` pins the behaviour.
+
+`retainOnExitArgs` (`src/tmux.ts`) chains `remain-on-exit` into the SAME invocation that creates the pane, never a follow-up call: a command that errors and exits can be gone before a second, separate call would run, and the only fact the option needs to reach is the first tick of the process's own life.
