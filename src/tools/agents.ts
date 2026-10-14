@@ -1570,6 +1570,7 @@ export function registerAgents(server: McpServer): void {
         );
         requireLive(agent);
         const target = agent.tmux_target;
+        const identity = paneIdentity(agent);
         const auditIdentity = captureQueenWriteIdentity(project.id);
         let outgoing = args.text ?? ""; const tag = senderTag(project.id, currentActor());
         let shortened: { message_id: number; note: string; marker: string } | null = null;
@@ -1622,9 +1623,9 @@ export function registerAgents(server: McpServer): void {
               confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
             }
             if (args.wait_ms == null) return quiet;
-            await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+            await sleep(args.wait_ms);
             try {
-              if (observeOwnership(agent) !== "live") throw new Error("not live");
+              requireStillOwned(agent.id, identity, "agent_send");
               return { ...quiet, tail: capturePane(target, 15) };
             } catch {
               return {
@@ -1733,7 +1734,6 @@ export function registerAgents(server: McpServer): void {
 
           let pasted = false;
           let buffered = false;
-          const identity = paneIdentity(agent);
           try {
             await sendText(
               target,
@@ -1784,10 +1784,11 @@ export function registerAgents(server: McpServer): void {
         }
 
         if (args.wait_ms != null) {
-          await sleep(Math.min(Math.max(args.wait_ms, 250), 10000));
+          await sleep(args.wait_ms);
 
           let tailField: { tail: string } | { note: string };
           try {
+            requireStillOwned(agent.id, identity, "agent_send");
             tailField = { tail: capturePane(target, 15) };
           } catch {
             tailField = {

@@ -365,6 +365,37 @@ describe("agent_send", { skip: hasTmux ? false : "tmux is not installed" }, () =
 
   });
 
+  it("agent_send wait_ms tail refuses a pane whose ownership changed during the wait", async () => {
+    const name = "send-wait-owner-change";
+    const otherName = "send-wait-foreign-pane";
+    const sent = await spawnShowing(name, replayFixture("ready-idle.txt"));
+    const foreign = await spawnShowing(otherName, replayFixture("ready-idle.txt"));
+    spawned.push(sent.agent_id, foreign.agent_id);
+    const original = db.prepare("SELECT tmux_target, pane_pid FROM agents WHERE id = ?").get(sent.agent_id);
+    const foreignPane = db.prepare("SELECT tmux_target, pane_pid FROM agents WHERE id = ?").get(foreign.agent_id);
+
+    try {
+      const pending = mcp.call("agent_send", { name, keys: ["Escape"], wait_ms: 1000 });
+      await sleep(150);
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(
+        foreignPane.tmux_target,
+        foreignPane.pane_pid,
+        sent.agent_id,
+      );
+
+      const receipt = await pending;
+      assert.equal(receipt.sent, true);
+      assert.equal(receipt.tail, undefined);
+      assert.match(receipt.note, /tail could not be read/);
+    } finally {
+      db.prepare("UPDATE agents SET tmux_target = ?, pane_pid = ? WHERE id = ?").run(
+        original.tmux_target,
+        original.pane_pid,
+        sent.agent_id,
+      );
+    }
+  });
+
   describe("refuses raw keys to a lead from a non-lead caller (does not touch a peer lead, or text)", () => {
     async function showingAsLead(name, file) {
       const receipt = await spawnShowing(name, replayFixture(file));
