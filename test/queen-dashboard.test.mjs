@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import vm from "node:vm";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, McpClient, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen dashboard tests");
 clearHiveEnv();
@@ -661,6 +661,71 @@ describe("queen dashboard generation", () => {
     assert.match(html, /^<!doctype html>/);
     assert.match(html, /<\/html>\n$/);
     assert.match(html, /No queen brief yet/);
+  });
+
+  it("the queen page claim and mark keys round-trip through kv_get", async () => {
+    await tick(null);
+    const client = new McpClient({ cwd: home, dataDir: dirs.dataDir });
+    await client.start();
+    try {
+      const who = await client.call("whoami");
+      assert.equal(who.project.path, realpathSync(home));
+
+      const claim = await client.call("kv_get", { key: "hive:queen-page-claim" });
+      const mark = await client.call("kv_get", { key: "hive:queen-page-mark" });
+      const claimRow = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-claim");
+      const markRow = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-mark");
+
+      assert.equal(claim.value, "");
+      assert.equal(JSON.parse(claimRow.value), claim.value);
+      assert.match(mark.value, /^[a-f0-9]{64}$/);
+      assert.equal(JSON.parse(markRow.value), mark.value);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("queen page markers are JSON while the scheduler still accepts old raw hashes", async () => {
+    db.prepare("DELETE FROM kv WHERE project_id = ? AND key IN (?, ?)").run(
+      queen.id,
+      "hive:queen-page-claim",
+      "hive:queen-page-mark",
+    );
+    await tick(null);
+
+    const read = () =>
+      db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-mark").value;
+    const storedHash = read();
+    const hash = JSON.parse(storedHash);
+    assert.match(hash, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.parse(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(queen.id, "hive:queen-page-claim").value), "");
+
+    const jsonHash = JSON.stringify(hash);
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      jsonHash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    forceClaim();
+    await tick(null);
+    assert.equal(read(), jsonHash);
+
+    db.prepare("UPDATE kv SET value = ?, updated_at = datetime('now') WHERE project_id = ? AND key = ?").run(
+      hash,
+      queen.id,
+      "hive:queen-page-mark",
+    );
+    db.prepare("INSERT OR REPLACE INTO kv (project_id, key, value) VALUES (?, ?, ?)").run(
+      queen.id,
+      QUEEN_BRIEF_KEY,
+      JSON.stringify(brief({ summary: "Changed from an old raw hash", picks: [], lanes_at_brief: {} })),
+    );
+    forceClaim();
+    await tick(null);
+    assert.match(readFileSync(page(), "utf8"), /Changed from an old raw hash/);
+    const refreshedHash = JSON.parse(read());
+    assert.match(refreshedHash, /^[a-f0-9]{64}$/);
+    assert.notEqual(refreshedHash, hash);
   });
 
   it("the generated page carries a real queen_audit row with its target project's name", () => {
