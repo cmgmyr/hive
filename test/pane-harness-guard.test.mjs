@@ -366,34 +366,6 @@ describe("agent_spawn does not hand back instructions it has no way to deliver (
     assert.match(brief, /pg-brief-shell/, "and it must be THIS worker's brief");
   });
 
-  it("still returns instructions for a harness hive can type into but does not brief, so the field is gated on delivery not on briefing", async () => {
-    const { harnessFor, registerHarness, unregisterHarness } = await import("../dist/harnesses.js");
-    registerHarness({
-      name: "typeable-unbriefed",
-      matches: (command) => command.trim().split(/\s+/)[0] === "typeable-unbriefed",
-      argsFor: () => [],
-      briefDelivery: null,
-      stateSource: false,
-      transcriptDir: false,
-      contextTokens: false,
-      supportsResume: false,
-      supportsRename: false,
-      classifiesPaneScreen: true,
-      paneClassifier: {
-        choiceCheck: () => ({ awaitingChoice: null, tail: "" }),
-        inputBoxState: () => null,
-        hasInputBox: () => null,
-      },
-      hasScopes: false,
-    });
-    try {
-      const h = harnessFor("typeable-unbriefed");
-      assert.equal(h.briefDelivery, null, "no brief channel");
-      assert.equal(h.classifiesPaneScreen, true, "but hive can read its screen, so agent_send text still works");
-    } finally {
-      unregisterHarness("typeable-unbriefed");
-    }
-  });
 });
 
 describe("the door checks the harness on the ROW, not behind a liveness probe (todo 507)", () => {

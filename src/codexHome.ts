@@ -241,7 +241,6 @@ function configToml(input: {
   indexJs: string;
   serverEnv: Record<string, string>;
   statusLine: string[];
-  readOnly?: boolean;
   modelContextWindow: number | null;
   modelAutoCompactTokenLimit: number | null;
 }): string {
@@ -380,7 +379,6 @@ export function ensureCodexHome(
       indexJs,
       serverEnv: { ...input.serverEnv, HIVE_AGENT_ID: input.actorId },
       statusLine,
-      readOnly: input.readOnly,
       modelContextWindow,
       modelAutoCompactTokenLimit,
     }),

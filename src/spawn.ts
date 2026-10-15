@@ -582,16 +582,13 @@ export function branchAt(cwd: string): string {
   return git(["rev-parse", "--short", "HEAD"]) ?? "";
 }
 
-export function parkAgentRow(agentId: number, expected: string | RowPaneIdentity, branch: string): string | undefined {
+export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
   const park =
     "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
     "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ?";
-  const row =
-    typeof expected === "string"
-      ? db.prepare(`${park} RETURNING parked_at`).get(branch, agentId, expected)
-      : db
-          .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
-          .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
+  const row = db
+    .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
+    .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
   return (row as { parked_at: string } | undefined)?.parked_at;
 }
 
@@ -692,23 +689,17 @@ export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string):
   db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
 }
 
-export function closeAgentRow(agentId: number, expected?: string | RowPaneIdentity): boolean {
+export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): boolean {
   const info =
     expected === undefined
       ? db
           .prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'")
           .run(agentId)
-      : typeof expected === "string"
-        ? db
-            .prepare(
-              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' AND tmux_target = ?",
-            )
-            .run(agentId, expected)
-        : db
-            .prepare(
-              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
-                "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
-            )
-            .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
+      : db
+          .prepare(
+            "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
+              "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
+          )
+          .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
   return info.changes > 0;
 }

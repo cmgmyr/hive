@@ -39,7 +39,6 @@ const WIDGET = {
   supportsRename: true,
   classifiesPaneScreen: true,
   paneClassifier: STUB_CLASSIFIER,
-  hasScopes: false,
 };
 
 // The witness WIDGET can no longer carry: briefDelivery ON while hive cannot read the screen.
@@ -172,11 +171,6 @@ describe("registering a hypothetical second harness", () => {
     }
   });
 
-  it("keeps hasScopes off the widget while stateSource stays on, so a scoped-registration report can't be inferred from an unrelated capability (todo 512's mistake, generalised)", () => {
-    assert.equal(harnessFor("widget").hasScopes, false);
-    assert.equal(harnessFor("widget").stateSource, true);
-  });
-
   it("reads an EMPTY command as no-fact-recorded and classifiable, never as an unclassifiable harness", () => {
     assert.equal(screenClassifiable(""), true, "a wake can name a pane with no agents row behind it");
     assert.equal(screenClassifiable("   "), true);
@@ -204,6 +198,5 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(claude.supportsResume, true);
     assert.equal(claude.supportsRename, true);
     assert.equal(claude.classifiesPaneScreen, true);
-    assert.equal(claude.hasScopes, true);
   });
 });

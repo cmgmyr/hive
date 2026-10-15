@@ -60,9 +60,6 @@ export interface HarnessCapabilities {
   readonly classifiesPaneScreen: boolean;
   readonly paneClassifier: PaneClassifier | null;
 
-  // Whether MCP registrations for this harness carry a scope at all; not where its config lives.
-  readonly hasScopes: boolean;
-
   // Whether agent_spawn must call ensureCodexHome before launch. A flag, not a name check, like
   // every other branch here.
   readonly needsHome: boolean;
@@ -149,8 +146,6 @@ const claudeHarness: HarnessCapabilities = {
   classifiesPaneScreen: true,
   paneClassifier: { choiceCheck: paneChoiceCheck, inputBoxState, inputBoxSnapshot, hasInputBox: paneHasInputBox, trailerView: claudeTrailerView },
 
-  hasScopes: true,
-
   needsHome: false,
 
   // "--" so a message that starts with a dash is never read as a flag.
@@ -190,8 +185,6 @@ export const codexHarness: HarnessCapabilities = {
     trailerView: codexTrailerView,
   },
 
-  hasScopes: false,
-
   needsHome: true,
 
   // Auto-submits with no Enter; verified live on v0.149.0.
@@ -225,8 +218,6 @@ const unknownHarness: HarnessCapabilities = {
 
   classifiesPaneScreen: false,
   paneClassifier: null,
-
-  hasScopes: false,
 
   needsHome: false,
 
