@@ -301,7 +301,12 @@ describe("lead auto-handoff restart", () => {
       const rc = join(tmp, `rc-${ctx.requestId}`);
       const cmd = [process.execPath, join(DIST, "cli.js"), ...start(ctx)].map((a) => `'${a}'`).join(" ");
       execFileSync("tmux", ["respawn-pane", "-k", "-t", ctx.pane.pane, "-e", `HIVE_DATA_DIR=${dataDir}`, `${cmd}; echo $? > '${rc}'; exec sleep 600`]);
-      assert.ok(await until(() => existsSync(rc), 8000));
+      await until(
+        () => existsSync(rc) && readFileSync(rc, "utf8").trim() !== "",
+        8000,
+        25,
+        "the bootstrap exit status must be fully written",
+      );
       return readFileSync(rc, "utf8").trim();
     };
 
