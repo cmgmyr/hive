@@ -1488,6 +1488,10 @@ const CONDITION_GONE = "gone";
 
 const NOTICE_RETRY_AFTER = "-60 seconds";
 
+const spentUntypedNotice = (alias: string): string =>
+  `${alias}.fired_at IS NOT NULL AND COALESCE(${alias}.typed_at, ${alias}.socket_attempt_at) IS NULL ` +
+  `AND ${alias}.cancelled_at IS NULL AND ${alias}.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')`;
+
 const NOTICE_MAX_AGE = "-1 hours";
 
 const ROSTER_STILL_GOING = 8;
@@ -1500,8 +1504,7 @@ const STANDING_EXPIRED_NOTE =
 const unreported = (condition: string, episode: string): string => `NOT EXISTS (
     SELECT 1 FROM wake_idle_notices n LEFT JOIN wakes nt ON nt.id = n.notice_wake_id
      WHERE n.wake_id = ? AND n.agent_id = a.id AND n.condition = '${condition}' AND n.episode = ${episode}
-       AND NOT (nt.fired_at IS NOT NULL AND COALESCE(nt.typed_at, nt.socket_attempt_at) IS NULL AND nt.cancelled_at IS NULL
-                AND nt.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')))`;
+       AND NOT (${spentUntypedNotice("nt")}))`;
 
 const CREW_COLUMNS =
   `a.id, a.name, a.actor_id, a.tmux_target, a.tmux_socket, a.pane_pid, a.agent_state,
@@ -1826,15 +1829,14 @@ function standingNoticeBody(
   return lines.join("\n");
 }
 
-function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): void {
-  stmt(
+function rearmSpentEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
+  return stmt(
     `DELETE FROM wake_idle_notices
       WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ?
         AND notice_wake_id IS NOT NULL
         AND EXISTS (SELECT 1 FROM wakes t WHERE t.id = wake_idle_notices.notice_wake_id
-                      AND t.fired_at IS NOT NULL AND COALESCE(t.typed_at, t.socket_attempt_at) IS NULL AND t.cancelled_at IS NULL
-                      AND t.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}'))`,
-  ).run(timerId, agentId, condition, episode);
+                      AND ${spentUntypedNotice("t")})`,
+  ).run(timerId, agentId, condition, episode).changes > 0;
 }
 
 function claimEpisode(timerId: number, agentId: number, condition: string, episode: string): boolean {
@@ -2043,9 +2045,16 @@ const claimStallBatch = db.transaction(
     if (!stillPending(timer.id)) return false;
     const won: StallCandidate[] = [];
     for (const c of candidates) {
-      if (c.row.agent_state === "waiting" && !claimBlockNotice(timer.id, c.row.id, c.row.episode)) continue;
-      rearmSpentEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
-      if (claimEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode)) won.push(c);
+      const rearmed = rearmSpentEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+      if (!claimEpisode(timer.id, c.row.id, CONDITION_STALL, c.row.episode)) continue;
+      if (c.row.agent_state === "waiting" && !rearmed && !claimBlockNotice(timer.id, c.row.id, c.row.episode)) {
+        stmt(
+          `DELETE FROM wake_idle_notices
+            WHERE wake_id = ? AND agent_id = ? AND condition = ? AND episode = ? AND notice_wake_id IS NULL`,
+        ).run(timer.id, c.row.id, CONDITION_STALL, c.row.episode);
+        continue;
+      }
+      won.push(c);
     }
 
     if (won.length === 0) return false;
