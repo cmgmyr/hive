@@ -463,7 +463,7 @@ function renderTodosSection(index: SectionMeta[], projectId: number): string {
       "open todos",
       "todos",
       rows,
-      emptyState("No active todos.", "New open or in-progress todos land here. Backlog todos stay off this list."),
+      emptyState("No open todos.", "No active todos are listed. New open or in-progress todos land here. Backlog todos stay off this list."),
       "todo-list",
     );
   return section(index, "todos", "Todos", `${all.length} open, ${blockedCount} blocked`, "checklist", String(shown.length), body);

@@ -78,7 +78,8 @@ it("a backlog-only project does not get a completion empty state", () => {
   seedTodo(project.id, { title: "shelved work", status: "backlog" });
 
   const dashboard = renderDashboard(project.id);
-  assert.match(dashboard, /No active todos\./);
+  assert.match(dashboard, /No open todos\./);
+  assert.match(dashboard, /No active todos are listed\./);
   assert.match(dashboard, /Backlog todos stay off this list\./);
   assert.doesNotMatch(dashboard, /Every todo in this project is completed or archived/);
 });
