@@ -19,6 +19,7 @@ import {
   scratchDirs,
   sleep,
   until,
+  untilOrTimeout,
 } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the quiet lead wake delivery tests");
@@ -403,8 +404,10 @@ describe("a standing watch's finish notice delivered by socket", () => {
 
       for (let i = 0; i < 5 && sock.received.length === 0; i++) {
         await tick();
-        await until(() => sock.received.length === 1, 600);
+        const posted = await untilOrTimeout(() => sock.received.length === 1, 600);
+        assert.ok(posted || i < 4, "the notice must reach the socket within five scheduler ticks");
       }
+      assert.equal(sock.received.length, 1, "one notice must reach the socket before the retry window closes");
       const [notice] = notices(watch);
       assert.equal(notice.delivery_method, "socket");
       if (confirmed) {
