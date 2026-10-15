@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { lstatSync, realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -7,6 +6,7 @@ import { db } from "./db.js";
 import { LEAD_KIND } from "./spawn.js";
 import { rowOwnership } from "./tmux.js";
 import { recordQueenRefusal } from "./queenAudit.js";
+import { gitOut } from "./git.js";
 
 export interface Project {
   id: number;
@@ -116,18 +116,12 @@ export function registeredAncestor(dir: string): Project | null {
 }
 
 export function gitPrimaryRoot(dir: string): string | null {
-  try {
-    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
-    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: dir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-      env,
-    }).trim();
-    const resolvedCommonDir = resolve(dir, commonDir);
+  const commonDir = gitOut(dir, ["rev-parse", "--git-common-dir"]);
+  if (commonDir === null) return null;
+  const resolvedCommonDir = resolve(dir, commonDir);
 
-    if (basename(resolvedCommonDir) !== ".git") return null;
+  if (basename(resolvedCommonDir) !== ".git") return null;
+  try {
     return realpathSync(dirname(resolvedCommonDir));
   } catch {
     return null;
@@ -135,19 +129,11 @@ export function gitPrimaryRoot(dir: string): string | null {
 }
 
 function gitDirs(dir: string): { gitDir: string; commonDir: string } | null {
+  const result = gitOut(dir, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (result === null) return null;
+  const out = result.split("\n");
+  if (out.length !== 2) return null;
   try {
-
-    const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...env } = process.env;
-    const out = execFileSync("git", ["rev-parse", "--git-dir", "--git-common-dir"], {
-      cwd: dir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-      env,
-    })
-      .trim()
-      .split("\n");
-    if (out.length !== 2) return null;
     return {
       gitDir: realpathSync(resolve(dir, out[0])),
       commonDir: realpathSync(resolve(dir, out[1])),

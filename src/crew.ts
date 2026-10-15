@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import type Database from "better-sqlite3";
 import { db } from "./db.js";
 import { type Project, isLinkedWorktree } from "./context.js";
@@ -12,6 +11,7 @@ import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
 import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
 import { reportsAgentStateLog } from "./stateProvenance.js";
+import { gitOut } from "./git.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";
 import {
   SKILL_TOOL,
@@ -122,34 +122,15 @@ function oneShotWatched(pending: WakeRow[]): number[] {
     });
 }
 
-function stripped(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const { GIT_DIR: _gitDir, GIT_COMMON_DIR: _gitCommonDir, GIT_WORK_TREE: _gitWorkTree, ...rest } = env;
-  return rest;
-}
-
-function git(cwd: string, args: string[]): string | null {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 2000,
-      env: stripped(process.env),
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-
 export function readCommitsAhead(cwd: string, projectRoot: string): number | null {
   if (!cwd || cwd === projectRoot || !isLinkedWorktree(cwd)) return null;
   const candidates: string[] = [];
-  const remoteHead = git(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
+  const remoteHead = gitOut(cwd, ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]);
   if (remoteHead) candidates.push(remoteHead);
   candidates.push("refs/heads/main", "refs/heads/master");
   for (const ref of candidates) {
-    if (git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) === null) continue;
-    const count = git(cwd, ["rev-list", "--count", `${ref}..HEAD`]);
+    if (gitOut(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]) === null) continue;
+    const count = gitOut(cwd, ["rev-list", "--count", `${ref}..HEAD`]);
     return count !== null && /^\d+$/.test(count) ? Number(count) : null;
   }
   return null;

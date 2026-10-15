@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
+import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
 import {
@@ -564,22 +564,10 @@ export function renameAgent(
 }
 
 export function branchAt(cwd: string): string {
-  const git = (args: string[]): string | null => {
-    try {
-      return execFileSync("git", args, {
-        cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 2000,
-      }).trim();
-    } catch {
-      return null;
-    }
-  };
-  const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = gitOut(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch === null) return "";
   if (branch !== "HEAD") return branch;
-  return git(["rev-parse", "--short", "HEAD"]) ?? "";
+  return gitOut(cwd, ["rev-parse", "--short", "HEAD"]) ?? "";
 }
 
 export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
