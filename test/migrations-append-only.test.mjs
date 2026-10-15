@@ -55,6 +55,7 @@ const SHIPPED = [
   "1acfb6d8ef98561b",
   "c33d4dab459587c3",
   "eb59a7d3f4851eb5",
+  "fd2b3b6dc1ca73d8",
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -86,7 +87,11 @@ describe("MIGRATIONS is append-only", () => {
     assert.equal(MIGRATIONS[34], "ALTER TABLE wakes ADD COLUMN delivered_by TEXT;");
   });
 
-  it("the new final migration adds only nullable pane_started_at to agents", () => {
-    assert.equal(MIGRATIONS.at(-1).trim(), "ALTER TABLE agents ADD COLUMN pane_started_at TEXT;");
+  it("the final migration recreates the handoff fence with the grace-start ceiling", () => {
+    const migration = MIGRATIONS.at(-1);
+    assert.match(migration, /^\s*DROP TRIGGER fence_handoff_held_claim;/);
+    assert.match(migration, /CREATE TRIGGER fence_handoff_held_claim/);
+    assert.match(migration, /h\.grace_started_at IS NOT NULL/);
+    assert.match(migration, /julianday\('now'\) - julianday\(h\.grace_started_at\).*< 900/s);
   });
 });

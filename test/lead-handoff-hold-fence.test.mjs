@@ -81,14 +81,30 @@ function seedHandoff(leadAgentId, over = {}) {
     hold_released_at: null,
     request_wake_id: null,
     updated_at: null,
+    hold_since: null,
     ...over,
   };
+  const graceStartedAtWasSet = Object.hasOwn(over, "grace_started_at");
   db.prepare("DELETE FROM lead_handoffs").run();
   db.prepare(
     `INSERT INTO lead_handoffs (project_id, lead_agent_id, pane_target, predecessor_pane_pid, predecessor_session_id,
-       reason, state, pass, request_wake_id, hold_released_at, updated_at)
-     VALUES (?, ?, '%9801', '4243', 'sess', ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%d %H:%M:%f', 'now')))`,
-  ).run(project, leadAgentId, row.reason, row.state, row.pass, row.request_wake_id, row.hold_released_at, row.updated_at);
+       reason, state, pass, request_wake_id, hold_released_at, hold_since, grace_started_at, updated_at)
+     VALUES (?, ?, '%9801', '4243', 'sess', ?, ?, ?, ?, ?, ?,
+       CASE WHEN ? THEN ? ELSE strftime('%Y-%m-%d %H:%M:%f', 'now') END,
+       COALESCE(?, strftime('%Y-%m-%d %H:%M:%f', 'now')))`,
+  ).run(
+    project,
+    leadAgentId,
+    row.reason,
+    row.state,
+    row.pass,
+    row.request_wake_id,
+    row.hold_released_at,
+    row.hold_since,
+    graceStartedAtWasSet ? 1 : 0,
+    row.grace_started_at ?? null,
+    row.updated_at,
+  );
 }
 
 const wakeRow = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
@@ -128,7 +144,8 @@ describe("the handoff hold fence in the store", () => {
   });
 
   it("a connection that prepared its claim before the fence existed is still fenced", () => {
-    const trigger = MIGRATIONS.findLast((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
+    const migration = MIGRATIONS.findLast((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
+    const trigger = migration?.slice(migration.indexOf(`CREATE TRIGGER ${TRIGGER}`));
     assert.ok(trigger, "the fence migration is in MIGRATIONS");
     const other = new Database(db.name);
     try {
@@ -190,7 +207,7 @@ describe("the handoff hold fence in the store", () => {
   });
 
   it("a holding row untouched for an hour no longer fences", () => {
-    seedHandoff(leadId, { state: "grace", updated_at: "2000-01-01 00:00:00.000" });
+    seedHandoff(leadId, { state: "started", updated_at: "2000-01-01 00:00:00.000" });
     assert.equal(oneShot(db, seedWake("lead:fence")).changes, 1);
     db.prepare("UPDATE lead_handoffs SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now', '-3000 seconds')").run();
     assert.equal(oneShot(db, seedWake("lead:fence")).changes, 0, "a hold 3000 s old still fences");
@@ -281,5 +298,60 @@ describe("the store fence agrees with handoffHoldsWake on every handoff state", 
             }
     assert.deepEqual(disagreements, []);
     assert.ok(fenced > 20 && passed > 20, `the grid must exercise both outcomes (fenced ${fenced}, passed ${passed})`);
+  });
+
+  it("grace agrees in the gate and trigger at fresh, 14-minute, 16-minute, and released boundaries", () => {
+    const cases = [
+      { label: "fresh", released: null, held: true },
+      { label: "14 min", grace_started_at: "14 minutes", released: null, held: true },
+      { label: "16 min", grace_started_at: "16 minutes", released: null, held: false },
+      { label: "released", released: "2026-01-01 00:00:00.000", held: false },
+    ];
+    const disagreements = [];
+
+    for (const row of cases) {
+      const wake = seedWake("lead:fence");
+      const graceStartedAt = typeof row.grace_started_at === "string"
+        ? db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', ?) AS value")
+            .get(`-${row.grace_started_at}`)
+            .value
+        : row.grace_started_at;
+      seedHandoff(leadId, {
+        state: "grace",
+        ...(Object.hasOwn(row, "grace_started_at") ? { grace_started_at: graceStartedAt } : {}),
+        hold_released_at: row.released,
+      });
+      const gate = handoffHoldsWake(wake.id, leadId);
+      const store = oneShot(db, wake).changes === 0;
+      if (gate !== row.held || store !== row.held || gate !== store) {
+        disagreements.push(`${row.label}: expected ${row.held}, gate ${gate}, store ${store}`);
+      }
+      db.prepare("DELETE FROM wakes WHERE id = ?").run(wake.id);
+    }
+
+    assert.deepEqual(disagreements, []);
+  });
+
+  it("a grace handoff with no grace_started_at does not hold automation", () => {
+    const wake = seedWake("lead:fence");
+    seedHandoff(leadId, { state: "grace", grace_started_at: null });
+
+    assert.equal(handoffHoldsWake(wake.id, leadId), false);
+    assert.equal(oneShot(db, wake).changes, 1);
+  });
+
+  it("a grace claim after a 14-minute request hold still holds 14 minutes into its own grace", () => {
+    const wake = seedWake("lead:fence");
+    const requestStarted = db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', '-28 minutes') AS value").get().value;
+    const graceStarted = db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', '-14 minutes') AS value").get().value;
+    seedHandoff(leadId, {
+      state: "grace",
+      hold_since: requestStarted,
+      grace_started_at: graceStarted,
+      updated_at: graceStarted,
+    });
+
+    assert.equal(handoffHoldsWake(wake.id, leadId), true);
+    assert.equal(oneShot(db, wake).changes, 0);
   });
 });

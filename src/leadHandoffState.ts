@@ -102,7 +102,7 @@ export function readActiveHandoff(leadAgentId: number): HandoffRow | null {
 export function handoffHoldsAutomation(row: HandoffRow): boolean { // mirrored by trigger fence_handoff_held_claim (src/db.ts); change both via a NEW migration
   switch (row.state) {
     case "grace":
-      return true;
+      return row.hold_released_at === null && !olderThan(row.grace_started_at, STOP_HOLD_CAP_SECONDS);
     case "started":
       return !olderThan(row.updated_at, HOLD_CEILING_SECONDS);
     case "respawning":

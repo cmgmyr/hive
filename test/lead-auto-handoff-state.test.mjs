@@ -178,7 +178,8 @@ describe("lead auto-handoff state", () => {
     assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
     handoff.casHandoff(requestId, ["pending"], { state: "requested" });
     assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
-    handoff.casHandoff(requestId, ["requested"], { state: "grace" });
+    const graceStartedAt = db.prepare("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now') AS value").get().value;
+    handoff.casHandoff(requestId, ["requested"], { state: "grace", grace_started_at: graceStartedAt });
     assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, true);
     handoff.casHandoff(requestId, ["grace"], { state: "postponed" });
     assert.equal(handoff.readHandoffGate(lead.id).holdAutomation, false);
