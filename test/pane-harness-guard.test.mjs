@@ -5,7 +5,7 @@ import { after, before, describe, it } from "node:test";
 
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-import { DIST, isolateTmux, makeFakeClaude, McpClient, runFixture, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
+import { assertScratchStore, DIST, isolateTmux, makeFakeClaude, McpClient, runFixture, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the pane-harness guard tests");
 
@@ -304,6 +304,7 @@ describe("an UNREADABLE pane is a third outcome, and agent_send must not read it
 describe("a lead whose own harness hive cannot classify cannot receive wakes at all (todo 507)", () => {
   it("refuses a wake_set aimed at it, so the whole wake system is closed to such a lead rather than one call failing", NEEDS_TMUX, async () => {
     const { db } = await import("../dist/db.js");
+    await assertScratchStore();
     const projectId = (await mcp.call("whoami")).project.id;
 
     const pane = execFileSync(
@@ -372,6 +373,7 @@ describe("agent_spawn does not hand back instructions it has no way to deliver (
 describe("the door checks the harness on the ROW, not behind a liveness probe (todo 507)", () => {
   it("refuses a self-targeted wake whose own row is unclassifiable even when the liveness probe cannot answer", NEEDS_TMUX, async () => {
     const { db } = await import("../dist/db.js");
+    await assertScratchStore();
     const projectId = (await mcp.call("whoami")).project.id;
 
     // A foreign tmux_socket makes isLive answer null - neither true nor false. That is the case that
@@ -409,6 +411,7 @@ describe("the door checks the harness on the ROW, not behind a liveness probe (t
 
   it("names the harness problem rather than the liveness problem for a dead unclassifiable worker", NEEDS_TMUX, async () => {
     const { db } = await import("../dist/db.js");
+    await assertScratchStore();
     const projectId = (await mcp.call("whoami")).project.id;
     const rowId = db
       .prepare(
