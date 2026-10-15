@@ -771,6 +771,24 @@ function driveOwnLeadHandoff(): void {
   }
 }
 
+function isolated(label: string, task: () => unknown | Promise<unknown>): void | Promise<void> {
+  const report = (err: unknown): void => {
+    try {
+      console.error(`[scheduler] ${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+    } catch {
+
+    }
+  };
+  try {
+    const result = task();
+    if (result !== null && typeof result === "object" && "then" in result) {
+      return Promise.resolve(result).then(() => {}, report);
+    }
+  } catch (err) {
+    report(err);
+  }
+}
+
 export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
   if (ticking) return;
   ticking = true;
@@ -783,16 +801,17 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     }
 
     if (snapshot === undefined) snapshot = liveTargets();
-    janitor(snapshot);
-    if (snapshot) reportRunningBuildChange(snapshot);
-    driveOwnLeadHandoff();
+    const tickSnapshot = snapshot;
+    isolated("janitor", () => janitor(tickSnapshot));
+    if (tickSnapshot) isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
+    isolated("lead handoff", driveOwnLeadHandoff);
 
-    checkConfirmations();
-    pruneStateLog();
+    isolated("wake confirmations", checkConfirmations);
+    isolated("state-log pruning", pruneStateLog);
 
-    maybeBackupHourly(db, dataDir);
+    isolated("hourly backup", () => maybeBackupHourly(db, dataDir));
 
-    maybeGenerateDashboards();
+    isolated("dashboard generation", maybeGenerateDashboards);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
     const candidates = stmt(
@@ -807,16 +826,18 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
 
     const choices: ChoiceCache = new Map();
     for (const timer of candidates) {
-      if (timer.kind === "delay") {
-        await fireDelay(timer, snapshot, choices);
-        continue;
-      }
-      const leadWatch = leadSubscription(timer.id);
-      if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, snapshot, now, choices);
-      else await maybeFireIdle(timer, snapshot, now, choices);
+      await isolated(`timer ${timer.id}`, async () => {
+        if (timer.kind === "delay") {
+          await fireDelay(timer, tickSnapshot, choices);
+          return;
+        }
+        const leadWatch = leadSubscription(timer.id);
+        if (leadWatch !== null) await maybeFireLeadWatch(timer, leadWatch, tickSnapshot, now, choices);
+        else await maybeFireIdle(timer, tickSnapshot, now, choices);
+      });
     }
-    await retryUnconfirmedSocketWakes(snapshot, choices);
-    await retryQuietLeadMessages(snapshot);
+    await isolated("unconfirmed socket wake retry", () => retryUnconfirmedSocketWakes(tickSnapshot, choices));
+    await isolated("quiet lead message retry", () => retryQuietLeadMessages(tickSnapshot));
   } catch {
 
   } finally {
@@ -3011,8 +3032,23 @@ async function deliver(
     }
     if (err instanceof FiringSuperseded) return;
     if (firing !== null && !pasted) dropRepeatingFiring(timer, firing, err);
-    if (!(err instanceof PaneOwnershipLost)) throw err;
-    if (firing === null || pasted) recordLostAfterClaim(timer, pasted, err.message, firing);
+    if (err instanceof PaneOwnershipLost) {
+      if (firing === null || pasted) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
+      return;
+    }
+    if (pasted) {
+      const repairableNotice = stmt(
+        `SELECT 1 FROM wake_idle_notices n JOIN wakes w ON w.id = n.notice_wake_id
+          WHERE n.notice_wake_id = ? AND w.fired_at IS NOT NULL
+            AND COALESCE(w.typed_at, w.socket_attempt_at) IS NULL AND w.cancelled_at IS NULL
+          LIMIT 1`,
+      ).get(timer.id);
+      if (pasted && repairableNotice === undefined) {
+        recordLostAfterClaim(timer, pasted, err instanceof Error ? err.message : String(err), firing);
+      }
+    }
     return;
   } finally {
 
