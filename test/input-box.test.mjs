@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { REPO, isolateTmux, until } from "./helpers.mjs";
+import { REPO, isolateTmux, tmux, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the input-box fixture tests");
 
@@ -167,15 +167,9 @@ describe(
         const fixture = join(FIXTURES, file);
         const cmd = `cat '${fixture}'; sleep 600`;
         if (i === 0) {
-          execFileSync(
-            "tmux",
-            ["new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd],
-            { stdio: "ignore" },
-          );
+          tmux("new-session", "-d", "-s", session, "-n", name, "-x", "220", "-y", "50", cmd);
         } else {
-          execFileSync("tmux", ["new-window", "-d", "-t", `=${session}`, "-n", name, cmd], {
-            stdio: "ignore",
-          });
+          tmux("new-window", "-d", "-t", `=${session}`, "-n", name, cmd);
         }
       });
     });
@@ -246,7 +240,7 @@ describe(
         const args = i === 0
           ? ["new-session", "-d", "-s", session, "-n", file.replace(".txt", ""), "-x", "220", "-y", "50", cmd]
           : ["new-window", "-d", "-t", `=${session}`, "-n", file.replace(".txt", ""), cmd];
-        execFileSync("tmux", args, { stdio: "ignore" });
+        tmux(...args);
       });
     });
     after(() => cleanup(session));

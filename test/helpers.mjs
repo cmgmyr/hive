@@ -262,6 +262,49 @@ function traceTmuxServer(suite, socket) {
   }
 }
 
+const KILL_VERBS = new Set(["kill-session", "kill-window", "kill-pane"]);
+const EMPTIED_SERVER_EXIT_BOUND_MS = 5000;
+
+// tmux returns from a kill before an emptied server has exited, and a new-session that connects in
+// that window fails "server exited unexpectedly". Returns the server pid only when it is now exiting.
+function killReportingEmptiedServer(socket, killArgs) {
+  const lines = execFileSync(
+    "tmux",
+    [
+      "-S", socket, "display-message", "-p", "#{pid}",
+      ";", ...killArgs,
+      ";", "list-sessions", "-F", "#{session_name}",
+      ";", "show-options", "-sv", "exit-empty",
+    ],
+    { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] },
+  )
+    .split("\n")
+    .filter(Boolean);
+  const pid = Number(lines[0]);
+  const exitEmpty = lines.at(-1);
+  const remaining = lines.slice(1, -1);
+  return remaining.length === 0 && exitEmpty === "on" && Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function awaitEmptiedServerExit(socket, pid, who) {
+  const deadline = Date.now() + EMPTIED_SERVER_EXIT_BOUND_MS;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if (e?.code === "ESRCH" || e?.code === "EPERM") return;
+      throw e;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${who}: the kill left the tmux server on ${socket} with no sessions, and its process ${pid} had not exited ` +
+          `after ${EMPTIED_SERVER_EXIT_BOUND_MS}ms; a new-session now would race that exit ("server exited unexpectedly")`,
+      );
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+}
+
 export function isolateTmux(suite) {
   const tmuxTmp = mkdtempSync(join(tmpdir(), "hive-tmux-"));
   process.env.TMUX_TMPDIR = tmuxTmp;
@@ -370,15 +413,13 @@ export function isolateTmux(suite) {
       return;
     }
     for (const session of sessions) {
+      let emptied = null;
       try {
-        execFileSync("tmux", ["-S", target, "kill-session", "-t", `=${session}`], {
-          stdio: "ignore",
-          timeout: 5000,
-          killSignal: "SIGKILL",
-        });
+        emptied = killReportingEmptiedServer(target, ["kill-session", "-t", `=${session}`]);
       } catch {
 
       }
+      if (emptied) awaitEmptiedServerExit(target, emptied, `${suite}: cleanup(${session})`);
     }
   };
   return { hasTmux, cleanup };
@@ -466,6 +507,11 @@ export function tmux(...args) {
   const socket = resolvedTmuxSocket();
   if (!socket) {
     throw new Error(`tmux(): cannot resolve a reachable tmux socket (TMUX_TMPDIR=${process.env.TMUX_TMPDIR ?? "unset"})`);
+  }
+  if (KILL_VERBS.has(args[0])) {
+    const emptied = killReportingEmptiedServer(socket, args);
+    if (emptied) awaitEmptiedServerExit(socket, emptied, `tmux(${args.join(" ")})`);
+    return "";
   }
   return execFileSync("tmux", ["-S", socket, ...args], { encoding: "utf8", timeout: 5000, killSignal: "SIGKILL" })
     .replace(/\n$/, "");
