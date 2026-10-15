@@ -4,7 +4,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, McpClient, paneField, resolvedTmuxSocket, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, paneField, resolvedTmuxSocket, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen scope tests");
 after(() => cleanup("qscope-alpha"));
@@ -13,6 +13,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { QUEEN_REACH, QUEEN_REFUSAL } = await import("../dist/context.js");
 migrate();
 

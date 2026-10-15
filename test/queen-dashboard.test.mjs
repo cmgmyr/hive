@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import vm from "node:vm";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, McpClient, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, makeFakeClaude, makeFakeOpen, McpClient, runCli, runNode, scratchDirs, tmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen dashboard tests");
 clearHiveEnv();
@@ -13,6 +13,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { parseQueenBrief, readQueenBrief, renderQueenDashboard, QUEEN_BRIEF_KEY } = await import("../dist/queenDashboard.js");

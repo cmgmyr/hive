@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, scratchDirs } from "./helpers.mjs";
 
 process.env.HIVE_DATA_DIR = scratchDirs().dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { extendOwnedLease } = await import("../dist/tools/leases.js");
 migrate();
 

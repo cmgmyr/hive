@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, makeFakeClaude, runCli, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the queen CLI scope tests");
 
@@ -12,6 +12,7 @@ clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { QUEEN_REFUSAL } = await import("../dist/context.js");
 const { sessionName } = await import("../dist/tmux.js");
 migrate();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead reserved process-name tests");
 
@@ -9,6 +9,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 
 let projectId;

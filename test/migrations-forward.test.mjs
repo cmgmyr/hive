@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { REPO, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, REPO, scratchDirs } from "./helpers.mjs";
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate, MIGRATIONS } = await import("../dist/db.js");
+await assertScratchStore();
 
 if (!db.name.startsWith(dirs.dataDir)) throw new Error(`refusing: opened ${db.name}`);
 

@@ -4,13 +4,14 @@ import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node
 import { execFileSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, paneField, runCli, scratchDirs, tmux, tmuxSocketUnder } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, isolateTmux, leadRow, makeFakeClaude, paneField, runCli, scratchDirs, tmux, tmuxSocketUnder } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("hive next");
 clearHiveEnv();
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 migrate();
 
