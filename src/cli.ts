@@ -203,6 +203,8 @@ import {
   stopAllProcesses,
   stopLine,
   stopProcess,
+  renderStart,
+  type StartResult,
   STOP_REASONS,
 } from "./processes.js";
 import {
@@ -453,10 +455,22 @@ async function ensureTrusted(
   return true;
 }
 
-function startYmlCommand(project: Project, name: string, proc: YmlProcess, config: ProjectYml): string {
+function startYmlCommand(
+  project: Project,
+  name: string,
+  proc: YmlProcess,
+  config: ProjectYml,
+  trusted: boolean,
+): StartResult {
+
+  if (!trusted) return { status: "refused", reason: "untrusted" } as const;
 
   if (isReservedAgentName(name)) {
-    return `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`;
+    return {
+      status: "refused",
+      reason: "reserved-name",
+      message: `skipped: "lead" is reserved for this project's lead session and cannot be used as a process name`,
+    } as const;
   }
   const existing = db
     .prepare("SELECT id, tmux_target, tmux_socket FROM agents WHERE project_id = ? AND name = ? AND status = 'running'")
@@ -467,17 +481,23 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess, confi
     if (live) {
       const windows = projectWindows(sessionName(), project.id);
       const where = windows === null ? null : paneVisibility(existing.tmux_target, windows);
-      return where === "shown" || where === "hidden" ? `already running (${where})` : "already running";
+      return { status: "already-running", location: where === "shown" || where === "hidden" ? where : null } as const;
     }
 
-    if (live === null) return "skipped: tmux could not be probed, so hive cannot tell whether it is already running";
+    if (live === null) {
+      return {
+        status: "refused",
+        reason: "unknown-liveness",
+        message: "skipped: tmux could not be probed, so hive cannot tell whether it is already running",
+      } as const;
+    }
     closeAgentRow(existing.id);
   }
   let dir: string;
   try {
     dir = resolveCommandDir(project.path, proc.dir);
   } catch (e) {
-    return `skipped: ${errorMessage(e)}`;
+    return { status: "refused", reason: "escaped-dir", message: `skipped: ${errorMessage(e)}` } as const;
   }
   const placement: "split" | "window" | "processes" = proc.visible
     ? (config.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split"))
@@ -502,16 +522,19 @@ function startYmlCommand(project: Project, name: string, proc: YmlProcess, confi
       setPaneTitle(target, shownPaneTitle(project.name, name));
       if (landedInProjectId != null) {
         const landedName = getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}`;
-        return `started, landed in project "${landedName}"'s window`;
+        return { status: "started", message: `started, landed in project "${landedName}"'s window` } as const;
       }
-      return "started";
+      return { status: "started", message: "started" } as const;
     }
-    return inProcessesWindow
-      ? "started (hidden)"
-      : "started in its own window: it opened this project's tmux session, and a session's first window " +
-          `cannot be a tile. Move it with: hive hide "${name}"`;
+    return {
+      status: "started",
+      message: inProcessesWindow
+        ? "started (hidden)"
+        : "started in its own window: it opened this project's tmux session, and a session's first window " +
+            `cannot be a tile. Move it with: hive hide "${name}"`,
+    } as const;
   } catch (e) {
-    return `failed: ${errorMessage(e)}`;
+    return { status: "failed", message: errorMessage(e) } as const;
   }
 }
 
@@ -1011,9 +1034,9 @@ async function cmdLead(argv: string[]): Promise<void> {
           console.log(`- ${name}: defined, auto_start off (start with: hive start "${name}")`);
           continue;
         }
-        if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-          console.log(`- ${name}: ${startYmlCommand(project, name, proc, config)}`);
-        }
+        const trusted = await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env);
+        const result = startYmlCommand(project, name, proc, config, trusted);
+        if (trusted) console.log(`- ${name}: ${renderStart(result)}`);
       }
     }
 
@@ -1777,9 +1800,10 @@ async function cmdStart(argv: string[]): Promise<void> {
     console.log(processNotDefined(config, name));
     process.exit(1);
   }
-  if (await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env)) {
-    console.log(`${name}: ${startYmlCommand(project, name, proc, config)}`);
-  }
+  const trusted = await ensureTrusted(project.id, name, proc.command, proc.dir, proc.env);
+  const result = startYmlCommand(project, name, proc, config, trusted);
+  if (trusted) console.log(`${name}: ${renderStart(result)}`);
+  if (!trusted || result.status === "failed" || result.status === "refused") process.exitCode = 1;
 }
 
 function processNotDefined(config: ProjectYml | null, name: string): string {
