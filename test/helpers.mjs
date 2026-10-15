@@ -874,9 +874,10 @@ async function waitUntil(predicate, timeoutMs, stepMs) {
   }
 }
 
-export async function until(predicate, timeoutMs = 3000, stepMs = 25, message = "condition not met") {
+export async function until(predicate, timeoutMs = 3000, stepMs = 25, message) {
   if (!(await waitUntil(predicate, timeoutMs, stepMs))) {
-    assert.fail(`Timed out after ${timeoutMs}ms waiting for ${message}`);
+    const timeoutMessage = message ?? predicate.toString().slice(0, 200);
+    assert.fail(`Timed out after ${timeoutMs}ms waiting for ${timeoutMessage}`);
   }
   return true;
 }
