@@ -20,8 +20,8 @@ would be lost.
 
 One forked profile directory is resolved by multiple projects with different
 `vars`. Baking a var at fork or write time hands one project another
-project's values. Substitution only happens inside `renderProfileFile`,
-called by whatever is reading the file for a specific project.
+project's values. Substitution only happens at read time, in `renderProfileFile` or
+`renderTemplate`, called by whatever is reading the file for a specific project.
 
 ## A new conditional var needs its code deployed first
 
