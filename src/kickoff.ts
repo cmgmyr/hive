@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +8,7 @@ import type { ProvenanceRow } from "./stateProvenance.js";
 
 import { cutToUnitBudget } from "./slug.js";
 import { FIRST_MESSAGE_SHA_ENV } from "./firstMessage.js";
+import { gitOut } from "./git.js";
 
 export const OUTPUT_BUDGET = 10_000;
 const CONTEXT_BUDGET = 6_000;
@@ -26,16 +26,7 @@ export interface KickoffResult {
 }
 
 function currentBranch(dir: string): string | null {
-  try {
-    return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-      cwd: dir,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-
-    return null;
-  }
+  return gitOut(dir, ["rev-parse", "--abbrev-ref", "HEAD"]);
 }
 
 export function truncate(text: string, limit: number): string {

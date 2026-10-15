@@ -1,7 +1,7 @@
-import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gitOut } from "./git.js";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const checkoutRoot = join(moduleDir, "..");
@@ -82,21 +82,9 @@ function packageVersion(): string {
 }
 
 function currentGit(): GitState | null {
-  try {
-    const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
-      cwd: checkoutRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd: checkoutRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return { sha, dirty: status.trim().length > 0 };
-  } catch {
-    return null;
-  }
+  const sha = gitOut(checkoutRoot, ["rev-parse", "--short", "HEAD"]);
+  const status = gitOut(checkoutRoot, ["status", "--porcelain"]);
+  return sha === null || status === null ? null : { sha, dirty: status.length > 0 };
 }
 
 const describe = (sha: string, dirty: boolean) => `${sha}${dirty ? "-dirty" : ""}`;

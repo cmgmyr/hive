@@ -157,6 +157,22 @@ describe("hive lead --detach", { skip: hasTmux ? false : "tmux is not installed"
     assert.equal(countRows("command_trust", p.id), 0);
   });
 
+  it("does not fail the lead when an optional auto-start process fails to launch", async () => {
+    const p = project("autostart-launch-failure");
+    writeFileSync(
+      join(p.path, "hive.yml"),
+      "lead: claude\nprocesses:\n  broken:\n    command: 'exit 17'\n    visible: false\n",
+    );
+    seedTrust(p.id, "lead", "claude");
+    seedTrust(p.id, "broken", "exit 17");
+
+    const result = await runCli(["lead", p.path, "--detach"], cliOpts(p.path));
+
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^- broken: failed: /m);
+    assert.ok(leadRow(db, p.id));
+  });
+
   it("returns the recorded pane and attach command, adopts live leads, and restarts dead panes", async () => {
     const p = project("detached target");
     writeFileSync(join(p.path, "hive.yml"), "dashboard: true\n");

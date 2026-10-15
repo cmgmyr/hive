@@ -33,7 +33,7 @@ describe("hive start refuses a process named \"lead\"", { skip: hasTmux ? false 
   it("skips it and names the reason, starting nothing", async () => {
     const { code, stdout } = await runCli(["start", "lead"], opts);
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
     assert.match(stdout, /reserved/);
     const rows = db.prepare("SELECT * FROM agents WHERE project_id = ? AND name = 'lead'").all(projectId);
     assert.equal(rows.length, 0, "a refused start must not leave any row behind, of any kind");
@@ -47,7 +47,7 @@ describe("hive start refuses a process named \"lead\"", { skip: hasTmux ? false 
 
     const { code, stdout } = await runCli(["start", "lead"], opts);
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
 
     assert.doesNotMatch(stdout, /already running/, "the real lead's row must not stand in for the process");
     assert.match(stdout, /reserved/);
