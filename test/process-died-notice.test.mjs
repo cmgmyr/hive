@@ -190,4 +190,18 @@ describe("a dead-process notice is filed only for a lead whose pane the lead row
     await crashApi();
     assert.equal(noticeBodies().length, before + 1, "control: the same death reaches a lead that owns its pane");
   });
+
+  it("does not mint a dead-process notice for a live but unclassifiable lead pane", needsTmux, async () => {
+    const { screenClassifiable } = await import("../dist/harnesses.js");
+    assert.equal(screenClassifiable("sleep 600"), false);
+    db.prepare("UPDATE agents SET command = 'sleep 600' WHERE kind = 'lead'").run();
+    const before = noticeBodies().length;
+    await crashApi();
+
+    assert.equal(noticeBodies().length, before, "a pane hive cannot classify must not receive a notice");
+
+    db.prepare("UPDATE agents SET command = 'claude' WHERE kind = 'lead'").run();
+    await crashApi();
+    assert.equal(noticeBodies().length, before + 1, "a classifiable lead still receives the report");
+  });
 });
