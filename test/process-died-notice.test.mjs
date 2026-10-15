@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
-import { clearHiveEnv, crashPane, isolateTmux, runCli, scratchDirs, seedTrustedYml, tmux, until } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, crashPane, isolateTmux, runCli, scratchDirs, seedTrustedYml, tmux, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the dead-process notice tests");
 
@@ -10,6 +10,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { createWindow, ensureSession, findProjectWindow, sessionName, targetLive } = await import("../dist/tmux.js");
 const { janitor } = await import("../dist/scheduler.js");
 

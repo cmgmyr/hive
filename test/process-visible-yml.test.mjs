@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the hive.yml visible key tests");
 
@@ -18,6 +18,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { configHash, loadProjectYml } = await import("../dist/projectYml.js");
 const { sessionName } = await import("../dist/tmux.js");
 

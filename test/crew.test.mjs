@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import Database from "better-sqlite3";
 import {
+  assertScratchStore,
   createLiveAndDialogPanes,
   isolateTmux,
   paneField,
@@ -20,6 +21,7 @@ const { hasTmux, cleanup } = isolateTmux("the crew tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 const { addProject } = await import("../dist/context.js");
 const { classifyActivity, collectCrew, crewStoreProblem, readCommitsAhead, reviewSkillsOf } = await import("../dist/crew.js");
 const { sessionName } = await import("../dist/tmux.js");

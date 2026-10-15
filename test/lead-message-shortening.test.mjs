@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, makeFakeClaude, McpClient, REPO, scratchDirs, until } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, makeFakeClaude, McpClient, REPO, scratchDirs, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead-message shortening tests");
 const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
@@ -40,6 +40,7 @@ before(async () => {
   mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir, env: { HIVE_SPAWN_READY_MS: "2000" } });
   await mcp.start();
   ({ db } = await import("../dist/db.js"));
+  await assertScratchStore();
 });
 
 after(async () => {

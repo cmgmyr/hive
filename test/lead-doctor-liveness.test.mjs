@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { failureCount, isolateTmux, makeFakeClaude, paneField, runCli, scratchDirs, warningCount } from "./helpers.mjs";
+import { assertScratchStore, failureCount, isolateTmux, makeFakeClaude, paneField, runCli, scratchDirs, warningCount } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead doctor-liveness tests");
 
@@ -11,6 +11,7 @@ const dirs = scratchDirs();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 
 function withoutConfigSourceRows(stdout) {

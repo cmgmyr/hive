@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, scratchDirs } from "./helpers.mjs";
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate, MIGRATIONS } = await import("../dist/db.js");
+await assertScratchStore();
 
 if (!db.name.startsWith(dirs.dataDir)) throw new Error(`refusing: opened ${db.name}`);
 

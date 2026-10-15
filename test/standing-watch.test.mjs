@@ -4,13 +4,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { DIST, isolateTmux, McpClient, runFixture, scratchDirs, until } from "./helpers.mjs";
+import { assertScratchStore, DIST, isolateTmux, McpClient, runFixture, scratchDirs, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the standing watch tests");
 const NEEDS_TMUX = { skip: hasTmux ? false : "tmux is not installed" };
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
+const { db } = await import("../dist/db.js");
+await assertScratchStore();
 
 const fixtureEnv = (dataDir) => ({ HIVE_DATA_DIR: dataDir, TMUX_TMPDIR: process.env.TMUX_TMPDIR });
 

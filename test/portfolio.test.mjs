@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { clearHiveEnv, fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux, hasTmux } = isolateTmux("the portfolio tests");
 clearHiveEnv();
@@ -12,6 +12,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 
 const { db, migrate } = await import("../dist/db.js");
+await assertScratchStore();
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { collectPortfolio, leadText, ACTIVE_WAKE_WHERE } = await import("../dist/portfolio.js");

@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { JsonRpcClient } from "./mcp-client.mjs";
 
 export const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -541,9 +542,9 @@ export function windowFor(session, projectId) {
   return match[0];
 }
 
-export class McpClient {
+export class McpClient extends JsonRpcClient {
   constructor({ cwd, dataDir, env = {}, server = SERVER }) {
-    this.child = spawn("node", [server], {
+    super("node", [server], {
       cwd,
       env: {
         ...baseEnv(),
@@ -551,72 +552,8 @@ export class McpClient {
         HIVE_AUTO_ATTACH: "0",
         ...env,
       },
-      stdio: ["pipe", "pipe", "inherit"],
-    });
-    this.nextId = 1;
-    this.pending = new Map();
-
-    this.child.stdout.setEncoding("utf8");
-    let buffer = "";
-    this.child.stdout.on("data", (chunk) => {
-      buffer += chunk;
-      let nl;
-      while ((nl = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        const resolve = this.pending.get(msg.id);
-        if (resolve) {
-          this.pending.delete(msg.id);
-          resolve(msg);
-        }
-      }
-    });
-  }
-
-  send(payload) {
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
-  }
-
-  request(method, params) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Timed out waiting for ${method} (id ${id})`));
-      }, 15000);
-      this.pending.set(id, (msg) => {
-        clearTimeout(timer);
-        resolve(msg);
-      });
-      this.send({ jsonrpc: "2.0", id, method, params });
-    });
-  }
-
-  async start() {
-    await this.request("initialize", {
-      protocolVersion: "2025-06-18",
-      capabilities: {},
       clientInfo: { name: "hive-test", version: "0" },
     });
-    this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
-  }
-
-  async call(name, args = {}) {
-    const msg = await this.request("tools/call", { name, arguments: args });
-    if (msg.error) throw new Error(msg.error.message);
-    const text = msg.result?.content?.[0]?.text ?? "";
-    if (msg.result?.isError) throw new Error(text);
-    return text ? JSON.parse(text) : null;
-  }
-
-  async close() {
-    this.child.stdin.end();
-    const exited = new Promise((resolve) => this.child.once("exit", resolve));
-    const timeout = new Promise((resolve) => setTimeout(resolve, 3000).unref());
-    await Promise.race([exited, timeout]);
-    if (this.child.exitCode == null) this.child.kill("SIGKILL");
   }
 }
 

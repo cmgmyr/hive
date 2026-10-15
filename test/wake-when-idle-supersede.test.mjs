@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, it } from "node:test";
 
-import { isolateTmux, makeFakeClaude, McpClient, scratchDirs } from "./helpers.mjs";
+import { assertScratchStore, isolateTmux, makeFakeClaude, McpClient, scratchDirs } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the wake_when_idle supersede tests");
 
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName, liveTargets } = await import("../dist/tmux.js");
 const { tick } = await import("../dist/scheduler.js");
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, rmSync } from "node:fs";
 import { after, before, describe, it } from "node:test";
 import {
+  assertScratchStore,
   isolateTmux,
   liveAgentRow,
   makeFakeClaude,
@@ -16,6 +17,7 @@ const { hasTmux, cleanup } = isolateTmux("the agent_park tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName, targetLive } = await import("../dist/tmux.js");
 const { releaseParkRow } = await import("../dist/spawn.js");
 

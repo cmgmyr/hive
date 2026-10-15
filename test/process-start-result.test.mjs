@@ -3,12 +3,13 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { fakeFailingTmux, isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
+import { assertScratchStore, fakeFailingTmux, isolateTmux, runCli, scratchDirs, seedTrustedYml } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the process start outcome tests");
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db } = await import("../dist/db.js");
+await assertScratchStore();
 const { sessionName } = await import("../dist/tmux.js");
 const session = sessionName();
 const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
