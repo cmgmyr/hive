@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.4 - 2026-10-14
+
+- `kv_get` and `kv_list` no longer fail on a stored value that is not valid JSON. They return it as a raw string. `kv_list`'s `prefix` now matches literally, so `_`, `%` and `\` in a prefix are plain characters and matching is case-sensitive.
+- `help()` no longer says a session falls back to the only registered project. Its tool descriptions now match the tools for lead wake cancellation, answer wake rerouting, worker options, list limits and `queen_audit_list`.
+- `agent_rename` no longer retitles a pane that is in tmux copy mode. The row is still renamed. `agent_send` checks again that it owns the pane before it captures the `wait_ms` tail.
+- Advice to re-pin or rebuild hive is now a command you can run as printed. Native-addon errors, the dispatcher warning, the generated shim and `hive doctor` name the Node interpreter and CLI path directly, instead of telling you to run `hive setup` through a `hive` command that may be stale. `hive doctor` mentions `scripts/sweep-scratch.mjs` only in a checkout that has it.
+- The scheduler runs each maintenance step and each due wake on its own, so one failure no longer stops the rest of that tick. A wake that fails after its text was pasted now leaves a record.
+- A stall notice about a waiting worker is filed again if the earlier one was never typed. A dead-process notice is sent only when hive can read the lead's screen.
+- After upgrading, restart every hive session.
+
 ## 1.11.3 - 2026-10-13
 
 - A recipient given as a string agent id (`"41"`) or as an actor id (`"lead:41"`) now reaches that agent in `wake_set`, `wake_when_idle`, `agent_send` and the other agent tools when no running agent's name matches it. Names still come first, exactly as before: an exact name, then a unique partial name, so a ticket number still finds its worker. A number always resolves by id. The queen's wakes and messages to another project's lead use the same lookup, so a lead addressed by a string id is no longer refused.
