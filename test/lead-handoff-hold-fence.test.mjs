@@ -144,7 +144,8 @@ describe("the handoff hold fence in the store", () => {
   });
 
   it("a connection that prepared its claim before the fence existed is still fenced", () => {
-    const trigger = MIGRATIONS.findLast((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
+    const migration = MIGRATIONS.findLast((sql) => sql.includes(`CREATE TRIGGER ${TRIGGER}`));
+    const trigger = migration?.slice(migration.indexOf(`CREATE TRIGGER ${TRIGGER}`));
     assert.ok(trigger, "the fence migration is in MIGRATIONS");
     const other = new Database(db.name);
     try {

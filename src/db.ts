@@ -617,6 +617,42 @@ ALTER TABLE queen_audit ADD COLUMN problem TEXT NOT NULL DEFAULT '';
   `
 ALTER TABLE agents ADD COLUMN pane_started_at TEXT;
 `,
+  `
+DROP TRIGGER fence_handoff_held_claim;
+CREATE TRIGGER fence_handoff_held_claim
+BEFORE UPDATE OF fire_count, delivery_method ON wakes
+FOR EACH ROW
+WHEN (NEW.fire_count > OLD.fire_count
+      OR (NEW.delivery_method IS 'pty-after-socket-timeout'
+          AND OLD.delivery_method IS NOT 'pty-after-socket-timeout'
+          AND NEW.typed_at IS NULL))
+  AND EXISTS (
+    SELECT 1 FROM lead_handoffs h
+     WHERE h.lead_agent_id = (SELECT a.id FROM agents a
+                               WHERE a.actor_id = NEW.deliver_actor
+                               ORDER BY (a.status = 'running') DESC,
+                                        a.id DESC
+                               LIMIT 1)
+       AND h.state NOT IN ('completed', 'failed')
+       AND h.request_wake_id IS NOT NEW.id
+       AND (
+            (h.state = 'grace'
+             AND h.hold_released_at IS NULL
+             AND h.grace_started_at IS NOT NULL
+             AND (julianday('now') - julianday(h.grace_started_at)) * 86400 < 900)
+            OR ((h.state IN ('grace', 'started')
+                 OR (h.hold_released_at IS NULL AND (
+                       h.state IN ('respawning', 'ambiguous', 'wind_down')
+                       OR (h.state = 'requested'
+                           AND (h.reason = 'stop' OR h.pass >= 2))
+                       OR (h.state = 'postponed' AND h.reason = 'stop'))))
+                AND h.state <> 'grace'
+                AND (julianday('now') - julianday(h.updated_at)) * 86400 < 3600)
+       ))
+BEGIN
+  SELECT RAISE(IGNORE);
+END;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
