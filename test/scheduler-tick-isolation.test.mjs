@@ -117,7 +117,7 @@ describe("tick() isolates failures so one timer or step cannot skip delivery", (
     db.prepare("DELETE FROM wakes WHERE id = ?").run(poisonId);
   });
 
-  it("a pre-paste one-shot error leaves delivery unrecorded", NEEDS_TMUX, async () => {
+  it("a pre-paste one-shot error preserves the untyped claim", NEEDS_TMUX, async () => {
     const timerId = seedDelayWake(firstPane, "lost-after-claim");
     process.env.HIVE_TEST_FAIL_PANE = firstPane;
 
@@ -126,7 +126,7 @@ describe("tick() isolates failures so one timer or step cannot skip delivery", (
     const timer = db.prepare("SELECT fired_at, fire_count, cancelled_at, held_reason FROM wakes WHERE id = ?").get(timerId);
     assert.ok(timer.fired_at, "the wake must have been claimed before the injected delivery failure");
     assert.equal(timer.fire_count, 1, "the failed one-shot wake must not be claimed again");
-    assert.equal(timer.cancelled_at, null, "an error before the paste must remain eligible for a repair path");
+    assert.equal(timer.cancelled_at, null, "an undelivered wake must not be marked terminal");
     assert.equal(timer.held_reason, null, "do not record an undelivered wake as terminal");
     delete process.env.HIVE_TEST_FAIL_PANE;
   });
