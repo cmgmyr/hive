@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.5 - 2026-10-15
+
+- A lead handoff's grace period now holds the lead's wakes for at most 15 minutes from when grace began, like the other handoff holds. Before, a grace hold whose driver had died could hold wakes indefinitely. The store migrates to schema 45 on first open to apply the same limit to wake claims; hive takes a backup before the migration runs.
+- Backlog todos no longer count as open or as waiting on you. `hive status`, the statusline, the project dashboard, the crew sidebar, `hive portfolio`, the queen dashboard and `hive next` now agree: only an unarchived todo that is `open` or `in_progress` counts, and only such a todo tagged `needs-human` puts a project in the waiting-on-you lane. The dashboard says so when a project has only backlog todos.
+- `hive start <name>` now exits 1 when the process failed to launch, when hive refused to start it (a reserved name, an unapproved command, a directory outside the project, or a tmux server it could not probe), and exits 0 only when the process started or was already running. `hive lead`'s automatic starts are unchanged.
+- Every git read hive makes ignores `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE` from the environment and gives up after 2 seconds, so a hook that sets them can no longer make hive read another repository's branch, and a stuck git call can no longer hang a command.
+- Updated dependencies: `@modelcontextprotocol/sdk`, `smol-toml`, `zod` and `@types/node`.
+- After upgrading, restart every hive session.
+
 ## 1.11.4 - 2026-10-14
 
 - `kv_get` and `kv_list` no longer fail on a stored value that is not valid JSON. They return it as a raw string. `kv_list`'s `prefix` now matches literally, so `_`, `%` and `\` in a prefix are plain characters and matching is case-sensitive.
