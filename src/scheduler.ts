@@ -360,15 +360,15 @@ function reportDeadProcess(agent: CrewRowForRecord, snapshot: AliveSnapshot): vo
     // interrupted between the two is not reported as a crash.
     if (stoppingMarkerLive(agent.project_id, agent.id)) return;
     const lead = stmt(
-      `SELECT actor_id, tmux_target, tmux_socket, pane_pid FROM agents
+      `SELECT actor_id, tmux_target, tmux_socket, pane_pid, command FROM agents
         WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id DESC LIMIT 1`,
     ).get(agent.project_id, LEAD_KIND) as
-      | ({ actor_id: string } & RowPaneIdentity)
+      | ({ actor_id: string; command: string } & RowPaneIdentity)
       | undefined;
 
     // Never mint a notice hive could not deliver: with no live lead pane there is nobody this could
     // ever reach, and the row would sit in wakes forever.
-    if (!lead?.tmux_target || rowOwnership(lead, snapshot) !== "live") return;
+    if (!lead?.tmux_target || !screenClassifiable(lead.command) || rowOwnership(lead, snapshot) !== "live") return;
     insertNotice(
       { project_id: agent.project_id, owner: lead.actor_id },
       lead.actor_id,
