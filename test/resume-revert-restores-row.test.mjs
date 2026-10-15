@@ -236,7 +236,8 @@ describe(
 
       let parkedAt;
       failedResume(id, name, () => {
-        parkedAt = parkAgentRow(id, "", "branch-from-the-concurrent-park");
+        const identity = rowNow(id, ["tmux_target", "tmux_socket", "pane_pid"]);
+        parkedAt = parkAgentRow(id, identity, "branch-from-the-concurrent-park");
       });
 
       assert.ok(parkedAt, "the staged park must actually have won its CAS, or this tests nothing");

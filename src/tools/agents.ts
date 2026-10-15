@@ -935,10 +935,6 @@ export function registerAgents(server: McpServer): void {
                           note: "The pane never became ready. The brief is loaded regardless; check agent_output before sending the worker its assignment - typing into it now risks losing the text silently.",
                         }),
               }
-            : harness.classifiesPaneScreen
-              ? {
-                  instructions: workerBrief(briefFor(actorId)),
-                }
               : {
                   brief_path: writeAgentBrief(agentId, workerBrief(briefFor(actorId))),
                   note:
