@@ -28,7 +28,7 @@ function seedTodo(projectId, { title, status = "open", tags = [], archived = fal
     .get(projectId, title, status, JSON.stringify(tags), archived ? "2026-10-01 00:00:00" : null).id;
 }
 
-it("all open todo surfaces use open and in_progress, exclude archived and backlog, and share blocker semantics", async () => {
+it("every todo surface agrees on the active count", async () => {
   const project = addProject(dirs.projectDir, "todo-scope-cross-surface");
   seedTodo(project.id, { title: "ordinary open" });
   const inProgress = seedTodo(project.id, { title: "in progress", status: "in_progress", tags: ["needs-human"] });
@@ -69,6 +69,30 @@ it("all open todo surfaces use open and in_progress, exclude archived and backlo
   const crewCli = await runCli(["crew", "--json"], opts);
   assert.equal(crewCli.code, 0, crewCli.stderr);
   assert.deepEqual(JSON.parse(crewCli.stdout).needs_you.map((row) => row.id), [inProgress, blocked]);
+});
+
+it("a backlog needs-human todo is not needs-you in the crew sidebar", () => {
+  const projectPath = join(dirs.tmp, "backlog-crew-project");
+  mkdirSync(projectPath, { recursive: true });
+  const project = addProject(projectPath, "backlog-crew-project");
+  const activeAsk = seedTodo(project.id, { title: "active ask", status: "in_progress", tags: ["needs-human"] });
+  seedTodo(project.id, { title: "backlog ask", status: "backlog", tags: ["needs-human"] });
+
+  const crew = collectCrew(project, new Date("2026-10-15T12:00:00Z"));
+  assert.deepEqual(crew.needs_you.map((row) => row.id), [activeAsk]);
+});
+
+it("the dashboard does not count backlog todos as open", () => {
+  const projectPath = join(dirs.tmp, "backlog-dashboard-project");
+  mkdirSync(projectPath, { recursive: true });
+  const project = addProject(projectPath, "backlog-dashboard-project");
+  seedTodo(project.id, { title: "open work", status: "open" });
+  seedTodo(project.id, { title: "backlog work", status: "backlog" });
+
+  const dashboard = renderDashboard(project.id);
+  assert.match(dashboard, />1<span class="stat-unit">open<\/span>/);
+  assert.match(dashboard, /1 open, 0 blocked/);
+  assert.ok(!dashboard.includes("backlog work"));
 });
 
 it("a backlog-only project does not get a completion empty state", () => {
