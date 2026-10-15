@@ -492,7 +492,7 @@ describe("hive start refuses to duplicate a process it cannot see", { skip: hasT
       HIVE_TEST_UNPROBEABLE: "%9301",
     });
 
-    assert.equal(code, 0, stdout);
+    assert.equal(code, 1, stdout);
     assert.match(stdout, /skipped: tmux could not be probed/);
     assert.equal(agentStatus(existing), "running", "the row must not be closed");
     assert.equal(runningNamed("web").length, 1, "and no second copy may be launched");
