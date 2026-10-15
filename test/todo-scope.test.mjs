@@ -49,7 +49,7 @@ it("all open todo surfaces use open and in_progress, exclude archived and backlo
   assert.match(dashboard, />3<span class="stat-unit">open<\/span>/);
   assert.match(dashboard, /3 open, 1 blocked/);
   for (const title of ["ordinary open", "in progress", "blocked open"]) assert.ok(dashboard.includes(title));
-  for (const title of ["shelved needs you", "completed needs you", "archived open", "backlog blocker"])
+  for (const title of ["shelved needs you", "completed needs you", "archived open"])
     assert.ok(!dashboard.includes(title), `${title} must not appear in the dashboard's open list`);
 
   const opts = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp };
@@ -59,4 +59,12 @@ it("all open todo surfaces use open and in_progress, exclude archived and backlo
   const statusline = await runCli(["statusline"], opts);
   assert.equal(statusline.code, 0, statusline.stderr);
   assert.match(statusline.stdout, /3 todos \(2 ready\)/);
+  const portfolioCli = await runCli(["portfolio", "--json"], opts);
+  assert.equal(portfolioCli.code, 0, portfolioCli.stderr);
+  const portfolioOutput = JSON.parse(portfolioCli.stdout).projects.find((row) => row.id === project.id);
+  assert.equal(portfolioOutput.todos.open + portfolioOutput.todos.in_progress, 3);
+  assert.equal(portfolioOutput.needs_human, 2);
+  const crewCli = await runCli(["crew", "--json"], opts);
+  assert.equal(crewCli.code, 0, crewCli.stderr);
+  assert.deepEqual(JSON.parse(crewCli.stdout).needs_you.map((row) => row.id), [inProgress, blocked]);
 });

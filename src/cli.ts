@@ -262,10 +262,10 @@ import {
 import {
   getTodoDetail,
   listTodoSummaries,
-  OPEN_BLOCKERS_SQL,
   TODO_STATUSES,
   type TodoDetail,
 } from "./tools/todos.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import {
   createPad,
   getActivePadByName,
@@ -2079,7 +2079,7 @@ function cmdStatus(): void {
     const todos = (
       db
         .prepare(
-          "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
+          `SELECT COUNT(*) AS n FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
         )
         .get(project.id) as { n: number }
     ).n;
@@ -3497,11 +3497,11 @@ function cmdStatusline(): void {
   );
 
   const todos = count(
-    "SELECT COUNT(*) AS n FROM todos WHERE project_id = ? AND status IN ('open', 'in_progress') AND archived_at IS NULL",
+    `SELECT COUNT(*) AS n FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
   );
   const ready = count(
     `SELECT COUNT(*) AS n FROM todos t
-     WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
+     WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
        AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
   );
   const pads = count("SELECT COUNT(*) AS n FROM pads WHERE project_id = ? AND archived = 0");

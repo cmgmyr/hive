@@ -48,7 +48,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   const { findProjectForCwd } = await import("./context.js");
   const { ACTIVE_TIMER_WHERE } = await import("./scheduler.js");
   const { getActivePadByName } = await import("./tools/pads.js");
-  const { OPEN_BLOCKERS_SQL } = await import("./tools/todos.js");
+  const { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } = await import("./todoScope.js");
   migrate();
 
   const project = findProjectForCwd();
@@ -83,7 +83,7 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM todos t
-         WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL
+         WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
            AND EXISTS (${OPEN_BLOCKERS_SQL})`,
       )
       .get(project.id) as { n: number }

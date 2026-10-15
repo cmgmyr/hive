@@ -2,7 +2,7 @@ import { db } from "./db.js";
 import { listProjects } from "./context.js";
 import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
-import { OPEN_BLOCKERS_SQL } from "./tools/todos.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { pendingQuestionCount } from "./questions.js";
 import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
@@ -136,7 +136,7 @@ function projectRow(
       `SELECT t.id, t.title, t.slug, t.priority, t.status, t.tags, t.updated_at,
               EXISTS (${OPEN_BLOCKERS_SQL}) AS blocked
          FROM todos t
-        WHERE t.project_id = ? AND t.status IN ('open', 'in_progress') AND t.archived_at IS NULL`,
+        WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}`,
     )
     .all(project.id) as TodoRow[];
 
