@@ -865,13 +865,25 @@ export function repaintPaneAsSameWorker(db, target, command) {
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function until(predicate, timeoutMs = 3000, stepMs = 25) {
+async function waitUntil(predicate, timeoutMs, stepMs) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await predicate()) return true;
     if (Date.now() >= deadline) return false;
     await sleep(stepMs);
   }
+}
+
+export async function until(predicate, timeoutMs = 3000, stepMs = 25, message) {
+  if (!(await waitUntil(predicate, timeoutMs, stepMs))) {
+    const timeoutMessage = message ?? predicate.toString().slice(0, 200);
+    assert.fail(`Timed out after ${timeoutMs}ms waiting for ${timeoutMessage}`);
+  }
+  return true;
+}
+
+export async function untilOrTimeout(predicate, timeoutMs = 3000, stepMs = 25) {
+  return waitUntil(predicate, timeoutMs, stepMs);
 }
 
 export function withEnv(vars, fn) {

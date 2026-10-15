@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
-import { isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, seedLeadProject, until } from "./helpers.mjs";
+import { isolateTmux, leadRow, makeFakeClaude, runCli, scratchDirs, seedLeadProject, until, untilOrTimeout } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the fresh-lead leftover tests");
 
@@ -100,7 +100,7 @@ describe("a fresh hive lead clears the processes a previous lead left running (t
     const restarted = commandRow(project.id, "server");
     assert.ok(restarted, "the replacement must be recorded");
     assert.equal(
-      await until(() => targetLive(restarted.tmux_target) === false, 1500),
+      await untilOrTimeout(() => targetLive(restarted.tmux_target) === false, 1500),
       false,
       "the replacement must still be up: started before the leftover was stopped, it exits on EADDRINUSE",
     );

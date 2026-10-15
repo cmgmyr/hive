@@ -15,6 +15,7 @@ import {
   seedLeadProject,
   tmux,
   until,
+  untilOrTimeout,
 } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead pane-exited backstop tests");
@@ -132,7 +133,7 @@ describe("a killed lead pane takes its project's processes with it (todo 765)", 
     crashPane(workerPane);
 
     assert.equal(await until(() => targetLive(workerPane) === false, 8000), true, "the fixture needs that pane gone");
-    assert.equal(await until(() => runningNames(project.id).length === 0, 2000), false);
+    assert.equal(await untilOrTimeout(() => runningNames(project.id).length === 0, 2000), false);
     assert.deepEqual(runningNames(project.id), ["api"], "only the lead's own pane may trigger the stop");
   });
 
@@ -190,7 +191,7 @@ describe("a deliberate respawn is not a pane exit", () => {
       const pane = execFileSync("tmux", ["list-panes", "-t", `=${name}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
       execFileSync("tmux", ["set-hook", "-ga", "pane-exited", `run-shell "echo #{hook_pane} >> '${marker}'"`]);
       execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "sleep 601"]);
-      assert.equal(await until(() => readFileSync(marker, "utf8").includes(pane), 1500), false, "no hook for a respawn");
+      assert.equal(await untilOrTimeout(() => readFileSync(marker, "utf8").includes(pane), 1500), false, "no hook for a respawn");
       execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "true"]);
       assert.equal(await until(() => readFileSync(marker, "utf8").includes(pane), 5000), true, "the hook is armed: a real exit fires it");
     } finally {

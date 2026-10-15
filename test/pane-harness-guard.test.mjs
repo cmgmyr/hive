@@ -5,7 +5,7 @@ import { after, before, describe, it } from "node:test";
 
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-import { DIST, isolateTmux, makeFakeClaude, McpClient, runFixture, scratchDirs, until } from "./helpers.mjs";
+import { DIST, isolateTmux, makeFakeClaude, McpClient, runFixture, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the pane-harness guard tests");
 
@@ -31,15 +31,16 @@ after(async () => {
 
 const fakeClaude = makeFakeClaude(dirs.tmp);
 
-async function spawn(name, command) {
+async function spawn(name, command, outputExpected) {
   const receipt = await mcp.call("agent_spawn", { name, command, extra_args: [], placement: "window" });
-  await until(async () => (await mcp.call("agent_output", { name })).output.trim() !== "");
+  const outputReady = await untilOrTimeout(async () => (await mcp.call("agent_output", { name })).output.trim() !== "");
+  assert.equal(outputReady, outputExpected, `${name}: the fixture output must match the recorded harness behavior`);
   return receipt;
 }
 
 describe("a wake is refused at the door when its target's harness cannot be classified (todo 507)", () => {
   it("wake_set refuses a shell target, naming the mechanism rather than reporting it later as a timeout", NEEDS_TMUX, async () => {
-    const { agent_id } = await spawn("pg-wake-shell", "bash");
+    const { agent_id } = await spawn("pg-wake-shell", "bash", true);
 
     await assert.rejects(
       mcp.call("wake_set", { delay_seconds: 5, body: "MARKERWAKE", deliver_to: agent_id }),
@@ -52,8 +53,8 @@ describe("a wake is refused at the door when its target's harness cannot be clas
   });
 
   it("wake_when_idle refuses the same target, since both tools resolve delivery through one path", NEEDS_TMUX, async () => {
-    const { agent_id } = await spawn("pg-idle-shell", "bash");
-    const watched = await spawn("pg-idle-watched", fakeClaude("sleep 600"));
+    const { agent_id } = await spawn("pg-idle-shell", "bash", true);
+    const watched = await spawn("pg-idle-watched", fakeClaude("sleep 600"), false);
 
     await assert.rejects(
       mcp.call("wake_when_idle", {
@@ -67,7 +68,7 @@ describe("a wake is refused at the door when its target's harness cannot be clas
   });
 
   it("still accepts a claude target, so the refusal is about the harness and not about wakes", NEEDS_TMUX, async () => {
-    const { agent_id } = await spawn("pg-wake-claude", fakeClaude("sleep 600"));
+    const { agent_id } = await spawn("pg-wake-claude", fakeClaude("sleep 600"), false);
     const wake = await mcp.call("wake_set", { delay_seconds: 900, body: "MARKERWAKE", deliver_to: agent_id });
     assert.ok(wake.wake_id, "a classifiable target must still be accepted");
     await mcp.call("wake_cancel", { wake_id: wake.wake_id });
@@ -222,7 +223,7 @@ describe("a plain session's wake to its own pane still delivers, end to end (tod
 describe("an UNREADABLE pane is a third outcome, and agent_send must not read it as \"no dialog\" (todo 507)", () => {
   it("refuses text when the pane cannot be read, and says which of the two refusals this is", NEEDS_TMUX, async () => {
     const name = "pg-unreadable";
-    await spawn(name, fakeClaude(`cat '${join(dirs.tmp, "..", "nonexistent")}' 2>/dev/null; sleep 600`));
+    await spawn(name, fakeClaude(`cat '${join(dirs.tmp, "..", "nonexistent")}' 2>/dev/null; sleep 600`), false);
 
     const realTmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim();
     const shimDir = join(dirs.tmp, "capture-fails");
@@ -260,7 +261,7 @@ describe("an UNREADABLE pane is a third outcome, and agent_send must not read it
 
   it("exempts submit=false on an unreadable pane, since the destructive event is the Enter and there is none", NEEDS_TMUX, async () => {
     const name = "pg-unreadable-nosubmit";
-    await spawn(name, fakeClaude("sleep 600"));
+    await spawn(name, fakeClaude("sleep 600"), false);
 
     const realTmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim();
     const shimDir = join(dirs.tmp, "capture-fails-nosubmit");
@@ -292,7 +293,7 @@ describe("an UNREADABLE pane is a third outcome, and agent_send must not read it
 
   it("still sends when the pane reads cleanly, so the refusal is about the third outcome and not about sending", NEEDS_TMUX, async () => {
     const name = "pg-readable";
-    await spawn(name, fakeClaude("sleep 600"));
+    await spawn(name, fakeClaude("sleep 600"), false);
     const receipt = await mcp.call("agent_send", { name, text: "MARKERREADABLE" });
     assert.equal(receipt.sent, true, "a readable pane with no dialog must still be sent to");
   });
@@ -517,7 +518,7 @@ describe("a hold nothing lifts on its own says 'needs you', and cannot mask a ne
 describe("agent_rename treats an unreadable pane as a third outcome too (todo 507, ADV 11)", () => {
   it("renames the row but does NOT type /rename into a pane it could not read", NEEDS_TMUX, async () => {
     const name = "pg-rename-blind";
-    await spawn(name, fakeClaude("sleep 600"));
+    await spawn(name, fakeClaude("sleep 600"), false);
 
     const realTmux = execFileSync("sh", ["-c", "command -v tmux"], { encoding: "utf8" }).trim();
     const shimDir = join(dirs.tmp, "capture-fails-rename");

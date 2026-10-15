@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { isolateTmux, repaintPaneAsSameWorker, until } from "./helpers.mjs";
+import { isolateTmux, repaintPaneAsSameWorker, until, untilOrTimeout } from "./helpers.mjs";
 import { replayFixture, settleTicks, TICK_MS, wakeNotifyFixture } from "./wake-notify-fixture.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the wake block-notification tests");
@@ -160,7 +160,8 @@ describe(
         "the latch must really say waiting, or this tests nothing",
       );
 
-      await until(async () => noticeCount(wakeId) > 0, 6 * TICK_MS);
+      const noticeArrived = await untilOrTimeout(async () => noticeCount(wakeId) > 0, 6 * TICK_MS);
+      assert.equal(noticeArrived, false, "a stale waiting latch must not file a notice");
       assert.equal(noticeCount(wakeId), 0, "a stale latch over a pane with no dialog must say nothing");
       assert.equal(timerRow(wakeId).fired_at, null, "and the wake keeps waiting for a real idle");
     });

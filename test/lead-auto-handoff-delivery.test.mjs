@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, beforeEach, describe, it } from "node:test";
 
-import { DIST, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs, until } from "./helpers.mjs";
+import { DIST, REPO, assertScratchStore, clearHiveEnv, isolateTmux, runNode, scratchDirs, until, untilOrTimeout } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the lead auto-handoff delivery tests");
 const { dataDir, tmp } = scratchDirs();
@@ -365,7 +365,7 @@ describe("lead auto-handoff delivery", () => {
         text: "not over the socket", submit: true,
       });
       assert.equal(receipt.sent, false);
-      assert.equal(await until(() => received.length > 0, 1500), false, "nothing reached the socket");
+      assert.equal(await untilOrTimeout(() => received.length > 0, 1500), false, "nothing reached the socket");
       assert.equal(readFileSync(sink.sink, "utf8"), "");
     } finally {
       server.close();
