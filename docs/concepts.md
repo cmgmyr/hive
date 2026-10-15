@@ -15,7 +15,7 @@ The vocabulary, identity model, workflow, and shared store behind hive.
 | lane | One independent stream of work: typically one worker plus one or more todos. |
 | queen | The one lead per data dir that reads every registered project and writes into another only through its lead. See [the queen guide](queen.md). |
 | portfolio | `hive portfolio`: one row per project, sorted into waiting on you, stuck, moving and quiet. |
-| needs-human | A todo tag that puts its project in the portfolio's waiting-on-you lane. |
+| needs-human | A tag on an unarchived todo with status `open` or `in_progress` that puts its project in the portfolio's waiting-on-you lane. |
 
 ## Why not subagents?
 

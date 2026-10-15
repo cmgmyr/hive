@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { db } from "./db.js";
+import { ACTIVE_TODO_SQL, NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { getProject } from "./context.js";
 import type { PaneVisibility } from "./tmux.js";
 
@@ -191,12 +192,9 @@ function fetchTodoCounts(projectId: number): TodoCounts {
   return db
     .prepare(
       `SELECT
-         (SELECT COUNT(*) FROM todos WHERE project_id = ? AND archived_at IS NULL AND status != 'completed') AS open,
-         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND t.archived_at IS NULL AND t.status != 'completed'
-            AND EXISTS (
-              SELECT 1 FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-               WHERE b.todo_id = t.id AND bt.status != 'completed'
-            )) AS blocked,
+         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}) AS open,
+         (SELECT COUNT(*) FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
+            AND EXISTS (${OPEN_BLOCKERS_SQL})) AS blocked,
          (SELECT COUNT(*) FROM todos
             WHERE project_id = ? AND completed_at IS NOT NULL
               AND date(completed_at, 'localtime') >= date('now', 'localtime', '-6 days')) AS completed7d`,
@@ -380,7 +378,7 @@ interface OpenTodoRow {
   slug: string;
   status: string;
   priority: string;
-  open_blockers: number;
+  blocked: number;
 }
 
 interface BlockerRef {
@@ -390,10 +388,9 @@ interface BlockerRef {
 
 const OPEN_TODOS_SQL = `
   SELECT t.id, t.title, t.body, t.slug, t.status, t.priority,
-    (SELECT COUNT(*) FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-      WHERE b.todo_id = t.id AND bt.status != 'completed') AS open_blockers
+    EXISTS (${OPEN_BLOCKERS_SQL}) AS blocked
   FROM todos t
-  WHERE t.project_id = ? AND t.archived_at IS NULL AND t.status != 'completed'
+  WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL}
   ORDER BY CASE t.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, t.id`;
 
 function fetchBlockersFor(todoIds: number[]): Map<number, BlockerRef[]> {
@@ -403,7 +400,7 @@ function fetchBlockersFor(todoIds: number[]): Map<number, BlockerRef[]> {
   const rows = db
     .prepare(
       `SELECT b.todo_id, t.id, t.title FROM todo_blockers b JOIN todos t ON t.id = b.blocker_id
-       WHERE b.todo_id IN (${placeholders}) AND t.status != 'completed'`,
+       WHERE b.todo_id IN (${placeholders}) AND t.${NOT_COMPLETED_TODO_SQL}`,
     )
     .all(...todoIds) as (BlockerRef & { todo_id: number })[];
   for (const row of rows) {
@@ -422,11 +419,11 @@ function todoBadgeLevel(status: string, blocked: boolean): StatusLevel {
 function renderTodosSection(index: SectionMeta[], projectId: number): string {
   const all = db.prepare(OPEN_TODOS_SQL).all(projectId) as OpenTodoRow[];
   const shown = all.slice(0, TODO_CAP);
-  const blockersByTodo = fetchBlockersFor(shown.filter((t) => t.open_blockers > 0).map((t) => t.id));
-  const blockedCount = all.filter((t) => t.open_blockers > 0).length;
+  const blockersByTodo = fetchBlockersFor(shown.filter((t) => t.blocked).map((t) => t.id));
+  const blockedCount = all.filter((t) => t.blocked).length;
   const rows = shown
     .map((t) => {
-      const blocked = t.open_blockers > 0;
+      const blocked = Boolean(t.blocked);
       const blockers = blocked
         ? (blockersByTodo.get(t.id) ?? []).map((b) => `${mono(`#${b.id}`)} ${prose(b.title)}`).join(", ")
         : "";
@@ -466,7 +463,7 @@ function renderTodosSection(index: SectionMeta[], projectId: number): string {
       "open todos",
       "todos",
       rows,
-      emptyState("No open todos.", "Every todo in this project is completed or archived. New ones land here."),
+      emptyState("No open todos.", "No active todos are listed. New open or in-progress todos land here. Backlog todos stay off this list."),
       "todo-list",
     );
   return section(index, "todos", "Todos", `${all.length} open, ${blockedCount} blocked`, "checklist", String(shown.length), body);

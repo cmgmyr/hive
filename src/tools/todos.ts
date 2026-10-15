@@ -7,6 +7,7 @@ import { matchesAnyTag, parseTags, run } from "../result.js";
 import { findUnsafeControlChar } from "../tmux.js";
 import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
+import { NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_FROM_WHERE, OPEN_BLOCKERS_SQL } from "../todoScope.js";
 
 interface TodoRow {
   id: number;
@@ -46,13 +47,8 @@ export { SLUG_MAX_LEN, fallbackSlug };
 export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
 const statusParam = z.enum(TODO_STATUSES);
 
-const OPEN_BLOCKERS_FROM_WHERE = `FROM todo_blockers b JOIN todos bt ON bt.id = b.blocker_id
-   WHERE b.todo_id = t.id AND bt.status != 'completed'`;
-
-export const OPEN_BLOCKERS_SQL = `SELECT 1 ${OPEN_BLOCKERS_FROM_WHERE}`;
-
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
-   WHERE b.blocker_id = ? AND t.status != 'completed' AND t.archived_at IS NULL`;
+   WHERE b.blocker_id = ? AND t.${NOT_COMPLETED_TODO_SQL} AND t.archived_at IS NULL`;
 
 export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id)`;
 
@@ -330,10 +326,7 @@ const completeTodo = db.transaction((projectId: number, todoId: number, complete
       db
         .prepare(
           `${LIVE_DEPENDENTS_SQL}
-             AND NOT EXISTS (
-               SELECT 1 FROM todo_blockers b2 JOIN todos bt ON bt.id = b2.blocker_id
-               WHERE b2.todo_id = t.id AND bt.status != 'completed'
-             )`,
+             AND NOT EXISTS (${OPEN_BLOCKERS_SQL})`,
         )
         .all(todo.id) as { todo_id: number }[]
     ).map((r) => r.todo_id);

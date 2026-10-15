@@ -6,6 +6,7 @@ import { awaitingFirstPrompt } from "./firstPrompt.js";
 import { heldReasonLabel } from "./heldLabel.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import { NEEDS_HUMAN_TAG } from "./portfolio.js";
+import { ACTIVE_TODO_SQL } from "./todoScope.js";
 import { pendingQuestionCount } from "./questions.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
@@ -551,7 +552,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
   const needsYou = (
     db
       .prepare(
-        "SELECT id, slug, tags FROM todos WHERE project_id = ? AND status != 'completed' AND archived_at IS NULL ORDER BY id",
+        `SELECT t.id, t.slug, t.tags FROM todos t WHERE t.project_id = ? AND ${ACTIVE_TODO_SQL} ORDER BY t.id`,
       )
       .all(project.id) as { id: number; slug: string; tags: string }[]
   )
