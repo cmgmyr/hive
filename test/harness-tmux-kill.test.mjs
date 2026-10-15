@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { isolateTmux, resolvedTmuxSocket, tmux, until } from "./helpers.mjs";
+import { REPO, fakeFailingTmux, isolateTmux, resolvedTmuxSocket, tmux, until } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the harness tmux kill tests");
 const skip = hasTmux ? false : "tmux is not installed";
@@ -78,4 +78,25 @@ describe("a harness kill that empties the private server waits for that server t
     }
     assert.ok(await until(() => !isAlive(pid), 5000), "releasing the job must let the emptied server exit");
   });
+});
+
+describe("a failing fixture tmux command reports tmux's stderr", () => {
+  it("tmux() carries tmux's stderr in the error it throws", { skip }, () => {
+    const fake = fakeFailingTmux({ stderr: "server exited unexpectedly" });
+    const path = process.env.PATH;
+    process.env.PATH = `${fake}:${path}`;
+    try {
+      assert.throws(() => tmux("new-session", "-d", "-s", "never", "sleep", "600"), /server exited unexpectedly/);
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  for (const file of ["codex-pane-fixtures.test.mjs", "input-box.test.mjs"]) {
+    it(`${file} starts its fixture sessions through tmux(), never with stderr discarded`, () => {
+      const source = readFileSync(join(REPO, "test", file), "utf8");
+      assert.doesNotMatch(source, /execFileSync\("tmux", \[?"new-(session|window)"/);
+      assert.doesNotMatch(source, /stdio: "ignore"/);
+    });
+  }
 });
