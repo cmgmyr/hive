@@ -82,11 +82,11 @@ describe("a harness kill that empties the private server waits for that server t
 
 describe("a failing fixture tmux command reports tmux's stderr", () => {
   it("tmux() carries tmux's stderr in the error it throws", { skip }, () => {
-    const fake = fakeFailingTmux({ stderr: "server exited unexpectedly" });
+    const fake = fakeFailingTmux({ stderr: "fake tmux: this stderr must reach the error" });
     const path = process.env.PATH;
     process.env.PATH = `${fake}:${path}`;
     try {
-      assert.throws(() => tmux("new-session", "-d", "-s", "never", "sleep", "600"), /server exited unexpectedly/);
+      assert.throws(() => tmux("new-session", "-d", "-s", "never", "sleep", "600"), /fake tmux: this stderr must reach the error/);
     } finally {
       process.env.PATH = path;
     }
