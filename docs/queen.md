@@ -56,8 +56,8 @@ It is deterministic and read-only. Each project lands in one of four lanes:
 
 | Lane | Meaning |
 |---|---|
-| waiting on you | A todo is tagged `needs-human` or a question is pending, and nothing else is moving |
-| stuck | A hard stall, or stuck work on the todo graph when nothing is moving and nothing is tagged `needs-human` and no question is pending (the exact checks are below) |
+| waiting on you | An unarchived todo with status `open` or `in_progress` is tagged `needs-human`, or a question is pending, and nothing else is moving |
+| stuck | A hard stall, or stuck work on the todo graph when nothing is moving and no active todo is tagged `needs-human` and no question is pending (the exact checks are below) |
 | moving | A worker is working, or an in-progress todo is not blocked and has not gone stale |
 | quiet | Nothing asked, nothing broken |
 
@@ -65,15 +65,15 @@ hive decides the lane in this order, and the first step that applies wins:
 
 1. Stuck on a hard stall: the lead's pane is dead while a todo is in progress or a wake is pending; the project folder is missing while a todo is open or in progress or a wake is pending; a worker is waiting on input; or a wake is more than five minutes overdue.
 2. Otherwise moving, if a worker is working or an in-progress todo is neither blocked nor stale.
-3. Otherwise waiting on you, if a todo is tagged `needs-human` or a question is pending.
+3. Otherwise waiting on you, if an unarchived todo with status `open` or `in_progress` is tagged `needs-human`, or a question is pending.
 4. Otherwise stuck on the todo graph: an in-progress todo is blocked, every open or in-progress todo is blocked, or in-progress work has had no activity for 48 hours.
 5. Otherwise quiet.
 
-So a project with live work stays moving and keeps its `needs-human` count, and a dead lead pane makes a project stuck even when a worker is running. A pending wake never counts as movement, and a held wake is never overdue.
+So a project with live work stays moving and keeps its active `needs-human` count, and a dead lead pane makes a project stuck even when a worker is running. A pending wake never counts as movement, and a held wake is never overdue.
 
 Each project also carries a `questions_pending` count in JSON and `questions N pending` in the terminal output. It is a count only: it never reads question text or answers. A pending question adds the `questions_pending` reason and counts as a wait when the project has no hard stall or moving work.
 
-To put a project in front of yourself, tag a todo `needs-human`. A lead or worker sets it with `tags` on `todo_create` or `todo_update`; `todo_update` replaces the whole tag list, so include the tags the todo already has.
+To put a project in front of yourself, tag an unarchived todo with status `open` or `in_progress` as `needs-human`. A lead or worker sets it with `tags` on `todo_create` or `todo_update`; `todo_update` replaces the whole tag list, so include the tags the todo already has.
 
 A sample with two invented projects:
 
@@ -99,7 +99,7 @@ hive next          # attach to that project's lead
 hive next --print  # name the choice, start and attach nothing
 ```
 
-`hive next` picks one project from the portfolio. Projects waiting on you come first, ranked by the combined count of `needs-human` todos and pending questions, then oldest activity, then project id. Stuck projects and moving projects holding either kind of wait are also candidates. Among them, projects with a wait rank before stuck projects without one; candidates with a wait are ranked by the combined count, then blocked in-progress todos, overdue wakes, workers needing input, oldest activity, then project id. It skips the queen home.
+`hive next` picks one project from the portfolio. Projects waiting on you come first, ranked by the combined count of active `needs-human` todos and pending questions, then oldest activity, then project id. Stuck projects and moving projects holding either kind of wait are also candidates. Among them, projects with a wait rank before stuck projects without one; candidates with a wait are ranked by the combined count, then blocked in-progress todos, overdue wakes, workers needing input, oldest activity, then project id. It skips the queen home.
 
 `--print` prints the choice as one JSON line and exits, so you can check the ranking without moving your terminal:
 
@@ -110,7 +110,7 @@ hive next --print  # name the choice, start and attach nothing
 With nothing to pick, it prints this line and exits 0:
 
 ```text
-No project needs you: none is waiting, stuck, or holding a needs-human item.
+No project needs you: none is waiting, stuck, or holding an active needs-human item.
 ```
 
 Without `--print`, it starts that project's lead detached first, then attaches. A dead, reissued or unverifiable lead (one with no recorded pane pid) gets a fresh pane, and only a lead whose recorded pane pid matches its pane is adopted. Status surfaces label a dead lead with a matching `session_end` event as dormant; other dead leads remain dead. If hive cannot tell whether the lead is alive because tmux did not answer, it starts nothing. It exits 1 when the chosen project's folder is missing, and it refuses in a session locked to one project.

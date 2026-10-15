@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { after, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
@@ -67,4 +69,16 @@ it("all open todo surfaces use open and in_progress, exclude archived and backlo
   const crewCli = await runCli(["crew", "--json"], opts);
   assert.equal(crewCli.code, 0, crewCli.stderr);
   assert.deepEqual(JSON.parse(crewCli.stdout).needs_you.map((row) => row.id), [inProgress, blocked]);
+});
+
+it("a backlog-only project does not get a completion empty state", () => {
+  const projectPath = join(dirs.tmp, "backlog-only-project");
+  mkdirSync(projectPath, { recursive: true });
+  const project = addProject(projectPath, "backlog-only-project");
+  seedTodo(project.id, { title: "shelved work", status: "backlog" });
+
+  const dashboard = renderDashboard(project.id);
+  assert.match(dashboard, /No active todos\./);
+  assert.match(dashboard, /Backlog todos stay off this list\./);
+  assert.doesNotMatch(dashboard, /Every todo in this project is completed or archived/);
 });
