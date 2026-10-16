@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.6 - 2026-10-16
+
+- No behaviour change. Shared agent, wake, pad and todo logic moved out of the MCP tool modules into modules that the CLI and the MCP server both use, which removes every import cycle in `src/`. Tool names, schemas, descriptions and outputs are unchanged, and so is every CLI command's output and exit code.
+- For contributors: a new test fails the suite on any import cycle under `src/`, or on any module other than the MCP entry that imports a tool module. `docs/architecture.md` section 2 describes the new layering.
+- After upgrading, restart every hive session.
+
 ## 1.11.5 - 2026-10-15
 
 - A lead handoff's grace period now holds the lead's wakes for at most 15 minutes from when grace began, like the other handoff holds. Before, a grace hold whose driver had died could hold wakes indefinitely. The store migrates to schema 45 on first open to apply the same limit to wake claims; hive takes a backup before the migration runs.
