@@ -155,7 +155,7 @@ describe("rule and reference citations name real files and symbols", () => {
 
   it("fails a planted call that only a code comment mentions, because a comment defines nothing", () => {
     const commentOnly = "isLive";
-    assert.ok(new RegExp(commentOnly).test(readRepo("src/tools/wakes.ts")), "precondition: wakes.ts still mentions isLive in a comment");
+    assert.ok(new RegExp(commentOnly).test(readRepo("src/wakeTarget.ts")), "precondition: wakeTarget.ts still mentions isLive in a comment");
     assert.deepEqual(missingCalls("It calls `isLive()` first."), [
       "call `isLive()` is not defined anywhere in src/, scripts/ or claude-plugin/",
     ]);

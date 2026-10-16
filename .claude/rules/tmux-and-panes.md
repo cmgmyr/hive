@@ -4,6 +4,8 @@ paths:
   - "src/spawn.ts"
   - "src/scheduler.ts"
   - "src/tools/agents.ts"
+  - "src/agentRecords.ts"
+  - "src/wakeTarget.ts"
   - "src/cli.ts"
   - "src/crew.ts"
   - "src/leadMessage.ts"
