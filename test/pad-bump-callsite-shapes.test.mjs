@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { REPO } from "./helpers.mjs";
 
-const SOURCE = readFileSync(`${REPO}/src/tools/pads.ts`, "utf8");
+const SOURCES = ["src/pads.ts", "src/tools/pads.ts"].map((path) => readFileSync(`${REPO}/${path}`, "utf8"));
+const SOURCE = SOURCES.join("\n");
 
 const ALL_CALLS = SOURCE.match(/(?<!function )\bbumpPad\(/g) ?? [];
 
@@ -13,7 +14,7 @@ const SHAPES = {
   undefined: /bumpPad\(\s*[\w.]+\s*,\s*undefined\s*,/g,
 };
 
-describe("every bumpPad( call site in src/tools/pads.ts passes one of the three named predicate shapes", () => {
+describe("every bumpPad( call site in src/pads.ts and src/tools/pads.ts passes one of the three named predicate shapes", () => {
   it("has exactly the five call sites this fix produces (update this count deliberately if a call site is added or removed)", () => {
     assert.equal(ALL_CALLS.length, 5);
   });

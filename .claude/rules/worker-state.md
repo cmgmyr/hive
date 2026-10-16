@@ -5,6 +5,7 @@ paths:
   - "src/hooks.ts"
   - "src/scheduler.ts"
   - "src/tools/wakes.ts"
+  - "src/wakeTarget.ts"
   - "src/firstPrompt.ts"
   - "src/dashboard.ts"
   - "src/crew.ts"

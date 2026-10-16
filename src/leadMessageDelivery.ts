@@ -23,7 +23,7 @@ import {
   type AliveSnapshot,
   type RowPaneIdentity,
 } from "./tmux.js";
-import type { AgentRow } from "./tools/agents.js";
+import type { AgentRow } from "./agentRecords.js";
 
 export const SOCKET_MESSAGE_FOOTER = "Automated hive worker message. Do not reply to this socket sender.";
 

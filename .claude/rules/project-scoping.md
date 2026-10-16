@@ -4,6 +4,8 @@ paths:
   - "src/queenAuditStore.ts"
   - "src/spawn.ts"
   - "src/tools/agents.ts"
+  - "src/agentRecords.ts"
+  - "src/wakeTarget.ts"
   - "src/leadMessage.ts"
 ---
 

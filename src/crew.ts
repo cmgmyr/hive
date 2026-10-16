@@ -9,7 +9,7 @@ import { ACTIVE_TODO_SQL } from "./todoScope.js";
 import { pendingQuestionCount } from "./questions.js";
 import { loadProjectYml } from "./projectYml.js";
 import { parseTags } from "./result.js";
-import { ACTIVE_TIMER_WHERE } from "./scheduler.js";
+import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 import { reportsAgentStateLog } from "./stateProvenance.js";
 import { gitOut } from "./git.js";
 import { liveTargets, rowOwnership, type AliveSnapshot } from "./tmux.js";

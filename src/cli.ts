@@ -85,7 +85,6 @@ import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemov
 import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
-  ACTIVE_TIMER_WHERE,
   socketAwaitingWhere,
   dashboardFileContained,
   describeStall,
@@ -96,6 +95,7 @@ import {
   generateQueenDashboardNow,
   transcriptStaleness,
 } from "./scheduler.js";
+import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 import { readTurnCount } from "./turnCount.js";
 import { leadSessionEnded } from "./leadState.js";
 import { heldReasonLabel } from "./heldLabel.js";
@@ -264,16 +264,15 @@ import {
 import {
   getTodoDetail,
   listTodoSummaries,
-  TODO_STATUSES,
   type TodoDetail,
-} from "./tools/todos.js";
-import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
+} from "./todos.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL, TODO_STATUSES } from "./todoScope.js";
 import {
   createPad,
   getActivePadByName,
   listActivePads,
   overwritePadContent,
-} from "./tools/pads.js";
+} from "./pads.js";
 import { answerQuestion, listQuestions } from "./questions.js";
 
 function usage(): never {

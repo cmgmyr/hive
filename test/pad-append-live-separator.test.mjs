@@ -5,7 +5,7 @@ import { scratchDirs } from "./helpers.mjs";
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { bumpPad, createPad, APPEND_WITH_SEPARATOR_SET } = await import("../dist/tools/pads.js");
+const { bumpPad, createPad, APPEND_WITH_SEPARATOR_SET } = await import("../dist/pads.js");
 migrate();
 
 function makeProject(name) {

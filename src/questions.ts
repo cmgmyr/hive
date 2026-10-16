@@ -1,6 +1,6 @@
 import { db } from "./db.js";
 import { HUMAN_ACTOR_PREFIX } from "./context.js";
-import { assertSafeWakeBody, resolveWakeDelivery } from "./tools/wakes.js";
+import { assertSafeWakeBody, resolveWakeDelivery } from "./wakeTarget.js";
 
 type QuestionRef = { kind: "todo" | "pr"; number: number };
 type QuestionOption = { label: string; description: string; recommended: boolean };
