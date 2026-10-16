@@ -83,4 +83,3 @@ export function assertSafeWakeBody(body: string): void {
     );
   }
 }
-

@@ -168,4 +168,3 @@ export function getTodoDetail(projectId: number, todoId: number, includeComments
   }
   return result;
 }
-

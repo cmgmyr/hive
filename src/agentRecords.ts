@@ -161,4 +161,3 @@ export function summaryLiveness(row: AgentRow, snapshot?: AliveSnapshot | null):
   if (row.status !== "running") return false;
   return ownershipLiveness(rowOwnership(row, snapshot));
 }
-
