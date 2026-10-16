@@ -37,8 +37,9 @@ export function truncate(text: string, limit: number): string {
 async function digest(projectPath: string, profile: string, warnings: string[]): Promise<string | null> {
   const { migrate, db } = await import("./db.js");
   const { findProjectForCwd } = await import("./context.js");
-  const { ACTIVE_TIMER_WHERE } = await import("./scheduler.js");
   const { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } = await import("./todoScope.js");
+  const { ACTIVE_TIMER_WHERE } = await import("./wakeSql.js");
+  const { getActivePadByName } = await import("./pads.js");
   migrate();
 
   const project = findProjectForCwd();

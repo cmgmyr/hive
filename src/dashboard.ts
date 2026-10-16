@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
+import { listQuestions, pendingQuestionCount } from "./questions.js";
+import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 import { db } from "./db.js";
 import { ACTIVE_TODO_SQL, NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { getProject } from "./context.js";
@@ -35,7 +36,6 @@ import { awaitingFirstPrompt } from "./firstPrompt.js";
 
 import { SLUG_MAX_LEN, cutToUnitBudget } from "./slug.js";
 
-const requireFromHere = createRequire(import.meta.url);
 
 export const TODO_CAP = 100;
 export const AGENT_CAP = 50;
@@ -124,7 +124,6 @@ function fetchProject(projectId: number): { id: number; name: string } {
   return row;
 }
 
-const PENDING_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 function agentStatusLevel(state: string): StatusLevel {
   if (state === "working") return "live";
@@ -182,7 +181,7 @@ function fetchNextWake(projectId: number): NextWakeBrief | undefined {
   return db
     .prepare(
       `SELECT kind, due_at, max_wait_at, deliver_actor FROM wakes
-       WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
+       WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at) LIMIT 1`,
     )
     .get(projectId) as NextWakeBrief | undefined;
@@ -640,7 +639,7 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
   const all = db
     .prepare(
       `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, held_at
-       FROM wakes WHERE project_id = ? AND ${PENDING_WAKE_WHERE}
+       FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at)`,
     )
     .all(projectId) as WakeRow[];
@@ -684,8 +683,6 @@ function questionAge(createdAt: string): string {
 }
 
 function renderQuestionsSection(index: SectionMeta[], projectId: number): string {
-  // A static import of questions.js cycles through tools/wakes.ts and scheduler.ts.
-  const { listQuestions, pendingQuestionCount } = requireFromHere("./questions.js") as typeof import("./questions.js");
   const questions = listQuestions(projectId);
   if (questions.length === 0) return "";
   const pendingCount = pendingQuestionCount(projectId);

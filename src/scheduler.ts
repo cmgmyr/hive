@@ -1,4 +1,6 @@
 import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
+import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
+export { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 import { runningBuildChange, runningBuildNotice, versionInfo } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -177,9 +179,6 @@ function deliveryOwnership(row: DeliveryRow, snapshot: AliveSnapshot | null): De
   if (row.deliver_row_status !== "running") return "closed";
   return rowOwnership(deliveryIdentity(row), snapshot);
 }
-
-export const ACTIVE_TIMER_WHERE =
-  "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 const SETTLE_WINDOW = "-15 seconds";
 

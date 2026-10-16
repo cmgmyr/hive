@@ -15,13 +15,13 @@ import {
 import { run } from "../result.js";
 import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "../agentRecords.js";
 import {
-  ACTIVE_TIMER_WHERE,
   LOG_RETENTION,
   OWNED_BY_WATCH,
   WATCH_SCOPE_PROJECT,
   seedGoneCursor,
   type TimerRow,
 } from "../scheduler.js";
+import { ACTIVE_TIMER_WHERE } from "../wakeSql.js";
 import { idParam, projectIdParam } from "./params.js";
 import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";

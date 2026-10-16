@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 
-import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
+import { assertScratchStore, clearHiveEnv, fakeFailingTmux, isolateTmux, REPO, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux, hasTmux } = isolateTmux("the portfolio tests");
 clearHiveEnv();
@@ -16,7 +16,6 @@ await assertScratchStore();
 migrate();
 const { addProject } = await import("../dist/context.js");
 const { collectPortfolio, leadText, ACTIVE_WAKE_WHERE } = await import("../dist/portfolio.js");
-const { ACTIVE_TIMER_WHERE } = await import("../dist/scheduler.js");
 
 after(() => {
   for (const name of sessions) {
@@ -386,8 +385,16 @@ describe("portfolio idle-watch wakes", () => {
     assert.equal(row(upcoming).lane, "quiet");
   });
 
-  it("keeps the local active-wake clause identical to the scheduler's", () => {
-    assert.equal(ACTIVE_WAKE_WHERE, ACTIVE_TIMER_WHERE);
+  it("active-wake readers import the one leaf predicate", () => {
+    const files = ["scheduler", "crew", "cli", "kickoff", "tools/wakes", "portfolio", "dashboard"];
+    const sources = Object.fromEntries(files.map((file) => [file, readFileSync(`${REPO}/src/${file}.ts`, "utf8")]));
+    const clause = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
+    assert.equal(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8").match(/cancelled_at IS NULL/g)?.length, 1);
+    assert.equal(Object.values(sources).filter((source) => source.includes(clause)).length, 0);
+    for (const file of files) {
+      assert.match(sources[file], /from ["'](?:\.\.\/|\.\/)?wakeSql\.js["']/);
+    }
+    assert.equal(ACTIVE_WAKE_WHERE, clause);
   });
 });
 

@@ -85,7 +85,6 @@ import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemov
 import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
-  ACTIVE_TIMER_WHERE,
   socketAwaitingWhere,
   dashboardFileContained,
   describeStall,
@@ -96,6 +95,7 @@ import {
   generateQueenDashboardNow,
   transcriptStaleness,
 } from "./scheduler.js";
+import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 import { readTurnCount } from "./turnCount.js";
 import { leadSessionEnded } from "./leadState.js";
 import { heldReasonLabel } from "./heldLabel.js";

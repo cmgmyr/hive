@@ -4,6 +4,8 @@ import { existsSync } from "node:fs";
 import { parseTags } from "./result.js";
 import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { pendingQuestionCount } from "./questions.js";
+import { ACTIVE_TIMER_WHERE as ACTIVE_WAKE_WHERE } from "./wakeSql.js";
+export { ACTIVE_WAKE_WHERE };
 import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
@@ -32,7 +34,6 @@ const WAKE_OVERDUE_GRACE = "-5 minutes";
 const STALE_IN_PROGRESS = "-48 hours";
 const WAKE_UPCOMING = "+24 hours";
 
-export const ACTIVE_WAKE_WHERE = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
 
 export type PortfolioLeadTurn = "working" | "turn_ended" | "unknown";
 
