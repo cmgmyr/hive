@@ -1,22 +1,27 @@
-import { captureQueenWriteIdentity, effectiveProjectId, isQueenLead, type QueenWriteIdentity } from "./context.js";
+import { captureQueenWriteIdentity, effectiveProjectId, isQueenLead } from "./context.js";
+import {
+  insertQueenAuditRow,
+  QUEEN_AUDIT_DEFAULT_LIMIT,
+  QUEEN_AUDIT_MAX_LIMIT,
+  QUEEN_AUDIT_MAX_ROWS,
+  QUEEN_AUDIT_RETENTION,
+  QUEEN_AUDIT_SUMMARY_MAX,
+  recordQueenRefusal,
+  type QueenAuditRow,
+  type QueenWriteIdentity,
+} from "./queenAuditStore.js";
 import { db } from "./db.js";
 import { cutToUnitBudget, flatten } from "./slug.js";
 
-export type { QueenWriteIdentity } from "./context.js";
-
-export interface QueenAuditRow {
-  id: number;
-  actor_id: string;
-  home_project_id: number;
-  target_project_id: number;
-  operation: string;
-  resource_type: string;
-  resource_id: number;
-  summary: string;
-  outcome: "confirmed" | "refused";
-  problem: string;
-  created_at: string;
-}
+export {
+  QUEEN_AUDIT_DEFAULT_LIMIT,
+  QUEEN_AUDIT_MAX_LIMIT,
+  QUEEN_AUDIT_MAX_ROWS,
+  QUEEN_AUDIT_RETENTION,
+  QUEEN_AUDIT_SUMMARY_MAX,
+  recordQueenRefusal,
+} from "./queenAuditStore.js";
+export type { QueenAuditRow, QueenWriteIdentity } from "./queenAuditStore.js";
 
 type Receipt = Record<string, unknown>;
 export interface QueenAuditOperation {
@@ -25,12 +30,6 @@ export interface QueenAuditOperation {
   summary(args: Receipt, receipt: Receipt): string;
 }
 
-export const QUEEN_AUDIT_SUMMARY_MAX = 160;
-export const QUEEN_AUDIT_DEFAULT_LIMIT = 20;
-export const QUEEN_AUDIT_MAX_LIMIT = 100;
-export const QUEEN_AUDIT_RETENTION = "-30 days";
-export const QUEEN_AUDIT_MAX_ROWS = 20_000;
-
 function resource(type: string, value: unknown): { type: string; id: number } | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? { type, id: value } : null;
 }
@@ -38,33 +37,6 @@ function resource(type: string, value: unknown): { type: string; id: number } | 
 function removalSummary(r: Receipt): string {
   const counts = Object.entries((r.counts ?? {}) as Record<string, number>).map(([t, n]) => `${t} ${n}`);
   return `removed project "${r.name}"${counts.length > 0 ? ` with ${counts.join(", ")}` : ""}`;
-}
-
-function insertQueenAuditRow(
-  operation: string,
-  targetProjectId: number,
-  identity: QueenWriteIdentity,
-  resourceType: string,
-  resourceId: number,
-  summary: string,
-  outcome: QueenAuditRow["outcome"] = "confirmed",
-  problem = "",
-): void {
-  db.prepare(
-    `INSERT INTO queen_audit
-       (actor_id, home_project_id, target_project_id, operation, resource_type, resource_id, summary, outcome, problem)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    identity.actor_id,
-    identity.home_project_id,
-    targetProjectId,
-    operation,
-    resourceType,
-    resourceId,
-    summary,
-    outcome,
-    problem,
-  );
 }
 
 export const QUEEN_AUDIT_OPERATIONS: Readonly<Record<string, QueenAuditOperation>> = {
@@ -133,21 +105,6 @@ function insertAudit(operation: string, targetProjectId: number, args: Receipt, 
   const text = flatten(spec.summary(args, receipt));
   const summary = text.length <= QUEEN_AUDIT_SUMMARY_MAX ? text : cutToUnitBudget(text, QUEEN_AUDIT_SUMMARY_MAX - 1) + "…";
   insertQueenAuditRow(operation, targetProjectId, identity, touched.type, touched.id, summary);
-}
-
-export function recordQueenRefusal(
-  operation: string,
-  targetProjectId: number,
-  problem: string,
-  identity: QueenWriteIdentity,
-): void {
-  const text = flatten(problem);
-  const summaryText = `refused: ${text}`;
-  const summary =
-    summaryText.length <= QUEEN_AUDIT_SUMMARY_MAX
-      ? summaryText
-      : cutToUnitBudget(summaryText, QUEEN_AUDIT_SUMMARY_MAX - 1) + "…";
-  insertQueenAuditRow(operation, targetProjectId, identity, "project", targetProjectId, summary, "refused", text);
 }
 
 export function commitQueenStateWrite<T extends Receipt>(operation: string, targetProjectId: number, args: Receipt, mutate: () => T): T {

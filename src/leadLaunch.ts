@@ -4,7 +4,7 @@ import { carriesNameFlag, type HarnessCapabilities } from "./harnesses.js";
 import { join } from "node:path";
 import { checkoutRoot, renderProfileFile, resolveProfileFile } from "./profiles.js";
 import { activeProfile, configHash, mergedProjectVars, type ProjectYml } from "./projectYml.js";
-import { LEAD_NAME } from "./spawn.js";
+import { LEAD_NAME } from "./agentKinds.js";
 import { shellQuote } from "./tmux.js";
 
 // What `hive lead` and the handoff bootstrap both need to launch a claude lead: trust, posture,

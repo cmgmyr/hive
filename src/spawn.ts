@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
+import { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
@@ -217,16 +218,10 @@ export function asNameClash(e: unknown, name: string): unknown {
   return e;
 }
 
-export const LEAD_KIND = "lead";
-export const LEAD_ACTOR_PREFIX = `${LEAD_KIND}:`;
-export const isLeadActorId = (actorId: string): boolean => actorId.startsWith(LEAD_ACTOR_PREFIX);
-export const mintLeadActorId = (agentId: number): string => `${LEAD_ACTOR_PREFIX}${agentId}`;
+export { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 
 export const isRunningLeadActor = (actorId: string): boolean =>
   !!db.prepare("SELECT 1 FROM agents WHERE actor_id = ? AND kind = ? AND status = 'running'").get(actorId, LEAD_KIND);
-
-export const LEAD_NAME = LEAD_KIND;
-export const isReservedAgentName = (name: string): boolean => name.toLowerCase() === LEAD_NAME;
 
 export function upsertActor(actorId: string, name: string, kind: string): void {
   db.prepare(

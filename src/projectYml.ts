@@ -4,7 +4,7 @@ import { resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { harnessNames } from "./harnesses.js";
 import { isValidProfileName } from "./profiles.js";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 import { isWindowLayout, WINDOW_LAYOUTS, type WindowLayout } from "./tmux.js";
 import {
   globalConfigPath,

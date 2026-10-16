@@ -1,6 +1,7 @@
 ---
 paths:
   - "src/context.ts"
+  - "src/queenAuditStore.ts"
   - "src/spawn.ts"
   - "src/tools/agents.ts"
   - "src/leadMessage.ts"
