@@ -3,9 +3,9 @@ import { userInfo } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { storeDir } from "./dataDir.js";
 import { db } from "./db.js";
-import { LEAD_KIND } from "./spawn.js";
+import { LEAD_KIND } from "./agentKinds.js";
 import { rowOwnership } from "./tmux.js";
-import { recordQueenRefusal } from "./queenAudit.js";
+import { recordQueenRefusal, type QueenWriteIdentity } from "./queenAuditStore.js";
 import { gitOut } from "./git.js";
 
 export interface Project {
@@ -320,10 +320,7 @@ export function isQueenLead(): boolean {
   return queenProjectId() !== null;
 }
 
-export interface QueenWriteIdentity {
-  actor_id: string;
-  home_project_id: number;
-}
+export type { QueenWriteIdentity } from "./queenAuditStore.js";
 
 export function captureQueenWriteIdentity(targetProjectId: number): QueenWriteIdentity | null {
   const home = queenProjectId();

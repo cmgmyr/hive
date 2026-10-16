@@ -107,7 +107,7 @@ it("every foreign QUEEN_REACH category has a descriptor and an actual path fixtu
     .filter((path) => path.endsWith(".ts"))
     .map((path) => join(REPO, "src", path))
     .filter((path) => readFileSync(path, "utf8").includes("INSERT INTO queen_audit"));
-  assert.deepEqual(files, [join(REPO, "src/queenAudit.ts")]);
+  assert.deepEqual(files, [join(REPO, "src/queenAuditStore.ts")]);
   assert.equal((readFileSync(files[0], "utf8").match(/INSERT INTO queen_audit/g) ?? []).length, 1);
 });
 for (const [operation, perform] of Object.entries(fixture)) {

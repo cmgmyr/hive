@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { guardAbi } from "./abi.js";
 import { guardStoreDir } from "./dataDir.js";
 import { maybeBackupBeforeMigrations } from "./backup.js";
-import { errorMessage } from "./result.js";
+import { errorMessage } from "./errors.js";
 
 export const dataDir = guardStoreDir();
 mkdirSync(dataDir, { recursive: true });

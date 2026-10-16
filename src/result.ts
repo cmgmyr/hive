@@ -2,10 +2,9 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Project } from "./context.js";
 import { runningBuildChange, runningBuildNotice } from "./version.js";
+import { errorMessage } from "./errors.js";
 
-export function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+export { errorMessage } from "./errors.js";
 
 function ok(data: unknown): CallToolResult {
   const text = typeof data === "string" ? data : JSON.stringify(data, null, 1);
