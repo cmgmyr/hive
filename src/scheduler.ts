@@ -16,13 +16,13 @@ import { QUEEN_GENERATED_MARKER, readQueenBrief, renderQueenDashboard } from "./
 import { COMMAND_KIND, stoppingMarkerLive } from "./processes.js";
 import {
   closeAgentRow,
-  isLeadActorId,
-  LEAD_ACTOR_PREFIX,
-  LEAD_KIND,
   PaneOwnershipLost,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
 } from "./spawn.js";
+import {
+  isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND,
+} from "./agentKinds.js";
 import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
 import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
