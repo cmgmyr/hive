@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db } from "../db.js";
+import { COMMENT_COUNT_SQL, getTodo, getTodoDetail, listTodoSummaries, type TodoDetail, type TodoListFilter, type TodoRow, type TodoSummary } from "../todos.js";
+import { TODO_STATUSES } from "../todoScope.js";
+export { COMMENT_COUNT_SQL, getTodo, getTodoDetail, listTodoSummaries, type TodoDetail, type TodoListFilter, type TodoRow, type TodoSummary } from "../todos.js";
+export { TODO_STATUSES } from "../todoScope.js";
 import { commitQueenStateWrite } from "../queenAudit.js";
 import { currentActor, effectiveProjectId, resolveProject } from "../context.js";
 import { matchesAnyTag, parseTags, run } from "../result.js";
@@ -8,24 +12,6 @@ import { findUnsafeControlChar } from "../tmux.js";
 import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 import { NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_FROM_WHERE, OPEN_BLOCKERS_SQL } from "../todoScope.js";
-
-interface TodoRow {
-  id: number;
-  project_id: number;
-  title: string;
-  body: string;
-  priority: string;
-  status: string;
-  locked_by: string | null;
-  tags: string;
-  slug: string;
-  created_at: string;
-  completed_at: string | null;
-  archived_at: string | null;
-  updated_at: string;
-  open_blockers?: number;
-  comment_count?: number;
-}
 
 const priorityParam = z.enum(["high", "medium", "low"]);
 
@@ -44,159 +30,10 @@ const slugParam = z
 
 export { SLUG_MAX_LEN, fallbackSlug };
 
-export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
 const statusParam = z.enum(TODO_STATUSES);
 
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
    WHERE b.blocker_id = ? AND t.${NOT_COMPLETED_TODO_SQL} AND t.archived_at IS NULL`;
-
-export const COMMENT_COUNT_SQL = `(SELECT COUNT(*) FROM todo_comments c WHERE c.todo_id = t.id)`;
-
-const SUMMARY_SQL = `
-  SELECT t.*,
-    (SELECT COUNT(*) ${OPEN_BLOCKERS_FROM_WHERE}) AS open_blockers,
-    ${COMMENT_COUNT_SQL} AS comment_count
-  FROM todos t`;
-
-function getTodo(projectId: number, todoId: number): TodoRow {
-  const row = db
-    .prepare(`${SUMMARY_SQL} WHERE t.project_id = ? AND t.id = ?`)
-    .get(projectId, todoId) as TodoRow | undefined;
-  if (!row) throw new Error(`No todo with id ${todoId} in project ${projectId}. Call todo_list.`);
-  return row;
-}
-
-export interface TodoSummary {
-  todo_id: number;
-  title: string;
-  slug: string;
-  status: string;
-  priority: string;
-  tags: string[];
-  archived: boolean;
-  is_blocked: boolean;
-  open_blockers: number;
-  comment_count: number;
-  updated_at: string;
-}
-
-function summarize(row: TodoRow): TodoSummary {
-  return {
-    todo_id: row.id,
-    title: row.title,
-
-    slug: row.slug || fallbackSlug(row.title) || `todo ${row.id}`,
-    status: row.status,
-    priority: row.priority,
-    tags: parseTags(row.tags),
-    archived: row.archived_at != null,
-    is_blocked: (row.open_blockers ?? 0) > 0,
-    open_blockers: row.open_blockers ?? 0,
-    comment_count: row.comment_count ?? 0,
-    updated_at: row.updated_at,
-  };
-}
-
-export interface TodoListFilter {
-  statuses?: string[];
-  priority?: string;
-  query?: string;
-  tags?: string[];
-  isBlocked?: boolean;
-  includeArchived?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
-export function listTodoSummaries(projectId: number, filter: TodoListFilter = {}) {
-  const limit = Math.min(filter.limit ?? 50, 200);
-  const offset = filter.offset ?? 0;
-  let sql = `${SUMMARY_SQL} WHERE t.project_id = ?`;
-  const params: unknown[] = [projectId];
-  if (!filter.includeArchived) {
-    sql += " AND t.archived_at IS NULL";
-  }
-  if (filter.statuses && filter.statuses.length > 0) {
-    sql += ` AND t.status IN (${filter.statuses.map(() => "?").join(",")})`;
-    params.push(...filter.statuses);
-  }
-  if (filter.priority) {
-    sql += " AND t.priority = ?";
-    params.push(filter.priority);
-  }
-  if (filter.query) {
-
-    sql += " AND (t.title LIKE ? OR t.body LIKE ? OR t.slug LIKE ?)";
-    params.push(`%${filter.query}%`, `%${filter.query}%`, `%${filter.query}%`);
-  }
-  sql += " ORDER BY t.updated_at DESC";
-  let rows = (db.prepare(sql).all(...params) as TodoRow[]).filter((r) =>
-    matchesAnyTag(r.tags, filter.tags),
-  );
-  if (filter.isBlocked != null) {
-    rows = rows.filter((r) => ((r.open_blockers ?? 0) > 0) === filter.isBlocked);
-  }
-  return {
-    total_count: rows.length,
-    offset,
-    limit,
-    todos: rows.slice(offset, offset + limit).map(summarize),
-  };
-}
-
-interface TodoRef {
-  id: number;
-  title: string;
-  status: string;
-}
-
-interface TodoComment {
-  id: number;
-  author: string;
-  body: string;
-  created_at: string;
-}
-
-export interface TodoDetail extends TodoSummary {
-  body: string;
-  created_at: string;
-  completed_at: string | null;
-  blockers: TodoRef[];
-  blocking: TodoRef[];
-  comments?: TodoComment[];
-}
-
-export function getTodoDetail(projectId: number, todoId: number, includeComments: boolean): TodoDetail {
-  const todo = getTodo(projectId, todoId);
-  const blockers = db
-    .prepare(
-      `SELECT t.id, t.title, t.status FROM todo_blockers b
-       JOIN todos t ON t.id = b.blocker_id WHERE b.todo_id = ?`,
-    )
-    .all(todo.id) as TodoRef[];
-  const blocking = db
-    .prepare(
-      `SELECT t.id, t.title, t.status FROM todo_blockers b
-       JOIN todos t ON t.id = b.todo_id WHERE b.blocker_id = ?`,
-    )
-    .all(todo.id) as TodoRef[];
-  const result: TodoDetail = {
-    ...summarize(todo),
-    body: todo.body,
-    created_at: todo.created_at,
-    completed_at: todo.completed_at,
-    blockers,
-    blocking,
-  };
-  if (includeComments) {
-    result.comments = db
-      .prepare(
-        "SELECT id, author, body, created_at FROM todo_comments WHERE todo_id = ? ORDER BY created_at",
-      )
-      .all(todo.id) as TodoComment[];
-  }
-  return result;
-}
 
 function transitiveBlockers(startId: number): Set<number> {
   const seen = new Set<number>();

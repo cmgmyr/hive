@@ -1,3 +1,5 @@
+export const TODO_STATUSES = ["open", "in_progress", "backlog", "completed"] as const;
+
 export const ACTIVE_TODO_SQL = "t.status IN ('open', 'in_progress') AND t.archived_at IS NULL";
 
 export const NOT_COMPLETED_TODO_SQL = "status != 'completed'";

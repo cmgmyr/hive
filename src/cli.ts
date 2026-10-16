@@ -264,16 +264,15 @@ import {
 import {
   getTodoDetail,
   listTodoSummaries,
-  TODO_STATUSES,
   type TodoDetail,
-} from "./tools/todos.js";
-import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
+} from "./todos.js";
+import { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL, TODO_STATUSES } from "./todoScope.js";
 import {
   createPad,
   getActivePadByName,
   listActivePads,
   overwritePadContent,
-} from "./tools/pads.js";
+} from "./pads.js";
 import { answerQuestion, listQuestions } from "./questions.js";
 
 function usage(): never {

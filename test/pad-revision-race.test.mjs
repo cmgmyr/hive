@@ -8,7 +8,7 @@ const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 await assertScratchStore();
-const { getPadMeta, bumpPad, createPad } = await import("../dist/tools/pads.js");
+const { getPadMeta, bumpPad, createPad } = await import("../dist/pads.js");
 migrate();
 
 function makeProject(tmp, name) {

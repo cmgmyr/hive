@@ -38,7 +38,6 @@ async function digest(projectPath: string, profile: string, warnings: string[]):
   const { migrate, db } = await import("./db.js");
   const { findProjectForCwd } = await import("./context.js");
   const { ACTIVE_TIMER_WHERE } = await import("./scheduler.js");
-  const { getActivePadByName } = await import("./tools/pads.js");
   const { ACTIVE_TODO_SQL, OPEN_BLOCKERS_SQL } = await import("./todoScope.js");
   migrate();
 
@@ -262,3 +261,4 @@ const runDirectly = (() => {
   }
 })();
 if (runDirectly) await runKickoff(process.argv.slice(2));
+import { getActivePadByName } from "./pads.js";
