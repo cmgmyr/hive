@@ -14,7 +14,6 @@ import { db } from "./db.js";
 import { cutToUnitBudget, flatten } from "./slug.js";
 
 export {
-  insertQueenAuditRow,
   QUEEN_AUDIT_DEFAULT_LIMIT,
   QUEEN_AUDIT_MAX_LIMIT,
   QUEEN_AUDIT_MAX_ROWS,
