@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { describe, it } from "node:test";
@@ -62,6 +62,7 @@ function resolveLocal(from, specifier, files, root = REPO) {
   } else if (!extension) {
     candidates.push(`${target}.ts`, join(target, "index.ts"));
   } else {
+    if (!existsSync(target)) throw new Error(`${from}: unresolved local module ${JSON.stringify(specifier)}`);
     return null;
   }
   for (const candidate of candidates) {
@@ -256,6 +257,9 @@ describe("source import graph", () => {
 
   it("rejects unresolved local imports", () => {
     withParsedFiles({ "src/a.ts": 'import "./missing.js";' }, (files, root) => {
+      assert.throws(() => edgeGraph(files, root), /src\/a\.ts: unresolved local module/);
+    });
+    withParsedFiles({ "src/a.ts": 'import "./missing.json";' }, (files, root) => {
       assert.throws(() => edgeGraph(files, root), /src\/a\.ts: unresolved local module/);
     });
   });
