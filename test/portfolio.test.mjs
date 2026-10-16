@@ -392,7 +392,10 @@ describe("portfolio idle-watch wakes", () => {
     assert.equal(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8").match(/cancelled_at IS NULL/g)?.length, 1);
     assert.equal(Object.values(sources).filter((source) => source.includes(clause)).length, 0);
     for (const file of files) {
-      assert.match(sources[file], /from ["'](?:\.\.\/|\.\/)?wakeSql\.js["']/);
+      const importPattern = file === "kickoff"
+        ? /import\(["']\.\/wakeSql\.js["']\)/
+        : /from ["'](?:\.\.\/|\.\/)?wakeSql\.js["']/;
+      assert.match(sources[file], importPattern);
     }
     assert.equal(ACTIVE_WAKE_WHERE, clause);
   });
