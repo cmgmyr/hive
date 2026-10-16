@@ -9,11 +9,18 @@ import { REPO } from "./helpers.mjs";
 
 const MINIMUM_REAL_EDGES = 250;
 const PARSER_SOURCE = "typescript/unstable/sync Program.getSourceFile";
+const UNSUPPORTED_SOURCE_EXTENSIONS = new Set([".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx", ".jsx"]);
 
-function sourceFiles(dir) {
+function sourceFiles(dir, root) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
-    return entry.isDirectory() ? sourceFiles(path) : entry.isFile() && path.endsWith(".ts") ? [path] : [];
+    if (entry.isDirectory()) return sourceFiles(path, root);
+    if (!entry.isFile()) return [];
+    const extension = extname(path);
+    if (UNSUPPORTED_SOURCE_EXTENSIONS.has(extension)) {
+      throw new Error(`${relative(root, path).split(sep).join("/")}: unsupported source extension ${extension}`);
+    }
+    return extension === ".ts" ? [path] : [];
   });
 }
 
@@ -26,7 +33,7 @@ function parseProject(root = REPO) {
   assert.ok(project, `TypeScript parser did not open ${config}`);
   const files = new Map();
   try {
-    for (const file of sourceFiles(src)) {
+    for (const file of sourceFiles(src, root)) {
       const parsed = project.program.getSourceFile(file);
       assert.ok(parsed, `TypeScript parser returned no AST for ${relative(root, file)}`);
       files.set(relative(root, file).split(sep).join("/"), parsed);
@@ -209,6 +216,13 @@ describe("source import graph", () => {
     assert.ok(edges.length > MINIMUM_REAL_EDGES, `${PARSER_SOURCE} floor requires more than ${MINIMUM_REAL_EDGES} edges, got ${edges.length}`);
     const cycles = cyclePaths(files, edges);
     assert.deepEqual(cycles, [], cycles.map((cycle) => cycle.join(" -> ")).join("\n"));
+  });
+
+  it("fails closed with the file name when src contains an unsupported source extension", () => {
+    assert.throws(
+      () => withParsedFiles({ "src/not-in-graph.mts": "export {};" }, () => {}),
+      /src\/not-in-graph\.mts: unsupported source extension \.mts/,
+    );
   });
 
   it("only the MCP entry imports tool modules", () => {
