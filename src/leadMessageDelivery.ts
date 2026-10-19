@@ -4,10 +4,14 @@ import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress } from "./claudeWake
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   LEAD_MESSAGE_THRESHOLD,
+  MESSAGE_METHOD,
+  MESSAGE_STATUS,
   renderLeadMessage,
   senderTag,
   shortenedSendNote,
   storeLeadMessage,
+  type MessageMethod,
+  type MessageStatus,
   type StoredLeadMessage,
 } from "./leadMessage.js";
 import { readHandoffGate } from "./leadHandoffState.js";
@@ -27,21 +31,7 @@ import type { AgentRow } from "./agentRecords.js";
 
 export const SOCKET_MESSAGE_FOOTER = "Automated hive worker message. Do not reply to this socket sender.";
 
-export const MESSAGE_STATUS = {
-  socketPending: "socket-pending",
-  fallbackPending: "fallback-pending",
-  fallbackClaimed: "fallback-claimed",
-  complete: "complete",
-  failed: "failed",
-} as const;
-
-export const MESSAGE_METHOD = {
-  socket: "socket",
-  pty: "pty",
-  ptyAfterSocketTimeout: "pty-after-socket-timeout",
-} as const;
-
-type Method = (typeof MESSAGE_METHOD)[keyof typeof MESSAGE_METHOD];
+type Method = MessageMethod;
 
 export interface QuietMessageReceipt {
   agent_id: number;
@@ -121,7 +111,7 @@ function readRow(id: number): DeliveryRow | undefined {
   return db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(id) as DeliveryRow | undefined;
 }
 
-function setStatus(id: number, from: string, to: string, fields: Record<string, string | null> = {}): boolean {
+function setStatus(id: number, from: MessageStatus, to: MessageStatus, fields: Record<string, string | null> = {}): boolean {
   const names = Object.keys(fields);
   const sets = ["delivery_status = ?", ...names.map((n) => `${n} = ?`)].join(", ");
   try {

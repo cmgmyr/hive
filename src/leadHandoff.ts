@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { db } from "./db.js";
+import { MESSAGE_RETENTION, MESSAGE_STATUS } from "./leadMessage.js";
+import { LOG_RETENTION } from "./wakeSql.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   casHandoff,
@@ -243,14 +245,15 @@ export function requestBody(row: Pick<HandoffRow, "id" | "pass" | "reason">, tur
 export function automationBlocker(lead: { id: number; actor_id: string }, seconds: number | null): string | null {
   const inFlight = db
     .prepare(
-      `SELECT 1 AS hit FROM agent_messages WHERE to_agent_id = ? AND delivery_status IN ('socket-pending', 'fallback-claimed')
-        AND created_at >= datetime('now', '-7 days')
+      `SELECT 1 AS hit FROM agent_messages WHERE to_agent_id = ? AND delivery_status IN (?, ?)
+        AND created_at >= datetime('now', ?)
        UNION ALL
        SELECT 1 FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ? AND fired_at IS NOT NULL AND cancelled_at IS NULL
-        AND delivery_method LIKE 'socket%' AND confirmed_at IS NULL AND socket_attempt_at >= datetime('now', '-7 days')
+        AND delivery_method LIKE 'socket%' AND confirmed_at IS NULL AND socket_attempt_at >= datetime('now', ?)
        LIMIT 1`,
     )
-    .get(lead.id, lead.actor_id, `${REQUEST_BODY_PREFIX}%`);
+    .get(lead.id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackClaimed, MESSAGE_RETENTION,
+      lead.actor_id, `${REQUEST_BODY_PREFIX}%`, LOG_RETENTION);
   if (inFlight !== undefined) return "a delivery to the lead is still in flight";
   if (seconds === null) return null;
   const window = `-${seconds} seconds`;
@@ -568,8 +571,8 @@ export function handoffInjection(leadActor: string): string | null {
   ).n;
   const heldMessages = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE to_agent_id = ? AND delivery_status = 'fallback-pending' AND created_at >= datetime('now', '-7 days')")
-      .get(lead.id) as { n: number }
+      .prepare("SELECT COUNT(*) AS n FROM agent_messages WHERE to_agent_id = ? AND delivery_status = ? AND created_at >= datetime('now', ?)")
+      .get(lead.id, MESSAGE_STATUS.fallbackPending, MESSAGE_RETENTION) as { n: number }
   ).n;
   const lines = [`[hive] LEAD HANDOFF: pad "${HANDOFF_PAD_NAME}" #${pad.id} revision ${pad.revision}, written ${pad.updated_at} UTC.`];
   {

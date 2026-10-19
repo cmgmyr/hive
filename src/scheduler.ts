@@ -35,6 +35,7 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
+import { LOG_RETENTION } from "./wakeSql.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
 import { driveLeadHandoff } from "./leadHandoff.js";
 import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
@@ -501,7 +502,7 @@ function cancelWithReason(timerId: number, reason: string): void {
   );
 }
 
-export const LOG_RETENTION = "-7 days";
+export { LOG_RETENTION } from "./wakeSql.js";
 const LOG_MAX_ROWS = 20_000;
 
 function pruneStateLog(): void {
