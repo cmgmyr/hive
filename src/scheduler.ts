@@ -37,7 +37,17 @@ import {
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { LOG_RETENTION } from "./wakeSql.js";
 import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
-import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
+import {
+  CROSS_SESSION_CLOSE,
+  DELIVERY_METHOD,
+  postClaudeWake,
+  promptMarkerEvidenceSql,
+  quietMessagingOn,
+  socketGraceDue,
+  socketSenderAddress,
+  SOCKET_WAKE_FOOTER,
+} from "./claudeWake.js";
+export { DELIVERY_METHOD };
 import { driveLeadHandoff } from "./leadHandoff.js";
 import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
 import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
@@ -2768,12 +2778,6 @@ function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string, fir
   );
 }
 
-export const DELIVERY_METHOD = {
-  socket: "socket",
-  socketRepeating: "socket-repeating",
-  pty: "pty",
-  ptyAfterSocketTimeout: "pty-after-socket-timeout",
-} as const;
 export const socketAwaitingWhere = (prefix = ""): string =>
   `${prefix}delivery_method = '${DELIVERY_METHOD.socket}' AND ${prefix}confirmed_at IS NULL AND ${prefix}typed_at IS NULL AND ${prefix}cancelled_at IS NULL`;
 // An attempt older than the row's latest claim belongs to an earlier firing (an old-build claim leaves it behind).
@@ -2800,7 +2804,6 @@ function repeatingFiringPending(id: number): boolean {
 }
 
 const firingMarker = (timer: Pick<TimerRow, "id" | "fire_count">): string => `[hive wake #${timer.id} firing #${timer.fire_count}`;
-const SOCKET_CONFIRM_GRACE_SECONDS = 60;
 const withReDelivered = (note: string | null): string => (note ? `${note}, re-delivered` : "re-delivered");
 
 const promptEvidenceSql = (lowerBound: string): string => `
@@ -2809,31 +2812,15 @@ const promptEvidenceSql = (lowerBound: string): string => `
           AND (payload LIKE '%[hive wake #' || wakes.id || ']%'
                OR payload LIKE '%[hive wake #' || wakes.id || ',%')`;
 
-const ENVELOPE_OPEN = '<cross-session-message from="';
-const ENVELOPE_SENDER_CLOSE = '" from-name="hive">';
-const EV_PROMPT =
-  "(CASE WHEN json_valid(ev.payload) THEN COALESCE(json_extract(ev.payload, '$.prompt'), '') ELSE ev.payload END)";
 const EV_MARKER = "('[hive wake #' || wakes.id || ' firing #' || wakes.fire_count)";
-const markerAt = (start: string): string =>
-  `substr(${EV_PROMPT}, ${start}, length(${EV_MARKER}) + 1) IN (${EV_MARKER} || ']', ${EV_MARKER} || ',')`;
-const EV_HEADER_END = `instr(${EV_PROMPT}, char(10))`;
+const markerAt = (promptSql: string, startSql: string): string =>
+  `substr(${promptSql}, ${startSql}, length(${EV_MARKER}) + 1) IN (${EV_MARKER} || ']', ${EV_MARKER} || ',')`;
 
 // The current firing's exact marker, at prompt offset 0 (typed) or opening hive's envelope body (socket).
 const repeatingEvidenceSql = (select: string): string => `
        SELECT ${select} FROM agent_state_log ev
         WHERE ev.actor_id = wakes.deliver_actor AND ev.event = 'prompt' AND ev.created_at >= wakes.socket_attempt_at
-          AND (${markerAt("1")}
-               OR (${EV_HEADER_END} > ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length}
-                   AND substr(${EV_PROMPT}, 1, ${ENVELOPE_OPEN.length}) = '${ENVELOPE_OPEN}'
-                   AND substr(${EV_PROMPT}, ${EV_HEADER_END} - ${ENVELOPE_SENDER_CLOSE.length}, ${ENVELOPE_SENDER_CLOSE.length}) = '${ENVELOPE_SENDER_CLOSE}'
-                   AND instr(substr(${EV_PROMPT}, ${ENVELOPE_OPEN.length + 1}, ${EV_HEADER_END} - ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length + 1}), '"') = 0
-                   AND ${markerAt(`${EV_HEADER_END} + 1`)}
-                   AND instr(${EV_PROMPT}, char(10) || '${CROSS_SESSION_CLOSE}') > ${EV_HEADER_END}))`;
-
-function quietMessagingOn(projectId: number): boolean {
-  const project = stmt("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
-  return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
-}
+          AND ${promptMarkerEvidenceSql(markerAt)}`;
 
 // Only a wake to a live, row-owned Claude lead whose socket was registered by this pane epoch.
 function socketRoute(timer: TimerRow, owner: DeliveryOwner | null): boolean {
@@ -2959,7 +2946,7 @@ async function deliver(
       }
       const posted = await postClaudeWake({
         socketPath: timer.deliver_messaging_socket,
-        senderAddress: senderAddress(join(dataDir, "wake-sender.sock")),
+        senderAddress: socketSenderAddress(dataDir),
         text,
         beforeWrite: () => socketStillRegistered(timer, owner!),
       });
@@ -3056,22 +3043,9 @@ async function deliver(
 
 // Measured from the lead's first turn end after the post, because a busy lead reads the post only then.
 function socketFallbackDue(timer: TimerRow): boolean {
-  const firstStop = (
-    stmt(
-      "SELECT MIN(created_at) AS t FROM agent_state_log WHERE actor_id = ? AND event = 'stop' AND created_at >= ?",
-    ).get(timer.deliver_actor, timer.socket_attempt_at) as { t: string | null }
-  ).t;
-  let from = firstStop;
-  if (from === null) {
-    const turn = timer.deliver_row_id === null ? null : readLeadTurnState(timer.deliver_row_id);
-    if (turn !== null && turn.state === "working" && turn.pane_pid === timer.deliver_pane_pid) return false;
-    from = timer.socket_attempt_at;
-  }
-  return (
-    stmt("SELECT (julianday('now') - julianday(?)) * 86400 >= ? AS due").get(from, SOCKET_CONFIRM_GRACE_SECONDS) as {
-      due: number;
-    }
-  ).due === 1;
+  return socketGraceDue(timer.deliver_actor, timer.socket_attempt_at, timer.deliver_pane_pid, () =>
+    timer.deliver_row_id === null ? null : readLeadTurnState(timer.deliver_row_id),
+  );
 }
 
 async function fallbackClaimed(timer: TimerRow, snapshot: AliveSnapshot | null, choices: ChoiceCache): Promise<boolean> {

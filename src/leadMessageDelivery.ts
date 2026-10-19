@@ -1,6 +1,13 @@
-import { join } from "node:path";
 import { dataDir, db } from "./db.js";
-import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress } from "./claudeWake.js";
+import {
+  CROSS_SESSION_CLOSE,
+  promptMarkerEvidenceSql,
+  postClaudeWake,
+  quietMessagingOn,
+  socketGraceDue,
+  socketSenderAddress,
+  SOCKET_MESSAGE_FOOTER,
+} from "./claudeWake.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   LEAD_MESSAGE_THRESHOLD,
@@ -16,7 +23,6 @@ import {
 } from "./leadMessage.js";
 import { readHandoffGate } from "./leadHandoffState.js";
 import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
-import { loadProjectYml } from "./projectYml.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
 import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
@@ -29,8 +35,6 @@ import {
   type RowPaneIdentity,
 } from "./tmux.js";
 import type { AgentRow } from "./agentRecords.js";
-
-export const SOCKET_MESSAGE_FOOTER = "Automated hive worker message. Do not reply to this socket sender.";
 
 type Method = MessageMethod;
 
@@ -48,14 +52,9 @@ export interface QuietMessageReceipt {
 
 type DeliveryRow = StoredLeadMessage & { project_id: number };
 
-const CONFIRM_GRACE_SECONDS = 60;
-
-const ENVELOPE_OPEN = '<cross-session-message from="';
-const ENVELOPE_SENDER_CLOSE = '" from-name="hive">';
-const EV_PROMPT =
-  "(CASE WHEN json_valid(ev.payload) THEN COALESCE(json_extract(ev.payload, '$.prompt'), '') ELSE ev.payload END)";
 const EV_MARKER = "(agent_messages.sender_tag || '[message #' || agent_messages.id || ',')";
-const EV_HEADER_END = `instr(${EV_PROMPT}, char(10))`;
+const messageMarkerAt = (promptSql: string, startSql: string): string =>
+  `substr(${promptSql}, ${startSql}, length(${EV_MARKER})) = ${EV_MARKER}`;
 
 // The exact "[hive:worker NAME] [message #N," at prompt offset 0 (typed) or opening hive's own envelope body (socket).
 const messageEvidenceSql = (select: string): string => `
@@ -63,20 +62,9 @@ const messageEvidenceSql = (select: string): string => `
    WHERE ev.actor_id = (SELECT a.actor_id FROM agents a WHERE a.id = agent_messages.to_agent_id)
      AND ev.event = 'prompt'
      AND ev.created_at >= COALESCE(agent_messages.socket_attempt_at, agent_messages.created_at)
-     AND (substr(${EV_PROMPT}, 1, length(${EV_MARKER})) = ${EV_MARKER}
-          OR (${EV_HEADER_END} > ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length}
-              AND substr(${EV_PROMPT}, 1, ${ENVELOPE_OPEN.length}) = '${ENVELOPE_OPEN}'
-              AND substr(${EV_PROMPT}, ${EV_HEADER_END} - ${ENVELOPE_SENDER_CLOSE.length}, ${ENVELOPE_SENDER_CLOSE.length}) = '${ENVELOPE_SENDER_CLOSE}'
-              AND instr(substr(${EV_PROMPT}, ${ENVELOPE_OPEN.length + 1}, ${EV_HEADER_END} - ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length + 1}), '"') = 0
-              AND substr(${EV_PROMPT}, ${EV_HEADER_END} + 1, length(${EV_MARKER})) = ${EV_MARKER}
-              AND instr(${EV_PROMPT}, char(10) || '${CROSS_SESSION_CLOSE}') > ${EV_HEADER_END}))`;
+     AND ${promptMarkerEvidenceSql(messageMarkerAt)}`;
 
 const RETAINED = "agent_messages.created_at >= datetime('now', '-7 days')";
-
-function quietMessagingOn(projectId: number): boolean {
-  const project = db.prepare("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
-  return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
-}
 
 const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
 
@@ -342,7 +330,7 @@ export async function sendQuietLeadMessage(options: {
   if (skip === null) {
     const posted = await postClaudeWake({
       socketPath: target.claude_messaging_socket,
-      senderAddress: senderAddress(join(dataDir, "wake-sender.sock")),
+      senderAddress: socketSenderAddress(dataDir),
       text: body,
       beforeWrite: () => {
         requireStillOwned(target.id, identity, `message #${id} socket delivery`);
@@ -425,20 +413,7 @@ export async function sendQuietLeadMessage(options: {
 }
 
 function graceExpired(row: DeliveryRow, actorId: string, panePid: string): boolean {
-  const firstStop = (
-    db
-      .prepare("SELECT MIN(created_at) AS t FROM agent_state_log WHERE actor_id = ? AND event = 'stop' AND created_at >= ?")
-      .get(actorId, row.socket_attempt_at) as { t: string | null }
-  ).t;
-  let from = firstStop;
-  if (from === null) {
-    const turn = readLeadTurnState(row.to_agent_id);
-    if (turn !== null && turn.state === "working" && turn.pane_pid === panePid) return false;
-    from = row.socket_attempt_at;
-  }
-  return (
-    db.prepare("SELECT (julianday('now') - julianday(?)) * 86400 >= ? AS due").get(from, CONFIRM_GRACE_SECONDS) as { due: number }
-  ).due === 1;
+  return socketGraceDue(actorId, row.socket_attempt_at, panePid, () => readLeadTurnState(row.to_agent_id));
 }
 
 function confirmFromPrompts(): void {

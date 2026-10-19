@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+import { DELIVERY_METHOD } from "./claudeWake.js";
 import { cutToUnitBudget, flatten } from "./slug.js";
 
 // 300 sits in the empty band between the two measured populations (todo 475): the largest lead-bound
@@ -31,9 +32,9 @@ export const MESSAGE_STATUS = {
 export type MessageStatus = (typeof MESSAGE_STATUS)[keyof typeof MESSAGE_STATUS];
 
 export const MESSAGE_METHOD = {
-  socket: "socket",
-  pty: "pty",
-  ptyAfterSocketTimeout: "pty-after-socket-timeout",
+  socket: DELIVERY_METHOD.socket,
+  pty: DELIVERY_METHOD.pty,
+  ptyAfterSocketTimeout: DELIVERY_METHOD.ptyAfterSocketTimeout,
 } as const;
 
 export type MessageMethod = (typeof MESSAGE_METHOD)[keyof typeof MESSAGE_METHOD];

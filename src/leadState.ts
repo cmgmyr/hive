@@ -1,5 +1,6 @@
 import { liveBackgroundTasks } from "./backgroundTasks.js";
 import { db } from "./db.js";
+import { hiveWorkerEnvelopeLikeSql, isHiveWorkerEnvelope } from "./claudeWake.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import { postponeGrace, readActiveHandoff } from "./leadHandoffState.js";
 import type { RowOwnership } from "./tmux.js";
@@ -56,7 +57,7 @@ export function humanPromptSql(col: string): string {
   const p = `CASE WHEN json_valid(${col}) THEN COALESCE(json_extract(${col}, '$.prompt'), ${col}) ELSE ${col} END`;
   return (
     `${p} NOT LIKE '%[hive wake #%' AND ${p} NOT LIKE '[hive:%' AND ${p} NOT LIKE '<task-notification>%' ` +
-    `AND ${p} NOT LIKE '<cross-session-message from="%" from-name="hive">' || char(10) || '[hive:worker %] [message #%,%' || char(10) || '</cross-session-message>%'`
+    `AND NOT ${hiveWorkerEnvelopeLikeSql(p)}`
   );
 }
 
@@ -64,7 +65,7 @@ export function humanPromptSql(col: string): string {
 export function isHumanPrompt(prompt: string): boolean {
   const p = prompt.toLowerCase();
   if (p.includes("[hive wake #") || p.startsWith("[hive:") || p.startsWith("<task-notification>")) return false;
-  return !/^<cross-session-message from="[\s\S]*" from-name="hive">\n\[hive:worker [\s\S]*\] \[message #[\s\S]*,[\s\S]*\n<\/cross-session-message>/.test(p);
+  return !isHiveWorkerEnvelope(p);
 }
 
 // The agent_state_log state label on hive's own first message to a lead; conversationHoldsWake skips it.
