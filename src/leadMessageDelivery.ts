@@ -12,6 +12,7 @@ import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   LEAD_MESSAGE_THRESHOLD,
   MESSAGE_METHOD,
+  MESSAGE_RETENTION,
   MESSAGE_STATUS,
   renderLeadMessage,
   senderTag,
@@ -64,7 +65,7 @@ const messageEvidenceSql = (select: string): string => `
      AND ev.created_at >= COALESCE(agent_messages.socket_attempt_at, agent_messages.created_at)
      AND ${promptMarkerEvidenceSql(messageMarkerAt)}`;
 
-const RETAINED = "agent_messages.created_at >= datetime('now', '-7 days')";
+const RETAINED = `agent_messages.created_at >= datetime('now', '${MESSAGE_RETENTION}')`;
 
 const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
 
