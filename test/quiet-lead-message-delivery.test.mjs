@@ -659,6 +659,28 @@ describe("a pane fallback holds, fails or stays uncertain by name", () => {
 });
 
 describe("delivery rows keep the message store's retention and lookup contract", () => {
+  it("retry ignores expired message rows without changing retained obligations", needsTmux, async () => {
+    const proj = project(true);
+    const target = lead(proj.id);
+    const from = worker(proj.id);
+    const identity = JSON.stringify({ tmux_target: target.pane, tmux_socket: ownSocket, pane_pid: target.pid });
+    const insert = db.prepare(
+      `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, delivery_method,
+         target_identity, sender_tag, created_at)
+       VALUES (?, ?, 'w', ?, ?, 'fallback-pending', 'pty', ?, ?, ?) RETURNING id`,
+    );
+    const stale = insert.get(proj.id, from.actorId, target.rowId, "expired retry", identity, from.tag, new Date().toISOString());
+    const retained = insert.get(proj.id, from.actorId, target.rowId, "retained retry", identity, from.tag, new Date().toISOString());
+    db.prepare("UPDATE agent_messages SET created_at = datetime('now', '-8 days') WHERE id = ?").run(stale.id);
+    db.prepare("UPDATE agent_messages SET created_at = datetime('now', '-6 days') WHERE id = ?").run(retained.id);
+
+    await retryQuietLeadMessages(liveTargets());
+    assert.equal(message(stale.id).delivery_status, "fallback-pending", "expired work remains for retention cleanup");
+    assert.ok(await until(() => sinkText(target).includes("retained retry"), 3000));
+    assert.equal(sinkText(target).includes("expired retry"), false);
+    assert.equal(message(retained.id).delivery_status, "complete");
+  });
+
   it("message retention and lookup miss taxonomy remain unchanged", needsTmux, async () => {
     const proj = project(true);
     const sock = listener();

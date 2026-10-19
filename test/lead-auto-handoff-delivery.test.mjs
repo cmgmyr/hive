@@ -92,6 +92,49 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("handoff uses message retention for blockers and held-message counts", async () => {
+    const lead = await armedQuietLead();
+    const padId = db
+      .prepare("INSERT INTO pads (project_id, name, content) VALUES (?, ?, 'handoff body') RETURNING id")
+      .get(project, handoff.HANDOFF_PAD_NAME).id;
+    try {
+      const row = active(lead.id);
+      db.prepare("UPDATE lead_handoffs SET state = 'started', successor_pane_pid = ?, pad_id = ? WHERE id = ?")
+        .run(lead.pane_pid, padId, row.id);
+      const worker = seedWorker();
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'expired claimed', 'fallback-claimed', datetime('now', '-8 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      db.prepare(
+        `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, fired_at, delivery_method, socket_attempt_at)
+         VALUES (?, 'lead:d', 'expired socket wake', 'delay', 'lead:d', '%9800', datetime('now', '-8 days'), 'socket', datetime('now', '-8 days'))`,
+      ).run(project);
+      assert.equal(handoff.automationBlocker(lead, 120), null, "expired message and wake obligations do not block handoff");
+
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'retained claimed', 'socket-pending', datetime('now', '-6 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight", "six-day message remains retained");
+      db.prepare("UPDATE agent_messages SET delivery_status = 'complete' WHERE text = 'retained claimed'").run();
+      db.prepare("UPDATE wakes SET socket_attempt_at = datetime('now', '-6 days') WHERE body = 'expired socket wake'").run();
+      assert.equal(handoff.automationBlocker(lead, 120), "a delivery to the lead is still in flight", "six-day socket wake remains retained");
+
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'expired held', 'fallback-pending', datetime('now', '-8 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      db.prepare(
+        `INSERT INTO agent_messages (project_id, from_actor, from_name, to_agent_id, text, delivery_status, created_at)
+         VALUES (?, ?, 'w', ?, 'retained held', 'fallback-pending', datetime('now', '-6 days'))`,
+      ).run(project, worker.actor_id, lead.id);
+      assert.match(handoff.handoffInjection(lead.actor_id), /1 message\(s\)\./);
+    } finally {
+      db.prepare("DELETE FROM pads WHERE id = ?").run(padId);
+    }
+  });
+
   it("warn requests handoff only after a known quiet lead turn", async () => {
     const lead = seedLead();
     turns(5);

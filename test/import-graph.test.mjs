@@ -149,6 +149,131 @@ function toolBoundaryViolations(edges) {
     !(edge.from === "src/index.ts" && edge.kind === "import" && !edge.typeOnly && edge.names.length > 0 && edge.names.every((name) => name.startsWith("register"))));
 }
 
+function sourceStringFragments(source) {
+  const fragments = [];
+  const walk = [source];
+  while (walk.length) {
+    const node = walk.pop();
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ||
+        ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      fragments.push(node.text);
+    }
+    node.forEachChild((child) => { walk.push(child); });
+  }
+  return fragments;
+}
+
+function importedLocals(source, modulePath, exportedName) {
+  const locals = [];
+  const walk = [source];
+  while (walk.length) {
+    const node = walk.pop();
+    if (ts.isImportDeclaration(node) && literalText(node.moduleSpecifier) === modulePath) {
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          if ((element.propertyName?.text ?? element.name.text) === exportedName) locals.push(element.name.text);
+        }
+      }
+    }
+    node.forEachChild((child) => { walk.push(child); });
+  }
+  return locals;
+}
+
+function callsNamed(source, names) {
+  const walk = [source];
+  while (walk.length) {
+    const node = walk.pop();
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && names.has(node.expression.text)) return true;
+    node.forEachChild((child) => { walk.push(child); });
+  }
+  return false;
+}
+
+function protocolOwnershipViolations(files) {
+  const violations = [];
+  const owners = [
+    { pattern: /wake-pane:/u, owner: "src/leaseStore.ts", label: "pane lease key" },
+    { pattern: /INSERT\s+INTO\s+leases/iu, owner: "src/leaseStore.ts", label: "lease insert SQL" },
+    { pattern: /UPDATE\s+leases/iu, owner: "src/leaseStore.ts", label: "lease update SQL" },
+    { pattern: /DELETE\s+FROM\s+leases/iu, owner: "src/leaseStore.ts", label: "lease delete SQL" },
+    { pattern: /<cross-session-message from="/u, owner: "src/claudeWake.ts", label: "envelope opener" },
+    { pattern: /" from-name="hive">/u, owner: "src/claudeWake.ts", label: "envelope sender suffix" },
+    { pattern: /<\/cross-session-message>/u, owner: "src/claudeWake.ts", label: "envelope closer" },
+    { pattern: /wake-sender\.sock/u, owner: "src/claudeWake.ts", label: "socket sender path" },
+    { pattern: /Automated hive wake\. Do not reply to this sender\./u, owner: "src/claudeWake.ts", label: "wake socket footer" },
+    { pattern: /Automated hive worker message\. Do not reply to this socket sender\./u, owner: "src/claudeWake.ts", label: "message socket footer" },
+  ];
+  for (const [file, source] of files) {
+    if (!file.startsWith("src/")) continue;
+    const fragments = sourceStringFragments(source);
+    const strings = fragments.join("\n");
+    for (const { pattern, owner, label } of owners) {
+      if (file !== owner && fragments.some((fragment) => pattern.test(fragment))) violations.push(`${file}: copied ${label}; owner is ${owner}`);
+    }
+    if (file !== "src/claudeWake.ts") {
+      const declarations = [];
+      const walk = [source];
+      while (walk.length) {
+        const node = walk.pop();
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && /GRACE_SECONDS$/u.test(node.name.text)) {
+          declarations.push(node.name.text);
+        }
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DELIVERY_METHOD") {
+          violations.push(`${file}: copied socket method vocabulary; owner is src/claudeWake.ts`);
+        }
+        node.forEachChild((child) => { walk.push(child); });
+      }
+      if (declarations.length) violations.push(`${file}: local socket grace declaration ${declarations.join(", ")}`);
+      if (fragments.some((fragment) => /MIN\s*\(\s*created_at\s*\)[\s\S]*event\s*=\s*['"]stop['"][\s\S]*created_at\s*>=/iu.test(fragment))) {
+        violations.push(`${file}: copied first-stop socket grace query; owner is src/claudeWake.ts`);
+      }
+    }
+    if (["src/leadMessageDelivery.ts", "src/leadHandoff.ts", "src/scheduler.ts"].includes(file) && /-7 days/u.test(strings)) {
+      violations.push(`${file}: copied message/log retention literal; owners are src/leadMessage.ts and src/wakeSql.ts`);
+    }
+    if (file === "src/leadMessageDelivery.ts") {
+      const declarations = [];
+      const walk = [source];
+      while (walk.length) {
+        const node = walk.pop();
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ["MESSAGE_STATUS", "MESSAGE_METHOD"].includes(node.name.text)) {
+          declarations.push(node.name.text);
+        }
+        node.forEachChild((child) => { walk.push(child); });
+      }
+      if (declarations.length) violations.push(`${file}: copied message vocabulary declaration ${declarations.join(", ")}; owner is src/leadMessage.ts`);
+    }
+  }
+
+  const requiredImports = {
+    "src/scheduler.ts": {
+      "./leaseStore.js": ["tryAcquirePaneLease", "releasePaneLease"],
+      "./claudeWake.js": ["postClaudeWake", "socketSenderAddress", "socketGraceDue", "promptMarkerEvidenceSql", "quietMessagingOn"],
+    },
+    "src/leadMessageDelivery.ts": {
+      "./leaseStore.js": ["tryAcquirePaneLease", "releasePaneLease"],
+      "./claudeWake.js": ["postClaudeWake", "socketSenderAddress", "socketGraceDue", "promptMarkerEvidenceSql", "quietMessagingOn"],
+    },
+    "src/leadState.ts": {
+      "./claudeWake.js": ["hiveWorkerEnvelopeLikeSql", "isHiveWorkerEnvelope"],
+    },
+  };
+  for (const [file, modules] of Object.entries(requiredImports)) {
+    const source = files.get(file);
+    if (!source) continue;
+    for (const [modulePath, names] of Object.entries(modules)) {
+      for (const name of names) {
+        const locals = importedLocals(source, modulePath, name);
+        if (locals.length === 0) violations.push(`${file}: missing named import ${name} from ${modulePath}`);
+        else if (!callsNamed(source, new Set(locals))) violations.push(`${file}: imported ${name} from ${modulePath} is not called`);
+      }
+    }
+  }
+  return violations.sort();
+}
+
 function withParsedFiles(fileMap, callback) {
   const root = mkdtempSync(join(tmpdir(), "hive-import-graph-"));
   try {
@@ -241,6 +366,44 @@ describe("source import graph", () => {
       const violations = toolBoundaryViolations(edgeGraph(fixtureFiles, root));
       assert.equal(violations.length, 4, violations.map((edge) => `${edge.from} -> ${edge.to} (${edge.kind})`).join("\n"));
       assert.deepEqual(violations.map((edge) => edge.kind).sort(), ["dynamic-import", "import", "re-export", "require"]);
+    });
+  });
+
+  it("shared delivery protocols have one source owner", () => {
+    const violations = protocolOwnershipViolations(parseProject());
+    assert.deepEqual(violations, [], violations.join("\n"));
+  });
+
+  it("protocol ownership gate rejects copied lease and socket fragments", () => {
+    const fixtures = {
+      "src/leaseStore.ts": "export {};",
+      "src/claudeWake.ts": "export {};",
+      "src/leadMessage.ts": "export {};",
+      "src/wakeSql.ts": "export {};",
+      "src/scheduler.ts": `const key = "wake-pane:";
+        const lease = "INSERT INTO leases";
+        const update = "UPDATE leases";
+        const release = "DELETE FROM leases";
+        const frame = '<cross-session-message from="';
+        const suffix = '" from-name="hive">';
+        const close = '</cross-session-message>';
+        const path = "wake-sender.sock";
+        const footer = "Automated hive wake. Do not reply to this sender.";
+        const grace = 60;
+        const GRACE_SECONDS = 60;
+        const DELIVERY_METHOD = { socket: "socket" };
+        const graceSql = "SELECT MIN(created_at) FROM agent_state_log WHERE event = 'stop' AND created_at >= ?";`,
+      "src/leadMessageDelivery.ts": `const MESSAGE_STATUS = { complete: "complete" };
+        const MESSAGE_METHOD = { pty: "pty" };
+        const footer = "Automated hive worker message. Do not reply to this socket sender.";
+        const retention = "-7 days";`,
+      "src/leadHandoff.ts": `const retention = "-7 days";`,
+    };
+    withParsedFiles(fixtures, (files) => {
+      const violations = protocolOwnershipViolations(files);
+      for (const expected of ["pane lease key", "lease insert SQL", "lease update SQL", "lease delete SQL", "envelope opener", "envelope sender suffix", "envelope closer", "socket sender path", "wake socket footer", "message socket footer", "socket grace declaration", "socket method vocabulary", "first-stop socket grace query", "message/log retention literal", "message vocabulary declaration"]) {
+        assert.ok(violations.some((violation) => violation.includes(expected)), `${expected}:\n${violations.join("\n")}`);
+      }
     });
   });
 

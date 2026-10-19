@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+import { DELIVERY_METHOD } from "./claudeWake.js";
 import { cutToUnitBudget, flatten } from "./slug.js";
 
 // 300 sits in the empty band between the two measured populations (todo 475): the largest lead-bound
@@ -20,6 +21,24 @@ export const MESSAGE_RETENTION = "-7 days";
 // holds unbounded message text rather than a hook payload.
 export const MESSAGE_MAX_ROWS = 5_000;
 
+export const MESSAGE_STATUS = {
+  socketPending: "socket-pending",
+  fallbackPending: "fallback-pending",
+  fallbackClaimed: "fallback-claimed",
+  complete: "complete",
+  failed: "failed",
+} as const;
+
+export type MessageStatus = (typeof MESSAGE_STATUS)[keyof typeof MESSAGE_STATUS];
+
+export const MESSAGE_METHOD = {
+  socket: DELIVERY_METHOD.socket,
+  pty: DELIVERY_METHOD.pty,
+  ptyAfterSocketTimeout: DELIVERY_METHOD.ptyAfterSocketTimeout,
+} as const;
+
+export type MessageMethod = (typeof MESSAGE_METHOD)[keyof typeof MESSAGE_METHOD];
+
 export interface StoredLeadMessage {
   id: number;
   from_actor: string;
@@ -27,8 +46,8 @@ export interface StoredLeadMessage {
   to_agent_id: number;
   text: string;
   created_at: string;
-  delivery_status: string | null;
-  delivery_method: string | null;
+  delivery_status: MessageStatus | null;
+  delivery_method: MessageMethod | null;
   socket_attempt_at: string | null;
   confirmed_at: string | null;
   fallback_claimed_at: string | null;

@@ -2,6 +2,7 @@
 paths:
   - "src/dataDir.ts"
   - "src/db.ts"
+  - "src/leaseStore.ts"
   - "src/backup.ts"
   - "src/teardown.ts"
   - "src/result.ts"

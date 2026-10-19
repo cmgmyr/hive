@@ -1,19 +1,31 @@
-import { join } from "node:path";
 import { dataDir, db } from "./db.js";
-import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress } from "./claudeWake.js";
+import {
+  CROSS_SESSION_CLOSE,
+  promptMarkerEvidenceSql,
+  postClaudeWake,
+  quietMessagingOn,
+  socketGraceDue,
+  socketSenderAddress,
+  SOCKET_MESSAGE_FOOTER,
+} from "./claudeWake.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   LEAD_MESSAGE_THRESHOLD,
+  MESSAGE_METHOD,
+  MESSAGE_RETENTION,
+  MESSAGE_STATUS,
   renderLeadMessage,
   senderTag,
   shortenedSendNote,
   storeLeadMessage,
+  type MessageMethod,
+  type MessageStatus,
   type StoredLeadMessage,
 } from "./leadMessage.js";
 import { readHandoffGate } from "./leadHandoffState.js";
 import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
-import { loadProjectYml } from "./projectYml.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
+import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
   holdsHumanInput,
   paneInCopyMode,
@@ -25,23 +37,7 @@ import {
 } from "./tmux.js";
 import type { AgentRow } from "./agentRecords.js";
 
-export const SOCKET_MESSAGE_FOOTER = "Automated hive worker message. Do not reply to this socket sender.";
-
-export const MESSAGE_STATUS = {
-  socketPending: "socket-pending",
-  fallbackPending: "fallback-pending",
-  fallbackClaimed: "fallback-claimed",
-  complete: "complete",
-  failed: "failed",
-} as const;
-
-export const MESSAGE_METHOD = {
-  socket: "socket",
-  pty: "pty",
-  ptyAfterSocketTimeout: "pty-after-socket-timeout",
-} as const;
-
-type Method = (typeof MESSAGE_METHOD)[keyof typeof MESSAGE_METHOD];
+type Method = MessageMethod;
 
 export interface QuietMessageReceipt {
   agent_id: number;
@@ -57,16 +53,9 @@ export interface QuietMessageReceipt {
 
 type DeliveryRow = StoredLeadMessage & { project_id: number };
 
-const PANE_LEASE_TTL_SECONDS = 6;
-const PANE_LEASE_SETTLE_MS = 500;
-const CONFIRM_GRACE_SECONDS = 60;
-
-const ENVELOPE_OPEN = '<cross-session-message from="';
-const ENVELOPE_SENDER_CLOSE = '" from-name="hive">';
-const EV_PROMPT =
-  "(CASE WHEN json_valid(ev.payload) THEN COALESCE(json_extract(ev.payload, '$.prompt'), '') ELSE ev.payload END)";
 const EV_MARKER = "(agent_messages.sender_tag || '[message #' || agent_messages.id || ',')";
-const EV_HEADER_END = `instr(${EV_PROMPT}, char(10))`;
+const messageMarkerAt = (promptSql: string, startSql: string): string =>
+  `substr(${promptSql}, ${startSql}, length(${EV_MARKER})) = ${EV_MARKER}`;
 
 // The exact "[hive:worker NAME] [message #N," at prompt offset 0 (typed) or opening hive's own envelope body (socket).
 const messageEvidenceSql = (select: string): string => `
@@ -74,20 +63,9 @@ const messageEvidenceSql = (select: string): string => `
    WHERE ev.actor_id = (SELECT a.actor_id FROM agents a WHERE a.id = agent_messages.to_agent_id)
      AND ev.event = 'prompt'
      AND ev.created_at >= COALESCE(agent_messages.socket_attempt_at, agent_messages.created_at)
-     AND (substr(${EV_PROMPT}, 1, length(${EV_MARKER})) = ${EV_MARKER}
-          OR (${EV_HEADER_END} > ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length}
-              AND substr(${EV_PROMPT}, 1, ${ENVELOPE_OPEN.length}) = '${ENVELOPE_OPEN}'
-              AND substr(${EV_PROMPT}, ${EV_HEADER_END} - ${ENVELOPE_SENDER_CLOSE.length}, ${ENVELOPE_SENDER_CLOSE.length}) = '${ENVELOPE_SENDER_CLOSE}'
-              AND instr(substr(${EV_PROMPT}, ${ENVELOPE_OPEN.length + 1}, ${EV_HEADER_END} - ${ENVELOPE_OPEN.length + ENVELOPE_SENDER_CLOSE.length + 1}), '"') = 0
-              AND substr(${EV_PROMPT}, ${EV_HEADER_END} + 1, length(${EV_MARKER})) = ${EV_MARKER}
-              AND instr(${EV_PROMPT}, char(10) || '${CROSS_SESSION_CLOSE}') > ${EV_HEADER_END}))`;
+     AND ${promptMarkerEvidenceSql(messageMarkerAt)}`;
 
-const RETAINED = "agent_messages.created_at >= datetime('now', '-7 days')";
-
-function quietMessagingOn(projectId: number): boolean {
-  const project = db.prepare("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
-  return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
-}
+const RETAINED = `agent_messages.created_at >= datetime('now', '${MESSAGE_RETENTION}')`;
 
 const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
 
@@ -121,7 +99,7 @@ function readRow(id: number): DeliveryRow | undefined {
   return db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(id) as DeliveryRow | undefined;
 }
 
-function setStatus(id: number, from: string, to: string, fields: Record<string, string | null> = {}): boolean {
+function setStatus(id: number, from: MessageStatus, to: MessageStatus, fields: Record<string, string | null> = {}): boolean {
   const names = Object.keys(fields);
   const sets = ["delivery_status = ?", ...names.map((n) => `${n} = ?`)].join(", ");
   try {
@@ -147,32 +125,6 @@ function stamp(id: number, column: "typed_at" | "fallback_claimed_at"): void {
 
 function socketText(id: number, text: string, tag: string): string {
   return `${renderLeadMessage(id, text, tag)}\n\n${SOCKET_MESSAGE_FOOTER}`;
-}
-
-function acquirePaneLease(row: DeliveryRow, key: string): string | null {
-  try {
-    db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, ?, 'agent')").run(row.from_actor, row.from_name);
-    db.prepare("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')").run(row.project_id, key);
-    const held = db
-      .prepare(
-        `INSERT INTO leases (project_id, lock_key, owner, expires_at)
-         VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
-         ON CONFLICT(project_id, lock_key) DO NOTHING
-         RETURNING expires_at`,
-      )
-      .get(row.project_id, key, row.from_actor, PANE_LEASE_TTL_SECONDS) as { expires_at: string } | undefined;
-    return held?.expires_at ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function releasePaneLease(row: DeliveryRow, key: string, expiresAt: string): void {
-  try {
-    db.prepare("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at = ?").run(row.project_id, key, expiresAt);
-  } catch {
-
-  }
 }
 
 type FallbackOutcome =
@@ -262,8 +214,11 @@ async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | nu
   if (ownership !== "live" || target === undefined) {
     return failPending(row, `the lead pane this message was accepted for is ${ownership}; nothing is typed into a replacement`);
   }
-  const key = `wake-pane:${identity.tmux_socket}:${identity.tmux_target}`;
-  const expiresAt = acquirePaneLease(row, key);
+  const expiresAt = tryAcquirePaneLease(row.project_id, identity.tmux_socket, identity.tmux_target, {
+    id: row.from_actor,
+    name: row.from_name,
+    kind: "agent",
+  });
   if (expiresAt === null) return hold(row, "another delivery holds the lead's pane");
   let wrote = false;
   try {
@@ -317,7 +272,7 @@ async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | nu
     return { kind: "typed" };
   } finally {
     if (wrote) await sleep(PANE_LEASE_SETTLE_MS);
-    releasePaneLease(row, key, expiresAt);
+    releasePaneLease(row.project_id, identity.tmux_socket, identity.tmux_target, expiresAt);
   }
 }
 
@@ -376,7 +331,7 @@ export async function sendQuietLeadMessage(options: {
   if (skip === null) {
     const posted = await postClaudeWake({
       socketPath: target.claude_messaging_socket,
-      senderAddress: senderAddress(join(dataDir, "wake-sender.sock")),
+      senderAddress: socketSenderAddress(dataDir),
       text: body,
       beforeWrite: () => {
         requireStillOwned(target.id, identity, `message #${id} socket delivery`);
@@ -459,20 +414,7 @@ export async function sendQuietLeadMessage(options: {
 }
 
 function graceExpired(row: DeliveryRow, actorId: string, panePid: string): boolean {
-  const firstStop = (
-    db
-      .prepare("SELECT MIN(created_at) AS t FROM agent_state_log WHERE actor_id = ? AND event = 'stop' AND created_at >= ?")
-      .get(actorId, row.socket_attempt_at) as { t: string | null }
-  ).t;
-  let from = firstStop;
-  if (from === null) {
-    const turn = readLeadTurnState(row.to_agent_id);
-    if (turn !== null && turn.state === "working" && turn.pane_pid === panePid) return false;
-    from = row.socket_attempt_at;
-  }
-  return (
-    db.prepare("SELECT (julianday('now') - julianday(?)) * 86400 >= ? AS due").get(from, CONFIRM_GRACE_SECONDS) as { due: number }
-  ).due === 1;
+  return socketGraceDue(actorId, row.socket_attempt_at, panePid, () => readLeadTurnState(row.to_agent_id));
 }
 
 function confirmFromPrompts(): void {

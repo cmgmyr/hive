@@ -10,6 +10,7 @@ paths:
   - "src/crew.ts"
   - "src/leadMessage.ts"
   - "src/leadMessageDelivery.ts"
+  - "src/leaseStore.ts"
   - "src/harnesses.ts"
   - "src/processes.ts"
   - "src/leadHandoffCli.ts"
