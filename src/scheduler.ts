@@ -1527,7 +1527,7 @@ export function markGoneReported(agentId: number, projectId: number): void {
          FROM wakes t
          JOIN agents a ON a.id = ?
         WHERE t.project_id = ? AND t.kind = 'idle_any' AND t.watch_scope IS NOT NULL
-          AND t.cancelled_at IS NULL AND t.fired_at IS NULL
+          AND ${pendingOneShotWhere("t.")}
           AND a.closed_at IS NOT NULL`,
   ).run(agentId, projectId);
 }

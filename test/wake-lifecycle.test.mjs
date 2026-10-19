@@ -7,6 +7,12 @@ import { describe, it } from "node:test";
 
 const wakeSql = await import("../dist/wakeSql.js");
 
+const column = (name) => `(?:[A-Za-z_$][\\w$]*\\.)?${name}`;
+const pendingOneShotCopy = new RegExp(
+  `(?:${column("cancelled_at")}\\s+IS\\s+NULL\\s+AND\\s+${column("fired_at")}\\s+IS\\s+NULL|${column("fired_at")}\\s+IS\\s+NULL\\s+AND\\s+${column("cancelled_at")}\\s+IS\\s+NULL)`,
+  "iu",
+);
+
 function fixture(overrides = {}) {
   return {
     cancelled_at: null,
@@ -233,6 +239,10 @@ describe("wake lifecycle vocabulary", () => {
       "spentUntypedNotice", "watchWatchingWhere", "handoffSocketInFlightWhere", "holdableWakeWhere", "wakeConfirmation",
     ];
     for (const [path, source] of sources) {
+      if (path !== join(root, "wakeSql.ts")) {
+        const duplicate = pendingOneShotCopy.exec(source);
+        assert.equal(duplicate, null, `${path}: copied pending-one-shot predicate ${duplicate?.[0] ?? ""}`);
+      }
       for (const name of ["DELIVERY_METHOD", "ACTIVE_TIMER_WHERE", "LOG_RETENTION", "NOTICE_RETRY_AFTER", "FIRING_DROPPED_NOTE", ...helpers]) {
         if (new RegExp(`(?:const|let|var|function) ${name}\\s*(?:=|\\()`, "u").test(source)) {
           record(name, path);
