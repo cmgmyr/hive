@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, it } from "node:test";
 
@@ -130,6 +132,7 @@ describe("wake lifecycle vocabulary", () => {
     assert.equal(confirmation(fixture({ socket_attempt_at: "2026-10-19 12:00:00", typed_busy: 1 }), true), "unconfirmed_busy");
     assert.equal(confirmation(fixture({ socket_attempt_at: "2026-10-19 12:00:00" }), false), "no_confirmation_channel");
     assert.equal(confirmation(fixture({ typed_at: "2026-10-19 12:00:00", confirmed_at: "2026-10-19 12:00:01" }), false), "confirmed");
+    assert.equal(confirmation(fixture({ confirmed_at: "2026-10-19 12:00:01" }), false), null);
   });
 
   it("hold vocabulary preserves persisted bytes and matching modes", () => {
@@ -149,15 +152,35 @@ describe("wake lifecycle vocabulary", () => {
       "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from cancellation for this alone, so it is held rather than lost");
     assert.equal(wakeSql.HELD_REASON_PANE_REISSUED_PREFIX,
       "the pane id recorded for this wake now belongs to a different pane than the one it was set against (its pid no longer matches, most likely a tmux server restart reissuing the id); held rather than typed into the wrong pane - ");
+    assert.equal(wakeSql.HELD_REASON_PANE_REISSUED_LEAD,
+      "the pane id recorded for this wake now belongs to a different pane than the one it was set against (its pid no longer matches, most likely a tmux server restart reissuing the id); held rather than typed into the wrong pane - run `hive lead` to re-point it at the live one");
+    assert.equal(wakeSql.HELD_REASON_PANE_REISSUED_WORKER,
+      "the pane id recorded for this wake now belongs to a different pane than the one it was set against (its pid no longer matches, most likely a tmux server restart reissuing the id); held rather than typed into the wrong pane - nothing re-points a worker's wake automatically, so cancel it with wake_cancel and set a fresh one once the worker's pane is confirmed live, or leave it: it will keep holding rather than deliver wrongly");
+    assert.equal(wakeSql.HELD_REASON_PANE_REISSUED_THEN_DEAD,
+      "the pane id recorded for this wake now belongs to a different pane than the one it was set against (its pid no longer matches, most likely a tmux server restart reissuing the id); held rather than typed into the wrong pane - the pane it was reissued to has since gone dead too; nothing re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may do this even though the wake is not theirs) if it is no longer needed");
     assert.equal(wakeSql.HELD_REASON_PANE_UNKNOWN_PREFIX,
       "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now records a different pane, or the pane is on another tmux socket); held rather than typed into a pane that may not be its own - ");
+    assert.equal(wakeSql.HELD_REASON_PANE_UNKNOWN_LEAD,
+      "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now records a different pane, or the pane is on another tmux socket); held rather than typed into a pane that may not be its own - run `hive lead` to start or adopt a lead with a recorded pane and re-point it");
+    assert.equal(wakeSql.HELD_REASON_PANE_UNKNOWN_WORKER,
+      "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now records a different pane, or the pane is on another tmux socket); held rather than typed into a pane that may not be its own - nothing re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may, even though the wake is not theirs), or leave it: it keeps holding rather than deliver wrongly");
+    assert.equal(wakeSql.HELD_REASON_PANE_UNKNOWN_THEN_DEAD,
+      "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now records a different pane, or the pane is on another tmux socket); held rather than typed into a pane that may not be its own - that pane has since gone dead too; nothing re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may) if it is no longer needed");
     assert.equal(wakeSql.HELD_REASON_ACTOR_CLOSED,
       "delivery actor closed: the row this wake was bound to is closed, so nothing was typed and the wake was cancelled rather than delivered into a pane that row no longer owns");
     assert.equal(wakeSql.HELD_REASON_LEAD_ROW_CLOSED,
       "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a lead and re-points it");
     assert.equal(wakeSql.HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM, "delivery stopped after claim: ");
     assert.equal(wakeSql.HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX, "the pane's harness is not one hive can classify; ");
+    assert.equal(wakeSql.HELD_REASON_UNCLASSIFIABLE_PANE,
+      "the pane's harness is not one hive can classify; neither the dialog guard nor the unsubmitted-text guard can read this screen and delivery would type blind. wake_set and wake_when_idle refuse such a target outright now, so this wake predates that or its pane's command changed underneath it. Nothing hive does on its own clears this: it lifts only when that pane is replaced by one hive starts itself (`hive lead` after the pane exits). Cancel it with wake_cancel (any running lead may, even though the wake is not theirs) and drive that pane with agent_send(keys: [...])");
+    assert.equal(wakeSql.HELD_REASON_COPY_MODE,
+      "the pane is in tmux copy mode; tmux clears its bracketed-paste flag there, so the body would arrive with no paste markers (losing everything before the last 1022-byte write) and the Enter would be eaten by the mode instead of submitting - both silently, with tmux reporting success. It delivers once whoever is reading that pane leaves copy mode");
     assert.equal(wakeSql.HELD_REASON_UNSUBMITTED_INPUT_PREFIX, "the pane's input box has unsubmitted human text; ");
+    assert.equal(wakeSql.HELD_REASON_UNSUBMITTED_INPUT,
+      "the pane's input box has unsubmitted human text; delivering now would paste the wake body onto it and submit both as one message");
+    assert.equal(wakeSql.HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED,
+      "the pane's input box has unsubmitted human text; hive could not resolve a live pane for the wake's owner on this tick - retrying, since that may be transient rather than permanent");
     assert.equal(wakeSql.HELD_REASON_CONVERSATION,
       "a human talked to this lead more recently than the conversation-hold window; holding so a wake does not split an in-progress discussion - it delivers once the window passes or the hold's own ceiling is reached, whichever comes first");
     assert.equal(wakeSql.HELD_REASON_HANDOFF,
@@ -190,21 +213,38 @@ describe("wake lifecycle vocabulary", () => {
   });
 
   it("wake lifecycle vocabulary has one source owner", () => {
-    const files = ["wakeSql", "scheduler", "claudeWake", "leadHandoffState"];
+    const root = fileURLToPath(new URL("../src/", import.meta.url));
+    const files = [];
+    const walk = (dir) => {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (name.endsWith(".ts")) files.push(path);
+      }
+    };
+    walk(root);
+    const sources = new Map(files.map((path) => [path, readFileSync(path, "utf8")]));
     const declarations = new Map();
-    for (const file of files) {
-      const source = readFileSync(new URL(`../src/${file}.ts`, import.meta.url), "utf8");
-      for (const name of ["DELIVERY_METHOD", "ACTIVE_TIMER_WHERE", "HELD_REASON_HANDOFF"]) {
-        if (new RegExp(`(?:const|let|var) ${name}\\s*=`, "u").test(source)) {
-          declarations.set(name, [...(declarations.get(name) ?? []), file]);
+    const record = (name, path) => declarations.set(name, [...(declarations.get(name) ?? []), path]);
+    const helpers = [
+      "activeWakeWhere", "pendingOneShotWhere", "firedOneShotWhere", "heldWakeWhere", "sentWakeAtSql",
+      "schedulerCandidateWhere", "socketAwaitingWhere", "currentAttempt", "repeatingSocketAwaitingWhere",
+      "repeatingFallbackClaimedWhere", "repeatingFiringPendingWhere", "repeatingSocketFiringWhere",
+      "spentUntypedNotice", "watchWatchingWhere", "handoffSocketInFlightWhere", "holdableWakeWhere", "wakeConfirmation",
+    ];
+    for (const [path, source] of sources) {
+      for (const name of ["DELIVERY_METHOD", "ACTIVE_TIMER_WHERE", "LOG_RETENTION", "NOTICE_RETRY_AFTER", "FIRING_DROPPED_NOTE", ...helpers]) {
+        if (new RegExp(`(?:const|let|var|function) ${name}\\s*(?:=|\\()`, "u").test(source)) {
+          record(name, path);
         }
       }
+      for (const match of source.matchAll(/(?:export\s+)?const\s+(HELD_REASON_(?!LABELS\b)[A-Z_]+)\s*=/gu)) record(match[1], path);
     }
-    assert.deepEqual([...declarations.entries()], [
-      ["DELIVERY_METHOD", ["wakeSql"]],
-      ["ACTIVE_TIMER_WHERE", ["wakeSql"]],
-      ["HELD_REASON_HANDOFF", ["wakeSql"]],
-    ]);
+    for (const [name, owners] of declarations) {
+      assert.deepEqual(owners, [join(root, "wakeSql.ts")], `${name} owners`);
+    }
+    assert.equal(declarations.size, helpers.length + 5 + [...sources.values()].reduce((n, source) =>
+      n + [...source.matchAll(/(?:export\s+)?const\s+HELD_REASON_(?!LABELS\b)[A-Z_]+\s*=/gu)].length, 0));
   });
 
   it("wake and first-prompt vocabulary imports have no runtime effects", async () => {

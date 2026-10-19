@@ -92,6 +92,40 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("handoff keeps the legacy broad socket blocker across lifecycle states", async () => {
+    const lead = seedLead();
+    const at = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString().replace("T", " ").slice(0, 19);
+    const cases = [
+      { name: "current repeating socket", fired_at: at(0), delivery_method: "socket-repeating", socket_attempt_at: at(0), repeat_every_ms: 60_000, blocked: true },
+      { name: "stale repeating socket attempt remains a legacy blocker", fired_at: at(0), delivery_method: "socket-repeating", socket_attempt_at: at(60), repeat_every_ms: 60_000, blocked: true },
+      { name: "typed unconfirmed socket remains a legacy blocker", fired_at: at(0), delivery_method: "socket", socket_attempt_at: at(0), typed_at: at(0), blocked: true },
+      { name: "retained attempt blocks", fired_at: at(6 * 86400), delivery_method: "socket", socket_attempt_at: at(6 * 86400), blocked: true },
+      { name: "expired attempt does not block", fired_at: at(8 * 86400), delivery_method: "socket", socket_attempt_at: at(8 * 86400), blocked: false },
+      { name: "claimed repeating fallback does not match socket prefix", fired_at: at(0), delivery_method: "pty-after-socket-timeout", socket_attempt_at: at(0), repeat_every_ms: 60_000, blocked: false },
+      { name: "dropped fallback does not match socket prefix", fired_at: at(0), delivery_method: "pty-after-socket-timeout", socket_attempt_at: at(0), socket_delivery_note: "dropped", repeat_every_ms: 60_000, blocked: false },
+      { name: "request body is excluded", body: `${handoff.REQUEST_BODY_PREFIX}900`, fired_at: at(0), delivery_method: "socket", socket_attempt_at: at(0), blocked: false },
+    ];
+    for (const testCase of cases) {
+      db.prepare("DELETE FROM wakes").run();
+      db.prepare(
+        `INSERT INTO wakes
+         (project_id, owner, body, kind, deliver_actor, deliver_pane, fired_at, cancelled_at,
+          delivery_method, socket_attempt_at, confirmed_at, typed_at, repeat_every_ms, socket_delivery_note)
+         VALUES (?, 'lead:d', ?, 'delay', 'lead:d', '%9800', ?, NULL, ?, ?, NULL, ?, ?, ?)`,
+      ).run(
+        project,
+        testCase.body ?? "ordinary wake",
+        testCase.fired_at ?? null,
+        testCase.delivery_method ?? null,
+        testCase.socket_attempt_at ?? null,
+        testCase.typed_at ?? null,
+        testCase.repeat_every_ms ?? null,
+        testCase.socket_delivery_note ?? null,
+      );
+      assert.equal(handoff.automationBlocker(lead, null) !== null, testCase.blocked, testCase.name);
+    }
+  });
+
   it("handoff uses message retention for blockers and held-message counts", async () => {
     const lead = await armedQuietLead();
     const padId = db

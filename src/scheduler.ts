@@ -6,6 +6,7 @@ import {
   HELD_REASON_ACTOR_CLOSED,
   HELD_REASON_CONVERSATION,
   HELD_REASON_COPY_MODE,
+  HELD_REASON_HANDOFF,
   HELD_REASON_LEAD_BOOT_INPUT_BOX,
   HELD_REASON_LEAD_PANE_DEAD,
   HELD_REASON_LEAD_ROW_CLOSED,
@@ -21,18 +22,13 @@ import {
   HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   LOG_RETENTION,
-  NOTICE_RETRY_AFTER,
   activeWakeWhere,
-  currentAttempt,
-  handoffSocketInFlightWhere,
-  heldWakeWhere,
   holdableWakeWhere,
   identityThenDead,
   isLeadRowClosedHold,
   isUnclassifiablePaneHold,
   isUnsubmittedInputHold,
   pendingOneShotWhere,
-  repeatingFallbackClaimedWhere,
   repeatingFiringPendingWhere,
   repeatingSocketAwaitingWhere,
   repeatingSocketFiringWhere,
@@ -108,7 +104,7 @@ import {
   SOCKET_WAKE_FOOTER,
 } from "./claudeWake.js";
 import { driveLeadHandoff } from "./leadHandoff.js";
-import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
+import { handoffHoldsWake } from "./leadHandoffState.js";
 import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
@@ -805,7 +801,7 @@ function maybeGenerateDashboards(): void {
 }
 
 export function checkConfirmations(): void {
-  const sentAt = "COALESCE(wakes.socket_attempt_at, wakes.typed_at)";
+  const sentAt = sentWakeAtSql("wakes.");
   const confirmationQuery = promptEvidenceSql(sentAt);
   try {
     const pending = stmt(
@@ -887,11 +883,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     const candidates = stmt(
       `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
          FROM wakes ${DELIVER_SOCKET_JOIN}
-        WHERE wakes.cancelled_at IS NULL AND (
-         (wakes.kind = 'delay' AND wakes.due_at <= datetime('now')
-           AND (wakes.fired_at IS NULL OR wakes.repeat_every_ms IS NOT NULL))
-         OR (wakes.kind != 'delay' AND wakes.fired_at IS NULL)
-       )`,
+        WHERE ${schedulerCandidateWhere("wakes.")}`,
     ).all() as TimerRow[];
 
     const choices: ChoiceCache = new Map();
@@ -978,9 +970,7 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRo
   bestEffortRun(
     `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-     WHERE id = ? AND cancelled_at IS NULL
-       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ? AND (? IS NULL OR fire_count = ?))
-         OR (${socketAwaitingWhere()}))`,
+     WHERE id = ? AND ${holdableWakeWhere()}`,
     reason,
     timer.id,
     timer.due_at,
@@ -1188,7 +1178,7 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
   const placeholders = conditions.map(() => "?").join(", ");
   return stmt(
     `SELECT t.id FROM wakes t
-      WHERE t.parent_wake_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
+      WHERE t.parent_wake_id = ? AND ${pendingOneShotWhere("t.")}
         AND EXISTS (
           SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = t.id AND n.condition IN (${placeholders})
         )
@@ -1200,7 +1190,7 @@ function updateNoticeInPlace(noticeId: number, body: string): boolean {
   return (
     stmt(
       `UPDATE wakes SET body = ?, created_at = datetime('now')
-        WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
+        WHERE id = ? AND ${pendingOneShotWhere()}`,
     ).run(body, noticeId).changes === 1
   );
 }
@@ -1221,9 +1211,8 @@ const claimModalHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_MODAL_CHOICE,
@@ -1271,9 +1260,8 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_UNSUBMITTED_INPUT,
@@ -1365,7 +1353,7 @@ function blockedWatchedAgents(
 
 const stillPending = (timerId: number): boolean =>
   stmt(
-    `SELECT 1 AS hit FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+    `SELECT 1 AS hit FROM wakes WHERE id = ? AND ${pendingOneShotWhere()}`,
   ).get(timerId) !== undefined;
 
 const claimBlockNoticeWithNotice = db.transaction(
@@ -2143,8 +2131,7 @@ function agedOutBody(timer: TimerRow): string {
 // up sitting finished and unnoticed - which this project has paid for twice.
 export function watchStillWatchingClause(timer: TimerRow): string {
   const parent = stmt(
-    `SELECT (cancelled_at IS NULL AND fired_at IS NULL
-             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching,
+    `SELECT (${watchWatchingWhere()}) AS watching,
             (watch_scope IS NOT NULL) AS standing
        FROM wakes WHERE id = ?`,
   ).get(timer.parent_wake_id) as { watching: number; standing: number } | undefined;
@@ -2399,7 +2386,7 @@ function claimOneShot(timer: TimerRow): boolean {
     stmt(
       `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-         AND fired_at IS NULL AND cancelled_at IS NULL`,
+         AND ${pendingOneShotWhere()}`,
     ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
   );
 }
