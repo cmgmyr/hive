@@ -51,24 +51,33 @@ describe("lease store", () => {
     assert.equal(PANE_LEASE_SETTLE_MS, 500);
 
     const one = project("pane-lease-one");
-    const two = project("pane-lease-two");
     const key = paneLeaseKey("/tmp/tmux:shared/default", "%7");
     const scheduler = { id: "hive:scheduler", name: "hive scheduler", kind: "scheduler" };
-    const sender = { id: "agent:pane-sender", name: "pane sender", kind: "agent" };
     const acquiredAt = tryAcquirePaneLease(one.id, "/tmp/tmux:shared/default", "%7", scheduler);
     assert.ok(acquiredAt);
     const row = readLease(one.id, key);
-    assert.equal(row.owner, scheduler.id);
     assert.equal(row.expires_at, acquiredAt);
     assert.equal(row.expires_at, db.prepare("SELECT datetime(?, '+6 seconds') AS value").get(row.acquired_at).value);
-    assert.equal(tryAcquirePaneLease(one.id, "/tmp/tmux:shared/default", "%7", sender), null);
-    assert.equal(tryAcquirePaneLease(one.id, "/tmp/tmux:shared/default", "%7", scheduler), null, "same-owner acquisition does not renew");
-    assert.equal(readLease(one.id, key).expires_at, acquiredAt);
-    assert.ok(tryAcquirePaneLease(two.id, "/tmp/tmux:shared/default", "%7", sender), "project scopes the same pane key");
-    assert.ok(tryAcquirePaneLease(one.id, "/tmp/tmux:shared/default", "%8", sender), "pane scopes the same socket");
 
     const source = readFileSync(new URL("../dist/leaseStore.js", import.meta.url), "utf8");
     assert.match(source, /expires_at < datetime\('now'\)/, "expired leases use the shipped strict less-than purge");
+  });
+
+  it("pane contention excludes scheduler and sender actors", () => {
+    const one = project("pane-contention-one");
+    const two = project("pane-contention-two");
+    const socket = "/tmp/tmux:shared/default";
+    const pane = "%7";
+    const scheduler = { id: "hive:scheduler", name: "hive scheduler", kind: "scheduler" };
+    const sender = { id: "agent:pane-sender", name: "pane sender", kind: "agent" };
+    const acquiredAt = tryAcquirePaneLease(one.id, socket, pane, scheduler);
+    assert.ok(acquiredAt);
+    assert.equal(readLease(one.id, paneLeaseKey(socket, pane)).owner, scheduler.id);
+    assert.equal(tryAcquirePaneLease(one.id, socket, pane, sender), null);
+    assert.equal(tryAcquirePaneLease(one.id, socket, pane, scheduler), null, "same-owner acquisition does not renew");
+    assert.equal(readLease(one.id, paneLeaseKey(socket, pane)).expires_at, acquiredAt);
+    assert.ok(tryAcquirePaneLease(two.id, socket, pane, sender), "project scopes the same pane key");
+    assert.ok(tryAcquirePaneLease(one.id, socket, "%8", sender), "pane scopes the same socket");
   });
 
   it("expired purge distinguishes an exact empty key from a project purge", () => {
