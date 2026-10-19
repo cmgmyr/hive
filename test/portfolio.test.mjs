@@ -389,7 +389,7 @@ describe("portfolio idle-watch wakes", () => {
     const files = ["scheduler", "crew", "cli", "kickoff", "tools/wakes", "portfolio", "dashboard"];
     const sources = Object.fromEntries(files.map((file) => [file, readFileSync(`${REPO}/src/${file}.ts`, "utf8")]));
     const clause = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
-    assert.equal(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8").match(/cancelled_at IS NULL/g)?.length, 1);
+    assert.match(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8"), /export const ACTIVE_TIMER_WHERE = activeWakeWhere\(\)/u);
     assert.equal(Object.values(sources).filter((source) => source.includes(clause)).length, 0);
     for (const file of files) {
       const importPattern = file === "kickoff"
@@ -644,6 +644,18 @@ describe("portfolio panes", () => {
     assert.deepEqual(r.workers, { working: 1, idle: 1, needs_input: 1, other: 1, unreachable: 1, unconfirmed: 1 });
     assert.equal(r.lane, "stuck");
     assert.deepEqual(r.reasons, ["worker_needs_input", "worker_working"]);
+  });
+
+  it("portfolio keeps resumed idle separate from finished idle", { skip }, () => {
+    const p = project();
+    agent(p, { state: "working", target: livePane() });
+    agent(p, { state: "waiting", target: livePane() });
+    agent(p, { state: "idle", target: livePane() });
+    const resumedIdle = agent(p, { state: "idle", target: livePane() });
+    db.prepare("UPDATE agents SET resumed_at = ? WHERE id = ?").run("2026-09-29 11:00:00", resumedIdle);
+    agent(p, { state: "unknown", target: livePane() });
+
+    assert.deepEqual(row(p).workers, { working: 1, idle: 1, needs_input: 1, other: 2, unreachable: 0, unconfirmed: 0 });
   });
 
   it("does not call in_progress work stale while a live worker is working on it", { skip }, () => {

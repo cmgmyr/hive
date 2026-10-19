@@ -149,6 +149,65 @@ function toolBoundaryViolations(edges) {
     !(edge.from === "src/index.ts" && edge.kind === "import" && !edge.typeOnly && edge.names.length > 0 && edge.names.every((name) => name.startsWith("register"))));
 }
 
+const LIFECYCLE_LEAF_IMPORT_ALLOWLIST = new Map([
+  ["src/wakeSql.ts", new Set()],
+  ["src/firstPrompt.ts", new Set()],
+]);
+
+function moduleLoads(source) {
+  const loads = [];
+  const requireNames = new Set(["require"]);
+  const pending = [source];
+  while (pending.length) {
+    const node = pending.pop();
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isCallExpression(node.initializer)) {
+      const callee = node.initializer.expression;
+      if (ts.isIdentifier(callee) && callee.text === "createRequire") requireNames.add(node.name.text);
+    }
+    node.forEachChild((child) => { pending.push(child); });
+  }
+
+  const record = (kind, specifier) => loads.push({ kind, specifier });
+  const walk = [source];
+  while (walk.length) {
+    const node = walk.pop();
+    if (ts.isImportDeclaration(node) && node.moduleSpecifier) {
+      record("import", literalText(node.moduleSpecifier) ?? node.moduleSpecifier.getText(source));
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      record("re-export", literalText(node.moduleSpecifier) ?? node.moduleSpecifier.getText(source));
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const expression = node.moduleReference.expression;
+      record("import-equals", expression ? literalText(expression) ?? expression.getText(source) : "<computed>");
+    } else if (ts.isImportTypeNode(node)) {
+      const argument = node.argument;
+      const specifier = ts.isLiteralTypeNode(argument) ? literalText(argument.literal) : null;
+      record("import-type", specifier ?? argument.getText(source));
+    } else if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      const dynamicImport = expression.kind === ts.SyntaxKind.ImportKeyword;
+      const requireCall = ts.isIdentifier(expression) && requireNames.has(expression.text);
+      if (dynamicImport || requireCall) {
+        const specifier = node.arguments.length === 1 ? literalText(node.arguments[0]) : null;
+        record(dynamicImport ? "dynamic-import" : "require", specifier ?? node.getText(source));
+      }
+    }
+    node.forEachChild((child) => { walk.push(child); });
+  }
+  return loads;
+}
+
+function lifecycleLeafImportViolations(files) {
+  const violations = [];
+  for (const [file, allowlist] of LIFECYCLE_LEAF_IMPORT_ALLOWLIST) {
+    const source = files.get(file);
+    assert.ok(source, `missing ${file} from parsed source tree`);
+    for (const { kind, specifier } of moduleLoads(source)) {
+      if (!allowlist.has(specifier)) violations.push(`${file}: ${kind} ${specifier}`);
+    }
+  }
+  return violations;
+}
+
 function sourceStringFragments(source) {
   const fragments = [];
   const walk = [source];
@@ -220,8 +279,8 @@ function protocolOwnershipViolations(files) {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && /GRACE_SECONDS$/u.test(node.name.text)) {
           declarations.push(node.name.text);
         }
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DELIVERY_METHOD") {
-          violations.push(`${file}: copied socket method vocabulary; owner is src/claudeWake.ts`);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DELIVERY_METHOD" && file !== "src/wakeSql.ts") {
+          violations.push(`${file}: copied socket method vocabulary; owner is src/wakeSql.ts`);
         }
         node.forEachChild((child) => { walk.push(child); });
       }
@@ -366,6 +425,20 @@ describe("source import graph", () => {
       const violations = toolBoundaryViolations(edgeGraph(fixtureFiles, root));
       assert.equal(violations.length, 4, violations.map((edge) => `${edge.from} -> ${edge.to} (${edge.kind})`).join("\n"));
       assert.deepEqual(violations.map((edge) => edge.kind).sort(), ["dynamic-import", "import", "re-export", "require"]);
+    });
+  });
+
+  it("wake and first-prompt leaves import only their explicit allowlist", () => {
+    assert.deepEqual(LIFECYCLE_LEAF_IMPORT_ALLOWLIST, new Map([
+      ["src/wakeSql.ts", new Set()],
+      ["src/firstPrompt.ts", new Set()],
+    ]));
+    assert.deepEqual(lifecycleLeafImportViolations(parseProject()), []);
+    withParsedFiles({
+      "src/wakeSql.ts": 'import "./db.js"; export {};',
+      "src/firstPrompt.ts": "export {};",
+    }, (files) => {
+      assert.deepEqual(lifecycleLeafImportViolations(files), ["src/wakeSql.ts: import ./db.js"]);
     });
   });
 

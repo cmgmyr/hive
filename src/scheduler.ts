@@ -1,6 +1,63 @@
 import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
-import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
-export { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  DELIVERY_METHOD,
+  FIRING_DROPPED_NOTE,
+  HELD_REASON_ACTOR_CLOSED,
+  HELD_REASON_CONVERSATION,
+  HELD_REASON_COPY_MODE,
+  HELD_REASON_HANDOFF,
+  HELD_REASON_LEAD_BOOT_INPUT_BOX,
+  HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_LEAD_ROW_CLOSED,
+  HELD_REASON_MODAL_CHOICE,
+  HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM,
+  HELD_REASON_PANE_REISSUED_LEAD,
+  HELD_REASON_PANE_REISSUED_WORKER,
+  HELD_REASON_PANE_UNKNOWN_LEAD,
+  HELD_REASON_PANE_UNKNOWN_WORKER,
+  HELD_REASON_UNCLASSIFIABLE_PANE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT,
+  HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  LOG_RETENTION,
+  activeWakeWhere,
+  holdableWakeWhere,
+  identityThenDead,
+  isLeadRowClosedHold,
+  isUnclassifiablePaneHold,
+  isUnsubmittedInputHold,
+  pendingOneShotWhere,
+  repeatingFiringPendingWhere,
+  repeatingSocketAwaitingWhere,
+  repeatingSocketFiringWhere,
+  schedulerCandidateWhere,
+  sentWakeAtSql,
+  socketAwaitingWhere,
+  spentUntypedNotice,
+  wasHeldForPaneIdentity,
+  wasHeldForPaneReissue,
+  watchWatchingWhere,
+} from "./wakeSql.js";
+export {
+  ACTIVE_TIMER_WHERE,
+  DELIVERY_METHOD,
+  HELD_REASON_ACTOR_CLOSED,
+  HELD_REASON_CONVERSATION,
+  HELD_REASON_COPY_MODE,
+  HELD_REASON_LEAD_PANE_DEAD,
+  HELD_REASON_UNCLASSIFIABLE_PANE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  isLeadRowClosedHold,
+  isUnclassifiablePaneHold,
+  isUnsubmittedInputHold,
+  socketAwaitingWhere,
+  wasHeldForPaneIdentity,
+  wasHeldForPaneReissue,
+} from "./wakeSql.js";
 import { parseStoreTimestamp } from "./storeClock.js";
 import { runningBuildChange, runningBuildNotice, versionInfo } from "./version.js";
 import type { Statement } from "better-sqlite3";
@@ -26,7 +83,7 @@ import {
 import {
   isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND,
 } from "./agentKinds.js";
-import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import { awaitingFirstPrompt, finishedIdle, finishedIdleSql } from "./firstPrompt.js";
 import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
   describeLiveTasks,
@@ -36,11 +93,9 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { LOG_RETENTION } from "./wakeSql.js";
 import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
   CROSS_SESSION_CLOSE,
-  DELIVERY_METHOD,
   postClaudeWake,
   promptMarkerEvidenceSql,
   quietMessagingOn,
@@ -48,9 +103,8 @@ import {
   socketSenderAddress,
   SOCKET_WAKE_FOOTER,
 } from "./claudeWake.js";
-export { DELIVERY_METHOD };
 import { driveLeadHandoff } from "./leadHandoff.js";
-import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
+import { handoffHoldsWake } from "./leadHandoffState.js";
 import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
@@ -747,7 +801,7 @@ function maybeGenerateDashboards(): void {
 }
 
 export function checkConfirmations(): void {
-  const sentAt = "COALESCE(wakes.socket_attempt_at, wakes.typed_at)";
+  const sentAt = sentWakeAtSql("wakes.");
   const confirmationQuery = promptEvidenceSql(sentAt);
   try {
     const pending = stmt(
@@ -829,11 +883,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     const candidates = stmt(
       `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
          FROM wakes ${DELIVER_SOCKET_JOIN}
-        WHERE wakes.cancelled_at IS NULL AND (
-         (wakes.kind = 'delay' AND wakes.due_at <= datetime('now')
-           AND (wakes.fired_at IS NULL OR wakes.repeat_every_ms IS NOT NULL))
-         OR (wakes.kind != 'delay' AND wakes.fired_at IS NULL)
-       )`,
+        WHERE ${schedulerCandidateWhere("wakes.")}`,
     ).all() as TimerRow[];
 
     const choices: ChoiceCache = new Map();
@@ -920,9 +970,7 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRo
   bestEffortRun(
     `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
        first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-     WHERE id = ? AND cancelled_at IS NULL
-       AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL AND due_at = ? AND (? IS NULL OR fire_count = ?))
-         OR (${socketAwaitingWhere()}))`,
+     WHERE id = ? AND ${holdableWakeWhere()}`,
     reason,
     timer.id,
     timer.due_at,
@@ -931,105 +979,7 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRo
   );
 }
 
-const HELD_REASON_MODAL_CHOICE = "pane is awaiting a modal choice (folder-trust or /model picker)";
 const LEAD_BOOT_BOX_WAIT_MS = 60_000;
-const HELD_REASON_LEAD_BOOT_INPUT_BOX = "the lead's input box is not on screen yet; holding while its session starts";
-export const HELD_REASON_LEAD_PANE_DEAD =
-  "the lead's pane is not live right now (likely mid-restart); lead-owned wakes are exempt from " +
-  "cancellation for this alone, so it is held rather than lost";
-
-const HELD_REASON_PANE_REISSUED_PREFIX =
-  "the pane id recorded for this wake now belongs to a different pane than the one it was set " +
-  "against (its pid no longer matches, most likely a tmux server restart reissuing the id); held " +
-  "rather than typed into the wrong pane - ";
-const HELD_REASON_PANE_REISSUED_LEAD =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}run \`hive lead\` to re-point it at the live one`;
-const HELD_REASON_PANE_REISSUED_WORKER =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}nothing re-points a worker's wake automatically, so cancel ` +
-  "it with wake_cancel and set a fresh one once the worker's pane is confirmed live, or leave it: " +
-  "it will keep holding rather than deliver wrongly";
-
-const HELD_REASON_PANE_REISSUED_THEN_DEAD =
-  `${HELD_REASON_PANE_REISSUED_PREFIX}the pane it was reissued to has since gone dead too; nothing ` +
-  "re-points a worker's wake automatically, so cancel it with wake_cancel (any running lead may do " +
-  "this even though the wake is not theirs) if it is no longer needed";
-export function wasHeldForPaneReissue(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_PANE_REISSUED_PREFIX);
-}
-
-const HELD_REASON_PANE_UNKNOWN_PREFIX =
-  "pane ownership for this wake's row cannot be verified (no pane pid was recorded for it, its row now " +
-  "records a different pane, or the pane is on another tmux socket); held rather than typed into a pane " +
-  "that may not be its own - ";
-const HELD_REASON_PANE_UNKNOWN_LEAD =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}run \`hive lead\` to start or adopt a lead with a recorded pane and re-point it`;
-const HELD_REASON_PANE_UNKNOWN_WORKER =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}nothing re-points a worker's wake automatically, so cancel it with ` +
-  "wake_cancel (any running lead may, even though the wake is not theirs), or leave it: it keeps holding " +
-  "rather than deliver wrongly";
-const HELD_REASON_PANE_UNKNOWN_THEN_DEAD =
-  `${HELD_REASON_PANE_UNKNOWN_PREFIX}that pane has since gone dead too; nothing re-points a worker's wake ` +
-  "automatically, so cancel it with wake_cancel (any running lead may) if it is no longer needed";
-
-// One family for both identity holds, so a later dead pane re-holds them instead of cancelling.
-export function wasHeldForPaneIdentity(heldReason: string | null): boolean {
-  return wasHeldForPaneReissue(heldReason) || (heldReason?.startsWith(HELD_REASON_PANE_UNKNOWN_PREFIX) ?? false);
-}
-
-const identityThenDead = (heldReason: string | null): string =>
-  wasHeldForPaneReissue(heldReason) ? HELD_REASON_PANE_REISSUED_THEN_DEAD : HELD_REASON_PANE_UNKNOWN_THEN_DEAD;
-
-export const HELD_REASON_ACTOR_CLOSED =
-  "delivery actor closed: the row this wake was bound to is closed, so nothing was typed and the wake was " +
-  "cancelled rather than delivered into a pane that row no longer owns";
-const HELD_REASON_LEAD_ROW_CLOSED =
-  "the lead's row is closed, so no pane is this wake's to type into; held until `hive lead` starts or adopts a " +
-  "lead and re-points it";
-
-export function isLeadRowClosedHold(heldReason: string | null): boolean {
-  return heldReason === HELD_REASON_LEAD_ROW_CLOSED;
-}
-const HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM = "delivery stopped after claim: ";
-
-export const HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX =
-  "the pane's harness is not one hive can classify; ";
-export const HELD_REASON_UNCLASSIFIABLE_PANE =
-  `${HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX}neither the dialog guard nor the unsubmitted-text ` +
-  "guard can read this screen and delivery would type blind. wake_set and wake_when_idle refuse such a " +
-  "target outright now, so this wake predates that or its pane's command changed underneath it. Nothing " +
-  "hive does on its own clears this: it lifts only when that pane is replaced by one hive starts itself " +
-  "(`hive lead` after the pane exits). Cancel it with wake_cancel (any running lead may, even though the " +
-  "wake is not theirs) and drive that pane with agent_send(keys: [...])";
-
-export function isUnclassifiablePaneHold(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX);
-}
-
-export const HELD_REASON_COPY_MODE =
-  "the pane is in tmux copy mode; tmux clears its bracketed-paste flag there, so the body would arrive " +
-  "with no paste markers (losing everything before the last 1022-byte write) and the Enter would be " +
-  "eaten by the mode instead of submitting - both silently, with tmux reporting success. It delivers " +
-  "once whoever is reading that pane leaves copy mode";
-
-export const HELD_REASON_UNSUBMITTED_INPUT_PREFIX = "the pane's input box has unsubmitted human text; ";
-export const HELD_REASON_UNSUBMITTED_INPUT =
-  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}delivering now would paste the wake body onto it and submit ` +
-  "both as one message";
-
-// Distinct from HELD_REASON_UNSUBMITTED_INPUT so the claim's debounce doesn't latch a transient
-// pane-resolution failure shut forever - the next tick retries instead of giving up permanently.
-const HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED =
-  `${HELD_REASON_UNSUBMITTED_INPUT_PREFIX}hive could not resolve a live pane for the wake's owner on ` +
-  "this tick - retrying, since that may be transient rather than permanent";
-
-export function isUnsubmittedInputHold(heldReason: string | null): boolean {
-  return heldReason != null && heldReason.startsWith(HELD_REASON_UNSUBMITTED_INPUT_PREFIX);
-}
-
-export const HELD_REASON_CONVERSATION =
-  "a human talked to this lead more recently than the conversation-hold window; holding so a wake " +
-  "does not split an in-progress discussion - it delivers once the window passes or the hold's own " +
-  "ceiling is reached, whichever comes first";
 
 function leadBootSessionIsFresh(agentId: number, panePid: string): boolean {
   const row = stmt(
@@ -1228,7 +1178,7 @@ function pendingNoticeFor(parentTimerId: number, conditions: readonly string[]):
   const placeholders = conditions.map(() => "?").join(", ");
   return stmt(
     `SELECT t.id FROM wakes t
-      WHERE t.parent_wake_id = ? AND t.fired_at IS NULL AND t.cancelled_at IS NULL
+      WHERE t.parent_wake_id = ? AND ${pendingOneShotWhere("t.")}
         AND EXISTS (
           SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = t.id AND n.condition IN (${placeholders})
         )
@@ -1240,7 +1190,7 @@ function updateNoticeInPlace(noticeId: number, body: string): boolean {
   return (
     stmt(
       `UPDATE wakes SET body = ?, created_at = datetime('now')
-        WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`,
+        WHERE id = ? AND ${pendingOneShotWhere()}`,
     ).run(body, noticeId).changes === 1
   );
 }
@@ -1261,9 +1211,8 @@ const claimModalHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_MODAL_CHOICE,
@@ -1311,9 +1260,8 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
       stmt(
         `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
-          WHERE id = ? AND cancelled_at IS NULL
+          WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-            AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_UNSUBMITTED_INPUT,
@@ -1405,7 +1353,7 @@ function blockedWatchedAgents(
 
 const stillPending = (timerId: number): boolean =>
   stmt(
-    `SELECT 1 AS hit FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+    `SELECT 1 AS hit FROM wakes WHERE id = ? AND ${pendingOneShotWhere()}`,
   ).get(timerId) !== undefined;
 
 const claimBlockNoticeWithNotice = db.transaction(
@@ -1498,12 +1446,6 @@ function alreadyToldAbout(timerId: number, agentId: number, blockedSince: string
 const CONDITION_IDLE = "idle";
 const CONDITION_GONE = "gone";
 
-const NOTICE_RETRY_AFTER = "-60 seconds";
-
-const spentUntypedNotice = (alias: string): string =>
-  `${alias}.fired_at IS NOT NULL AND COALESCE(${alias}.typed_at, ${alias}.socket_attempt_at) IS NULL ` +
-  `AND ${alias}.cancelled_at IS NULL AND ${alias}.fired_at < datetime('now', '${NOTICE_RETRY_AFTER}')`;
-
 const NOTICE_MAX_AGE = "-1 hours";
 
 const ROSTER_STILL_GOING = 8;
@@ -1561,7 +1503,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
           AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner, timer.id) as CrewRow[]
-  ).filter((row) => !awaitingFirstPrompt(row));
+  ).filter(finishedIdle);
 }
 
 function standingGoneRows(timer: TimerRow): CrewRow[] {
@@ -1569,7 +1511,7 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
     `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
-        AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")})
+        AND NOT (${finishedIdleSql("a")})
         AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
         ${OWNED_BY_WATCH}
@@ -1585,7 +1527,7 @@ export function markGoneReported(agentId: number, projectId: number): void {
          FROM wakes t
          JOIN agents a ON a.id = ?
         WHERE t.project_id = ? AND t.kind = 'idle_any' AND t.watch_scope IS NOT NULL
-          AND t.cancelled_at IS NULL AND t.fired_at IS NULL
+          AND ${pendingOneShotWhere("t.")}
           AND a.closed_at IS NOT NULL`,
   ).run(agentId, projectId);
 }
@@ -1649,7 +1591,7 @@ function stillGoingRows(timer: TimerRow): StillGoingRow[] | null {
       `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
-          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
+          AND NOT (${finishedIdleSql("a")}) AND a.actor_id != ?
           ${OWNED_BY_WATCH}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner) as StillGoingRow[];
@@ -1816,7 +1758,7 @@ function standingNoticeBody(
     shown = rows
       .slice(0, ROSTER_STILL_GOING)
       .map((r) =>
-        awaitingFirstPrompt(r) && r.agent_state === "idle"
+        r.agent_state === "idle" && !finishedIdle(r)
           ? `${r.name} (awaiting first assignment)`
           : `${r.name} (${stateNowClause(r)})`,
       );
@@ -2189,8 +2131,7 @@ function agedOutBody(timer: TimerRow): string {
 // up sitting finished and unnoticed - which this project has paid for twice.
 export function watchStillWatchingClause(timer: TimerRow): string {
   const parent = stmt(
-    `SELECT (cancelled_at IS NULL AND fired_at IS NULL
-             AND (max_wait_at IS NULL OR max_wait_at > datetime('now'))) AS watching,
+    `SELECT (${watchWatchingWhere()}) AS watching,
             (watch_scope IS NOT NULL) AS standing
        FROM wakes WHERE id = ?`,
   ).get(timer.parent_wake_id) as { watching: number; standing: number } | undefined;
@@ -2445,7 +2386,7 @@ function claimOneShot(timer: TimerRow): boolean {
     stmt(
       `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-         AND fired_at IS NULL AND cancelled_at IS NULL`,
+         AND ${pendingOneShotWhere()}`,
     ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
   );
 }
@@ -2479,7 +2420,7 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
     }
 
     return {
-      idle: !awaitingFirstPrompt(agent) && agent.agent_state === "idle",
+      idle: finishedIdle(agent),
       gone: false,
       since: agent.state_changed_at,
     };
@@ -2779,22 +2720,8 @@ function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string, fir
   );
 }
 
-export const socketAwaitingWhere = (prefix = ""): string =>
-  `${prefix}delivery_method = '${DELIVERY_METHOD.socket}' AND ${prefix}confirmed_at IS NULL AND ${prefix}typed_at IS NULL AND ${prefix}cancelled_at IS NULL`;
-// An attempt older than the row's latest claim belongs to an earlier firing (an old-build claim leaves it behind).
-const currentAttempt = (p: string): string =>
-  `${p}socket_attempt_at IS NOT NULL AND ${p}confirmed_at IS NULL AND ${p}typed_at IS NULL AND ${p}cancelled_at IS NULL
-   AND ${p}fired_at IS NOT NULL AND ${p}socket_attempt_at >= ${p}fired_at`;
-const repeatingSocketAwaitingWhere = (prefix = ""): string =>
-  `${prefix}delivery_method = '${DELIVERY_METHOD.socketRepeating}' AND ${currentAttempt(prefix)}`;
-const FIRING_DROPPED_NOTE = "dropped";
-const repeatingFallbackClaimedWhere = (prefix = ""): string =>
-  `${prefix}repeat_every_ms IS NOT NULL AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}
-   AND ${prefix}socket_delivery_note IS NOT '${FIRING_DROPPED_NOTE}'`;
-// Bounded like retry and confirmation: past retention neither can settle it, so it must stop deferring.
-const REPEATING_FIRING_PENDING = `((${repeatingSocketAwaitingWhere()}) OR (${repeatingFallbackClaimedWhere()}))
-  AND socket_attempt_at >= datetime('now', '${LOG_RETENTION}')`;
-const REPEATING_SOCKET_FIRING = `repeat_every_ms IS NOT NULL AND COALESCE(delivery_method, '') IN ('${DELIVERY_METHOD.socketRepeating}', '${DELIVERY_METHOD.ptyAfterSocketTimeout}')`;
+const REPEATING_FIRING_PENDING = repeatingFiringPendingWhere();
+const REPEATING_SOCKET_FIRING = repeatingSocketFiringWhere();
 
 function repeatingFiringPending(id: number): boolean {
   try {

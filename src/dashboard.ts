@@ -33,7 +33,7 @@ export function processCounts(procs: ProcessSnapshot[]): {
   };
 }
 
-import { awaitingFirstPrompt } from "./firstPrompt.js";
+import { finishedIdle } from "./firstPrompt.js";
 
 import { SLUG_MAX_LEN, cutToUnitBudget } from "./slug.js";
 
@@ -134,7 +134,7 @@ function agentStatusLevel(state: string): StatusLevel {
 }
 
 function agentStateBadge(a: { agent_state: string; resumed_at: string }): string {
-  return awaitingFirstPrompt(a) && a.agent_state === "idle"
+  return a.agent_state === "idle" && !finishedIdle(a)
     ? statusBadge("live", "idle (no assignment yet)")
     : statusBadge(agentStatusLevel(a.agent_state), a.agent_state);
 }

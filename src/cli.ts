@@ -85,17 +85,20 @@ import { formatRowCounts, projectRowCounts, removeProject } from "./projectRemov
 import { ensureHooksFile, ensureLeadHooksFile } from "./hooks.js";
 import { errorMessage, registrationNoticeText, withTrailingNewline } from "./result.js";
 import {
-  socketAwaitingWhere,
   dashboardFileContained,
   describeStall,
-  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
-  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
   janitor,
   resolveDashboardFile,
   generateQueenDashboardNow,
   transcriptStaleness,
 } from "./scheduler.js";
-import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX,
+  HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  heldWakeWhere,
+  socketAwaitingWhere,
+} from "./wakeSql.js";
 import { readTurnCount } from "./turnCount.js";
 import { leadSessionEnded } from "./leadState.js";
 import { heldReasonLabel } from "./heldLabel.js";
@@ -3537,13 +3540,13 @@ function cmdStatusline(): void {
     .prepare(
       `WITH chosen AS (
          SELECT held_reason, first_held_at FROM wakes
-          WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL
+          WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND ${heldWakeWhere()}
           ORDER BY (held_reason LIKE ?) DESC, (held_reason LIKE ?) ASC,
                    first_held_at IS NULL ASC, first_held_at ASC
           LIMIT 1
        )
        SELECT
-         (SELECT COUNT(*) FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND held_at IS NOT NULL) AS n,
+         (SELECT COUNT(*) FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE} AND ${heldWakeWhere()}) AS n,
          (SELECT held_reason FROM chosen) AS held_reason,
          (SELECT first_held_at FROM chosen) AS first_held_at`,
     )

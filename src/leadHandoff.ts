@@ -1,14 +1,18 @@
 import { createHash } from "node:crypto";
 import { db } from "./db.js";
 import { MESSAGE_RETENTION, MESSAGE_STATUS } from "./leadMessage.js";
-import { LOG_RETENTION } from "./wakeSql.js";
+import {
+  HELD_REASON_HANDOFF,
+  LOG_RETENTION,
+  handoffSocketInFlightWhere,
+  pendingOneShotWhere,
+} from "./wakeSql.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   casHandoff,
   type HandoffReason,
   type HandoffRow,
   type HandoffState,
-  HELD_REASON_HANDOFF,
   handoffHoldsAutomation,
   nowSql,
   olderThan,
@@ -168,7 +172,7 @@ const failTransaction = db.transaction((id: number, failure: string, from: reado
   if (!casHandoff(id, from, { state: "failed", failure, owner_token: null, owner_pid: null }, where)) return false;
   db.prepare(
     `UPDATE wakes SET cancelled_at = datetime('now'), held_reason = ?
-      WHERE id = (SELECT request_wake_id FROM lead_handoffs WHERE id = ?) AND fired_at IS NULL AND cancelled_at IS NULL`,
+      WHERE id = (SELECT request_wake_id FROM lead_handoffs WHERE id = ?) AND ${pendingOneShotWhere()}`,
   ).run(`lead handoff #${id} failed: ${failure}`, id);
   return true;
 });
@@ -248,8 +252,7 @@ export function automationBlocker(lead: { id: number; actor_id: string }, second
       `SELECT 1 AS hit FROM agent_messages WHERE to_agent_id = ? AND delivery_status IN (?, ?)
         AND created_at >= datetime('now', ?)
        UNION ALL
-       SELECT 1 FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ? AND fired_at IS NOT NULL AND cancelled_at IS NULL
-        AND delivery_method LIKE 'socket%' AND confirmed_at IS NULL AND socket_attempt_at >= datetime('now', ?)
+       SELECT 1 FROM wakes WHERE deliver_actor = ? AND body NOT LIKE ? AND ${handoffSocketInFlightWhere()}
        LIMIT 1`,
     )
     .get(lead.id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackClaimed, MESSAGE_RETENTION,
@@ -300,7 +303,7 @@ const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; 
   const waiting = current.request_wake_id === null
     ? undefined
     : (db
-        .prepare("SELECT id FROM wakes WHERE id = ? AND due_at IS NULL AND fired_at IS NULL AND cancelled_at IS NULL")
+        .prepare(`SELECT id FROM wakes WHERE id = ? AND due_at IS NULL AND ${pendingOneShotWhere()}`)
         .get(current.request_wake_id) as { id: number } | undefined);
   let wakeId: number;
   if (waiting !== undefined) {
@@ -561,7 +564,7 @@ export function handoffInjection(leadActor: string): string | null {
     .all(lead.project_id) as { name: string; agent_state: string }[];
   const pending = (
     db
-      .prepare("SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND fired_at IS NULL AND cancelled_at IS NULL")
+      .prepare(`SELECT COUNT(*) AS n FROM wakes WHERE deliver_actor = ? AND ${pendingOneShotWhere()}`)
       .get(lead.actor_id) as { n: number }
   ).n;
   const heldWakes = (

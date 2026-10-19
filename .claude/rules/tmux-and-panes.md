@@ -17,6 +17,7 @@ paths:
   - "src/leadHandoff.ts"
   - "src/portfolio.ts"
   - "src/projectRemove.ts"
+  - "src/wakeSql.ts"
   - "scripts/restart-lead.sh"
 ---
 

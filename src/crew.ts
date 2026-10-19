@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { parseStoreTimestamp } from "./storeClock.js";
 import { db } from "./db.js";
 import { type Project, isLinkedWorktree } from "./context.js";
-import { awaitingFirstPrompt } from "./firstPrompt.js";
+import { finishedIdle } from "./firstPrompt.js";
 import { heldReasonLabel } from "./heldLabel.js";
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import { NEEDS_HUMAN_TAG } from "./portfolio.js";
@@ -518,7 +518,7 @@ export function collectCrew(project: Project, now: Date): CrewSnapshot {
         age_seconds: Math.max(0, Math.floor((now.getTime() - Date.parse(isoUtc(row.created_at) ?? "")) / 1000) || 0),
         activity,
         context_fill: kind ? readContextFill(kind, worker) : null,
-        your_turn: row.agent_state === "idle" && !awaitingFirstPrompt(row),
+        your_turn: finishedIdle(row),
         commits_ahead: commitsByCwd.get(row.cwd) ?? null,
       },
     });

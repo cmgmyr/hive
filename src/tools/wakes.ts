@@ -15,13 +15,19 @@ import {
 import { run } from "../result.js";
 import { findAgent, observeOwnership, notOwnedError, summaryLiveness, type AgentRow } from "../agentRecords.js";
 import {
-  LOG_RETENTION,
   OWNED_BY_WATCH,
   WATCH_SCOPE_PROJECT,
   seedGoneCursor,
   type TimerRow,
 } from "../scheduler.js";
-import { ACTIVE_TIMER_WHERE } from "../wakeSql.js";
+import {
+  ACTIVE_TIMER_WHERE,
+  LOG_RETENTION,
+  firedOneShotWhere,
+  pendingOneShotWhere,
+  type ConfirmationStatus,
+  wakeConfirmation,
+} from "../wakeSql.js";
 import { idParam, projectIdParam } from "./params.js";
 import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";
@@ -55,7 +61,7 @@ function recentlyFiredWakes(projectId: number): TimerRow[] {
   return db
     .prepare(
       `SELECT * FROM wakes
-       WHERE project_id = ? AND cancelled_at IS NULL AND fired_at IS NOT NULL AND repeat_every_ms IS NULL
+       WHERE project_id = ? AND ${firedOneShotWhere()}
          AND fired_at >= datetime('now', ?)
        ORDER BY fired_at DESC, id DESC LIMIT ${RECENTLY_FIRED_LIMIT}`,
     )
@@ -73,8 +79,6 @@ function makeChannelChecker(): (actorId: string) => boolean {
     return has;
   };
 }
-
-type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no_confirmation_channel";
 
 function deliveryState(
   t: TimerRow,
@@ -97,16 +101,10 @@ function deliveryState(
     held_reason: t.held_reason,
     confirmed_at: t.confirmed_at,
 
-    confirmation:
-      t.typed_at == null && t.socket_attempt_at == null
-        ? null
-        : t.confirmed_at != null
-          ? "confirmed"
-          : !hasChannel(t.deliver_actor)
-            ? "no_confirmation_channel"
-            : t.typed_busy === 1
-              ? "unconfirmed_busy"
-              : "unconfirmed",
+    confirmation: wakeConfirmation(
+      t,
+      (t.typed_at == null && t.socket_attempt_at == null) || t.confirmed_at != null || hasChannel(t.deliver_actor),
+    ),
     delivery_method: t.delivery_method,
     delivered_by: t.delivered_by,
     socket_attempt_at: t.socket_attempt_at,
@@ -559,7 +557,7 @@ export function registerWakes(server: McpServer): void {
                 `SELECT id, watch FROM wakes
                   WHERE project_id = ? AND owner = ? AND kind = ?
                     AND watch_scope IS NULL AND deliver_actor = ? AND deliver_pane = ?
-                    AND fired_at IS NULL AND cancelled_at IS NULL
+                    AND ${pendingOneShotWhere()}
                     AND id NOT IN (SELECT wake_id FROM lead_idle_subscriptions)`,
               )
               .all(projectId, currentActor(), `idle_${mode}`, delivery.actor, delivery.pane) as { id: number; watch: string }[]
@@ -569,7 +567,7 @@ export function registerWakes(server: McpServer): void {
           const superseded = candidates.filter(
             (id) =>
               db
-                .prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND cancelled_at IS NULL AND fired_at IS NULL")
+                .prepare(`UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ? AND ${pendingOneShotWhere()}`)
                 .run(id).changes === 1,
           );
           const info = db
@@ -790,7 +788,7 @@ export function registerWakes(server: McpServer): void {
               ? db
                   .prepare(
                     `UPDATE wakes SET cancelled_at = datetime('now')
-                     WHERE parent_wake_id = ? AND cancelled_at IS NULL AND fired_at IS NULL`,
+                     WHERE parent_wake_id = ? AND ${pendingOneShotWhere()}`,
                   )
                   .run(args.wake_id).changes
               : 0;

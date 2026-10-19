@@ -1,4 +1,5 @@
 import { db } from "./db.js";
+export { HELD_REASON_HANDOFF } from "./wakeSql.js";
 
 export type HandoffReason = "warn" | "stop";
 export type HandoffState =
@@ -132,10 +133,6 @@ export function readHandoffGate(leadAgentId: number): HandoffGate | null {
     ? null
     : { requestId: row.id, requestWakeId: row.request_wake_id, holdAutomation: handoffHoldsAutomation(row) };
 }
-
-export const HELD_REASON_HANDOFF =
-  "the lead is handing off to a fresh session; held through the wind-down and the successor's boot, and delivered to " +
-  "the lead row once the successor completes its first turn, or when the handoff fails or releases its hold";
 
 // A wake addressed to a lead row is held while that lead's handoff holds automation, except the
 // current request wake itself, which still passes every human-input and ownership guard.

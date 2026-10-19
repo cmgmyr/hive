@@ -10,6 +10,7 @@ paths:
   - "src/config.ts"
   - "src/globalConfig.ts"
   - "src/leadHandoffState.ts"
+  - "src/wakeSql.ts"
 ---
 
 # The store, the data dir, and what keeps tests off it

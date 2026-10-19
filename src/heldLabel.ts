@@ -5,7 +5,7 @@ import {
   isUnclassifiablePaneHold,
   isUnsubmittedInputHold,
   wasHeldForPaneIdentity,
-} from "./scheduler.js";
+} from "./wakeSql.js";
 
 // test/docs.test.mjs fails if a label here is missing from docs/install.md. It checks
 // presence only: docs/install.md also counts the set in prose, and nothing guards that number.

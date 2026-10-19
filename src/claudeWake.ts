@@ -2,6 +2,9 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
+import { DELIVERY_METHOD } from "./wakeSql.js";
+
+export { DELIVERY_METHOD } from "./wakeSql.js";
 
 export const CROSS_SESSION_CLOSE = "</cross-session-message>";
 export const ENVELOPE_OPEN = '<cross-session-message from="';
@@ -10,13 +13,6 @@ export const SOCKET_WAKE_FOOTER = "Automated hive wake. Do not reply to this sen
 export const SOCKET_MESSAGE_FOOTER = "Automated hive worker message. Do not reply to this socket sender.";
 export const SOCKET_WRITE_BOUND_MS = 1000;
 export const SOCKET_CONFIRM_GRACE_SECONDS = 60;
-
-export const DELIVERY_METHOD = {
-  socket: "socket",
-  socketRepeating: "socket-repeating",
-  pty: "pty",
-  ptyAfterSocketTimeout: "pty-after-socket-timeout",
-} as const;
 
 export function senderAddress(socketPath: string): string {
   const encoded = socketPath.replace(/[^A-Za-z0-9/._-]/gu, (c) =>
