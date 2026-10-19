@@ -220,8 +220,8 @@ function protocolOwnershipViolations(files) {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && /GRACE_SECONDS$/u.test(node.name.text)) {
           declarations.push(node.name.text);
         }
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DELIVERY_METHOD") {
-          violations.push(`${file}: copied socket method vocabulary; owner is src/claudeWake.ts`);
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === "DELIVERY_METHOD" && file !== "src/wakeSql.ts") {
+          violations.push(`${file}: copied socket method vocabulary; owner is src/wakeSql.ts`);
         }
         node.forEachChild((child) => { walk.push(child); });
       }

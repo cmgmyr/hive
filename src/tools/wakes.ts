@@ -22,6 +22,7 @@ import {
   type TimerRow,
 } from "../scheduler.js";
 import { ACTIVE_TIMER_WHERE } from "../wakeSql.js";
+import { wakeConfirmation, type ConfirmationStatus } from "../wakeSql.js";
 import { idParam, projectIdParam } from "./params.js";
 import { cutToUnitBudget } from "../slug.js";
 import { awaitingFirstPrompt } from "../firstPrompt.js";
@@ -74,8 +75,6 @@ function makeChannelChecker(): (actorId: string) => boolean {
   };
 }
 
-type ConfirmationStatus = "confirmed" | "unconfirmed" | "unconfirmed_busy" | "no_confirmation_channel";
-
 function deliveryState(
   t: TimerRow,
   hasChannel: (actorId: string) => boolean,
@@ -97,16 +96,7 @@ function deliveryState(
     held_reason: t.held_reason,
     confirmed_at: t.confirmed_at,
 
-    confirmation:
-      t.typed_at == null && t.socket_attempt_at == null
-        ? null
-        : t.confirmed_at != null
-          ? "confirmed"
-          : !hasChannel(t.deliver_actor)
-            ? "no_confirmation_channel"
-            : t.typed_busy === 1
-              ? "unconfirmed_busy"
-              : "unconfirmed",
+    confirmation: wakeConfirmation(t, hasChannel(t.deliver_actor)),
     delivery_method: t.delivery_method,
     delivered_by: t.delivered_by,
     socket_attempt_at: t.socket_attempt_at,
