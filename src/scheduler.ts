@@ -83,7 +83,7 @@ import {
 import {
   isLeadActorId, LEAD_ACTOR_PREFIX, LEAD_KIND,
 } from "./agentKinds.js";
-import { awaitingFirstPrompt, awaitingFirstPromptSql } from "./firstPrompt.js";
+import { awaitingFirstPrompt, finishedIdle, finishedIdleSql } from "./firstPrompt.js";
 import { evaluateLeadWatch, leadSubscription, type LeadIdleSubscription, type PaneReaders } from "./leadWatch.js";
 import {
   describeLiveTasks,
@@ -1503,7 +1503,7 @@ function standingIdleRows(timer: TimerRow): CrewRow[] {
           AND ${unreported(CONDITION_IDLE, "a.state_changed_at")}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner, timer.id) as CrewRow[]
-  ).filter((row) => !awaitingFirstPrompt(row));
+  ).filter(finishedIdle);
 }
 
 function standingGoneRows(timer: TimerRow): CrewRow[] {
@@ -1511,7 +1511,7 @@ function standingGoneRows(timer: TimerRow): CrewRow[] {
     `SELECT ${CREW_COLUMNS}, a.closed_at AS episode
        FROM agents a
       WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'closed' AND a.actor_id != ?
-        AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")})
+        AND NOT (${finishedIdleSql("a")})
         AND a.parked_at = ''
         AND a.closed_at IS NOT NULL
         ${OWNED_BY_WATCH}
@@ -1591,7 +1591,7 @@ function stillGoingRows(timer: TimerRow): StillGoingRow[] | null {
       `SELECT a.name, a.actor_id, a.agent_state, a.state_changed_at, a.status, a.command, a.kind, a.resumed_at
          FROM agents a
         WHERE a.project_id = ? AND a.kind = 'agent' AND a.status = 'running'
-          AND (a.agent_state != 'idle' OR ${awaitingFirstPromptSql("a")}) AND a.actor_id != ?
+          AND NOT (${finishedIdleSql("a")}) AND a.actor_id != ?
           ${OWNED_BY_WATCH}
         ORDER BY a.id`,
     ).all(timer.project_id, timer.deliver_actor, timer.owner) as StillGoingRow[];
@@ -1758,7 +1758,7 @@ function standingNoticeBody(
     shown = rows
       .slice(0, ROSTER_STILL_GOING)
       .map((r) =>
-        awaitingFirstPrompt(r) && r.agent_state === "idle"
+        r.agent_state === "idle" && !finishedIdle(r)
           ? `${r.name} (awaiting first assignment)`
           : `${r.name} (${stateNowClause(r)})`,
       );
@@ -2420,7 +2420,7 @@ function watchedStates(timer: TimerRow, snapshot: AliveSnapshot): WatchedState[]
     }
 
     return {
-      idle: !awaitingFirstPrompt(agent) && agent.agent_state === "idle",
+      idle: finishedIdle(agent),
       gone: false,
       since: agent.state_changed_at,
     };

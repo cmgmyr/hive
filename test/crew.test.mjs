@@ -734,7 +734,7 @@ describe("collectCrew worker facts", () => {
     db.prepare("DELETE FROM agents").run();
   });
 
-  it("owned live dialog only is red and first idle is not your turn", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  it("crew your_turn distinguishes assigned idle from resumed unassigned idle", { skip: hasTmux ? false : "tmux is not installed" }, () => {
     const { livePane, dialogPane } = createLiveAndDialogPanes("crew-dialog", "tool-permission-prompt.txt");
     const socket = resolvedTmuxSocket();
     const pid = (pane) => paneField(pane, "#{pane_pid}");

@@ -7,6 +7,7 @@ import { pendingQuestionCount } from "./questions.js";
 import { ACTIVE_TIMER_WHERE as ACTIVE_WAKE_WHERE } from "./wakeSql.js";
 export { ACTIVE_WAKE_WHERE };
 import { leadSessionEnded, readLeadTurnState } from "./leadState.js";
+import { finishedIdle } from "./firstPrompt.js";
 import { liveTargets, ownershipLiveness, rowOwnership, type AliveSnapshot } from "./tmux.js";
 
 export type PortfolioLane = "waiting_on_you" | "stuck" | "moving" | "quiet";
@@ -95,6 +96,7 @@ interface AgentRow {
   id: number;
   kind: string;
   agent_state: string;
+  resumed_at: string;
   tmux_target: string;
   tmux_socket: string;
   pane_pid: string;
@@ -157,7 +159,7 @@ function projectRow(
 
   const agents = db
     .prepare(
-      "SELECT id, kind, agent_state, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
+      "SELECT id, kind, agent_state, resumed_at, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id",
     )
     .all(project.id) as AgentRow[];
 
@@ -187,7 +189,8 @@ function projectRow(
     else if (a.agent_state === "working") {
       workers.working++;
       liveWorking++;
-    } else if (a.agent_state === "idle") workers.idle++;
+    } else if (finishedIdle(a)) workers.idle++;
+    else if (a.agent_state === "idle") workers.other++;
     else if (a.agent_state === "waiting") {
       workers.needs_input++;
       liveWaiting++;
