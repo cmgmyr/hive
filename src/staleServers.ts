@@ -3,6 +3,8 @@ import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_DATA_DIR } from "./dataDir.js";
+import { parseEtimeSeconds } from "./etime.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 export interface StaleHiveServer {
   pid: number;
@@ -35,33 +37,11 @@ export function readProcessEnvironment(pid: number): string | null {
 
 const serverEntrypoint = resolve(dirname(fileURLToPath(import.meta.url)), "index.js");
 
-export function elapsedSeconds(value: string): number | null {
-  const dayForm = /^(\d+)-(\d{1,2}):(\d{2}):(\d{2})$/.exec(value);
-  const fields = dayForm ? dayForm.slice(2).map(Number) : value.split(":").map(Number);
-  if ((!dayForm && fields.length !== 2 && fields.length !== 3) || fields.some((field) => !Number.isSafeInteger(field) || field < 0)) {
-    return null;
-  }
-
-  let total: number;
-  if (dayForm) {
-    const [hours, minutes, seconds] = fields;
-    if (hours! > 23 || minutes! > 59 || seconds! > 59) return null;
-    total = (Number(dayForm[1]) * 24 + hours!) * 3600 + minutes! * 60 + seconds!;
-  } else if (fields.length === 2) {
-    const [minutes, seconds] = fields;
-    if (seconds! > 59) return null;
-    total = minutes! * 60 + seconds!;
-  } else {
-    const [hours, minutes, seconds] = fields;
-    if (minutes! > 59 || seconds! > 59) return null;
-    total = hours! * 3600 + minutes! * 60 + seconds!;
-  }
-  return Number.isSafeInteger(total) ? total : null;
-}
+export const elapsedSeconds = parseEtimeSeconds;
 
 function appliedAtInstant(appliedAt: string): number | null {
   if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(appliedAt)) return null;
-  const instant = Date.parse(`${appliedAt.replace(" ", "T")}Z`);
+  const instant = parseStoreTimestamp(appliedAt);
   return Number.isFinite(instant) ? instant : null;
 }
 
