@@ -36,6 +36,7 @@ import {
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { LOG_RETENTION } from "./wakeSql.js";
+import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import { CROSS_SESSION_CLOSE, postClaudeWake, senderAddress, SOCKET_WAKE_FOOTER } from "./claudeWake.js";
 import { driveLeadHandoff } from "./leadHandoff.js";
 import { handoffHoldsWake, HELD_REASON_HANDOFF } from "./leadHandoffState.js";
@@ -2343,40 +2344,26 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   };
 }
 
-const PANE_CLAIM_TTL_SECONDS = 6;
-const PANE_CLAIM_SETTLE_MS = 500;
-
 const PANE_CLAIM_OWNER = "hive:scheduler";
-
-function acquirePaneClaim(projectId: number, key: string): string | null {
-  try {
-    stmt("INSERT OR IGNORE INTO actors (id, name, kind) VALUES (?, 'hive scheduler', 'scheduler')").run(PANE_CLAIM_OWNER);
-    stmt("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')").run(projectId, key);
-    const row = stmt(
-      `INSERT INTO leases (project_id, lock_key, owner, expires_at)
-       VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
-       ON CONFLICT(project_id, lock_key) DO NOTHING
-       RETURNING expires_at`,
-    ).get(projectId, key, PANE_CLAIM_OWNER, PANE_CLAIM_TTL_SECONDS) as { expires_at: string } | undefined;
-    return row?.expires_at ?? null;
-  } catch {
-    return null;
-  }
-}
 
 // Serializes check-then-type per pane ACROSS scheduler instances: the per-wake claim is atomic but two
 // instances claiming different wakes for one pane would otherwise both paste before either submits.
 // A loser skips this tick and its wake stays unclaimed.
 async function withPaneClaim(timer: TimerRow, fn: () => Promise<boolean>): Promise<void> {
-  const key = `wake-pane:${timer.deliver_socket}:${timer.deliver_pane}`;
-  const held = timer.deliver_pane ? acquirePaneClaim(timer.project_id, key) : null;
+  const held = timer.deliver_pane
+    ? tryAcquirePaneLease(timer.project_id, timer.deliver_socket, timer.deliver_pane, {
+        id: PANE_CLAIM_OWNER,
+        name: "hive scheduler",
+        kind: "scheduler",
+      })
+    : null;
   if (held === null) return;
   try {
     // Settle: a slow TUI still showing the pasted text would make the next instance hold instead of type.
-    if (await fn()) await sleep(PANE_CLAIM_SETTLE_MS);
+    if (await fn()) await sleep(PANE_LEASE_SETTLE_MS);
   } finally {
     // Match this acquire's expires_at: after a TTL takeover the owner is shared, so owner alone would delete the taker's row.
-    bestEffortRun("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at = ?", timer.project_id, key, held);
+    releasePaneLease(timer.project_id, timer.deliver_socket, timer.deliver_pane, held);
   }
 }
 

@@ -5,7 +5,7 @@ import { scratchDirs } from "./helpers.mjs";
 const dirs = scratchDirs();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
-const { readLease } = await import("../dist/tools/leases.js");
+const { readLease } = await import("../dist/leaseStore.js");
 migrate();
 
 describe("lease_acquire's conflict-path read cannot throw on a released row (fix round 1, P2)", () => {
