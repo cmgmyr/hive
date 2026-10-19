@@ -5,6 +5,7 @@ import { db } from "./db.js";
 import { SECTION_STYLE, SPRITE, chevron, renderBoardPadsTodos, sectionScript } from "./dashboard.js";
 import type { QueenAuditRow } from "./queenAudit.js";
 import type { PortfolioLane, PortfolioProject, PortfolioReason, PortfolioReport } from "./portfolio.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 export const QUEEN_BRIEF_KEY = "queen:brief";
 
@@ -127,7 +128,7 @@ const REASON_SEVERE: ReadonlySet<PortfolioReason> = new Set([
 ]);
 
 function parseUtc(ts: string): number {
-  return Date.parse(`${ts.replace(" ", "T")}Z`);
+  return parseStoreTimestamp(ts);
 }
 
 function age(from: string, asOf: string): string {

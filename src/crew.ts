@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { parseStoreTimestamp } from "./storeClock.js";
 import { db } from "./db.js";
 import { type Project, isLinkedWorktree } from "./context.js";
 import { awaitingFirstPrompt } from "./firstPrompt.js";
@@ -83,7 +84,7 @@ export function crewStoreProblem(database: Database.Database = db): string | nul
 
 function isoUtc(value: string | null): string | null {
   if (!value) return null;
-  const date = new Date(/(Z|[+-]\d\d:?\d\d)$/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+  const date = new Date(parseStoreTimestamp(value));
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 

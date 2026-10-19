@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 export const TEARDOWN_LOG = "teardowns.jsonl";
 
@@ -50,7 +51,7 @@ export function sqlNow(now: Date = new Date()): string {
   return now.toISOString().replace("T", " ").slice(0, 23);
 }
 
-const sqlToDate = (ts: string): Date => new Date(`${ts.replace(" ", "T")}Z`);
+const sqlToDate = (ts: string): Date => new Date(parseStoreTimestamp(ts));
 
 export function teardownWindow(from: string, to: string, basis: WindowBasis): TeardownWindow {
   const seconds = (sqlToDate(to).getTime() - sqlToDate(from).getTime()) / 1000;

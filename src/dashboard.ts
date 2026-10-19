@@ -5,6 +5,7 @@ import { db } from "./db.js";
 import { ACTIVE_TODO_SQL, NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { getProject } from "./context.js";
 import type { PaneVisibility } from "./tmux.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 
 // The dashboard's own input contract, defined here so this file keeps no runtime dependency on the
 // tmux-aware producer (src/processes.ts) that fills it.
@@ -92,7 +93,7 @@ function formatDate(d: Date): string {
 
 export function formatLocal(utc: string | null): string {
   if (!utc) return "-";
-  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  const d = new Date(parseStoreTimestamp(utc));
   if (Number.isNaN(d.getTime())) return utc;
   return formatDate(d);
 }
@@ -106,7 +107,7 @@ function timeEl(utc: string | null): string {
 // is the whole point of the line this renders.
 function shortWhenEl(utc: string | null): string {
   if (!utc) return '<span class="muted">-</span>';
-  const d = new Date(`${utc.replace(" ", "T")}Z`);
+  const d = new Date(parseStoreTimestamp(utc));
   if (Number.isNaN(d.getTime())) return `<span class="time">${escapeHtml(utc)}</span>`;
   const local = formatDate(d);
   const isToday = local.slice(0, 10) === formatDate(new Date()).slice(0, 10);
@@ -673,7 +674,7 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
 }
 
 function questionAge(createdAt: string): string {
-  const timestamp = Date.parse(`${createdAt.replace(" ", "T")}Z`);
+  const timestamp = parseStoreTimestamp(createdAt);
   if (!Number.isFinite(timestamp)) return "unknown";
   const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (seconds >= 86400) return `${Math.floor(seconds / 86400)}d ago`;

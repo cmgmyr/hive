@@ -1,6 +1,7 @@
 import { QUEEN_AUDIT_RETENTION, QUEEN_AUDIT_MAX_ROWS, recentQueenAudit } from "./queenAudit.js";
 import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
 export { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
+import { parseStoreTimestamp } from "./storeClock.js";
 import { runningBuildChange, runningBuildNotice, versionInfo } from "./version.js";
 import type { Statement } from "better-sqlite3";
 import { existsSync, lstatSync, mkdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1035,7 +1036,7 @@ function leadBootSessionIsFresh(agentId: number, panePid: string): boolean {
     "SELECT pane_started_at FROM agents WHERE id = ? AND pane_pid = ?",
   ).get(agentId, panePid) as { pane_started_at: string | null } | undefined;
   if (!row?.pane_started_at) return false;
-  const timestamp = Date.parse(`${row.pane_started_at.replace(" ", "T")}Z`);
+  const timestamp = parseStoreTimestamp(row.pane_started_at);
   return Number.isFinite(timestamp) && Date.now() - timestamp < LEAD_BOOT_BOX_WAIT_MS;
 }
 
