@@ -711,15 +711,11 @@ function reportMigrationResult(result: ReturnType<typeof migrateLegacyConfig>): 
 }
 
 async function cmdLead(argv: string[]): Promise<void> {
-
-  const unknownFlag = argv.find((a) => a.startsWith("--") && a !== "--no-dashboard" && a !== "--detach");
-  if (unknownFlag !== undefined) {
-    console.error(`hive lead: unknown flag "${unknownFlag}". Flags are --no-dashboard and --detach.`);
-    process.exit(1);
-  }
-  const noDashboard = argv.includes("--no-dashboard");
-  const detach = argv.includes("--detach");
-  const path = argv.find((a) => !a.startsWith("--"));
+  const parsed = parseArgs(argv, { flags: ["--no-dashboard", "--detach"] });
+  rejectUnknownFlags("lead", parsed, "--no-dashboard and --detach");
+  const noDashboard = parsed.flags.has("--no-dashboard");
+  const detach = parsed.flags.has("--detach");
+  const path = parsed.positional[0];
 
   let registrationNotice: string | null = null;
   try {
@@ -1577,6 +1573,7 @@ function profileSizeAdvisory(name: string, file: string): string {
 
 function cmdProfile(argv: string[]): void {
   const [sub, ...rest] = argv;
+  if (sub?.startsWith("-")) rejectUnknownFlags("profile", parseArgs(argv, {}), "none");
 
   try {
     switch (sub) {
@@ -1753,13 +1750,9 @@ function openDashboardOnce(project: Project, dashboardFile: string): void {
 }
 
 function cmdAttach(argv: string[]): void {
-
-  const unknownFlag = argv.find((a) => a.startsWith("--"));
-  if (unknownFlag !== undefined) {
-    console.error(`hive attach: unknown flag "${unknownFlag}". hive attach takes no flags.`);
-    process.exit(1);
-  }
-  const path = argv.find((a) => !a.startsWith("--"));
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("attach", parsed, "none");
+  const path = parsed.positional[0];
   const project = resolveProjectForWrite("hive attach", path);
   maybeOpenDashboard(project, !!loadProjectYml(project.path).config?.dashboard);
   const session = sessionName();
@@ -1930,7 +1923,7 @@ const leadPaneExitedHookArmed = (): boolean =>
 function cmdLeadPaneExited(argv: string[]): void {
   try {
     const parsed = parseArgs(argv, {});
-    if (parsed.unknown.length > 0) return;
+    rejectUnknownFlags("lead-pane-exited", parsed, "none");
     const pane = parsed.positional[0];
     if (!pane) return;
     // Pane id alone, with no socket compare: a global hook only ever runs on the server it was
@@ -2939,15 +2932,10 @@ function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
 }
 
 function cmdDoctor(argv: string[]): void {
-  const strict = argv.includes("--strict");
-  doctorVerbose = argv.includes("--verbose");
-  const KNOWN_DOCTOR_FLAGS = new Set(["--strict", "--verbose"]);
-  const unknown = argv.find((a) => !KNOWN_DOCTOR_FLAGS.has(a));
-  if (unknown !== undefined) {
-
-    console.error(`hive doctor: unknown argument "${unknown}". Flags are --strict and --verbose.`);
-    process.exit(1);
-  }
+  const parsed = parseArgs(argv, { flags: ["--strict", "--verbose"] });
+  rejectUnknownFlags("doctor", parsed, "--strict and --verbose");
+  const strict = parsed.flags.has("--strict");
+  doctorVerbose = parsed.flags.has("--verbose");
   reportMigrationResult(migrateLegacyConfig());
   let failures = 0;
 
@@ -4058,13 +4046,15 @@ function requireFlagValues(command: string, parsed: ParsedArgs): void {
 }
 
 function cmdTodos(argv: string[]): void {
+  const parsed = parseArgs(argv, { flags: ["--all"], valued: ["--status", "--tag"] });
+  rejectUnknownFlags("todos", parsed, "--all, --status <status>, --tag <tag>");
+  requireFlagValues("todos", parsed);
   const project = resolveProjectForRead("todos");
 
-  const all = argv.includes("--all");
-  const statusIdx = argv.indexOf("--status");
-  const status = flagValue(argv, "--status");
+  const all = parsed.flags.has("--all");
+  const status = parsed.values.get("--status");
 
-  if (statusIdx !== -1 && (status === undefined || status.startsWith("--"))) {
+  if (parsed.values.has("--status") && status === undefined) {
     console.log(`Usage: hive todos --status <s>  where <s> is one of: ${TODO_STATUSES.join(", ")}`);
     process.exit(1);
   }
@@ -4072,10 +4062,9 @@ function cmdTodos(argv: string[]): void {
     console.log(`Unknown status "${status}". Valid: ${TODO_STATUSES.join(", ")}`);
     process.exit(1);
   }
-  const tagIdx = argv.indexOf("--tag");
-  const tag = flagValue(argv, "--tag");
+  const tag = parsed.values.get("--tag");
 
-  if (tagIdx !== -1 && (tag === undefined || tag.startsWith("--"))) {
+  if (parsed.values.has("--tag") && tag === undefined) {
     console.log("Usage: hive todos --tag <t>");
     process.exit(1);
   }
@@ -4121,9 +4110,11 @@ function cmdTodos(argv: string[]): void {
 }
 
 function cmdTodo(argv: string[]): void {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("todo", parsed, "none");
   const project = resolveProjectForRead("todo");
 
-  const id = Number(argv.find((a) => !a.startsWith("--")));
+  const id = Number(parsed.positional[0]);
   if (!Number.isInteger(id)) {
     console.log("Usage: hive todo <id>  (run inside the project)");
     process.exit(1);
@@ -4336,6 +4327,8 @@ let command = args[0] ?? "lead";
 let rest = args.slice(1);
 if (command === "--help" || command === "-h" || command === "help") usage();
 if (command === "--version" || command === "-v") {
+  const parsed = parseArgs(rest, { flags: ["--check"] });
+  rejectUnknownFlags("version", parsed, "--check");
   const { line, drift } = versionInfo();
   console.log(line);
   if (drift) console.log(`! ${drift}`);
@@ -4409,6 +4402,7 @@ try {
       cmdHide(rest);
       break;
     case "status":
+      rejectUnknownFlags("status", parseArgs(rest, {}), "none");
       cmdStatus();
       break;
     case "portfolio":
@@ -4433,6 +4427,7 @@ try {
       cmdDoctor(rest);
       break;
     case "pads":
+      rejectUnknownFlags("pads", parseArgs(rest, {}), "none");
       cmdPads();
       break;
     case "pad":
@@ -4451,6 +4446,7 @@ try {
       cmdAnswer(rest);
       break;
     case "backups":
+      rejectUnknownFlags("backups", parseArgs(rest, {}), "none");
       cmdBackups();
       break;
     case "restore":
@@ -4459,20 +4455,29 @@ try {
     case "project":
       await cmdProject(rest);
       break;
-    case "runbook":
-      cmdRunbook(rest[0]);
+    case "runbook": {
+      const parsed = parseArgs(rest, {});
+      rejectUnknownFlags("runbook", parsed, "none");
+      cmdRunbook(parsed.positional[0]);
       break;
-    case "posture":
-      cmdPosture(rest[0]);
+    }
+    case "posture": {
+      const parsed = parseArgs(rest, {});
+      rejectUnknownFlags("posture", parsed, "none");
+      cmdPosture(parsed.positional[0]);
       break;
+    }
     case "profile":
       cmdProfile(rest);
       break;
-    case "kickoff":
-
+    case "kickoff": {
+      const parsed = parseArgs(rest, { flags: ["--explain", "--codex"] });
+      rejectUnknownFlags("kickoff", parsed, "--explain, --codex");
       await (await import("./kickoff.js")).runKickoff(rest);
       break;
+    }
     case "statusline":
+      rejectUnknownFlags("statusline", parseArgs(rest, {}), "none");
       cmdStatusline();
       break;
     default:
