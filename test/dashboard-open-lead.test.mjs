@@ -170,7 +170,7 @@ describe("--no-dashboard argument-parsing edge cases (todo 356)", { skip: hasTmu
       env: { PATH: `${dirname(claudePath)}:${fakeOpen.bin}:${process.env.PATH}`, TERM_PROGRAM: "" },
     });
     assert.notEqual(led.code, 0, "a misspelled flag must not exit 0");
-    assert.match(led.stderr, /unknown flag/);
+    assert.match(led.stderr, /unknown argument/);
 
     assert.deepEqual(fakeOpen.calls(), [], "a rejected invocation must never reach the point of opening anything");
   });
@@ -182,7 +182,7 @@ describe("--no-dashboard argument-parsing edge cases (todo 356)", { skip: hasTmu
       tmp: dirs3.tmp,
     });
     assert.notEqual(attached.code, 0, "an unknown flag to hive attach must not exit 0");
-    assert.match(attached.stderr, /unknown flag/);
+    assert.match(attached.stderr, /unknown argument/);
     assert.doesNotMatch(attached.stderr, /ENOENT/, "must be a clean rejection, not a raw filesystem error");
   });
 });

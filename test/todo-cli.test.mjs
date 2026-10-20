@@ -208,6 +208,25 @@ describe("hive todos", () => {
     assert.doesNotMatch(stdout, /Open dispatchable todo/);
   });
 
+  it("rejects flag-shaped --status and --tag values as missing values", async () => {
+    const dirs = scratchDirs();
+    const status = await runCli(["todos", "--status", "--tag", "issue"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.equal(status.code, 1);
+    assert.match(status.stdout, /Usage: hive todos --status/);
+
+    const tag = await runCli(["todos", "--tag", "--status", "open"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.equal(tag.code, 1);
+    assert.match(tag.stdout, /Usage: hive todos --tag/);
+  });
+
+  it("rejects equals-form --status arguments as unknown flags", async () => {
+    const dirs = scratchDirs();
+    const { code, stdout, stderr } = await runCli(["todos", "--status=open"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.equal(code, 1);
+    assert.match(stderr, /unknown argument "--status=open"/);
+    assert.equal(stdout, "");
+  });
+
   it("says so, cleanly, in a project with no todos", async () => {
     const dirs = scratchDirs();
     await runCli(["init", "--no-profile"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
