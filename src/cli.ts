@@ -2933,6 +2933,8 @@ function reportEffectiveConfig(loaded: ResolvedHiveConfig): void {
 
 function cmdDoctor(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--strict", "--verbose"] });
+  const unexpected = argv.find((arg) => arg !== "--strict" && arg !== "--verbose");
+  if (unexpected !== undefined) parsed.unknown = [unexpected];
   rejectUnknownFlags("doctor", parsed, "--strict and --verbose");
   const strict = parsed.flags.has("--strict");
   doctorVerbose = parsed.flags.has("--verbose");
@@ -4047,6 +4049,17 @@ function requireFlagValues(command: string, parsed: ParsedArgs): void {
 
 function cmdTodos(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--all"], valued: ["--status", "--tag"] });
+  for (const flag of ["--status", "--tag"] as const) {
+    const index = argv.indexOf(flag);
+    const value = index === -1 ? undefined : argv[index + 1];
+    if (index === -1 || (value !== undefined && !value.startsWith("--"))) continue;
+    if (flag === "--status") {
+      console.log(`Usage: hive todos --status <s>  where <s> is one of: ${TODO_STATUSES.join(", ")}`);
+    } else {
+      console.log("Usage: hive todos --tag <t>");
+    }
+    process.exit(1);
+  }
   rejectUnknownFlags("todos", parsed, "--all, --status <status>, --tag <tag>");
   requireFlagValues("todos", parsed);
   const project = resolveProjectForRead("todos");

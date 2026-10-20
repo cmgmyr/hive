@@ -2,7 +2,7 @@
 
 Every `hive` subcommand, in one table. Run `hive --help` for the same list from the shell.
 
-Every command rejects unknown flags. To pass positional text that starts with `-`, put it after `--`.
+Commands that parse arguments reject unknown flags. To pass positional text that starts with `-`, put it after `--`.
 
 | Command | What it does |
 |---|---|

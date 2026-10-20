@@ -78,6 +78,17 @@ describe("hive CLI unknown flags", () => {
     });
     assert.equal(code, 0, stderr);
   });
+  it("doctor refuses an unexpected positional argument", async () => {
+    const dirs = scratchDirs();
+    const { code, stdout, stderr } = await runCli(["doctor", "unexpected"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, /hive doctor: unknown argument "unexpected"/);
+    assert.equal(stdout, "");
+  });
   it("todos rejects an unknown single-dash flag with the shared refusal", async () => {
     const dirs = scratchDirs();
     const { code, stdout, stderr } = await runCli(["todos", "-x"], {
@@ -99,6 +110,19 @@ describe("hive CLI unknown flags", () => {
     });
     assert.equal(code, 1);
     assert.match(stderr, /unknown argument "--hive-unknown-test-flag"\. Flags are --request <id>, --pad <id>, --revision <n>\./);
+    assert.equal(stdout, "");
+  });
+
+  it("lead-handoff reports a missing declared value as unexpected input", async () => {
+    const dirs = scratchDirs();
+    const { code, stdout, stderr } = await runCli(["lead-handoff", "--request"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, /unexpected argument "--request"/);
+    assert.doesNotMatch(stderr, /unknown argument/);
     assert.equal(stdout, "");
   });
 });

@@ -36,7 +36,7 @@ function flags(argv: string[], names: readonly string[]): Record<string, string>
   for (let i = 0; i < argv.length; i++) {
     const name = argv[i].replace(/^--/, "");
     if (!argv[i].startsWith("--") || !names.includes(name) || argv[i + 1] === undefined) {
-      return `unknown argument "${argv[i]}". Flags are ${names.map((flag) => `--${flag} <value>`).join(", ")}`;
+      return `unexpected argument "${argv[i]}"`;
     }
     out[name] = argv[++i];
   }
