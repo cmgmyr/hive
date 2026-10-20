@@ -44,7 +44,7 @@ function flags(argv: string[], names: readonly string[]): Record<string, string>
   return absent.length > 0 ? `missing --${absent.join(", --")}` : out;
 }
 
-function rejectUnknownFlag(argv: string[], command: string, names: readonly string[]): boolean {
+function rejectUnknownFlag(argv: string[], command: string, names: readonly string[], flagsText: string): boolean {
   const known = new Set(names.map((name) => `--${name}`));
   for (let i = 0; i < argv.length; i++) {
     if (known.has(argv[i])) {
@@ -52,7 +52,6 @@ function rejectUnknownFlag(argv: string[], command: string, names: readonly stri
       continue;
     }
     if (argv[i].startsWith("-")) {
-      const flagsText = names.map((name) => `--${name} <value>`).join(", ");
       console.error(`hive ${command}: unknown argument "${argv[i]}". Flags are ${flagsText}.`);
       return true;
     }
@@ -72,7 +71,7 @@ function runningLeadById(id: number): RunningLead | undefined {
 }
 
 export async function cmdLeadHandoff(argv: string[]): Promise<number> {
-  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"])) return 1;
+  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"], "--request <id>, --pad <id>, --revision <n>")) return 1;
   const refuse = (why: string): number => {
     console.error(`hive lead-handoff: ${why}. This session stays as it is.`);
     return 1;
@@ -191,7 +190,7 @@ const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)
 // `hive lead-handoff-grace`: the one detached owner of an attempt. It never outlives a changed
 // attempt or token, and after it claims the respawn it never repeats the kill.
 export async function runHandoffGrace(argv: string[]): Promise<number> {
-  if (rejectUnknownFlag(argv, "lead-handoff-grace", ["request", "attempt", "token"])) return 1;
+  if (rejectUnknownFlag(argv, "lead-handoff-grace", ["request", "attempt", "token"], "--request <id>, --attempt <n>, --token <token>")) return 1;
   try {
     return await graceLoop(argv);
   } catch (e) {
@@ -279,7 +278,7 @@ async function graceLoop(argv: string[]): Promise<number> {
 // `hive lead-handoff-start`: runs in the respawned pane before Claude. It publishes the successor's
 // pid on the same lead row by CAS against the predecessor, and only then lets the shell exec Claude.
 export async function runHandoffStart(argv: string[]): Promise<number> {
-  if (rejectUnknownFlag(argv, "lead-handoff-start", ["request", "attempt", "token"])) return 1;
+  if (rejectUnknownFlag(argv, "lead-handoff-start", ["request", "attempt", "token"], "--request <id>, --attempt <n>, --token <token>")) return 1;
   const parsed = flags(argv, ["request", "attempt", "token"]);
   const refuse = (why: string, id?: number): number => {
     if (id !== undefined) {

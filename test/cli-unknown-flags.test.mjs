@@ -89,4 +89,16 @@ describe("hive CLI unknown flags", () => {
     assert.match(stderr, /unknown argument "-x"\. Flags are --all, --status <status>, --tag <tag>\./);
     assert.equal(stdout, "");
   });
+
+  it("lead-handoff names its declared flags in the shared refusal", async () => {
+    const dirs = scratchDirs();
+    const { code, stdout, stderr } = await runCli(["lead-handoff", unknown], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+    });
+    assert.equal(code, 1);
+    assert.match(stderr, /unknown argument "--hive-unknown-test-flag"\. Flags are --request <id>, --pad <id>, --revision <n>\./);
+    assert.equal(stdout, "");
+  });
 });
