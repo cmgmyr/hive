@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.7 - 2026-10-19
+
+- Every `hive` command that parses arguments now refuses a flag it does not know, with exit 1 and a message naming the flags it takes. Before, `hive todos`, `hive todo`, `hive status`, `hive pads`, `hive backups`, `hive runbook`, `hive posture`, `hive profile`, `hive kickoff`, `hive statusline` and `hive --version` ignored a misspelled flag and ran anyway. To pass text that starts with `-` as a positional argument, put it after `--`.
+- `hive todos --status=open` and `--tag=<t>` are refused. Write `--status open` and `--tag <t>`.
+- `hive lead` and `hive attach` say `unknown argument` instead of `unknown flag` when they refuse a flag.
+- The queen's portfolio counts a resumed worker that is idle and has no todo as `other`, not `idle`.
+- Internal: the wake-pane lease, the socket delivery hop, wake lifecycle checks and a few small parsers each have a single implementation now. Wake delivery behaviour is unchanged.
+- After upgrading, restart every hive session.
+
 ## 1.11.6 - 2026-10-16
 
 - No behaviour change. Shared agent, wake, pad and todo logic moved out of the MCP tool modules into modules that the CLI and the MCP server both use, which removes every import cycle in `src/`. Tool names, schemas, descriptions and outputs are unchanged, and so is every CLI command's output and exit code.
