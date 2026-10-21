@@ -81,6 +81,10 @@ function packageVersion(): string {
   }
 }
 
+export function hiveVersion(): string {
+  return readBuildInfo()?.version ?? packageVersion();
+}
+
 function currentGit(): GitState | null {
   const sha = gitOut(checkoutRoot, ["rev-parse", "--short", "HEAD"]);
   const status = gitOut(checkoutRoot, ["status", "--porcelain"]);
@@ -96,7 +100,7 @@ export interface VersionInfo {
 
 export function versionInfo(): VersionInfo {
   const info = readBuildInfo();
-  const version = info?.version ?? packageVersion();
+  const version = hiveVersion();
 
   if (!info || info.sha == null) {
     const now = currentGit();

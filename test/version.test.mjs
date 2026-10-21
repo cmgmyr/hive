@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
-import { DIST, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
+import { DIST, McpClient, isolateTmux, REPO, runCli, runFixture, scratchDirs } from "./helpers.mjs";
 
 const { cleanup } = isolateTmux("the version tests");
 after(() => cleanup());
@@ -44,6 +44,23 @@ describe("hive --version reports the build-time stamp `npm run build` wrote to d
       result.stdout.includes(`  ok    version: ${stampedLine}`),
       `expected doctor to report "${stampedLine}", got:\n${result.stdout}`,
     );
+  });
+});
+
+describe("MCP initialize reports the package version in serverInfo", () => {
+  it("reports the same version as the running package", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    try {
+      const init = await mcp.request("initialize", {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "hive-test", version: "0" },
+      });
+      assert.equal(init.result.serverInfo.name, "hive");
+      assert.equal(init.result.serverInfo.version, JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version);
+    } finally {
+      await mcp.close();
+    }
   });
 });
 
