@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.11.8 - 2026-10-20
+
+- The MCP server reports its real version in the `initialize` handshake (`serverInfo.version`). Before, it always said `0.1.0`. This helps when a managed MCP config pins a version, such as `npx -y --package=@cmgmyr/hive@1.11.8 hive-mcp`, because the handshake now names the build that is running.
+- Updated dependencies: `zod` and `hono`. The `hono` update includes a fix for GHSA-5r4p-p66f-jhc7 in `serveStatic`, which hive does not use.
+- After upgrading, restart every hive session.
+
 ## 1.11.7 - 2026-10-19
 
 - Every `hive` command that parses arguments now refuses a flag it does not know, with exit 1 and a message naming the flags it takes. Before, `hive todos`, `hive todo`, `hive status`, `hive pads`, `hive backups`, `hive runbook`, `hive posture`, `hive profile`, `hive kickoff`, `hive statusline` and `hive --version` ignored a misspelled flag and ran anyway. To pass text that starts with `-` as a positional argument, put it after `--`.
