@@ -39,9 +39,9 @@ tmux is only needed for the agent tools; everything else runs without it.
 
 The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive's own code's. It is two ranges rather than one floor because a Node-API level starts once per release line: the addon needs Node-API 10, which begins at 22.14.0 on the 22 line and 23.6.0 on the 23 line. Node 23.0.0 through 23.5.0 satisfy a plain "22.14 or newer" and only provide Node-API 9, so they cannot load the addon.
 
-`hive setup` and the `claude mcp add` line both register an absolute interpreter for the same reason: hive must not let the working directory pick its own. The addon is N-API, so it loads under any Node in the range above, but a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory, and a directory can pin one below that range. Under such a Node the addon does not report an error; it kills the process inside `dlopen`, with no stack trace and no output at all. Pinning is what stops a `cd` from doing that.
+`hive setup` and the `claude mcp add` line both register an absolute interpreter for the same reason: hive must not let the working directory pick its own. The addon is N-API, so it loads under any Node in the range above, but a Node version manager (asdf, nvm, volta, fnm, mise, Herd) resolves `node` per directory, and a directory can pin one below that range. Under such a Node hive prints `this Node is too old for better-sqlite3's native addon`, names the Node-API level the addon needs and the level your Node provides, and exits. Pinning is what stops a `cd` from doing that. If you cannot pin an absolute path, see [Managed MCP configurations](#managed-mcp-configurations).
 
-Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node and `better-sqlite3` refuses to load with `ERR_DLOPEN_FAILED`. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
+Register the interpreter, not its name. `$(command -v node)` expands once, at registration, and freezes the absolute path of the Node you just built with. A bare `node` is resolved by Claude Code at launch instead, through whatever shim the launch directory pins, so a session started in a repo on a different Node major starts hive's server under that Node, and the server exits with the too-old message above. If you later build hive with a different Node, re-register: `claude mcp remove --scope user hive`, then re-add it with the new `$(command -v node)`.
 
 `hive setup` writes a dispatcher to `~/.local/bin/hive`, and refuses to point it at a build inside a linked git worktree, since worktrees are disposable and the shim breaks the moment its target is torn down (`--force` overrides). Put that ahead of any version manager's shims in your shell profile:
 
@@ -127,6 +127,30 @@ The status line only re-renders on session activity by default. Add `"refreshInt
 `--scope user` makes hive available in every project, which is right for most machines. If you also run another MCP server with similar tool names (`todo_create`, `kv_set`, `lease_acquire`), register per project instead: run `claude mcp add hive -- "$(command -v node)" "$(npm root -g)/@cmgmyr/hive/dist/index.js"` from that project's directory, or use the checkout's `dist/index.js` when you installed from source. Loading two overlapping catalogs in one session invites Claude to write to the wrong store.
 
 Register hive in one scope only. A project-scoped registration shadows the user-scoped one, and `claude mcp list` is the way to catch it: two entries named hive means the project one is what your session is actually running.
+
+## Managed MCP configurations
+
+A managed or shared MCP configuration (for example one pushed by MDM) needs one launch command that is identical on every machine and holds no absolute path. Use this entry:
+
+```json
+["npx", "-y", "--package=node@<node-version>", "--package=@cmgmyr/hive@<hive-version>", "hive-mcp"]
+```
+
+For example, `["npx", "-y", "--package=node@24.12.0", "--package=@cmgmyr/hive@1.11.8", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly.
+
+The `hive-mcp` bin starts with `#!/usr/bin/env node`, so the server runs on the first `node` on PATH, not on the Node that ran `npx`. A bare `npx -y --package=@cmgmyr/hive@<hive-version> hive-mcp` therefore fails in any folder whose version manager pins a Node below the range. The extra `node` package fixes that: `npx` puts its `node` binary first on the PATH of the child process, so the server runs on that Node whatever the folder pins.
+
+An absolute path to `npx`, such as `/opt/homebrew/bin/npx`, does not help. The shebang still picks `node` from PATH, and the path differs between Apple Silicon and Intel Homebrew and does not exist without Homebrew Node.
+
+Limits to know about:
+
+- `npx` must be on the PATH your client passes to the server. If a folder pins a Node that is not installed, an asdf or mise shim fails before `npx` runs.
+- With npm `ignore-scripts=true`, the `node` package installs no binary. The server then falls back to the PATH `node` and the failure above returns. The `node` package is an extra package that downloads Node through an install script.
+- The first launch downloads Node and hive into the npx cache. Later launches reuse the cache, and the addon is a Node-API build, so a cache entry installed under one Node runs under another Node in range.
+
+To bump, change both strings together, because both pins are exact.
+
+`hive upgrade` refuses an npx cache install. If you also want the `hive` CLI, install it separately at the same version with `npm install -g @cmgmyr/hive@<hive-version>`.
 
 ## Updating
 
