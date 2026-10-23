@@ -136,7 +136,7 @@ A managed or shared MCP configuration (for example one pushed by MDM) needs one 
 ["npx", "-y", "--package=node@<node-version>", "--package=@cmgmyr/hive@<hive-version>", "hive-mcp"]
 ```
 
-For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.11.8", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly. Pin the newest patched Node in that range, and re-check it when you bump hive. The npm `node` package can lag Node's own releases by a few days, so a fresh security release may not be installable through npx yet.
+For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.11.8", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly. Within the Node major you pick, pin its newest patch release, and re-check it when you bump hive. The npm `node` package can lag Node's own releases by a few days, so a fresh security release may not be installable through npx yet.
 
 The `hive-mcp` bin starts with `#!/usr/bin/env node`, so the server runs on the first `node` on PATH, not on the Node that ran `npx`. A bare `npx -y --package=@cmgmyr/hive@<hive-version> hive-mcp` therefore fails in any folder whose version manager pins a Node below the range. The extra `node` package fixes that: `npx` puts its `node` binary first on the PATH of the child process, so the server runs on that Node whatever the folder pins.
 
