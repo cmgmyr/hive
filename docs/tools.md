@@ -2,6 +2,8 @@
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
+Where a tool names a running agent by `name`, a string that matches no running agent's name, in full or in part, is tried as that agent's row id (`"7"`) or actor id (`agent:7`) in the same project. A name always wins over an id.
+
 | Tool | What it does | When to use it |
 |---|---|---|
 | **identity** | | |
@@ -17,10 +19,10 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `agent_spawn` | Starts a worker in a tmux pane or window, locked to the project; `harness` picks the CLI, default the project's `agents:` first entry | One worker per parallel work stream; a `claude` worker briefs itself, so send it the assignment directly |
 | `agent_list` | Lists this project's agents with live status | Morning triage, or before spawning more |
 | `agent_status` | One agent in detail, with a short terminal tail | To check on a specific worker |
-| `agent_send` | Types text or key presses into a worker's terminal. Text is prefixed with the sender tag (`[hive:lead]`, `[hive:worker <name>]`, or `[hive:agent <name>]` for a sender with no agents row here). Text over 300 characters bound for a LEAD is stored and delivered as a one-line pointer instead. With `quiet_messaging` on, a worker's submitted text to a Claude lead is stored with an id and posted to the lead's messaging socket instead of typed; the receipt says `pending` until the lead's prompt confirms it, and hive types it into the pane once if nothing does; the text path refuses a pane whose harness hive cannot classify, where `keys` still works. Both text and keys refuse a worker whose recorded pane pid does not match its pane, naming whether it is gone, reissued or unverifiable | To give a worker its task, answer a prompt, or press Enter/Escape for it |
+| `agent_send` | Types text or key presses into a worker's terminal. Text is prefixed with the sender tag (`[hive:lead]`, `[hive:worker <name>]`, or `[hive:agent <name>]` for a sender with no agents row here). Text over 300 characters bound for a LEAD is stored and delivered as a one-line pointer instead. With `quiet_messaging` on, a worker's submitted text to a Claude lead is stored with an id and posted to the lead's messaging socket instead of typed; the receipt says `pending` until the lead's prompt confirms it, and hive types it into the pane once if nothing does; the text path refuses a pane whose harness hive cannot classify, where `keys` still works. Both text and keys refuse a worker whose recorded pane pid does not match its pane, naming whether it is gone, reissued or unverifiable. With `wait_ms`, the terminal tail is read only if the pane still belongs to that worker after the wait; otherwise the receipt carries a note instead | To give a worker its task, answer a prompt, or press Enter/Escape for it |
 | `agent_message_get` | Reads the full text behind a `[message #N ...]` line, and, for a message sent with `quiet_messaging` on, its delivery state (`delivery_status`, `delivery_method`, `confirmed_at`, `delivery_note`) | When a worker's report to the lead was shortened and you want the rest, or to see whether a quiet message was confirmed |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
-| `agent_rename` | Changes a worker's display name; `actor_id` stays the same. A worker whose pane is gone or reissued is renamed in the store only; one whose pane ownership cannot be verified is refused | When a worker's job becomes clear after you started it |
+| `agent_rename` | Changes a worker's display name; `actor_id` stays the same. A worker whose pane is gone or reissued is renamed in the store only; one whose pane ownership cannot be verified is refused. A pane in tmux copy mode is renamed in the store but not retitled, and the receipt says so | When a worker's job becomes clear after you started it |
 | `agent_resume` | Resumes a closed claude or codex worker from its recorded session id (`claude --resume` / `codex resume`), reusing the same actor_id | To get a closed worker's full prior context back instead of briefing a fresh one |
 | `agent_park` | Parks a claude or codex worker for the night: closes the pane, marks the row parked rather than plain closed, records the branch, and hands back a board line. A pane that is gone or reissued is left alone and the row is parked anyway; a pane whose ownership cannot be verified is refused | End of day, when the lane is paused rather than finished and you want it back tomorrow |
 | `agent_close` | Kills the worker's window and marks it closed. It kills only a pane whose recorded pid matches; a gone or reissued pane is left alone and the row closed, and a row whose pane ownership cannot be verified is refused. Called on a PARKED row (by `agent_id`) it releases the park instead. With `row_only: true` it marks the row closed with no kill, stop or typing; it only reads tmux to check ownership. Only a human or peer lead may pass it, and it refuses any row that provably owns a live pane, or any row it could not check because tmux did not answer | After capturing handoffs; terminal output is not retained. Also how you abandon a parked lane you have decided not to resume. `row_only` is for a row whose pane is gone, reissued, or whose ownership cannot be verified, such as a lead row with no recorded pane pid |
@@ -57,8 +59,8 @@ Every tool is project-scoped: it acts on the current working directory's project
 | `todo_unblock` | Removes one dependency | When ordering changes |
 | **kv** | | |
 | `kv_set` | Stores a small shared JSON value, optional TTL | Flags, ports, shared config other sessions should find |
-| `kv_get` | Reads a value by key | |
-| `kv_list` | Lists values, optional key prefix | |
+| `kv_get` | Reads a value by key. A stored value that is not valid JSON comes back as its raw text | |
+| `kv_list` | Lists values, optional key prefix. The prefix matches literally, so `%` and `_` are ordinary characters | |
 | `kv_delete` | Removes a key | |
 | **leases** | | |
 | `lease_acquire` | Claims a named piece of shared state with a TTL; re-taking your own lease extends it | Before changing state another session can also change; expired leases free themselves |

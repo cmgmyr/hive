@@ -39,7 +39,7 @@ Writing into another project is narrow. The queen may do exactly these things th
 | `hive lead <path>` | Starts or adopts that project's lead |
 | `project_prune`, `hive project rm <id\|path>` | Removes a stray project. `project_prune` takes the empty-only sweep, or one `project_id` with `confirm_name` set to its exact name to remove a project that owns rows. Never the queen's own project, never one with a running row that owns a live pane or cannot be verified. See [removing a project](projects.md#removing-a-project) |
 
-Everything else there belongs to the project's own lead: pads, todo status, kv, leases, workers, project selection. `project_add` and `actor_prune` stay refused: they change the whole store, not one project. Anything not listed is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`, and the message names the operation, the project, and why. A tool hive has not classified for the queen is refused by default.
+The queen's wake or message goes to the lead that delivery would reach, so a stale running lead row left in front of the live one does not misdirect it or cause a refusal. Everything else there belongs to the project's own lead: pads, todo status, kv, leases, workers, project selection. `project_add` and `actor_prune` stay refused: they change the whole store, not one project. Anything not listed is refused with `QUEEN_CROSS_PROJECT_WRITE_REFUSED`, and the message names the operation, the project, and why. A tool hive has not classified for the queen is refused by default.
 
 In its own home the queen is an ordinary project lead. Pads, todos and workers there are its own, and workers it spawns stay locked to the home.
 
@@ -142,7 +142,7 @@ The page is titled "All projects". It reloads every minute, and it keeps which s
 
 - A "Picks today" card from the queen's brief, with a "Since the brief" line naming projects that changed lane after it was written.
 - One section per lane, in the order waiting on you, stuck, moving, quiet. Active projects are cards with their reasons, lead state and workers; quiet ones are a short list. A project name opens that project's own dashboard when it has one.
-- An "Every project" grid with one row per project.
+- An "Every project" grid with one row per project, including a Questions column with the pending count (shown as zero when none are pending).
 - A "Recent queen actions" card from the audit trail.
 - The queen home project's own Board, Todos and Pads sections, below the portfolio. They are the same sections the [per-project dashboard](dashboard.md) draws, with the same empty states, and they read only the queen's own project, not every project's. A project's board and todos live on that project's dashboard, which its card links to.
 
