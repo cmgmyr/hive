@@ -108,8 +108,6 @@ Each harness gets its own allowlist of reasons that count as the session ending 
 
 If you exit a lead cleanly and then start it again in that pane by hand, its processes are already stopped and nothing brings them back: only `hive lead` starts them. Start them with `hive start <name>`, or restart the lead through `hive lead` and let it do it for you.
 
-A process that exits on its own is reported to the lead: `[hive] process "<name>" exited on its own; its pane is gone. Restart it with: hive start "<name>"`. A stop you asked for is not reported, and neither is an exit when the lead has no live pane hive can classify, since nothing could deliver the notice.
-
 Workers are never stopped by any of this, deliberately. You often want to finish with a worker after the lead is closed, so closing a lead takes down its processes and leaves its crew alone.
 
 A stop is graceful first: hive types C-c into the pane, waits two seconds for the process to exit, and kills the pane only if it is still there. The receipt says which one ended it, so `stopped` never covers for a process that is still holding its port:
@@ -133,7 +131,7 @@ A fresh `hive lead` reports what it found:
 
 Re-running `hive lead` while the lead is alive adopts that pane and stops nothing, because those processes belong to the lead that is still running.
 
-A process that dies on its own tells the lead so, once, naming the command that restarts it. A process you stopped says nothing. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
+A process that dies on its own tells the lead so, once, as `[hive] process "<name>" exited on its own; its pane is gone. Restart it with: hive start "<name>"`. A process you stopped says nothing, and neither does a death when the lead has no live pane hive can classify, since nothing could deliver the notice. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
 
 A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
 
