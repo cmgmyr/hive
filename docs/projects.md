@@ -131,7 +131,7 @@ A fresh `hive lead` reports what it found:
 
 Re-running `hive lead` while the lead is alive adopts that pane and stops nothing, because those processes belong to the lead that is still running.
 
-A process that dies on its own tells the lead so, once, naming the command that restarts it. A process you stopped says nothing. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
+A process that dies on its own tells the lead so, once, as `[hive] process "<name>" exited on its own; its pane is gone. Restart it with: hive start "<name>"`. A process you stopped says nothing, and neither does a death when the lead has no live pane hive can classify, since nothing could deliver the notice. What tells the two apart is a short-lived marker hive writes before it touches the pane, so an interrupted stop is not reported as a crash either.
 
 A stop that cannot finish says so rather than pretending. If the process survives both C-c and the kill, you get `<name>: still running: its pane survived C-c and kill-pane, so hive left the row open` and the process stays visible to `hive status` and to the next `hive stop`.
 

@@ -221,7 +221,7 @@ Hive touches six things on a machine; remove them in any order:
 
 ```bash
 hive status                     # confirm the session name, then end it:
-tmux kill-session -t =hive-main # every project's windows live in this one session
+tmux kill-session -t '=hive-main' # every project's windows live in this one session
 tmux ls | grep view- || true    # a second terminal's attach opens its own VIEW
                                  # session grouped with hive-main; kill those
                                  # too (or just close their terminals - a view
@@ -234,6 +234,6 @@ rm ~/.claude/skills/hive        # the session-start plugin symlink, if you made 
 rm -rf ~/.hive                  # database, hooks file, forked profiles, ALL shared state
 ```
 
-One session holds every project, so this is one `kill-session`, not one per project, but only when nothing else is attached. A window belongs to every session it is grouped with, not only to `hive-main`, so `kill-session -t =hive-main` does not tear the windows down while a VIEW session (opened by any other terminal's `hive attach`, `hive lead`, or `hive <project>`) is still holding them; the windows simply keep living under that view until it too is killed or its last client detaches. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
+One session holds every project, so this is one `kill-session`, not one per project, but only when nothing else is attached. A window belongs to every session it is grouped with, not only to `hive-main`, so `kill-session -t '=hive-main'` does not tear the windows down while a VIEW session (opened by any other terminal's `hive attach`, `hive lead`, or `hive <project>`) is still holding them; the windows simply keep living under that view until it too is killed or its last client detaches. `tmux kill-server` would take down every tmux session on the machine, including ones that have nothing to do with hive. Sessions also end on their own once their panes exit, so you can skip the first two lines entirely if nothing is running.
 
 Then revoke the automation permission under System Settings > Privacy & Security > Automation (the entry allowing your terminal to control iTerm), and delete the checkout.
