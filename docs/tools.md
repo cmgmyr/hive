@@ -2,7 +2,7 @@
 
 Every tool is project-scoped: it acts on the current working directory's project without an explicit override.
 
-Where a tool names a running agent by `name`, a string that matches no running agent's name, in full or in part, is tried as that agent's row id (`"7"`) or actor id (`agent:7`) in the same project. A name always wins over an id.
+Where a tool names a running agent by `name`, a string that matches no agent name, in full or in part, is then tried as a running agent's row id (`"7"`) or actor id (`agent:7`) in the same project. A name always wins over an id, and a name that belongs to a closed or parked agent is reported as such instead.
 
 | Tool | What it does | When to use it |
 |---|---|---|
