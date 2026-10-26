@@ -7,6 +7,10 @@ import { describe, it } from "node:test";
 
 const wakeSql = await import("../dist/wakeSql.js");
 
+function sqliteUtc(msAgo = 0) {
+  return new Date(Date.now() - msAgo).toISOString().replace("T", " ").slice(0, 19);
+}
+
 const column = (name) => `(?:[A-Za-z_$][\\w$]*\\.)?${name}`;
 const pendingOneShotCopy = new RegExp(
   `(?:${column("cancelled_at")}\\s+IS\\s+NULL\\s+AND\\s+${column("fired_at")}\\s+IS\\s+NULL|${column("fired_at")}\\s+IS\\s+NULL\\s+AND\\s+${column("cancelled_at")}\\s+IS\\s+NULL)`,
@@ -84,13 +88,18 @@ describe("wake lifecycle vocabulary", () => {
   });
 
   it("socket lifecycle predicates keep confirmation, firing, fallback, and retention distinct", () => {
+    const recentSocketAttempt = sqliteUtc();
     const currentSocket = fixture({
-      fired_at: "2026-10-19 12:00:00",
+      fired_at: recentSocketAttempt,
       repeat_every_ms: 60_000,
       delivery_method: wakeSql.DELIVERY_METHOD.socketRepeating,
-      socket_attempt_at: "2026-10-19 12:00:00",
+      socket_attempt_at: recentSocketAttempt,
     });
-    const staleSocket = { ...currentSocket, fired_at: "2026-10-19 12:01:00" };
+    const staleSocket = {
+      ...currentSocket,
+      fired_at: new Date(Date.parse(`${recentSocketAttempt}Z`) + 60_000)
+        .toISOString().replace("T", " ").slice(0, 19),
+    };
     const claimedFallback = {
       ...currentSocket,
       delivery_method: wakeSql.DELIVERY_METHOD.ptyAfterSocketTimeout,
@@ -99,8 +108,8 @@ describe("wake lifecycle vocabulary", () => {
     const droppedFallback = { ...claimedFallback, socket_delivery_note: wakeSql.FIRING_DROPPED_NOTE };
 
     assert.equal(evaluate(wakeSql.socketAwaitingWhere("w."), fixture({
-      fired_at: "2026-10-19 12:00:00", delivery_method: wakeSql.DELIVERY_METHOD.socket,
-      socket_attempt_at: "2026-10-19 12:00:00",
+      fired_at: recentSocketAttempt, delivery_method: wakeSql.DELIVERY_METHOD.socket,
+      socket_attempt_at: recentSocketAttempt,
     })), 1);
     assert.equal(evaluate(wakeSql.currentAttempt("w."), currentSocket), 1);
     assert.equal(evaluate(wakeSql.currentAttempt("w."), staleSocket), 0);
@@ -124,8 +133,8 @@ describe("wake lifecycle vocabulary", () => {
     assert.equal(evaluate(wakeSql.holdableWakeWhere("w."), held, [held.due_at, 4, 4]), 1);
     assert.equal(evaluate(wakeSql.holdableWakeWhere("w."), held, [held.due_at, 3, 3]), null);
     assert.equal(evaluate(wakeSql.handoffSocketInFlightWhere("w."), fixture({
-      fired_at: "2026-10-19 12:00:00", delivery_method: "socket-legacy",
-      socket_attempt_at: "2026-10-19 12:00:00",
+      fired_at: recentSocketAttempt, delivery_method: "socket-legacy",
+      socket_attempt_at: recentSocketAttempt,
     }), ["-7 days"]), 1);
     assert.equal(evaluate(wakeSql.handoffSocketInFlightWhere("w."), fixture({
       fired_at: "2026-10-19 12:00:00", delivery_method: "socket-legacy",
