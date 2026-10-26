@@ -14,8 +14,8 @@ jobs:
   docs-mermaid:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: node scripts/check-mermaid.mjs
@@ -38,12 +38,12 @@ jobs:
             skipped: 28
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.alt }}
       - run: echo "HIVE_TEST_ALT_NODE=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -127,12 +127,12 @@ jobs:
             skipped: 3
     name: test (macos-latest, node ${{ matrix.node }})
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.alt }}
       - run: echo "HIVE_TEST_ALT_NODE=$(command -v node)" >> "$GITHUB_ENV"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -182,8 +182,8 @@ jobs:
             why: where Node-API 10 starts on the 23 line
     name: node ${{ matrix.node }} must ${{ matrix.expect }} (${{ matrix.why }})
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
       - run: echo "HIVE_BOUNDARY_NODE=$(command -v node)" >> "$GITHUB_ENV"
@@ -204,7 +204,7 @@ jobs:
             exit 1
           fi
           echo "confirmed: node $got_node, Node-API $got_napi"
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
