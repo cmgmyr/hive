@@ -14,7 +14,7 @@ The incidents, measurements, and worked examples behind `test/CLAUDE.md`'s prohi
 
 `alt` is paired explicitly rather than derived, because the only thing that makes an alt VALID is that its NODE_MODULE_VERSION differs from `node`'s (test/helpers.mjs alternateInterpreter). A rule like "always 22" silently stops discriminating on the leg where 22 IS the primary, and the tests that need it would skip while still reporting green.
 
-The OS split began as a billing decision while the repo was private. At that time macOS minutes had a 10x multiplier: two macOS legs used 1,360 of 1,425 billed minutes in the first four days of August, and a later sample of 30 runs put macOS at 77% of billed minutes. That led to a weekly macOS run from 2026-09-04 through 2026-09-21. The repo became public on 2026-09-22, and macOS now runs on every push and pull request with the rest of CI.
+The OS split began as a billing decision while the repo was private. At that time macOS minutes had a 10x multiplier: two macOS legs used 1,360 of 1,425 billed minutes in the first four days of August, and a later sample of 30 runs put macOS at 77% of billed minutes. That led to a weekly macOS run beginning 2026-08-10 (95dc77f, todo 350). macOS returned to every push and pull request on 2026-09-21 (de83214, todo 1343). The repo became public on 2026-09-22.
 
 Linux carries both Node versions. The separate `test-macos` job covers macOS-specific behavior and a clean native-addon build on the same push, pull request, and manual triggers.
 
@@ -56,7 +56,7 @@ This bump is a live worked example for todo 421: the budget is a ledger you edit
 
 ## ci.yml: workflow rationale retained on demand
 
-Current triggers: every job runs on push to `main`, on every pull request, and on `workflow_dispatch`; no job carries an event `if:`. The weekly schedule was removed after the repo became public on 2026-09-22, when macOS returned to every push and pull request. The paragraphs below retain the history of the schedule-only period between 2026-09-04 and 2026-09-21.
+Current triggers: every job runs on push to `main`, on every pull request, and on `workflow_dispatch`; no job carries an event `if:`. The weekly schedule was removed on 2026-10-26 in this lane (todo 2124). The paragraphs below retain the history of the schedule-only period between 2026-09-04 and 2026-09-21.
 
 During the 2026-09-04 through 2026-09-21 schedule-only period, the macOS canary ran Monday at 08:42 UTC. Its lower cadence limited the cost of the private-repo 10x macOS multiplier, at the cost of up to a week of detection delay. The off-hour start avoided GitHub's scheduled-run peak. A superseded run continued to completion, and repeated pushes paid for each intermediate head. Job-level event conditions were removed on 2026-09-21 when push and pull request triggers returned.
 
@@ -66,4 +66,4 @@ The layout and probe tests drive a real tmux server and skip silently without tm
 
 The macOS job covers Linux's darwin-only cases and a clean native-addon build. Its budget is 3 because the three `HIVE_TEST_REAL_CODEX` cases are platform-independent and skip there too; bump it whenever the Linux budget moves for a platform-independent gate.
 
-Push and pull_request triggers were dropped on 2026-09-04 after Actions credits ran out across the account. `test` and `floor-boundary` joined the existing `schedule || workflow_dispatch` gate, so all three jobs ran on the weekly cron and none ran for pushes or pull requests. A local full suite was the merge gate during that period. Commit de83214 restored push and pull_request on 2026-09-21; the weekly cron remained until the repo became public on 2026-09-22.
+Push and pull_request triggers were dropped on 2026-09-04 after Actions credits ran out across the account. `test` and `floor-boundary` joined the existing `schedule || workflow_dispatch` gate, so all three jobs ran on the weekly cron and none ran for pushes or pull requests. A local full suite was the merge gate during that period. Commit de83214 restored push and pull_request on 2026-09-21; the weekly cron remained until 2026-10-26 (todo 2124).
