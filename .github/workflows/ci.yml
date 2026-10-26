@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "42 8 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -65,7 +63,7 @@ jobs:
           exit 1
       - name: cache tmux ${{ matrix.tmux }}
         id: tmux-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/tmux-${{ matrix.tmux }}
           key: tmux-${{ runner.os }}-${{ runner.arch }}-${{ matrix.tmux }}
@@ -127,7 +125,7 @@ jobs:
           - node: 24
             alt: 22
             skipped: 3
-    name: test (macos-latest, node ${{ matrix.node }}) [canary]
+    name: test (macos-latest, node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
