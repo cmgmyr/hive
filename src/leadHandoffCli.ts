@@ -7,7 +7,7 @@ import { cliPath } from "./dispatcher.js";
 import { FIRST_MESSAGE_SHA_ENV, firstMessageDigest } from "./firstMessage.js";
 import { ensureLeadHooksFile } from "./hooks.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
-import { loadProjectYml, quietMessagingEnabled } from "./projectYml.js";
+import { leadSidebarEnabled, loadProjectYml, quietMessagingEnabled } from "./projectYml.js";
 import { buildEnvFlags } from "./spawn.js";
 import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } from "./tmux.js";
 import {
@@ -172,7 +172,7 @@ async function successorLaunch(row: HandoffRow, lead: RunningLead, attempt: numb
     projectId: lead.project_id,
     projectName: lead.name,
     hooksPath: ensureLeadHooksFile(lead.project_id, quietMessagingEnabled(config)),
-    sidebarPluginDir: config?.lead_sidebar === true ? crewPluginDir() : null,
+    sidebarPluginDir: leadSidebarEnabled(config) ? crewPluginDir() : null,
     posture: renderLeadPosture(config).rendered,
     firstMessage,
   });

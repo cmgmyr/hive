@@ -215,6 +215,7 @@ import {
   agentVarKeys,
   BUILT_IN_PROJECT_YML,
   configHash,
+  leadSidebarEnabled,
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
@@ -788,7 +789,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         projectId: project.id,
         projectName: project.name,
         hooksPath,
-        sidebarPluginDir: config?.lead_sidebar === true && leadHarness.name === "claude" ? crewPluginDir() : null,
+        sidebarPluginDir: leadSidebarEnabled(config) && leadHarness.name === "claude" ? crewPluginDir() : null,
         posture: renderedPosture,
         firstMessage,
       }));
@@ -1140,7 +1141,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
 
-# lead_sidebar: true            # a crew pane in a claude lead (default: false; restart the lead)
+# lead_sidebar: false           # disable the crew pane in a claude lead; restart the lead
 
 # quiet_messaging: false       # use typed wakes and worker messages instead of one row; restart the lead
 

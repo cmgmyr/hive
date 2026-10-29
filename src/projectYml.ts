@@ -65,7 +65,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
-  lead_sidebar: false,
+  lead_sidebar: true,
   quiet_messaging: true,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
@@ -87,6 +87,10 @@ export function activeProfile(config: ProjectYml | null): string | null {
 
 export function quietMessagingEnabled(config: ProjectYml | null): boolean {
   return config?.quiet_messaging ?? BUILT_IN_PROJECT_YML.quiet_messaging;
+}
+
+export function leadSidebarEnabled(config: ProjectYml | null): boolean {
+  return config?.lead_sidebar ?? BUILT_IN_PROJECT_YML.lead_sidebar;
 }
 
 // First entry is the default; absent or empty means claude only (todo 526).
@@ -291,7 +295,7 @@ function applyLayer(
   if (has("lead_sidebar")) {
     const value = root.lead_sidebar;
     if (value == null) {
-      config.lead_sidebar = false;
+      config.lead_sidebar = BUILT_IN_PROJECT_YML.lead_sidebar;
       sources.lead_sidebar = source;
     } else if (typeof value === "boolean") {
       config.lead_sidebar = value;

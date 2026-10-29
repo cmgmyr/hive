@@ -51,7 +51,7 @@ async function startLead(yml, { trustLead } = {}) {
   if (existsSync(argvFile)) unlinkSync(argvFile);
   const dir = join(dirs.tmp, `lead-${seq++}`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "hive.yml"), yml);
+  if (yml !== null) writeFileSync(join(dir, "hive.yml"), yml);
   if (trustLead) {
     const project = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get(`lead-${seq}`, dir);
     db.prepare("INSERT INTO command_trust (project_id, name, config_hash) VALUES (?, ?, ?)").run(
@@ -76,9 +76,9 @@ const withoutPaths = (argv) => argv.map((a) => a.replaceAll(dirs.dataDir, "<data
 describe("lead_sidebar config key", () => {
   it("boolean layering records source and invalid type warns", () => {
     const absent = resolve({ project: "dashboard: true\n" });
-    assert.equal(absent.config.lead_sidebar, false);
+    assert.equal(absent.config.lead_sidebar, true);
     assert.equal(absent.sources.lead_sidebar, "built-in");
-    assert.equal(resolve({ project: "lead_sidebar: null\n" }).config.lead_sidebar, false);
+    assert.equal(resolve({ project: "lead_sidebar: null\n" }).config.lead_sidebar, true);
     const global = resolve({ global: "lead_sidebar: true\n" });
     assert.equal(global.config.lead_sidebar, true);
     assert.equal(global.sources.lead_sidebar, "global");
@@ -87,24 +87,27 @@ describe("lead_sidebar config key", () => {
     assert.equal(project.sources.lead_sidebar, "project");
     for (const bad of ["yes-please", "1", '"true"']) {
       const loaded = resolve({ project: `lead_sidebar: ${bad}\n` });
-      assert.equal(loaded.config.lead_sidebar, false, bad);
+      assert.equal(loaded.config.lead_sidebar, true, bad);
       assert.ok(loaded.warnings.some((w) => w.includes("lead_sidebar must be true or false")), JSON.stringify(loaded.warnings));
     }
   });
 });
 
 describe("hive lead --plugin-dir for the crew mod", { skip: hasTmux ? false : "tmux is not installed" }, () => {
-  it("absent false null keep lead argv unchanged", async () => {
-    const absent = await startLead("dashboard: false\n");
-    const off = await startLead("lead_sidebar: false\n");
+  it("lead_sidebar defaults to on, including with no hive.yml", async () => {
+    const absent = await startLead(null);
     const nul = await startLead("lead_sidebar:\n");
-    for (const { argv } of [absent, off, nul]) assert.equal(argv.includes("--plugin-dir"), false);
-    assert.deepEqual(withoutPaths(off.argv), withoutPaths(absent.argv));
-    assert.deepEqual(withoutPaths(nul.argv), withoutPaths(absent.argv));
+    assert.notEqual(absent.argv.indexOf("--plugin-dir"), -1, JSON.stringify(absent.argv));
+    assert.notEqual(nul.argv.indexOf("--plugin-dir"), -1, JSON.stringify(nul.argv));
+  });
+
+  it("lead_sidebar false omits the crew pane", async () => {
+    const off = await startLead("lead_sidebar: false\n");
+    assert.equal(off.argv.includes("--plugin-dir"), false);
   });
 
   it("true adds installed plugin only to Claude lead", async () => {
-    const off = await startLead("dashboard: false\n");
+    const off = await startLead("lead_sidebar: false\n");
     const on = await startLead("lead_sidebar: true\n");
     const at = on.argv.indexOf("--plugin-dir");
     assert.notEqual(at, -1, JSON.stringify(on.argv));

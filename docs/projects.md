@@ -40,7 +40,7 @@ dashboard: true               # optional; default false. Writes a generated, aut
                               # recent activity. Read-only, self-contained, opens from file://.
                               # `hive`/`hive lead` opens it in a browser once per ~8h of use
                               # (`hive lead --no-dashboard` skips this run's open).
-lead_sidebar: true            # optional; default false. A claude lead gets a crew pane (workers,
+lead_sidebar: true            # default true. A claude lead gets a crew pane (workers,
                               # todos, wakes) from `hive crew --json`. Restart the lead after
                               # changing it (see [the crew sidebar](crew.md)).
 quiet_messaging: true        # default true. Set false to keep typed wakes and worker messages.
