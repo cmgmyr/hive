@@ -33,7 +33,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
 lead_branches: [main, master] # branches where a session gets hive's kickoff
 first_message: "..."         # a lead's first turn; absent or "" sends none
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
-lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
+lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults true
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .hive/dashboard.html on every tick (see [the dashboard guide](dashboard.md)):
                               # the board pad, open todos, running agents, pending wakes, and

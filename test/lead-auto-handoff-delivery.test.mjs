@@ -169,14 +169,14 @@ describe("lead auto-handoff delivery", () => {
     }
   });
 
-  it("warn requests handoff only after a known quiet lead turn", async () => {
+  it("a budget without auto_handoff requests handoff after a known quiet lead turn", async () => {
     const lead = seedLead();
     turns(5);
     await prompt();
-    drive({ warn: 3, stop: 10 });
-    assert.equal(active(lead.id), null, "no auto_handoff key: no request");
+    drive({ warn: 3, stop: 10, auto_handoff: false });
+    assert.equal(active(lead.id), null, "explicit false keeps the lead in this session");
 
-    drive();
+    drive({ warn: 3, stop: 10 });
     let row = active(lead.id);
     assert.equal(row.state, "pending", "armed at warn while the lead is still working");
     assert.equal(wake(row.request_wake_id).due_at, null);

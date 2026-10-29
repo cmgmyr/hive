@@ -1137,7 +1137,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 
-# lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
+# lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults on
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
 

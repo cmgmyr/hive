@@ -272,7 +272,10 @@ function applyLayer(
       const budget: LeadTurnBudget = { warn: value.warn, stop: value.stop };
       if (value.auto_handoff !== undefined) {
         if (typeof value.auto_handoff === "boolean") budget.auto_handoff = value.auto_handoff;
-        else warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+        else {
+          budget.auto_handoff = false;
+          warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+        }
       }
       config.lead_turn_budget = budget;
       sources.lead_turn_budget = source;

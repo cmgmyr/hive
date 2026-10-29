@@ -64,7 +64,7 @@ const sessions = [];
 after(() => cleanup(...sessions));
 
 const projectDir = mkdtempSync(join(tmp, "project-"));
-writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10, auto_handoff: true}\n");
+writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10}\n");
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('restart', ?) RETURNING id").get(projectDir).id;
 writeFileSync(
   TRANSCRIPT,
