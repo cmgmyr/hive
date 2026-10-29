@@ -215,10 +215,12 @@ import {
   agentVarKeys,
   BUILT_IN_PROJECT_YML,
   configHash,
+  leadSidebarEnabled,
   loadProjectYml,
   mergedProjectVars,
   NO_PROFILE,
   PROJECT_YML_KEYS,
+  quietMessagingEnabled,
   type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
@@ -744,7 +746,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     reportMigrationResult(migrateLegacyConfig());
     for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
-    const hooksPath = ensureLeadHooksFile(project.id, config?.quiet_messaging === true);
+    const hooksPath = ensureLeadHooksFile(project.id, quietMessagingEnabled(config));
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -787,7 +789,7 @@ async function cmdLead(argv: string[]): Promise<void> {
         projectId: project.id,
         projectName: project.name,
         hooksPath,
-        sidebarPluginDir: config?.lead_sidebar === true && leadHarness.name === "claude" ? crewPluginDir() : null,
+        sidebarPluginDir: leadSidebarEnabled(config) && leadHarness.name === "claude" ? crewPluginDir() : null,
         posture: renderedPosture,
         firstMessage,
       }));
@@ -1135,13 +1137,13 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
 
-# lead_turn_budget: {warn: 300, stop: 600} # optional lead statusline thresholds
+# lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults on
 
 # dashboard: true               # write .hive/dashboard.html (default: false)
 
-# lead_sidebar: true            # a crew pane in a claude lead (default: false; restart the lead)
+# lead_sidebar: false           # disable the crew pane in a claude lead; restart the lead
 
-# quiet_messaging: true        # wakes and worker messages reach a claude lead as one row (default: false; restart the lead)
+# quiet_messaging: false       # use typed wakes and worker messages instead of one row; restart the lead
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

@@ -1,7 +1,9 @@
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { db } from "./db.js";
-import { loadProjectYml } from "./projectYml.js";
+import { dataDir, db } from "./db.js";
+import { harnessFor } from "./harnesses.js";
+import { loadProjectYml, quietMessagingEnabled } from "./projectYml.js";
+import { shellQuote } from "./tmux.js";
 import { DELIVERY_METHOD } from "./wakeSql.js";
 
 export { DELIVERY_METHOD } from "./wakeSql.js";
@@ -32,7 +34,13 @@ function claudeWakeFrame(sender: string, text: string): string {
 
 export function quietMessagingOn(projectId: number): boolean {
   const project = db.prepare("SELECT path FROM projects WHERE id = ?").get(projectId) as { path: string } | undefined;
-  return project !== undefined && loadProjectYml(project.path).config?.quiet_messaging === true;
+  return project !== undefined && quietMessagingEnabled(loadProjectYml(project.path).config);
+}
+
+export function quietMessagingHooksLaunched(projectId: number, command: string): boolean {
+  const path = join(dataDir, `lead-${projectId}-hooks.json`);
+  const args = harnessFor("claude").briefDelivery?.settingsArgs(path);
+  return args !== undefined && command.includes(args.map(shellQuote).join(" "));
 }
 
 export function promptMarkerEvidenceSql(markerAt: (promptSql: string, startSql: string) => string): string {

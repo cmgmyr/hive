@@ -13,7 +13,8 @@ await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
 migrate();
-const { loadProjectYml } = await import("../dist/projectYml.js");
+const { loadProjectYml, quietMessagingEnabled } = await import("../dist/projectYml.js");
+const { quietMessagingOn } = await import("../dist/claudeWake.js");
 const { ensureHooksFile, ensureLeadHooksFile, ensureWorkerHooksFile } = await import("../dist/hooks.js");
 const { sessionName } = await import("../dist/tmux.js");
 
@@ -37,29 +38,34 @@ const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 after(() => cleanup(sessionName()));
 
-describe("quiet_messaging resolves off unless set true", () => {
-  it("is off when absent, false or null, with a built-in source when absent", () => {
+describe("quiet_messaging resolves on by default", () => {
+  it("defaults to on with no hive.yml, and null resets to the built-in default", () => {
     const absent = resolve({ project: "dashboard: true\n" });
-    assert.equal(absent.config.quiet_messaging, false);
+    assert.equal(absent.config.quiet_messaging, true);
     assert.equal(absent.sources.quiet_messaging, "built-in");
     assert.equal(resolve({ project: "quiet_messaging: false\n" }).config.quiet_messaging, false);
-    assert.equal(resolve({ project: "quiet_messaging: null\n" }).config.quiet_messaging, false);
+    assert.equal(resolve({ project: "quiet_messaging: null\n" }).config.quiet_messaging, true);
+    assert.equal(quietMessagingEnabled(null), true);
+    const noConfigDir = join(dirs.tmp, "quiet-no-file");
+    mkdirSync(noConfigDir, { recursive: true });
+    const projectId = db.prepare("INSERT INTO projects (name, path) VALUES ('quiet-no-file', ?) RETURNING id").get(noConfigDir).id;
+    assert.equal(quietMessagingOn(projectId), true);
   });
 
-  it("warns on a non-boolean value and stays off", () => {
+  it("warns on a non-boolean value and falls back to the default", () => {
     for (const value of ["yes-please", "1", "\"true\""]) {
       const loaded = resolve({ project: `quiet_messaging: ${value}\n` });
-      assert.equal(loaded.config.quiet_messaging, false, value);
+      assert.equal(loaded.config.quiet_messaging, true, value);
       assert.ok(loaded.warnings.some((w) => w.includes("quiet_messaging must be true or false")), JSON.stringify(loaded.warnings));
     }
   });
 
-  it("turns on from the global file, and a project false or null overrides a global true", () => {
+  it("turns on from the global file, and a project false overrides a global true", () => {
     const globalOn = resolve({ global: "quiet_messaging: true\n" });
     assert.equal(globalOn.config.quiet_messaging, true);
     assert.equal(globalOn.sources.quiet_messaging, "global");
     assert.equal(resolve({ global: "quiet_messaging: true\n", project: "quiet_messaging: false\n" }).config.quiet_messaging, false);
-    assert.equal(resolve({ global: "quiet_messaging: true\n", project: "quiet_messaging: null\n" }).config.quiet_messaging, false);
+    assert.equal(resolve({ global: "quiet_messaging: true\n", project: "quiet_messaging: null\n" }).config.quiet_messaging, true);
     const projectOn = resolve({ project: "quiet_messaging: true\n" });
     assert.equal(projectOn.config.quiet_messaging, true);
     assert.equal(projectOn.sources.quiet_messaging, "project");
@@ -115,7 +121,7 @@ describe("hive lead launches a claude lead with the settings its key selects", (
 
   it("an opted-in project's lead command names its own accept file; an off project's names hooks.json", needsTmux, async () => {
     const on = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-on", leadBin, processes: {}, yml: `lead: ${leadBin}\nquiet_messaging: true\n` });
-    const off = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-off", leadBin, processes: {}, yml: `lead: ${leadBin}\n` });
+    const off = await seedLeadProject(db, { root: dirs.tmp, name: "qlw-off", leadBin, processes: {}, yml: `lead: ${leadBin}\nquiet_messaging: false\n` });
     for (const project of [on, off]) {
       const result = await runCli(["lead", "--detach"], { cwd: project.dir, dataDir: dirs.dataDir, tmp: dirs.tmp });
       assert.equal(result.code, 0, result.stderr + result.stdout);

@@ -45,6 +45,10 @@ export const HANDOFF_PAD_NAME = "hive-lead-handoff";
 
 export const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
+function autoHandoffEnabled(budget: LeadTurnBudget | null): boolean {
+  return budget !== null && (budget.auto_handoff ?? true);
+}
+
 export interface LeadForHandoff {
   id: number;
   project_id: number;
@@ -63,7 +67,7 @@ export function handoffEligibility(
   budget: LeadTurnBudget | null,
   snapshot: (LeadTurnState & LeadSafetySnapshot) | null = readLeadSafetySnapshot(lead.id),
 ): Eligibility {
-  if (budget === null || budget.auto_handoff !== true) return { eligible: false, why: "auto_handoff is not enabled" };
+  if (budget === null || !autoHandoffEnabled(budget)) return { eligible: false, why: "auto_handoff is not enabled" };
   if (harnessFor(lead.command).name !== "claude") return { eligible: false, why: "the lead is not a Claude lead" };
   if (lead.pane_pid === "") return { eligible: false, why: "the lead's pane pid is unknown" };
   if (
@@ -385,7 +389,7 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     settleAfterRespawn(row, lead);
     return;
   }
-  if (budget?.auto_handoff !== true) {
+  if (!autoHandoffEnabled(budget)) {
     failHandoff(row.id, "lead_turn_budget.auto_handoff is no longer on");
     return;
   }
@@ -503,7 +507,7 @@ export type Verdict = { go: true } | { wait: string } | { postpone: string; esca
 
 // The final quiet check. A screen or probe that cannot be read waits; it never establishes quiet.
 export async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, budget: LeadTurnBudget | null): Promise<Verdict> {
-  if (budget?.auto_handoff !== true) return { fail: "lead_turn_budget.auto_handoff is no longer on" };
+  if (!autoHandoffEnabled(budget)) return { fail: "lead_turn_budget.auto_handoff is no longer on" };
   if (lead === undefined || lead.pane_pid !== row.predecessor_pane_pid || lead.tmux_target !== row.pane_target) {
     return { fail: "the lead row no longer names the pane this handoff was requested for" };
   }

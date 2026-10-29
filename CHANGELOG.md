@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- `quiet_messaging` now defaults to on, including when no `hive.yml` exists. Existing installs with a running lead need to restart it after upgrading to use the socket; leads started without the generated hooks keep typed delivery until then. Set `quiet_messaging: false` to keep typed delivery. Restart your lead after upgrading.
+- `lead_sidebar` now defaults to on for Claude leads, including when no `hive.yml` exists. Existing leads need a restart to load it. On terminals narrower than 144 columns, the sidebar does not dock automatically; run `/hive-crew` to open it. Set `lead_sidebar: false` to disable it. Restart your lead after upgrading.
+- With a valid `lead_turn_budget`, `auto_handoff` now defaults to on. Existing setups with a budget and no `auto_handoff` key will start handing off after upgrading; set `lead_turn_budget.auto_handoff: false` to keep the current session. Restart every hive session and the lead after upgrading so all servers honor message holds.
+
 ## 1.11.8 - 2026-10-20
 
 - The MCP server reports its real version in the `initialize` handshake (`serverInfo.version`). Before, it always said `0.1.0`. This helps when a managed MCP config pins a version, such as `npx -y --package=@cmgmyr/hive@1.11.8 hive-mcp`, because the handshake now names the build that is running.

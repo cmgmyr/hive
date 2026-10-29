@@ -64,7 +64,7 @@ const sessions = [];
 after(() => cleanup(...sessions));
 
 const projectDir = mkdtempSync(join(tmp, "project-"));
-writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10, auto_handoff: true}\n");
+writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10}\n");
 const project = db.prepare("INSERT INTO projects (name, path) VALUES ('restart', ?) RETURNING id").get(projectDir).id;
 writeFileSync(
   TRANSCRIPT,
@@ -206,7 +206,7 @@ describe("lead auto-handoff restart", () => {
     assert.equal(panePid(ctx.pane.pane), ctx.pane.pid);
   });
 
-  it("grace owner respawns once and refuses changed or unknown ownership", needsTmux, async () => {
+  it("handoff restarts the lead with its default sidebar and refuses changed ownership", needsTmux, async () => {
     const launchedBefore = existsSync(launched) ? readFileSync(launched, "utf8").length : 0;
     const ownLaunches = () => (existsSync(launched) ? readFileSync(launched, "utf8").slice(launchedBefore) : "");
     const ctx = await readyLead({ stop: "stop-shell-running.json" });
@@ -239,6 +239,8 @@ describe("lead auto-handoff restart", () => {
     assert.equal(started.successor_pane_pid, successorPid);
     assert.equal(db.prepare("SELECT pane_pid FROM agents WHERE id = ?").get(ctx.lead.id).pane_pid, successorPid);
     assert.ok(record.includes("--settings"));
+    assert.ok(record.includes("--plugin-dir"));
+    assert.ok(record.includes(join(REPO, "claude-plugin", "crew")));
     assert.ok(await until(() => !alive(ctx.pane.pid), 3000), "the predecessor process is gone");
     const crew = db.prepare("SELECT status, parent_actor_id FROM agents WHERE id = ?").get(worker);
     assert.deepEqual({ ...crew }, { status: "running", parent_actor_id: "lead:r" }, "the crew and its parent link survive");

@@ -96,6 +96,7 @@ import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
 import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
   CROSS_SESSION_CLOSE,
+  quietMessagingHooksLaunched,
   postClaudeWake,
   promptMarkerEvidenceSql,
   quietMessagingOn,
@@ -2760,7 +2761,8 @@ function socketRoute(timer: TimerRow, owner: DeliveryOwner | null): boolean {
     timer.deliver_messaging_pane_pid !== "" &&
     timer.deliver_messaging_pane_pid === timer.deliver_pane_pid &&
     timer.deliver_row_target === timer.deliver_pane &&
-    quietMessagingOn(timer.project_id)
+    quietMessagingOn(timer.project_id) &&
+    quietMessagingHooksLaunched(timer.project_id, timer.deliver_command)
   );
 }
 

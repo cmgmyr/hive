@@ -65,8 +65,8 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   context_checkpoint_percent: null,
   lead_turn_budget: null,
   dashboard: false,
-  lead_sidebar: false,
-  quiet_messaging: false,
+  lead_sidebar: true,
+  quiet_messaging: true,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
 });
@@ -83,6 +83,14 @@ export const NO_PROFILE = "none";
 export function activeProfile(config: ProjectYml | null): string | null {
   const name = config?.profile;
   return name == null || name === NO_PROFILE ? null : name;
+}
+
+export function quietMessagingEnabled(config: ProjectYml | null): boolean {
+  return config?.quiet_messaging ?? BUILT_IN_PROJECT_YML.quiet_messaging;
+}
+
+export function leadSidebarEnabled(config: ProjectYml | null): boolean {
+  return config?.lead_sidebar ?? BUILT_IN_PROJECT_YML.lead_sidebar;
 }
 
 // First entry is the default; absent or empty means claude only (todo 526).
@@ -264,7 +272,10 @@ function applyLayer(
       const budget: LeadTurnBudget = { warn: value.warn, stop: value.stop };
       if (value.auto_handoff !== undefined) {
         if (typeof value.auto_handoff === "boolean") budget.auto_handoff = value.auto_handoff;
-        else warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+        else {
+          budget.auto_handoff = false;
+          warn(`lead_turn_budget.auto_handoff must be true or false; ignoring "${String(value.auto_handoff)}", so automatic handoff stays off.`);
+        }
       }
       config.lead_turn_budget = budget;
       sources.lead_turn_budget = source;
@@ -287,7 +298,7 @@ function applyLayer(
   if (has("lead_sidebar")) {
     const value = root.lead_sidebar;
     if (value == null) {
-      config.lead_sidebar = false;
+      config.lead_sidebar = BUILT_IN_PROJECT_YML.lead_sidebar;
       sources.lead_sidebar = source;
     } else if (typeof value === "boolean") {
       config.lead_sidebar = value;
@@ -298,7 +309,7 @@ function applyLayer(
   if (has("quiet_messaging")) {
     const value = root.quiet_messaging;
     if (value == null) {
-      config.quiet_messaging = false;
+      config.quiet_messaging = BUILT_IN_PROJECT_YML.quiet_messaging;
       sources.quiet_messaging = source;
     } else if (typeof value === "boolean") {
       config.quiet_messaging = value;

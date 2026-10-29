@@ -62,27 +62,26 @@ function reset() {
 describe("lead auto-handoff state", () => {
   beforeEach(reset);
 
-  it("only an opted-in Claude lead arms turn-budget handoff", async () => {
+  it("a budget without auto_handoff arms handoff, but false and no budget do not", async () => {
     const lead = seedLead();
     writeTranscript(5);
     await completedTurn();
-    const on = { warn: 3, stop: 10, auto_handoff: true };
-    const armed = handoff.handoffEligibility(lead, on);
+    const budget = { warn: 3, stop: 10 };
+    const armed = handoff.handoffEligibility(lead, budget);
     assert.equal(armed.eligible, true, JSON.stringify(armed));
     assert.equal(armed.reason, "warn");
     assert.equal(armed.turns, 5);
     assert.deepEqual(armed.epoch, { pane_pid: "4242", session_id: SESSION });
-    assert.equal(handoff.handoffEligibility(lead, { ...on, stop: 5 }).reason, "stop");
+    assert.equal(handoff.handoffEligibility(lead, { ...budget, stop: 5 }).reason, "stop");
 
-    assert.equal(handoff.handoffEligibility(lead, { warn: 3, stop: 10 }).eligible, false);
-    assert.equal(handoff.handoffEligibility(lead, { ...on, auto_handoff: false }).eligible, false);
+    assert.equal(handoff.handoffEligibility(lead, { ...budget, auto_handoff: false }).eligible, false);
     assert.equal(handoff.handoffEligibility(lead, null).eligible, false);
-    assert.equal(handoff.handoffEligibility({ ...lead, command: "codex" }, on).eligible, false);
-    assert.equal(handoff.handoffEligibility({ ...lead, pane_pid: "9999" }, on).eligible, false);
-    assert.equal(handoff.handoffEligibility(lead, { ...on, warn: 6, stop: 10 }).eligible, false);
+    assert.equal(handoff.handoffEligibility({ ...lead, command: "codex" }, budget).eligible, false);
+    assert.equal(handoff.handoffEligibility({ ...lead, pane_pid: "9999" }, budget).eligible, false);
+    assert.equal(handoff.handoffEligibility(lead, { ...budget, warn: 6, stop: 10 }).eligible, false);
     writeFileSync(TRANSCRIPT, "");
     db.prepare("UPDATE lead_turn_state SET transcript_path = ? WHERE agent_id = ?").run(join(tmp, "missing.jsonl"), lead.id);
-    assert.match(handoff.handoffEligibility(lead, on).why, /turn count is unavailable/);
+    assert.match(handoff.handoffEligibility(lead, budget).why, /turn count is unavailable/);
   });
 
   it("two schedulers arm one epoch and one request wake", async () => {
