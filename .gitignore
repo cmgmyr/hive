@@ -25,3 +25,5 @@ dist/
 # Claude Code scaffolds these into a mod directory when it loads the mod
 /claude-plugin/crew/tsconfig.json
 /claude-plugin/crew/.claude-plugin/types/
+
+/PR_BODY.md
