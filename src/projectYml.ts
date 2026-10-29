@@ -66,7 +66,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   lead_turn_budget: null,
   dashboard: false,
   lead_sidebar: false,
-  quiet_messaging: false,
+  quiet_messaging: true,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
 });
@@ -83,6 +83,10 @@ export const NO_PROFILE = "none";
 export function activeProfile(config: ProjectYml | null): string | null {
   const name = config?.profile;
   return name == null || name === NO_PROFILE ? null : name;
+}
+
+export function quietMessagingEnabled(config: ProjectYml | null): boolean {
+  return config?.quiet_messaging ?? BUILT_IN_PROJECT_YML.quiet_messaging;
 }
 
 // First entry is the default; absent or empty means claude only (todo 526).
@@ -298,7 +302,7 @@ function applyLayer(
   if (has("quiet_messaging")) {
     const value = root.quiet_messaging;
     if (value == null) {
-      config.quiet_messaging = false;
+      config.quiet_messaging = BUILT_IN_PROJECT_YML.quiet_messaging;
       sources.quiet_messaging = source;
     } else if (typeof value === "boolean") {
       config.quiet_messaging = value;

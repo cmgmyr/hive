@@ -2,6 +2,7 @@ import { dataDir, db } from "./db.js";
 import {
   CROSS_SESSION_CLOSE,
   promptMarkerEvidenceSql,
+  quietMessagingHooksLaunched,
   postClaudeWake,
   quietMessagingOn,
   socketGraceDue,
@@ -79,7 +80,7 @@ function eligible(options: { projectId: number; fromActor: string; target: Agent
   const sender = db
     .prepare("SELECT 1 AS hit FROM agents WHERE project_id = ? AND actor_id = ? AND status = 'running' AND kind = 'agent'")
     .get(projectId, fromActor);
-  return sender !== undefined && quietMessagingOn(projectId);
+  return sender !== undefined && quietMessagingOn(projectId) && quietMessagingHooksLaunched(projectId, target.command);
 }
 
 function registeredSocket(target: AgentRow): boolean {

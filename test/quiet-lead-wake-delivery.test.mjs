@@ -33,7 +33,7 @@ const { db, migrate } = await import("../dist/db.js");
 const { tick, DELIVER_SOCKET_JOIN, ACTIVE_TIMER_WHERE, socketAwaitingWhere } = await import("../dist/scheduler.js");
 const { postClaudeWake, senderAddress } = await import("../dist/claudeWake.js");
 const { versionInfo } = await import("../dist/version.js");
-const { tmuxSocketPath } = await import("../dist/tmux.js");
+const { shellQuote, tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -50,8 +50,13 @@ after(() => {
 
 function project(on) {
   const dir = mkdtempSync(join(tmp, "qlw-project-"));
-  writeFileSync(join(dir, "hive.yml"), on ? "quiet_messaging: true\n" : "dashboard: false\n");
+  writeFileSync(join(dir, "hive.yml"), on ? "quiet_messaging: true\n" : "quiet_messaging: false\n");
   return db.prepare("INSERT INTO projects (name, path) VALUES ('qlw', ?) RETURNING id").get(dir).id;
+}
+
+function projectWithoutYml() {
+  const dir = mkdtempSync(join(tmp, "qlw-project-no-yml-"));
+  return db.prepare("INSERT INTO projects (name, path) VALUES ('qlw-no-yml', ?) RETURNING id").get(dir).id;
 }
 
 function listener() {
@@ -81,16 +86,19 @@ function sinkPane() {
 }
 
 let actorCount = 0;
-function lead(projectId, { socket = "", registeredPid, kind = "lead", command = "claude" } = {}) {
+function lead(projectId, { socket = "", registeredPid, kind = "lead", command } = {}) {
   const { pane, pid, sink } = sinkPane();
   const actorId = `${kind}:qlw${actorCount++}`;
+  const launchCommand = command ?? (kind === "lead"
+    ? ["claude", "--settings", join(dataDir, `lead-${projectId}-hooks.json`)].map(shellQuote).join(" ")
+    : "claude");
   const rowId = db
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status,
          claude_messaging_socket, claude_messaging_pane_pid, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, '/tmp', 'running', ?, ?, datetime('now', '-60 seconds')) RETURNING id`,
     )
-    .get(projectId, actorId, `qlw${actorCount}`, kind, pane, ownSocket, pid, command, socket, registeredPid ?? (socket ? pid : "")).id;
+    .get(projectId, actorId, `qlw${actorCount}`, kind, pane, ownSocket, pid, launchCommand, socket, registeredPid ?? (socket ? pid : "")).id;
   return { actorId, rowId, pane, pid, sink };
 }
 
@@ -163,6 +171,18 @@ describe("a one-shot wake to an opted-in Claude lead goes by socket", () => {
     assert.equal(row.fire_count, 1);
     await sleep(300);
     assert.equal(sinkText(target), "");
+  });
+
+  it("a lead started without quiet hooks gets typed wakes after the default turns on", needsTmux, async () => {
+    const sock = listener();
+    const projectId = projectWithoutYml();
+    const target = lead(projectId, { socket: sock.path, command: "claude" });
+    const id = dueWake(projectId, target, BODY);
+
+    await tick();
+    assert.ok(await until(() => sinkText(target).includes(BODY), 3000));
+    assert.equal(sock.received.length, 0);
+    assert.equal(wake(id).delivery_method, "pty");
   });
 
   it("is confirmed by the real prompt hook seeing the envelope, and a confirmed wake is never re-typed", needsTmux, async () => {
@@ -614,7 +634,7 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
   });
 
   it("key-off repeating wakes preserve exact legacy pane bytes after an earlier socket firing", needsTmux, async () => {
-    for (const off of ["dashboard: false\n", "quiet_messaging: false\n"]) {
+    for (const off of ["quiet_messaging: false\n"]) {
       const { pid, target, id, sock } = await firstFiring();
       await promptHook(target, content(sock.received[0]));
       await tick();

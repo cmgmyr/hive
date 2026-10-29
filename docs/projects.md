@@ -43,7 +43,7 @@ dashboard: true               # optional; default false. Writes a generated, aut
 lead_sidebar: true            # optional; default false. A claude lead gets a crew pane (workers,
                               # todos, wakes) from `hive crew --json`. Restart the lead after
                               # changing it (see [the crew sidebar](crew.md)).
-quiet_messaging: true        # optional; default false. A claude lead gets its wakes and its
+quiet_messaging: true        # default true. Set false to keep typed wakes and worker messages.
                               # workers' messages as one "Message from @hive" row instead of
                               # typed text. Restart the lead after changing it (see
                               # [Quiet messaging](#quiet-messaging)).
@@ -137,17 +137,17 @@ A stop that cannot finish says so rather than pretending. If the process survive
 
 ### Quiet messaging
 
-By default hive types every wake into the lead's pane, so each one shows up as a block of pasted text. With `quiet_messaging: true`, a wake to a running Claude Code lead goes to that session's cross-session message socket instead. Claude Code draws it as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. The setting is off unless you turn it on.
+By default, wakes to Claude Code leads use the lead's cross-session message socket. Claude Code draws each wake as one dim row, `Message from @hive: [hive wake #N] ...`, and you press ctrl+o to expand it. The lead still reads the whole body. Workers, Codex leads, and Claude leads started without the generated quiet-messaging hooks file receive typed wakes.
 
-**Turn it on.** Add the key to your global `~/.hive/hive.yml` to cover every project, or to one project's `hive.yml` to cover only that project:
+**Turn it off.** Set the key to `false` in your global `~/.hive/hive.yml` to use typed delivery everywhere, or in one project's `hive.yml` to disable it for that project:
 
 ```yaml
-quiet_messaging: true
+quiet_messaging: false
 ```
 
-A project's value wins over the global one, so `quiet_messaging: false` in a project's `hive.yml` keeps that project on typed wakes while the global file turns it on everywhere else. If you set `HIVE_DATA_DIR`, the global file is `$HIVE_DATA_DIR/hive.yml`.
+A project's value wins over the global one, so `quiet_messaging: false` in a project's `hive.yml` keeps that project on typed delivery while the global default is on elsewhere. A YAML `null` resets the value to the built-in default, `true`. If you set `HIVE_DATA_DIR`, the global file is `$HIVE_DATA_DIR/hive.yml`.
 
-**Restart the lead.** The setting takes effect when `hive lead` starts a new Claude Code session. That launch passes a generated settings file, `~/.hive/lead-<project id>-hooks.json`, which sets `crossSessionInbound: "accept"` and adds a `SessionStart` hook that records the session's socket. A lead that was already running keeps the settings it started with, so reattaching to it or editing the generated file changes nothing. Close the lead session (`/exit`), then run `hive lead` again.
+**Restart the lead after upgrading.** The setting takes effect when `hive lead` starts a new Claude Code session. That launch passes a generated settings file, `~/.hive/lead-<project id>-hooks.json`, which sets `crossSessionInbound: "accept"` and adds a `SessionStart` hook that records the session's socket. A lead that was already running keeps the settings it started with, so hive keeps typing its wakes and worker messages until you restart it. Close the lead session (`/exit`), then run `hive lead` again.
 
 Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mode holds each incoming message behind an approval dialog. Restarting is what avoids that.
 
@@ -155,7 +155,7 @@ Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mo
 
 - `delivery_method: "socket"` means hive posted it to the socket. A repeating wake shows `"socket-repeating"` for its current firing.
 - `confirmation: "confirmed"` means the lead's prompt hook saw it, so the lead read it.
-- `delivery_method: "pty"` means hive typed it as before. That is expected for a wake to a worker, a Codex lead, a lead started before you turned the setting on, and a body containing `</cross-session-message>`.
+- `delivery_method: "pty"` means hive typed it. That is expected for a wake to a worker, a Codex lead, a lead started without the generated quiet-messaging hooks, and a body containing `</cross-session-message>`.
 
 **If a message does not arrive.** A socket write succeeding does not prove the lead read the message, so hive waits for the prompt hook. When the lead was busy, the clock starts at the end of the lead's first turn after the post, because a busy session reads the message only then. If there is still no confirmation 60 seconds after that turn end, or 60 seconds after the post when no turn was running, hive types the same wake into the pane once. It starts `[hive wake #N, re-delivered] If you already handled wake #N, ignore this.` and `wake_get` shows `delivery_method: "pty-after-socket-timeout"`. A socket that refuses the connection, or a write that does not finish within one second, gets the same re-delivery straight away. A timed-out write may still have reached the lead, so that case can duplicate. The worst case is that the lead sees one wake twice, and the second copy says so.
 
@@ -165,7 +165,7 @@ Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mo
 
 **Restart older hive sessions.** Every session with hive loaded runs its own scheduler, and a session still running a hive version without per-firing socket delivery keeps its old behaviour. It types repeating wakes into the pane, does not wait for an unsettled firing, and its claim of the next firing makes the newer servers drop the earlier firing's pending re-delivery. It can also mark a repeating firing confirmed when that wake's own body quotes `[hive wake #N]`. After upgrading, restart every session with hive loaded, or reconnect hive with `/mcp`.
 
-**Turn it off.** Set `quiet_messaging: false`, or remove the key, in the file where you turned it on, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
+Set `quiet_messaging: false` in the global or project file, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
 
 Turning it on accepts cross-session messages from every sender to that lead, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
 

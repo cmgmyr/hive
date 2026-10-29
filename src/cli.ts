@@ -219,6 +219,7 @@ import {
   mergedProjectVars,
   NO_PROFILE,
   PROJECT_YML_KEYS,
+  quietMessagingEnabled,
   type ResolvedHiveConfig,
   type ProjectYml,
   resolveCommandDir,
@@ -744,7 +745,7 @@ async function cmdLead(argv: string[]): Promise<void> {
     reportMigrationResult(migrateLegacyConfig());
     for (const w of warnings) console.log(`! ${w}`);
     const session = sessionName();
-    const hooksPath = ensureLeadHooksFile(project.id, config?.quiet_messaging === true);
+    const hooksPath = ensureLeadHooksFile(project.id, quietMessagingEnabled(config));
     let leadCommand = "claude";
     if (!config) {
       console.log(
@@ -1141,7 +1142,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 
 # lead_sidebar: true            # a crew pane in a claude lead (default: false; restart the lead)
 
-# quiet_messaging: true        # wakes and worker messages reach a claude lead as one row (default: false; restart the lead)
+# quiet_messaging: false       # use typed wakes and worker messages instead of one row; restart the lead
 
 # vars:                         # substituted into the profile runbook
 #   repo: owner/name            # {{repo}}

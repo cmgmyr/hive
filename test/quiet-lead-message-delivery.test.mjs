@@ -33,7 +33,7 @@ const { tick } = await import("../dist/scheduler.js");
 const { sendQuietLeadMessage, retryQuietLeadMessages } = await import("../dist/leadMessageDelivery.js");
 const { renderLeadPointer } = await import("../dist/leadMessage.js");
 const { senderAddress } = await import("../dist/claudeWake.js");
-const { liveTargets, tmuxSocketPath } = await import("../dist/tmux.js");
+const { liveTargets, shellQuote, tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
 const HOOK = join(DIST, "hook.js");
@@ -61,6 +61,12 @@ function project(key) {
   const dir = mkdtempSync(join(tmp, "qlm-project-"));
   writeFileSync(join(dir, "hive.yml"), key === undefined ? "dashboard: false\n" : `dashboard: false\nquiet_messaging: ${key}\n`);
   const id = db.prepare("INSERT INTO projects (name, path) VALUES ('qlm', ?) RETURNING id").get(dir).id;
+  return { id, dir };
+}
+
+function projectWithoutYml() {
+  const dir = mkdtempSync(join(tmp, "qlm-project-no-yml-"));
+  const id = db.prepare("INSERT INTO projects (name, path) VALUES ('qlm-no-yml', ?) RETURNING id").get(dir).id;
   return { id, dir };
 }
 
@@ -96,18 +102,21 @@ function sinkPane({ fixture } = {}) {
 }
 
 let actorCount = 0;
-function agentRow(projectId, { kind, socket = "", registeredPid, command = "claude", fixture, name } = {}) {
+function agentRow(projectId, { kind, socket = "", registeredPid, command, fixture, name } = {}) {
   const { pane, pid, sink, flag } = sinkPane({ fixture });
   const n = actorCount++;
   const actorId = `${kind}:qlm${n}`;
   const rowName = name ?? `qlm-${kind}-${n}`;
+  const launchCommand = command ?? (kind === "lead"
+    ? ["claude", "--settings", join(dataDir, `lead-${projectId}-hooks.json`)].map(shellQuote).join(" ")
+    : "claude");
   const rowId = db
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, kind, tmux_target, tmux_socket, pane_pid, command, cwd, status,
          claude_messaging_socket, claude_messaging_pane_pid, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, '/tmp', 'running', ?, ?, datetime('now', '-60 seconds')) RETURNING id`,
     )
-    .get(projectId, actorId, rowName, kind, pane, ownSocket, pid, command, socket, registeredPid ?? (socket ? pid : "")).id;
+    .get(projectId, actorId, rowName, kind, pane, ownSocket, pid, launchCommand, socket, registeredPid ?? (socket ? pid : "")).id;
   return { actorId, rowId, pane, pid, sink, flag, name: rowName, tag: `[hive:${kind === "lead" ? "lead" : "worker"} ${rowName}] ` };
 }
 const lead = (projectId, options = {}) => agentRow(projectId, { kind: "lead", ...options });
@@ -218,8 +227,8 @@ describe("a worker's send to an opted-in Claude lead goes over the lead's socket
 });
 
 describe("only an opted-in worker-to-Claude-lead submitted send takes the socket", () => {
-  it("key absent and false preserve today's bytes and short-message storage", needsTmux, async () => {
-    for (const key of [undefined, false]) {
+  it("explicit false preserves typed bytes and short-message storage", needsTmux, async () => {
+    for (const key of [false]) {
       const proj = project(key);
       const sock = listener();
       const target = lead(proj.id, { socket: sock.path });
@@ -241,6 +250,20 @@ describe("only an opted-in worker-to-Claude-lead submitted send takes the socket
       assert.equal(sock.received.length, 0, `key ${key}: zero frames`);
       db.exec("DELETE FROM agent_messages");
     }
+  });
+
+  it("a lead started without quiet hooks gets typed worker messages after the default turns on", needsTmux, async () => {
+    const proj = projectWithoutYml();
+    const sock = listener();
+    const target = lead(proj.id, { socket: sock.path, command: "claude" });
+    const from = worker(proj.id);
+    const client = await mcpAs(proj, from.actorId);
+
+    const receipt = await client.call("agent_send", { name: target.name, text: "legacy lead report" });
+    assert.deepEqual(receipt, { agent_id: target.rowId, name: target.name, sent: true });
+    assert.ok(await until(() => sinkText(target) === `${from.tag}legacy lead report\n`, 3000));
+    assert.equal(sock.received.length, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_messages").get().n, 0);
   });
 
   it("lead send, worker target, Codex lead, keys and submit=false stay PTY", needsTmux, async () => {
