@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.11.9 - 2026-10-30
 
 - `quiet_messaging` now defaults to on, including when no `hive.yml` exists. Existing installs with a running lead need to restart it after upgrading to use the socket; leads started without the generated hooks keep typed delivery until then. Set `quiet_messaging: false` to keep typed delivery. Restart your lead after upgrading.
 - `lead_sidebar` now defaults to on for Claude leads, including when no `hive.yml` exists. Existing leads need a restart to load it. On terminals narrower than 144 columns, the sidebar does not dock automatically; run `/hive-crew` to open it. Set `lead_sidebar: false` to disable it. Restart your lead after upgrading.
