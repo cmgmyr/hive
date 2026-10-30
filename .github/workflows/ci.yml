@@ -61,12 +61,17 @@ jobs:
           done
           echo "::error::apt install failed after 3 attempts"
           exit 1
+      - name: read runner image for tmux cache
+        id: runner-image
+        run: |
+          test -n "$ImageOS" || { echo "::error::ImageOS is unset; the tmux cache key cannot name the runner image"; exit 1; }
+          echo "image=$ImageOS" >> "$GITHUB_OUTPUT"
       - name: cache tmux ${{ matrix.tmux }}
         id: tmux-cache
         uses: actions/cache@v6
         with:
           path: ~/tmux-${{ matrix.tmux }}
-          key: tmux-${{ runner.os }}-${{ runner.arch }}-${{ matrix.tmux }}
+          key: tmux-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.image }}-${{ matrix.tmux }}
       - name: build tmux ${{ matrix.tmux }} from the release tarball
         if: steps.tmux-cache.outputs.cache-hit != 'true'
         timeout-minutes: 10
