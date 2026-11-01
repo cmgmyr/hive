@@ -123,6 +123,22 @@ describe("hive layout", { skip: hasTmux ? false : "tmux is not installed" }, () 
     assert.equal(windowLayout(window), "main-vertical", "the merged hive.yml layout overrides the stored window layout");
   });
 
+  it("hive layout reports when tmux cannot apply the configured layout", async () => {
+    const worker = await spawnWorker("layout-failed-retile-worker");
+    const row = db.prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND name = ?")
+      .get(project.id, worker.name);
+    const window = windowFor(session, project.id);
+    tmux("set-window-option", "-t", window, "@hive-layout", "even-horizontal");
+    const failingTmux = fakeFailingTmux({ failOn: "select-layout" });
+
+    const result = await cli(["layout"], dirs.projectDir, { PATH: `${failingTmux}:${process.env.PATH}` });
+    assert.equal(result.code, 1, result.stderr);
+    assert.ok(panesIn(window).includes(row.tmux_target), "the worker pane was moved even though the retile failed");
+    assert.match(result.stdout, /layout main-vertical could not be applied; panes were moved/);
+    assert.doesNotMatch(result.stdout, /; layout main-vertical$/m);
+    assert.equal(windowLayout(window), "even-horizontal");
+  });
+
   it("hive layout with no project window exits 1", async () => {
     const otherDir = mkdtempSync(join(dirs.tmp, "layout-no-window-"));
     db.prepare("INSERT INTO projects (name, path) VALUES (?, ?)").run("layout-no-window", otherDir);
@@ -173,6 +189,8 @@ describe("hive layout", { skip: hasTmux ? false : "tmux is not installed" }, () 
     const source = paneWindow(row.tmux_target);
     tmux("set-window-option", "-t", source, "@hive-owned", "1");
     const humanPane = tmux("split-window", "-d", "-P", "-F", "#{pane_id}", "-t", source, "sleep 600");
+    const staleRow = seedPaneRow(project.id, "layout-stale-target", humanPane);
+    db.prepare("UPDATE agents SET pane_pid = ? WHERE id = ?").run("0", staleRow);
 
     const result = await cli();
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
@@ -209,6 +227,35 @@ describe("hive layout", { skip: hasTmux ? false : "tmux is not installed" }, () 
     const receipt = await spawnWorker("layout-placement-note-worker");
     assert.match(receipt.note, /own window.*placement "window" overrides this project's split config; run `hive layout`/);
     await mcp.call("agent_close", { name: receipt.name });
+  });
+
+  it("agent_spawn uses HIVE_SPAWN_PLACEMENT when hive.yml leaves placement unset", async () => {
+    const configPath = join(dirs.projectDir, "hive.yml");
+    const originalConfig = "placement: split\nlayout: main-vertical\n";
+    writeFileSync(configPath, "layout: main-vertical\n");
+    const lead = leadRow(db, project.id);
+    const envMcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: {
+        HIVE_AGENT_ID: lead.actor_id,
+        HIVE_SPAWN_READY_MS: "500",
+        HIVE_SPAWN_PLACEMENT: "window",
+      },
+    });
+    await envMcp.start();
+    const name = "layout-env-placement-worker";
+    try {
+      const receipt = await envMcp.call("agent_spawn", { name, command: fakeClaude("sleep 600"), extra_args: [] });
+      const leadWindow = windowFor(session, project.id);
+      const workerWindow = paneWindow(receipt.tmux_target);
+      assert.ok(workerWindow, "the worker has a live window");
+      assert.notEqual(workerWindow.split(":")[1], leadWindow.split(":")[1]);
+      await envMcp.call("agent_close", { name });
+    } finally {
+      await envMcp.close();
+      writeFileSync(configPath, originalConfig);
+    }
   });
 
   it("hive layout refuses layout-selection flags", async () => {

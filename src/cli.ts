@@ -2134,10 +2134,13 @@ function cmdLayout(argv: string[]): void {
       tmux("swap-pane", "-s", lead.tmux_target, "-t", leadPanes[0]);
     }
     applyLayout(windows.project, layout);
+    const layoutApplied = windowLayout(windows.project) === layout;
 
+    const projectRunningRows = db
+      .prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND status = 'running' AND tmux_target != ''")
+      .all(project.id) as RowPaneIdentity[];
     const projectRunningTargets = new Set(
-      (db.prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND status = 'running' AND tmux_target != ''").all(project.id) as { tmux_target: string }[])
-        .map((row) => row.tmux_target),
+      projectRunningRows.filter((row) => rowOwnership(row, snapshot) === "live").map((row) => row.tmux_target),
     );
     const leftWindows: string[] = [];
     for (const source of sourceWindows) {
@@ -2154,6 +2157,10 @@ function cmdLayout(argv: string[]): void {
     const lines = moved.map(({ name, pane }) => `moved ${name} pane ${pane} into ${windows.project}`);
     if (leftWindows.length > 0) lines.push(`left windows with panes remaining: ${leftWindows.join(", ")}`);
     if (moved.length === 0) lines.push("nothing to move");
+    if (!layoutApplied) {
+      lines.push(`layout ${layout} could not be applied; ${moved.length > 0 ? "panes were moved" : "no panes were moved"}`);
+      return { lines, exitCode: 1 };
+    }
     lines.push(`moved ${moved.length} pane${moved.length === 1 ? "" : "s"} into ${windows.project}; layout ${layout}`);
     return { lines, exitCode: 0 };
   });

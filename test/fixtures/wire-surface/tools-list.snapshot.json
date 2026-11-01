@@ -679,7 +679,7 @@
           "type": "string"
         },
         "placement": {
-          "description": "Omit this to use the project's hive.yml placement (default: split). split: the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode). agent_output reads scrollback, so a crowded window does not limit what a lead can read. If workers end up in other windows, run hive layout to gather them.",
+          "description": "Omit this to use the project's hive.yml placement, else HIVE_SPAWN_PLACEMENT, else split. split: the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode). agent_output reads scrollback, so a crowded window does not limit what a lead can read. If workers end up in other windows, run hive layout to gather them.",
           "enum": [
             "split",
             "window"
