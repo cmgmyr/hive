@@ -19,6 +19,7 @@ export const ALLOWLIST = [
   { path: "src/tools/agents.ts", marker: "target,\n              outgoing" },
   { path: "src/scheduler.ts", marker: "prefix + body + staleness + tail" },
   { path: "src/leadMessageDelivery.ts", marker: "renderLeadMessage(row.id, row.text, row.sender_tag" },
+  { path: "src/usageLimit.ts", marker: 'sendText(row.tmux_target, "continue"' },
 ];
 
 export function sendTextSites(contents, path) {
@@ -42,7 +43,7 @@ describe("agent_send sender tags cover every sendText site", () => {
     assert.equal(allowed({ path: "src/tools/agents.ts", call: "sendText(target,\n              rawText" }), false);
   });
 
-  it("every source sendText site is a tagged delivery, wake, slash command, or definition", () => {
+  it("every source sendText site is tagged or is the plain Codex continue command", () => {
     const sites = trackedFiles(REPO)
       .filter((path) => path.startsWith("src/") && path.endsWith(".ts"))
       .flatMap((path) => sendTextSites(readFileSync(`${REPO}/${path}`, "utf8"), path));

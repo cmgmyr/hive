@@ -1,0 +1,6 @@
+{
+  "session_id": "synthetic-claude-session",
+  "transcript_path": "<synthetic-owned-transcript>",
+  "error": "rate_limit",
+  "last_assistant_message": "You've hit your session limit · resets 3:45pm"
+}

@@ -1,0 +1,9 @@
+{
+  "source": "findings-limit-fork-spike A1 and amux parser quote",
+  "forms": [
+    "You've hit your session limit · resets 3:45pm",
+    "You've hit your weekly limit · resets Mon 12:00am",
+    "You've hit your weekly limit · resets Oct 2 at 3am (America/New_York)",
+    "You've hit your session limit · resets 8:30pm (America/New_York)"
+  ]
+}

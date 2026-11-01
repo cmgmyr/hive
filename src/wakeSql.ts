@@ -166,6 +166,9 @@ export function isUnclassifiablePaneHold(heldReason: string | null): boolean {
   return heldReason != null && heldReason.startsWith(HELD_REASON_UNCLASSIFIABLE_PANE_PREFIX);
 }
 
+export const HELD_REASON_PANE_CAPTURE_UNKNOWN =
+  "the pane could not be read, so its dialog state is unknown; wake held rather than typed blind";
+
 export const HELD_REASON_COPY_MODE =
   "the pane is in tmux copy mode; tmux clears its bracketed-paste flag there, so the body would arrive " +
   "with no paste markers (losing everything before the last 1022-byte write) and the Enter would be " +
@@ -191,3 +194,5 @@ export const HELD_REASON_CONVERSATION =
 export const HELD_REASON_HANDOFF =
   "the lead is handing off to a fresh session; held through the wind-down and the successor's boot, and delivered to " +
   "the lead row once the successor completes its first turn, or when the handoff fails or releases its hold";
+
+export const HELD_REASON_USAGE_LIMIT = "the target harness is stopped by a usage limit; held until ";

@@ -12,6 +12,8 @@ interface HookPayload {
   background_tasks?: unknown;
   session_id?: unknown;
   transcript_path?: unknown;
+  error?: unknown;
+  last_assistant_message?: unknown;
 }
 
 interface HookOwnerRow {
@@ -322,6 +324,21 @@ try {
   if (actorId) {
     const event = process.argv[2] ?? "";
     const hookPayload = readPayload();
+    if (event === "stop_failure") {
+      try {
+        const { observeClaudeStopFailure } = await import("./usageLimit.js");
+        const row = db.prepare("SELECT id, command, kind, status FROM agents WHERE actor_id = ? AND status = 'running'")
+          .get(actorId) as { id: number; command: string; kind: string; status: string } | undefined;
+        const { harnessFor } = await import("./harnesses.js");
+        if (row && ["agent", "lead"].includes(row.kind) && harnessFor(row.command).name === "claude" && hookPayload.error === "rate_limit") {
+          reconcileSessionId(actorId, hookPayload);
+          reconcileTranscriptPath(actorId, hookPayload);
+          observeClaudeStopFailure(row.id, hookPayload, Date.now());
+        }
+      } catch {}
+      record(actorId, event, UNCHANGED);
+      process.exit(0);
+    }
     const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
       .get(actorId) as HookOwnerRow | undefined;
     let guarded = false;

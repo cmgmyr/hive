@@ -26,6 +26,7 @@ import {
 import { readHandoffGate } from "./leadHandoffState.js";
 import { HANDED_OFF_STATES_SQL, readLeadTurnState } from "./leadState.js";
 import { currentOwnership, PaneOwnershipLost, paneIdentity, requireStillOwned } from "./spawn.js";
+import { observeUsageLimit, usageLimitGate } from "./usageLimit.js";
 import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
   holdsHumanInput,
@@ -69,6 +70,13 @@ const messageEvidenceSql = (select: string): string => `
 const RETAINED = `agent_messages.created_at >= datetime('now', '${MESSAGE_RETENTION}')`;
 
 const handoffHolds = (agentId: number): boolean => readHandoffGate(agentId)?.holdAutomation === true;
+
+function usageLimitUntil(target: AgentRow): string | null {
+  const now = Date.now();
+  observeUsageLimit(target.id, now);
+  const gate = usageLimitGate(target.id, now);
+  return gate.held ? gate.until : null;
+}
 
 const HANDOFF_HOLD_NOTE = "the lead is handing off to a fresh session; held until the successor completes its first turn";
 
@@ -133,6 +141,8 @@ type FallbackOutcome =
   | { kind: "held"; reason: string }
   | { kind: "settled" }
   | { kind: "failed"; reason: string };
+
+class UsageLimitRace extends Error {}
 
 function hold(row: DeliveryRow, reason: string): FallbackOutcome {
   try {
@@ -199,6 +209,9 @@ function retargetAfterHandoff(row: DeliveryRow): DeliveryRow {
 
 // One guarded pane attempt. The claim is the CAS that makes it at most one per message.
 async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | null): Promise<FallbackOutcome> {
+  const initialTarget = db.prepare("SELECT * FROM agents WHERE id = ?").get(original.to_agent_id) as AgentRow | undefined;
+  const heldUntil = initialTarget ? usageLimitUntil(initialTarget) : null;
+  if (heldUntil !== null) return hold(original, `the target harness is stopped by a usage limit until ${heldUntil}`);
   if (handoffHolds(original.to_agent_id)) return hold(original, HANDOFF_HOLD_NOTE);
   const row = retargetAfterHandoff(original);
   let identity: RowPaneIdentity;
@@ -230,6 +243,9 @@ async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | nu
     const choice = classifier.choiceCheck(pane).awaitingChoice;
     if (choice !== false) return hold(row, choice ? "the lead's pane is waiting on a choice" : "the lead's pane could not be read");
     if (holdsHumanInput(classifier.inputBoxState(pane))) return hold(row, "the lead's input box holds unsubmitted text");
+    const latestTarget = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+    const latestHold = latestTarget ? usageLimitUntil(latestTarget) : null;
+    if (latestHold !== null) return hold(row, `the target harness is stopped by a usage limit until ${latestHold}`);
 
     const claimed = (() => {
       try {
@@ -253,7 +269,9 @@ async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | nu
     try {
       await sendText(
         pane,
-        renderLeadMessage(row.id, row.text, row.sender_tag ?? "", row.socket_attempt_at !== null),
+        target.kind === "lead"
+          ? renderLeadMessage(row.id, row.text, row.sender_tag ?? "", row.socket_attempt_at !== null)
+          : `${row.sender_tag ?? ""}${row.text}`,
         true,
         () => {
           pasted = true;
@@ -262,9 +280,21 @@ async function paneFallback(original: DeliveryRow, snapshot?: AliveSnapshot | nu
         () => {
           buffered = true;
         },
-        () => requireStillOwned(row.to_agent_id, identity, `message #${row.id} fallback`),
+        () => {
+          const current = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+          if (current) {
+            const until = usageLimitUntil(current);
+            if (until !== null) throw new UsageLimitRace(`the target harness is stopped by a usage limit until ${until}`);
+          }
+          requireStillOwned(row.to_agent_id, identity, `message #${row.id} fallback`);
+        },
       );
     } catch (err) {
+      if (err instanceof UsageLimitRace && !pasted) {
+        const reason = err.message;
+        setStatus(row.id, MESSAGE_STATUS.fallbackClaimed, MESSAGE_STATUS.fallbackPending, { delivery_note: reason });
+        return { kind: "held", reason };
+      }
       const reason = pasteFailure(err, pasted, buffered);
       setStatus(row.id, MESSAGE_STATUS.fallbackClaimed, MESSAGE_STATUS.failed, { delivery_note: reason });
       return { kind: "failed", reason };
@@ -290,6 +320,33 @@ function earlierFallbackPending(row: DeliveryRow): boolean {
 
 const DO_NOT_RESEND = "do not resend";
 
+export async function sendUsageHeldMessage(options: {
+  projectId: number;
+  fromActor: string;
+  target: AgentRow;
+  text: string;
+  submit: boolean;
+}): Promise<QuietMessageReceipt | null> {
+  if (!options.submit || options.target.status !== "running") return null;
+  const until = usageLimitUntil(options.target);
+  if (until === null) return null;
+  const { projectId, fromActor, target, text } = options;
+  const { id } = storeLeadMessage(projectId, fromActor, target.id, text);
+  const tag = senderTag(projectId, fromActor);
+  db.prepare(`UPDATE agent_messages SET delivery_status = ?, delivery_method = ?, delivery_note = ?,
+      target_identity = ?, sender_tag = ? WHERE id = ?`)
+    .run(MESSAGE_STATUS.fallbackPending, MESSAGE_METHOD.pty, `held for usage limit until ${until}`, JSON.stringify(paneIdentity(target)), tag, id);
+  return {
+    agent_id: target.id,
+    name: target.name,
+    sent: false,
+    pending: true,
+    message_id: id,
+    delivery_method: MESSAGE_METHOD.pty,
+    note: `Message #${id} is accepted and stored, held for the target's usage limit until ${until}; do NOT resubmit it. agent_message_get(${id}) shows its delivery state.`,
+  };
+}
+
 // null means this send is not eligible, and agent_send's ordinary pane path runs unchanged.
 export async function sendQuietLeadMessage(options: {
   projectId: number;
@@ -298,6 +355,8 @@ export async function sendQuietLeadMessage(options: {
   text: string;
   submit: boolean;
 }): Promise<QuietMessageReceipt | null> {
+  const held = await sendUsageHeldMessage(options);
+  if (held !== null) return held;
   if (!eligible(options)) return null;
   const { projectId, fromActor, target, text } = options;
   const identity = paneIdentity(target);
@@ -336,6 +395,14 @@ export async function sendQuietLeadMessage(options: {
       text: body,
       beforeWrite: () => {
         requireStillOwned(target.id, identity, `message #${id} socket delivery`);
+        const until = usageLimitUntil(target);
+        if (until !== null) {
+          setStatus(id, MESSAGE_STATUS.socketPending, MESSAGE_STATUS.fallbackPending, {
+            delivery_method: MESSAGE_METHOD.pty,
+            delivery_note: `held for usage limit until ${until}`,
+          });
+          return false;
+        }
         const now = db
           .prepare(
             `SELECT a.status, a.kind, a.pane_pid, a.claude_messaging_socket AS socket, a.claude_messaging_pane_pid AS pid,
@@ -432,7 +499,8 @@ function expireGrace(): void {
     .all(MESSAGE_STATUS.socketPending) as DeliveryRow[];
   for (const row of pending) {
     try {
-      const target = db.prepare("SELECT actor_id FROM agents WHERE id = ?").get(row.to_agent_id) as { actor_id: string } | undefined;
+      const target = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+      if (target && usageLimitUntil(target) !== null) continue;
       const panePid = (JSON.parse(row.target_identity ?? "{}") as Partial<RowPaneIdentity>).pane_pid ?? "";
       if (target === undefined || !graceExpired(row, target.actor_id, panePid)) continue;
       db.prepare(
@@ -472,6 +540,13 @@ export async function retryQuietLeadMessages(snapshot: AliveSnapshot | null): Pr
     const pair = `${row.from_actor}\u0000${row.to_agent_id}`;
     if (blocked.has(pair)) continue;
     try {
+      const target = db.prepare("SELECT * FROM agents WHERE id = ?").get(row.to_agent_id) as AgentRow | undefined;
+      const until = target ? usageLimitUntil(target) : null;
+      if (until !== null) {
+        hold(row, `the target harness is stopped by a usage limit until ${until}`);
+        blocked.add(pair);
+        continue;
+      }
       const outcome = await paneFallback(row, snapshot);
       if (outcome.kind === "held") blocked.add(pair);
     } catch {

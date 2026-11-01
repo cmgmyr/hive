@@ -53,6 +53,17 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     assert.deepEqual(versions, MIGRATIONS.map((_, i) => i + 1));
   });
 
+  it("adds a per-agent usage-limit episode table without modifying worker state columns", () => {
+    assert.deepEqual(db.prepare("SELECT * FROM agent_usage_limits").all(), []);
+    const columns = db.prepare("SELECT name FROM pragma_table_info('agent_usage_limits')").all().map((c) => c.name);
+    assert.deepEqual(columns, [
+      "agent_id", "project_id", "harness", "pane_pid", "session_id", "signal_key", "observed_at",
+      "reset_at", "expires_at", "released_at", "continue_claimed_at",
+    ]);
+    assert.ok(db.prepare("SELECT agent_state FROM agents WHERE id = ?").get(agentId));
+    assert.deepEqual(db.prepare("SELECT * FROM agent_state_log WHERE actor_id = 'agent:v30'").all(), []);
+  });
+
   it("ends with agents.model, agents.extra_args, nullable pane_started_at and an empty recovery marker", () => {
     assert.ok(agentColumns.includes("model"));
     assert.ok(agentColumns.includes("extra_args"));

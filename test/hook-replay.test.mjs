@@ -10,6 +10,7 @@ const { dataDir } = scratchDirs();
 
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dataDir;
+process.env.CLAUDE_CONFIG_DIR = join(dataDir, "claude-home");
 await assertScratchStore();
 
 const { db, migrate } = await import("../dist/db.js");
@@ -75,4 +76,39 @@ describe("dist/hook.js decides the recorded state for every captured payload", (
       assert.equal(logStateFor(actorId), decidedLogState);
     });
   }
+
+  it("rate_limit StopFailure from findings-limit-fork-spike A2 holds without changing worker state", async () => {
+    const actorId = "agent:synthetic-limit";
+    const id = db.prepare(`INSERT INTO agents
+      (project_id, actor_id, name, tmux_target, command, cwd, status, agent_state, kind, session_id)
+      VALUES (?, ?, 'synthetic-limit', '%9601', 'claude', '/tmp', 'running', 'working', 'agent', 'synthetic-claude-session') RETURNING id`)
+      .get(project, actorId).id;
+    const transcriptDir = join(process.env.CLAUDE_CONFIG_DIR, "projects", "-tmp");
+    const transcriptPath = join(transcriptDir, "synthetic-claude-session.jsonl");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(transcriptDir, { recursive: true });
+    writeFileSync(transcriptPath,
+      `{"type":"assistant","sessionId":"synthetic-claude-session","isApiErrorMessage":true,"error":"rate_limit","apiError":"usage_limit_reached","quotaLimits":{"status":"rejected","resetsAt":1793555100}}\n`);
+
+    await runHook("stop_failure", JSON.stringify({
+      session_id: "synthetic-claude-session",
+      transcript_path: transcriptPath,
+      error: "rate_limit",
+      last_assistant_message: "You've hit your session limit · resets 3:45pm",
+    }), actorId);
+
+    assert.equal(stateOf(id), "working");
+    assert.equal(db.prepare("SELECT state FROM agent_state_log WHERE actor_id = ? ORDER BY id DESC LIMIT 1").get(actorId).state, "unchanged");
+    assert.equal(db.prepare("SELECT harness FROM agent_usage_limits WHERE agent_id = ?").get(id).harness, "claude");
+  });
+
+  it("generated Claude hooks match only rate_limit StopFailure from findings-limit-fork-spike A2", async () => {
+    const id = agentRow("hook-settings", "working");
+    const { ensureWorkerHooksFile } = await import("../dist/hooks.js");
+    const path = ensureWorkerHooksFile(id, { includePostToolUse: false });
+    const settings = JSON.parse(readFileSync(path, "utf8"));
+    assert.equal(settings.hooks.StopFailure.length, 1);
+    assert.equal(settings.hooks.StopFailure[0].matcher, "rate_limit");
+    assert.match(settings.hooks.StopFailure[0].hooks[0].command, /hook\.js stop_failure$/);
+  });
 });

@@ -74,6 +74,10 @@ The keys shared between the two YAML files are `lead`, `placement`, `layout`, `p
 
 When a key is absent from global `hive.yml`, legacy `config.json` can still supply `attach` or `autoAttach` until migration runs. `hive lead`, `hive setup`, and `hive doctor` migrate those settings once into global `hive.yml`; MCP reads never migrate or write files. Existing YAML keys, including null, win. Hive renames the original bytes to `config.json.migrated`. To reverse the migrated attach settings, remove their keys from global `hive.yml` and rename the archive back to `config.json` in the same data directory. A changed global lead command still needs approval for each project that uses it.
 
+## Harness usage limits
+
+Usage-limit handling has no configuration key. Hive reads only the target's locally owned transcript or Codex rollout plus its pane, holds due wakes and submitted messages, and refuses a new spawn or resume on the same project's same harness with a retry time. A known reset releases after a 60-second grace period. An unknown reset releases after six hours from its first observation. Codex workers with a known reset get one `continue` after the reset when their pane still shows the limit and the worker has received an assignment. Hive makes no usage-service request. Restart hive MCP sessions after upgrading so older schedulers cannot type into a limited pane.
+
 See [project configuration](projects.md#project-commands-hiveyml), [profiles](profiles.md#profiles-standing-instructions-across-projects), and [dashboard settings](dashboard.md#enable-it) for the project-specific examples.
 
 ## Set by hive or for tests

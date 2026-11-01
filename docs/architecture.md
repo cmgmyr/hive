@@ -10,6 +10,12 @@ Every mechanical claim here cites `file:line`. A diagram is a claim that reads a
 
 The thing newcomers get wrong first: hive has no daemon. Every Claude Code session runs its own `hive` MCP server (`McpServer`/`StdioServerTransport`, `src/index.ts:2-11`) as a plain child process talking JSON-RPC over stdio, and every one of those processes, plus the `hive` CLI, opens the same WAL-mode SQLite file directly (`new Database`, `src/db.ts:4-5,9,16,18,42`; `src/cli.ts:58` imports `db`, `dataDir`, and `migrate` from that same module, a different door onto the same store). The CLI makes one npm registry request only for `hive --version --check`, `hive upgrade`, or an interactive doctor refresh; the MCP server, hooks, and scheduler never do, and `HIVE_NO_UPDATE_CHECK=1` disables it. Coordination beyond the database goes through one shared tmux server: one session per store, one window per project inside it (`.claude/rules/tmux-and-panes.md`).
 
+`usageLimit.ts` owns local limit evidence, episode deadlines, admission checks and Codex continuation (`observeUsageLimit`, `src/usageLimit.ts:273`; `limitedHarness`, `src/usageLimit.ts:322`; `continueLimitedCodexWorkers`, `src/usageLimit.ts:338`). It reads only the agent's own validated transcript or rollout and, for Codex, the currently owned pane. `StopFailure` records Claude evidence without changing `agents.agent_state` or `lead_turn_state` (`observeClaudeStopFailure`, `src/usageLimit.ts:247`; `hookEntry`, `src/hooks.ts:54`). Episodes live in `agent_usage_limits` (`src/db.ts:657`), separate from `agent_state` and its append-only event log. The scheduler checks the shared episode before wake claims, socket retries and pane writes (`usageLimitHeld`, `src/scheduler.ts:994`); the tool layer uses the same owner for spawn and resume refusal (`refuseLimitedHarness`, `src/tools/agents.ts:114`). Submitted messages remain in `agent_messages` through `sendUsageHeldMessage` (`src/leadMessageDelivery.ts:323`).
+
+`tick()` attempts `continueLimitedCodexWorkers` (`src/scheduler.ts:862`; `src/usageLimit.ts:338`) before draining wakes and messages. It requires a known reset, an assigned Codex worker, its own live pane still showing the limit, no dialog or pending input, and a pane lease; a compare-and-set claim prevents another server from typing a second `continue` for that episode. The six-hour unknown-reset cap is a bounded release, not evidence that the harness recovered (`UNKNOWN_RESET_MS`, `src/usageLimit.ts:13`).
+
+
+
 ```mermaid
 flowchart TB
     subgraph S1["Claude Code session 1"]
@@ -53,6 +59,13 @@ flowchart TB
     scheduler["src/scheduler.ts"] --> wakeSql
     leaseTool["src/tools/leases.ts"] --> leaseStore["src/leaseStore.ts"]
     scheduler --> leaseStore
+    scheduler --> usageLimit["src/usageLimit.ts"]
+    agents["src/tools/agents.ts"] --> usageLimit
+    messageDelivery["src/leadMessageDelivery.ts"] --> usageLimit
+    hook["src/hook.ts"] --> usageLimit
+    usageLimit --> transcript["src/transcript.ts"]
+    usageLimit --> codexHome["src/codexHome.ts"]
+    usageLimit --> leaseStore
     scheduler --> claudeWake["src/claudeWake.ts"]
     messageDelivery["src/leadMessageDelivery.ts"] --> leaseStore
     messageDelivery --> claudeWake
