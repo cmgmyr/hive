@@ -57,7 +57,7 @@ Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`h
 
 ### A worker's long report reaches you as one line
 
-Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and types a single pointer line into that pane instead:
+Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and delivers a single pointer line to that pane instead:
 
 ```
 [hive:worker api] [message #7, 885 chars] BLOCKED: the migration test wedges on a
@@ -73,7 +73,7 @@ Three things about it are deliberate:
 - **A short message is never shortened.** Under 300 characters it lands whole, so "I am blocked, the machine is wedged" still arrives complete and actionable with no lookup. The threshold sits in the gap between the two real populations: the longest messages anyone writes by hand run to about 140 characters, and worker reports start around 440.
 - **The sender is told.** `agent_send`'s receipt comes back with `shortened: true`, the message id, and a note saying to put whatever needs acting on in the first 140 characters or on the todo. A worker cannot keep writing 900-byte reports believing you read them.
 
-With `quiet_messaging` on, a worker's message arrives as one dim `Message from @hive` row instead of typed text, short ones included, and every one carries its id (`[message #7, 42 chars]`), so `agent_message_get` also tells you whether it was confirmed. See [Quiet messaging](projects.md#quiet-messaging).
+With quiet messaging on (the default), a worker's message arrives as one dim `Message from @hive` row instead of typed text, short ones included, and every one carries its id (`[message #7, 42 chars]`), so `agent_message_get` also tells you whether it was confirmed. See [Quiet messaging](projects.md#quiet-messaging).
 
 Messages are kept for 7 days. The pointer line stays in your scrollback longer than that, so a lookup for an expired id tells you it expired rather than reporting it missing, and points you at the todo or pad the sender wrote instead.
 
@@ -97,9 +97,9 @@ Workers report their state (`working`, `idle`, `waiting`) the moment it changes,
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
 - `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
 
-A fired wake-up types into your terminal as a fresh turn, prefixed `[hive wake #N]`. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
+A fired wake-up reaches your lead as a fresh turn, prefixed `[hive wake #N]`. By default a Claude lead sees it as one dim `Message from @hive` row; a worker, a Codex lead, or a lead in a project with `quiet_messaging: false` gets it typed into the terminal. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
 
-What gets typed depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is typed as one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
+What gets delivered depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
 
 ```text
 [hive wake #752] docs-lane: idle.

@@ -87,7 +87,7 @@ With the default `auto` attach mode (or `control`), set these once per machine u
 
 - Check "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
 - Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
-- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with `quiet_messaging`, the lead's own socket), not the display.
+- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with quiet messaging on, the default, the lead's own socket), not the display.
 
 None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
@@ -136,7 +136,7 @@ A managed or shared MCP configuration (for example one pushed by MDM) needs one 
 ["npx", "-y", "--package=node@<node-version>", "--package=@cmgmyr/hive@<hive-version>", "hive-mcp"]
 ```
 
-For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.11.8", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly. Within the Node major you pick, pin its newest patch release, and re-check it when you bump hive. The npm `node` package can lag Node's own releases by a few days, so a fresh security release may not be installable through npx yet.
+For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.11.9", "hive-mcp"]`. Pick a Node inside the supported range, `^22.14.0 || >=23.6.0`, and pin both versions exactly. Within the Node major you pick, pin its newest patch release, and re-check it when you bump hive. The npm `node` package can lag Node's own releases by a few days, so a fresh security release may not be installable through npx yet.
 
 The `hive-mcp` bin starts with `#!/usr/bin/env node`, so the server runs on the first `node` on PATH, not on the Node that ran `npx`. A bare `npx -y --package=@cmgmyr/hive@<hive-version> hive-mcp` therefore fails in any folder whose version manager pins a Node below the range. The extra `node` package fixes that: `npx` puts its `node` binary first on the PATH of the child process, so the server runs on that Node whatever the folder pins.
 
@@ -217,7 +217,7 @@ When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, 
 
 ## Uninstall
 
-Hive touches six things on a machine; remove them in any order:
+Hive touches seven things on a machine; remove them in any order:
 
 ```bash
 hive status                     # confirm the session name, then end it:
