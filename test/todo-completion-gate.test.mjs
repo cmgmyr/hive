@@ -146,9 +146,25 @@ it("both completion tools wait for the trusted literal command and persist only 
   const script = `require('node:fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify({cwd:process.cwd(), argv:process.argv[1], id:process.env.HIVE_TODO_ID, title:process.env.HIVE_TODO_TITLE, project:process.env.HIVE_PROJECT_ID, actor:process.env.HIVE_ACTOR_ID}))`;
   const argv = [process.execPath, "-e", script, literal];
   setGate(argv);
-  for (const [index, method] of ["todo_complete", "todo_update"].entries()) {
+  const cases = [
+    { method: "todo_complete", initial: "open" },
+    { method: "todo_update", initial: "open" },
+    { method: "todo_complete", initial: "in_progress" },
+    { method: "todo_update", initial: "backlog" },
+    { method: "todo_complete", initial: "archived" },
+  ];
+  for (const [index, { method, initial }] of cases.entries()) {
     const todo = await mcp.call("todo_create", { title: `candidate ${index}` });
-    const dependent = await mcp.call("todo_create", { title: `dependent ${index}`, blocked_by: [todo.todo_id] });
+    if (initial === "in_progress" || initial === "backlog") {
+      await mcp.call("todo_update", { todo_id: todo.todo_id, status: initial });
+    }
+    if (initial === "archived") await mcp.call("todo_archive", { todo_id: todo.todo_id });
+    const dependent = initial === "archived"
+      ? null
+      : await mcp.call("todo_create", { title: `dependent ${index}`, blocked_by: [todo.todo_id] });
+    const before = await mcp.call("todo_get", { todo_id: todo.todo_id });
+    assert.equal(before.status, initial === "archived" ? "open" : initial);
+    assert.equal(before.archived, initial === "archived");
     const candidateTitle = `candidate 'title'\n${index}`;
     if (method === "todo_complete") await mcp.call(method, { todo_id: todo.todo_id });
     else await mcp.call(method, { todo_id: todo.todo_id, status: "completed", title: candidateTitle });
@@ -159,8 +175,10 @@ it("both completion tools wait for the trusted literal command and persist only 
     assert.equal(output.title, method === "todo_update" ? candidateTitle : `candidate ${index}`);
     assert.equal(output.project, String(gateProject.id));
     assert.equal(output.actor, `user:${userInfo().username}`);
-    assert.equal((await mcp.call("todo_get", { todo_id: todo.todo_id })).status, "completed");
-    assert.equal((await mcp.call("todo_get", { todo_id: dependent.todo_id })).open_blockers, 0);
+    const completed = await mcp.call("todo_get", { todo_id: todo.todo_id });
+    assert.equal(completed.status, "completed");
+    assert.equal(completed.archived, initial === "archived");
+    if (dependent) assert.equal((await mcp.call("todo_get", { todo_id: dependent.todo_id })).open_blockers, 0);
   }
 });
 
