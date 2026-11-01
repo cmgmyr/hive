@@ -674,6 +674,10 @@ CREATE TABLE agent_usage_limits (
 CREATE INDEX idx_agent_usage_limits_gate ON agent_usage_limits(project_id, harness, expires_at)
   WHERE released_at IS NULL;
 `,
+  `
+ALTER TABLE agents ADD COLUMN forked_from_agent_id INTEGER REFERENCES agents(id);
+ALTER TABLE agents ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT '';
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

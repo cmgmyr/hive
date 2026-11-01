@@ -375,6 +375,7 @@ describe("the queen's cross-project scope", { skip: hasTmux ? false : "tmux is n
     kv_delete: () => ({ key: "k" }),
     lease_acquire: () => ({ key: "file:x", ttl_seconds: 60 }),
     lease_release: () => ({ key: "file:x" }),
+    agent_fork: () => ({ agent_id: alphaWorker.id, name: "forked" }),
     agent_spawn: () => ({ name: "intruder" }),
     agent_resume: () => ({ name: "impl" }),
     agent_park: () => ({ name: "impl" }),

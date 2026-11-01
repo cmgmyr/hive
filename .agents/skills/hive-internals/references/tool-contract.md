@@ -41,7 +41,7 @@ would have held the missing tool; see the file named in each case.
 | todos | `todo_create` | `todo_get` | `todo_list` | `todo_update` | `todo_archive` | none, accepted (`src/tools/todos.ts`) |
 | kv | `kv_set` | `kv_get` | `kv_list` | `kv_set` | TTL | `kv_delete` |
 | leases | `lease_acquire` | none, accepted (`src/tools/leases.ts`) | none, accepted (`src/tools/leases.ts`) | `lease_acquire` (re-acquiring extends) | TTL | `lease_release` |
-| agents | `agent_spawn` | `agent_status` | `agent_list` | `agent_rename` | `agent_park` | `agent_close` |
+| agents | `agent_spawn`, `agent_fork` | `agent_status` | `agent_list` | `agent_rename` | `agent_park` | `agent_close` |
 | wakes | `wake_set`, `wake_when_idle` | `wake_get` | `wake_list` | `wake_update` | n/a | `wake_cancel` |
 | projects | `project_add` | none, accepted (`src/tools/meta.ts`) | `project_list` | none, accepted (`src/tools/meta.ts`) | none, accepted (`src/tools/meta.ts`) | `project_prune` (empty projects; with `confirm_name`, one non-empty project and everything it owns, via `src/projectRemove.ts`) |
 | actors | implicit (`src/context.ts`) | none, accepted (`src/context.ts`) | none, accepted (`src/context.ts`) | n/a | none, accepted (`src/context.ts`) | `actor_prune` |
@@ -54,11 +54,12 @@ landed: #97 as `project_prune` and `actor_prune`, #96 as `wake_get` and
 new gap got filed should update that cell, not distrust the rest of the
 table.
 
-Two more tools landed since #82 that the table doesn't fully account for.
-`agent_park` filled the agents row's Retire cell, above (issue #156, the
-worked example in the naming section below). `agent_resume` did not get a
-cell: it reverses a park rather than performing one of the six lifecycle
-verbs, so it sits outside this table on the same grounds as
+Three more tools landed since #82. `agent_park` filled the agents row's
+Retire cell, above (issue #156, the worked example in the naming section
+below). `agent_fork` fills its Create cell because it starts a new worker
+from an existing session. `agent_resume` did not get a cell: it reverses a
+park rather than performing one of the six lifecycle verbs, so it sits
+outside this table on the same grounds as
 `todo_complete`/`todo_block`/`todo_unblock` do further down - a domain
 operation on state the table has no column for, not a gap to fill in.
 

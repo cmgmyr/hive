@@ -11,6 +11,7 @@ const EXPECTED_OUTPUT_SCHEMA_TOOLS = [
   "agent_park",
   "agent_rename",
   "agent_resume",
+  "agent_fork",
   "agent_spawn",
   "kv_delete",
   "kv_set",

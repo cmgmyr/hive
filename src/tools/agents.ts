@@ -16,7 +16,7 @@ import {
   workerCommandString,
   writeAgentBrief,
 } from "../brief.js";
-import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile, refreshCodexMcpEnv } from "../codexHome.js";
+import { codexHomeDir, codexInstructionsPhrase, codexLaunchArgs, ensureCodexHome, ensureCodexHooksFile, findCodexFork, readCodexForkSeed, refreshCodexMcpEnv, seedCodexFork } from "../codexHome.js";
 import { currentActor, findProjectForDir, getProject, linkedWorktreePrimaryRoot, resolveProject } from "../context.js";
 import {
   commandHead,
@@ -119,7 +119,7 @@ function refuseLimitedHarness(projectId: number, harness: string, action = "agen
   if (held) {
     throw new Error(
       `[${action}:usage-limit] ${harness} is stopped by a usage limit until ${held.until}. ` +
-        `This ${action === "agent_resume" ? "resume" : "spawn"} was not queued; retry it after that time.`,
+        `This ${action === "agent_resume" ? "resume" : action === "agent_fork" ? "fork" : "spawn"} was not queued; retry it after that time.`,
     );
   }
 }
@@ -400,6 +400,64 @@ function stripSessionArgs(args: string[]): string[] {
   return stripped;
 }
 
+function effortForAgent(agent: AgentRow, harness: string): string | undefined {
+  const args = storedLaunchOptions(agent.extra_args).args;
+  if (harness === "claude") {
+    for (let i = args.length - 1; i >= 0; i--) {
+      if (args[i].startsWith("--effort=")) return args[i].slice("--effort=".length);
+      if (args[i] === "--effort" && i + 1 < args.length) return args[i + 1];
+    }
+    return undefined;
+  }
+  for (let i = args.length - 1; i >= 0; i--) {
+    const value = args[i] === "-c" ? args[i + 1] : args[i].startsWith("-c") ? args[i].slice(2) : args[i];
+    const match = /^model_reasoning_effort=(low|medium|high|xhigh)$/.exec(value ?? "");
+    if (match) return match[1];
+  }
+  return undefined;
+}
+
+function effortArgs(harness: string, effort: string | undefined): string[] {
+  if (!effort) return [];
+  const allowed = harness === "claude" ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "xhigh"];
+  if (!allowed.includes(effort)) throw new Error(`effort "${effort}" is not supported by ${harness}.`);
+  return harness === "claude" ? ["--effort", effort] : ["-c", `model_reasoning_effort=${effort}`];
+}
+
+async function waitForCodexFork(
+  childKey: string,
+  sourceSessionId: string,
+  deadline: number,
+): Promise<{ sessionId: string; transcriptPath: string } | null> {
+  while (Date.now() < deadline) {
+    const found = findCodexFork(childKey, sourceSessionId);
+    if (found) return found;
+    await sleep(Math.min(250, Math.max(1, deadline - Date.now())));
+  }
+  return findCodexFork(childKey, sourceSessionId);
+}
+
+function retireForkChild(projectId: number, childId: number): void {
+  const child = getAgentRow(projectId, childId, "Check agent_list(include_closed: true).");
+  if (child.status !== "running") return;
+  const ownership = observeOwnership(child);
+  if (ownership === "unknown") {
+    throw new Error(`Fork child agent_id ${child.id} is retained because its pane ownership is unknown.`);
+  }
+  const live = ownership === "live" && stillOwnsPane(child, "agent_fork cleanup");
+  if (live) killAgentPane(child.tmux_target);
+  if (!closeAgentRow(child.id, paneIdentity(child))) {
+    const after = getAgentRow(projectId, child.id, "Check agent_list(include_closed: true).");
+    if (after.status !== "closed") {
+      throw new Error(`Fork child agent_id ${child.id} changed during cleanup and is retained for recovery.`);
+    }
+  }
+  if (child.codex_home) {
+    const closed = getAgentRow(projectId, child.id, "Check agent_list(include_closed: true).");
+    if (closed.codex_home) reapCodexHomeForClosedAgent(child.id, closed.codex_home);
+  }
+}
+
 function requestsExistingSession(extraArgs: string[] | undefined): boolean {
   return (extraArgs ?? []).some(
     (arg) =>
@@ -511,6 +569,9 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     cwd: row.cwd,
     parent_actor_id: row.parent_actor_id,
     todo_id: row.todo_id,
+    ...(row.forked_from_agent_id != null
+      ? { forked_from_agent_id: row.forked_from_agent_id, forked_from_session_id: row.forked_from_session_id }
+      : {}),
     created_at: row.created_at,
     ...(dormant ? { dormant_since: dormant.ended_at } : {}),
   };
@@ -860,6 +921,263 @@ export function registerAgents(server: McpServer): void {
           receipt.note = existingNote ? `${existingNote} ${placementNote}` : placementNote;
         }
         return receipt;
+      }),
+  );
+
+  server.registerTool(
+    "agent_fork",
+    {
+      description:
+        "Fork a same-project Claude Code or Codex worker into a new worker with a new identity and pane. The child starts from a copy of the source conversation, gets a fresh brief, and does not inherit the source todo. Claude Code process-scoped permission grants are not copied and may need approval again.",
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      inputSchema: {
+        agent_id: idParam.describe("Numeric id of the same-project worker to fork."),
+        name: z.string().describe("Required name for the new child worker."),
+        cwd: z.string().optional().describe("Child working directory; defaults to the source worker's directory."),
+        model: z.string().min(1).optional().describe("Model override; defaults to the source worker's model."),
+        effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Reasoning effort override; defaults to the source worker's effort."),
+        read_only: z.boolean().optional().describe("Read-only mode override; defaults to the source worker's mode."),
+        todo_id: idParam.optional().describe("Explicit todo for this new child; absent means no todo link."),
+        placement: z.enum(["split", "window"]).optional(),
+        layout: z.enum(WINDOW_LAYOUTS).optional(),
+        project_id: projectIdParam,
+      },
+      outputSchema: {
+        agent_id: idParam,
+        actor_id: z.string(),
+        name: z.string(),
+        tmux_target: z.string(),
+        forked_from_agent_id: idParam,
+        forked_from_session_id: z.string(),
+        session_id: z.string(),
+        ready: z.boolean(),
+        permission_note: z.string(),
+        note: z.string().optional(),
+        tail: z.string().optional(),
+      },
+    },
+    (args) =>
+      run(async () => {
+        const callerProject = resolveProject();
+        const project = args.project_id === undefined ? callerProject : resolveProject(args.project_id);
+        if (project.id !== callerProject.id) throw new Error("agent_fork is same-project only; source and child must belong to this session's project.");
+        const source = getAgentRow(project.id, args.agent_id, "Call agent_list(include_closed: true). agent_fork is same-project only.");
+        if (source.kind !== "agent") throw new Error("agent_fork only accepts a worker, not a lead or command row.");
+        if (source.status !== "running" && source.status !== "closed") {
+          throw new Error(`Agent ${source.id} cannot be forked from status ${source.status}.`);
+        }
+        const harness = harnessFor(source.command);
+        refuseLimitedHarness(project.id, harness.name, "agent_fork");
+        if (!["claude", "codex"].includes(harness.name)) {
+          throw new Error(`Agent ${source.id} uses unsupported fork harness "${harness.name}".`);
+        }
+        if (harness.name === "codex" && source.status === "closed" && !source.parked_at) {
+          throw new Error(`Closed Codex agent ${source.id} is not parked; its fork home may have been reaped.`);
+        }
+        if (harness.name === "codex" && !source.codex_home) {
+          throw new Error(`Codex agent ${source.id} has no recorded CODEX_HOME; it cannot be forked.`);
+        }
+        if (!source.session_id) throw new Error(`Agent ${source.id} has no recorded session id and cannot be forked.`);
+        if (!source.cwd || !existsSync(source.cwd) || !statSync(source.cwd).isDirectory()) {
+          throw new Error(`Agent ${source.id} has no readable working directory and cannot be forked.`);
+        }
+        if (!source.transcript_path || !existsSync(source.transcript_path) || !statSync(source.transcript_path).isFile()) {
+          throw new Error(`Agent ${source.id} has no readable transcript and cannot be forked.`);
+        }
+        const codexSeed = harness.name === "codex" ? readCodexForkSeed(source) : undefined;
+
+        const name = normalizeAgentName(args.name, "name");
+        requireNameFree(project.id, name);
+        let cwd = source.cwd;
+        if (args.cwd !== undefined) {
+          cwd = realpathSync(args.cwd);
+          if (!statSync(cwd).isDirectory()) throw new Error(`cwd is not a directory: ${args.cwd}`);
+          const cwdProject = findProjectForDir(cwd);
+          if (cwdProject && cwdProject.id !== project.id) {
+            throw new Error(`cwd ${cwd} belongs to project "${cwdProject.name}" (id ${cwdProject.id}), not source project "${project.name}" (id ${project.id}).`);
+          }
+        }
+        if (args.todo_id !== undefined) {
+          const linked = db.prepare("SELECT archived_at FROM todos WHERE id = ? AND project_id = ?").get(args.todo_id, project.id) as { archived_at: string | null } | undefined;
+          if (!linked) throw new Error(`todo_id ${args.todo_id} is not a todo in project "${project.name}" (id ${project.id}).`);
+          if (linked.archived_at != null) throw new Error(`todo_id ${args.todo_id} is archived; unarchive it or link another todo.`);
+        }
+
+        const model = args.model ?? source.model ?? extractCommandFlag(source.command, "--model");
+        const launchOptions = storedLaunchOptions(source.extra_args);
+        const readOnly = args.read_only ?? launchOptions.readOnly;
+        const effort = args.effort ?? effortForAgent(source, harness.name);
+        const forkEffort = effortArgs(harness.name, effort);
+        const projectConfig = loadProjectYml(project.path).config;
+        const placement = args.placement ?? projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
+        const childSessionId = harness.name === "claude" ? randomUUID() : "";
+        const codexHomeKey = harness.name === "codex" ? randomUUID() : undefined;
+        const deadline = Date.now() + PANE_READY_MS;
+        let instructionLayers: string[] = [];
+        const buildCommand = ({ agentId, actorId }: { agentId: number; actorId: string }) => {
+          const brief = workerBrief({
+            name,
+            actorId,
+            projectName: project.name,
+            projectPath: project.path,
+            cwd,
+            profile: activeProfile(projectConfig),
+            vars: mergedBriefVars(projectConfig?.vars, harness.name),
+          });
+          if (harness.name === "codex" && codexHomeKey) {
+            const home = ensureCodexHome({
+              key: codexHomeKey,
+              actorId,
+              serverEnv: agentIdentityEnv(actorId, name, project.path),
+              cwd,
+              brief,
+              readOnly,
+              includePostToolUse: projectConfig?.context_checkpoint_percent != null,
+            });
+            instructionLayers = home.instructionLayers;
+            ensureCodexHooksFile(codexHomeKey, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+            seedCodexFork(source, codexHomeKey, codexSeed!);
+            if (findCodexFork(codexHomeKey, source.session_id)) {
+              throw new Error("Fresh Codex fork home already contains a child rollout before launch.");
+            }
+            return workerCommandString({
+              command: resolvedCommandPrefix(source.command) || "codex",
+              model,
+              displayName: name,
+              extraArgs: [...home.extraArgs, "-C", cwd, ...forkEffort, "fork", source.session_id],
+            });
+          }
+
+          const briefPath = writeAgentBrief(agentId, brief);
+          const settingsPath = ensureWorkerHooksFile(agentId, { readOnly, includePostToolUse: projectConfig?.context_checkpoint_percent != null });
+          return workerCommandString({
+            command: resolvedCommandPrefix(source.command) || "claude",
+            model,
+            displayName: name,
+            settingsPath,
+            briefPath,
+            extraArgs: [...forkEffort, "--session-id", childSessionId, "--resume", source.session_id, "--fork-session"],
+          });
+        };
+
+        let spawned;
+        try {
+          spawned = launchAgent({
+            projectId: project.id,
+            projectName: project.name,
+            projectPath: project.path,
+            name,
+            kind: "agent",
+            commandString: buildCommand,
+            cwd,
+            env: { ...contextCheckpointEnv(projectConfig), ...(codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {}) },
+            placement,
+            layout,
+            parentActor: currentActor(),
+            sessionId: childSessionId,
+            codexHome: codexHomeKey,
+            model,
+            extraArgs: forkEffort,
+            readOnly,
+            todoId: args.todo_id,
+            forkedFromAgentId: source.id,
+            forkedFromSessionId: source.session_id,
+            retainOnExit: true,
+          });
+        } catch (error) {
+          if (codexHomeKey) rmSync(codexHomeDir(codexHomeKey), { recursive: true, force: true });
+          throw error;
+        }
+
+        const classifier = paneClassifierFor(source.command)!;
+        const readiness = await pollPaneReadiness(spawned.target, Math.max(0, deadline - Date.now()), classifier.hasInputBox);
+        if (harness.name === "codex") {
+          let found: { sessionId: string; transcriptPath: string } | null;
+          try {
+            found = await waitForCodexFork(codexHomeKey!, source.session_id, deadline);
+          } catch (error) {
+            try {
+              retireForkChild(project.id, spawned.agentId);
+            } catch (cleanupError) {
+              throw new Error(`Codex fork discovery failed (${String(error)}); child agent_id ${spawned.agentId} needs recovery (${String(cleanupError)}).`);
+            }
+            throw error;
+          }
+          if (!found) {
+            try {
+              retireForkChild(project.id, spawned.agentId);
+            } catch (cleanupError) {
+              throw new Error(`Codex fork session was not identified within ${PANE_READY_MS}ms; child agent_id ${spawned.agentId} needs recovery (${String(cleanupError)}).`);
+            }
+            throw new Error(`Codex fork session was not identified within ${PANE_READY_MS}ms; child agent_id ${spawned.agentId} was retired.`);
+          }
+          if (readiness === "gone") {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork child agent_id ${spawned.agentId} exited before it became ready.`);
+          }
+          const child = getAgentRow(project.id, spawned.agentId, "Call agent_list(include_closed: true).");
+          if (!stillOwnsPane(child, "agent_fork session discovery")) {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork child agent_id ${spawned.agentId} no longer owns its pane.`);
+          }
+          const bound = db.prepare(
+            "UPDATE agents SET session_id = ?, transcript_path = ? WHERE id = ? AND status = 'running' AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ? AND session_id = '' AND forked_from_session_id = ?",
+          ).run(found.sessionId, found.transcriptPath, child.id, child.tmux_target, child.tmux_socket, child.pane_pid, source.session_id);
+          if (bound.changes !== 1) {
+            retireForkChild(project.id, spawned.agentId);
+            throw new Error(`Codex fork identity could not be bound to child agent_id ${spawned.agentId}; the child was retired.`);
+          }
+          const choice = readiness === "ready" ? classifier.choiceCheck(spawned.target) : { awaitingChoice: null, tail: "" };
+          return {
+            agent_id: spawned.agentId,
+            actor_id: spawned.actorId,
+            name,
+            tmux_target: spawned.target,
+            forked_from_agent_id: source.id,
+            forked_from_session_id: source.session_id,
+            session_id: found.sessionId,
+            ready: readiness === "ready" && choice.awaitingChoice !== true,
+            permission_note: "Claude Code process-scoped permission grants are not copied to a fork; approve them again in the child if prompted.",
+            ...(readiness !== "ready" || choice.awaitingChoice === true ? {
+              note: readiness === "timeout" ? "The child session was found, but its pane did not reach a classifiable input box before the readiness deadline." : "The child session was found, but the pane is waiting on a choice. Clear it before sending an assignment.",
+              tail: choice.tail || capturePaneQuietly(spawned.target),
+            } : {}),
+          };
+        }
+
+        let tail: string | undefined;
+        let exited = false;
+        let dialog = false;
+        if (readiness === "gone") {
+          exited = true;
+          tail = captureFinalScreen(spawned.target, 30);
+          db.prepare("UPDATE agents SET exit_tail = ? WHERE id = ?").run(tail, spawned.agentId);
+          discardOrphanedPane(spawned.target);
+        } else if (readiness === "ready") {
+          const choice = classifier.choiceCheck(spawned.target);
+          dialog = choice.awaitingChoice === true;
+          if (dialog) tail = choice.tail;
+        } else {
+          tail = capturePaneQuietly(spawned.target);
+        }
+        return {
+          agent_id: spawned.agentId,
+          actor_id: spawned.actorId,
+          name,
+          tmux_target: spawned.target,
+          forked_from_agent_id: source.id,
+          forked_from_session_id: source.session_id,
+          session_id: childSessionId,
+          ready: readiness === "ready" && !dialog,
+          permission_note: "Claude Code process-scoped permission grants are not copied to a fork; approve them again in the child if prompted.",
+          ...(exited ? { note: "The forked session was created, but its pane exited before becoming ready.", tail } : dialog ? { note: "The forked session is waiting on a choice. Clear it before sending an assignment.", tail } : readiness === "timeout" ? { note: "The forked session was created, but its pane did not reach a classifiable input box before the readiness deadline.", tail } : {}),
+        };
       }),
   );
 

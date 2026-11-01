@@ -32,6 +32,8 @@ export interface AgentRow {
   claude_messaging_socket: string;
   claude_messaging_pane_pid: string;
   todo_id: number | null;
+  forked_from_agent_id: number | null;
+  forked_from_session_id: string;
 }
 
 export const CLOSED_ROW_ORDER = "(parked_at != '') DESC, closed_at DESC, id DESC";

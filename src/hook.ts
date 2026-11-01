@@ -22,6 +22,7 @@ interface HookOwnerRow {
   status: string;
   codex_home: string;
   session_id: string;
+  forked_from_session_id: string;
 }
 
 function canonicalPathWithMissingSuffix(input: string): string | null {
@@ -77,6 +78,26 @@ function acceptsWorkerHook(
     typeof payload.session_id === "string" && payload.session_id !== "" &&
     row.session_id === payload.session_id
   );
+}
+
+async function acceptsForkHook(
+  row: HookOwnerRow,
+  payload: HookPayload,
+  sessionsRoot: string,
+): Promise<boolean> {
+  if (!row.forked_from_session_id) return acceptsWorkerHook(row, payload, sessionsRoot);
+  if (payload.session_id === row.forked_from_session_id) return false;
+  if (typeof payload.session_id !== "string" || typeof payload.transcript_path !== "string") return false;
+  try {
+    const { findCodexFork } = await import("./codexHome.js");
+    const child = findCodexFork(row.codex_home, row.forked_from_session_id);
+    if (!child || child.sessionId !== payload.session_id) return false;
+    const reported = canonicalPathWithMissingSuffix(payload.transcript_path);
+    const discovered = canonicalPathWithMissingSuffix(child.transcriptPath);
+    return reported !== null && reported === discovered && acceptsWorkerHook(row, payload, sessionsRoot);
+  } catch {
+    return false;
+  }
 }
 
 function validCheckpointThreshold(): boolean {
@@ -295,13 +316,17 @@ if (process.argv[2] === "post_tool_use") {
     if (kind === "codex" && validCheckpointThreshold() && actorId.startsWith("agent:")) {
       suppliedPayload = readPayload();
       const { db } = await import("./db.js");
-      const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+      const row = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
         .get(actorId) as HookOwnerRow | undefined;
       if (row?.kind === "agent") {
         const { harnessFor } = await import("./harnesses.js");
         if (harnessFor(row.command).name === "codex") {
           if (row.status !== "running") process.exit(0);
-          if (typeof row.codex_home === "string" && row.codex_home !== "") {
+          if (row.forked_from_session_id) {
+            if (!row.codex_home) process.exit(0);
+            const { codexHomeDir } = await import("./codexHome.js");
+            if (!await acceptsForkHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) process.exit(0);
+          } else if (typeof row.codex_home === "string" && row.codex_home !== "") {
             const { codexHomeDir } = await import("./codexHome.js");
             if (!acceptsWorkerHook(row, suppliedPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
               process.exit(0);
@@ -339,8 +364,13 @@ try {
       record(actorId, event, UNCHANGED);
       process.exit(0);
     }
-    const row = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+    const row = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
       .get(actorId) as HookOwnerRow | undefined;
+    if (row?.kind === "agent" && row.forked_from_session_id) {
+      if (hookPayload.session_id === row.forked_from_session_id) process.exit(0);
+      const { harnessFor } = await import("./harnesses.js");
+      if (harnessFor(row.command).name === "claude" && hookPayload.session_id !== row.session_id) process.exit(0);
+    }
     let guarded = false;
     let state: string | null = null;
     if (row?.kind === "agent") {
@@ -348,8 +378,13 @@ try {
       if (harnessFor(row.command).name === "codex") {
         if (row.status !== "running") process.exit(0);
         const { codexHomeDir } = await import("./codexHome.js");
+        if (row.forked_from_session_id) {
+          if (!row.codex_home || !await acceptsForkHook(row, hookPayload, join(codexHomeDir(row.codex_home), "sessions"))) {
+            process.exit(0);
+          }
+        }
         const result = db.transaction(() => {
-          const current = db.prepare("SELECT kind, command, status, codex_home, session_id FROM agents WHERE actor_id = ?")
+          const current = db.prepare("SELECT kind, command, status, codex_home, session_id, forked_from_session_id FROM agents WHERE actor_id = ?")
             .get(actorId) as HookOwnerRow | undefined;
           if (current?.kind === "agent" && harnessFor(current.command).name === "codex" && current.status !== "running") {
             return { status: "inactive" as const, state: null };
@@ -358,7 +393,9 @@ try {
             return { status: "changed" as const, state: null };
           }
           const sessionsRoot = join(codexHomeDir(current.codex_home), "sessions");
-          if (!acceptsWorkerHook(current, hookPayload, sessionsRoot)) return { status: "rejected" as const, state: null };
+          if (current.forked_from_session_id !== row.forked_from_session_id || !acceptsWorkerHook(current, hookPayload, sessionsRoot)) {
+            return { status: "rejected" as const, state: null };
+          }
           const state = applyWorkerTransition(actorId, event);
           reconcileSessionId(actorId, hookPayload);
           reconcileTranscriptPath(actorId, hookPayload);

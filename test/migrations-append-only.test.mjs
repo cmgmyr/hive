@@ -58,6 +58,7 @@ const SHIPPED = [
   "fd2b3b6dc1ca73d8",
   "e3fb399f68b0b787",
   "48f7023ba8512413",
+  "f1b1eb472f87051c"
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -106,5 +107,12 @@ describe("MIGRATIONS is append-only", () => {
   it("migration 47 adds the per-agent usage-limit table", () => {
     assert.match(MIGRATIONS[46], /CREATE TABLE agent_usage_limits/);
     assert.match(MIGRATIONS[46], /continue_claimed_at TEXT/);
+  });
+
+  it("migration 48 appends only fork lineage columns", () => {
+    const migration = MIGRATIONS[47];
+    assert.match(migration, /ALTER TABLE agents ADD COLUMN forked_from_agent_id INTEGER REFERENCES agents\(id\);/);
+    assert.match(migration, /ALTER TABLE agents ADD COLUMN forked_from_session_id TEXT NOT NULL DEFAULT '';/);
+    assert.equal((migration.match(/ALTER TABLE/g) ?? []).length, 2);
   });
 });

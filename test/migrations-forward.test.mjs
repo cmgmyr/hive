@@ -110,6 +110,8 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
       todo_id: todoId,
       pane_started_at: paneStartedAt,
       recovery_state: recoveryState,
+      forked_from_agent_id: forkedFromAgentId,
+      forked_from_session_id: forkedFromSessionId,
       ...rest
     } = after;
     assert.deepEqual(rest, before.agent);
@@ -120,6 +122,8 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     assert.equal(todoId, null);
     assert.equal(paneStartedAt, null);
     assert.equal(recoveryState, "");
+    assert.equal(forkedFromAgentId, null);
+    assert.equal(forkedFromSessionId, "");
   });
 
   it("adds the socket delivery columns to wakes, null on rows written before them", () => {
@@ -127,8 +131,8 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note", "delivered_by"]) assert.ok(columns.includes(name), name);
   });
 
-  it("appending the recovery marker leaves a pre-existing wake unchanged", () => {
-    const prior = new Database(join(dirs.dataDir, "pre-delivered-by.db"));
+  it("appending the final migration preserves pre-existing agent data", () => {
+    const prior = new Database(join(dirs.dataDir, "pre-fork-lineage.db"));
     try {
       prior.pragma("foreign_keys = ON");
       prior.exec("CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
@@ -136,21 +140,22 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
         prior.exec(migration);
         prior.prepare("INSERT INTO migrations (version) VALUES (?)").run(index + 1);
       }
-      const legacyProject = prior.prepare("INSERT INTO projects (name, path) VALUES ('legacy-wake', '/tmp/legacy-wake') RETURNING id").get().id;
-      const legacyWake = prior.prepare(
-        `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, fired_at, fire_count)
-         VALUES (?, 'user:legacy', 'old wake body', 'delay', '[]', 'user:legacy', '%1', datetime('now'), datetime('now'), 1)
-         RETURNING id`,
+      const legacyProject = prior.prepare("INSERT INTO projects (name, path) VALUES ('legacy-fork', '/tmp/legacy-fork') RETURNING id").get().id;
+      const legacyAgent = prior.prepare(
+        `INSERT INTO agents (project_id, actor_id, name, command, cwd, kind, session_id)
+         VALUES (?, 'agent:legacy', 'legacy', 'claude', '/tmp/legacy-fork', 'agent', 'legacy-session') RETURNING id`,
       ).get(legacyProject).id;
-      const beforeWake = prior.prepare("SELECT * FROM wakes WHERE id = ?").get(legacyWake);
+      const beforeAgent = prior.prepare("SELECT * FROM agents WHERE id = ?").get(legacyAgent);
       prior.exec(MIGRATIONS.at(-1));
-      const afterWake = prior.prepare("SELECT * FROM wakes WHERE id = ?").get(legacyWake);
+      const afterAgent = prior.prepare("SELECT * FROM agents WHERE id = ?").get(legacyAgent);
+      const { forked_from_agent_id: forkedFromAgentId, forked_from_session_id: forkedFromSessionId, ...rest } = afterAgent;
       assert.deepEqual(
-        Object.fromEntries(Object.keys(beforeWake).map((key) => [key, afterWake[key]])),
-        beforeWake,
-        "the appended column leaves existing wake fields unchanged",
+        rest,
+        beforeAgent,
+        "the appended lineage columns leave every existing agent field unchanged",
       );
-      assert.equal(afterWake.delivered_by, null, "pre-existing wakes have no server identity");
+      assert.equal(forkedFromAgentId, null);
+      assert.equal(forkedFromSessionId, "");
     } finally {
       prior.close();
     }

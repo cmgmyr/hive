@@ -422,6 +422,7 @@ export const QUEEN_REACH: Readonly<Record<string, QueenReach>> = {
   lease_release: "home",
   agent_spawn: "home",
   agent_resume: "home",
+  agent_fork: "home",
   agent_park: "home",
   agent_rename: "home",
   agent_close: "home",

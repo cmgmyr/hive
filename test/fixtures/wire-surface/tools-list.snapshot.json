@@ -189,6 +189,150 @@
       "type": "object"
     }
   },
+  "agent_fork": {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Fork a same-project Claude Code or Codex worker into a new worker with a new identity and pane. The child starts from a copy of the source conversation, gets a fresh brief, and does not inherit the source todo. Claude Code process-scoped permission grants are not copied and may need approval again.",
+    "execution": {
+      "taskSupport": "forbidden"
+    },
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "agent_id": {
+          "description": "Numeric id of the same-project worker to fork.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "cwd": {
+          "description": "Child working directory; defaults to the source worker's directory.",
+          "type": "string"
+        },
+        "effort": {
+          "description": "Reasoning effort override; defaults to the source worker's effort.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        "layout": {
+          "enum": [
+            "tiled",
+            "main-vertical",
+            "main-horizontal",
+            "even-horizontal",
+            "even-vertical"
+          ],
+          "type": "string"
+        },
+        "model": {
+          "description": "Model override; defaults to the source worker's model.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "description": "Required name for the new child worker.",
+          "type": "string"
+        },
+        "placement": {
+          "enum": [
+            "split",
+            "window"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "read_only": {
+          "description": "Read-only mode override; defaults to the source worker's mode.",
+          "type": "boolean"
+        },
+        "todo_id": {
+          "description": "Explicit todo for this new child; absent means no todo link.",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agent_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "type": "string"
+        },
+        "agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "forked_from_agent_id": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "forked_from_session_id": {
+          "type": "string"
+        },
+        "hive_notice": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "permission_note": {
+          "type": "string"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "tail": {
+          "type": "string"
+        },
+        "tmux_target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent_id",
+        "actor_id",
+        "name",
+        "tmux_target",
+        "forked_from_agent_id",
+        "forked_from_session_id",
+        "session_id",
+        "ready",
+        "permission_note"
+      ],
+      "type": "object"
+    }
+  },
   "agent_list": {
     "annotations": {
       "destructiveHint": false,

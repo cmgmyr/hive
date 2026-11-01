@@ -21,7 +21,7 @@ PROMPTS — invokable prompts (slash commands in MCP clients)
   runbook — load this project's own standing process
 
 AGENTS — spawn and drive worker sessions in tmux
-  agent_spawn, agent_list, agent_status, agent_send, agent_output,
+  agent_spawn, agent_fork, agent_list, agent_status, agent_send, agent_output,
   agent_message_get, agent_rename, agent_park, agent_resume, agent_close
 
 WAKE-UPS — scheduled nudges instead of polling
@@ -161,6 +161,14 @@ runbook (fork it first), not a pad write.`,
     stopped by that harness's usage limit makes spawn retryable until its
     reset or bounded deadline; hive does not queue spawns.
     Workers run with HIVE_PROJECT_LOCK=1.
+  agent_fork(agent_id, name, cwd?, model?, effort?, read_only?, todo_id?,
+    placement?, layout?):
+    make a new worker from a same-project Claude or Codex session. The child
+    gets a new identity, pane, session and brief, and receives no assignment
+    until you send one. It does not copy the source worktree, Hive todo link,
+    or promise that harness todos or tasks copy. Claude process-scoped grants
+    need approval again. A Codex child gets a fresh home seeded with the
+    source rollout; a closed Codex worker whose home was reaped cannot fork.
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
     names like Escape or C-c. wait_ms returns the terminal tail after.
@@ -179,7 +187,8 @@ runbook (fork it first), not a pad write.`,
   agent_output(name|agent_id, lines?) — read the rendered terminal.
   agent_status(name|agent_id, include_brief?) — liveness, current command,
     short tail, and the path to the brief this worker was given
-    (include_brief=true returns its text; no transcript records it).
+    (include_brief=true returns its text; no transcript records it). Forked
+    workers show forked_from_agent_id and forked_from_session_id.
   agent_list(include_closed?, limit?, before_id?) — agents with live status.
     include_closed adds closed/parked rows, newest first, limit 20/max 100;
     page with before_id set to the receipt's next_before_id.
