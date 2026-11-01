@@ -1,0 +1,1 @@
+{"type":"assistant","sessionId":"synthetic-claude-session","isApiErrorMessage":true,"error":"rate_limit","apiError":"usage_limit_reached","quotaLimits":{"status":"rejected","resetsAt":1793555100,"rateLimitType":"five_hour"}}

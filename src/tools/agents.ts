@@ -40,7 +40,8 @@ import {
   shortenedSendNote,
   storeLeadMessage,
 } from "../leadMessage.js";
-import { sendQuietLeadMessage } from "../leadMessageDelivery.js";
+import { sendQuietLeadMessage, sendUsageHeldMessage } from "../leadMessageDelivery.js";
+import { limitedHarness, observeProjectUsageLimits, observeUsageLimit, usageLimitGate } from "../usageLimit.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
@@ -110,6 +111,20 @@ import {
 
 const unknownOwnershipNote = (snapshot: AliveSnapshot | null): string =>
   observationFailed(snapshot) ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE;
+
+function refuseLimitedHarness(projectId: number, harness: string, action = "agent_spawn"): void {
+  const now = Date.now();
+  observeProjectUsageLimits(projectId, harness, now);
+  const held = limitedHarness(projectId, harness, now);
+  if (held) {
+    throw new Error(
+      `[${action}:usage-limit] ${harness} is stopped by a usage limit until ${held.until}. ` +
+        `This ${action === "agent_resume" ? "resume" : "spawn"} was not queued; retry it after that time.`,
+    );
+  }
+}
+
+class UsageLimitActive extends Error {}
 
 export type LostCasReport = { outcome: "retired"; parked: boolean } | { outcome: "revived" };
 
@@ -518,7 +533,7 @@ export function registerAgents(server: McpServer): void {
     "agent_spawn",
     {
       description:
-        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
+        "Spawn a worker agent (default: claude, or the project's hive.yml agents: default). A claude worker is briefed automatically: the full brief is appended to its system prompt, so send it its assignment directly. A command or harness that resolves to a known harness (claude, codex) not listed in the project's hive.yml agents: is refused; absent agents: means claude only. A command hive cannot classify the screen of (claude and codex both do; a harness with no entry does not) can be spawned but NOT typed into: the receipt carries brief_path and says so, and agent_send's text path and wakes both refuse that pane. A same-project worker or lead on that harness's active usage limit makes this spawn retryable until its reset or bounded deadline; hive does not queue spawns. Set read_only: true to block local file writes and mutating shell while keeping Hive MCP available; agent_resume preserves this mode and agent_status reports it. Only bare claude/codex executables are supported in this mode, with only effort-setting extra_args. The worker is locked to this project. Humans can watch with: tmux attach -t hive-main.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -653,6 +668,7 @@ export function registerAgents(server: McpServer): void {
               `agents: list (${allowed.join(", ")}). Add it to agents: to allow spawning it.`,
           );
         }
+        if (harnessNames().includes(harness.name)) refuseLimitedHarness(project.id, harness.name);
         if (args.read_only && (
           !["claude", "codex"].includes(harness.name) ||
           !/^[A-Za-z0-9_./-]+$/.test(baseCommand) ||
@@ -851,7 +867,7 @@ export function registerAgents(server: McpServer): void {
     "agent_resume",
     {
       description:
-        "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
+        "Resume a CLOSED claude or codex worker from its recorded session id (claude --resume / codex resume): a fresh pane, the same actor_id, and the worker's full prior context. A same-project worker or lead on that harness's active usage limit makes this resume retryable until its reset or bounded deadline; hive does not queue resumes. Addressed by name or agent_id among closed agents (agent_list(include_closed: true)). Send it its next instruction with agent_send once resumed - this tool does not.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -888,6 +904,7 @@ export function registerAgents(server: McpServer): void {
           );
         }
         const resumeHarness = harnessFor(agent.command);
+        refuseLimitedHarness(project.id, resumeHarness.name, "agent_resume");
         if (!resumeHarness.supportsResume) {
           throw new Error(
             `Agent ${agent.id} ("${agent.name}")'s harness ("${resumeHarness.name}", command: "${agent.command}") ` +
@@ -1205,13 +1222,20 @@ export function registerAgents(server: McpServer): void {
         if (ownership === "unknown") throw notOwnedError(agent, ownership);
         const live = ownership === "live";
         const identity = paneIdentity(agent);
+        const renameHarness = harnessFor(agent.command);
+        if (live && renameHarness.supportsRename) {
+          observeUsageLimit(agent.id, Date.now());
+          const limit = usageLimitGate(agent.id, Date.now());
+          if (limit.held) {
+            throw new Error(`agent_rename is retryable after the target usage limit at ${limit.until}; the row and pane were not renamed.`);
+          }
+        }
 
         renameAgent(agent, newName, live ? project.name : null);
 
         let retitled = false;
         let heldNote: string | undefined;
         let heldTail: string | undefined;
-        const renameHarness = harnessFor(agent.command);
         if (live && renameHarness.supportsRename) {
           const classifier = renameHarness.paneClassifier!;
           const { awaitingChoice, tail } = classifier.choiceCheck(agent.tmux_target);
@@ -1436,7 +1460,7 @@ export function registerAgents(server: McpServer): void {
     "agent_send",
     {
       description:
-        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. With quiet_messaging on, a worker's submitted text to a Claude lead is stored with a message id and posted over the lead's messaging socket instead of typed (the same pointer when over 300 characters): the receipt says pending until the lead's prompt confirms it, hive types it into the pane once if no confirmation comes, and the socket post skips the pane checks below; do not resend a pending send. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
+        "Type into an agent's terminal, addressed by name (or agent_id). text of any shape is prefixed with the sender tag, delivered as one bracketed paste and submitted with Enter unless submit=false. A submitted text send to a target on its current usage limit is stored and held in its message row until release; its receipt says pending, so do not resend it. keys and submit=false remain manual recovery paths. ONE EXCEPTION: text over 300 characters sent to a LEAD by anyone who is not that lead is stored and delivered as a one-line pointer instead, because a lead's pane is a human's own window; the receipt says so and names agent_message_get for the full text. Worker-bound text is never shortened at any length. With quiet_messaging on, a worker's submitted text to a Claude lead is stored with a message id and posted over the lead's messaging socket instead of typed (the same pointer when over 300 characters): the receipt says pending until the lead's prompt confirms it, hive types it into the pane once if no confirmation comes, and the socket post skips the pane checks below; do not resend a pending send. Alternatively pass keys (tmux key names like Escape, C-c, Enter). wait_ms (250-10000) returns the terminal tail after sending. A claude worker is already briefed by agent_spawn. A worker whose screen hive cannot classify is REFUSED on the text path entirely (its brief is at the spawn receipt's brief_path); keys still reaches it. A pane in tmux copy mode is REFUSED too, and retriably: tmux clears its bracketed-paste flag there, so the paste would lose its markers and the Enter would be eaten - leave copy mode (or agent_send(keys: [\"-X\", \"cancel\"]) to cancel it deliberately) and send again.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1503,13 +1527,14 @@ export function registerAgents(server: McpServer): void {
                 'allowed. To send an actual keystroke on purpose, use keys instead (e.g. keys: ["C-c"]).',
             );
           }
-          const quiet = await sendQuietLeadMessage({
+          const messageOptions = {
             projectId: project.id,
             fromActor: currentActor(),
             target: agent,
             text: args.text,
             submit: args.submit !== false,
-          });
+          };
+          const quiet = await sendUsageHeldMessage(messageOptions) ?? await sendQuietLeadMessage(messageOptions);
           if (quiet !== null) {
             if (quiet.sent) {
               confirmQueenWrite("agent_send", project.id, args, { sent: true, agent_id: agent.id }, auditIdentity);
@@ -1604,6 +1629,15 @@ export function registerAgents(server: McpServer): void {
             }
           }
 
+          const newlyHeld = await sendUsageHeldMessage({
+            projectId: project.id,
+            fromActor: currentActor(),
+            target: agent,
+            text: args.text,
+            submit: submitting,
+          });
+          if (newlyHeld !== null) return newlyHeld;
+
           if (
             agent.kind === LEAD_KIND &&
             !isRunningLeadActor(currentActor()) &&
@@ -1637,9 +1671,33 @@ export function registerAgents(server: McpServer): void {
               () => {
                 buffered = true;
               },
-              () => requireStillOwned(agent.id, identity, "agent_send"),
+              () => {
+                requireStillOwned(agent.id, identity, "agent_send");
+                if (submitting) {
+                  observeUsageLimit(agent.id, Date.now());
+                  const gate = usageLimitGate(agent.id, Date.now());
+                  if (gate.held) throw new UsageLimitActive(`the target harness is stopped by a usage limit until ${gate.until}`);
+                }
+              },
             );
           } catch (err) {
+            if (err instanceof UsageLimitActive && !pasted) {
+              const held = await sendUsageHeldMessage({
+                projectId: project.id,
+                fromActor: currentActor(),
+                target: agent,
+                text: args.text,
+                submit: submitting,
+              });
+              if (held !== null) return held;
+            }
+            if (err instanceof UsageLimitActive && pasted) {
+              throw new Error(
+                `[agent_send:usage-limit-after-paste] ${err.message}. The text was pasted but no Enter was sent; ` +
+                  "read the pane before deciding whether to submit or clear it.",
+                { cause: err },
+              );
+            }
             const shortenedClause =
               shortened === null ? "" : shortenedSendFailureClause(shortened.marker, shortened.message_id);
             if (err instanceof PaneOwnershipLost) {

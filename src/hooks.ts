@@ -7,6 +7,7 @@ import type { ContextRecordKind } from "./transcript.js";
 import { effectiveClaudeStatusLine, statusLineEntry } from "./statusline.js";
 
 export interface HookEntry {
+  matcher?: string;
   hooks: { type: string; command: string }[];
 }
 
@@ -50,6 +51,7 @@ function stateHookSettings(): { hooks: Record<string, HookEntry[]> } {
   return {
     hooks: {
       Stop: [hookEntry("stop")],
+      StopFailure: [{ ...hookEntry("stop_failure"), matcher: "rate_limit" }],
       UserPromptSubmit: [hookEntry("prompt")],
       Notification: [hookEntry("notify")],
       SessionEnd: [hookEntry("session_end")],

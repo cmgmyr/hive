@@ -157,7 +157,9 @@ runbook (fork it first), not a pad write.`,
     and layout in hive.yml; an explicit argument overrides it. cwd defaults to the project root; pass
     a git worktree path to isolate parallel file edits. A claude worker gets
     its brief in the system prompt; other commands return instructions to
-    PREPEND to the first prompt.
+    PREPEND to the first prompt. A same-project worker or lead currently
+    stopped by that harness's usage limit makes spawn retryable until its
+    reset or bounded deadline; hive does not queue spawns.
     Workers run with HIVE_PROJECT_LOCK=1.
   agent_send(name|agent_id, text?, keys?, submit?, wait_ms?) — type into the
     worker's terminal. Multi-line text pastes safely; keys sends tmux key
@@ -170,6 +172,8 @@ runbook (fork it first), not a pad write.`,
     posted to the lead's messaging socket instead; the receipt says pending
     until the lead's prompt confirms it, and hive types it into the pane once
     if nothing does. Do not resend a pending send.
+    A submitted text send to a target stopped by its usage limit is stored
+    as pending until release. keys and submit=false remain manual recovery.
   agent_message_get(message_id) — the full text behind a pointer line, plus
     the delivery state of a quiet message. Kept 7 days; a lookup for a pruned id says it expired, not that it is missing.
   agent_output(name|agent_id, lines?) — read the rendered terminal.
@@ -192,7 +196,9 @@ runbook (fork it first), not a pad write.`,
     claude or codex worker on a fresh pane from its recorded session id,
     with the same actor_id and its full prior context. It does not send
     the assignment; agent_send it afterwards. Read the pane before
-    believing any wake about a worker you just resumed.
+    believing any wake about a worker you just resumed. A same-project
+    harness limit makes resume retryable until its reset or bounded deadline;
+    hive does not queue resumes.
   agent_close(name|agent_id, confirm_self?, row_only?) — kill the worker's pane and mark closed. Capture
     handoffs first; output is not retained. Self-close needs confirm_self.
     On a PARKED row (by agent_id) it releases the park instead, which is how

@@ -57,6 +57,7 @@ const SHIPPED = [
   "eb59a7d3f4851eb5",
   "fd2b3b6dc1ca73d8",
   "e3fb399f68b0b787",
+  "48f7023ba8512413",
 ];
 
 const hash = (sql) => createHash("sha256").update(sql).digest("hex").slice(0, 16);
@@ -88,17 +89,22 @@ describe("MIGRATIONS is append-only", () => {
     assert.equal(MIGRATIONS[34], "ALTER TABLE wakes ADD COLUMN delivered_by TEXT;");
   });
 
-  it("the existing final migration recreates the handoff fence with the grace-start ceiling", () => {
-    const migration = MIGRATIONS.at(-2);
+  it("migration 45 recreates the handoff fence with the grace-start ceiling", () => {
+    const migration = MIGRATIONS[44];
     assert.match(migration, /^\s*DROP TRIGGER fence_handoff_held_claim;/);
     assert.match(migration, /CREATE TRIGGER fence_handoff_held_claim/);
     assert.match(migration, /h\.grace_started_at IS NOT NULL/);
     assert.match(migration, /julianday\('now'\) - julianday\(h\.grace_started_at\).*< 900/s);
   });
 
-  it("the appended migration adds the worker recovery marker", () => {
-    assert.match(MIGRATIONS.at(-1), /ALTER TABLE agents ADD COLUMN recovery_state/);
-    assert.match(MIGRATIONS.at(-1), /DEFAULT ''/);
-    assert.match(MIGRATIONS.at(-1), /'pending', 'excluded'/);
+  it("migration 46 adds the worker recovery marker", () => {
+    assert.match(MIGRATIONS[45], /ALTER TABLE agents ADD COLUMN recovery_state/);
+    assert.match(MIGRATIONS[45], /DEFAULT ''/);
+    assert.match(MIGRATIONS[45], /'pending', 'excluded'/);
+  });
+
+  it("migration 47 adds the per-agent usage-limit table", () => {
+    assert.match(MIGRATIONS[46], /CREATE TABLE agent_usage_limits/);
+    assert.match(MIGRATIONS[46], /continue_claimed_at TEXT/);
   });
 });

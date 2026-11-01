@@ -12,6 +12,7 @@ import {
   HELD_REASON_LEAD_ROW_CLOSED,
   HELD_REASON_MODAL_CHOICE,
   HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM,
+  HELD_REASON_PANE_CAPTURE_UNKNOWN,
   HELD_REASON_PANE_REISSUED_LEAD,
   HELD_REASON_PANE_REISSUED_WORKER,
   HELD_REASON_PANE_UNKNOWN_LEAD,
@@ -21,6 +22,7 @@ import {
   HELD_REASON_UNSUBMITTED_INPUT,
   HELD_REASON_UNSUBMITTED_INPUT_OWNER_UNRESOLVED,
   HELD_REASON_UNSUBMITTED_INPUT_PREFIX,
+  HELD_REASON_USAGE_LIMIT,
   LOG_RETENTION,
   activeWakeWhere,
   holdableWakeWhere,
@@ -66,6 +68,7 @@ import { createHash } from "node:crypto";
 import { dirname, join, sep } from "node:path";
 import { dataDir, db, storeReplaced } from "./db.js";
 import { decodeKvValue } from "./kvValue.js";
+import { continueLimitedCodexWorkers, observeUsageLimit, usageLimitGate } from "./usageLimit.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
 import { snapshotProcesses } from "./processes.js";
@@ -896,14 +899,22 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     isolated("dashboard generation", maybeGenerateDashboards);
     const now = (stmt("SELECT datetime('now') AS now").get() as { now: string }).now;
 
+    await isolated("Codex usage-limit continuation", () => continueLimitedCodexWorkers(Date.now()));
+
     const candidates = stmt(
       `SELECT wakes.*, ${DELIVER_ROW_COLUMNS}
          FROM wakes ${DELIVER_SOCKET_JOIN}
-        WHERE ${schedulerCandidateWhere("wakes.")}`,
+        WHERE ${schedulerCandidateWhere("wakes.")}
+        ORDER BY wakes.id`,
     ).all() as TimerRow[];
+    const orderedDelays = candidates
+      .filter((timer) => timer.kind === "delay")
+      .sort((a, b) => (a.due_at ?? "").localeCompare(b.due_at ?? "") || a.id - b.id);
+    let delayIndex = 0;
 
     const choices: ChoiceCache = new Map();
-    for (const timer of candidates) {
+    for (const candidate of candidates) {
+      const timer = candidate.kind === "delay" ? orderedDelays[delayIndex++] : candidate;
       await isolated(`timer ${timer.id}`, async () => {
         if (timer.kind === "delay") {
           await fireDelay(timer, tickSnapshot, choices);
@@ -993,6 +1004,31 @@ function holdTimer(timer: Pick<TimerRow, "id" | "due_at"> & Partial<Pick<TimerRo
     count,
     count,
   );
+}
+
+function usageLimitHeld(timer: TimerRow): boolean {
+  if (timer.deliver_row_id === null) return false;
+  const now = Date.now();
+  observeUsageLimit(timer.deliver_row_id, now);
+  const gate = usageLimitGate(timer.deliver_row_id, now);
+  if (!gate.held) return false;
+  holdTimer(timer, `${HELD_REASON_USAGE_LIMIT}${gate.until ?? "the recorded deadline"}`);
+  return true;
+}
+
+class UsageLimitRace extends Error {
+  constructor(readonly until: string) { super(`${HELD_REASON_USAGE_LIMIT}${until}`); }
+}
+
+function unclaimUsageLimit(timer: TimerRow, until: string): void {
+  try {
+    stmt(`UPDATE wakes SET due_at = ?, fired_at = NULL, fire_count = MAX(0, fire_count - 1),
+        typed_at = NULL, typed_busy = NULL, typed_seen = NULL, confirmed_at = NULL,
+        held_at = datetime('now'), held_reason = ?, first_held_at = COALESCE(first_held_at, datetime('now')),
+        socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
+      WHERE id = ? AND fire_count = ? AND typed_at IS NULL AND cancelled_at IS NULL`)
+      .run(timer.due_at, `${HELD_REASON_USAGE_LIMIT}${until}`, timer.id, timer.fire_count);
+  } catch {}
 }
 
 const LEAD_BOOT_BOX_WAIT_MS = 60_000;
@@ -1463,6 +1499,7 @@ const CONDITION_IDLE = "idle";
 const CONDITION_GONE = "gone";
 
 const NOTICE_MAX_AGE = "-1 hours";
+const PANE_CAPTURE_UNKNOWN_MAX_AGE = "-1 hours";
 
 const ROSTER_STILL_GOING = 8;
 
@@ -2248,7 +2285,12 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
     return { ok: false };
   }
 
+  const releasedAfterCaptureHold = timer.held_reason === paneCaptureReleaseReason(timer.fire_count + 1);
   const dialog = awaitingChoice(timer.deliver_pane, timer.deliver_command, choices);
+  if (dialog === null && !releasedAfterCaptureHold && paneCaptureUnknownHoldApplies(timer)) {
+    holdTimer(timer, HELD_REASON_PANE_CAPTURE_UNKNOWN);
+    return { ok: false };
+  }
   if (dialog === true) {
 
     noteModalHold(timer, snapshot);
@@ -2305,7 +2347,7 @@ function deliverable(timer: TimerRow, snapshot: AliveSnapshot | null, choices: C
   const box = boxState === undefined ? "unknown" : boxState === null ? "absent" : boxState.state;
   return {
     ok: true,
-    typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}`,
+    typedSeen: `live=yes pid=${pid} dialog=${dialogSeen} box=${box}${releasedAfterCaptureHold ? "; released after unreadable-capture hold" : ""}`,
 
     firstHeldAt: timer.held_at != null ? timer.first_held_at : null,
     owner,
@@ -2340,11 +2382,11 @@ async function fireDelay(
   snapshot: AliveSnapshot | null,
   choices: ChoiceCache,
 ): Promise<void> {
-
   if (handoffHoldsWake(timer.id, timer.deliver_row_id)) {
     holdTimer(timer, HELD_REASON_HANDOFF);
     return;
   }
+  if (usageLimitHeld(timer)) return;
   const disposition = noticeDisposition(timer);
   if (disposition === "aged") {
     try {
@@ -2363,7 +2405,49 @@ async function fireDelay(
     return;
   }
   if (timer.repeat_every_ms != null && repeatingFiringPending(timer.id)) return;
-  await withPaneClaim(timer, () => fireDelayClaimed(timer, snapshot, choices));
+  const releaseReason = releaseExpiredPaneCaptureHold(timer);
+  const deliveryTimer = releaseReason === null ? timer : { ...timer, held_reason: releaseReason };
+  await withPaneClaim(deliveryTimer, () => fireDelayClaimed(deliveryTimer, snapshot, choices));
+}
+
+function paneCaptureReleaseReason(firing: number): string {
+  return `released after unreadable-capture hold at the one-hour cap for firing #${firing}`;
+}
+
+function paneCaptureUnknownHoldApplies(timer: TimerRow): boolean {
+  if (timer.deliver_row_id === null) return false;
+  return stmt(`SELECT 1 AS hit FROM agent_usage_limits
+    WHERE agent_id = ? AND (
+      (released_at IS NULL AND expires_at >= datetime('now', '-1 hour'))
+      OR released_at >= datetime('now', '-1 hour')
+    )`).get(timer.deliver_row_id) !== undefined;
+}
+
+function releaseExpiredPaneCaptureHold(timer: TimerRow): string | null {
+  if (timer.held_reason !== HELD_REASON_PANE_CAPTURE_UNKNOWN || timer.first_held_at === null) return null;
+  try {
+    const age = stmt("SELECT ? <= datetime('now', ?) AS expired").get(
+      timer.first_held_at,
+      PANE_CAPTURE_UNKNOWN_MAX_AGE,
+    ) as { expired: number };
+    if (age.expired !== 1) return null;
+    const reason = paneCaptureReleaseReason(timer.fire_count + 1);
+    const released = stmt(
+      `UPDATE wakes SET held_reason = ?
+       WHERE id = ? AND held_reason = ? AND first_held_at IS ? AND ${holdableWakeWhere()}`,
+    ).run(
+      reason,
+      timer.id,
+      HELD_REASON_PANE_CAPTURE_UNKNOWN,
+      timer.first_held_at,
+      timer.due_at,
+      timer.fire_count,
+      timer.fire_count,
+    );
+    return released.changes === 1 ? reason : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fireDelayClaimed(
@@ -2384,27 +2468,37 @@ async function fireDelayClaimed(
          socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL
          AND fire_count = ? AND NOT COALESCE((${REPEATING_FIRING_PENDING}), 0)
+         AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
+           (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
+             ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
+           AND u.released_at IS NULL AND u.expires_at > datetime('now'))
        RETURNING fire_count, fired_at`,
     ).get(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms, timer.fire_count) as
       | { fire_count: number; fired_at: string }
       | undefined;
     if (claimed === undefined) return false;
     firing = { ...timer, fire_count: claimed.fire_count, fired_at: claimed.fired_at, socket_attempt_at: null, socket_delivery_note: null, delivery_method: null };
-  } else if (!claimOneShot(timer)) {
-    return false;
+  } else {
+    const claimed = claimOneShot(timer);
+    if (!claimed) return false;
+    firing = { ...timer, ...claimed };
   }
   await deliver(firing, "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
   return true;
 }
 
-function claimOneShot(timer: TimerRow): boolean {
-  return (
-    stmt(
-      `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
+function claimOneShot(timer: TimerRow): { fire_count: number; fired_at: string } | null {
+  const claimed = stmt(
+    `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
-         AND ${pendingOneShotWhere()}`,
-    ).run(timer.id, timer.due_at, timer.body, timer.repeat_every_ms).changes === 1
-  );
+         AND ${pendingOneShotWhere()}
+         AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
+           (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
+             ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
+           AND u.released_at IS NULL AND u.expires_at > datetime('now'))
+       RETURNING fire_count, fired_at`,
+  ).get(timer.id, timer.due_at, timer.body, timer.repeat_every_ms) as { fire_count: number; fired_at: string } | undefined;
+  return claimed ?? null;
 }
 
 const GONE: WatchedState = { idle: true, gone: true, since: null };
@@ -2476,6 +2570,7 @@ async function maybeFireIdle(
   now: string,
   choices: ChoiceCache,
 ): Promise<void> {
+  if (usageLimitHeld(timer)) return;
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
 
   if (isStandingWatch(timer)) {
@@ -2487,8 +2582,10 @@ async function maybeFireIdle(
     if (timedOut) {
       await withPaneClaim(timer, async () => {
         const decision = deliverable(timer, snapshot, choices);
-        if (!decision.ok || !claimOneShot(timer)) return false;
-        await deliver(timer, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+        if (!decision.ok) return false;
+        const claimed = claimOneShot(timer);
+        if (!claimed) return false;
+        await deliver({ ...timer, ...claimed }, STANDING_EXPIRED_NOTE, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
         return true;
       });
     }
@@ -2510,8 +2607,10 @@ async function maybeFireIdle(
   if (ready) {
     await withPaneClaim(timer, async () => {
       const decision = deliverable(timer, snapshot, choices);
-      if (!decision.ok || !claimOneShot(timer)) return false;
-      await deliver(timer, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+      if (!decision.ok) return false;
+      const claimed = claimOneShot(timer);
+      if (!claimed) return false;
+      await deliver({ ...timer, ...claimed }, timedOut && !idleMet ? "max wait reached" : "", choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
       return true;
     });
   }
@@ -2526,6 +2625,7 @@ async function maybeFireLeadWatch(
   now: string,
   choices: ChoiceCache,
 ): Promise<void> {
+  if (usageLimitHeld(timer)) return;
   const timedOut = timer.max_wait_at != null && timer.max_wait_at <= now;
   const readers: PaneReaders = {
     awaitingChoice: (pane, command) => awaitingChoice(pane, command, choices),
@@ -2543,11 +2643,13 @@ async function maybeFireLeadWatch(
   if (note === null) return;
   await withPaneClaim(timer, async () => {
     const decision = deliverable(timer, snapshot, choices);
-    if (!decision.ok || !claimOneShot(timer)) return false;
+    if (!decision.ok) return false;
+    const claimed = claimOneShot(timer);
+    if (!claimed) return false;
     if (result.kind === "invalid") {
       bestEffortRun("UPDATE lead_idle_subscriptions SET terminal_reason = ? WHERE wake_id = ?", result.reason, timer.id);
     }
-    await deliver(timer, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
+    await deliver({ ...timer, ...claimed }, note, choices, decision.typedSeen, decision.firstHeldAt, decision.owner);
     return true;
   });
 }
@@ -2801,14 +2903,14 @@ function socketStillRegistered(timer: TimerRow, owner: DeliveryOwner): boolean {
 }
 
 // A failed stamp means the firing was cancelled or superseded, so nothing is posted.
-function stampRepeatingAttempt(timer: TimerRow, note: string, firstHeldAt: string | null): boolean {
+function stampRepeatingAttempt(timer: TimerRow, note: string, typedSeen: string, firstHeldAt: string | null): boolean {
   try {
     return (
       stmt(
         `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-           delivery_method = ?, delivered_by = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+           delivery_method = ?, delivered_by = ?, first_held_at = ?, typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
          WHERE id = ? AND fire_count = ? AND cancelled_at IS NULL AND typed_at IS NULL AND socket_attempt_at IS NULL`,
-      ).run(note, DELIVERY_METHOD.socketRepeating, deliveredByForFiring(timer), firstHeldAt, timer.id, timer.fire_count).changes === 1
+      ).run(note, DELIVERY_METHOD.socketRepeating, deliveredByForFiring(timer), firstHeldAt, typedSeen, timer.id, timer.fire_count).changes === 1
     );
   } catch {
     return false;
@@ -2875,17 +2977,18 @@ async function deliver(
     const text = `${head}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
     if (!text.includes(CROSS_SESSION_CLOSE)) {
       if (repeating) {
-        if (!stampRepeatingAttempt(timer, note, firstHeldAt)) return;
+        if (!stampRepeatingAttempt(timer, note, typedSeen, firstHeldAt)) return;
         firing = timer.fire_count;
       } else {
         bestEffortRun(
           `UPDATE wakes SET socket_attempt_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), socket_delivery_note = ?,
-             delivery_method = ?, delivered_by = ?, first_held_at = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
+             delivery_method = ?, delivered_by = ?, first_held_at = ?, typed_seen = ?, held_at = NULL, held_reason = NULL, confirmed_at = NULL
            WHERE id = ?`,
           note,
           DELIVERY_METHOD.socket,
           deliveredByForFiring(timer),
           firstHeldAt,
+          typedSeen,
           timer.id,
         );
       }
@@ -2893,12 +2996,17 @@ async function deliver(
         socketPath: timer.deliver_messaging_socket,
         senderAddress: socketSenderAddress(dataDir),
         text,
-        beforeWrite: () => socketStillRegistered(timer, owner!),
+      beforeWrite: () => !usageLimitHeld(timer) && socketStillRegistered(timer, owner!),
       });
       if (posted) {
         forgetPaneAnswers(timer.deliver_pane, choices);
         return;
       }
+    if (usageLimitHeld(timer)) {
+      const until = timer.deliver_row_id === null ? null : usageLimitGate(timer.deliver_row_id, Date.now()).until;
+      if (until) unclaimUsageLimit(timer, until);
+      return;
+    }
       if (firing !== null && !claimRepeatingFallback(timer)) return;
       note = withReDelivered(note);
       fallback = true;
@@ -2951,10 +3059,21 @@ async function deliver(
         ? () => {
             if (owner) requireStillOwned(owner.rowId, owner.identity, `wake #${timer.id} delivery`);
             if (firing !== null) requireCurrentFiring(timer.id, firing);
+            if (timer.deliver_row_id !== null) {
+              observeUsageLimit(timer.deliver_row_id, Date.now());
+              const gate = usageLimitGate(timer.deliver_row_id, Date.now());
+              if (gate.held && gate.until) throw new UsageLimitRace(gate.until);
+            }
           }
         : undefined,
     );
   } catch (err) {
+    if (err instanceof UsageLimitRace) {
+      if (!pasted) unclaimUsageLimit(timer, err.until);
+      else recordLostAfterClaim(timer, true, `${err.message} The body was pasted, and no Enter was sent.`, firing);
+      forgetPaneAnswers(timer.deliver_pane, choices);
+      return;
+    }
     if (fallback && !pasted && firing === null) {
       bestEffortRun("UPDATE wakes SET delivery_method = ?, delivered_by = ? WHERE id = ? AND typed_at IS NULL", DELIVERY_METHOD.socket, deliveredByForFiring(timer), timer.id);
     }
@@ -3017,6 +3136,7 @@ async function retryUnconfirmedSocketWakes(snapshot: AliveSnapshot | null, choic
         AND wakes.socket_attempt_at >= datetime('now', ?)`,
   ).all(LOG_RETENTION) as TimerRow[];
   for (const timer of awaiting) {
+    if (usageLimitHeld(timer)) continue;
     if (!socketFallbackDue(timer)) continue;
     await withPaneClaim(timer, () => fallbackClaimed(timer, snapshot, choices));
   }

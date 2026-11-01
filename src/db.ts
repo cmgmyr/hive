@@ -657,6 +657,23 @@ END;
 ALTER TABLE agents ADD COLUMN recovery_state TEXT NOT NULL DEFAULT ''
   CHECK (recovery_state IN ('', 'pending', 'excluded'));
 `,
+  `
+CREATE TABLE agent_usage_limits (
+  agent_id INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  harness TEXT NOT NULL CHECK (harness IN ('claude', 'codex')),
+  pane_pid TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  signal_key TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  reset_at TEXT,
+  expires_at TEXT NOT NULL,
+  released_at TEXT,
+  continue_claimed_at TEXT
+);
+CREATE INDEX idx_agent_usage_limits_gate ON agent_usage_limits(project_id, harness, expires_at)
+  WHERE released_at IS NULL;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {
