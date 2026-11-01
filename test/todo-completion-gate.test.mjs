@@ -318,11 +318,21 @@ it("signal exits, spawn failures and output overflow refuse with bounded stream 
   await assert.rejects(mcp.call("todo_complete", { todo_id: todo.todo_id }), /\[todo_completion_gate:signal\].*signal SIGTERM/s);
   setGate([join(dirs.tmp, "does-not-exist")]);
   await assert.rejects(mcp.call("todo_complete", { todo_id: todo.todo_id }), /\[todo_completion_gate:spawn\]/);
-  setGate([process.execPath, "-e", "process.stdout.write('a'.repeat(6000)); process.stderr.write('b'.repeat(6000)); process.exit(8)"]);
+  setGate([
+    process.execPath,
+    "-e",
+    "process.stdout.write('stdout-prefix-marker'+'a'.repeat(6000)+'stdout-suffix-marker'); process.stderr.write('stderr-prefix-marker'+'b'.repeat(6000)+'stderr-suffix-marker'); process.exit(8)",
+  ]);
   await assert.rejects(mcp.call("todo_complete", { todo_id: todo.todo_id }), (error) => {
     assert.match(error.message, /\[todo_completion_gate:failed\].*exit 8/);
-    assert.match(error.message, /stdout tail:/);
-    assert.match(error.message, /stderr tail:/);
+    const stdoutTail = error.message.split("stdout tail:\n")[1]?.split("\nstderr tail:\n")[0] ?? "";
+    const stderrTail = error.message.split("stderr tail:\n")[1] ?? "";
+    assert.equal(Buffer.byteLength(stdoutTail), 4096);
+    assert.equal(Buffer.byteLength(stderrTail), 4096);
+    assert.ok(!stdoutTail.includes("stdout-prefix-marker"));
+    assert.ok(!stderrTail.includes("stderr-prefix-marker"));
+    assert.ok(stdoutTail.endsWith("stdout-suffix-marker"));
+    assert.ok(stderrTail.endsWith("stderr-suffix-marker"));
     assert.ok(error.message.length < 8500, "error should carry bounded tails, not all 12 KB");
     return true;
   });
