@@ -221,7 +221,7 @@ Why a socket path is a location and not a server identity, and why that is accep
 
 ## 8. Todo completion gate
 
-The optional project `completion_gate` is read by `loadProjectYml` (`src/projectYml.ts:464`) and uses the existing command-trust descriptor (`completionGateTrust`, `src/todoCompletionGate.ts:18`). `hive lead` records approval through `ensureTrusted` (`src/cli.ts:438`); it does not run the gate. On either completion path, `throughCompletionGate` (`src/tools/todos.ts:56`) resolves the owning project, captures the row, and awaits `runTodoCompletionGate` (`src/todoCompletionGate.ts:79`) before opening the immediate write transaction. After exit 0 it reloads trust/config, then the transaction checks the persisted row snapshot before updating status. The await leaves the event loop and SQLite write transaction available while the child runs.
+The optional project `completion_gate` is read by `loadProjectYml` (`src/projectYml.ts:464`) and uses the existing command-trust descriptor (`completionGateTrust`, `src/todoCompletionGate.ts:20`). `hive lead` records approval through `ensureTrusted` (`src/cli.ts:438`); it does not run the gate. On either completion path, `throughCompletionGate` (`src/tools/todos.ts:56`) resolves the owning project, captures the row, and awaits `runTodoCompletionGate` (`src/todoCompletionGate.ts:80`) before opening the immediate write transaction. After exit 0 it reloads trust/config, then the transaction checks the persisted row snapshot before updating status. The await leaves the event loop and SQLite write transaction available while the child runs.
 
 ## Upgrades
 
