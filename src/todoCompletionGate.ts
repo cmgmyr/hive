@@ -133,7 +133,17 @@ export async function runTodoCompletionGate(input: TodoCompletionGateInput): Pro
       } else child.kill("SIGKILL");
       child.stdout.destroy();
       child.stderr.destroy();
-      finish(failure("timeout", input, null, null, Buffer.concat(stdout), Buffer.concat(stderr)));
+      finish(
+        failure(
+          "timeout",
+          input,
+          null,
+          null,
+          Buffer.concat(stdout),
+          Buffer.concat(stderr),
+          `completion gate timed out after ${TIMEOUT_MS}ms`,
+        ),
+      );
     }, TIMEOUT_MS);
     child.once("error", () => finish(failure("spawn", input, null, null, Buffer.concat(stdout), Buffer.concat(stderr))));
     child.once("close", (code, signal) => {

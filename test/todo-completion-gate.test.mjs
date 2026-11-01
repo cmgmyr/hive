@@ -364,7 +364,7 @@ it("a gate that ignores SIGTERM is killed and refuses at the fixed 30 second bou
   const todo = await mcp.call("todo_create", { title: "timeout" });
   setGate([process.execPath, "-e", "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000)"]);
   const started = Date.now();
-  await assert.rejects(mcp.call("todo_complete", { todo_id: todo.todo_id }), /\[todo_completion_gate:timeout\]/);
+  await assert.rejects(mcp.call("todo_complete", { todo_id: todo.todo_id }), /\[todo_completion_gate:timeout\].*30000ms/s);
   assert.ok(Date.now() - started >= 29_000, "the configured 30000ms timeout must be observed");
   assert.equal((await mcp.call("todo_get", { todo_id: todo.todo_id })).status, "open");
 });
