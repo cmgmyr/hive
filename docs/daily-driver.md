@@ -97,7 +97,7 @@ Workers report their state (`working`, `idle`, `waiting`) the moment it changes,
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
 - `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
 
-A fired wake-up reaches your lead as a fresh turn, prefixed `[hive wake #N]`. By default a Claude lead sees it as one dim `Message from @hive` row; a worker, a Codex lead, or a lead in a project with `quiet_messaging: false` gets it typed into the terminal. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
+A fired wake-up reaches your lead as a fresh turn, prefixed `[hive wake #N]`. By default a Claude lead started by `hive` sees it as one dim `Message from @hive` row, and hive types it once if the row is not confirmed. A worker, a Codex lead, a lead started without hive's generated hooks, or a lead in a project with `quiet_messaging: false` gets it typed into the terminal. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
 
 What gets delivered depends on who is receiving it. **A worker gets the body verbatim**, always, because the text in a worker's pane is your record of what it was told - the assignment, the reframes, the corrections. **A lead gets crew state**: a standing watch's finish notice is one line per worker, in the state hive reads as it delivers, and the workers that have not reported are a tally at the end:
 

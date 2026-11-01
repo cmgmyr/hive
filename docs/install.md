@@ -217,7 +217,7 @@ When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, 
 
 ## Uninstall
 
-Hive touches seven things on a machine; remove them in any order:
+Hive touches six things on a machine; remove them in any order:
 
 ```bash
 hive status                     # confirm the session name, then end it:
