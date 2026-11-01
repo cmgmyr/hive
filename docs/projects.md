@@ -167,7 +167,7 @@ Without `crossSessionInbound: "accept"`, a lead running in bypass-permissions mo
 
 Set `quiet_messaging: false` in the global or project file, then restart the lead the same way. Until the restart, the scheduler stops using the socket at once, but the running session still accepts messages from other sessions.
 
-Turning it on accepts cross-session messages from every sender to that lead, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
+With it on (the default), that lead accepts cross-session messages from every sender, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
 
 
 ## Automatic backups
