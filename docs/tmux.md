@@ -58,6 +58,8 @@ hive names tmux windows for the project alone (the window holds the lead AND its
 
 Do not try to solve this with `select-pane -T`. hive did consider it and rejected it: the application writes its own title afterwards and wins. Measured again on 2026-08-03, `select-pane -T "hive - worker-1"` held until the pane's Claude session wrote its own OSC 0 title, and then read whatever Claude set.
 
+If `agent_spawn` uses `placement: "window"` against a split `hive.yml`, run `hive layout` to gather live workers into the project's lead window and restore its configured layout. The command leaves unrelated panes in their source windows, so those windows remain until their last pane leaves.
+
 ## Suggested
 
 None of this is required. It is what makes a multi-project tmux workflow bearable.
