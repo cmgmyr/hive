@@ -96,7 +96,13 @@ async function runLeadInPty(row, fakeBin, answer) {
   ].join("\n");
   const child = spawn("python3", ["-c", ptyDriver, process.execPath, cli, answer], {
     cwd: row.path,
-    env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, HIVE_DATA_DIR: dirs.dataDir, HIVE_AUTO_ATTACH: "0" },
+    env: {
+      ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
+      HIVE_DATA_DIR: dirs.dataDir,
+      HIVE_AUTO_ATTACH: "0",
+      TERM: "xterm-256color",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
