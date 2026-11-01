@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { isTrusted } from "./leadLaunch.js";
+import { loadProjectYml } from "./projectYml.js";
 
 const GATE_NAME = "hive:todo-completion-gate";
 const TIMEOUT_MS = 30_000;
@@ -28,6 +29,30 @@ export function todoCompletionGateTrusted(projectId: number, argv: readonly stri
   return isTrusted(projectId, trust.name, trust.command, trust.dir, trust.env);
 }
 
+export function assertValidTodoCompletionGate(
+  input: TodoCompletionGateInput,
+  message: string | undefined,
+): void {
+  if (message) throw failure("invalid", input, null, null, Buffer.alloc(0), Buffer.alloc(0), message);
+}
+
+export function assertTodoCompletionGateCurrent(
+  input: TodoCompletionGateInput,
+  originalArgv: readonly string[],
+): void {
+  const current = loadProjectYml(input.projectPath);
+  if (
+    current.completionGateError ||
+    !current.config?.completion_gate ||
+    JSON.stringify(current.config.completion_gate) !== JSON.stringify(originalArgv)
+  ) {
+    throw failure("changed", input, null, null, Buffer.alloc(0), Buffer.alloc(0));
+  }
+  if (!todoCompletionGateTrusted(input.projectId, originalArgv)) {
+    throw failure("untrusted", input, null, null, Buffer.alloc(0), Buffer.alloc(0));
+  }
+}
+
 function failure(
   reason: string,
   input: TodoCompletionGateInput,
@@ -35,6 +60,7 @@ function failure(
   signal: NodeJS.Signals | null,
   stdout: Buffer,
   stderr: Buffer,
+  detail?: string,
 ): Error {
   const output = [
     stdout.length ? `stdout tail:\n${stdout.toString("utf8")}` : "",
@@ -43,6 +69,7 @@ function failure(
   return new Error(
     `[todo_completion_gate:${reason}] todo ${input.todoId}; exit ${code ?? "unavailable"}` +
       `${signal ? `; signal ${signal}` : ""}${output ? `\n${output}` : ""}` +
+      (detail ? `\n${detail}` : "") +
       (reason === "untrusted"
         ? "\ncompletion gate in hive.yml is not approved yet; run `hive` in a terminal in this project to review it."
         : ""),

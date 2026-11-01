@@ -12,6 +12,13 @@ import { findUnsafeControlChar } from "../tmux.js";
 import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 import { NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_FROM_WHERE, OPEN_BLOCKERS_SQL } from "../todoScope.js";
+import { loadProjectYml } from "../projectYml.js";
+import {
+  assertTodoCompletionGateCurrent,
+  assertValidTodoCompletionGate,
+  runTodoCompletionGate,
+  type TodoCompletionGateInput,
+} from "../todoCompletionGate.js";
 
 const priorityParam = z.enum(["high", "medium", "low"]);
 
@@ -34,6 +41,42 @@ const statusParam = z.enum(TODO_STATUSES);
 
 const LIVE_DEPENDENTS_SQL = `SELECT t.id AS todo_id FROM todo_blockers b JOIN todos t ON t.id = b.todo_id
    WHERE b.blocker_id = ? AND t.${NOT_COMPLETED_TODO_SQL} AND t.archived_at IS NULL`;
+
+const TODO_ROW_FIELDS = [
+  "id", "project_id", "title", "body", "priority", "status", "locked_by", "tags", "slug",
+  "created_at", "completed_at", "archived_at", "updated_at",
+] as const;
+
+function assertTodoSnapshot(actual: TodoRow, expected: TodoRow): void {
+  if (TODO_ROW_FIELDS.some((field) => actual[field] !== expected[field])) {
+    throw new Error(`[todo_completion_gate:changed] todo ${expected.id}; exit unavailable`);
+  }
+}
+
+async function throughCompletionGate<T>(
+  projectId: number,
+  snapshot: TodoRow,
+  title: string,
+  apply: (expected?: TodoRow) => T,
+): Promise<T> {
+  const project = resolveProject(projectId);
+  const loaded = loadProjectYml(project.path);
+  const argv = loaded.config?.completion_gate;
+  const input: TodoCompletionGateInput = {
+    projectId,
+    projectPath: project.path,
+    todoId: snapshot.id,
+    title,
+    actorId: "",
+    argv: argv ?? [],
+  };
+  assertValidTodoCompletionGate(input, loaded.completionGateError);
+  if (!argv) return apply();
+  const gatedInput = { ...input, actorId: currentActor(), argv };
+  await runTodoCompletionGate(gatedInput);
+  assertTodoCompletionGateCurrent(gatedInput, argv);
+  return apply(snapshot);
+}
 
 function transitiveBlockers(startId: number): Set<number> {
   const seen = new Set<number>();
@@ -109,8 +152,16 @@ const updateTodo = db.transaction(
       tags?: string[];
       slug?: string;
     },
+    expected?: TodoRow,
   ) => {
-    const todo = getTodo(projectId, todoId);
+    let todo: TodoRow;
+    try {
+      todo = getTodo(projectId, todoId);
+    } catch (error) {
+      if (expected) throw new Error(`[todo_completion_gate:changed] todo ${todoId}; exit unavailable`);
+      throw error;
+    }
+    if (expected) assertTodoSnapshot(todo, expected);
 
     if (todo.archived_at != null && todo.status === "completed" && patch.status && patch.status !== "completed") {
       throw new Error(
@@ -146,8 +197,15 @@ const updateTodo = db.transaction(
   },
 );
 
-const completeTodo = db.transaction((projectId: number, todoId: number, completed: boolean) => {
-  const todo = getTodo(projectId, todoId);
+const completeTodo = db.transaction((projectId: number, todoId: number, completed: boolean, expected?: TodoRow) => {
+  let todo: TodoRow;
+  try {
+    todo = getTodo(projectId, todoId);
+  } catch (error) {
+    if (expected) throw new Error(`[todo_completion_gate:changed] todo ${todoId}; exit unavailable`);
+    throw error;
+  }
+  if (expected) assertTodoSnapshot(todo, expected);
   if (!completed && todo.archived_at != null) {
     throw new Error(`Cannot reopen archived todo ${todo.id}. Unarchive it first.`);
   }
@@ -310,16 +368,33 @@ export function registerTodos(server: McpServer): void {
       outputSchema: { project_id: idParam, todo_id: idParam },
     },
     (args) =>
-      run(() => {
+      run(async () => {
         const projectId = effectiveProjectId(args.project_id);
-        const result = updateTodo.immediate(projectId, args.todo_id, {
+        const patch = {
           title: args.title,
           body: args.body,
           priority: args.priority,
           status: args.status,
           tags: args.tags,
           slug: args.slug,
-        });
+        };
+        if (args.status !== "completed") {
+          const result = updateTodo.immediate(projectId, args.todo_id, patch);
+          return { project_id: projectId, ...result };
+        }
+        const snapshot = getTodo(projectId, args.todo_id);
+        if (snapshot.status === "completed") {
+          const loaded = loadProjectYml(resolveProject(projectId).path);
+          const expected = loaded.completionGateError || loaded.config?.completion_gate ? snapshot : undefined;
+          const result = updateTodo.immediate(projectId, args.todo_id, patch, expected);
+          return { project_id: projectId, ...result };
+        }
+        const result = await throughCompletionGate(
+          projectId,
+          snapshot,
+          args.title ?? snapshot.title,
+          (expected) => updateTodo.immediate(projectId, args.todo_id, patch, expected),
+        );
         return { project_id: projectId, ...result };
       }),
   );
@@ -374,9 +449,26 @@ export function registerTodos(server: McpServer): void {
       },
     },
     (args) =>
-      run(() => {
+      run(async () => {
         const projectId = effectiveProjectId(args.project_id);
-        const result = completeTodo.immediate(projectId, args.todo_id, args.completed ?? true);
+        const completed = args.completed ?? true;
+        if (!completed) {
+          const result = completeTodo.immediate(projectId, args.todo_id, false);
+          return { project_id: projectId, ...result };
+        }
+        const snapshot = getTodo(projectId, args.todo_id);
+        if (snapshot.status === "completed") {
+          const loaded = loadProjectYml(resolveProject(projectId).path);
+          const expected = loaded.completionGateError || loaded.config?.completion_gate ? snapshot : undefined;
+          const result = completeTodo.immediate(projectId, args.todo_id, true, expected);
+          return { project_id: projectId, ...result };
+        }
+        const result = await throughCompletionGate(
+          projectId,
+          snapshot,
+          snapshot.title,
+          (expected) => completeTodo.immediate(projectId, args.todo_id, true, expected),
+        );
         return { project_id: projectId, ...result };
       }),
   );
