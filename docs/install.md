@@ -63,7 +63,7 @@ A worker can run `codex` instead of Claude Code. Two things beyond a plain `clau
 A codex worker supports most of the same lifecycle and reporting features, with a few limits:
 
 - You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:177`; `agent_park`, `src/tools/agents.ts:983`; `agent_resume`, `src/tools/agents.ts:810`). `agent_close` clears the Codex home needed by resume; it preserves the rollout file for reporting, but the closed session cannot be resumed (`reapCodexHomeForClosedAgent`, `src/spawn.ts:656`; `reapCodexHome`, `src/codexHome.ts:120`; `resumeHarness.name`, `src/tools/agents.ts:852`).
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2945`; `noteStalledCrew`, `src/scheduler.ts:2026`; `transcriptStaleness`, `src/scheduler.ts:1937`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2957`; `noteStalledCrew`, `src/scheduler.ts:2026`; `transcriptStaleness`, `src/scheduler.ts:1937`).
 - Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:112-137`; `contextFillField`, `src/tools/agents.ts:417-419`).
 - Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:308`).
 
@@ -214,6 +214,8 @@ The new code reaches each entry point at a different time:
 - Sessions already running keep the old server in memory. Run `/mcp` in that session and reconnect hive, or let it catch up when the session ends. Pulling before you open sessions for the day avoids this entirely.
 
 When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, so your lead command and vars stay yours) and uncomment its `watch: npm run watch` process. That auto-starts the compiler with the session and replaces the manual build step. The restart rules for running sessions still apply.
+
+For project-specific command trust and the optional todo completion gate, see [project commands](projects.md#project-commands-hiveyml).
 
 ## Uninstall
 

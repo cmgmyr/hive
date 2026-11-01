@@ -39,3 +39,5 @@ Commands that parse arguments reject unknown flags. To pass positional text that
 | `hive crew --json` | Print one JSON snapshot of this project's workers, todos, pending question count and wakes. Read-only: it runs no janitor and writes nothing. See [crew.md](crew.md). |
 | `hive statusline` | One-line store summary for Claude Code's status line |
 | `hive lead-handoff --request <id> --pad <id> --revision <n>` | Run by a lead answering an automatic handoff request (`lead_turn_budget.auto_handoff`): checks the persisted `hive-lead-handoff` pad and arms a short grace period, after which hive restarts the lead's pane with a fresh session. Any human input during the grace postpones it |
+
+There is no CLI command that completes a todo. MCP callers use `todo_complete` or `todo_update`; if the project sets `completion_gate`, `hive lead` reviews that command at startup through the existing interactive command approval.

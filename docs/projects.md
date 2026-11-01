@@ -33,6 +33,7 @@ agents: [claude, codex]       # optional allowed harness set for spawned crew; f
 lead_branches: [main, master] # branches where a session gets hive's kickoff
 first_message: "..."         # a lead's first turn; absent or "" sends none
 context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+completion_gate: [node, .hive/check-completion.mjs] # optional todo completion command
 lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults true
 dashboard: true               # optional; default false. Writes a generated, auto-refreshing
                               # HTML dashboard to .hive/dashboard.html on every tick (see [the dashboard guide](dashboard.md)):
@@ -75,6 +76,14 @@ The value is captured in the worker-only `HIVE_CONTEXT_CHECKPOINT_PERCENT` envir
 A visible process follows `placement:` exactly like a worker does: beside the lead under the default `split`, or its own tab under `placement: window`. Set `visible: false` instead and the process tiles as a pane in one shared `<project>/processes` window per project, so six background processes across two projects cost two tabs, not six.
 
 Visibility is not part of what hive approves. Toggling `visible` never re-opens the trust prompt, because the command hive runs is unchanged; only its name, its command, its `dir` and its `env` are hashed.
+
+### Todo completion gate
+
+Set `completion_gate` in the project `hive.yml` to a non-empty argv list. Hive runs that executable with literal arguments from the project root before an unfinished todo becomes completed through `todo_complete` or `todo_update(status="completed")`. Exit 0 lets the write continue. A nonzero exit, signal, timeout, spawn failure, untrusted command, invalid field, or stale todo/config refuses the entire write. The error includes the reason, exit status or signal when available, and up to 4096 bytes from each output stream. The command has a 30-second timeout and receives `HIVE_TODO_ID`, `HIVE_TODO_TITLE`, `HIVE_PROJECT_ID`, and `HIVE_ACTOR_ID` in its environment.
+
+The gate may run more than once when completion requests overlap, so it must be side-effect-free or idempotent.
+
+`hive lead` reviews the gate with the same interactive approval it uses for other project commands. Approval records trust for the current argv and does not run the gate. If approval is absent or the argv changes, completion refuses and tells you to run `hive` in a terminal in the project. There is no separate trust command. With the key absent or set to `null`, completions keep their existing behavior. A malformed `completion_gate` field in valid YAML refuses completion; a malformed whole project `hive.yml` follows the existing no-config behavior, so the gate does not run. The key is project-only and a global occurrence warns and is ignored.
 
 Two commands move a running process between the two places:
 

@@ -397,7 +397,9 @@ since every read pays for its full length.`,
 Blockers form a dependency graph (cycles are rejected). A todo is blocked
 while any of its blockers is not completed. Archived and completed are
 independent axes: archiving hides a closed lane's scaffolding from
-todo_list without marking anything done.`,
+todo_list without marking anything done. A project's optional completion_gate
+in hive.yml runs before a todo becomes completed; hive lead reviews its
+command at startup, and a refused gate leaves the todo unchanged.`,
 
   kv: `KV — small shared status values
 

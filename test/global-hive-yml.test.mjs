@@ -135,6 +135,38 @@ describe("global and project hive.yml resolution", () => {
     assert.ok(loaded.warnings.some((warning) => warning.startsWith(`${dirs.globalPath}:`) && warning.includes("cannot define `processes`")));
   });
 
+  it("accepts project completion argv and rejects malformed or global gate fields", () => {
+    const valid = fixture({ project: 'completion_gate: [node, "a file.js", "quoted\\nvalue"]\n' });
+    const loaded = loadProjectYml(valid.projectDir);
+    assert.deepEqual(loaded.config.completion_gate, ["node", "a file.js", "quoted\nvalue"]);
+    assert.equal(loaded.completionGateError, undefined);
+
+    for (const value of [
+      "completion_gate: []\n",
+      'completion_gate: [""]\n',
+      "completion_gate: [node, 1]\n",
+      'completion_gate: ["bad\\0arg"]\n',
+      "completion_gate: node\n",
+    ]) {
+      const invalid = fixture({ project: value });
+      const result = loadProjectYml(invalid.projectDir);
+      assert.equal(result.config.completion_gate, null, value);
+      assert.match(result.completionGateError ?? "", /must be a non-empty list/);
+      assert.ok(result.warnings.some((warning) => warning.includes("Refusing todo completion")), value);
+    }
+
+    const global = fixture({ global: "completion_gate: null\n" });
+    const globalResult = loadProjectYml(global.projectDir);
+    assert.equal(globalResult.config.completion_gate, null);
+    assert.equal(globalResult.completionGateError, undefined);
+    assert.ok(globalResult.warnings.some((warning) => warning.includes("global hive.yml cannot define `completion_gate`")));
+
+    const malformed = fixture({ project: "completion_gate: [node\n" });
+    const malformedResult = loadProjectYml(malformed.projectDir);
+    assert.equal(malformedResult.config, null);
+    assert.equal(malformedResult.completionGateError, undefined);
+  });
+
   it("project attach and autoAttach warn and cannot change terminal settings", () => {
     const dirs = fixture({ global: "attach: control\nautoAttach: off\n", project: "attach: raw\nautoAttach: on\n" });
     const loaded = loadProjectYml(dirs.projectDir);

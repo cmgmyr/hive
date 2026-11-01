@@ -46,6 +46,7 @@ export interface ProjectYml {
   quiet_messaging: boolean;
   vars: Record<string, string>;
   processes: Record<string, YmlProcess>;
+  completion_gate: string[] | null;
 }
 
 export interface LeadTurnBudget {
@@ -69,6 +70,7 @@ export const BUILT_IN_PROJECT_YML: Readonly<ProjectYml> = Object.freeze({
   quiet_messaging: true,
   vars: Object.freeze({}),
   processes: Object.freeze({}),
+  completion_gate: null,
 });
 
 export const PROJECT_YML_KEYS = Object.freeze(Object.keys(BUILT_IN_PROJECT_YML) as (keyof ProjectYml)[]);
@@ -142,6 +144,7 @@ export function resolveFirstMessage(
 
 export interface ResolvedHiveConfig {
   config: ProjectYml | null;
+  completionGateError?: string;
   warnings: string[];
   sources: Record<string, ConfigSource>;
   attach: { mode: AttachMode; source: ConfigSource };
@@ -227,6 +230,7 @@ function applyLayer(
   config: ProjectYml,
   sources: Record<string, ConfigSource>,
   warnings: string[],
+  completionGateError?: { value: string | undefined },
 ): void {
   const has = (key: string) => Object.hasOwn(root, key);
   const warn = (message: string) => warnings.push(`${path}: ${message}`);
@@ -389,6 +393,30 @@ function applyLayer(
     }
   }
 
+  if (has("completion_gate")) {
+    if (source === "global") {
+      warn("global hive.yml cannot define `completion_gate`; only project commands can be trusted.");
+    } else {
+      const value = root.completion_gate;
+      if (value == null) {
+        config.completion_gate = null;
+        sources.completion_gate = source;
+      } else if (
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((part) => typeof part === "string" && !part.includes("\0")) &&
+        (value[0] as string).trim() !== ""
+      ) {
+        config.completion_gate = value as string[];
+        sources.completion_gate = source;
+      } else {
+        const message = "completion_gate must be a non-empty list of strings without NUL, with a non-empty executable.";
+        warn(`${message} Refusing todo completion.`);
+        if (completionGateError) completionGateError.value = message;
+      }
+    }
+  }
+
   for (const key of ["attach", "autoAttach"] as const) {
     if (source === "project" && has(key)) warn(`${key} is global-only; ignoring it in project hive.yml.`);
   }
@@ -406,12 +434,13 @@ export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
   if (global.root) applyLayer(global.root, globalConfigPath(), "global", config, sources, warnings);
 
   let projectValid = false;
+  const completionGateError: { value: string | undefined } = { value: undefined };
   if (projectPath != null) {
     const file = resolve(projectPath, "hive.yml");
     const project = parseFile(file, warnings);
     if (project) {
       projectValid = true;
-      applyLayer(project, file, "project", config, sources, warnings);
+      applyLayer(project, file, "project", config, sources, warnings, completionGateError);
     }
   }
 
@@ -424,6 +453,7 @@ export function resolveHiveConfig(projectPath?: string): ResolvedHiveConfig {
 
   return {
     config: global.root || projectValid ? config : null,
+    ...(completionGateError.value ? { completionGateError: completionGateError.value } : {}),
     warnings,
     sources,
     attach: attachResult,

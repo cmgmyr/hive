@@ -57,6 +57,8 @@ Where a tool names a running agent by `name`, a string that matches no agent nam
 | `todo_comment` | Appends a comment | Handoffs: changed files, tests run, remaining risk |
 | `todo_block` | Adds a dependency; cycles are rejected | Encode ordering between tasks |
 | `todo_unblock` | Removes one dependency | When ordering changes |
+
+If the project defines `completion_gate` in its `hive.yml`, both tools run that trusted command before an unfinished todo becomes completed. A nonzero exit, timeout, signal, spawn error, invalid gate field, or stale todo/config returns an error and leaves the completion write unapplied. Reopening and other updates skip the gate. See [the project configuration](projects.md#todo-completion-gate).
 | **kv** | | |
 | `kv_set` | Stores a small shared JSON value, optional TTL | Flags, ports, shared config other sessions should find |
 | `kv_get` | Reads a value by key. A stored value that is not valid JSON comes back as its raw text | |
