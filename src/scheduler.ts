@@ -517,7 +517,9 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
       const closed = agent.kind === "agent"
         ? agent.recovery_state === "excluded"
           ? closeAgentRow(agent.id, identity)
-          : markWorkerLost(agent.id, identity)
+          : snapshot?.serverAnswered === true
+            ? markWorkerLost(agent.id, identity)
+            : closeAgentRow(agent.id, identity)
         : closeAgentRow(agent.id, identity);
       if (closed) {
         closedAgents += 1;

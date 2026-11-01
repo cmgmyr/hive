@@ -63,6 +63,17 @@ describe("crash recovery records only a conclusive loss of the recorded worker p
     assert.equal(row.recovery_state, "");
   });
 
+  it("does not mark recovery pending from an unanswered empty snapshot", () => {
+    const id = seedWorker("unanswered-empty");
+
+    const result = janitor({ panes: new Set(), windows: new Set(), serverAnswered: false });
+
+    const row = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(id);
+    assert.equal(result.closed_agents, 1, "the existing sweep still closes the row");
+    assert.equal(row.status, "closed");
+    assert.equal(row.recovery_state, "");
+  });
+
   it("a close intent written before a kill keeps the sweep from calling it a crash", () => {
     const id = seedWorker("deliberate");
     const identity = { tmux_target: "%8001", tmux_socket: "", pane_pid: "4242" };
