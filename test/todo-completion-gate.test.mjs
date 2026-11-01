@@ -287,7 +287,10 @@ it("a project config edit during the gate invalidates its result", async () => {
     await waitForFile(ready);
     writeFileSync(join(dirs.projectDir, "hive.yml"), `completion_gate: ${JSON.stringify([...original, "changed"])}\n`);
     writeFileSync(release, "go");
-    await assert.rejects(pending, /\[todo_completion_gate:changed\]/);
+    await assert.rejects(
+      pending,
+      /\[todo_completion_gate:changed\].*completion gate in hive\.yml is not approved yet; run `hive` in a terminal in this project to review it\./s,
+    );
     assert.equal((await mcp.call("todo_get", { todo_id: todo.todo_id })).status, "open");
   } finally {
     rmSync(release, { force: true });

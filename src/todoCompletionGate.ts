@@ -5,6 +5,8 @@ import { loadProjectYml } from "./projectYml.js";
 const GATE_NAME = "hive:todo-completion-gate";
 const TIMEOUT_MS = 30_000;
 const OUTPUT_TAIL_BYTES = 4096;
+const GATE_APPROVAL_MESSAGE =
+  "completion gate in hive.yml is not approved yet; run `hive` in a terminal in this project to review it.";
 
 export interface TodoCompletionGateInput {
   projectId: number;
@@ -41,12 +43,11 @@ export function assertTodoCompletionGateCurrent(
   originalArgv: readonly string[],
 ): void {
   const current = loadProjectYml(input.projectPath);
-  if (
-    current.completionGateError ||
-    !current.config?.completion_gate ||
-    JSON.stringify(current.config.completion_gate) !== JSON.stringify(originalArgv)
-  ) {
+  if (current.completionGateError || !current.config?.completion_gate) {
     throw failure("changed", input, null, null, Buffer.alloc(0), Buffer.alloc(0));
+  }
+  if (JSON.stringify(current.config.completion_gate) !== JSON.stringify(originalArgv)) {
+    throw failure("changed", input, null, null, Buffer.alloc(0), Buffer.alloc(0), GATE_APPROVAL_MESSAGE);
   }
   if (!todoCompletionGateTrusted(input.projectId, originalArgv)) {
     throw failure("untrusted", input, null, null, Buffer.alloc(0), Buffer.alloc(0));
@@ -71,7 +72,7 @@ function failure(
       `${signal ? `; signal ${signal}` : ""}${output ? `\n${output}` : ""}` +
       (detail ? `\n${detail}` : "") +
       (reason === "untrusted"
-        ? "\ncompletion gate in hive.yml is not approved yet; run `hive` in a terminal in this project to review it."
+        ? `\n${GATE_APPROVAL_MESSAGE}`
         : ""),
   );
 }
