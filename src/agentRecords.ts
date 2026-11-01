@@ -25,6 +25,7 @@ export interface AgentRow {
   parked_branch: string;
   resumed_at: string;
   codex_home: string;
+  recovery_state: "" | "pending" | "excluded";
   exit_tail: string;
   model: string | null;
   extra_args: string | null;

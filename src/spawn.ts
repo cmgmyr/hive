@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { preservedRolloutPath, reapCodexHome } from "./codexHome.js";
+import { codexHomeDir, preservedRolloutPath, reapCodexHome } from "./codexHome.js";
 import { getProject } from "./context.js";
 import { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
 import { loadProjectYml } from "./projectYml.js";
+import { WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import {
   applyLayout,
   claimInitialWindow,
@@ -430,6 +431,7 @@ export const RESUME_FLIP_COLUMNS = [
   "parked_at",
   "parked_branch",
   "resumed_at",
+  "recovery_state",
   "tmux_socket",
   "command",
 ];
@@ -438,7 +440,7 @@ export function resumeFlipSql(): string {
 
   return (
     "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
-    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
+    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, recovery_state = '', ` +
     "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
     "WHERE id = ? AND status = 'closed'"
   );
@@ -568,7 +570,7 @@ export function branchAt(cwd: string): string {
 export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
   const park =
     "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
-    "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ?";
+    "parked_branch = ?, recovery_state = 'excluded' WHERE id = ? AND status = 'running' AND tmux_target = ?";
   const row = db
     .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
     .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
@@ -632,44 +634,35 @@ export function releaseParkRow(agentId: number): boolean {
   );
 }
 
-// Row status alone is not the orphan test: a PARKED row is `status = 'closed'` too
-// (parkAgentRow above), and agent_park expects to resume it, cold-cache and all. `parked_at = ''`
-// is named explicitly rather than left to fall out of "closed" incidentally: codex can now be
-// parked too (harnessFor("codex").supportsResume, todo 563), exactly as this predicate already
-// assumed some non-claude harness eventually would - deriving the exclusion from harness capability
-// instead would have made this reap query's correctness depend on a table this file does not own.
-//
-// No conditional-UPDATE claim guards this, unlike closeAgentRow's "the conditional UPDATE is the
-// claim" - a deliberate difference, not a gap. That pattern earns its keep against an OBSERVABLE
-// side effect: a wake fired twice types into a pane twice. A reap has none - two instances racing
-// the same directory produce one deleted directory (rmSync's force:true swallows ENOENT even mid
-// recursive delete, not just on the top-level path), and the loser's `codex_home` update just
-// matches zero rows. Deleted twice is deleted once, so there is nothing here for a claim to arbitrate.
-//
-// rmSync runs before the clear, not after: if it throws (permissions, a mid-delete race), codex_home
-// stays set and this row is picked up again - by the next agent_close call, or by the janitor's own
-// backstop sweep - rather than the failure being silently swallowed by a claim that already fired.
-// The column IS the retry token; that is the guard here, it is just not shaped like a CAS.
-// Both callers wrap this, so a failure here costs a retry, never the close or the sweep it runs inside.
-// The target comes from the row's own transcript_path, not from reapCodexHome's returned list, so
-// a retry and a racing reap converge on the same file; the rewrite runs before the codex_home clear.
-export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): void {
-  const before = db.prepare("SELECT transcript_path FROM agents WHERE id = ?").get(agentId) as
-    | { transcript_path: string }
-    | undefined;
-  const oldTranscriptPath = before?.transcript_path ?? "";
-  const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
+// The selection can go stale while agent_resume claims the row, so revalidate and reap
+// under one SQLite writer claim before deleting the home.
+export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string): boolean | null {
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT transcript_path FROM agents
+         WHERE id = ? AND codex_home = ? AND status = 'closed' AND parked_at = ''
+           AND (recovery_state != 'pending' OR closed_at <= datetime('now', ?))`,
+      )
+      .get(agentId, codexHome, `-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { transcript_path: string } | undefined;
+    if (!row) return null;
 
-  reapCodexHome(codexHome);
+    const oldTranscriptPath = row.transcript_path ?? "";
+    const dest = oldTranscriptPath ? preservedRolloutPath(codexHome, oldTranscriptPath) : undefined;
+    const homeExisted = existsSync(codexHomeDir(codexHome));
 
-  if (dest && existsSync(dest)) {
-    db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ? AND transcript_path = ?").run(
-      dest,
-      agentId,
-      oldTranscriptPath,
-    );
-  }
-  db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
+    reapCodexHome(codexHome);
+
+    if (dest && existsSync(dest)) {
+      db.prepare("UPDATE agents SET transcript_path = ? WHERE id = ? AND transcript_path = ?").run(
+        dest,
+        agentId,
+        oldTranscriptPath,
+      );
+    }
+    db.prepare("UPDATE agents SET codex_home = '' WHERE id = ? AND codex_home = ?").run(agentId, codexHome);
+    return homeExisted;
+  }).immediate();
 }
 
 export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): boolean {

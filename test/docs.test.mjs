@@ -29,6 +29,11 @@ const COMMANDS = (() => {
 const { RAW_ATTACH_TMUX_CONFIG, TMUX_DOC } = await import("../dist/tmux.js");
 
 describe("docs keep up with the CLI", () => {
+  it("records the crash-retention exception as a maintainer decision", () => {
+    const patterns = readRepo("docs/patterns.md");
+    assert.match(patterns, /The maintainer approved one narrow exception on 2026-11-01 \(question 93\)/);
+  });
+
   it("lists every command in hive --help", async () => {
     const { stdout } = await runCli(["--help"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
     for (const command of COMMANDS) {

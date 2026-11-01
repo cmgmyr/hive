@@ -53,12 +53,16 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     assert.deepEqual(versions, MIGRATIONS.map((_, i) => i + 1));
   });
 
-  it("ends with agents.model, agents.extra_args and nullable pane_started_at", () => {
+  it("ends with agents.model, agents.extra_args, nullable pane_started_at and an empty recovery marker", () => {
     assert.ok(agentColumns.includes("model"));
     assert.ok(agentColumns.includes("extra_args"));
     const paneStartedAt = db.prepare("PRAGMA table_info(agents)").all().find((column) => column.name === "pane_started_at");
     assert.ok(paneStartedAt);
     assert.equal(paneStartedAt.notnull, 0);
+    const recoveryState = db.prepare("PRAGMA table_info('agents')").all().find((column) => column.name === "recovery_state");
+    assert.ok(recoveryState);
+    assert.equal(recoveryState.notnull, 1);
+    assert.equal(db.prepare("SELECT recovery_state FROM agents WHERE id = ?").get(agentId).recovery_state, "");
   });
 
   it("creates an empty queen audit table and does not duplicate it on a second migration", () => {
@@ -94,6 +98,7 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
       claude_messaging_pane_pid: socketPid,
       todo_id: todoId,
       pane_started_at: paneStartedAt,
+      recovery_state: recoveryState,
       ...rest
     } = after;
     assert.deepEqual(rest, before.agent);
@@ -103,6 +108,7 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     assert.equal(socketPid, "");
     assert.equal(todoId, null);
     assert.equal(paneStartedAt, null);
+    assert.equal(recoveryState, "");
   });
 
   it("adds the socket delivery columns to wakes, null on rows written before them", () => {
@@ -110,7 +116,7 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note", "delivered_by"]) assert.ok(columns.includes(name), name);
   });
 
-  it("appending delivered_by leaves a pre-existing wake unchanged", () => {
+  it("appending the recovery marker leaves a pre-existing wake unchanged", () => {
     const prior = new Database(join(dirs.dataDir, "pre-delivered-by.db"));
     try {
       prior.pragma("foreign_keys = ON");
