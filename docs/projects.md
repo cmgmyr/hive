@@ -43,10 +43,10 @@ dashboard: true               # optional; default false. Writes a generated, aut
 lead_sidebar: true            # default true. A claude lead gets a crew pane (workers,
                               # todos, wakes) from `hive crew --json`. Restart the lead after
                               # changing it (see [the crew sidebar](crew.md)).
-quiet_messaging: true        # default true. Set false to keep typed wakes and worker messages.
-                              # workers' messages as one "Message from @hive" row instead of
-                              # typed text. Restart the lead after changing it (see
-                              # [Quiet messaging](#quiet-messaging)).
+quiet_messaging: true         # default true. Wakes and workers' messages reach a claude lead
+                              # as one "Message from @hive" row instead of typed text. Set
+                              # false to keep them typed. Restart the lead after changing it
+                              # (see [Quiet messaging](#quiet-messaging)).
 vars:                         # substituted into the profile runbook
 processes:
   npm:dev: npm run dev        # shorthand; auto-starts with the session
