@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, it } from "node:test";
 
 import { assertScratchStore, clearHiveEnv, isolateTmux, McpClient, runCli, scratchDirs } from "./helpers.mjs";
 
-isolateTmux("the worker recovery tests");
+const { hasTmux, cleanup } = isolateTmux("the worker recovery tests");
 clearHiveEnv();
 
 const dirs = scratchDirs();
@@ -17,6 +18,7 @@ const { janitor } = await import("../dist/scheduler.js");
 const { codexHomeDir } = await import("../dist/codexHome.js");
 const { markWorkerRetirementIntent } = await import("../dist/workerRecovery.js");
 const { parkAgentRow } = await import("../dist/spawn.js");
+const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
 const projectId = db
@@ -72,6 +74,72 @@ describe("crash recovery records only a conclusive loss of the recorded worker p
     assert.equal(result.closed_agents, 1);
     assert.equal(row.status, "closed");
     assert.equal(row.recovery_state, "excluded");
+  });
+
+  it("agent_close intent wins when a janitor sweeps after kill and before the row close", { skip: !hasTmux && "tmux is not installed" }, async () => {
+    const socket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+    const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+    const session = `recovery-race-${process.pid}`;
+    const env = { ...process.env };
+    delete env.TMUX;
+    const runTmux = (...args) => execFileSync(realTmux, ["-S", socket, ...args], { env, encoding: "utf8" }).trim();
+    runTmux("new-session", "-d", "-s", session, "sleep", "300");
+    const pane = runTmux("list-panes", "-t", `=${session}`, "-F", "#{pane_id}");
+    const pid = runTmux("display-message", "-p", "-t", pane, "#{pane_pid}");
+    const id = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd,
+            status, kind, created_at)
+         VALUES (?, 'agent:close-race', 'close-race', ?, ?, ?, 'claude', ?, 'running', 'agent', datetime('now', '-60 seconds'))
+         RETURNING id`,
+      )
+      .get(projectId, pane, socket, pid, dirs.projectDir).id;
+    const fakeBin = join(dirs.tmp, "close-race-bin");
+    const sweepScript = join(dirs.tmp, "close-race-sweep.mjs");
+    const sweepResult = join(dirs.tmp, "close-race-sweep-result.json");
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(
+      sweepScript,
+      `import { writeFileSync } from "node:fs";\n` +
+        `const { janitor } = await import(${JSON.stringify(new URL("../dist/scheduler.js", import.meta.url).href)});\n` +
+        `const result = janitor({ panes: new Set(), windows: new Set(), serverAnswered: true });\n` +
+        `writeFileSync(process.env.HIVE_TEST_SWEEP_RESULT, JSON.stringify(result));\n`,
+    );
+    writeFileSync(
+      join(fakeBin, "tmux"),
+      `#!/bin/sh\n` +
+        `case " $* " in\n` +
+        `  *" kill-pane "*)\n` +
+        `    "${realTmux}" "$@" || exit $?\n` +
+        `    node "${sweepScript}" || exit $?\n` +
+        `    exit 0\n` +
+        `    ;;\n` +
+        `esac\n` +
+        `exec "${realTmux}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    const mcp = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: {
+        PATH: `${fakeBin}:${process.env.PATH}`,
+        TMUX_TMPDIR: process.env.TMUX_TMPDIR,
+        HIVE_TEST_SWEEP_RESULT: sweepResult,
+      },
+    });
+    await mcp.start();
+    try {
+      const receipt = await mcp.call("agent_close", { agent_id: id });
+      const row = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(id);
+      const sweep = JSON.parse(readFileSync(sweepResult, "utf8"));
+      assert.equal(sweep.closed_agents, 1, "the janitor must win after kill and before agent_close's row update");
+      assert.equal(row.status, "closed");
+      assert.equal(row.recovery_state, "excluded", "the interrupted deliberate close must not become a crash");
+      assert.equal(receipt.closed, true);
+    } finally {
+      await mcp.close();
+      cleanup(session);
+    }
   });
 
   it("the park row transition keeps its intent excluded", () => {
