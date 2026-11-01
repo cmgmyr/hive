@@ -215,6 +215,8 @@ The new code reaches each entry point at a different time:
 
 When developing hive itself, copy `hive.example.yml` to `hive.yml` (gitignored, so your lead command and vars stay yours) and uncomment its `watch: npm run watch` process. That auto-starts the compiler with the session and replaces the manual build step. The restart rules for running sessions still apply.
 
+For project-specific command trust and the optional todo completion gate, see [project commands](projects.md#project-commands-hiveyml).
+
 ## Uninstall
 
 Hive touches seven things on a machine; remove them in any order:

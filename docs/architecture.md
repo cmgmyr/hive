@@ -219,6 +219,10 @@ flowchart TD
 
 Why a socket path is a location and not a server identity, and why that is accepted rather than fixed, is in `.claude/rules/tmux-and-panes.md`.
 
+## 8. Todo completion gate
+
+The optional project `completion_gate` is read by `loadProjectYml` (`src/projectYml.ts:464`) and uses the existing command-trust descriptor (`completionGateTrust`, `src/todoCompletionGate.ts:18`). `hive lead` records approval through `ensureTrusted` (`src/cli.ts:436`); it does not run the gate. On either completion path, `throughCompletionGate` (`src/tools/todos.ts:56`) resolves the owning project, captures the row, and awaits `runTodoCompletionGate` (`src/todoCompletionGate.ts:79`) before opening the immediate write transaction. After exit 0 it reloads trust/config, then the transaction checks the persisted row snapshot before updating status. The await leaves the event loop and SQLite write transaction available while the child runs.
+
 ## Upgrades
 
 `src/upgrade.ts` classifies the running package and describes executable steps. A checkout wins over npm detection; a global install must match the canonical package under `npm root -g`. `cmdUpgrade` in `src/cli.ts` owns parsing, output, and execution. It queries the registry without writing the update cache, then runs setup from the newly installed CLI under the current absolute interpreter. Checkouts print the recipe unless `--run` is present. `src/mcpConfig.ts` owns the path-aware Claude and Codex diagnostics shared by setup and doctor for registrations recognised as hive; renamed registrations pointing outside the current hive dist are not detected, and neither command rewrites another tool's configuration. The CLI opens SQLite at import time even for a preview, but upgrade skips migrations.
