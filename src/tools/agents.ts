@@ -515,7 +515,7 @@ export function registerAgents(server: McpServer): void {
           .enum(["split", "window"])
           .optional()
           .describe(
-            "split (default): the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode).",
+            "Omit this to use the project's hive.yml placement (default: split). split: the worker appears as a pane in the lead's window, auto-tiled, so the whole crew shares one screen. window: its own tmux window (an iTerm tab under control mode). agent_output reads scrollback, so a crowded window does not limit what a lead can read. If workers end up in other windows, run hive layout to gather them.",
           ),
         layout: z
           .enum(WINDOW_LAYOUTS)
@@ -663,10 +663,14 @@ export function registerAgents(server: McpServer): void {
             briefPath,
           });
         };
+        const configuredPlacement = projectConfig?.placement ?? "split";
         const placement =
           args.placement ??
           projectConfig?.placement ??
           (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
+        const placementNote = args.placement === "window" && configuredPlacement === "split"
+          ? 'This worker got its own window because per-call placement "window" overrides this project\'s split config; run `hive layout` to gather it.'
+          : undefined;
         const layout = args.layout ?? projectConfig?.layout ?? DEFAULT_LAYOUT;
 
         let spawned;
@@ -795,6 +799,10 @@ export function registerAgents(server: McpServer): void {
         if (omittedTodoWarning) {
           const existingNote = typeof receipt.note === "string" ? receipt.note : "";
           receipt.note = existingNote ? `${existingNote} ${omittedTodoWarning}` : omittedTodoWarning;
+        }
+        if (placementNote) {
+          const existingNote = typeof receipt.note === "string" ? receipt.note : "";
+          receipt.note = existingNote ? `${existingNote} ${placementNote}` : placementNote;
         }
         return receipt;
       }),

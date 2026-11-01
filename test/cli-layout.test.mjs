@@ -205,6 +205,12 @@ describe("hive layout", { skip: hasTmux ? false : "tmux is not installed" }, () 
     assert.equal(paneWindow(workerPane), originalWindow);
   });
 
+  it("agent_spawn notes a window placement that overrides a split config", async () => {
+    const receipt = await spawnWorker("layout-placement-note-worker");
+    assert.match(receipt.note, /own window.*placement "window" overrides this project's split config; run `hive layout`/);
+    await mcp.call("agent_close", { name: receipt.name });
+  });
+
   it("hive layout refuses layout-selection flags", async () => {
     const result = await cli(["layout", "--window"]);
     assert.equal(result.code, 1);
