@@ -164,6 +164,7 @@ import {
   orphanScratchServers,
   orphansWorthWarningAbout,
   paneIsAloneInWindow,
+  paneWindow,
   paneVisibility,
   panePidForRecord,
   type ProjectWindows,
@@ -303,6 +304,7 @@ Usage:
   hive stop <process> [path]  stop one running process; --all stops every one
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
+  hive layout               gather this project's live workers and restore its configured layout
   hive status                overview of agents, todos, and wake-ups everywhere
   hive crew --json           this project's workers, todos and wakes as one JSON
                              snapshot; read-only, writes nothing
@@ -2052,6 +2054,112 @@ function cmdHide(argv: string[]): void {
       return `${name}: hidden`;
     }),
   );
+}
+
+function cmdLayout(argv: string[]): void {
+  const parsed = parseArgs(argv, {});
+  rejectUnknownFlags("layout", parsed, "none");
+  if (parsed.positional.length > 0) {
+    console.error("Usage: hive layout");
+    process.exit(1);
+  }
+
+  const project = resolveProjectForRead("layout");
+  const { config } = loadProjectYml(project.path);
+  if (config?.placement === "window") {
+    console.log("placement is window in hive.yml; nothing to gather");
+    return;
+  }
+  const layout = config?.layout ?? DEFAULT_LAYOUT;
+  const session = sessionName();
+
+  const result = withWindowClaim((): { lines: string[]; exitCode: number } => {
+    const snapshot = liveTargets();
+    if (observationFailed(snapshot)) {
+      return { lines: ["tmux could not be probed; nothing was changed"], exitCode: 1 };
+    }
+
+    const windows = projectWindows(session, project.id);
+    if (windows === null) {
+      return { lines: ["tmux could not be probed; nothing was changed"], exitCode: 1 };
+    }
+    if (!windows.project) {
+      return { lines: ["this project has no window yet; run hive first"], exitCode: 1 };
+    }
+
+    const lead = db
+      .prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = ? AND status = 'running' ORDER BY id LIMIT 1")
+      .get(project.id, LEAD_KIND) as RowPaneIdentity | undefined;
+    if (!lead || rowOwnership(lead, snapshot) !== "live") {
+      return { lines: ["the lead pane could not be verified; nothing was changed"], exitCode: 1 };
+    }
+    const leadWindow = paneWindow(lead.tmux_target);
+    if (!leadWindow || leadWindow.split(":")[1] !== windows.project.split(":")[1]) {
+      return {
+        lines: [`the lead pane is not in this project's window (${leadWindow ?? "unknown"} vs ${windows.project}); nothing was changed`],
+        exitCode: 1,
+      };
+    }
+
+    const ownedWindows = listOwnedWindows(session);
+    const workers = db
+      .prepare(
+        "SELECT id, name, tmux_target, tmux_socket, pane_pid FROM agents WHERE project_id = ? AND kind = 'agent' AND status = 'running' ORDER BY id",
+      )
+      .all(project.id) as (RowPaneIdentity & { id: number; name: string })[];
+    const moved: { name: string; pane: string }[] = [];
+    const sourceWindows = new Set<string>();
+
+    for (const worker of workers) {
+      if (rowOwnership(worker, snapshot) !== "live") continue;
+      const source = paneWindow(worker.tmux_target);
+      if (!source || source.split(":")[1] === windows.project.split(":")[1]) continue;
+      const sourceId = source.split(":")[1];
+      const stamped = ownedWindows.find((window) => window.window.split(":")[1] === sourceId);
+      if (
+        stamped &&
+        ((stamped.projectId !== "" && Number(stamped.projectId) !== project.id) ||
+          (stamped.processesOf !== "" && Number(stamped.processesOf) !== project.id))
+      ) {
+        continue;
+      }
+
+      tmux("join-pane", "-d", "-s", worker.tmux_target, "-t", windows.project);
+      sourceWindows.add(source);
+      moved.push({ name: worker.name, pane: worker.tmux_target });
+    }
+
+    const leadPanes = tmux("list-panes", "-t", windows.project, "-F", "#{pane_id}").split("\n").filter(Boolean);
+    if (leadPanes[0] !== lead.tmux_target) {
+      tmux("swap-pane", "-s", lead.tmux_target, "-t", leadPanes[0]);
+    }
+    applyLayout(windows.project, layout);
+
+    const projectRunningTargets = new Set(
+      (db.prepare("SELECT tmux_target FROM agents WHERE project_id = ? AND status = 'running' AND tmux_target != ''").all(project.id) as { tmux_target: string }[])
+        .map((row) => row.tmux_target),
+    );
+    const leftWindows: string[] = [];
+    for (const source of sourceWindows) {
+      let remaining: string[];
+      try {
+        remaining = tmux("list-panes", "-t", source, "-F", "#{pane_id}").split("\n").filter(Boolean);
+      } catch (error) {
+        if (tmuxSaysNothingThere(error)) continue;
+        throw error;
+      }
+      if (remaining.some((pane) => !projectRunningTargets.has(pane))) leftWindows.push(source);
+    }
+
+    const lines = moved.map(({ name, pane }) => `moved ${name} pane ${pane} into ${windows.project}`);
+    if (leftWindows.length > 0) lines.push(`left windows with panes remaining: ${leftWindows.join(", ")}`);
+    if (moved.length === 0) lines.push("nothing to move");
+    lines.push(`moved ${moved.length} pane${moved.length === 1 ? "" : "s"} into ${windows.project}; layout ${layout}`);
+    return { lines, exitCode: 0 };
+  });
+
+  console.log(result.lines.join("\n"));
+  process.exitCode = result.exitCode;
 }
 
 const LEAD_OWNERSHIP_LABEL: Record<RowOwnership, string> = {
@@ -4357,7 +4465,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "status", "portfolio", "crew", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "layout", "status", "portfolio", "crew", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   LEAD_HANDOFF_GRACE_VERB,
   LEAD_HANDOFF_START_VERB,
@@ -4415,6 +4523,9 @@ try {
       break;
     case "hide":
       cmdHide(rest);
+      break;
+    case "layout":
+      cmdLayout(rest);
       break;
     case "status":
       rejectUnknownFlags("status", parseArgs(rest, {}), "none");
