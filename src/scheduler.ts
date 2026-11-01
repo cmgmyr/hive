@@ -108,6 +108,7 @@ import { driveLeadHandoff } from "./leadHandoff.js";
 import { handoffHoldsWake } from "./leadHandoffState.js";
 import { FIRST_MESSAGE_LOG_STATE, humanPromptSql, readLeadTurnState } from "./leadState.js";
 import { retryQuietLeadMessages } from "./leadMessageDelivery.js";
+import { markWorkerLost, WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, screenClassifiable, transcriptDirFor } from "./harnesses.js";
 import { transcriptDir, readContextFill, type ContextWorker } from "./transcript.js";
 import {
@@ -286,7 +287,7 @@ export function startScheduler(intervalMs = DEFAULT_SCHEDULER_INTERVAL_MS): void
 
 const CREW_ROW_COLUMNS =
   "id, project_id, name, actor_id, kind, cwd, tmux_target, tmux_socket, pane_pid, session_id, agent_state, " +
-  "state_changed_at, created_at";
+  "state_changed_at, created_at, recovery_state";
 
 interface CrewRowForRecord {
   id: number;
@@ -302,6 +303,7 @@ interface CrewRowForRecord {
   agent_state: string | null;
   state_changed_at: string | null;
   created_at: string;
+  recovery_state: "" | "pending" | "excluded";
 }
 
 // Set only from a tick that SAW panes, so it separates "hive watched this socket die" from "hive
@@ -400,8 +402,10 @@ function reapClosedCodexHomes(): number {
   let reaped = 0;
   try {
     const rows = stmt(
-      "SELECT id, codex_home FROM agents WHERE codex_home != '' AND status = 'closed' AND parked_at = ''",
-    ).all() as { id: number; codex_home: string }[];
+      `SELECT id, codex_home FROM agents
+        WHERE codex_home != '' AND status = 'closed' AND parked_at = ''
+          AND (recovery_state != 'pending' OR closed_at <= datetime('now', ?))`,
+    ).all(`-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { id: number; codex_home: string }[];
     for (const row of rows) {
       try {
         reapCodexHomeForClosedAgent(row.id, row.codex_home);
@@ -506,7 +510,17 @@ export function janitor(snapshot: AliveSnapshot | null = liveTargets()): {
 
       // The conditional UPDATE is the claim: two instances probing the same dead socket both reach
       // this branch, and only the one that actually closed the row may put it in a record.
-      if (closeAgentRow(agent.id)) {
+      const identity = {
+        tmux_target: agent.tmux_target,
+        tmux_socket: agent.tmux_socket,
+        pane_pid: agent.pane_pid,
+      };
+      const closed = agent.kind === "agent"
+        ? agent.recovery_state === "excluded"
+          ? closeAgentRow(agent.id, identity)
+          : markWorkerLost(agent.id, identity)
+        : closeAgentRow(agent.id, identity);
+      if (closed) {
         closedAgents += 1;
         swept.push(agent);
       }

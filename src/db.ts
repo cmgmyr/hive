@@ -653,6 +653,10 @@ BEGIN
   SELECT RAISE(IGNORE);
 END;
 `,
+  `
+ALTER TABLE agents ADD COLUMN recovery_state TEXT NOT NULL DEFAULT ''
+  CHECK (recovery_state IN ('', 'pending', 'excluded'));
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

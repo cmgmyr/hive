@@ -430,6 +430,7 @@ export const RESUME_FLIP_COLUMNS = [
   "parked_at",
   "parked_branch",
   "resumed_at",
+  "recovery_state",
   "tmux_socket",
   "command",
 ];
@@ -438,7 +439,7 @@ export function resumeFlipSql(): string {
 
   return (
     "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
-    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, ` +
+    `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, recovery_state = '', ` +
     "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
     "WHERE id = ? AND status = 'closed'"
   );
@@ -568,7 +569,7 @@ export function branchAt(cwd: string): string {
 export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
   const park =
     "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
-    "parked_branch = ? WHERE id = ? AND status = 'running' AND tmux_target = ?";
+    "parked_branch = ?, recovery_state = 'excluded' WHERE id = ? AND status = 'running' AND tmux_target = ?";
   const row = db
     .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
     .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);

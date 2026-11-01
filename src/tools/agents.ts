@@ -65,6 +65,7 @@ import {
   storedLaunchOptions,
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
+import { markWorkerRetirementIntent } from "../workerRecovery.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
 import { leadSessionEnded } from "../leadState.js";
 import {
@@ -214,6 +215,18 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
     );
   }
   if (agent.status !== "running") {
+    if (agent.kind === "agent" && agent.recovery_state === "pending") {
+      if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+        throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
+      }
+      if (agent.codex_home) {
+        try {
+          reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+        } catch {
+
+        }
+      }
+    }
     return {
       ...receipt,
       ...(agent.parked_at ? { parked: true } : {}),
@@ -229,6 +242,9 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
           ? "Restart or end the lead from its own terminal."
           : "Use agent_close without row_only to stop it."),
     );
+  }
+  if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+    throw new Error(`Agent ${agent.id} changed before row-only retirement. Nothing was changed.`);
   }
   if (!closeAgentRow(agent.id, paneIdentity(agent))) {
     const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
@@ -1061,6 +1077,9 @@ export function registerAgents(server: McpServer): void {
 
         const branch = branchAt(agent.cwd);
         if (live) live = stillOwnsPane(agent, "agent_park");
+        if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+          throw new Error(`Agent ${agent.id} changed before its park intent was recorded. Nothing was changed.`);
+        }
         if (live) killAgentPane(agent.tmux_target);
 
         const parkedAt = parkAgentRow(agent.id, paneIdentity(agent), branch);
@@ -1817,6 +1836,25 @@ export function registerAgents(server: McpServer): void {
           return { agent_id: agent.id, name: agent.name, closed: true, park_released: true };
         }
 
+        if (agent.status === "closed" && agent.kind === "agent" && agent.recovery_state === "pending") {
+          if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+            throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
+          }
+          if (agent.codex_home) {
+            try {
+              reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+            } catch {
+
+            }
+          }
+          return {
+            agent_id: agent.id,
+            name: agent.name,
+            closed: true,
+            note: "Pending crash recovery was explicitly abandoned; its Codex home was released.",
+          };
+        }
+
         const ownership: RowOwnership = agent.status === "running" ? observeOwnership(agent) : "gone";
         if (ownership === "unknown") {
           throw new Error(
@@ -1854,6 +1892,9 @@ export function registerAgents(server: McpServer): void {
           };
         }
         if (live) live = stillOwnsPane(agent, "agent_close");
+        if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
+          throw new Error(`Agent ${agent.id} changed before its close intent was recorded. Nothing was changed.`);
+        }
         if (live) killAgentPane(agent.tmux_target);
 
         if (!closeAgentRow(agent.id, paneIdentity(agent))) {
