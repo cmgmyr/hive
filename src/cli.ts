@@ -229,6 +229,7 @@ import {
   type YmlProcess,
 } from "./projectYml.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
+import { completionGateTrust } from "./todoCompletionGate.js";
 import { handoffStatusSegment } from "./leadHandoff.js";
 import { cmdLeadHandoff, runHandoffGrace, runHandoffStart } from "./leadHandoffCli.js";
 import { harnessFor, hasTranscriptSignal, paneClassifierFor, transcriptDirFor } from "./harnesses.js";
@@ -739,6 +740,12 @@ async function cmdLead(argv: string[]): Promise<void> {
             proc.auto_start !== false && !isTrusted(project.id, name, proc.command, proc.dir, proc.env),
         )?.[0];
       }
+      if (!untrusted && config?.completion_gate) {
+        const gateTrust = completionGateTrust(config.completion_gate);
+        if (!isTrusted(project.id, gateTrust.name, gateTrust.command, gateTrust.dir, gateTrust.env)) {
+          untrusted = "completion gate";
+        }
+      }
       if (untrusted) {
         console.error(`hive lead: "${untrusted}" is not trusted; run hive lead <path> interactively once`);
         process.exitCode = 1;
@@ -760,6 +767,10 @@ async function cmdLead(argv: string[]): Promise<void> {
       } else {
         console.log("Using the default claude lead instead.");
       }
+    }
+    if (config?.completion_gate) {
+      const gateTrust = completionGateTrust(config.completion_gate);
+      await ensureTrusted(project.id, gateTrust.name, gateTrust.command, gateTrust.dir, gateTrust.env);
     }
 
     const leadHarness = harnessFor(leadCommand);
