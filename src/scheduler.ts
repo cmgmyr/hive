@@ -408,8 +408,7 @@ function reapClosedCodexHomes(): number {
     ).all(`-${WORKER_RECOVERY_RETENTION_SECONDS} seconds`) as { id: number; codex_home: string }[];
     for (const row of rows) {
       try {
-        reapCodexHomeForClosedAgent(row.id, row.codex_home);
-        reaped += 1;
+        if (reapCodexHomeForClosedAgent(row.id, row.codex_home) !== null) reaped += 1;
       } catch {
 
       }

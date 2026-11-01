@@ -17,7 +17,7 @@ const { db, migrate } = await import("../dist/db.js");
 const { janitor } = await import("../dist/scheduler.js");
 const { codexHomeDir } = await import("../dist/codexHome.js");
 const { markWorkerRetirementIntent } = await import("../dist/workerRecovery.js");
-const { parkAgentRow } = await import("../dist/spawn.js");
+const { parkAgentRow, reapCodexHomeForClosedAgent } = await import("../dist/spawn.js");
 const { tmuxSocketPath } = await import("../dist/tmux.js");
 migrate();
 
@@ -158,6 +158,28 @@ describe("crash recovery records only a conclusive loss of the recorded worker p
 });
 
 describe("a pending crash keeps its Codex home for seven days across server processes", () => {
+  it("a resume that wins after the reaper selects a stale candidate keeps the Codex home", () => {
+    const homeKey = "crashed-home-resume-wins";
+    mkdirSync(codexHomeDir(homeKey), { recursive: true });
+    writeFileSync(join(codexHomeDir(homeKey), "marker"), "keep for resume");
+    const id = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, tmux_target, tmux_socket, pane_pid, command, cwd,
+            status, kind, codex_home, recovery_state, closed_at)
+         VALUES (?, 'agent:resume-race', 'resume-race', '%8003', '', '4242', 'codex', ?, 'running', 'agent', ?, '', '')
+         RETURNING id`,
+      )
+      .get(projectId, dirs.projectDir, homeKey).id;
+
+    const result = reapCodexHomeForClosedAgent(id, homeKey);
+
+    const row = db.prepare("SELECT status, codex_home FROM agents WHERE id = ?").get(id);
+    assert.equal(row.status, "running");
+    assert.equal(row.codex_home, homeKey);
+    assert.equal(existsSync(codexHomeDir(homeKey)), true, "a resume that won the row must keep its Codex home");
+    assert.equal(result, null, "the stale candidate no longer qualifies for cleanup");
+  });
+
   it("survives a fresh CLI process, then the janitor reaps it after seven days", async () => {
     const homeKey = "crashed-home-7d";
     mkdirSync(codexHomeDir(homeKey), { recursive: true });
