@@ -11,6 +11,7 @@ after(() => cleanupTmux());
 const EXPECTED_TOOL_NAMES = [
   "actor_prune",
   "agent_close",
+  "agent_fork",
   "agent_list",
   "agent_message_get",
   "agent_output",

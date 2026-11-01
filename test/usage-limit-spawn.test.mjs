@@ -40,10 +40,12 @@ describe("spawn admission during a synthetic findings-limit-fork-spike A1-A2 epi
       (project_id, actor_id, name, tmux_target, command, cwd, status, kind, session_id)
       VALUES (?, 'agent:limit-active', 'limit-active', '', 'claude', ?, 'running', 'agent', 'synthetic-claude') RETURNING id`)
       .get(project.project.id, projectDir).id;
+    const sourceTranscript = join(dirs.tmp, "fork-source.jsonl");
+    writeFileSync(sourceTranscript, "{}\n");
     const parked = db.prepare(`INSERT INTO agents
-      (project_id, actor_id, name, tmux_target, command, cwd, status, kind, session_id, closed_at)
-      VALUES (?, 'agent:limit-parked', 'limit-parked', '', 'claude', ?, 'closed', 'agent', 'synthetic-claude-parked', datetime('now')) RETURNING id`)
-      .get(project.project.id, projectDir).id;
+      (project_id, actor_id, name, tmux_target, command, cwd, status, kind, session_id, transcript_path, closed_at)
+      VALUES (?, 'agent:limit-parked', 'limit-parked', '', 'claude', ?, 'closed', 'agent', 'synthetic-claude-parked', ?, datetime('now')) RETURNING id`)
+      .get(project.project.id, projectDir, sourceTranscript).id;
     db.prepare(`INSERT INTO agent_usage_limits
       (agent_id, project_id, harness, pane_pid, session_id, signal_key, observed_at, reset_at, expires_at)
       VALUES (?, ?, 'claude', '', 'synthetic-claude', 'spike-A1-A2-synthetic', datetime('now'), NULL, datetime('now', '+5 hours'))`)
@@ -54,6 +56,8 @@ describe("spawn admission during a synthetic findings-limit-fork-spike A1-A2 epi
     assert.match(spawnRefusal.message, /agent_spawn:usage-limit.*until/);
     const resumeRefusal = await mcp.call("agent_resume", { agent_id: parked }).then(() => null, (error) => error);
     assert.match(resumeRefusal.message, /agent_resume:usage-limit.*until/);
+    const forkRefusal = await mcp.call("agent_fork", { agent_id: parked, name: "must-not-fork" }).then(() => null, (error) => error);
+    assert.match(forkRefusal.message, /agent_fork:usage-limit.*until/);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agents WHERE project_id = ?").get(project.project.id).n, rowsBefore);
     assert.equal(db.prepare("SELECT status FROM agents WHERE id = ?").get(parked).status, "closed");
     assert.equal(db.prepare("SELECT 1 FROM agent_usage_limits WHERE project_id = ? AND harness = 'codex' AND released_at IS NULL").get(project.project.id), undefined);

@@ -1,9 +1,11 @@
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -17,7 +19,9 @@ import { parse as parseToml } from "smol-toml";
 import { gitPrimaryRoot } from "./context.js";
 import { storeDir } from "./dataDir.js";
 import { hookEntry } from "./hooks.js";
+import { harnessFor } from "./harnesses.js";
 import { shellQuote } from "./tmux.js";
+import type { AgentRow } from "./agentRecords.js";
 
 export interface CodexHomeInput {
   key: string;
@@ -58,6 +62,113 @@ export function preservedRolloutPath(key: string, transcriptPath: string): strin
 }
 
 const ROLLOUT_FILE = /^rollout-.*\.jsonl$/;
+const MAX_FORK_ROLLOUT_BYTES = 64 * 1024 * 1024;
+
+function firstSessionMeta(path: string): Record<string, unknown> | null {
+  const firstLine = readFileSync(path, "utf8").split("\n", 1)[0];
+  let record: unknown;
+  try {
+    record = JSON.parse(firstLine);
+  } catch {
+    if (firstLine.includes("\"forked_from_id\"")) throw new Error("Codex fork rollout has malformed session metadata.");
+    return null;
+  }
+  if (!record || typeof record !== "object" || (record as { type?: unknown }).type !== "session_meta") return null;
+  const payload = (record as { payload?: unknown }).payload;
+  return payload && typeof payload === "object" ? payload as Record<string, unknown> : record as Record<string, unknown>;
+}
+
+function checkedSessionsPath(home: string, transcriptPath: string): { sessionsRoot: string; sourcePath: string; relativePath: string } {
+  const sessionsRoot = realpathSync(join(home, "sessions"));
+  const sourcePath = realpathSync(transcriptPath);
+  const relativePath = relative(sessionsRoot, sourcePath);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new Error("Codex transcript is outside its recorded CODEX_HOME sessions directory.");
+  }
+  const file = lstatSync(sourcePath);
+  if (!file.isFile() || !ROLLOUT_FILE.test(sourcePath.split(/[\\/]/).at(-1) ?? "")) {
+    throw new Error("Codex transcript is not a regular rollout file.");
+  }
+  return { sessionsRoot, sourcePath, relativePath };
+}
+
+export function seedCodexFork(source: AgentRow, childKey: string, seed = readCodexForkSeed(source)): void {
+  writeCodexForkSeed(source, childKey, seed);
+}
+
+export interface CodexForkSeed {
+  sourceSessionId: string;
+  relativePath: string;
+  contents: Buffer;
+}
+
+export function readCodexForkSeed(source: AgentRow): CodexForkSeed {
+  if (harnessFor(source.command).name !== "codex") throw new Error("Only a Codex worker can seed a Codex fork.");
+  if (!source.session_id || !source.codex_home || !source.transcript_path) {
+    throw new Error("Codex source must have a recorded session, CODEX_HOME, and transcript path.");
+  }
+  const sourceHome = codexHomeDir(source.codex_home);
+  const { sessionsRoot, sourcePath, relativePath } = checkedSessionsPath(sourceHome, source.transcript_path);
+  const size = lstatSync(sourcePath).size;
+  if (size > MAX_FORK_ROLLOUT_BYTES) throw new Error("Codex source rollout exceeds the 64 MiB fork-seed limit.");
+
+  const contents = readFileSync(sourcePath);
+  const lastNewline = contents.lastIndexOf(0x0a);
+  if (lastNewline < 0) throw new Error("Codex source rollout has no complete JSONL records.");
+  const completePrefix = contents.subarray(0, lastNewline + 1);
+  const lines = completePrefix.toString("utf8").split("\n").filter(Boolean);
+  let sessionMeta: Record<string, unknown> | null = null;
+  try {
+    for (const line of lines) {
+      const record = JSON.parse(line) as { type?: unknown; payload?: unknown };
+      if (record?.type === "session_meta") {
+        const payload = record.payload;
+        sessionMeta = payload && typeof payload === "object" ? payload as Record<string, unknown> : record as Record<string, unknown>;
+      }
+    }
+  } catch {
+    throw new Error("Codex source rollout contains a malformed complete JSONL record.");
+  }
+  if (sessionMeta?.id !== source.session_id) {
+    throw new Error("Codex source rollout metadata.id does not match its recorded session id.");
+  }
+
+  return { sourceSessionId: source.session_id, relativePath, contents: completePrefix };
+}
+
+function writeCodexForkSeed(source: AgentRow, childKey: string, seed: CodexForkSeed): void {
+  if (seed.sourceSessionId !== source.session_id) throw new Error("Codex fork seed no longer matches the captured source session.");
+  const childSessions = join(codexHomeDir(childKey), "sessions");
+  mkdirSync(childSessions, { recursive: true });
+  const destination = join(childSessions, seed.relativePath);
+  mkdirSync(dirname(destination), { recursive: true });
+  if (existsSync(destination)) throw new Error("Fresh Codex child home already contains the source rollout path.");
+  writeFileSync(destination, seed.contents, { flag: "wx" });
+}
+
+export function findCodexFork(
+  childKey: string,
+  sourceSessionId: string,
+): { sessionId: string; transcriptPath: string } | null {
+  const sessionsRoot = join(codexHomeDir(childKey), "sessions");
+  const matches: { sessionId: string; transcriptPath: string }[] = [];
+  for (const path of collectRolloutFiles(sessionsRoot)) {
+    let meta: Record<string, unknown> | null;
+    try {
+      meta = firstSessionMeta(path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw e;
+    }
+    if (meta?.forked_from_id !== sourceSessionId) continue;
+    if (typeof meta.id !== "string" || !meta.id || meta.id === sourceSessionId) {
+      throw new Error("Codex fork rollout has malformed session metadata.");
+    }
+    matches.push({ sessionId: meta.id, transcriptPath: path });
+  }
+  if (matches.length > 1) throw new Error(`Found ${matches.length} Codex rollouts forked from the source session.`);
+  return matches[0] ?? null;
+}
 
 // Dirent.isFile()/.isDirectory() answer about the entry itself, not its target, so a symlinked
 // file or directory under sessions/ is neither and is silently skipped - never followed, never

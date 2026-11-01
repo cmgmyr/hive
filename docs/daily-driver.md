@@ -55,6 +55,8 @@ Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pan
 
 Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works. See [Codex workers](install.md#codex-workers) for its lifecycle, reporting, and instruction-loading limits.
 
+Use `agent_fork(agent_id, name)` when you want a worker to try an alternative using an existing Claude Code or Codex conversation. Hive creates a separate worker identity, session, pane and brief, then waits for your assignment. The child uses the source cwd by default; pass another cwd in the same project when useful. Hive does not copy the source worktree or todo link, and does not promise that harness tasks copy. Claude process-scoped permissions need approval again. A Codex source must still have its generated home and rollout, so park it before forking if you want to preserve it; a closed Codex home has been reaped.
+
 ### A worker's long report reaches you as one line
 
 Your lead's pane is your window, not a log. So when a worker sends a lead more than 300 characters of text, hive stores the message and delivers a single pointer line to that pane instead:
