@@ -238,9 +238,45 @@ describe("a pending crash keeps its Codex home for seven days across server proc
       const result = await mcp.call("agent_close", { agent_id: id });
       const row = db.prepare("SELECT recovery_state, codex_home FROM agents WHERE id = ?").get(id);
       assert.equal(result.closed, true);
+      assert.match(result.note, /Codex home directory existed and was released/);
       assert.equal(row.recovery_state, "excluded");
       assert.equal(row.codex_home, "");
       assert.equal(existsSync(codexHomeDir(homeKey)), false);
+    } finally {
+      await mcp.close();
+    }
+  });
+
+  it("both close paths report that a Claude worker had no Codex home to release", async () => {
+    const rowOnlyId = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, kind, recovery_state, closed_at)
+         VALUES (?, 'agent:claude-abandon', 'claude-abandon', 'claude', ?, 'closed', 'agent', 'pending', datetime('now'))
+         RETURNING id`,
+      )
+      .get(projectId, dirs.projectDir).id;
+    const closeId = db
+      .prepare(
+        `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, kind, recovery_state, closed_at)
+         VALUES (?, 'agent:claude-close', 'claude-close', 'claude', ?, 'closed', 'agent', 'pending', datetime('now'))
+         RETURNING id`,
+      )
+      .get(projectId, dirs.projectDir).id;
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    try {
+      const rowOnly = await mcp.call("agent_close", { agent_id: rowOnlyId, row_only: true });
+      const afterRowOnly = db.prepare("SELECT recovery_state, codex_home FROM agents WHERE id = ?").get(rowOnlyId);
+      assert.match(rowOnly.note, /recovery marker changed to excluded/);
+      assert.match(rowOnly.note, /no Codex home was associated with this row and none was released/);
+      assert.equal(afterRowOnly.recovery_state, "excluded");
+      assert.equal(afterRowOnly.codex_home, "");
+
+      const closed = await mcp.call("agent_close", { agent_id: closeId });
+      const afterClose = db.prepare("SELECT recovery_state, codex_home FROM agents WHERE id = ?").get(closeId);
+      assert.match(closed.note, /no Codex home was associated with this row and none was released/);
+      assert.equal(afterClose.recovery_state, "excluded");
+      assert.equal(afterClose.codex_home, "");
     } finally {
       await mcp.close();
     }

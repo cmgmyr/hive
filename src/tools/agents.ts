@@ -219,13 +219,19 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
       if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
         throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
       }
+      let releasedHome: boolean | null = null;
       if (agent.codex_home) {
         try {
-          reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+          releasedHome = reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
         } catch {
 
         }
       }
+      return {
+        ...receipt,
+        ...(agent.parked_at ? { parked: true } : {}),
+        note: pendingRecoveryAbandonmentNote(agent.id, agent.codex_home, releasedHome),
+      };
     }
     return {
       ...receipt,
@@ -266,6 +272,25 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
       `Row retired with no kill, stop or typing; its pane ownership read ${ownership}.` +
       (ownership === "unknown" ? " Anything still running in that pane was left alone." : ""),
   };
+}
+
+function pendingRecoveryAbandonmentNote(agentId: number, codexHome: string, releasedHome: boolean | null): string {
+  const row = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(agentId) as
+    | { status: string; recovery_state: string }
+    | undefined;
+  if (row?.status === "running") return "A concurrent resume now owns the row; no Codex home was released.";
+
+  const stateNote = row?.recovery_state === "excluded"
+    ? "The recovery marker changed to excluded"
+    : "The recovery marker could not be changed to excluded";
+  const homeNote = !codexHome
+    ? "no Codex home was associated with this row and none was released"
+    : releasedHome === true
+      ? "the Codex home directory existed and was released"
+      : releasedHome === false
+        ? "no Codex home directory existed to release"
+        : "the Codex home was not released because the row changed";
+  return `${stateNote}; ${homeNote}.`;
 }
 
 // Rechecked just before a kill. "changed" skips the kill and lets the row CAS report the race.
@@ -1840,9 +1865,10 @@ export function registerAgents(server: McpServer): void {
           if (!markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
             throw new Error(`Agent ${agent.id} changed before its recovery was abandoned. Nothing was changed.`);
           }
+          let releasedHome: boolean | null = null;
           if (agent.codex_home) {
             try {
-              reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
+              releasedHome = reapCodexHomeForClosedAgent(agent.id, agent.codex_home);
             } catch {
 
             }
@@ -1851,7 +1877,7 @@ export function registerAgents(server: McpServer): void {
             agent_id: agent.id,
             name: agent.name,
             closed: true,
-            note: "Pending crash recovery was explicitly abandoned; its Codex home was released.",
+            note: pendingRecoveryAbandonmentNote(agent.id, agent.codex_home, releasedHome),
           };
         }
 
