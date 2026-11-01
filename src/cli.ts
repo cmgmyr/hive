@@ -1149,6 +1149,7 @@ const HIVE_YML_TEMPLATE = `# hive project config. Read by \`hive lead\` from the
 # first_message: "..."         # a lead's first turn; absent or "" sends none
 
 # context_checkpoint_percent: null # unset means off; integer 1-100 to enable
+# completion_gate: null       # optional project todo check; null keeps it disabled
 
 # lead_turn_budget: {warn: 300, stop: 600} # optional thresholds; auto_handoff defaults on
 
