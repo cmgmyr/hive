@@ -54,6 +54,14 @@ ACTORS — who is writing
 }
 
 export const HELP_TOPICS: Record<string, string> = {
+  layout: `LAYOUT — restore a project's worker pane layout
+
+Run \`hive layout\` in a project to gather its live worker panes into the lead
+window and re-apply the merged hive.yml layout. The command takes no flags. It
+does nothing when the resolved placement is "window".
+
+This is a CLI command for the local tmux environment, not an MCP tool.`,
+
   workflow: `WORKFLOW — lead/worker orchestration
 
 One session acts as the lead. It spawns and drives workers with the agent
