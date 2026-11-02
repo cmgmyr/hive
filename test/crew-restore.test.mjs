@@ -250,8 +250,11 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
   });
 
   it("unknown foreign pane ownership is skipped and a missing session is reported as a retryable failure", async () => {
+    const active = await mcp.call("agent_spawn", { name: "restore-live", command: claude.bin });
+    await liveAgentRow(mcp, "restore-live");
     const live = await mcp.call("agent_spawn", { name: "restore-foreign", command: claude.bin });
     await liveAgentRow(mcp, "restore-foreign");
+    const activeBefore = row(active.agent_id);
     const originalSocket = row(live.agent_id).tmux_socket;
     db.prepare("UPDATE agents SET tmux_socket = ? WHERE id = ?").run("/tmp/foreign-tmux-socket", live.agent_id);
     const missingSession = db.prepare(
@@ -269,15 +272,20 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
     });
     assert.equal(result.code, 1);
     const rows = JSON.parse(result.stdout).rows;
+    assert.equal(rows.find((candidate) => candidate.agent_id === active.agent_id).outcome, "skipped");
     assert.equal(rows.find((candidate) => candidate.agent_id === live.agent_id).outcome, "skipped");
     const blocked = rows.find((candidate) => candidate.agent_id === missingSession);
     assert.equal(blocked.outcome, "failed");
     assert.match(blocked.reason, /session id/);
     assert.equal(row(live.agent_id).status, "running");
     assert.equal(row(live.agent_id).tmux_socket, "/tmp/foreign-tmux-socket");
+    assert.equal(row(active.agent_id).status, "running");
+    assert.equal(row(active.agent_id).tmux_target, activeBefore.tmux_target);
+    assert.equal(row(active.agent_id).pane_pid, activeBefore.pane_pid);
     assert.equal(row(missingSession).status, "closed");
     assert.equal(row(missingSession).recovery_state, "pending");
     db.prepare("UPDATE agents SET tmux_socket = ? WHERE id = ?").run(originalSocket, live.agent_id);
+    await mcp.call("agent_close", { agent_id: active.agent_id });
     await mcp.call("agent_close", { agent_id: live.agent_id });
     db.prepare("DELETE FROM agents WHERE id = ?").run(missingSession);
   });
@@ -317,6 +325,33 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
     }
     await mcp.call("agent_close", { agent_id: collision.agent_id });
     for (const [agentId] of expected) db.prepare("DELETE FROM agents WHERE id = ?").run(agentId);
+  });
+
+  it("an unanswered tmux probe leaves a running row and pane untouched", async () => {
+    const receipt = await mcp.call("agent_spawn", { name: "restore-unanswered", command: claude.bin });
+    await liveAgentRow(mcp, "restore-unanswered");
+    const before = row(receipt.agent_id);
+    const failingTmux = join(dirs.tmp, "tmux-fails");
+    mkdirSync(failingTmux, { recursive: true });
+    writeFileSync(join(failingTmux, "tmux"), "#!/bin/sh\nexit 1\n");
+    chmodSync(join(failingTmux, "tmux"), 0o755);
+
+    const result = await runCli(["crew-restore", "--json"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+      env: { HOME: fakeHome, PATH: `${failingTmux}:${process.env.PATH}` },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    const item = report.rows.find((candidate) => candidate.agent_id === receipt.agent_id);
+    assert.equal(item.outcome, "skipped");
+    assert.match(item.reason, /could not be checked/);
+    assert.equal(row(receipt.agent_id).status, "running");
+    assert.equal(row(receipt.agent_id).tmux_target, before.tmux_target);
+    assert.equal(row(receipt.agent_id).pane_pid, before.pane_pid);
+    assert.equal(rowOwnership(row(receipt.agent_id), liveTargets()), "live");
+    await mcp.call("agent_close", { agent_id: receipt.agent_id });
   });
 
   it("deliberately closed workers remain excluded from the recovery command", async () => {
