@@ -37,6 +37,28 @@ const cliOpts = (dir) => ({ cwd: dir, dataDir: dirs.dataDir, tmp: dirs.tmp });
 
 const runningNames = (projectId) => runningCommandNames(db, projectId);
 
+const respawnPane = async (pane, command) => {
+  const { ptyHeadroom } = await import("../dist/ptys.js");
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, command]);
+      return;
+    } catch (error) {
+      const stderr = String(error.stderr ?? "");
+      if (!stderr.includes("fork failed: Device not configured")) throw error;
+
+      const headroom = ptyHeadroom();
+      const maxSource = process.platform === "darwin" ? "kern.tty.ptmx_max" : "/proc/sys/kernel/pty/max";
+      const diagnostic = `respawn-pane -k attempt ${attempt}/3 failed: pty_max(${maxSource})=${headroom?.max ?? "unknown"}, allocated_ptys=${headroom?.allocated ?? "unknown"}`;
+      console.error(diagnostic);
+      if (attempt === 3) {
+        throw new Error(`${diagnostic}; ${stderr.trim()}`, { cause: error });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+};
+
 after(() => cleanup(session));
 
 describe("a killed lead pane takes its project's processes with it (todo 765)", { skip: hasTmux ? false : "tmux is not installed" }, () => {
@@ -180,7 +202,7 @@ describe("a killed lead pane takes its project's processes with it (todo 765)", 
 });
 
 describe("a deliberate respawn is not a pane exit", () => {
-  it("respawn-pane -k fires no global pane-exited hook, while a pane whose process exits does", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+  it("retries only fork ENXIO on respawn-pane -k, without treating a deliberate respawn as a pane exit", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     const { readFileSync, writeFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const marker = join(scratchDirs().tmp, "pane-exited.log");
@@ -190,9 +212,9 @@ describe("a deliberate respawn is not a pane exit", () => {
     try {
       const pane = execFileSync("tmux", ["list-panes", "-t", `=${name}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
       execFileSync("tmux", ["set-hook", "-ga", "pane-exited", `run-shell "echo #{hook_pane} >> '${marker}'"`]);
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "sleep 601"]);
+      await respawnPane(pane, "sleep 601");
       assert.equal(await untilOrTimeout(() => readFileSync(marker, "utf8").includes(pane), 1500), false, "no hook for a respawn");
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", pane, "true"]);
+      await respawnPane(pane, "true");
       assert.equal(await until(() => readFileSync(marker, "utf8").includes(pane), 5000), true, "the hook is armed: a real exit fires it");
     } finally {
       try {
