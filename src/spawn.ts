@@ -420,6 +420,7 @@ export interface ResumeSpec {
   placement: "split" | "window";
   layout?: WindowLayout;
   parentActor: string;
+  recoveryOnly?: boolean;
 
   // Merged under agentIdentityEnv the same way launchAgent merges spec.env (:245-248) - claude's
   // resume never needed this, so it defaulted to none; a codex resume needs CODEX_HOME pointed at
@@ -442,19 +443,24 @@ export const RESUME_FLIP_COLUMNS = [
   "command",
 ];
 
-export function resumeFlipSql(): string {
+export function resumeFlipSql(recoveryOnly = false): string {
 
   return (
     "UPDATE agents SET status = 'running', closed_at = NULL, tmux_target = '', pane_pid = '', " +
     `agent_state = 'unknown', state_changed_at = NULL, ${PARK_STAMP_CLEARED}, recovery_state = '', ` +
     "resumed_at = datetime('now'), tmux_socket = ?, command = ? " +
-    "WHERE id = ? AND status = 'closed'"
+    `WHERE id = ? AND status = 'closed'${recoveryOnly ? " AND recovery_state = 'pending'" : ""}`
   );
 }
 
 function restoreFlippedRow(agentId: number, before: Record<string, string | null>): void {
+  const assignments = RESUME_FLIP_COLUMNS.map((column) =>
+    column === "recovery_state"
+      ? "recovery_state = CASE WHEN recovery_state = 'excluded' THEN 'excluded' ELSE ? END"
+      : `${column} = ?`,
+  ).join(", ");
   db.prepare(
-    `UPDATE agents SET ${RESUME_FLIP_COLUMNS.map((c) => `${c} = ?`).join(", ")} ` +
+    `UPDATE agents SET ${assignments} ` +
       "WHERE id = ? AND status = 'running' AND tmux_target = ''",
   ).run(...RESUME_FLIP_COLUMNS.map((c) => before[c] ?? null), agentId);
 }
@@ -469,7 +475,7 @@ export function resumeAgent(
   let flip: { before: Record<string, string | null> | undefined; changes: number };
 
   const captureBeforeFlip = db.prepare(`SELECT ${RESUME_FLIP_COLUMNS.join(", ")} FROM agents WHERE id = ?`);
-  const flipStatement = db.prepare(resumeFlipSql());
+  const flipStatement = db.prepare(resumeFlipSql(spec.recoveryOnly));
   try {
 
     flip = db

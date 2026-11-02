@@ -20,7 +20,8 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 migrate();
 const { addProject } = await import("../dist/context.js");
-const { RESUME_FLIP_COLUMNS, parkAgentRow, resumeAgent, resumeFlipSql } = await import("../dist/spawn.js");
+const { RESUME_FLIP_COLUMNS, closeAgentRow, parkAgentRow, resumeAgent, resumeFlipSql } = await import("../dist/spawn.js");
+const { markWorkerRetirementIntent } = await import("../dist/workerRecovery.js");
 const { seedGoneCursor, tick } = await import("../dist/scheduler.js");
 
 const project = addProject(dirs.projectDir, "rr");
@@ -39,6 +40,7 @@ const SEEDED = {
   parked_at: "2026-08-11 18:00:00",
   parked_branch: "todo-374-park-restore",
   resumed_at: "",
+  recovery_state: "",
   tmux_socket: "/tmp/rr-socket/default",
   command: "claude --name rr",
 };
@@ -51,9 +53,9 @@ function closedWorker(over = {}) {
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, cwd, kind, session_id, created_at,
           status, closed_at, tmux_target, pane_pid, agent_state, state_changed_at,
-          parked_at, parked_branch, resumed_at, tmux_socket, command)
+          parked_at, parked_branch, resumed_at, recovery_state, tmux_socket, command)
         VALUES (?, ?, ?, ?, 'agent', 'fake-session-id', datetime('now', '-300 seconds'),
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       project.id,
@@ -69,13 +71,14 @@ function closedWorker(over = {}) {
       row.parked_at,
       row.parked_branch,
       row.resumed_at,
+      row.recovery_state,
       row.tmux_socket,
       row.command,
     ).id;
   return { id, name };
 }
 
-function failedResume(agentId, name, duringFailure = () => {}) {
+function failedResume(agentId, name, duringFailure = () => {}, recoveryOnly = false) {
   const originalPrepare = db.prepare.bind(db);
   let threw = null;
   db.prepare = (sql) => {
@@ -101,6 +104,7 @@ function failedResume(agentId, name, duringFailure = () => {}) {
       commandString: "claude --resume fake-session-id",
       placement: "window",
       parentActor: "test:rr",
+      recoveryOnly,
     });
   } catch (e) {
     threw = String(e?.message);
@@ -136,6 +140,72 @@ describe(
       assert.equal(after.resumed_at, "", "the resume did not happen, so the latch it stamps must not survive");
       assert.deepEqual(after, before, "the revert is the flip's exact inverse: no column left changed");
 
+    });
+
+    it("recovery-only resume requires pending and restores that marker on pre-pane failure", () => {
+      const excluded = closedWorker({ recovery_state: "excluded", parked_at: "", parked_branch: "" });
+      const excludedBefore = rowNow(excluded.id, RESUME_FLIP_COLUMNS);
+      assert.throws(() => resumeAgent({
+        agentId: excluded.id,
+        actorId: `agent:${excluded.name}`,
+        name: excluded.name,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        cwd: dirs.projectDir,
+        commandString: "claude --resume fake-session-id",
+        placement: "window",
+        parentActor: "test:rr",
+        recoveryOnly: true,
+      }), /not closed/);
+      assert.deepEqual(rowNow(excluded.id, RESUME_FLIP_COLUMNS), excludedBefore);
+
+      const pending = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      const pendingBefore = rowNow(pending.id, RESUME_FLIP_COLUMNS);
+      failedResume(pending.id, pending.name, () => {}, true);
+      assert.deepEqual(rowNow(pending.id, RESUME_FLIP_COLUMNS), pendingBefore);
+      assert.equal(rowNow(pending.id, ["recovery_state"]).recovery_state, "pending");
+    });
+
+    it("recovery claim loses to a retirement marker written after candidate selection", () => {
+      const row = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      const selected = rowNow(row.id, RESUME_FLIP_COLUMNS);
+      assert.equal(selected.recovery_state, "pending");
+      db.prepare("UPDATE agents SET recovery_state = 'excluded' WHERE id = ?").run(row.id);
+
+      assert.throws(() => resumeAgent({
+        agentId: row.id,
+        actorId: `agent:${row.name}`,
+        name: row.name,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        cwd: dirs.projectDir,
+        commandString: "claude --resume fake-session-id",
+        placement: "window",
+        parentActor: "test:rr",
+        recoveryOnly: true,
+      }), /not closed/);
+      assert.equal(rowNow(row.id, ["status"]).status, "closed");
+      assert.equal(rowNow(row.id, ["recovery_state"]).recovery_state, "excluded");
+    });
+
+    it("a failed recovery rollback preserves a close intent written after the claim", () => {
+      const row = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      let closeIdentity;
+      failedResume(row.id, row.name, () => {
+        const claimed = rowNow(row.id, ["status", "tmux_target", "tmux_socket", "pane_pid"]);
+        assert.equal(claimed.status, "running");
+        assert.equal(claimed.tmux_target, "");
+        closeIdentity = claimed;
+        assert.equal(markWorkerRetirementIntent(row.id, claimed), true);
+      }, true);
+
+      const after = rowNow(row.id, RESUME_FLIP_COLUMNS);
+      assert.equal(after.status, "closed");
+      assert.equal(after.recovery_state, "excluded");
+      assert.equal(after.tmux_target, "%77");
+      assert.equal(closeAgentRow(row.id, closeIdentity), false, "the close CAS observes the row already closed by rollback");
     });
 
     it("does not let a standing watch file an obituary for the parked lane it failed to pick up", async () => {

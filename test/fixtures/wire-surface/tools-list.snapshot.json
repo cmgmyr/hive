@@ -975,7 +975,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: layout, workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, questions, leases.",
+    "description": "Hive usage guidance. Omit topic for an overview, or pass one of: crew-restore, layout, workflow, profiles, agents, wakes, projects, identity, actors, pads, todos, kv, questions, leases.",
     "execution": {
       "taskSupport": "forbidden"
     },

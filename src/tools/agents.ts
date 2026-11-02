@@ -41,7 +41,7 @@ import {
   storeLeadMessage,
 } from "../leadMessage.js";
 import { sendQuietLeadMessage, sendUsageHeldMessage } from "../leadMessageDelivery.js";
-import { limitedHarness, observeProjectUsageLimits, observeUsageLimit, usageLimitGate } from "../usageLimit.js";
+import { observeUsageLimit, usageLimitGate } from "../usageLimit.js";
 import { run } from "../result.js";
 import { markGoneReported } from "../scheduler.js";
 import {
@@ -62,11 +62,11 @@ import {
   requireStillOwned,
   releaseParkRow,
   renameAgent,
-  resumeAgent,
   storedLaunchOptions,
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
 import { markWorkerRetirementIntent } from "../workerRecovery.js";
+import { contextCheckpointEnv, refuseLimitedHarness, resumeWorker } from "../agentResume.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
 import { leadSessionEnded } from "../leadState.js";
 import {
@@ -111,18 +111,6 @@ import {
 
 const unknownOwnershipNote = (snapshot: AliveSnapshot | null): string =>
   observationFailed(snapshot) ? PROBE_FAILED_NOTE : UNVERIFIED_OWNERSHIP_NOTE;
-
-function refuseLimitedHarness(projectId: number, harness: string, action = "agent_spawn"): void {
-  const now = Date.now();
-  observeProjectUsageLimits(projectId, harness, now);
-  const held = limitedHarness(projectId, harness, now);
-  if (held) {
-    throw new Error(
-      `[${action}:usage-limit] ${harness} is stopped by a usage limit until ${held.until}. ` +
-        `This ${action === "agent_resume" ? "resume" : action === "agent_fork" ? "fork" : "spawn"} was not queued; retry it after that time.`,
-    );
-  }
-}
 
 class UsageLimitActive extends Error {}
 
@@ -576,11 +564,6 @@ function agentSummary(row: AgentRow, snapshot?: AliveSnapshot | null) {
     ...(dormant ? { dormant_since: dormant.ended_at } : {}),
   };
 }
-export function contextCheckpointEnv(config: ProjectYml | null): Record<string, string> {
-  const value = config?.context_checkpoint_percent;
-  return value == null ? {} : { HIVE_CONTEXT_CHECKPOINT_PERCENT: String(value) };
-}
-
 export function worktreeInstallNotice(cwd: string, projectPath: string, config: ProjectYml | null): string | undefined {
   const install = config?.vars?.install?.trim();
   if (!install) return undefined;
@@ -1214,144 +1197,9 @@ export function registerAgents(server: McpServer): void {
       run(async () => {
         const project = resolveProject(args.project_id);
         const agent = findClosedAgent(project.id, args);
-
-        if (agent.kind === LEAD_KIND) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") is this project's lead session. agent_resume is for workers; ` +
-              "start a lead session with `hive lead`.",
-          );
-        }
-        const resumeHarness = harnessFor(agent.command);
-        refuseLimitedHarness(project.id, resumeHarness.name, "agent_resume");
-        if (!resumeHarness.supportsResume) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s harness ("${resumeHarness.name}", command: "${agent.command}") ` +
-              "does not support resume, so it has no session id to resume from.",
-          );
-        }
-        if (!agent.session_id) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") has no recorded session id, so it cannot be resumed. It may ` +
-              "predate this feature, or it may have closed before its first hook event ever fired. Spawn a new " +
-              "worker instead.",
-          );
-        }
-        if (resumeHarness.name === "codex" && !agent.codex_home) {
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}") has no recorded CODEX_HOME, so its session cannot be resumed. ` +
-              (agent.parked_at
-                ? "This should not happen for a parked codex worker - its home is only reaped on agent_close. " +
-                  "Check agent_status for how it actually got here."
-                : "It was closed with agent_close, which reaps a codex worker's home (rollout files included) " +
-                  "immediately - only a PARKED codex worker keeps its home. Nothing here to resume; spawn a new " +
-                  "worker instead."),
-          );
-        }
-
-        if (!existsSync(agent.cwd)) {
-          const recreate = agent.parked_branch
-            ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
-            : `recreate a checkout at ${agent.cwd} (no branch was recorded for it - agent_park records one)`;
-          const reason =
-            resumeHarness.name === "codex"
-              ? "It resumes into that directory as its working directory"
-              : "Its transcript is resolved from that path";
-          throw new Error(
-            `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd}. ${reason}, so ` +
-              `recreate it and the resume works unchanged: ${recreate}`,
-          );
-        }
-
-        const branchNow = agent.parked_branch ? branchAt(agent.cwd) : "";
-        const branchDrift =
-          branchNow && branchNow !== agent.parked_branch
-            ? { parked_branch: agent.parked_branch, branch_now: branchNow }
-            : null;
-
-        const collision = runningAgentNamed(project.id, agent.name);
-        if (collision) {
-          throw new Error(
-            `Cannot resume agent ${agent.id} ("${agent.name}") under its recorded name: a running agent ` +
-              `(agent ${collision.id}) already has it. agent_resume does not rename on your behalf - the ` +
-              `${agent.parked_at ? "parked" : "closed"} lane is not lost, it just cannot come back under a name ` +
-              "someone else is using. Free the name first (agent_rename or agent_close on the running one), " +
-              `then retry agent_resume(agent_id: ${agent.id}).`,
-          );
-        }
-
-        const { config: projectConfig } = loadProjectYml(project.path);
-        const placement =
-          projectConfig?.placement ?? (process.env.HIVE_SPAWN_PLACEMENT === "window" ? "window" : "split");
-        const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
-
-        const launchOptions = storedLaunchOptions(agent.extra_args);
-        let commandString: string;
-        let resumeEnv: Record<string, string> = contextCheckpointEnv(projectConfig);
-        if (resumeHarness.name === "codex") {
-          commandString = workerCommandString({
-            command: resolvedCommandPrefix(agent.command) || "codex",
-            // Recovered from the row's own recorded command: every codex worker hive spawns
-            // carries a pinned model (codex has no bare alias), so dropping this would silently
-            // resume on codex's default model instead of the one the lane actually chose.
-            model: agent.model ?? extractCommandFlag(agent.command, "--model"),
-            displayName: agent.name,
-            // Subcommand positional, not a flag - live-verified on v0.149.0 (`codex resume --help`:
-            // "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]"). No --settings/hooks file: a
-            // codex worker's hooks come from its own home's hooks.json, never claude's shared one.
-            extraArgs: [
-              ...codexLaunchArgs(agent.cwd, launchOptions.readOnly),
-              ...stripSessionArgs(launchOptions.args),
-              "resume",
-              agent.session_id,
-            ],
-          });
-          resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home) };
-          ensureCodexHooksFile(agent.codex_home, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
-          refreshCodexMcpEnv(agent.codex_home, agentIdentityEnv(agent.actor_id, agent.name, project.path));
-        } else {
-          const claudeBinary = resolvedCommandPrefix(agent.command) || "claude";
-          commandString = workerCommandString({
-            command: claudeBinary,
-            displayName: agent.name,
-            model: agent.model ?? undefined,
-            extraArgs: [
-              ...stripSessionArgs(launchOptions.args),
-              "--resume",
-              agent.session_id,
-            ],
-            settingsPath: ensureWorkerHooksFile(agent.id, { readOnly: launchOptions.readOnly, includePostToolUse: projectConfig?.context_checkpoint_percent != null }),
-          });
-        }
-
-        const { target, landedInProjectId } = resumeAgent({
-          agentId: agent.id,
-          actorId: agent.actor_id,
-          name: agent.name,
-          projectId: project.id,
-          projectName: project.name,
-          projectPath: project.path,
-          cwd: agent.cwd,
-          commandString,
-          env: resumeEnv,
-          placement,
-          layout,
-          parentActor: currentActor(),
-        });
+        const receipt = await resumeWorker(project.id, agent.id, { parentActor: currentActor() });
         ensureAttached(sessionName());
-
-        return {
-          agent_id: agent.id,
-          actor_id: agent.actor_id,
-          name: agent.name,
-          tmux_target: target,
-          resumed_session_id: agent.session_id,
-
-          ...(agent.parked_at ? { was_parked_at: agent.parked_at } : {}),
-          ...(branchDrift ? { branch_drift: branchDrift } : {}),
-          ...(landedInProjectId != null
-            ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` }
-            : {}),
-        };
+        return receipt;
       }),
   );
 
