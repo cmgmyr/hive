@@ -20,7 +20,8 @@ process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { db, migrate } = await import("../dist/db.js");
 migrate();
 const { addProject } = await import("../dist/context.js");
-const { RESUME_FLIP_COLUMNS, parkAgentRow, resumeAgent, resumeFlipSql } = await import("../dist/spawn.js");
+const { RESUME_FLIP_COLUMNS, closeAgentRow, parkAgentRow, resumeAgent, resumeFlipSql } = await import("../dist/spawn.js");
+const { markWorkerRetirementIntent } = await import("../dist/workerRecovery.js");
 const { seedGoneCursor, tick } = await import("../dist/scheduler.js");
 
 const project = addProject(dirs.projectDir, "rr");
@@ -187,6 +188,24 @@ describe(
       }), /not closed/);
       assert.equal(rowNow(row.id, ["status"]).status, "closed");
       assert.equal(rowNow(row.id, ["recovery_state"]).recovery_state, "excluded");
+    });
+
+    it("a failed recovery rollback preserves a close intent written after the claim", () => {
+      const row = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      let closeIdentity;
+      failedResume(row.id, row.name, () => {
+        const claimed = rowNow(row.id, ["status", "tmux_target", "tmux_socket", "pane_pid"]);
+        assert.equal(claimed.status, "running");
+        assert.equal(claimed.tmux_target, "");
+        closeIdentity = claimed;
+        assert.equal(markWorkerRetirementIntent(row.id, claimed), true);
+      }, true);
+
+      const after = rowNow(row.id, RESUME_FLIP_COLUMNS);
+      assert.equal(after.status, "closed");
+      assert.equal(after.recovery_state, "excluded");
+      assert.equal(after.tmux_target, "%77");
+      assert.equal(closeAgentRow(row.id, closeIdentity), false, "the close CAS observes the row already closed by rollback");
     });
 
     it("does not let a standing watch file an obituary for the parked lane it failed to pick up", async () => {

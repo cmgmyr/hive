@@ -454,8 +454,13 @@ export function resumeFlipSql(recoveryOnly = false): string {
 }
 
 function restoreFlippedRow(agentId: number, before: Record<string, string | null>): void {
+  const assignments = RESUME_FLIP_COLUMNS.map((column) =>
+    column === "recovery_state"
+      ? "recovery_state = CASE WHEN recovery_state = 'excluded' THEN 'excluded' ELSE ? END"
+      : `${column} = ?`,
+  ).join(", ");
   db.prepare(
-    `UPDATE agents SET ${RESUME_FLIP_COLUMNS.map((c) => `${c} = ?`).join(", ")} ` +
+    `UPDATE agents SET ${assignments} ` +
       "WHERE id = ? AND status = 'running' AND tmux_target = ''",
   ).run(...RESUME_FLIP_COLUMNS.map((c) => before[c] ?? null), agentId);
 }
