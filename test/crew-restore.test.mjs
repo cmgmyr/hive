@@ -191,13 +191,19 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
     await mcp.call("agent_close", { agent_id: receipt.agent_id });
   });
 
-  it("failure before pane publication restores the pending marker for retry", async () => {
-    const receipt = await mcp.call("agent_spawn", { name: "restore-retry", command: claude.bin });
-    await liveAgentRow(mcp, "restore-retry");
-    db.prepare("UPDATE agents SET session_id = 'retry-session' WHERE id = ?").run(receipt.agent_id);
-    const before = row(receipt.agent_id);
-    crashPane(before.tmux_target);
-    db.exec(`CREATE TRIGGER crew_restore_fail_actor BEFORE INSERT ON actors WHEN NEW.id = '${before.actor_id}' BEGIN SELECT RAISE(ABORT, 'simulated resume setup failure'); END`);
+  it("mixed restore failure rolls back pending state and a retry skips the success", async () => {
+    const success = await mcp.call("agent_spawn", { name: "restore-retry-success", command: claude.bin });
+    await liveAgentRow(mcp, "restore-retry-success");
+    db.prepare("UPDATE agents SET session_id = 'success-session' WHERE id = ?").run(success.agent_id);
+    const successBefore = row(success.agent_id);
+    crashPane(successBefore.tmux_target);
+
+    const failure = await mcp.call("agent_spawn", { name: "restore-retry-failure", command: claude.bin });
+    await liveAgentRow(mcp, "restore-retry-failure");
+    db.prepare("UPDATE agents SET session_id = 'retry-session' WHERE id = ?").run(failure.agent_id);
+    const failureBefore = row(failure.agent_id);
+    crashPane(failureBefore.tmux_target);
+    db.exec(`CREATE TRIGGER crew_restore_fail_actor BEFORE INSERT ON actors WHEN NEW.id = '${failureBefore.actor_id}' BEGIN SELECT RAISE(ABORT, 'simulated resume setup failure'); END`);
 
     const result = await runCli(["crew-restore", "--json"], {
       cwd: dirs.projectDir,
@@ -207,14 +213,21 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
     });
     db.exec("DROP TRIGGER crew_restore_fail_actor");
     assert.equal(result.code, 1);
-    const item = JSON.parse(result.stdout).rows.find((candidate) => candidate.agent_id === receipt.agent_id);
-    assert.equal(item.outcome, "failed");
-    assert.ok(item.reason, "the failed launch must carry a row-specific reason");
-    const after = row(receipt.agent_id);
-    assert.equal(after.status, "closed");
-    assert.equal(after.recovery_state, "pending");
-    assert.equal(after.tmux_target, before.tmux_target);
-    assert.equal(after.pane_pid, before.pane_pid);
+    const firstRows = JSON.parse(result.stdout).rows;
+    assert.equal(firstRows.find((candidate) => candidate.agent_id === success.agent_id).outcome, "restored");
+    const failed = firstRows.find((candidate) => candidate.agent_id === failure.agent_id);
+    assert.equal(failed.outcome, "failed");
+    assert.ok(failed.reason, "the failed launch must carry a row-specific reason");
+    const afterFailure = row(failure.agent_id);
+    assert.equal(afterFailure.status, "closed");
+    assert.equal(afterFailure.recovery_state, "pending");
+    assert.equal(afterFailure.tmux_target, failureBefore.tmux_target);
+    assert.equal(afterFailure.pane_pid, failureBefore.pane_pid);
+    const afterSuccess = row(success.agent_id);
+    assert.equal(afterSuccess.status, "running");
+    assert.notEqual(afterSuccess.pane_pid, successBefore.pane_pid);
+    const successfulLaunches = () => (readFileSync(claude.argvLog, "utf8").match(/success-session/g) ?? []).length;
+    assert.equal(successfulLaunches(), 1);
 
     const retry = await runCli(["crew-restore", "--json"], {
       cwd: dirs.projectDir,
@@ -223,11 +236,17 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
       env: { HOME: fakeHome },
     });
     assert.equal(retry.code, 0, retry.stderr);
-    assert.equal(JSON.parse(retry.stdout).rows.find((candidate) => candidate.agent_id === receipt.agent_id).outcome, "restored");
-    assert.equal(row(receipt.agent_id).status, "running");
-    assert.equal(row(receipt.agent_id).recovery_state, "");
-    assert.equal(rowOwnership(row(receipt.agent_id), liveTargets()), "live");
-    await mcp.call("agent_close", { agent_id: receipt.agent_id });
+    const retryRows = JSON.parse(retry.stdout).rows;
+    assert.equal(retryRows.find((candidate) => candidate.agent_id === success.agent_id).outcome, "skipped");
+    assert.equal(retryRows.find((candidate) => candidate.agent_id === failure.agent_id).outcome, "restored");
+    assert.equal(row(success.agent_id).status, "running");
+    assert.equal(row(success.agent_id).pane_pid, afterSuccess.pane_pid);
+    assert.equal(successfulLaunches(), 1, "the retry must not launch the already restored row again");
+    assert.equal(row(failure.agent_id).status, "running");
+    assert.equal(row(failure.agent_id).recovery_state, "");
+    assert.equal(rowOwnership(row(failure.agent_id), liveTargets()), "live");
+    await mcp.call("agent_close", { agent_id: success.agent_id });
+    await mcp.call("agent_close", { agent_id: failure.agent_id });
   });
 
   it("unknown foreign pane ownership is skipped and a missing session is reported as a retryable failure", async () => {
@@ -320,6 +339,34 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
     assert.equal(row(receipt.agent_id).status, "closed");
     assert.equal(row(receipt.agent_id).recovery_state, "excluded");
     assert.equal(row(receipt.agent_id).tmux_target, before.tmux_target);
+  });
+
+  it("restore only reads and changes rows from the current project", async () => {
+    const otherPath = join(dirs.tmp, "other-project");
+    mkdirSync(otherPath, { recursive: true });
+    const otherProjectId = db.prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id").get("restore-other", otherPath).id;
+    const otherAgentId = db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, kind, session_id,
+          recovery_state, parent_actor_id)
+       VALUES (?, 'agent:restore-other', 'restore-other-worker', ?, ?, 'closed', 'agent', 'other-session', 'pending', 'lead:other')
+       RETURNING id`,
+    ).get(otherProjectId, claude.bin, otherPath).id;
+
+    const result = await runCli(["crew-restore", "--json"], {
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      tmp: dirs.tmp,
+      env: { HOME: fakeHome },
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.project_id, projectId);
+    assert.equal(report.rows.some((candidate) => candidate.agent_id === otherAgentId), false);
+    const otherRow = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(otherAgentId);
+    assert.equal(otherRow.status, "closed");
+    assert.equal(otherRow.recovery_state, "pending");
+    db.prepare("DELETE FROM agents WHERE id = ?").run(otherAgentId);
+    db.prepare("DELETE FROM projects WHERE id = ?").run(otherProjectId);
   });
 
   it("a surviving watch ignores the recovery Stop, then reports the next assigned turn", async () => {
