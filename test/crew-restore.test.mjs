@@ -192,17 +192,12 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
   });
 
   it("failure before pane publication restores the pending marker for retry", async () => {
-    const binDir = join(dirs.tmp, "claude-fails-resume");
-    mkdirSync(binDir, { recursive: true });
-    const bin = join(binDir, "claude");
-    const firstAttempt = join(dirs.tmp, "claude-first-resume-attempt");
-    writeFileSync(bin, `#!/bin/sh\nfor arg in "$@"; do if [ "$arg" = "--resume" ] && [ ! -e ${JSON.stringify(firstAttempt)} ]; then touch ${JSON.stringify(firstAttempt)}; exit 19; fi; done\nexec sleep 90\n`);
-    chmodSync(bin, 0o755);
-    const receipt = await mcp.call("agent_spawn", { name: "restore-retry", command: bin });
+    const receipt = await mcp.call("agent_spawn", { name: "restore-retry", command: claude.bin });
     await liveAgentRow(mcp, "restore-retry");
     db.prepare("UPDATE agents SET session_id = 'retry-session' WHERE id = ?").run(receipt.agent_id);
     const before = row(receipt.agent_id);
     crashPane(before.tmux_target);
+    db.exec(`CREATE TRIGGER crew_restore_fail_actor BEFORE INSERT ON actors WHEN NEW.id = '${before.actor_id}' BEGIN SELECT RAISE(ABORT, 'simulated resume setup failure'); END`);
 
     const result = await runCli(["crew-restore", "--json"], {
       cwd: dirs.projectDir,
@@ -210,6 +205,7 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
       tmp: dirs.tmp,
       env: { HOME: fakeHome },
     });
+    db.exec("DROP TRIGGER crew_restore_fail_actor");
     assert.equal(result.code, 1);
     const item = JSON.parse(result.stdout).rows.find((candidate) => candidate.agent_id === receipt.agent_id);
     assert.equal(item.outcome, "failed");
