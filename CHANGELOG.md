@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.12.0 - 2026-11-02
+
+- New `hive crew-restore [--dry-run] [--json]` brings back workers whose panes were lost to a crash or a reboot. It resumes each one on its existing row, with its session, working directory, model and launch arguments, and never replays the previous assignment. Output lists only workers that could be recovered and counts the rest as `not considered`; `--json` adds a numeric `not_considered`. Use `agent_resume` for one closed worker.
+- Hive now records why a worker's row closed. A worker whose pane was confirmed gone is marked for crash recovery, while `agent_close` and `agent_park` are excluded. A crashed Codex worker's home is kept for seven days from the detected loss so it can be resumed, then reaped; a deliberate close releases it right away. Older rows are never treated as crashes.
+- New `agent_fork` tool starts a new worker from an existing Claude Code or Codex worker's session, with its own row, pane and session. The source worker is unchanged. The child inherits cwd, model, effort and read-only mode, gets no assignment and no todo link by default, and does not get a copy of the worktree.
+- Hive holds due wakes and submitted messages while a worker's or lead's harness is at its usage limit, and refuses a new spawn, resume or fork on that harness in the same project with a retry time. A known reset releases after a 60-second grace period; an unknown one after six hours. A Codex worker with a known reset gets one `continue` after the reset if its pane still shows the limit. Hive reads only local transcripts and panes and makes no usage-service request. There is no configuration key.
+- New `hive layout` gathers this project's live worker panes into the lead window and restores the configured layout. `agent_spawn` explains `placement: "window"` and points at `hive layout`.
+- New project-only `completion_gate` key in `hive.yml`: an argv list hive runs before an unfinished todo is completed. A nonzero exit, timeout (30 seconds), untrusted command or invalid field refuses the completion, and the error carries the reason and the tail of each output stream. `hive lead` approves the command like other project commands. The key is absent by default, so completions behave as before.
+- Updated the `@hono/node-server` lockfile entry out of a vulnerable range.
+- After upgrading, restart every hive session and the lead.
+
 ## 1.11.9 - 2026-10-30
 
 - `quiet_messaging` now defaults to on, including when no `hive.yml` exists. Existing installs with a running lead need to restart it after upgrading to use the socket; leads started without the generated hooks keep typed delivery until then. Set `quiet_messaging: false` to keep typed delivery. Restart your lead after upgrading.
