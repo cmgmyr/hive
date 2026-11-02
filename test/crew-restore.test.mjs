@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   assertScratchStore,
@@ -19,6 +19,7 @@ import {
   scratchDirs,
   seedDeadPaneLead,
   seedStandingWatch,
+  sleep,
 } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the crew-restore tests");
@@ -48,15 +49,26 @@ function fakeHarness(name) {
   const bin = join(binDir, name);
   const argvLog = join(dirs.tmp, `${name}-argv.log`);
   const envLog = join(dirs.tmp, `${name}-env.log`);
-  const body = `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(argvLog)}\nprintf 'actor=%s\\nname=%s\\ncwd=%s\\nhome=%s\\n' "$HIVE_AGENT_ID" "$HIVE_AGENT_NAME" "$PWD" "$CODEX_HOME" >> ${JSON.stringify(envLog)}\nexec sleep 90\n`;
+  const readyDir = join(dirs.tmp, `${name}-ready`);
+  mkdirSync(readyDir, { recursive: true });
+  const body = `#!/bin/sh\nprintf '%s\\n' "$@" >> ${JSON.stringify(argvLog)}\nprintf 'actor=%s\\nname=%s\\ncwd=%s\\nhome=%s\\n' "$HIVE_AGENT_ID" "$HIVE_AGENT_NAME" "$PWD" "$CODEX_HOME" >> ${JSON.stringify(envLog)}\ntouch ${JSON.stringify(readyDir)}/"$HIVE_AGENT_ID"\nexec sleep 90\n`;
   writeFileSync(bin, body);
   chmodSync(bin, 0o755);
-  return { bin, argvLog, envLog };
+  return { bin, argvLog, envLog, readyDir };
 }
 
 const claude = fakeHarness("claude");
 const codex = fakeHarness("codex");
 const fakeClaude = makeFakeClaude(dirs.tmp);
+
+async function waitForHarnessLaunch(harness, actorId) {
+  const marker = join(harness.readyDir, actorId);
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if (existsSync(marker)) return;
+    await sleep(10);
+  }
+  throw new Error(`fake harness ${harness.bin} did not write its launch marker for ${actorId}`);
+}
 
 before(async () => {
   mcp = new McpClient({
@@ -91,6 +103,8 @@ async function spawnPair() {
   });
   await liveAgentRow(mcp, "restore-claude");
   await liveAgentRow(mcp, "restore-codex");
+  await waitForHarnessLaunch(claude, c.actor_id);
+  await waitForHarnessLaunch(codex, x.actor_id);
   db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("claude-session-nonce", c.agent_id);
   db.prepare("UPDATE agents SET session_id = ? WHERE id = ?").run("codex-session-nonce", x.agent_id);
   return [c.agent_id, x.agent_id];
