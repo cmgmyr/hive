@@ -40,6 +40,7 @@ const STOP_PAYLOAD = readFileSync(join(REPO, "test", "fixtures", "hook-payloads"
 const PROMPT_PAYLOAD = readFileSync(join(REPO, "test", "fixtures", "hook-payloads", "prompt-user.json"), "utf8");
 let mcp;
 let projectId;
+let todoId;
 
 function fakeHarness(name) {
   const binDir = join(dirs.tmp, `${name}-bin`);
@@ -65,6 +66,7 @@ before(async () => {
   });
   await mcp.start();
   projectId = (await mcp.call("whoami")).project.id;
+  todoId = db.prepare("INSERT INTO todos (project_id, title) VALUES (?, ?) RETURNING id").get(projectId, "crew restore identity").id;
 });
 
 after(async () => {
@@ -78,12 +80,14 @@ async function spawnPair() {
     command: claude.bin,
     model: "sonnet",
     extra_args: ["--effort", "high"],
+    todo_id: todoId,
   });
   const x = await mcp.call("agent_spawn", {
     name: "restore-codex",
     command: codex.bin,
     model: "gpt-5.1-codex",
     extra_args: ["-c", "model_reasoning_effort=high"],
+    todo_id: todoId,
   });
   await liveAgentRow(mcp, "restore-claude");
   await liveAgentRow(mcp, "restore-codex");
@@ -141,8 +145,14 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
       assert.equal(current.status, "running");
       assert.equal(current.recovery_state, "");
       assert.equal(current.actor_id, prior.actor_id);
+      assert.equal(current.name, prior.name);
+      assert.equal(current.project_id, prior.project_id);
+      assert.equal(current.parent_actor_id, prior.parent_actor_id);
       assert.equal(current.cwd, prior.cwd);
       assert.equal(current.session_id, prior.session_id);
+      assert.equal(current.todo_id, todoId);
+      assert.equal(current.model, prior.model);
+      assert.equal(current.extra_args, prior.extra_args);
       assert.notEqual(current.pane_pid, prior.pane_pid);
       assert.equal(rowOwnership(current, liveTargets()), "live");
       assert.equal(result.rows[index].tmux_target, current.tmux_target);
