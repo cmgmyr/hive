@@ -37,6 +37,7 @@ Commands that parse arguments reject unknown flags. To pass positional text that
 | `hive profile list` | Show the profiles hive can see |
 | `hive kickoff --explain` | Check whether a session here gets the session-start injection |
 | `hive crew --json` | Print one JSON snapshot of this project's workers, todos, pending question count and wakes. Read-only: it runs no janitor and writes nothing. See [crew.md](crew.md). |
+| `hive crew-restore [--dry-run] [--json]` | Resume this project's workers marked pending after confirmed pane loss. Dry run reports candidates and blockers without mutation. It skips live, unknown, parked, deliberately closed, and historical rows; it does not replay the previous assignment. See [projects.md](projects.md#recovering-a-worker-after-pane-loss). |
 | `hive statusline` | One-line store summary for Claude Code's status line |
 | `hive lead-handoff --request <id> --pad <id> --revision <n>` | Run by a lead answering an automatic handoff request (`lead_turn_budget.auto_handoff`): checks the persisted `hive-lead-handoff` pad and arms a short grace period, after which hive restarts the lead's pane with a fresh session. Any human input during the grace postpones it |
 

@@ -39,6 +39,7 @@ const SEEDED = {
   parked_at: "2026-08-11 18:00:00",
   parked_branch: "todo-374-park-restore",
   resumed_at: "",
+  recovery_state: "",
   tmux_socket: "/tmp/rr-socket/default",
   command: "claude --name rr",
 };
@@ -51,9 +52,9 @@ function closedWorker(over = {}) {
     .prepare(
       `INSERT INTO agents (project_id, actor_id, name, cwd, kind, session_id, created_at,
           status, closed_at, tmux_target, pane_pid, agent_state, state_changed_at,
-          parked_at, parked_branch, resumed_at, tmux_socket, command)
+          parked_at, parked_branch, resumed_at, recovery_state, tmux_socket, command)
         VALUES (?, ?, ?, ?, 'agent', 'fake-session-id', datetime('now', '-300 seconds'),
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       project.id,
@@ -69,13 +70,14 @@ function closedWorker(over = {}) {
       row.parked_at,
       row.parked_branch,
       row.resumed_at,
+      row.recovery_state,
       row.tmux_socket,
       row.command,
     ).id;
   return { id, name };
 }
 
-function failedResume(agentId, name, duringFailure = () => {}) {
+function failedResume(agentId, name, duringFailure = () => {}, recoveryOnly = false) {
   const originalPrepare = db.prepare.bind(db);
   let threw = null;
   db.prepare = (sql) => {
@@ -101,6 +103,7 @@ function failedResume(agentId, name, duringFailure = () => {}) {
       commandString: "claude --resume fake-session-id",
       placement: "window",
       parentActor: "test:rr",
+      recoveryOnly,
     });
   } catch (e) {
     threw = String(e?.message);
@@ -136,6 +139,54 @@ describe(
       assert.equal(after.resumed_at, "", "the resume did not happen, so the latch it stamps must not survive");
       assert.deepEqual(after, before, "the revert is the flip's exact inverse: no column left changed");
 
+    });
+
+    it("recovery-only resume requires pending and restores that marker on pre-pane failure", () => {
+      const excluded = closedWorker({ recovery_state: "excluded", parked_at: "", parked_branch: "" });
+      const excludedBefore = rowNow(excluded.id, RESUME_FLIP_COLUMNS);
+      assert.throws(() => resumeAgent({
+        agentId: excluded.id,
+        actorId: `agent:${excluded.name}`,
+        name: excluded.name,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        cwd: dirs.projectDir,
+        commandString: "claude --resume fake-session-id",
+        placement: "window",
+        parentActor: "test:rr",
+        recoveryOnly: true,
+      }), /not closed/);
+      assert.deepEqual(rowNow(excluded.id, RESUME_FLIP_COLUMNS), excludedBefore);
+
+      const pending = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      const pendingBefore = rowNow(pending.id, RESUME_FLIP_COLUMNS);
+      failedResume(pending.id, pending.name, () => {}, true);
+      assert.deepEqual(rowNow(pending.id, RESUME_FLIP_COLUMNS), pendingBefore);
+      assert.equal(rowNow(pending.id, ["recovery_state"]).recovery_state, "pending");
+    });
+
+    it("recovery claim loses to a retirement marker written after candidate selection", () => {
+      const row = closedWorker({ recovery_state: "pending", parked_at: "", parked_branch: "" });
+      const selected = rowNow(row.id, RESUME_FLIP_COLUMNS);
+      assert.equal(selected.recovery_state, "pending");
+      db.prepare("UPDATE agents SET recovery_state = 'excluded' WHERE id = ?").run(row.id);
+
+      assert.throws(() => resumeAgent({
+        agentId: row.id,
+        actorId: `agent:${row.name}`,
+        name: row.name,
+        projectId: project.id,
+        projectName: project.name,
+        projectPath: project.path,
+        cwd: dirs.projectDir,
+        commandString: "claude --resume fake-session-id",
+        placement: "window",
+        parentActor: "test:rr",
+        recoveryOnly: true,
+      }), /not closed/);
+      assert.equal(rowNow(row.id, ["status"]).status, "closed");
+      assert.equal(rowNow(row.id, ["recovery_state"]).recovery_state, "excluded");
     });
 
     it("does not let a standing watch file an obituary for the parked lane it failed to pick up", async () => {

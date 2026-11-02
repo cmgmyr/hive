@@ -199,6 +199,9 @@ import {
   windowLayout,
 } from "./tmux.js";
 import { collectCrew, crewStoreProblem } from "./crew.js";
+import { resumeWorker } from "./agentResume.js";
+import { markWorkerLost } from "./workerRecovery.js";
+import type { AgentRow } from "./agentRecords.js";
 import { describeVisibility, formatLocal, processCounts } from "./dashboard.js";
 import {
   runningCommandRow,
@@ -306,6 +309,8 @@ Usage:
   hive show <process> [path]  move a running process's pane beside the lead
   hive hide <process> [path]  move it back into the <project>/processes window
   hive layout               gather this project's live workers and restore its configured layout
+  hive crew-restore [--dry-run] [--json]
+                             resume this project's workers marked for crash recovery
   hive status                overview of agents, todos, and wake-ups everywhere
   hive crew --json           this project's workers, todos and wakes as one JSON
                              snapshot; read-only, writes nothing
@@ -3891,6 +3896,148 @@ function cmdCrew(argv: string[]): void {
   console.log(JSON.stringify(collectCrew(project, new Date())));
 }
 
+async function cmdCrewRestore(argv: string[]): Promise<void> {
+  const parsed = parseArgs(argv, { flags: ["--dry-run", "--json"] });
+  if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
+  rejectUnknownFlags("crew-restore", parsed, "--dry-run and --json");
+  const dryRun = parsed.flags.has("--dry-run");
+  let project: Project | null;
+  try {
+    project = pinnedOrCwdProject();
+  } catch (e) {
+    console.error(`hive crew-restore: ${errorMessage(e)}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!project) {
+    console.error("hive crew-restore: this directory is not a registered hive project.");
+    process.exitCode = 1;
+    return;
+  }
+
+  const snapshot = liveTargets();
+  const workers = db
+    .prepare("SELECT * FROM agents WHERE project_id = ? AND kind = 'agent' ORDER BY id")
+    .all(project.id) as AgentRow[];
+  const rows: {
+    agent_id: number;
+    name: string;
+    outcome: "restored" | "would_restore" | "skipped" | "failed";
+    reason?: string;
+    tmux_target?: string;
+  }[] = [];
+
+  for (const initial of workers) {
+    let candidate = initial;
+    if (candidate.status === "running") {
+      if (!candidate.tmux_target) {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "resume is already in flight or was interrupted before pane publication; inspect manually" });
+        continue;
+      }
+      const ownership = rowOwnership(candidate, snapshot);
+      if (ownership === "live") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the recorded pane is still live" });
+        continue;
+      }
+      if (ownership === "unknown") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: snapshot === null ? "tmux ownership could not be checked" : "pane ownership is unknown" });
+        continue;
+      }
+      if (ownership !== "gone" && ownership !== "reissued") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed while it was inspected" });
+        continue;
+      }
+      if (!dryRun) {
+        const expected = {
+          tmux_target: candidate.tmux_target,
+          tmux_socket: candidate.tmux_socket,
+          pane_pid: candidate.pane_pid,
+        };
+        if (!markWorkerLost(candidate.id, expected)) {
+          const latest = db.prepare("SELECT * FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as AgentRow | undefined;
+          if (!latest || latest.status !== "closed" || latest.recovery_state !== "pending") {
+            rows.push({ agent_id: initial.id, name: initial.name, outcome: "skipped", reason: "the row changed before crash recovery could be claimed" });
+            continue;
+          }
+          candidate = latest;
+        } else {
+          const latest = db.prepare("SELECT * FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as AgentRow | undefined;
+          if (!latest) {
+            rows.push({ agent_id: initial.id, name: initial.name, outcome: "skipped", reason: "the row was removed during crash recovery" });
+            continue;
+          }
+          candidate = latest;
+        }
+      } else {
+        candidate = { ...candidate, status: "closed", recovery_state: "pending" };
+      }
+    }
+
+    if (candidate.parked_at) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "parked workers are not crash recoveries" });
+      continue;
+    }
+    if (candidate.status !== "closed" || candidate.recovery_state !== "pending") {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "row is not marked for crash recovery" });
+      continue;
+    }
+
+    const harness = harnessFor(candidate.command);
+    const blocker = !harness.supportsResume
+      ? `harness "${harness.name}" does not support resume`
+      : !candidate.session_id
+        ? "no recorded session id"
+        : !candidate.cwd || !existsSync(candidate.cwd)
+          ? `working directory is missing: ${candidate.cwd || "(empty)"}`
+          : harness.name === "codex" && (!candidate.codex_home || !existsSync(codexHomeDir(candidate.codex_home)))
+            ? "Codex home is missing"
+            : !candidate.parent_actor_id
+              ? "no recorded parent actor for recovery placement"
+              : (db
+                  .prepare("SELECT id FROM agents WHERE project_id = ? AND status = 'running' AND id != ? AND lower(name) = lower(?) LIMIT 1")
+                  .get(project.id, candidate.id, candidate.name) as { id: number } | undefined)
+              ? "a running worker already uses this name"
+              : undefined;
+    if (blocker) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: dryRun ? "skipped" : "failed", reason: blocker });
+      continue;
+    }
+    if (dryRun) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "would_restore" });
+      continue;
+    }
+
+    try {
+      const receipt = await resumeWorker(project.id, candidate.id, {
+        parentActor: candidate.parent_actor_id!,
+        recoveryOnly: true,
+      });
+      rows.push({ agent_id: receipt.agent_id, name: receipt.name, outcome: "restored", tmux_target: receipt.tmux_target });
+    } catch (e) {
+      const latest = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ? AND project_id = ?").get(candidate.id, project.id) as { status: string; recovery_state: string } | undefined;
+      if (latest?.status !== "closed" || latest.recovery_state !== "pending") {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed before the guarded recovery claim" });
+      } else {
+        rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "failed", reason: errorMessage(e) });
+      }
+    }
+  }
+
+  if (parsed.flags.has("--json")) {
+    console.log(JSON.stringify({ project_id: project.id, dry_run: dryRun, rows }));
+  } else {
+    const counts = { restored: 0, would_restore: 0, skipped: 0, failed: 0 };
+    for (const row of rows) {
+      counts[row.outcome]++;
+      const target = row.tmux_target ? ` ${row.tmux_target}` : "";
+      const reason = row.reason ? `: ${row.reason}` : "";
+      console.log(`${row.outcome.padEnd(13)} agent ${row.agent_id} ${row.name}${target}${reason}`);
+    }
+    console.log(`crew-restore: ${counts.restored} restored, ${counts.would_restore} would restore, ${counts.skipped} skipped, ${counts.failed} failed`);
+  }
+  if (rows.some((row) => row.outcome === "failed")) process.exitCode = 1;
+}
+
 function cmdPortfolio(argv: string[]): void {
   const parsed = parseArgs(argv, { flags: ["--json"] });
   if (parsed.positional.length > 0) parsed.unknown.push(parsed.positional[0]);
@@ -4484,7 +4631,7 @@ if (command === "--version" || command === "-v") {
   process.exit(0);
 }
 const COMMANDS = [
-  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "layout", "status", "portfolio", "crew", "next", "setup", "upgrade", "doctor",
+  "lead", "queen", "queen-audit", "init", "attach", "start", "stop", "show", "hide", "layout", "status", "portfolio", "crew", "crew-restore", "next", "setup", "upgrade", "doctor",
   LEAD_PANE_EXITED_VERB,
   LEAD_HANDOFF_GRACE_VERB,
   LEAD_HANDOFF_START_VERB,
@@ -4555,6 +4702,9 @@ try {
       break;
     case "crew":
       cmdCrew(rest);
+      break;
+    case "crew-restore":
+      await cmdCrewRestore(rest);
       break;
     case "queen-audit":
       cmdQueenAudit(rest);

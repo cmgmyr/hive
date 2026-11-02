@@ -54,6 +54,17 @@ ACTORS — who is writing
 }
 
 export const HELP_TOPICS: Record<string, string> = {
+  "crew-restore": `CREW RESTORE — resume crashed workers for this project
+
+Run \`hive crew-restore [--dry-run] [--json]\` from a registered project.
+The command resumes rows marked pending after a confirmed worker pane loss.
+It skips live, unknown, parked, deliberately closed and historical rows.
+The dry run reports candidates and blockers without changing rows or panes.
+Each restored worker keeps its row, actor, session, working directory and
+launch options. The command does not replay its previous assignment.
+
+This is a CLI command for the local tmux environment, not an MCP tool.`,
+
   layout: `LAYOUT — restore a project's worker pane layout
 
 Run \`hive layout\` in a project to gather its live worker panes into the lead
