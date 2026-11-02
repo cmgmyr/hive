@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { db } from "./db.js";
-import { getAgentRow } from "./agentRecords.js";
-import { getProject } from "./context.js";
+import { getAgentRow, type AgentRow } from "./agentRecords.js";
+import { getProject, type Project } from "./context.js";
 import { workerCommandString } from "./brief.js";
 import {
   codexHomeDir,
@@ -25,6 +25,14 @@ export interface ResumeWorkerResult {
   was_parked_at?: string;
   branch_drift?: { parked_branch: string; branch_now: string };
   landed_in_project?: string;
+}
+
+export interface ResumeWorkerValidation {
+  project: Project;
+  agent: AgentRow;
+  harness: ReturnType<typeof harnessFor>;
+  stateProblem?: string;
+  blocker?: string;
 }
 
 export function refuseLimitedHarness(projectId: number, harness: string, action = "agent_spawn"): void {
@@ -95,6 +103,66 @@ function stripSessionArgs(args: string[]): string[] {
   return stripped;
 }
 
+export function validateResumeWorker(
+  project: Project,
+  agent: AgentRow,
+  options: { parentActor?: string | null; recoveryOnly?: boolean },
+): ResumeWorkerValidation {
+  const harness = harnessFor(agent.command);
+
+  let stateProblem: string | undefined;
+  let blocker: string | undefined;
+  if (agent.status !== "closed") {
+    stateProblem = `Agent ${agent.id} ("${agent.name}") is not closed (status: ${agent.status}).`;
+  } else if (agent.kind === LEAD_KIND) {
+    stateProblem = `Agent ${agent.id} ("${agent.name}") is this project's lead session. agent_resume is for workers; start a lead session with \`hive lead\`.`;
+  } else if (options.recoveryOnly && (agent.recovery_state !== "pending" || agent.parked_at)) {
+    stateProblem = "row is not marked for crash recovery";
+  } else if (!harness.supportsResume) {
+    blocker =
+      `Agent ${agent.id} ("${agent.name}")'s harness ("${harness.name}", command: "${agent.command}") ` +
+      "does not support resume, so it has no session id to resume from.";
+  } else if (!agent.session_id) {
+    blocker =
+      `Agent ${agent.id} ("${agent.name}") has no recorded session id, so it cannot be resumed. It may ` +
+      "predate this feature, or it may have closed before its first hook event ever fired. Spawn a new worker instead.";
+  } else if (harness.name === "codex" && !agent.codex_home) {
+    blocker =
+      `Agent ${agent.id} ("${agent.name}") has no recorded CODEX_HOME, so its session cannot be resumed. ` +
+      (agent.parked_at
+        ? "This should not happen for a parked codex worker - its home is only reaped on agent_close. Check agent_status for how it actually got here."
+        : "Its Codex home was released after close, so there is nothing here to resume; spawn a new worker instead.");
+  } else if (!agent.cwd || !existsSync(agent.cwd)) {
+    const recreate = agent.parked_branch
+      ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
+      : `recreate a checkout at ${agent.cwd || "(empty)"} (no branch was recorded for it - agent_park records one)`;
+    const reason = harness.name === "codex" ? "It resumes into that directory as its working directory" : "Its transcript is resolved from that path";
+    blocker =
+      `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd || "(empty)"}. ${reason}, ` +
+      `so recreate it and the resume works unchanged: ${recreate}`;
+  } else if (options.recoveryOnly && options.parentActor == null) {
+    blocker = "no recorded parent actor for recovery placement";
+  } else if (options.recoveryOnly && harness.name === "codex" && !existsSync(codexHomeDir(agent.codex_home!))) {
+    blocker = "Codex home is missing";
+  } else {
+    const running = db
+      .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
+      .all(project.id) as { id: number; name: string }[];
+    const collision = running.find((row) => row.id !== agent.id && row.name.toLowerCase() === agent.name.toLowerCase());
+    if (collision) {
+      blocker = options.recoveryOnly
+        ? "a running worker already uses this name"
+        : `Cannot resume agent ${agent.id} ("${agent.name}") under its recorded name: a running agent ` +
+          `(agent ${collision.id}) already has it. agent_resume does not rename on your behalf - the ` +
+          `${agent.parked_at ? "parked" : "closed"} lane is not lost, it just cannot come back under a name ` +
+          "someone else is using. Free the name first (agent_rename or agent_close on the running one), " +
+          `then retry agent_resume(agent_id: ${agent.id}).`;
+    }
+  }
+
+  return { project, agent, harness, stateProblem, blocker };
+}
+
 export async function resumeWorker(
   projectId: number,
   agentId: number,
@@ -103,52 +171,11 @@ export async function resumeWorker(
   const project = getProject(projectId);
   if (!project) throw new Error(`Project ${projectId} is no longer registered.`);
   const agent = getAgentRow(project.id, agentId, "Call agent_list(include_closed: true).");
-  if (agent.status !== "closed") {
-    throw new Error(`Agent ${agent.id} ("${agent.name}") is not closed (status: ${agent.status}).`);
-  }
-  if (agent.kind === LEAD_KIND) {
-    throw new Error(`Agent ${agent.id} ("${agent.name}") is this project's lead session. agent_resume is for workers; start a lead session with \`hive lead\`.`);
-  }
-
-  const resumeHarness = harnessFor(agent.command);
-  refuseLimitedHarness(project.id, resumeHarness.name, "agent_resume");
-  if (!resumeHarness.supportsResume) {
-    throw new Error(
-      `Agent ${agent.id} ("${agent.name}")'s harness ("${resumeHarness.name}", command: "${agent.command}") does not support resume, so it has no session id to resume from.`,
-    );
-  }
-  if (!agent.session_id) {
-    throw new Error(
-      `Agent ${agent.id} ("${agent.name}") has no recorded session id, so it cannot be resumed. It may predate this feature, or it may have closed before its first hook event ever fired. Spawn a new worker instead.`,
-    );
-  }
-  if (resumeHarness.name === "codex" && !agent.codex_home) {
-    throw new Error(
-      `Agent ${agent.id} ("${agent.name}") has no recorded CODEX_HOME, so its session cannot be resumed. ` +
-        (agent.parked_at
-          ? "This should not happen for a parked codex worker - its home is only reaped on agent_close. Check agent_status for how it actually got here."
-          : "Its Codex home was released after close, so there is nothing here to resume; spawn a new worker instead."),
-    );
-  }
-  if (!agent.cwd || !existsSync(agent.cwd)) {
-    const recreate = agent.parked_branch
-      ? `git worktree add ${agent.cwd} ${agent.parked_branch}`
-      : `recreate a checkout at ${agent.cwd} (no branch was recorded for it - agent_park records one)`;
-    const reason = resumeHarness.name === "codex" ? "It resumes into that directory as its working directory" : "Its transcript is resolved from that path";
-    throw new Error(
-      `Agent ${agent.id} ("${agent.name}")'s working directory is gone: ${agent.cwd || "(empty)"}. ${reason}, so recreate it and the resume works unchanged: ${recreate}`,
-    );
-  }
-
-  const collision = db
-    .prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id")
-    .all(project.id) as { id: number; name: string }[];
-  const taken = collision.find((row) => row.id !== agent.id && row.name.toLowerCase() === agent.name.toLowerCase());
-  if (taken) {
-    throw new Error(
-      `Cannot resume agent ${agent.id} ("${agent.name}") under its recorded name: a running agent (agent ${taken.id}) already has it. agent_resume does not rename on your behalf - the ${agent.parked_at ? "parked" : "closed"} lane is not lost, it just cannot come back under a name someone else is using. Free the name first (agent_rename or agent_close on the running one), then retry agent_resume(agent_id: ${agent.id}).`,
-    );
-  }
+  const validation = validateResumeWorker(project, agent, options);
+  const resumeHarness = validation.harness;
+  if (validation.stateProblem) throw new Error(validation.stateProblem);
+  refuseLimitedHarness(project.id, validation.harness.name, "agent_resume");
+  if (validation.blocker) throw new Error(validation.blocker);
 
   const branchNow = agent.parked_branch ? branchAt(agent.cwd) : "";
   const branchDrift = branchNow && branchNow !== agent.parked_branch

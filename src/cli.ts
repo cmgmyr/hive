@@ -199,7 +199,7 @@ import {
   windowLayout,
 } from "./tmux.js";
 import { collectCrew, crewStoreProblem } from "./crew.js";
-import { resumeWorker } from "./agentResume.js";
+import { resumeWorker, validateResumeWorker } from "./agentResume.js";
 import { markWorkerLost } from "./workerRecovery.js";
 import type { AgentRow } from "./agentRecords.js";
 import { describeVisibility, formatLocal, processCounts } from "./dashboard.js";
@@ -3982,24 +3982,17 @@ async function cmdCrewRestore(argv: string[]): Promise<void> {
       continue;
     }
 
-    const harness = harnessFor(candidate.command);
-    const blocker = !harness.supportsResume
-      ? `harness "${harness.name}" does not support resume`
-      : !candidate.session_id
-        ? "no recorded session id"
-        : !candidate.cwd || !existsSync(candidate.cwd)
-          ? `working directory is missing: ${candidate.cwd || "(empty)"}`
-          : harness.name === "codex" && (!candidate.codex_home || !existsSync(codexHomeDir(candidate.codex_home)))
-            ? "Codex home is missing"
-            : !candidate.parent_actor_id
-              ? "no recorded parent actor for recovery placement"
-              : (db
-                  .prepare("SELECT id FROM agents WHERE project_id = ? AND status = 'running' AND id != ? AND lower(name) = lower(?) LIMIT 1")
-                  .get(project.id, candidate.id, candidate.name) as { id: number } | undefined)
-              ? "a running worker already uses this name"
-              : undefined;
-    if (blocker) {
-      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: dryRun ? "skipped" : "failed", reason: blocker });
+    const validation = validateResumeWorker(project, candidate, {
+      parentActor: candidate.parent_actor_id,
+      recoveryOnly: true,
+    });
+    candidate = validation.agent;
+    if (validation.stateProblem) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: "skipped", reason: "the row changed before recovery validation" });
+      continue;
+    }
+    if (validation.blocker) {
+      rows.push({ agent_id: candidate.id, name: candidate.name, outcome: dryRun ? "skipped" : "failed", reason: validation.blocker });
       continue;
     }
     if (dryRun) {
