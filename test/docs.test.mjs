@@ -347,9 +347,11 @@ describe("docs keep up with the MCP surface", () => {
     }
   });
 
-  it("documents every registered tool in docs/tools.md, and names nothing extra", () => {
+  it("documents every registered tool exactly once in docs/tools.md, and names nothing extra", () => {
 
     const documented = readmeToolNames(toolsSection(readRepo("docs/tools.md")));
+    const duplicates = [...new Set(documented.filter((name, index) => documented.indexOf(name) !== index))];
+    assert.deepEqual(duplicates, [], `docs/tools.md has duplicate tool rows: ${duplicates.join(", ")}`);
     for (const name of REGISTERED_TOOLS) {
       assert.ok(documented.includes(name), `${name} is registered but has no row in docs/tools.md's table`);
     }
