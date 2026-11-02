@@ -35,6 +35,7 @@ const { db } = await import("../dist/db.js");
 await assertScratchStore();
 const { sessionName, rowOwnership, liveTargets } = await import("../dist/tmux.js");
 const { codexHomeDir } = await import("../dist/codexHome.js");
+const { markWorkerLost } = await import("../dist/workerRecovery.js");
 const { tick } = await import("../dist/scheduler.js");
 const HOOK = join(DIST, "hook.js");
 const STOP_PAYLOAD = readFileSync(join(REPO, "test", "fixtures", "hook-payloads", "stop-idle.json"), "utf8");
@@ -393,11 +394,58 @@ describe("hive crew-restore", { skip: hasTmux ? false : "tmux is not installed" 
       env: { HOME: fakeHome },
     });
     assert.equal(result.code, 0, result.stderr);
-    const item = JSON.parse(result.stdout).rows.find((candidate) => candidate.agent_id === receipt.agent_id);
-    assert.equal(item.outcome, "skipped");
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.rows.some((candidate) => candidate.agent_id === receipt.agent_id), false);
+    assert.ok(report.not_considered > 0);
     assert.equal(row(receipt.agent_id).status, "closed");
     assert.equal(row(receipt.agent_id).recovery_state, "excluded");
     assert.equal(row(receipt.agent_id).tmux_target, before.tmux_target);
+  });
+
+  it("dry-run lists only a pending row and counts more than fifty historical and excluded rows", async () => {
+    const baselineNotConsidered = db.prepare(
+      `SELECT COUNT(*) AS count FROM agents WHERE project_id = ? AND kind = 'agent'
+       AND status != 'running'
+       AND NOT (status = 'closed' AND recovery_state = 'pending' AND parked_at = '')`,
+    ).get(projectId).count;
+    const insert = db.prepare(
+      `INSERT INTO agents (project_id, actor_id, name, command, cwd, status, kind, session_id,
+          recovery_state, parent_actor_id, parked_at)
+       VALUES (?, ?, ?, ?, ?, 'closed', 'agent', ?, ?, 'lead:restore-test', ?)`
+    );
+    for (let index = 0; index < 60; index++) {
+      insert.run(projectId, `agent:restore-history-${index}`, `restore-history-${index}`, claude.bin,
+        dirs.projectDir, `history-session-${index}`, "", "");
+      insert.run(projectId, `agent:restore-excluded-${index}`, `restore-excluded-${index}`, claude.bin,
+        dirs.projectDir, `excluded-session-${index}`, "excluded", "");
+    }
+    insert.run(projectId, "agent:restore-parked-history", "restore-parked-history", claude.bin,
+      dirs.projectDir, "parked-session", "", "2026-11-02 00:00:00");
+
+    const receipt = await mcp.call("agent_spawn", { name: "restore-only-pending", command: claude.bin });
+    await liveAgentRow(mcp, "restore-only-pending");
+    db.prepare("UPDATE agents SET session_id = 'only-pending-session' WHERE id = ?").run(receipt.agent_id);
+    const pending = row(receipt.agent_id);
+    crashPane(pending.tmux_target);
+    assert.equal(markWorkerLost(receipt.agent_id, pending), true);
+
+    const options = { cwd: dirs.projectDir, dataDir: dirs.dataDir, tmp: dirs.tmp, env: { HOME: fakeHome } };
+    const jsonResult = await runCli(["crew-restore", "--dry-run", "--json"], options);
+    assert.equal(jsonResult.code, 0, jsonResult.stderr);
+    const report = JSON.parse(jsonResult.stdout);
+    assert.deepEqual(report.rows.map((item) => item.agent_id), [receipt.agent_id]);
+    assert.equal(report.rows[0].outcome, "would_restore");
+    assert.equal(report.not_considered, baselineNotConsidered + 121);
+
+    const humanResult = await runCli(["crew-restore", "--dry-run"], options);
+    assert.equal(humanResult.code, 0, humanResult.stderr);
+    assert.match(humanResult.stdout, new RegExp(`would_restore\\s+agent ${receipt.agent_id} restore-only-pending`));
+    assert.doesNotMatch(humanResult.stdout, /restore-history-|restore-excluded-|restore-parked-history/);
+    assert.match(humanResult.stdout, new RegExp(`${baselineNotConsidered + 121} not considered`));
+    db.prepare("DELETE FROM agents WHERE project_id = ? AND name LIKE 'restore-history-%'").run(projectId);
+    db.prepare("DELETE FROM agents WHERE project_id = ? AND name LIKE 'restore-excluded-%'").run(projectId);
+    db.prepare("DELETE FROM agents WHERE project_id = ? AND name = 'restore-parked-history'").run(projectId);
+    db.prepare("DELETE FROM agents WHERE id = ?").run(receipt.agent_id);
   });
 
   it("restore only reads and changes rows from the current project", async () => {

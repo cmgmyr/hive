@@ -3919,6 +3919,12 @@ async function cmdCrewRestore(argv: string[]): Promise<void> {
   const workers = db
     .prepare("SELECT * FROM agents WHERE project_id = ? AND kind = 'agent' ORDER BY id")
     .all(project.id) as AgentRow[];
+  const candidates = workers.filter((worker) => {
+    if (worker.parked_at) return false;
+    if (worker.status === "closed") return worker.recovery_state === "pending";
+    return worker.status === "running";
+  });
+  const notConsidered = workers.length - candidates.length;
   const rows: {
     agent_id: number;
     name: string;
@@ -3927,7 +3933,7 @@ async function cmdCrewRestore(argv: string[]): Promise<void> {
     tmux_target?: string;
   }[] = [];
 
-  for (const initial of workers) {
+  for (const initial of candidates) {
     let candidate = initial;
     if (candidate.status === "running") {
       if (!candidate.tmux_target) {
@@ -4017,7 +4023,7 @@ async function cmdCrewRestore(argv: string[]): Promise<void> {
   }
 
   if (parsed.flags.has("--json")) {
-    console.log(JSON.stringify({ project_id: project.id, dry_run: dryRun, rows }));
+    console.log(JSON.stringify({ project_id: project.id, dry_run: dryRun, rows, not_considered: notConsidered }));
   } else {
     const counts = { restored: 0, would_restore: 0, skipped: 0, failed: 0 };
     for (const row of rows) {
@@ -4026,7 +4032,7 @@ async function cmdCrewRestore(argv: string[]): Promise<void> {
       const reason = row.reason ? `: ${row.reason}` : "";
       console.log(`${row.outcome.padEnd(13)} agent ${row.agent_id} ${row.name}${target}${reason}`);
     }
-    console.log(`crew-restore: ${counts.restored} restored, ${counts.would_restore} would restore, ${counts.skipped} skipped, ${counts.failed} failed`);
+    console.log(`crew-restore: ${counts.restored} restored, ${counts.would_restore} would restore, ${counts.skipped} skipped, ${counts.failed} failed, ${notConsidered} not considered`);
   }
   if (rows.some((row) => row.outcome === "failed")) process.exitCode = 1;
 }
