@@ -27,7 +27,7 @@ import {
   setPaneTitle,
   setRemainOnExit,
   makeProcessesWindow,
-  tmux,
+  tmux, shellQuote,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
@@ -382,11 +382,11 @@ export function launchAgent(spec: LaunchSpec): {
       spec.kind === "agent"
         ? { ...spec.env, ...agentIdentityEnv(actorId, spec.name, spec.projectPath) }
         : spec.env;
-    const envFlags = buildEnvFlags(env);
+    const envFlags = buildEnvFlags(paneEnv(env));
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const placed = placeAgentPane(session, spec, envFlags, commandString, title, (window) => {
+    const placed = placeAgentPane(session, spec, envFlags, paneCommand(commandString), title, (window) => {
       retainedWindow = window;
     });
     const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
@@ -506,13 +506,13 @@ export function resumeAgent(
 
     upsertActor(spec.actorId, spec.name, "agent");
 
-    const envFlags = buildEnvFlags({
+    const envFlags = buildEnvFlags(paneEnv({
       ...spec.env,
       ...agentIdentityEnv(spec.actorId, spec.name, spec.projectPath),
-    });
+    }));
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
-    const placed = placeAgentPane(session, spec, envFlags, spec.commandString, title);
+    const placed = placeAgentPane(session, spec, envFlags, paneCommand(spec.commandString), title);
     const { target, landedInProjectId } = placed;
     const pid = createdPidOrDiscard(target, placed.pid);
     refuseIfExitedImmediately(target, false);
@@ -690,4 +690,23 @@ export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): bool
           )
           .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
   return info.changes > 0;
+}
+
+function paneEnv(env: Record<string, string>): Record<string, string> {
+  const path = paneEnvPath();
+  return path === null ? env : { ...env, PATH: path };
+}
+
+export function paneEnvPath(): string | null {
+  if (process.env.npm_command !== "exec" || process.env.PATH === undefined) return null;
+
+  const entries = process.env.PATH.split(":");
+  // npm exec's first node-gyp-bin entry closes its injected PATH prefix; preserve everything after it.
+  const boundary = entries.findIndex((entry) => entry.endsWith("/@npmcli/run-script/lib/node-gyp-bin"));
+  return boundary === -1 ? null : entries.slice(boundary + 1).join(":");
+}
+
+function paneCommand(command: string): string {
+  const path = paneEnvPath();
+  return path === null ? command : `PATH=${shellQuote(path)} ${command}`;
 }
