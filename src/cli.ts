@@ -191,7 +191,7 @@ import {
   makeProcessesWindow,
   tmux,
   TMUX_DOC,
-  tmuxSaysNothingThere,
+  tmuxNotInstalled, tmuxSaysNothingThere,
   tmuxTimeoutOverride,
   tmuxSocketPath,
   untrustedTmuxServer,
@@ -3121,7 +3121,7 @@ function cmdDoctor(argv: string[]): void {
       );
     }
   } catch (e) {
-    if (tmuxSaysNothingThere(e) && process.env.NO_COLOR !== undefined) {
+    if (!tmuxNotInstalled(e) && tmuxSaysNothingThere(e) && process.env.NO_COLOR !== undefined) {
       warn(
         "tmux NO_COLOR",
         "NO_COLOR is set in this shell; a tmux server started here would pass it to every worker, causing Claude Code placeholders and suggestions to read as typed input; agent_send refuses and wakes hold.",
