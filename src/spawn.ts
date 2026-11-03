@@ -27,7 +27,7 @@ import {
   setPaneTitle,
   setRemainOnExit,
   makeProcessesWindow,
-  tmux,
+  tmux, paneEnvPath, tmuxWithClientPath,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
@@ -270,7 +270,7 @@ function placeAgentPane(
       return claimInitialWindow(started, windowName, windowOwnerId).pane;
     }
     const splitInto = (window: string, layout: WindowLayout): string => {
-      const [pane, created = ""] = tmux(
+      const [pane, created = ""] = tmuxWithClientPath(paneEnvPath(),
         "split-window", "-d", "-P", "-F", "#{pane_id}\t#{pane_pid}",
         "-t", window, "-c", spec.cwd, ...envFlags, commandString,
         ...(spec.retainOnExit ? retainOnExitArgs(window) : []),

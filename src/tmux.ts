@@ -228,7 +228,7 @@ export function ensureSession(name: string, cwd: string, initial: InitialPane): 
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
-    const [pane, window, pid = ""] = tmux(
+    const [pane, window, pid = ""] = tmuxWithClientPath(paneEnvPath(),
       "new-session", "-d", "-P", "-F", CREATED_PANE_FORMAT, "-s", name, "-c", cwd,
       ...(initial && "command" in initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
@@ -873,7 +873,7 @@ export function createWindow(
   detach = false,
   retainOnExit = false,
 ): { pane: string; window: string; pid: string } {
-  const created = tmux(
+  const created = tmuxWithClientPath(paneEnvPath(),
     "new-window", ...(detach ? ["-d"] : []), "-P", "-F", CREATED_PANE_FORMAT,
     "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
     ...(retainOnExit ? retainOnExitArgs(`=${session}:${windowName}`) : []),
@@ -1725,4 +1725,26 @@ export async function sendText(
     beforePaneWrite?.();
     tmux("send-keys", "-t", target, "Enter");
   }
+}
+
+export function tmuxWithClientPath(path: string | null, ...args: string[]): string {
+  if (path === null) return tmux(...args);
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return tmux(...args);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+  }
+}
+
+export function paneEnvPath(): string | null {
+  if (process.env.npm_command !== "exec" || process.env.PATH === undefined) return null;
+
+  const entries = process.env.PATH.split(":");
+  // npm exec's first node-gyp-bin entry closes its injected PATH prefix; preserve everything after it.
+  const boundary = entries.findIndex((entry) => entry.endsWith("/@npmcli/run-script/lib/node-gyp-bin"));
+  return boundary === -1 ? null : entries.slice(boundary + 1).join(":");
 }
