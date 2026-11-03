@@ -191,7 +191,7 @@ import {
   makeProcessesWindow,
   tmux,
   TMUX_DOC,
-  tmuxSaysNothingThere,
+  tmuxNotInstalled, tmuxSaysNothingThere,
   tmuxTimeoutOverride,
   tmuxSocketPath,
   untrustedTmuxServer,
@@ -3111,6 +3111,24 @@ function cmdDoctor(argv: string[]): void {
     const override = tmuxTimeoutOverride();
     return override === null ? version : `${version} (HIVE_TMUX_TIMEOUT_MS=${override}ms override; testing only)`;
   });
+  try {
+    const serverEnv = tmux("show-environment", "-g", "NO_COLOR");
+    if (serverEnv.startsWith("NO_COLOR=")) {
+      warn(
+        "tmux NO_COLOR",
+        "Claude Code drops the dim styling on placeholders and suggestions, so hive reads them as typed input; agent_send refuses and wakes hold.",
+        "clear it with `tmux set-environment -g -u NO_COLOR`, then restart affected workers",
+      );
+    }
+  } catch (e) {
+    if (!tmuxNotInstalled(e) && tmuxSaysNothingThere(e) && process.env.NO_COLOR !== undefined) {
+      warn(
+        "tmux NO_COLOR",
+        "NO_COLOR is set in this shell; a tmux server started here would pass it to every worker, causing Claude Code placeholders and suggestions to read as typed input; agent_send refuses and wakes hold.",
+        "unset NO_COLOR before starting tmux, or clear it with `tmux set-environment -g -u NO_COLOR` on a running server, then restart affected workers",
+      );
+    }
+  }
   const orphans = orphanScratchServers();
   reportPtyHeadroom(orphans);
   reportOrphanTmuxServers(orphans);
