@@ -27,7 +27,7 @@ import {
   setPaneTitle,
   setRemainOnExit,
   makeProcessesWindow,
-  tmux, shellQuote,
+  tmux, tmuxWithClientPath,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
@@ -261,7 +261,7 @@ function placeAgentPane(
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
     const windowOwnerId = spec.placement === "split" ? spec.projectId : null;
-    const started = ensureSession(session, spec.cwd, { envFlags, command: commandString });
+    const started = ensureSession(session, spec.cwd, { envFlags, command: commandString, clientPath: paneEnvPath() });
     if (started.created) {
 
       // Deliberate for placement "processes" too: this pane IS the new session's initial window, so it
@@ -270,7 +270,7 @@ function placeAgentPane(
       return claimInitialWindow(started, windowName, windowOwnerId).pane;
     }
     const splitInto = (window: string, layout: WindowLayout): string => {
-      const [pane, created = ""] = tmux(
+      const [pane, created = ""] = tmuxWithClientPath(paneEnvPath(),
         "split-window", "-d", "-P", "-F", "#{pane_id}\t#{pane_pid}",
         "-t", window, "-c", spec.cwd, ...envFlags, commandString,
         ...(spec.retainOnExit ? retainOnExitArgs(window) : []),
@@ -289,7 +289,7 @@ function placeAgentPane(
       } else {
         const made = createWindow(
           session, processesWindowName(spec.projectName), spec.cwd, envFlags, commandString, null, true,
-          spec.retainOnExit ?? false,
+          spec.retainOnExit ?? false, paneEnvPath(),
         );
         pid = made.pid;
         if (spec.retainOnExit) onRetainArmed(made.window);
@@ -311,7 +311,7 @@ function placeAgentPane(
     }
     const made = createWindow(
       session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true,
-      spec.retainOnExit ?? false,
+      spec.retainOnExit ?? false, paneEnvPath(),
     );
     pid = made.pid;
     if (spec.retainOnExit) onRetainArmed(made.window);
@@ -382,11 +382,11 @@ export function launchAgent(spec: LaunchSpec): {
       spec.kind === "agent"
         ? { ...spec.env, ...agentIdentityEnv(actorId, spec.name, spec.projectPath) }
         : spec.env;
-    const envFlags = buildEnvFlags(paneEnv(env));
+    const envFlags = buildEnvFlags(env);
 
     const title = windowTitle(spec.projectName, spec.name);
 
-    const placed = placeAgentPane(session, spec, envFlags, paneCommand(commandString), title, (window) => {
+    const placed = placeAgentPane(session, spec, envFlags, commandString, title, (window) => {
       retainedWindow = window;
     });
     const { target, landedInProjectId, layoutApplied, inProcessesWindow } = placed;
@@ -506,13 +506,13 @@ export function resumeAgent(
 
     upsertActor(spec.actorId, spec.name, "agent");
 
-    const envFlags = buildEnvFlags(paneEnv({
+    const envFlags = buildEnvFlags({
       ...spec.env,
       ...agentIdentityEnv(spec.actorId, spec.name, spec.projectPath),
-    }));
+    });
     const session = sessionName();
     const title = windowTitle(spec.projectName, spec.name);
-    const placed = placeAgentPane(session, spec, envFlags, paneCommand(spec.commandString), title);
+    const placed = placeAgentPane(session, spec, envFlags, spec.commandString, title);
     const { target, landedInProjectId } = placed;
     const pid = createdPidOrDiscard(target, placed.pid);
     refuseIfExitedImmediately(target, false);
@@ -692,11 +692,6 @@ export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): bool
   return info.changes > 0;
 }
 
-function paneEnv(env: Record<string, string>): Record<string, string> {
-  const path = paneEnvPath();
-  return path === null ? env : { ...env, PATH: path };
-}
-
 export function paneEnvPath(): string | null {
   if (process.env.npm_command !== "exec" || process.env.PATH === undefined) return null;
 
@@ -704,9 +699,4 @@ export function paneEnvPath(): string | null {
   // npm exec's first node-gyp-bin entry closes its injected PATH prefix; preserve everything after it.
   const boundary = entries.findIndex((entry) => entry.endsWith("/@npmcli/run-script/lib/node-gyp-bin"));
   return boundary === -1 ? null : entries.slice(boundary + 1).join(":");
-}
-
-function paneCommand(command: string): string {
-  const path = paneEnvPath();
-  return path === null ? command : `PATH=${shellQuote(path)} ${command}`;
 }

@@ -199,7 +199,7 @@ export function crossServerRefusal(action: string): Error {
 
 export type SessionStart = { created: true; pane: string; window: string; pid: string } | { created: false };
 
-export type InitialPane = { envFlags: string[]; command: string } | { bare: true };
+export type InitialPane = { envFlags: string[]; command: string; clientPath?: string | null } | { bare: true };
 
 export function envFlagKeys(envFlags: string[]): string[] {
   return envFlags.filter((_, i) => i % 2 === 1).map((pair) => pair.split("=")[0]);
@@ -228,7 +228,7 @@ export function ensureSession(name: string, cwd: string, initial: InitialPane): 
   if (quietTmux("has-session", "-t", `=${name}`)) return { created: false };
   if (untrustedTmuxServer()) throw crossServerRefusal("create a tmux session");
   try {
-    const [pane, window, pid = ""] = tmux(
+    const [pane, window, pid = ""] = tmuxWithClientPath(initial && "command" in initial ? initial.clientPath ?? null : null,
       "new-session", "-d", "-P", "-F", CREATED_PANE_FORMAT, "-s", name, "-c", cwd,
       ...(initial && "command" in initial ? [...initial.envFlags, initial.command] : []),
     ).split("\t");
@@ -869,11 +869,11 @@ export function createWindow(
   envFlags: string[],
   command: string,
   projectId: number | null,
-
   detach = false,
   retainOnExit = false,
+  clientPath: string | null = null,
 ): { pane: string; window: string; pid: string } {
-  const created = tmux(
+  const created = tmuxWithClientPath(clientPath,
     "new-window", ...(detach ? ["-d"] : []), "-P", "-F", CREATED_PANE_FORMAT,
     "-t", `=${session}`, "-n", windowName, "-c", cwd, ...envFlags, command,
     ...(retainOnExit ? retainOnExitArgs(`=${session}:${windowName}`) : []),
@@ -1724,5 +1724,18 @@ export async function sendText(
     await sleep(ENTER_DELAY_MS);
     beforePaneWrite?.();
     tmux("send-keys", "-t", target, "Enter");
+  }
+}
+
+export function tmuxWithClientPath(path: string | null, ...args: string[]): string {
+  if (path === null) return tmux(...args);
+
+  const previousPath = process.env.PATH;
+  process.env.PATH = path;
+  try {
+    return tmux(...args);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
   }
 }

@@ -32,24 +32,25 @@ const npmExecPath = [...npmPrefix, basePath].join(":");
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const needsTmux = hasTmux ? {} : { skip: "tmux is not installed" };
 
-function startMcp(serverPath, npmCommand) {
+function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
   return new McpClient({
     cwd: dirs.projectDir,
     dataDir: dirs.dataDir,
     env: {
       PATH: serverPath,
+      HOME: dirs.tmp,
       npm_command: npmCommand,
       npm_lifecycle_event: "test",
       HIVE_SPAWN_READY_MS: "1",
       TERM: "xterm-256color",
-      SHELL: "/bin/sh",
+      SHELL: shell,
     },
   });
 }
 
-async function withMcp(serverPath, npmCommand, action) {
+async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh") {
   killScratchServer();
-  const mcp = startMcp(serverPath, npmCommand);
+  const mcp = startMcp(serverPath, npmCommand, shell);
   try {
     await mcp.start();
     return await action(mcp);
@@ -83,6 +84,16 @@ function installFakeClaude(output) {
   chmodSync(fakeClaude, 0o755);
 }
 
+function installStartupShell(startupPath) {
+  const shell = join(dirs.tmp, "startup-shell");
+  writeFileSync(
+    shell,
+    `#!/bin/sh\nif [ "$1" = "-c" ]; then\n  shift\n  PATH=${quote(startupPath)}:"$PATH" exec /bin/sh -c "$1"\nfi\nexec /bin/sh "$@"\n`,
+  );
+  chmodSync(shell, 0o755);
+  return shell;
+}
+
 after(() => {
   killScratchServer();
   rmSync(dirname(dirs.dataDir), { recursive: true, force: true });
@@ -113,6 +124,17 @@ describe("worker pane PATH from npm exec", () => {
         "new-session -e must not leave PATH at session scope after its pane starts",
       );
     });
+  });
+
+  it("preserves PATH entries added by the pane shell startup", needsTmux, async () => {
+    const startupBin = join(dirs.tmp, "startup-bin");
+    mkdirSync(startupBin);
+    const startupShell = installStartupShell(startupBin);
+    await withMcp(npmExecPath, "exec", async (mcp) => {
+      const actual = await spawnPathProbe(mcp, "path-shell-startup", join(dirs.tmp, "startup.path"));
+      assert.equal(actual, [startupBin, basePath].join(":"));
+      for (const injected of npmPrefix) assert.equal(actual.includes(injected), false);
+    }, startupShell);
   });
 
   it("cuts PATH again when agent_resume creates the resumed pane", needsTmux, async () => {
