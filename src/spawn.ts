@@ -27,7 +27,7 @@ import {
   setPaneTitle,
   setRemainOnExit,
   makeProcessesWindow,
-  tmux, tmuxWithClientPath,
+  tmux, paneEnvPath, tmuxWithClientPath,
   tmuxSocketPath,
   untrustedTmuxServer,
   waitForPaneEstablished,
@@ -261,7 +261,7 @@ function placeAgentPane(
 
     const windowName = spec.placement === "split" ? spec.projectName : title;
     const windowOwnerId = spec.placement === "split" ? spec.projectId : null;
-    const started = ensureSession(session, spec.cwd, { envFlags, command: commandString, clientPath: paneEnvPath() });
+    const started = ensureSession(session, spec.cwd, { envFlags, command: commandString });
     if (started.created) {
 
       // Deliberate for placement "processes" too: this pane IS the new session's initial window, so it
@@ -289,7 +289,7 @@ function placeAgentPane(
       } else {
         const made = createWindow(
           session, processesWindowName(spec.projectName), spec.cwd, envFlags, commandString, null, true,
-          spec.retainOnExit ?? false, paneEnvPath(),
+          spec.retainOnExit ?? false,
         );
         pid = made.pid;
         if (spec.retainOnExit) onRetainArmed(made.window);
@@ -311,7 +311,7 @@ function placeAgentPane(
     }
     const made = createWindow(
       session, windowName, spec.cwd, envFlags, commandString, windowOwnerId, true,
-      spec.retainOnExit ?? false, paneEnvPath(),
+      spec.retainOnExit ?? false,
     );
     pid = made.pid;
     if (spec.retainOnExit) onRetainArmed(made.window);
@@ -690,13 +690,4 @@ export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): bool
           )
           .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
   return info.changes > 0;
-}
-
-export function paneEnvPath(): string | null {
-  if (process.env.npm_command !== "exec" || process.env.PATH === undefined) return null;
-
-  const entries = process.env.PATH.split(":");
-  // npm exec's first node-gyp-bin entry closes its injected PATH prefix; preserve everything after it.
-  const boundary = entries.findIndex((entry) => entry.endsWith("/@npmcli/run-script/lib/node-gyp-bin"));
-  return boundary === -1 ? null : entries.slice(boundary + 1).join(":");
 }

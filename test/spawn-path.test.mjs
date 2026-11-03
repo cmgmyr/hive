@@ -4,14 +4,13 @@ import { execFileSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 import { dirname, join } from "node:path";
 
-import { clearHiveEnv, isolateTmux, McpClient, scratchDirs, tmux, tmuxSocketUnder, until } from "./helpers.mjs";
+import { clearHiveEnv, isolateTmux, McpClient, scratchDirs, tmux, until } from "./helpers.mjs";
 
-const { hasTmux } = isolateTmux("the worker PATH tests");
+const { hasTmux, cleanup } = isolateTmux("the worker PATH tests");
 const dirs = scratchDirs();
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
-const { sessionName } = await import("../dist/tmux.js");
-const scratchSocket = tmuxSocketUnder(process.env.TMUX_TMPDIR);
+const { paneEnvPath, sessionName } = await import("../dist/tmux.js");
 const { db } = await import("../dist/db.js");
 
 const userBin = join(dirs.tmp, "existing", "node_modules", ".bin");
@@ -49,21 +48,15 @@ function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
 }
 
 async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh") {
-  killScratchServer();
+  cleanup(sessionName());
   const mcp = startMcp(serverPath, npmCommand, shell);
   try {
     await mcp.start();
     return await action(mcp);
   } finally {
     await mcp.close();
-    killScratchServer();
+    cleanup(sessionName());
   }
-}
-
-function killScratchServer() {
-  try {
-    execFileSync("tmux", ["-S", scratchSocket, "kill-server"], { stdio: "ignore" });
-  } catch {}
 }
 
 async function spawnPathProbe(mcp, name, output, placement = "window") {
@@ -95,7 +88,7 @@ function installStartupShell(startupPath) {
 }
 
 after(() => {
-  killScratchServer();
+  cleanup(sessionName());
   rmSync(dirname(dirs.dataDir), { recursive: true, force: true });
 });
 
@@ -190,7 +183,6 @@ describe("worker pane PATH from npm exec", () => {
   it("reads npm_command and PATH at each pane PATH lookup", async () => {
     const oldPath = process.env.PATH;
     const oldNpmCommand = process.env.npm_command;
-    const { paneEnvPath } = await import("../dist/spawn.js");
     try {
       process.env.npm_command = "exec";
       process.env.PATH = [...npmPrefix, "/first/original/bin"].join(":");
