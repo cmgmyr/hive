@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
@@ -73,9 +73,12 @@ describe("hive doctor warns when NO_COLOR reaches Claude workers", () => {
 
   it("does not treat a missing tmux binary as an empty server", { skip: skipWithoutTmux }, async () => {
     const opts = doctorOpts();
+    const nodeOnlyBin = join(opts.tmp, "node-only-bin");
+    mkdirSync(nodeOnlyBin);
+    symlinkSync(process.execPath, join(nodeOnlyBin, "node"));
     const out = await runCli(["doctor"], {
       ...opts,
-      env: { ...opts.env, PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, NO_COLOR: "1" },
+      env: { ...opts.env, PATH: nodeOnlyBin, NO_COLOR: "1" },
     });
 
     assert.equal(out.stderr, "", out.stderr);
