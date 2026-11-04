@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.12.1 - 2026-11-03
+
+- Workers spawned by an MCP server launched with `npx` no longer inherit npm exec's PATH prefix. Before, a worker's PATH started with the `_npx` bin dir, a `node_modules/.bin` for every directory from the lead's working directory up to `/`, and npm's `node-gyp-bin`, so tools such as `biome` resolved from the main checkout instead of the worker's worktree. Hive now drops that prefix when it creates a pane, and the pane's shell still adds its own startup entries. Servers not launched through npm exec are unchanged. PATH entries that a version manager adds before npm runs, such as asdf's Node install directory, are kept.
+- `hive doctor` warns when `NO_COLOR` is set in the tmux server's environment, and names the fix. With it set, Claude Code drops the dim styling on its input-box suggestions, so hive reads a suggestion as unsubmitted input.
+- After upgrading, restart every hive session.
+
 ## 1.12.0 - 2026-11-02
 
 - New `hive crew-restore [--dry-run] [--json]` brings back workers whose panes were lost to a crash or a reboot. It resumes each one on its existing row, with its session, working directory, model and launch arguments, and never replays the previous assignment. Output lists only workers that could be recovered and counts the rest as `not considered`; `--json` adds a numeric `not_considered`. Use `agent_resume` for one closed worker.
