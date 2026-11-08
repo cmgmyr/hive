@@ -69,10 +69,6 @@ Commands appear as windows in the session (visible in iTerm like everything else
 
 Set `context_checkpoint_percent` to an integer from 1 through 100 to notify workers when their context fill reaches that percentage. An absent key or `null` disables the hook. Invalid values are ignored with a warning. Hive sends a factual context reading once per upward crossing; it does not stop the worker or prescribe an action. A below-threshold observation after compaction allows another crossing.
 
-### Recovering a worker after pane loss
-
-When hive confirms that a running worker's recorded pane is gone or belongs to another process, it closes that worker's row and marks the crash for recovery. A deliberate `agent_close` or `agent_park` is excluded. Run `hive crew-restore [--dry-run] [--json]` to resume pending crash recoveries on their existing rows; `agent_resume(agent_id: <id>)` remains available for one closed worker. Both preserve the worker's session, working directory and launch options when those resources remain available. Per-row output covers pending recovery rows and every running, non-parked row, with pane ownership live, gone, unknown or reissued, plus each outcome and reason. Historical, deliberately closed and parked rows stay out of that list; JSON adds a numeric `not_considered` count, and the human totals line shows the same count. Crew restore never replays the previous assignment. Hive keeps a crashed Codex worker's home for seven days from the detected loss, then reaps it; a deliberate close releases the home immediately. Historical closed rows are not inferred to be crashes. Restart all hive servers after upgrading before relying on this retention, since an older server still reaps every closed, non-parked home.
-
 The value is captured in the worker-only `HIVE_CONTEXT_CHECKPOINT_PERCENT` environment variable when a worker spawns or resumes. Editing `hive.yml` affects the next spawn or resume, not a running worker. This setting applies to Claude and Codex workers only. It has no `agent_spawn` argument and does not instrument the lead.
 
 ### Background processes (`visible: false`)
@@ -80,14 +76,6 @@ The value is captured in the worker-only `HIVE_CONTEXT_CHECKPOINT_PERCENT` envir
 A visible process follows `placement:` exactly like a worker does: beside the lead under the default `split`, or its own tab under `placement: window`. Set `visible: false` instead and the process tiles as a pane in one shared `<project>/processes` window per project, so six background processes across two projects cost two tabs, not six.
 
 Visibility is not part of what hive approves. Toggling `visible` never re-opens the trust prompt, because the command hive runs is unchanged; only its name, its command, its `dir` and its `env` are hashed.
-
-### Todo completion gate
-
-Set `completion_gate` in the project `hive.yml` to a non-empty argv list. Hive runs that executable with literal arguments from the project root before an unfinished todo becomes completed through `todo_complete` or `todo_update(status="completed")`. Exit 0 lets the write continue. A nonzero exit, signal, timeout, spawn failure, untrusted command, invalid field, or stale todo/config refuses the entire write. The error includes the reason, exit status or signal when available, and up to 4096 bytes from each output stream. The command has a 30-second timeout and receives `HIVE_TODO_ID`, `HIVE_TODO_TITLE`, `HIVE_PROJECT_ID`, and `HIVE_ACTOR_ID` in its environment.
-
-The gate may run more than once when completion requests overlap, so it must be side-effect-free or idempotent.
-
-`hive lead` reviews the gate with the same interactive approval it uses for other project commands. Approval records trust for the current argv and does not run the gate. If approval is absent or the argv changes, completion refuses and tells you to run `hive` in a terminal in the project. There is no separate trust command. With the key absent or set to `null`, completions keep their existing behavior. A malformed `completion_gate` field in valid YAML refuses completion; a malformed whole project `hive.yml` follows the existing no-config behavior, so the gate does not run. The key is project-only and a global occurrence warns and is ignored.
 
 Two commands move a running process between the two places:
 
@@ -104,13 +92,21 @@ One case does not tile. If a `visible: false` process is the thing that opens th
 
 `hive status` labels each running process `shown` or `hidden`, `hive doctor` reports one line counting them, and the dashboard gets a Processes card and section listing every process the project defines - running or not - with its state, where it is showing, and when it started.
 
-`agents:` needs no such approval, and that's deliberate rather than an oversight: unlike `processes:`, which carries an arbitrary string hive executes, each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
+### Allowed harnesses (`agents:`)
 
-## Harness usage limits
+Unlike `processes:`, which carries an arbitrary string hive executes, `agents:` needs no approval, and that is deliberate. Each `agents:` entry is checked against hive's own fixed table of known harnesses at parse time and dropped with a warning if it isn't one - the repo can only ever pick among names hive's code already recognizes, never smuggle in a command of its own. `agent_spawn`'s `harness` and `command` parameters are gated the same way: a command that resolves to a known harness (by basename) not in this list is refused; a command hive doesn't recognize as any harness at all was never part of this pool and is unaffected by it.
 
-Hive observes limits from the worker's or lead's locally owned transcript or Codex rollout and the current pane. While the limit is active, due wakes stay unclaimed and submitted text stays in its existing message row. `agent_send` returns a pending receipt; do not submit it again. `keys` and `submit: false` remain deliberate manual recovery paths. `agent_spawn` and `agent_resume` refuse synchronously when a running worker or lead in this project is limited on the same harness, and report the retry time. They do not create a deferred request. A known reset releases after 60 seconds; missing or unparseable reset data is capped at six hours from first observation. Other pane checks such as ownership, dialogs, copy mode and unsubmitted input still apply after release.
+### Todo completion gate
 
-For Codex, hive types `continue` once after a known reset only when the worker is assigned and its pane still shows the limit. Hive does not add a setting for this behavior. A new signal from the worker's own session starts a new episode. The detected Codex snapshot fields are inferred from open-source evidence and synthetic fixtures, not confirmed by a live subscription limit.
+Set `completion_gate` in the project `hive.yml` to a non-empty argv list. Hive runs that executable with literal arguments from the project root before an unfinished todo becomes completed through `todo_complete` or `todo_update(status="completed")`. Exit 0 lets the write continue. A nonzero exit, signal, timeout, spawn failure, untrusted command, invalid field, or stale todo/config refuses the entire write. The error includes the reason, exit status or signal when available, and up to 4096 bytes from each output stream. The command has a 30-second timeout and receives `HIVE_TODO_ID`, `HIVE_TODO_TITLE`, `HIVE_PROJECT_ID`, and `HIVE_ACTOR_ID` in its environment.
+
+The gate may run more than once when completion requests overlap, so it must be side-effect-free or idempotent.
+
+`hive lead` reviews the gate with the same interactive approval it uses for other project commands. Approval records trust for the current argv and does not run the gate. If approval is absent or the argv changes, completion refuses and tells you to run `hive` in a terminal in the project. There is no separate trust command. With the key absent or set to `null`, completions keep their existing behavior. A malformed `completion_gate` field in valid YAML refuses completion; a malformed whole project `hive.yml` follows the existing no-config behavior, so the gate does not run. The key is project-only and a global occurrence warns and is ignored.
+
+### Recovering a worker after pane loss
+
+When hive confirms that a running worker's recorded pane is gone or belongs to another process, it closes that worker's row and marks the crash for recovery. A deliberate `agent_close` or `agent_park` is excluded. Run `hive crew-restore [--dry-run] [--json]` to resume pending crash recoveries on their existing rows; `agent_resume(agent_id: <id>)` remains available for one closed worker. Both preserve the worker's session, working directory and launch options when those resources remain available. Per-row output covers pending recovery rows and every running, non-parked row, with pane ownership live, gone, unknown or reissued, plus each outcome and reason. Historical, deliberately closed and parked rows stay out of that list; JSON adds a numeric `not_considered` count, and the human totals line shows the same count. Crew restore never replays the previous assignment. Hive keeps a crashed Codex worker's home for seven days from the detected loss, then reaps it; a deliberate close releases the home immediately. Historical closed rows are not inferred to be crashes. Restart all hive servers after upgrading before relying on this retention, since an older server still reaps every closed, non-parked home.
 
 ### Process lifetime
 
@@ -188,6 +184,11 @@ Set `quiet_messaging: false` in the global or project file, then restart the lea
 
 With it on (the default), that lead accepts cross-session messages from every sender, not only from hive. Workers are unaffected: their generated settings keep refusing inbound messages.
 
+## Harness usage limits
+
+Hive observes limits from the worker's or lead's locally owned transcript or Codex rollout and the current pane. While the limit is active, due wakes stay unclaimed and submitted text stays in its existing message row. `agent_send` returns a pending receipt; do not submit it again. `keys` and `submit: false` remain deliberate manual recovery paths. `agent_spawn`, `agent_fork` and `agent_resume` refuse synchronously when a running worker or lead in this project is limited on the same harness, and report the retry time. They do not create a deferred request. A known reset releases after 60 seconds; missing or unparseable reset data is capped at six hours from first observation. Other pane checks such as ownership, dialogs, copy mode and unsubmitted input still apply after release.
+
+For Codex, hive types `continue` once after a known reset only when the worker is assigned and its pane still shows the limit. Hive does not add a setting for this behavior. A new signal from the worker's own session starts a new episode. The detected Codex snapshot fields are inferred from open-source evidence and synthetic fixtures, not confirmed by a live subscription limit.
 
 ## Automatic backups
 

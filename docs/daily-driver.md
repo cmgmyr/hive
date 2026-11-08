@@ -49,6 +49,8 @@ The global file can supply either setting; project values take precedence. See [
 
 hive re-applies the layout whenever a worker spawns or closes, so it holds up as the crew changes size. `agent_spawn`'s receipt names the layout it applied, so you can tell what hive chose without checking the panes by eye.
 
+A worker spawned with `placement: "window"` against a split config gets its own window. Run `hive layout` to gather this project's live worker panes back into the lead window and restore the configured layout. It leaves unrelated panes where they are, and does nothing when `hive.yml` sets `placement: window`.
+
 ## Workers
 
 Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pane or window, with its own identity and locked to the project. Type into it with `agent_send`, and read its terminal with `agent_output`. Spawning several workers on the same project shares one plan: for parallel file edits, give each its own git worktree with the `cwd` parameter, and everyone still reads and writes the same pads and todos.
@@ -56,6 +58,14 @@ Spawn one with `agent_spawn`; it starts an agent CLI (default `claude`) in a pan
 Pick a different harness per worker with `agent_spawn`'s `harness` parameter (`harness: "codex"`) or by naming the command directly (`command: "codex"`); leaving both unset spawns the project's `hive.yml` default, the first entry in its `agents:` list. A project has to opt codex into that list before either works. See [Codex workers](install.md#codex-workers) for its lifecycle, reporting, and instruction-loading limits.
 
 Use `agent_fork(agent_id, name)` when you want a worker to try an alternative using an existing Claude Code or Codex conversation. Hive creates a separate worker identity, session, pane and brief, then waits for your assignment. The child uses the source cwd by default; pass another cwd in the same project when useful. Hive does not copy the source worktree or todo link, and does not promise that harness tasks copy. Claude process-scoped permissions need approval again. A Codex source must still have its generated home and rollout, so park it before forking if you want to preserve it; a closed Codex home has been reaped.
+
+### After a crash or reboot
+
+When hive confirms a running worker's pane is gone, it closes that worker's row and marks it for recovery. Run `hive crew-restore --dry-run` to see which workers qualify and what blocks the rest, then `hive crew-restore` to resume them with their own sessions. It does not repeat their last assignment, so tell each worker what to do next. A deliberate `agent_close` or `agent_park` is never restored. A crashed Codex worker's home is kept for seven days. See [recovering a worker after pane loss](projects.md#recovering-a-worker-after-pane-loss).
+
+### When a harness hits its usage limit
+
+While a worker or lead is at its Claude or Codex usage limit, hive holds due wakes and submitted messages, and `agent_spawn`, `agent_fork` and `agent_resume` refuse for that harness in this project and give a retry time. Nothing is lost: held text stays stored, and `agent_send` returns a `pending` receipt, so do not send it again. There is no setting for this. See [harness usage limits](projects.md#harness-usage-limits).
 
 ### A worker's long report reaches you as one line
 

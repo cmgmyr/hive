@@ -76,7 +76,7 @@ When a key is absent from global `hive.yml`, legacy `config.json` can still supp
 
 ## Harness usage limits
 
-Usage-limit handling has no configuration key. Hive reads only the target's locally owned transcript or Codex rollout plus its pane, holds due wakes and submitted messages, and refuses a new spawn or resume on the same project's same harness with a retry time. A known reset releases after a 60-second grace period. An unknown reset releases after six hours from its first observation. Codex workers with a known reset get one `continue` after the reset when their pane still shows the limit and the worker has received an assignment. Hive makes no usage-service request. Restart hive MCP sessions after upgrading so older schedulers cannot type into a limited pane.
+Usage-limit handling has no configuration key. Hive reads only the target's locally owned transcript or Codex rollout plus its pane, holds due wakes and submitted messages, and refuses a new spawn, fork or resume on the same project's same harness with a retry time. A known reset releases after a 60-second grace period. An unknown reset releases after six hours from its first observation. Codex workers with a known reset get one `continue` after the reset when their pane still shows the limit and the worker has received an assignment. Hive makes no usage-service request. Restart hive MCP sessions after upgrading so older schedulers cannot type into a limited pane.
 
 See [project configuration](projects.md#project-commands-hiveyml), [profiles](profiles.md#profiles-standing-instructions-across-projects), and [dashboard settings](dashboard.md#enable-it) for the project-specific examples.
 

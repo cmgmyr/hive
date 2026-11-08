@@ -24,7 +24,7 @@ Where a tool names a running agent by `name`, a string that matches no agent nam
 | `agent_message_get` | Reads the full text behind a `[message #N ...]` line, and, for a message sent with quiet messaging on (the default), its delivery state (`delivery_status`, `delivery_method`, `confirmed_at`, `delivery_note`) | When a worker's report to the lead was shortened and you want the rest, or to see whether a quiet message was confirmed |
 | `agent_output` | Reads the worker's rendered terminal, up to 200 lines | To read real results before calling a lane done |
 | `agent_rename` | Changes a worker's display name; `actor_id` stays the same. A worker whose pane is gone or reissued is renamed in the store only; one whose pane ownership cannot be verified is refused. A pane in tmux copy mode is renamed in the store but not retitled, and the receipt says so | When a worker's job becomes clear after you started it |
-| `agent_resume` | Resumes a closed claude or codex worker from its recorded session id (`claude --resume` / `codex resume`), reusing the same actor_id. A current same-project limit on that harness refuses resume with a retry time and creates no pane | To get a closed worker's full prior context back instead of briefing a fresh one |
+| `agent_resume` | Resumes a closed claude or codex worker from its recorded session id (`claude --resume` / `codex resume`), reusing the same actor_id. A current same-project limit on that harness refuses resume with a retry time and creates no pane | To get a closed worker's full prior context back instead of briefing a fresh one. After a reboot or crash, `hive crew-restore` does this for every worker that lost its pane |
 | `agent_park` | Parks a claude or codex worker for the night: closes the pane, marks the row parked rather than plain closed, records the branch, and hands back a board line. A pane that is gone or reissued is left alone and the row is parked anyway; a pane whose ownership cannot be verified is refused | End of day, when the lane is paused rather than finished and you want it back tomorrow |
 | `agent_close` | Kills the worker's window and marks it closed. It kills only a pane whose recorded pid matches; a gone or reissued pane is left alone and the row closed, and a row whose pane ownership cannot be verified is refused. Called on a PARKED row (by `agent_id`) it releases the park instead. With `row_only: true` it marks the row closed with no kill, stop or typing; it only reads tmux to check ownership. Only a human or peer lead may pass it, and it refuses any row that provably owns a live pane, or any row it could not check because tmux did not answer | After capturing handoffs; terminal output is not retained. Also how you abandon a parked lane you have decided not to resume. `row_only` is for a row whose pane is gone, reissued, or whose ownership cannot be verified, such as a lead row with no recorded pane pid |
 | **wake-ups** | | |
@@ -58,8 +58,6 @@ Where a tool names a running agent by `name`, a string that matches no agent nam
 | `todo_comment` | Appends a comment | Handoffs: changed files, tests run, remaining risk |
 | `todo_block` | Adds a dependency; cycles are rejected | Encode ordering between tasks |
 | `todo_unblock` | Removes one dependency | When ordering changes |
-
-If the project defines `completion_gate` in its `hive.yml`, both tools run that trusted command before an unfinished todo becomes completed. A nonzero exit, timeout, signal, spawn error, invalid gate field, or stale todo/config returns an error and leaves the completion write unapplied. Reopening and other updates skip the gate. See [the project configuration](projects.md#todo-completion-gate).
 | **kv** | | |
 | `kv_set` | Stores a small shared JSON value, optional TTL | Flags, ports, shared config other sessions should find |
 | `kv_get` | Reads a value by key. A stored value that is not valid JSON comes back as its raw text | |
@@ -71,6 +69,8 @@ If the project defines `completion_gate` in its `hive.yml`, both tools run that 
 | **actors** | | |
 | `actor_prune` | Deletes every actor that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray or one-off actors; unlike every other tool here, the scan is store-wide, not scoped to the current project, since actors carry no `project_id` |
 
+If the project defines `completion_gate` in its `hive.yml`, both tools run that trusted command before an unfinished todo becomes completed. A nonzero exit, timeout, signal, spawn error, invalid gate field, or stale todo/config returns an error and leaves the completion write unapplied. Reopening and other updates skip the gate. See [the project configuration](projects.md#todo-completion-gate).
+
 Conventions borrowed from tools that got this right:
 
 - Write tools return slim receipts (`{project_id, todo_id}`) to keep token cost down. The 31 that declare an MCP `outputSchema` send that receipt twice on the wire (text plus `structuredContent`) - a deliberate, bounded duplication scoped to those tools only, not a regression to fix. After a rebuild or an automatic project registration, the first result from those tools also carries the one-time notice as an optional `hive_notice` string in `structuredContent`, because Claude Code shows the model `structuredContent` and drops the text for them. Tools without an `outputSchema` carry the same notice as a second text block.
@@ -78,13 +78,17 @@ Conventions borrowed from tools that got this right:
 - Leases and kv TTLs expire on their own, so a dead session never wedges the team.
 - Todo blockers form a dependency graph; cycles are rejected.
 
-## Read-only workers
+## Spawning with a todo link
 
 `agent_spawn` takes an optional `todo_id`: a non-archived todo in the same project, stored as the worker's link and shown by `agent_list`, `agent_status` and [the crew sidebar](crew.md). It changes no todo status, and `agent_resume` keeps it. A session whose MCP server started before this parameter existed refuses it as an unknown argument until it restarts.
+
+## Forking a worker
 
 `agent_fork(agent_id, name, ...)` requires a numeric source worker id and a new child name. The child inherits the source cwd, model, effort and read-only mode unless you override them. Hive creates a fresh actor, brief and session, records the source agent and session in the child row, and sends no assignment. Pass `todo_id` explicitly; Hive never copies the source todo link and makes no promise about harness todos or tasks. Hive does not copy the source worktree. Claude process-scoped permission grants are not copied, so approve them again if the child asks.
 
 Codex forks use the interactive `codex -C <cwd> fork <source-session-id>` command. Hive reads the source's completed rollout into the child's fresh `CODEX_HOME` and discovers the new rollout by its `session_meta.forked_from_id`; it never shares the source home or links the writable sessions directory. A running or parked Codex source needs its recorded home and rollout. Closing a Codex worker reaps that home, so a closed Codex session cannot be forked. A closed Claude worker can be forked while its transcript remains readable. `agent_status` and `agent_list` show `forked_from_agent_id` and `forked_from_session_id` for each child.
+
+## Read-only workers
 
 Use `agent_spawn(name: "reader", harness: "claude", read_only: true)` to keep a worker from editing local files or running shell commands that write files. It can still write Hive pads and todo comments through MCP. The spawn receipt reports `read_only: true`; `agent_status` and `agent_list` show the stored mode. `agent_resume` preserves it.
 
