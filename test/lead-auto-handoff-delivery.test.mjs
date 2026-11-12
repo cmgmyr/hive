@@ -92,6 +92,73 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("a pending request with only monitors is scheduled once quiet without permitting respawn", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-monitors-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending", "the human quiet window still applies");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    quietHuman();
+    drive();
+    const requested = active(lead.id);
+    assert.equal(requested.state, "requested");
+    assert.equal(requested.request_wake_id, pending.request_wake_id);
+    assert.notEqual(wake(requested.request_wake_id).due_at, null);
+    assert.match(handoff.backgroundVeto(db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id)), /monitor/);
+    drive();
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes").get().n, 1);
+  });
+
+  it("a shell still holds request scheduling even alongside monitors", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [
+      { type: "monitor", status: "running" }, { type: "shell", status: "running" },
+    ] }));
+    quietHuman();
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    assert.equal(pending.blocked_reason, "1 background task still live (shell)");
+  });
+
+  it("the pending status segment shows its blocking reason", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.match(pending.blocked_reason, /shell/);
+    assert.equal(handoff.handoffStatusSegment(lead.id), `handoff blocked: ${pending.blocked_reason}`);
+  });
+
+  it("request background safety keeps unknown work, missing evidence and stale turns blocked", async () => {
+    const lead = seedLead();
+    await prompt();
+    await stop("stop-monitors-running.json");
+    const snapshot = db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id);
+    assert.equal(handoff.requestBackgroundVeto(snapshot), null);
+    const cases = [
+      [{ stop_background: null }, /no background-task evidence/],
+      [{ stop_background: "{" }, /unreadable/],
+      [{ stop_background: "null" }, /unreadable/],
+      [{ stop_prompt_seq: null }, /no completed turn/],
+      [{ prompt_seq: snapshot.prompt_seq + 1 }, /turn started/],
+      [{ snapshot_session_id: "old-session" }, /current session/],
+      ...["shell", "subagent", "telepathy"].map((type) => [
+        { stop_background: JSON.stringify([{ type: "monitor" }, { type }]) }, new RegExp(`still live \\(${type}\\)`),
+      ]),
+    ];
+    for (const [patch, reason] of cases) assert.match(handoff.requestBackgroundVeto({ ...snapshot, ...patch }), reason);
+  });
+
   it("handoff keeps the legacy broad socket blocker across lifecycle states", async () => {
     const lead = seedLead();
     const at = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString().replace("T", " ").slice(0, 19);

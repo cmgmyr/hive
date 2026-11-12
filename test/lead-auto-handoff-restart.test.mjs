@@ -132,6 +132,31 @@ beforeEach(() => rmSync(delayed.flag, { force: true }));
 beforeEach(() => db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM pads; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM agents;"));
 
 describe("lead auto-handoff restart", () => {
+  it("the pending CLI explains live monitors and leaves manual clear to the human", needsTmux, async () => {
+    const ctx = await readyLead({ stop: "stop-monitors-running.json" });
+    handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "2 background tasks still live (monitor)" });
+    const result = await command(ctx);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /3 background tasks still live \(monitor\)/);
+    assert.match(result.stderr, /automatic replacement waits for them/);
+    assert.match(result.stderr, /persist the handoff pad.*human.*\/clear/i);
+    assert.equal(row(ctx.requestId).state, "pending");
+    assert.equal(row(ctx.requestId).attempt, 0);
+    assert.equal(row(ctx.requestId).owner_pid, null);
+    assert.match((await command(ctx, { revision: 7 })).stderr, /revision 1, not 7/);
+  });
+
+  it("the pending CLI names a finite blocker and prints the exact retry command", needsTmux, async () => {
+    const ctx = await readyLead();
+    handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "a human prompt arrived in the last 300 s" });
+    const result = await command(ctx);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /a human prompt arrived in the last 300 s/);
+    assert.ok(result.stderr.includes(`hive lead-handoff --request ${ctx.requestId} --pad ${ctx.padId} --revision ${ctx.revision}`));
+    assert.equal(row(ctx.requestId).state, "pending");
+    assert.equal(row(ctx.requestId).attempt, 0);
+  });
+
   it("handoff command arms one owner only for its persisted epoch pad", needsTmux, async () => {
     const ctx = await readyLead();
     assert.match((await command(ctx, { revision: 7 })).stderr, /revision 1, not 7/);

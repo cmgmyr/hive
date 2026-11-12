@@ -112,6 +112,16 @@ export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | 
   return null;
 }
 
+export function requestBackgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | null): string | null {
+  if (snapshot?.stop_background == null) return backgroundVeto(snapshot);
+  try {
+    const tasks = JSON.parse(snapshot.stop_background) as { type: string }[];
+    return backgroundVeto({ ...snapshot, stop_background: JSON.stringify(tasks.filter((task) => task.type !== "monitor")) });
+  } catch {
+    return "the background-task evidence is unreadable";
+  }
+}
+
 export interface ArmInput {
   lead: LeadForHandoff;
   ownerActor: string;
@@ -290,7 +300,7 @@ function requestBlocker(
   snapshot: (LeadTurnState & LeadSafetySnapshot) | null,
 ): Blocker | null {
   if (snapshot === null || snapshot.state !== "idle") return { reason: "the lead's turn has not ended", background: false };
-  const background = backgroundVeto(snapshot);
+  const background = requestBackgroundVeto(snapshot);
   if (background !== null) return { reason: background, background: true };
   const policy = passPolicy(row.pass, row.reason);
   if (!policy.requestNeedsQuiet) return null;
@@ -661,7 +671,9 @@ export function handoffStatusSegment(leadAgentId: number): string | null {
   const row = readActiveHandoff(leadAgentId);
   if (row !== null) {
     if (row.state === "started") return row.blocked_reason === SUCCESSOR_NOT_READY ? `handoff started: ${SUCCESSOR_NOT_READY}` : "handoff started";
-    if (row.hold_released_at !== null) return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
+    if (row.hold_released_at !== null || (row.state === "pending" && row.blocked_reason !== null)) {
+      return `handoff blocked: ${row.blocked_reason ?? "no quiet moment"}`;
+    }
     if (row.state === "grace") return "handoff in grace";
     return `handoff ${row.state.replace("_", " ")}`;
   }
