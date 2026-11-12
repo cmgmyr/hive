@@ -51,6 +51,14 @@ good morning, let's triage
 
 The lead reads your profile's standing process and proposes work. With no profile, the runbook pad has it interview you first.
 
+Already have notes, docs or tickets? Point the lead at them:
+
+```text
+Load my project into hive. Read the notes in ~/notes/my-project/, the docs in this repo, and the Jira issues PROJ-123 and PROJ-124. Turn what you find into a board pad, a plan pad, and todos with blockers where one thing waits on another.
+```
+
+The lead reads those sources with the tools the session already has: files, plus an MCP server or CLI for Jira or Confluence if you have one installed. hive has no importer of its own. The lead writes what it finds into pads and todos, so it survives the session.
+
 ## Your first worker
 
 Ask the lead for a small, self-contained job:
