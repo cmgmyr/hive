@@ -35,7 +35,7 @@ hive doctor          # verify: node, ABI, tmux, claude, database, hooks all gree
 
 ## Node version and the interpreter pin
 
-tmux is only needed for the agent tools; everything else runs without it.
+tmux is required for the lead and every worker, because hive runs each agent in a tmux pane. Without it, only the store tools (pads, todos, kv) work.
 
 The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive's own code's. It is two ranges rather than one floor because a Node-API level starts once per release line: the addon needs Node-API 10, which begins at 22.14.0 on the 22 line and 23.6.0 on the 23 line. Node 23.0.0 through 23.5.0 satisfy a plain "22.14 or newer" and only provide Node-API 9, so they cannot load the addon.
 
