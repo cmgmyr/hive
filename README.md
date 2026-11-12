@@ -11,7 +11,7 @@ Run a crew of Claude Code and Codex workers from one lead session: visible tmux 
 
 ## Install
 
-Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux for the agent tools. codex is optional, only needed if a project opts a worker into it; see [docs/install.md](docs/install.md#codex-workers).
+Requirements: macOS, Node `^22.14.0 || >=23.6.0`, [Claude Code](https://claude.com/claude-code), and tmux, which is required: hive runs the lead and every worker in a tmux pane. New here? Start with the [quick start](docs/quickstart.md). codex is optional, only needed if a project opts a worker into it; see [docs/install.md](docs/install.md#codex-workers).
 
 ```bash
 npm install -g @cmgmyr/hive
@@ -57,6 +57,7 @@ hive is a personal daily-driver tool, released low-key. It is single-user by des
 
 | Page | What's there |
 |---|---|
+| [Quick start](docs/quickstart.md) | Zero to a running lead and first worker: requirements, install, the config keys you will touch, first-run fixes |
 | [Architecture](docs/architecture.md) | Eight diagrams: process topology, module layering, spawn sequence, wake lifecycle, worker state (with the lead handoff), project scoping, store and server identity |
 | [Patterns](docs/patterns.md) | Standing trades, refused approaches, evidence standards, and guard shapes distilled from the project's own decisions and dead-ends |
 | [Concepts](docs/concepts.md) | Vocabulary, why not subagents, identity, the workflow, project scope, the shared store |

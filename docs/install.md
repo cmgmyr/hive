@@ -35,7 +35,7 @@ hive doctor          # verify: node, ABI, tmux, claude, database, hooks all gree
 
 ## Node version and the interpreter pin
 
-tmux is only needed for the agent tools; everything else runs without it.
+tmux is required for the lead and every worker, because hive runs each agent in a tmux pane. Without it, only the store tools (pads, todos, kv) work.
 
 The required Node range, `^22.14.0 || >=23.6.0`, is `better-sqlite3`'s, not hive's own code's. It is two ranges rather than one floor because a Node-API level starts once per release line: the addon needs Node-API 10, which begins at 22.14.0 on the 22 line and 23.6.0 on the 23 line. Node 23.0.0 through 23.5.0 satisfy a plain "22.14 or newer" and only provide Node-API 9, so they cannot load the addon.
 
@@ -85,13 +85,15 @@ A session opened afterward in a project root, on a lead branch, with a profile t
 
 The first time a worker spawns with nobody attached, macOS asks permission for hive to control iTerm; approve it once. This applies under either attach mode: `raw` still opens iTerm, just without control mode.
 
-With the default `auto` attach mode (or `control`), set these once per machine under Settings > General > tmux:
+With the default `auto` attach mode (or `control`), turn all of these on once per machine under Settings > General > tmux:
 
-- Check "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
-- Set "When attaching, restore windows as" to "Native tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window. ("Native tabs in a new window" also works if you prefer the session in its own window.)
-- Optional: check "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with quiet messaging on, the default, the lead's own socket), not the display.
+![iTerm Settings > General > tmux with every box checked: open tmux windows as tabs in the attaching window, automatically bury the tmux client session, use the tmux profile, status bar shows tmux status bar content, warn before pausing, unpause automatically, and mirror the tmux paste buffer to the local clipboard](assets/iterm-tmux-settings.png)
 
-None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
+- "Automatically bury the tmux client session after connecting". Without this, every attach leaves an idle gateway window in the background. Don't close that window by hand; closing it detaches the whole session. Bury applies on the next attach.
+- "Open tmux windows as tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window.
+- "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with quiet messaging on, the default, the lead's own socket), not the display.
+
+None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"open as tabs" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
 ## Status line
 
