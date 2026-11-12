@@ -12,6 +12,10 @@ import {
   underTestRunner,
 } from "./dataDir.js";
 
+export const TMUX_NOT_INSTALLED_MESSAGE =
+  "tmux is not installed; hive runs the lead and every worker in a tmux pane. " +
+  "Install it with `brew install tmux`, then run hive doctor again.";
+
 export class TmuxError extends Error {
   constructor(
     message: string,
@@ -131,7 +135,7 @@ function tmuxWithin(timeoutMs: number, ...args: string[]): string {
     const err = e as { code?: string; stderr?: Buffer | string; message?: string };
     if (err.code === "ENOENT") {
       throw new TmuxError(
-        "tmux is not installed. Install it (brew install tmux) to use agent tools.",
+        TMUX_NOT_INSTALLED_MESSAGE,
         "",
         true,
       );
