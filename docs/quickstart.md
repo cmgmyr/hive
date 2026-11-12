@@ -27,7 +27,7 @@ ln -s "$(npm root -g)/@cmgmyr/hive/claude-plugin" ~/.claude/skills/hive   # opti
 hive doctor
 ```
 
-Put `~/.local/bin` on your PATH below your version manager's block, or the version manager's `node` shim wins. See [install.md](install.md#node-version-and-the-interpreter-pin).
+Put `~/.local/bin` on your PATH below your version manager's block, or the version manager's `node` shim wins. See [install.md](install.md#node-version-and-the-interpreter-pin). `hive doctor` checks this: its `dispatcher` line warns and prints the `export PATH` line to add.
 
 `hive doctor` prints one line per check. You want `ok` beside `version`, `node`, `better-sqlite3`, `tmux`, `claude`, `database`, `stale hive servers` and `hooks file`. Anything marked `FAIL` is a problem to fix before you go on; a `warn` is worth reading but does not block you. `stale hive servers` may read `check skipped`, which is fine. The last line counts both.
 
@@ -108,6 +108,6 @@ The rest are in [Commands](commands.md).
 - **`this Node is too old for better-sqlite3's native addon`**: the `node` hive found is outside the supported range. Run `hive setup` from a good Node, then re-register MCP with that `$(command -v node)`. See [install.md](install.md#node-version-and-the-interpreter-pin).
 - **`tmux is not installed`**: run `brew install tmux`, then `hive doctor`.
 - **Claude has no hive tools**: the MCP line was never added, or points at an old build. Re-run the `claude mcp add` line above; `hive doctor` prints the exact line under `mcp registration`. Restart the session after.
-- **`hive` is not found, or runs the wrong Node**: `~/.local/bin` is missing from PATH or sits above your version manager's block. Under iTerm, check the PATH of the shell it launches.
+- **`hive` is not found, or runs the wrong Node**: `~/.local/bin` is missing from PATH or sits above your version manager's block. `hive doctor` names it: the `dispatcher` line warns and prints the `export PATH` line to add. Under iTerm, check the PATH of the shell it launches.
 
 Anything else: [Troubleshooting](troubleshooting.md).
