@@ -12,6 +12,7 @@ import { buildEnvFlags } from "./spawn.js";
 import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } from "./tmux.js";
 import {
   automationBlocker,
+  backgroundVeto,
   failHandoff,
   missingHeadings,
   padProblem,
@@ -88,7 +89,7 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
   }
   const row = readHandoff(requestId);
   if (row === null || row.lead_agent_id !== lead.id) return refuse(`there is no handoff request #${requestId} for this lead`);
-  if (row.state !== "requested") return refuse(`handoff #${requestId} is ${row.state}, not waiting for this command`);
+  if (row.state !== "requested" && row.state !== "pending") return refuse(`handoff #${requestId} is ${row.state}, not waiting for this command`);
   const snapshot = readLeadSafetySnapshot(lead.id);
   if (lead.pane_pid !== row.predecessor_pane_pid || snapshot?.session_id !== row.predecessor_session_id) {
     return refuse(`handoff #${requestId} was requested for a different session of this lead`);
@@ -101,6 +102,14 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
   }
   const missing = missingHeadings(pad!.content);
   if (missing.length > 0) return refuse(`the pad is missing these headings, in this order: ${missing.join("; ")}`);
+  if (row.state === "pending") {
+    const background = backgroundVeto(snapshot);
+    const reason = background ?? row.blocked_reason ?? "waiting for the scheduler's quiet moment";
+    if (background !== null && /\bmonitor\b/.test(background)) {
+      return refuse(`handoff #${requestId} is pending: ${reason}; automatic replacement waits for them; persist the handoff pad, then the human runs /clear`);
+    }
+    return refuse(`handoff #${requestId} is pending: ${reason}; once the blocker clears and the request arrives, retry: hive lead-handoff --request ${requestId} --pad ${padId} --revision ${revision}`);
+  }
   const inFlight = automationBlocker(lead, null);
   if (inFlight !== null) return refuse(`${inFlight}; run this command again in a minute`);
 

@@ -113,7 +113,7 @@ describe("lead auto-handoff state", () => {
     assert.equal(wakes[0].body, `handoff request #${rows[0].id}`);
   });
 
-  it("idle lead with a live shell, monitor, subagent or unknown task cannot respawn", async () => {
+  it("idle lead with a live shell, non-artifact monitor, subagent or unknown task cannot respawn", async () => {
     seedLead();
     const lead = db.prepare("SELECT * FROM agents").get();
     const veto = () => handoff.backgroundVeto(readLeadSafetySnapshot(lead.id));
@@ -123,7 +123,7 @@ describe("lead auto-handoff state", () => {
 
     await completedTurn("stop-shell-running.json");
     assert.match(veto(), /background task.*shell/);
-    await completedTurn("stop-monitors-running.json");
+    await completedTurn("lead-claude-stop.json", { background_tasks: [{ type: "monitor", status: "running", description: "watch build output" }] });
     assert.match(veto(), /monitor/);
     await completedTurn("lead-claude-stop.json", { background_tasks: [{ type: "telepathy", status: "running" }] });
     assert.match(veto(), /telepathy/);
@@ -141,6 +141,36 @@ describe("lead auto-handoff state", () => {
     await completedTurn();
     await hook("prompt", payload("lead-claude-prompt.json"));
     assert.match(veto(), /a turn started after the last completed one/);
+  });
+
+  it("an idle lead whose only live tasks are artifact live-update monitors can respawn", async () => {
+    const lead = seedLead();
+    await completedTurn("stop-monitors-running.json");
+    const snapshot = readLeadSafetySnapshot(lead.id);
+    assert.equal(snapshot.state, "idle");
+    assert.equal(handoff.backgroundVeto(snapshot), null);
+    const tasks = JSON.parse(snapshot.stop_background);
+    const url = "https://claude.ai/artifact/example-artifact";
+    const artifact = { type: "monitor", status: "running", description: `live updates for artifact ${url} (auto-armed on publish)` };
+    assert.equal(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([artifact]) }), null);
+    const rejected = [
+      { ...artifact, type: "shell" }, { ...artifact, type: "subagent" }, { ...artifact, type: "telepathy" },
+      { ...artifact, status: "unknown" }, { ...artifact, description: "watch build output" },
+      { ...artifact, description: artifact.description.replace("claude.ai/", "claude.ai.example/") },
+      { ...artifact, description: artifact.description.replace(" (auto-armed on publish)", "") },
+      { ...artifact, description: artifact.description + " and run a command" },
+    ];
+    for (const task of rejected) {
+      assert.notEqual(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([...tasks, task]) }), null, JSON.stringify(task));
+    }
+    const row = { id: 1, lead_agent_id: lead.id, predecessor_session_id: SESSION, predecessor_turns: 5, reason: "warn", pass: 1 };
+    const kickoff = handoff.successorPrompt(row);
+    for (const task of tasks) assert.ok(kickoff.includes(task.description.match(/https:\/\/\S+/)[0]));
+    assert.match(kickoff, /re-watch each artifact/i);
+    assert.match(handoff.requestBody(row, 5), /list each watched artifact.*URL/i);
+    db.prepare("UPDATE lead_turn_state SET stop_background = '{' WHERE agent_id = ?").run(lead.id);
+    assert.doesNotThrow(() => handoff.successorPrompt(row));
+    assert.doesNotMatch(handoff.successorPrompt(row), /Re-watch each artifact/);
   });
 
   it("failed wind-down releases delivery without a retry loop", () => {

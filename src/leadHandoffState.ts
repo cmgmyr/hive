@@ -151,6 +151,16 @@ export function olderThan(ts: string | null, seconds: number): boolean {
 
 export const nowSql = (): string => (db.prepare(`SELECT ${NOW_SQL} AS now`).get() as { now: string }).now;
 
+export function clearHandoffWait(row: HandoffRow): void {
+  const key = `handoff-wait:${row.id}`;
+  db.prepare(
+    `UPDATE wakes SET cancelled_at = datetime('now')
+      WHERE id = (SELECT json_extract(value, '$.notice_id') FROM kv WHERE project_id = ? AND key = ?)
+        AND cancelled_at IS NULL AND typed_at IS NULL AND confirmed_at IS NULL`,
+  ).run(row.project_id, key);
+  db.prepare("DELETE FROM kv WHERE project_id = ? AND key = ?").run(row.project_id, key);
+}
+
 // Every transition is a compare-and-set on the row's state; callers bind any extra identity
 // (attempt, owner token) through `where`.
 export function casHandoff(
@@ -159,16 +169,22 @@ export function casHandoff(
   set: Partial<Record<keyof HandoffRow, string | number | null>>,
   where: Partial<Record<keyof HandoffRow, string | number | null>> = {},
 ): boolean {
-  const setKeys = Object.keys(set);
-  const whereKeys = Object.keys(where);
-  const sql =
-    `UPDATE lead_handoffs SET ${[...setKeys.map((k) => `${k} = ?`), "updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')"].join(", ")}
-      WHERE id = ? AND state IN (${from.map(() => "?").join(", ")})` +
-    whereKeys.map((k) => ` AND ${k} IS ?`).join("");
-  const result = db
-    .prepare(sql)
-    .run(...setKeys.map((k) => set[k as keyof HandoffRow] ?? null), id, ...from, ...whereKeys.map((k) => where[k as keyof HandoffRow] ?? null));
-  return result.changes === 1;
+  const apply = db.transaction((): boolean => {
+    const setKeys = Object.keys(set);
+    const whereKeys = Object.keys(where);
+    const sql =
+      `UPDATE lead_handoffs SET ${[...setKeys.map((k) => `${k} = ?`), "updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')"].join(", ")}
+        WHERE id = ? AND state IN (${from.map(() => "?").join(", ")})` +
+      whereKeys.map((k) => ` AND ${k} IS ?`).join("");
+    const result = db
+      .prepare(sql)
+      .run(...setKeys.map((k) => set[k as keyof HandoffRow] ?? null), id, ...from, ...whereKeys.map((k) => where[k as keyof HandoffRow] ?? null));
+    if (result.changes === 1 && set.state !== undefined && !["pending", "wind_down", "postponed"].includes(String(set.state))) {
+      clearHandoffWait(readHandoff(id)!);
+    }
+    return result.changes === 1;
+  });
+  return apply.immediate();
 }
 
 // The one writer of the grace -> postponed transition; `where` binds the caller's identity, and pass is always bound.

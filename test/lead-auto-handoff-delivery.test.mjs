@@ -43,11 +43,12 @@ function turns(n) {
 }
 
 let paneCount = 0;
-function sinkPane() {
+function sinkPane({ ready = false } = {}) {
   const session = `lah-${process.pid}-${paneCount++}`;
   const sink = join(tmp, `${session}.sink`);
   writeFileSync(sink, "");
-  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", `cat > '${sink}'`], { stdio: "ignore" });
+  const screen = ready ? `cat '${join(REPO, "test", "fixtures", "panes", "ready-idle.txt")}'; ` : "";
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", `${screen}cat > '${sink}'`], { stdio: "ignore" });
   sessions.push(session);
   const [pane, pid] = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}\t#{pane_pid}"], { encoding: "utf8" })
     .trim()
@@ -92,6 +93,187 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("the same blockers across a completed turn do not resend", needsTmux, async () => {
+    const pane = sinkPane({ ready: true });
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    db.exec("UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    const saved = () => db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key)?.value;
+    const ageHold = () => db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    ageHold();
+    drive();
+    assert.equal(notices().length, 1);
+    assert.ok(await until(async () => { await tick(); return readFileSync(pane.sink, "utf8").includes("is waiting on"); }, 5000));
+    assert.notEqual(wake(notices()[0].id).typed_at, null);
+    const beforePrompt = saved();
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: `[hive wake #${notices()[0].id}] waiting notice` }));
+    drive();
+    assert.equal(saved(), beforePrompt, "stale evidence leaves the dedupe row as it is");
+    await stop("stop-shell-running.json");
+    drive();
+    ageHold();
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+    assert.equal(notices().length, 1);
+    assert.equal(wake(notices()[0].id).fire_count, 1);
+    assert.equal(readFileSync(pane.sink, "utf8").split("is waiting on").length - 1, 1);
+  });
+
+  it("a background-held request gets one notice after five minutes and another only when its blockers change", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    assert.equal(notices().length, 0);
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0].body, /handoff #\d+ is waiting on 1 live background task.*shell/);
+    assert.equal(notices()[0].body.split("\n")[0], `hive: handoff #${row.id} is waiting on 1 live background task (shell). Either stop them, noting in your handoff pad anything the next session should restart, and the handoff proceeds; or keep them running and the handoff waits until they end.`);
+    assert.equal(notices()[0].parent_wake_id, null);
+    drive();
+    assert.equal(notices().length, 1);
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [{ type: "shell", status: "running", description: "different work" }] }));
+    drive();
+    assert.equal(notices().length, 1, "a changed blocker starts a new five-minute hold");
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    assert.equal(notices().length, 2);
+    assert.match(notices()[1].body, /different work/);
+    assert.notEqual(notices()[0].cancelled_at, null, "the obsolete queued notice cannot arrive later");
+    await stop();
+    quietHuman();
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    assert.notEqual(notices()[1].cancelled_at, null);
+    drive();
+    assert.equal(notices().length, 2, "no notice after scheduling the request");
+  });
+
+  it("cancelled, failed and delivered requests leave no background-notice kv residue or new notices", needsTmux, async () => {
+    for (const ending of ["cancelled", "failed", "delivered", "completed"]) {
+      db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM lead_turn_state; DELETE FROM agents;");
+      const pane = sinkPane();
+      const lead = seedLead(pane);
+      turns(5);
+      await prompt();
+      await stop("stop-shell-running.json");
+      drive();
+      const row = active(lead.id);
+      const key = `handoff-wait:${row.id}`;
+      assert.ok(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key));
+      if (ending === "cancelled") db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(row.request_wake_id);
+      if (ending === "delivered") db.prepare("UPDATE wakes SET fired_at = datetime('now'), fire_count = 1 WHERE id = ?").run(row.request_wake_id);
+      if (ending === "failed") handoff.failHandoff(row.id, "test failure");
+      if (ending === "completed") handoff.casHandoff(row.id, ["pending"], { state: "completed" });
+      drive();
+      assert.equal(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined, ending);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes WHERE id != ?").get(row.request_wake_id).n, 0, ending);
+    }
+  });
+
+  it("resolving a request cancels its queued wait notice atomically before another scheduler can deliver it", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    const notice = db.prepare("SELECT * FROM wakes WHERE id != ?").get(row.request_wake_id);
+    assert.equal(notice.cancelled_at, null);
+    assert.equal(handoff.casHandoff(row.id, ["pending"], { state: "requested" }), true);
+    assert.notEqual(wake(notice.id).cancelled_at, null);
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    await tick();
+    assert.equal(wake(notice.id).fire_count, 0);
+    assert.doesNotMatch(readFileSync(pane.sink, "utf8"), /is waiting on/);
+  });
+
+  it("a pending request with only monitors is scheduled once quiet", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-monitors-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending", "the human quiet window still applies");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    quietHuman();
+    drive();
+    const requested = active(lead.id);
+    assert.equal(requested.state, "requested");
+    assert.equal(requested.request_wake_id, pending.request_wake_id);
+    assert.notEqual(wake(requested.request_wake_id).due_at, null);
+    assert.equal(handoff.backgroundVeto(db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id)), null);
+    drive();
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes").get().n, 1);
+  });
+
+  it("a shell still holds request scheduling even alongside monitors", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [
+      { type: "monitor", status: "running" }, { type: "shell", status: "running" },
+    ] }));
+    quietHuman();
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.equal(wake(pending.request_wake_id).due_at, null);
+    assert.equal(pending.blocked_reason, "1 background task still live (shell)");
+  });
+
+  it("the pending status segment shows its blocking reason", async () => {
+    const lead = seedLead();
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const pending = active(lead.id);
+    assert.equal(pending.state, "pending");
+    assert.match(pending.blocked_reason, /shell/);
+    assert.equal(handoff.handoffStatusSegment(lead.id), `handoff blocked: ${pending.blocked_reason}`);
+  });
+
+  it("request background safety keeps unknown work, missing evidence and stale turns blocked", async () => {
+    const lead = seedLead();
+    await prompt();
+    await stop("stop-monitors-running.json");
+    const snapshot = db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id);
+    assert.equal(handoff.requestBackgroundVeto(snapshot), null);
+    const cases = [
+      [{ stop_background: null }, /no background-task evidence/],
+      [{ stop_background: "{" }, /unreadable/],
+      [{ stop_background: "null" }, /unreadable/],
+      [{ stop_prompt_seq: null }, /no completed turn/],
+      [{ prompt_seq: snapshot.prompt_seq + 1 }, /turn started/],
+      [{ snapshot_session_id: "old-session" }, /current session/],
+      ...["shell", "subagent", "telepathy"].map((type) => [
+        { stop_background: JSON.stringify([{ type: "monitor" }, { type }]) }, new RegExp(`still live \\(${type}\\)`),
+      ]),
+    ];
+    for (const [patch, reason] of cases) assert.match(handoff.requestBackgroundVeto({ ...snapshot, ...patch }), reason);
+  });
+
   it("handoff keeps the legacy broad socket blocker across lifecycle states", async () => {
     const lead = seedLead();
     const at = (secondsAgo) => new Date(Date.now() - secondsAgo * 1000).toISOString().replace("T", " ").slice(0, 19);

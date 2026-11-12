@@ -99,7 +99,7 @@ async function hook(event, body, env = {}) {
   assert.equal(code, 0);
 }
 
-async function readyLead({ stop = "lead-claude-stop.json" } = {}) {
+async function readyLead({ stop = "lead-claude-stop.json", stopExtra = {} } = {}) {
   const pane = leadPane();
   const lead = db
     .prepare(
@@ -108,7 +108,7 @@ async function readyLead({ stop = "lead-claude-stop.json" } = {}) {
     )
     .get(project, pane.pane, ownSocket, pane.pid, projectDir);
   await hook("prompt", payload("lead-claude-prompt.json"));
-  await hook("stop", payload(stop));
+  await hook("stop", payload(stop, stopExtra));
   db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes'); UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
   const { requestId } = handoff.armHandoffRequest({
     lead, ownerActor: "lead:r", reason: "warn", epoch: { pane_pid: pane.pid, session_id: SESSION }, requestBody: () => "req",
@@ -132,6 +132,46 @@ beforeEach(() => rmSync(delayed.flag, { force: true }));
 beforeEach(() => db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM pads; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM agents;"));
 
 describe("lead auto-handoff restart", () => {
+  it("the pending CLI explains live monitors and leaves manual clear to the human", needsTmux, async () => {
+    const ctx = await readyLead({ stopExtra: { background_tasks: Array.from({ length: 3 }, () => ({ type: "monitor", status: "running", description: "watch build output" })) } });
+    handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "2 background tasks still live (monitor)" });
+    const result = await command(ctx);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /3 background tasks still live \(monitor\)/);
+    assert.match(result.stderr, /automatic replacement waits for them/);
+    assert.match(result.stderr, /persist the handoff pad.*human.*\/clear/i);
+    assert.equal(row(ctx.requestId).state, "pending");
+    assert.equal(row(ctx.requestId).attempt, 0);
+    assert.equal(row(ctx.requestId).owner_pid, null);
+    assert.match((await command(ctx, { revision: 7 })).stderr, /revision 1, not 7/);
+  });
+
+  it("the pending CLI names a finite blocker and prints the exact retry command", needsTmux, async () => {
+    const ctx = await readyLead();
+    handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "a human prompt arrived in the last 300 s" });
+    const result = await command(ctx);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /a human prompt arrived in the last 300 s/);
+    assert.ok(result.stderr.includes(`hive lead-handoff --request ${ctx.requestId} --pad ${ctx.padId} --revision ${ctx.revision}`));
+    assert.equal(row(ctx.requestId).state, "pending");
+    assert.equal(row(ctx.requestId).attempt, 0);
+  });
+
+  it("artifact-only monitors respawn and the successor launch names each watch", needsTmux, async () => {
+    const before = existsSync(launched) ? readFileSync(launched, "utf8").length : 0;
+    const ctx = await readyLead({ stop: "stop-monitors-running.json" });
+    const result = await command(ctx);
+    assert.equal(result.code, 0, result.stderr);
+    assert.ok(await until(() => row(ctx.requestId).owner_pid !== null, 3000));
+    endGrace(ctx.requestId);
+    assert.ok(await until(() => row(ctx.requestId).state === "started", 8000), JSON.stringify(row(ctx.requestId)));
+    assert.ok(await until(() => existsSync(launched) && readFileSync(launched, "utf8").slice(before).includes("Re-watch each artifact"), 3000));
+    const launch = readFileSync(launched, "utf8").slice(before);
+    for (const task of fixture("stop-monitors-running.json").background_tasks) {
+      assert.ok(launch.includes(task.description.match(/https:\/\/\S+/)[0]));
+    }
+  });
+
   it("handoff command arms one owner only for its persisted epoch pad", needsTmux, async () => {
     const ctx = await readyLead();
     assert.match((await command(ctx, { revision: 7 })).stderr, /revision 1, not 7/);
