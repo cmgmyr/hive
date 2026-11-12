@@ -29,7 +29,7 @@ hive doctor
 
 Put `~/.local/bin` on your PATH below your version manager's block, or the version manager's `node` shim wins. See [install.md](install.md#node-version-and-the-interpreter-pin).
 
-`hive doctor` prints one line per check. You want `ok` beside `version`, `node`, `better-sqlite3`, `tmux`, `claude`, `database`, `stale hive servers` and `hooks file`. Anything marked `FAIL` is a problem to fix before you go on; a `warn` is worth reading but does not block you. The last line counts both.
+`hive doctor` prints one line per check. You want `ok` beside `version`, `node`, `better-sqlite3`, `tmux`, `claude`, `database`, `stale hive servers` and `hooks file`. Anything marked `FAIL` is a problem to fix before you go on; a `warn` is worth reading but does not block you. `stale hive servers` may read `check skipped`, which is fine. The last line counts both.
 
 ## Your first project
 
@@ -39,7 +39,7 @@ hive init
 hive
 ```
 
-`hive init` registers the project and writes a starter `hive.yml` (all options commented out). It asks which profile to use; pick `orchestration` if you want a lead that delegates to workers. It also seeds a `board` pad, plus a `runbook` pad when you choose no profile. Commit `hive.yml`. Add `.hive/` to your `.gitignore`.
+`hive init` registers the project and writes a starter `hive.yml` (all options commented out). It asks which profile to use; pick `orchestration` (press Enter for the default) if you want a lead that delegates to workers. It also seeds a `board` pad, plus a `runbook` pad when you choose no profile. Commit `hive.yml`. Add `.hive/` to your `.gitignore`.
 
 `hive` (short for `hive lead`) opens a tmux window named after your project, running Claude in your project. Your terminal attaches to it; under iTerm the default is its native tmux integration. For attach modes and the one-time iTerm settings, see [tmux settings](tmux.md) and [One-time iTerm settings](install.md#one-time-iterm-settings).
 
