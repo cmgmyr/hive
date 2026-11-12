@@ -92,7 +92,7 @@ describe("hive doctor warns when NO_COLOR reaches Claude workers", () => {
     assert.match(out.stdout, /hive doctor/);
   });
 
-  it("keeps the tmux error when an installed tmux fails its version probe", async () => {
+  it("keeps the tmux error when an installed tmux fails its version probe", { skip: skipWithoutTmux }, async () => {
     const opts = doctorOpts();
     const failingTmux = fakeFailingTmux({ failOn: "-V", stderr: "tmux: operation not permitted" });
     const out = await runCli(["doctor"], {
