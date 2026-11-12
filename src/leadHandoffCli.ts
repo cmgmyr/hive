@@ -13,6 +13,7 @@ import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } fr
 import {
   automationBlocker,
   armManualHandoff,
+  handoffHarnessProblem,
   manualHandoffWaitInfo,
   backgroundVeto,
   failHandoff,
@@ -92,6 +93,8 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
   if ((process.env.TMUX_PANE ?? "") !== lead.tmux_target || rowOwnership(lead) !== "live") {
     return refuse("this is not running in the lead's own recorded pane");
   }
+  const harnessProblem = manual ? handoffHarnessProblem(lead) : null;
+  if (harnessProblem !== null) return refuse(`manual ${harnessProblem}`);
   const active = manual ? readActiveHandoff(lead.id) : null;
   if (active !== null) return refuse(`handoff #${active.id} is already ${active.state}; use that request instead`);
   let row = requestId === null ? null : readHandoff(requestId);

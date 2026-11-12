@@ -41,6 +41,8 @@ Commands that parse arguments reject unknown flags. To pass positional text that
 | `hive statusline` | One-line store summary for Claude Code's status line |
 | `hive lead-handoff [--request <id>] --pad <id> --revision <n>` | Run by a lead to start its own handoff, or to answer an automatic request with `--request`: checks the persisted `hive-lead-handoff` pad and arms a short grace period, after which hive restarts the lead's pane with a fresh session. Any human input during the grace postpones it |
 
+Manual handoff requires a Claude lead. Hive waits on Claude Code’s Stop-hook background-task evidence, which Codex leads do not provide. A Codex lead receives a refusal before any request is created.
+
 Without `--request`, the command creates a manual request for the lead’s current pane and session. It works without a turn budget and with `auto_handoff: false`. Write the active `hive-lead-handoff` pad first, then pass its id and current revision. An existing active handoff is refused by id and state. The command reports live non-artifact background tasks from the last Stop; grace waits for them and postpones after 10 minutes if they remain. Human input also postpones grace. Refresh the pad and answer the retry request with `--request` to try again.
 
 There is no CLI command that completes a todo. MCP callers use `todo_complete` or `todo_update`; if the project sets `completion_gate`, `hive lead` reviews that command at startup through the existing interactive command approval.

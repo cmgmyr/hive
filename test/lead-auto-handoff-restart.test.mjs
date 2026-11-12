@@ -254,6 +254,25 @@ describe("lead auto-handoff restart", () => {
     handoff.failHandoff(ctx.requestId, "test over", ["grace"]);
   });
 
+  it("manual handoff refuses a Codex lead before creating a row or wake", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true, stopExtra: { background_tasks: undefined } });
+    db.prepare("UPDATE agents SET command = 'codex' WHERE id = ?").run(ctx.lead.id);
+    ctx.lead.command = "codex";
+    writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead: codex\n");
+    assert.deepEqual(handoff.handoffEligibility(ctx.lead, { warn: 3, stop: 10 }), {
+      eligible: false, why: "the lead is not a Claude lead",
+    });
+    const result = await command(ctx, { manual: true });
+    if (result.code === 0) handoff.failHandoff(handoff.readActiveHandoff(ctx.lead.id).id, "test cleanup", ["grace"]);
+    assert.equal(result.code, 1, result.stderr || result.stdout);
+    assert.match(result.stderr, /manual handoff needs a Claude lead/);
+    assert.match(result.stderr, /Stop-hook evidence.*Codex lead does not write/);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lead_handoffs").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, 0);
+    assert.throws(() => handoff.armManualHandoff(ctx.lead, { pane_pid: ctx.pane.pid, session_id: SESSION }), /manual handoff needs a Claude lead/);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lead_handoffs").get().n, 0);
+  });
+
   it("the pending CLI explains live monitors and leaves manual clear to the human", needsTmux, async () => {
     const ctx = await readyLead({ stopExtra: { background_tasks: Array.from({ length: 3 }, () => ({ type: "monitor", status: "running", description: "watch build output" })) } });
     handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "2 background tasks still live (monitor)" });

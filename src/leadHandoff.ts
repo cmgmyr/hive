@@ -64,13 +64,18 @@ export type Eligibility =
   | { eligible: true; reason: HandoffReason; turns: number; epoch: { pane_pid: string; session_id: string } }
   | { eligible: false; why: string };
 
+export function handoffHarnessProblem(lead: Pick<LeadForHandoff, "command">): string | null {
+  return harnessFor(lead.command).name === "claude" ? null
+    : "handoff needs a Claude lead: it waits on Claude Code's Stop-hook evidence, which a Codex lead does not write";
+}
+
 export function handoffEligibility(
   lead: LeadForHandoff,
   budget: LeadTurnBudget | null,
   snapshot: (LeadTurnState & LeadSafetySnapshot) | null = readLeadSafetySnapshot(lead.id),
 ): Eligibility {
   if (budget === null || !autoHandoffEnabled(budget)) return { eligible: false, why: "auto_handoff is not enabled" };
-  if (harnessFor(lead.command).name !== "claude") return { eligible: false, why: "the lead is not a Claude lead" };
+  if (handoffHarnessProblem(lead) !== null) return { eligible: false, why: "the lead is not a Claude lead" };
   if (lead.pane_pid === "") return { eligible: false, why: "the lead's pane pid is unknown" };
   if (
     snapshot === null ||
@@ -187,6 +192,8 @@ export function armHandoffRequest(input: ArmInput): { requestId: number; created
 const manualArmTransaction = db.transaction((lead: LeadForHandoff, epoch: ArmInput["epoch"]): { requestId: number; created: boolean } => {
   const current = db.prepare("SELECT * FROM agents WHERE id = ? AND kind = 'lead' AND status = 'running'").get(lead.id) as LeadForHandoff | undefined;
   const snapshot = readLeadSafetySnapshot(lead.id);
+  const harnessProblem = current === undefined ? null : handoffHarnessProblem(current);
+  if (harnessProblem !== null) throw new Error(`manual ${harnessProblem}`);
   if (current === undefined || current.project_id !== lead.project_id || current.pane_pid !== epoch.pane_pid
       || current.tmux_target !== lead.tmux_target || current.tmux_socket !== lead.tmux_socket
       || epoch.session_id === "" || snapshot?.session_id !== epoch.session_id || snapshot.pane_pid !== epoch.pane_pid
