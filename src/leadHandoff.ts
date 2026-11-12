@@ -469,12 +469,17 @@ export function missingHeadings(content: string): string[] {
 
 export function successorPrompt(row: Pick<HandoffRow, "id" | "lead_agent_id" | "predecessor_session_id" | "predecessor_turns" | "reason" | "pass">): string {
   const snapshot = readLeadSafetySnapshot(row.lead_agent_id);
-  const artifacts = snapshot?.snapshot_session_id === row.predecessor_session_id && snapshot.session_id === row.predecessor_session_id
-    ? [...new Set((JSON.parse(snapshot.stop_background ?? "[]") as Parameters<typeof artifactWatchUrl>[0][]).flatMap((task) => {
-      const url = artifactWatchUrl(task);
-      return url === null ? [] : [url];
-    }))]
-    : [];
+  let artifacts: string[] = [];
+  if (snapshot?.snapshot_session_id === row.predecessor_session_id && snapshot.session_id === row.predecessor_session_id) {
+    try {
+      artifacts = [...new Set((JSON.parse(snapshot.stop_background ?? "[]") as Parameters<typeof artifactWatchUrl>[0][]).flatMap((task) => {
+        const url = artifactWatchUrl(task);
+        return url === null ? [] : [url];
+      }))];
+    } catch {
+      artifacts = [];
+    }
+  }
   return [
     `You are taking over as this project's lead from session ${row.predecessor_session_id} (hive handoff #${row.id}).`,
     `Read the "${HANDOFF_PAD_NAME}" handoff hive injected at session start (if none arrived, pad_read it by name), ` +

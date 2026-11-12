@@ -168,6 +168,9 @@ describe("lead auto-handoff state", () => {
     for (const task of tasks) assert.ok(kickoff.includes(task.description.match(/https:\/\/\S+/)[0]));
     assert.match(kickoff, /re-watch each artifact/i);
     assert.match(handoff.requestBody(row, 5), /list each watched artifact.*URL/i);
+    db.prepare("UPDATE lead_turn_state SET stop_background = '{' WHERE agent_id = ?").run(lead.id);
+    assert.doesNotThrow(() => handoff.successorPrompt(row));
+    assert.doesNotMatch(handoff.successorPrompt(row), /Re-watch each artifact/);
   });
 
   it("failed wind-down releases delivery without a retry loop", () => {
