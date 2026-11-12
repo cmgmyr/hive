@@ -65,6 +65,10 @@ When the worker finishes, hive wakes the lead with a note, so the lead does not 
 
 To watch or take over from another terminal, attach with `hive attach` (or `tmux attach`). In tmux, `Ctrl-b z` zooms the current pane to full screen; press it again to restore the layout.
 
+## The status line
+
+`hive statusline` prints a one-line summary of the project, such as `⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`. It prints nothing when a project has no live state. In a lead it adds `turns N`, and when a wake-up is held it adds a segment with the count and the oldest reason. It is not on by default: add it to your Claude Code status line script, as shown in [Status line](install.md#status-line).
+
 ## The config you will actually touch
 
 Settings live in `hive.yml`. A machine-wide `~/.hive/hive.yml` holds defaults, and a project's `hive.yml` wins over it. Scalar and list keys are replaced by the project value; `vars` merge key by key. `hive doctor` prints each effective value and which file it came from. See [global defaults](configuration.md#global-defaults).
