@@ -99,7 +99,7 @@ async function hook(event, body, env = {}) {
   assert.equal(code, 0);
 }
 
-async function readyLead({ stop = "lead-claude-stop.json", stopExtra = {} } = {}) {
+async function readyLead({ stop = "lead-claude-stop.json", stopExtra = {}, manual = false } = {}) {
   const pane = leadPane();
   const lead = db
     .prepare(
@@ -110,10 +110,10 @@ async function readyLead({ stop = "lead-claude-stop.json", stopExtra = {} } = {}
   await hook("prompt", payload("lead-claude-prompt.json"));
   await hook("stop", payload(stop, stopExtra));
   db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes'); UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
-  const { requestId } = handoff.armHandoffRequest({
+  const { requestId } = manual ? { requestId: null } : handoff.armHandoffRequest({
     lead, ownerActor: "lead:r", reason: "warn", epoch: { pane_pid: pane.pid, session_id: SESSION }, requestBody: () => "req",
   });
-  handoff.casHandoff(requestId, ["pending"], { state: "requested", request_reason: "warn" });
+  if (!manual) handoff.casHandoff(requestId, ["pending"], { state: "requested", request_reason: "warn" });
   const padRow = db
     .prepare(`INSERT INTO pads (project_id, name, content) VALUES (?, 'hive-lead-handoff', ?) RETURNING id, revision`)
     .get(project, PAD);
@@ -122,16 +122,138 @@ async function readyLead({ stop = "lead-claude-stop.json", stopExtra = {} } = {}
 
 const command = (ctx, overrides = {}, env = {}) =>
   runCli(
-    ["lead-handoff", "--request", String(ctx.requestId), "--pad", String(overrides.pad ?? ctx.padId), "--revision", String(overrides.revision ?? ctx.revision)],
+    ["lead-handoff", ...(overrides.manual ? [] : ["--request", String(ctx.requestId)]), "--pad", String(overrides.pad ?? ctx.padId), "--revision", String(overrides.revision ?? ctx.revision)],
     { cwd: projectDir, dataDir, env: { HIVE_AGENT_ID: "lead:r", HIVE_LEAD: "1", TMUX_PANE: ctx.pane.pane, ...env } },
   );
 const row = (id) => handoff.readHandoff(id);
 const endGrace = (id) => db.prepare("UPDATE lead_handoffs SET grace_started_at = datetime('now', '-10 minutes') WHERE id = ?").run(id);
 
 beforeEach(() => rmSync(delayed.flag, { force: true }));
+beforeEach(() => writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10}\n"));
 beforeEach(() => db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM pads; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM agents;"));
 
 describe("lead auto-handoff restart", () => {
+  it("a manual arm records the current epoch as requested without creating a wake", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true });
+    const armed = handoff.armManualHandoff(ctx.lead, { pane_pid: ctx.pane.pid, session_id: SESSION });
+    assert.equal(armed.created, true);
+    const request = row(armed.requestId);
+    assert.equal(request.state, "requested");
+    assert.equal(request.reason, "manual");
+    assert.equal(request.request_reason, "manual");
+    assert.equal(request.predecessor_pane_pid, ctx.pane.pid);
+    assert.equal(request.predecessor_session_id, SESSION);
+    assert.equal(request.request_wake_id, null);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, 0);
+  });
+
+  for (const budget of [null, { warn: 3, stop: 10, auto_handoff: false }]) {
+    it(`a manual lead-handoff creates a request and reaches respawn with ${budget === null ? "no budget" : "auto handoff off"}`, needsTmux, async () => {
+      const ctx = await readyLead({ manual: true });
+      writeFileSync(join(projectDir, "hive.yml"), `dashboard: false\n${budget === null ? "" : `lead_turn_budget: ${JSON.stringify(budget)}\n`}`);
+      const result = await command(ctx, { manual: true });
+      assert.equal(result.code, 0, result.stderr);
+      const request = handoff.readActiveHandoff(ctx.lead.id);
+      assert.equal(request.reason, "manual");
+      assert.equal(request.request_wake_id, null);
+      handoff.driveLeadHandoff("lead:r", () => budget);
+      assert.equal(row(request.id).state, "grace");
+      endGrace(request.id);
+      assert.ok(await until(() => row(request.id).state === "started", 8000), JSON.stringify(row(request.id)));
+      assert.notEqual(panePid(ctx.pane.pane), ctx.pane.pid);
+    });
+  }
+
+  it("a manual lead-handoff while one is active names its id and state without changing it", needsTmux, async () => {
+    const ctx = await readyLead();
+    for (const state of ["pending", "wind_down", "requested", "grace", "postponed", "respawning", "started", "ambiguous"]) {
+      db.prepare("UPDATE lead_handoffs SET state = ? WHERE id = ?").run(state, ctx.requestId);
+      const before = row(ctx.requestId);
+      const result = await command(ctx, { manual: true });
+      assert.equal(result.code, 1);
+      assert.ok(result.stderr.includes(`#${ctx.requestId}`), result.stderr);
+      assert.ok(result.stderr.includes(state), result.stderr);
+      assert.deepEqual(row(ctx.requestId), before);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lead_handoffs").get().n, 1);
+      assert.deepEqual(handoff.armManualHandoff(ctx.lead, { pane_pid: ctx.pane.pid, session_id: SESSION }), { requestId: ctx.requestId, created: false });
+    }
+  });
+
+  it("a manual call inside a turn reports the last Stop's shell and enters grace without bypassing its veto", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true, stop: "stop-shell-running.json" });
+    await hook("prompt", payload("lead-claude-prompt.json"));
+    const result = await command(ctx, { manual: true });
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /this handoff waits for: 1 shell; stop them, or it postpones after 10 minutes/);
+    const request = handoff.readActiveHandoff(ctx.lead.id);
+    assert.equal(request.state, "grace");
+    await hook("stop", payload("stop-shell-running.json"));
+    db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes')");
+    endGrace(request.id);
+    assert.ok(await until(() => /background task.*shell/.test(row(request.id).blocked_reason ?? ""), 8000));
+    assert.equal(row(request.id).state, "grace");
+    assert.equal(panePid(ctx.pane.pane), ctx.pane.pid);
+    handoff.failHandoff(request.id, "test over", ["grace"]);
+  });
+
+  it("manual validation refuses foreign callers, panes, epochs, pads, revisions and flags without creating a row", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true });
+    const refused = async (overrides, env, pattern) => {
+      const result = await command(ctx, { manual: true, ...overrides }, env);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, pattern);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lead_handoffs").get().n, 0);
+    };
+    await refused({}, { HIVE_LEAD: "" }, /only a running lead/);
+    await refused({}, { TMUX_PANE: "%999" }, /lead's own recorded pane/);
+    await refused({ pad: 99999 }, {}, /pad does not exist in this project/);
+    await refused({ revision: 99 }, {}, /revision 1, not 99/);
+    db.prepare("UPDATE pads SET content = 'IN FLIGHT', updated_at = datetime('now') WHERE id = ?").run(ctx.padId);
+    await refused({}, {}, /missing these headings/);
+    db.prepare("UPDATE pads SET content = ?, updated_at = datetime('now') WHERE id = ?").run(PAD, ctx.padId);
+    db.prepare("UPDATE lead_turn_state SET snapshot_session_id = 'old-session' WHERE agent_id = ?").run(ctx.lead.id);
+    await refused({}, {}, /current epoch is unknown or changed/);
+    assert.throws(() => handoff.armManualHandoff(ctx.lead, { pane_pid: ctx.pane.pid, session_id: SESSION }), /epoch/);
+    const unknown = await runCli(["lead-handoff", "--force", "1", "--pad", String(ctx.padId), "--revision", "1"], { cwd: projectDir, dataDir });
+    assert.equal(unknown.code, 1);
+    assert.match(unknown.stderr, /unknown argument "--force"/);
+  });
+
+  it("two simultaneous manual calls create one row and one grace owner", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true });
+    const results = await Promise.all([command(ctx, { manual: true }), command(ctx, { manual: true })]);
+    assert.deepEqual(results.map((result) => result.code).sort(), [0, 1]);
+    const request = handoff.readActiveHandoff(ctx.lead.id);
+    assert.equal(request.attempt, 1);
+    assert.equal(request.state, "grace");
+    assert.ok(results.find((result) => result.code === 1).stderr.includes(`#${request.id}`));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lead_handoffs").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, 0);
+    handoff.failHandoff(request.id, "test over", ["grace"]);
+  });
+
+  it("a postponed manual request uses the existing wake retry and requires a refreshed pad", needsTmux, async () => {
+    const ctx = await readyLead({ manual: true });
+    writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\n");
+    assert.equal((await command(ctx, { manual: true })).code, 0);
+    ctx.requestId = handoff.readActiveHandoff(ctx.lead.id).id;
+    await hook("prompt", payload("lead-claude-prompt.json"));
+    assert.equal(row(ctx.requestId).state, "postponed");
+    await hook("stop", payload("lead-claude-stop.json"));
+    db.exec("UPDATE lead_turn_state SET human_prompt_at = datetime('now', '-10 minutes')");
+    handoff.driveLeadHandoff("lead:r", () => null);
+    assert.equal(row(ctx.requestId).state, "requested");
+    assert.equal(row(ctx.requestId).request_reason, "manual");
+    const wake = db.prepare("SELECT * FROM wakes WHERE id = ?").get(row(ctx.requestId).request_wake_id);
+    assert.ok(wake.due_at);
+    assert.ok(wake.body.includes(`hive lead-handoff --request ${ctx.requestId}`));
+    assert.match((await command(ctx)).stderr, /refresh the pad/);
+    db.prepare("UPDATE pads SET content = content || ' ', revision = revision + 1, updated_at = datetime('now') WHERE id = ?").run(ctx.padId);
+    assert.equal((await command(ctx, { revision: 2 })).code, 0);
+    assert.equal(row(ctx.requestId).attempt, 2);
+    handoff.failHandoff(ctx.requestId, "test over", ["grace"]);
+  });
+
   it("the pending CLI explains live monitors and leaves manual clear to the human", needsTmux, async () => {
     const ctx = await readyLead({ stopExtra: { background_tasks: Array.from({ length: 3 }, () => ({ type: "monitor", status: "running", description: "watch build output" })) } });
     handoff.casHandoff(ctx.requestId, ["requested"], { state: "pending", blocked_reason: "2 background tasks still live (monitor)" });
@@ -394,13 +516,19 @@ describe("lead auto-handoff restart", () => {
     assert.equal(handoff.readHandoffGate(ctx.lead.id).holdAutomation, true, "the delivery fence stays up");
   });
 
-  it("a delayed successor receives the held roster and one-shot only after its first Stop", needsTmux, async () => {
-    const ctx = await readyLead();
+  for (const manual of [false, true]) it(`${manual ? "a manual" : "a delayed"} successor receives the held roster and one-shot only after its first Stop`, needsTmux, async () => {
+    const ctx = await readyLead({ manual });
     const SUCCESSOR = "delayed-successor-session";
     writeFileSync(delayed.stop, payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
     writeFileSync(delayed.flag, "");
-    assert.equal((await command(ctx)).code, 0);
+    const armed = await command(ctx, { manual });
+    assert.equal(armed.code, 0, armed.stderr);
+    if (manual) ctx.requestId = handoff.readActiveHandoff(ctx.lead.id).id;
     assert.equal(row(ctx.requestId).state, "grace");
+    if (manual) {
+      assert.equal(row(ctx.requestId).reason, "manual");
+      assert.equal(row(ctx.requestId).request_wake_id, null);
+    }
     writeFileSync(delayed.prompt, payload("lead-claude-prompt.json", { session_id: SUCCESSOR, prompt: handoff.successorPrompt(row(ctx.requestId)) }));
 
     const watch = db

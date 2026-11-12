@@ -12,11 +12,14 @@ import { buildEnvFlags } from "./spawn.js";
 import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } from "./tmux.js";
 import {
   automationBlocker,
+  armManualHandoff,
+  manualHandoffWaitInfo,
   backgroundVeto,
   failHandoff,
   missingHeadings,
   padProblem,
   readPad,
+  readActiveHandoff,
   RESPAWN_WAIT_LIMIT_SECONDS,
   respawnVerdict,
   type RunningLead,
@@ -32,7 +35,7 @@ import { harnessFor } from "./harnesses.js";
 const POLL_MS = 1_000;
 const HANDOFF_PAD_SOFT_CAP = 8_000;
 
-function flags(argv: string[], names: readonly string[]): Record<string, string> | string {
+function flags(argv: string[], names: readonly string[], required: readonly string[] = names): Record<string, string> | string {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const name = argv[i].replace(/^--/, "");
@@ -41,7 +44,7 @@ function flags(argv: string[], names: readonly string[]): Record<string, string>
     }
     out[name] = argv[++i];
   }
-  const absent = names.filter((n) => out[n] === undefined);
+  const absent = required.filter((n) => out[n] === undefined);
   return absent.length > 0 ? `missing --${absent.join(", --")}` : out;
 }
 
@@ -72,37 +75,41 @@ function runningLeadById(id: number): RunningLead | undefined {
 }
 
 export async function cmdLeadHandoff(argv: string[]): Promise<number> {
-  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"], "--request <id>, --pad <id>, --revision <n>")) return 1;
+  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"], "[--request <id>], --pad <id>, --revision <n>")) return 1;
   const refuse = (why: string): number => {
     console.error(`hive lead-handoff: ${why}. This session stays as it is.`);
     return 1;
   };
-  const parsed = flags(argv, ["request", "pad", "revision"]);
-  if (typeof parsed === "string") return refuse(`${parsed}; usage: hive lead-handoff --request <id> --pad <id> --revision <n>`);
-  const [requestId, padId, revision] = [intFlag(parsed.request), intFlag(parsed.pad), intFlag(parsed.revision)];
-  if (requestId === null || padId === null || revision === null) return refuse("--request, --pad and --revision take whole numbers");
+  const parsed = flags(argv, ["request", "pad", "revision"], ["pad", "revision"]);
+  if (typeof parsed === "string") return refuse(`${parsed}; usage: hive lead-handoff [--request <id>] --pad <id> --revision <n>`);
+  const manual = parsed.request === undefined;
+  let requestId = manual ? null : intFlag(parsed.request);
+  const [padId, revision] = [intFlag(parsed.pad), intFlag(parsed.revision)];
+  if ((!manual && requestId === null) || padId === null || revision === null) return refuse("--request, --pad and --revision take whole numbers");
   const actor = process.env.HIVE_AGENT_ID ?? "";
   const lead = process.env.HIVE_LEAD === "1" ? runningLeadByActor(actor) : undefined;
   if (lead === undefined) return refuse("only a running lead can hand itself off");
   if ((process.env.TMUX_PANE ?? "") !== lead.tmux_target || rowOwnership(lead) !== "live") {
     return refuse("this is not running in the lead's own recorded pane");
   }
-  const row = readHandoff(requestId);
-  if (row === null || row.lead_agent_id !== lead.id) return refuse(`there is no handoff request #${requestId} for this lead`);
-  if (row.state !== "requested" && row.state !== "pending") return refuse(`handoff #${requestId} is ${row.state}, not waiting for this command`);
+  const active = manual ? readActiveHandoff(lead.id) : null;
+  if (active !== null) return refuse(`handoff #${active.id} is already ${active.state}; use that request instead`);
+  let row = requestId === null ? null : readHandoff(requestId);
+  if (!manual && (row === null || row.lead_agent_id !== lead.id)) return refuse(`there is no handoff request #${requestId} for this lead`);
+  if (row !== null && row.state !== "requested" && row.state !== "pending") return refuse(`handoff #${requestId} is ${row.state}, not waiting for this command`);
   const snapshot = readLeadSafetySnapshot(lead.id);
-  if (lead.pane_pid !== row.predecessor_pane_pid || snapshot?.session_id !== row.predecessor_session_id) {
+  if (row !== null && (lead.pane_pid !== row.predecessor_pane_pid || snapshot?.session_id !== row.predecessor_session_id)) {
     return refuse(`handoff #${requestId} was requested for a different session of this lead`);
   }
   const pad = readPad(padId);
   const problem = padProblem(pad, lead.project_id, revision);
   if (problem !== null) return refuse(problem);
-  if (row.pad_id === pad!.id && row.pad_revision !== null && pad!.revision <= row.pad_revision) {
+  if (row !== null && row.pad_id === pad!.id && row.pad_revision !== null && pad!.revision <= row.pad_revision) {
     return refuse("this attempt was postponed, so refresh the pad (write it again) and pass the new revision");
   }
   const missing = missingHeadings(pad!.content);
   if (missing.length > 0) return refuse(`the pad is missing these headings, in this order: ${missing.join("; ")}`);
-  if (row.state === "pending") {
+  if (row?.state === "pending") {
     const background = backgroundVeto(snapshot);
     const reason = background ?? row.blocked_reason ?? "waiting for the scheduler's quiet moment";
     if (background !== null && /\bmonitor\b/.test(background)) {
@@ -112,6 +119,18 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
   }
   const inFlight = automationBlocker(lead, null);
   if (inFlight !== null) return refuse(`${inFlight}; run this command again in a minute`);
+
+  if (manual) {
+    try {
+      const armed = armManualHandoff(lead, { pane_pid: lead.pane_pid, session_id: snapshot?.session_id ?? "" });
+      row = readHandoff(armed.requestId);
+      if (!armed.created) return refuse(`handoff #${armed.requestId} is already ${row?.state ?? "unknown"}; use that request instead`);
+      requestId = armed.requestId;
+    } catch (e) {
+      return refuse(e instanceof Error ? e.message : String(e));
+    }
+  }
+  if (row === null) return refuse("the handoff request disappeared; retry this command");
 
   const token = randomUUID();
   const policy = quotedPolicy(row);
@@ -154,6 +173,8 @@ export async function cmdLeadHandoff(argv: string[]): Promise<number> {
     });
     return refuse("the grace owner could not start, so the handoff failed");
   }
+  const waitInfo = manual ? manualHandoffWaitInfo(lead) : null;
+  if (waitInfo !== null) console.log(waitInfo);
   if (pad!.content.length > HANDOFF_PAD_SOFT_CAP) {
     console.log(`! the pad is ${pad!.content.length} characters, over the ${HANDOFF_PAD_SOFT_CAP}-character guide; point into the store instead of copying it.`);
   }

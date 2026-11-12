@@ -184,6 +184,50 @@ export function armHandoffRequest(input: ArmInput): { requestId: number; created
   return armTransaction.immediate(input);
 }
 
+const manualArmTransaction = db.transaction((lead: LeadForHandoff, epoch: ArmInput["epoch"]): { requestId: number; created: boolean } => {
+  const current = db.prepare("SELECT * FROM agents WHERE id = ? AND kind = 'lead' AND status = 'running'").get(lead.id) as LeadForHandoff | undefined;
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (current === undefined || current.project_id !== lead.project_id || current.pane_pid !== epoch.pane_pid
+      || current.tmux_target !== lead.tmux_target || current.tmux_socket !== lead.tmux_socket
+      || epoch.session_id === "" || snapshot?.session_id !== epoch.session_id || snapshot.pane_pid !== epoch.pane_pid
+      || snapshot.snapshot_session_id !== epoch.session_id || snapshot.snapshot_pane_pid !== epoch.pane_pid) {
+    throw new Error("the lead's current epoch is unknown or changed; retry from its current session");
+  }
+  const active = readActiveHandoff(lead.id);
+  if (active !== null) return { requestId: active.id, created: false };
+  const inserted = db.prepare(
+    `INSERT INTO lead_handoffs (project_id, lead_agent_id, pane_target, tmux_socket, predecessor_pane_pid,
+       predecessor_session_id, reason, request_reason, state, pass, pass_started_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'manual', 'manual', 'requested', 1, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+     ON CONFLICT DO NOTHING RETURNING id`,
+  ).get(lead.project_id, lead.id, lead.tmux_target, lead.tmux_socket, epoch.pane_pid, epoch.session_id) as { id: number } | undefined;
+  if (inserted !== undefined) return { requestId: inserted.id, created: true };
+  const existing = db.prepare(
+    `SELECT id FROM lead_handoffs WHERE project_id = ? AND lead_agent_id = ? AND predecessor_pane_pid = ? AND predecessor_session_id = ?`,
+  ).get(lead.project_id, lead.id, epoch.pane_pid, epoch.session_id) as { id: number };
+  return { requestId: existing.id, created: false };
+});
+
+export function armManualHandoff(lead: LeadForHandoff, epoch: { pane_pid: string; session_id: string }): { requestId: number; created: boolean } {
+  return manualArmTransaction.immediate(lead, epoch);
+}
+
+// The command runs inside a turn, so its last Stop is information, not proof of current safety.
+export function manualHandoffWaitInfo(lead: LeadForHandoff): string | null {
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (snapshot === null || snapshot.session_id === "" || snapshot.snapshot_session_id !== snapshot.session_id
+      || snapshot.pane_pid !== lead.pane_pid || snapshot.snapshot_pane_pid !== lead.pane_pid
+      || snapshot.stop_prompt_seq === null || snapshot.stop_background === null) return null;
+  try {
+    const tasks = liveBackgroundTasks(JSON.parse(snapshot.stop_background)).filter((task) => artifactWatchUrl(task) === null);
+    if (tasks.length === 0) return null;
+    const types = [...new Set(tasks.map((task) => task.type || "unknown"))].sort().join(", ");
+    return `this handoff waits for: ${tasks.length} ${types}; stop them, or it postpones after 10 minutes`;
+  } catch {
+    return null;
+  }
+}
+
 // Definite failure before the destructive transition: record why, and the gate stops holding.
 // The epoch's unique key means the scheduler never re-requests it.
 type Binding = Partial<Record<keyof HandoffRow, string | number | null>>;
@@ -483,7 +527,7 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     settleAfterRespawn(row, lead);
     return;
   }
-  if (!autoHandoffEnabled(budget)) {
+  if (row.reason !== "manual" && !autoHandoffEnabled(budget)) {
     failHandoff(row.id, "lead_turn_budget.auto_handoff is no longer on");
     return;
   }
@@ -620,7 +664,7 @@ export type Verdict = { go: true } | { wait: string } | { postpone: string; esca
 
 // The final quiet check. A screen or probe that cannot be read waits; it never establishes quiet.
 export async function respawnVerdict(row: HandoffRow, lead: RunningLead | undefined, budget: LeadTurnBudget | null): Promise<Verdict> {
-  if (!autoHandoffEnabled(budget)) return { fail: "lead_turn_budget.auto_handoff is no longer on" };
+  if (row.reason !== "manual" && !autoHandoffEnabled(budget)) return { fail: "lead_turn_budget.auto_handoff is no longer on" };
   if (lead === undefined || lead.pane_pid !== row.predecessor_pane_pid || lead.tmux_target !== row.pane_target) {
     return { fail: "the lead row no longer names the pane this handoff was requested for" };
   }
