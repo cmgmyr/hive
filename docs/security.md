@@ -35,7 +35,7 @@ This page lists the local commands hive runs, the files it writes, and its netwo
 - The update-check cache is `<data dir>/update-check.json` (`writeCache`, `src/updateCheck.ts:69`).
 - Global settings are written to `<data dir>/hive.yml`, and legacy settings may be archived (`globalConfigPath`, `src/globalConfig.ts:41`; `writeGlobalConfigKey`, `src/globalConfig.ts:166`; `migrateLegacyConfig`, `src/globalConfig.ts:174`).
 - Claude hook settings are written to `<data dir>/hooks.json`, `<data dir>/worker-<id>-hooks.json`, and, for a project with quiet messaging on (the default), `<data dir>/lead-<project id>-hooks.json` (`ensureHooksFile`, `src/hooks.ts:29`; `ensureWorkerHooksFile`, `src/hooks.ts:62`; `ensureLeadHooksFile`, `src/hooks.ts:38`).
-- The handoff grace process appends its output to `<data dir>/lead-handoff-<request id>.log` (`openSync`, `src/leadHandoffCli.ts:141`).
+- The handoff grace process appends its output to `<data dir>/lead-handoff-<request id>.log` (`openSync`, `src/leadHandoffCli.ts:163`).
 - The pinned `hive` shim is written under the dispatcher directory (`cmdSetup`, `src/cli.ts:2380`; `writeFileSync`, `src/cli.ts:2437`).
 - Project setup can write `hive.yml`, `.gitignore`, and `.hive/` setup files (`cmdInit`, `src/cli.ts:1326`; `writeProfileKey`, `src/cli.ts:1320`; `publishQueenYml`, `src/cli.ts:1081`).
 - Profile forks and their origin records are written under `<data dir>/profiles/`, including `posture.md` (`userProfilesDir`, `src/profiles.ts:13`; `forkProfile`, `src/profiles.ts:197`; `writeOrigin`, `src/profiles.ts:122`).

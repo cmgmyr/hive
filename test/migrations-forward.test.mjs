@@ -131,12 +131,12 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note", "delivered_by"]) assert.ok(columns.includes(name), name);
   });
 
-  it("appending the final migration preserves pre-existing agent data", () => {
+  it("migration 48 adds lineage columns without changing pre-existing agent data", () => {
     const prior = new Database(join(dirs.dataDir, "pre-fork-lineage.db"));
     try {
       prior.pragma("foreign_keys = ON");
       prior.exec("CREATE TABLE migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
-      for (const [index, migration] of MIGRATIONS.slice(0, -1).entries()) {
+      for (const [index, migration] of MIGRATIONS.slice(0, 47).entries()) {
         prior.exec(migration);
         prior.prepare("INSERT INTO migrations (version) VALUES (?)").run(index + 1);
       }
@@ -146,7 +146,7 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
          VALUES (?, 'agent:legacy', 'legacy', 'claude', '/tmp/legacy-fork', 'agent', 'legacy-session') RETURNING id`,
       ).get(legacyProject).id;
       const beforeAgent = prior.prepare("SELECT * FROM agents WHERE id = ?").get(legacyAgent);
-      prior.exec(MIGRATIONS.at(-1));
+      prior.exec(MIGRATIONS[47]);
       const afterAgent = prior.prepare("SELECT * FROM agents WHERE id = ?").get(legacyAgent);
       const { forked_from_agent_id: forkedFromAgentId, forked_from_session_id: forkedFromSessionId, ...rest } = afterAgent;
       assert.deepEqual(

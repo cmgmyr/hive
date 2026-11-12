@@ -1,7 +1,7 @@
 import { db } from "./db.js";
 export { HELD_REASON_HANDOFF } from "./wakeSql.js";
 
-export type HandoffReason = "warn" | "stop";
+export type HandoffReason = "warn" | "stop" | "manual";
 export type HandoffState =
   | "pending"
   | "wind_down"
