@@ -191,6 +191,7 @@ import {
   makeProcessesWindow,
   tmux,
   TMUX_DOC,
+  TMUX_NOT_INSTALLED_MESSAGE,
   tmuxNotInstalled, tmuxSaysNothingThere,
   tmuxTimeoutOverride,
   tmuxSocketPath,
@@ -3106,7 +3107,13 @@ function cmdDoctor(argv: string[]): void {
   });
 
   check("tmux", () => {
-    const version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim();
+    let version: string;
+    try {
+      version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).trim();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(TMUX_NOT_INSTALLED_MESSAGE);
+      throw e;
+    }
 
     const override = tmuxTimeoutOverride();
     return override === null ? version : `${version} (HIVE_TMUX_TIMEOUT_MS=${override}ms override; testing only)`;
@@ -3132,7 +3139,18 @@ function cmdDoctor(argv: string[]): void {
   const orphans = orphanScratchServers();
   reportPtyHeadroom(orphans);
   reportOrphanTmuxServers(orphans);
-  check("claude", () => execFileSync("which", ["claude"], { encoding: "utf8" }).trim());
+  check("claude", () => {
+    try {
+      return execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
+    } catch (e) {
+      if ((e as { status?: number }).status === 1) {
+        throw new Error(
+          "Claude Code is not installed or not on PATH. Install it from https://claude.com/claude-code, then run hive doctor again.",
+        );
+      }
+      throw e;
+    }
+  });
   check("database", () => {
     const n = (db.prepare("SELECT COUNT(*) AS n FROM migrations").get() as { n: number }).n;
     const ahead = storeSchemaAhead(db);

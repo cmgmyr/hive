@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
-import { fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
+import { failureCount, fakeFailingTmux, isolateTmux, runCli, scratchDirs, tmux } from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the doctor NO_COLOR tests");
 const skipWithoutTmux = hasTmux ? false : "tmux is not installed";
@@ -71,7 +71,7 @@ describe("hive doctor warns when NO_COLOR reaches Claude workers", () => {
     assert.match(out.stdout, /hive doctor/);
   });
 
-  it("does not treat a missing tmux binary as an empty server", { skip: skipWithoutTmux }, async () => {
+  it("doctor names the tmux install when tmux is missing", async () => {
     const opts = doctorOpts();
     const nodeOnlyBin = join(opts.tmp, "node-only-bin");
     mkdirSync(nodeOnlyBin);
@@ -83,7 +83,44 @@ describe("hive doctor warns when NO_COLOR reaches Claude workers", () => {
 
     assert.equal(out.stderr, "", out.stderr);
     assert.match(out.stdout, /FAIL {2}tmux:/);
+    assert.match(
+      out.stdout,
+      /FAIL {2}tmux: tmux is not installed; hive runs the lead and every worker in a tmux pane\. Install it with `brew install tmux`, then run hive doctor again\./,
+    );
+    assert.ok(failureCount(out.stdout) >= 1, out.stdout);
     assert.doesNotMatch(out.stdout, /warn  tmux NO_COLOR/);
     assert.match(out.stdout, /hive doctor/);
+  });
+
+  it("keeps the tmux error when an installed tmux fails its version probe", async () => {
+    const opts = doctorOpts();
+    const failingTmux = fakeFailingTmux({ failOn: "-V", stderr: "tmux: operation not permitted" });
+    const out = await runCli(["doctor"], {
+      ...opts,
+      env: { ...opts.env, PATH: `${failingTmux}:${process.env.PATH}` },
+    });
+
+    assert.match(out.stderr, /tmux: operation not permitted/);
+    assert.match(out.stdout, /FAIL {2}tmux:.*tmux: operation not permitted/s);
+    assert.doesNotMatch(out.stdout, /tmux is not installed/);
+    assert.ok(failureCount(out.stdout) >= 1, out.stdout);
+  });
+
+  it("names how to install Claude Code when the doctor cannot find claude", async () => {
+    const opts = doctorOpts();
+    const nodeAndSystemBin = join(opts.tmp, "node-and-system-bin");
+    mkdirSync(nodeAndSystemBin);
+    symlinkSync(process.execPath, join(nodeAndSystemBin, "node"));
+    const out = await runCli(["doctor"], {
+      ...opts,
+      env: { ...opts.env, PATH: `${nodeAndSystemBin}:/usr/bin:/bin` },
+    });
+
+    assert.match(
+      out.stdout,
+      /FAIL {2}claude: Claude Code is not installed or not on PATH\. Install it from https:\/\/claude\.com\/claude-code, then run hive doctor again\./,
+    );
+    assert.doesNotMatch(out.stdout, /FAIL {2}claude:.*Command failed: which claude/);
+    assert.ok(failureCount(out.stdout) >= 1, out.stdout);
   });
 });
