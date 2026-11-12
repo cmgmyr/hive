@@ -10,6 +10,7 @@ import {
 import { harnessFor, paneClassifierFor } from "./harnesses.js";
 import {
   casHandoff,
+  clearHandoffWait,
   type HandoffReason,
   type HandoffRow,
   type HandoffState,
@@ -29,6 +30,7 @@ import { holdsHumanInput, paneInCopyMode, rowOwnership, tmuxSocketPath } from ".
 import { type LeadSafetySnapshot, type LeadTurnState, readLeadSafetySnapshot } from "./leadState.js";
 import type { LeadTurnBudget } from "./projectYml.js";
 import { readTurnCount } from "./turnCount.js";
+import { describeOneTask, liveBackgroundTasks } from "./backgroundTasks.js";
 
 // Tests read these through this module; the leaf owns them.
 export {
@@ -299,6 +301,71 @@ interface Blocker {
   background: boolean;
 }
 
+interface HandoffWait {
+  held_since: string;
+  last_key: string | null;
+  notice_id: number | null;
+}
+
+const handoffWaitKey = (id: number): string => `handoff-wait:${id}`;
+
+function readHandoffWait(row: HandoffRow): HandoffWait | null {
+  const saved = db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(row.project_id, handoffWaitKey(row.id)) as { value: string } | undefined;
+  return saved === undefined ? null : JSON.parse(saved.value) as HandoffWait;
+}
+
+function clearFinishedHandoffWaits(leadId: number): void {
+  const rows = db.prepare(
+    `SELECT h.* FROM lead_handoffs h JOIN kv k ON k.project_id = h.project_id AND k.key = 'handoff-wait:' || h.id
+      WHERE h.lead_agent_id = ? AND (h.state NOT IN ('pending', 'wind_down', 'postponed')
+        OR NOT EXISTS (SELECT 1 FROM wakes w WHERE w.id = h.request_wake_id AND w.due_at IS NULL AND ${pendingOneShotWhere("w.")}))`,
+  ).all(leadId) as HandoffRow[];
+  for (const row of rows) clearHandoffWait(row);
+}
+
+const recordHandoffWait = db.transaction((row: HandoffRow, lead: LeadForHandoff & { actor_id: string }, canNotify: boolean): void => {
+  const current = readHandoff(row.id);
+  const snapshot = readLeadSafetySnapshot(lead.id);
+  if (current === null || !["pending", "wind_down", "postponed"].includes(current.state)) return;
+  const waiting = db.prepare(`SELECT 1 FROM wakes WHERE id = ? AND due_at IS NULL AND ${pendingOneShotWhere()}`).get(current.request_wake_id);
+  let tasks: ReturnType<typeof liveBackgroundTasks> = [];
+  if (waiting !== undefined && snapshot?.session_id === current.predecessor_session_id && snapshot.snapshot_session_id === snapshot.session_id
+      && snapshot.pane_pid === current.predecessor_pane_pid && snapshot.stop_prompt_seq === snapshot.prompt_seq) {
+    try {
+      tasks = liveBackgroundTasks(JSON.parse(snapshot.stop_background ?? "[]")).filter((task) => task.type !== "monitor");
+    } catch {
+      tasks = [];
+    }
+  }
+  if (tasks.length === 0) {
+    clearHandoffWait(current);
+    return;
+  }
+  const saved = readHandoffWait(current) ?? { held_since: nowSql(), last_key: null, notice_id: null };
+  const key = JSON.stringify(tasks.map((task) => [task.type, task.status, task.description]).sort());
+  if (canNotify && olderThan(saved.held_since, 5 * 60) && saved.last_key !== key) {
+    clearHandoffWait(current);
+    const types = [...new Set(tasks.map((task) => task.type || "unknown"))].sort().join(", ");
+    const body = `hive: handoff #${current.id} is waiting on ${tasks.length} live background task${tasks.length === 1 ? "" : "s"} (${types}). ` +
+      "Either stop them, noting in your handoff pad anything the next session should restart, and the handoff proceeds; " +
+      "or keep them running and the handoff waits until they end.\n" +
+      tasks.map(describeOneTask).sort().join("\n");
+    const notice = db.prepare(
+      `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at)
+       SELECT ?, ?, ?, 'delay', actor_id, tmux_target, datetime('now') FROM agents
+        WHERE id = ? AND status = 'running' AND pane_pid = ? AND tmux_target = ? RETURNING id`,
+    ).get(current.project_id, lead.actor_id, body, lead.id, current.predecessor_pane_pid, current.pane_target) as { id: number } | undefined;
+    if (notice !== undefined) {
+      saved.last_key = key;
+      saved.notice_id = notice.id;
+    }
+  }
+  db.prepare(
+    `INSERT INTO kv (project_id, key, value, updated_by) VALUES (?, ?, ?, ?)
+     ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = datetime('now')`,
+  ).run(current.project_id, handoffWaitKey(current.id), JSON.stringify(saved), lead.actor_id);
+});
+
 function requestBlocker(
   lead: { id: number; actor_id: string },
   row: HandoffRow,
@@ -319,6 +386,7 @@ function requestBlocker(
 const requestTransaction = db.transaction((row: HandoffRow, lead: { id: number; actor_id: string; tmux_target: string }, turns: number | null): boolean => {
   const current = readHandoff(row.id);
   if (current === null || current.state !== row.state || current.pass !== row.pass) return false;
+  clearHandoffWait(current);
   const waiting = current.request_wake_id === null
     ? undefined
     : (db
@@ -384,6 +452,7 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     )
     .get(actorId) as (LeadForHandoff & { actor_id: string; path: string }) | undefined;
   if (lead === undefined) return;
+  clearFinishedHandoffWaits(lead.id);
   const budget = budgetFor(lead.path);
   const snapshot = readLeadSafetySnapshot(lead.id);
   let row = readActiveHandoff(lead.id);
@@ -429,6 +498,12 @@ export function driveLeadHandoff(actorId: string, budgetFor: (projectPath: strin
     row = readHandoff(row.id)!;
   }
   const blocker = requestBlocker(lead, row, snapshot);
+  if (row.state !== "requested") {
+    const saved = readHandoffWait(row);
+    const canNotify = saved !== null && olderThan(saved.held_since, 5 * 60)
+      && paneClassifierFor(lead.command) !== null && rowOwnership(lead) === "live";
+    recordHandoffWait.immediate(row, lead, canNotify);
+  }
   if (row.state === "requested") {
     maintainHold(row, blocker?.reason ?? null);
     return;

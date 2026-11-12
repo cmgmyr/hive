@@ -92,6 +92,84 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("a background-held request gets one notice after five minutes and another only when its blockers change", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    assert.equal(notices().length, 0);
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    assert.equal(notices().length, 1);
+    assert.match(notices()[0].body, /handoff #\d+ is waiting on 1 live background task.*shell/);
+    assert.equal(notices()[0].body.split("\n")[0], `hive: handoff #${row.id} is waiting on 1 live background task (shell). Either stop them, noting in your handoff pad anything the next session should restart, and the handoff proceeds; or keep them running and the handoff waits until they end.`);
+    assert.equal(notices()[0].parent_wake_id, null);
+    drive();
+    assert.equal(notices().length, 1);
+    await hook("stop", payload("lead-claude-stop.json", { background_tasks: [{ type: "shell", status: "running", description: "different work" }] }));
+    drive();
+    assert.equal(notices().length, 2);
+    assert.match(notices()[1].body, /different work/);
+    assert.notEqual(notices()[0].cancelled_at, null, "the obsolete queued notice cannot arrive later");
+    await stop();
+    quietHuman();
+    drive();
+    assert.equal(active(lead.id).state, "requested");
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    assert.notEqual(notices()[1].cancelled_at, null);
+    drive();
+    assert.equal(notices().length, 2, "no notice after scheduling the request");
+  });
+
+  it("cancelled, failed and delivered requests leave no background-notice kv residue or new notices", needsTmux, async () => {
+    for (const ending of ["cancelled", "failed", "delivered", "completed"]) {
+      db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM lead_turn_state; DELETE FROM agents;");
+      const pane = sinkPane();
+      const lead = seedLead(pane);
+      turns(5);
+      await prompt();
+      await stop("stop-shell-running.json");
+      drive();
+      const row = active(lead.id);
+      const key = `handoff-wait:${row.id}`;
+      assert.ok(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key));
+      if (ending === "cancelled") db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(row.request_wake_id);
+      if (ending === "delivered") db.prepare("UPDATE wakes SET fired_at = datetime('now'), fire_count = 1 WHERE id = ?").run(row.request_wake_id);
+      if (ending === "failed") handoff.failHandoff(row.id, "test failure");
+      if (ending === "completed") handoff.casHandoff(row.id, ["pending"], { state: "completed" });
+      drive();
+      assert.equal(db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined, ending);
+      assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes WHERE id != ?").get(row.request_wake_id).n, 0, ending);
+    }
+  });
+
+  it("resolving a request cancels its queued wait notice atomically before another scheduler can deliver it", needsTmux, async () => {
+    const pane = sinkPane();
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    drive();
+    const notice = db.prepare("SELECT * FROM wakes WHERE id != ?").get(row.request_wake_id);
+    assert.equal(notice.cancelled_at, null);
+    assert.equal(handoff.casHandoff(row.id, ["pending"], { state: "requested" }), true);
+    assert.notEqual(wake(notice.id).cancelled_at, null);
+    assert.equal(db.prepare("SELECT * FROM kv WHERE project_id = ? AND key = ?").get(project, key), undefined);
+    await tick();
+    assert.equal(wake(notice.id).fire_count, 0);
+    assert.doesNotMatch(readFileSync(pane.sink, "utf8"), /is waiting on/);
+  });
+
   it("a pending request with only monitors is scheduled once quiet", async () => {
     const lead = seedLead();
     turns(5);
