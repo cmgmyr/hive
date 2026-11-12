@@ -75,7 +75,7 @@ To watch or take over from another terminal, attach with `hive attach` (or `tmux
 
 ## The status line
 
-`hive statusline` prints a one-line summary of the project, such as `⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`. It prints nothing when a project has no live state. In a lead it adds `turns N`, and when a wake-up is held it adds a segment with the count and the oldest reason. It is not on by default: add it to your Claude Code status line script, as shown in [Status line](install.md#status-line).
+`hive statusline` prints a one-line summary of the project, such as `⬡ hive: 2 agents · 4 todos (2 ready) · 3 pads`. It prints nothing when a project has no live state. In a lead it adds `turns N`, and when a wake-up is held it adds a segment with the held count and the reason. It is not on by default: add it to your Claude Code status line script, as shown in [Status line](install.md#status-line).
 
 ## The config you will actually touch
 

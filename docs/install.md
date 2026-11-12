@@ -93,7 +93,7 @@ With the default `auto` attach mode (or `control`), turn all of these on once pe
 - "Open tmux windows as tabs in the attaching window". Running `hive` then opens the session as tabs in the window you ran it from instead of spawning a new macOS window.
 - "Unpause automatically" under Pausing. Claude sessions stream heavy output, and this keeps a lagging pane from freezing its display. Delivery is unaffected either way; wake-ups and `agent_send` go through the tmux server (or, with quiet messaging on, the default, the lead's own socket), not the display.
 
-None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"restore windows as" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
+None of these apply under `hive setup --attach raw`: iTerm's tmux integration (and its "bury"/"open as tabs" settings) only activates for a `tmux -CC` client, and a raw attach never runs one.
 
 ## Status line
 
