@@ -303,6 +303,7 @@ interface Blocker {
 
 interface HandoffWait {
   held_since: string;
+  blocker_key?: string;
   last_key: string | null;
   notice_id: number | null;
 }
@@ -328,21 +329,30 @@ const recordHandoffWait = db.transaction((row: HandoffRow, lead: LeadForHandoff 
   const snapshot = readLeadSafetySnapshot(lead.id);
   if (current === null || !["pending", "wind_down", "postponed"].includes(current.state)) return;
   const waiting = db.prepare(`SELECT 1 FROM wakes WHERE id = ? AND due_at IS NULL AND ${pendingOneShotWhere()}`).get(current.request_wake_id);
-  let tasks: ReturnType<typeof liveBackgroundTasks> = [];
-  if (waiting !== undefined && snapshot?.session_id === current.predecessor_session_id && snapshot.snapshot_session_id === snapshot.session_id
-      && snapshot.pane_pid === current.predecessor_pane_pid && snapshot.stop_prompt_seq === snapshot.prompt_seq) {
-    try {
-      tasks = liveBackgroundTasks(JSON.parse(snapshot.stop_background ?? "[]")).filter((task) => task.type !== "monitor");
-    } catch {
-      tasks = [];
-    }
+  if (waiting === undefined) {
+    clearHandoffWait(current);
+    return;
+  }
+  if (snapshot?.session_id !== current.predecessor_session_id || snapshot.snapshot_session_id !== snapshot.session_id
+      || snapshot.pane_pid !== current.predecessor_pane_pid || snapshot.stop_prompt_seq !== snapshot.prompt_seq || snapshot.stop_background === null) return;
+  let tasks: ReturnType<typeof liveBackgroundTasks>;
+  try {
+    const evidence = JSON.parse(snapshot.stop_background);
+    if (!Array.isArray(evidence)) return;
+    tasks = liveBackgroundTasks(evidence).filter((task) => task.type !== "monitor");
+  } catch {
+    return;
   }
   if (tasks.length === 0) {
     clearHandoffWait(current);
     return;
   }
-  const saved = readHandoffWait(current) ?? { held_since: nowSql(), last_key: null, notice_id: null };
   const key = JSON.stringify(tasks.map((task) => [task.type, task.status, task.description]).sort());
+  let saved = readHandoffWait(current);
+  if (saved === null || (saved.blocker_key ?? saved.last_key) !== key) {
+    clearHandoffWait(current);
+    saved = { held_since: nowSql(), blocker_key: key, last_key: null, notice_id: null };
+  }
   if (canNotify && olderThan(saved.held_since, 5 * 60) && saved.last_key !== key) {
     clearHandoffWait(current);
     const types = [...new Set(tasks.map((task) => task.type || "unknown"))].sort().join(", ");

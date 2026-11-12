@@ -43,11 +43,12 @@ function turns(n) {
 }
 
 let paneCount = 0;
-function sinkPane() {
+function sinkPane({ ready = false } = {}) {
   const session = `lah-${process.pid}-${paneCount++}`;
   const sink = join(tmp, `${session}.sink`);
   writeFileSync(sink, "");
-  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", `cat > '${sink}'`], { stdio: "ignore" });
+  const screen = ready ? `cat '${join(REPO, "test", "fixtures", "panes", "ready-idle.txt")}'; ` : "";
+  execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", `${screen}cat > '${sink}'`], { stdio: "ignore" });
   sessions.push(session);
   const [pane, pid] = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}\t#{pane_pid}"], { encoding: "utf8" })
     .trim()
@@ -92,6 +93,39 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
+  it("the same blockers across a completed turn do not resend", needsTmux, async () => {
+    const pane = sinkPane({ ready: true });
+    const lead = seedLead(pane);
+    turns(5);
+    await prompt();
+    await stop("stop-shell-running.json");
+    quietHuman();
+    db.exec("UPDATE agent_state_log SET created_at = datetime('now', '-10 minutes')");
+    drive();
+    const row = active(lead.id);
+    const key = `handoff-wait:${row.id}`;
+    const notices = () => db.prepare("SELECT * FROM wakes WHERE id != ? ORDER BY id").all(row.request_wake_id);
+    const saved = () => db.prepare("SELECT value FROM kv WHERE project_id = ? AND key = ?").get(project, key)?.value;
+    const ageHold = () => db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
+    ageHold();
+    drive();
+    assert.equal(notices().length, 1);
+    assert.ok(await until(async () => { await tick(); return readFileSync(pane.sink, "utf8").includes("is waiting on"); }, 5000));
+    assert.notEqual(wake(notices()[0].id).typed_at, null);
+    const beforePrompt = saved();
+    await hook("prompt", payload("lead-claude-prompt.json", { prompt: `[hive wake #${notices()[0].id}] waiting notice` }));
+    drive();
+    assert.equal(saved(), beforePrompt, "stale evidence leaves the dedupe row as it is");
+    await stop("stop-shell-running.json");
+    drive();
+    ageHold();
+    drive();
+    assert.equal(active(lead.id).state, "pending");
+    assert.equal(notices().length, 1);
+    assert.equal(wake(notices()[0].id).fire_count, 1);
+    assert.equal(readFileSync(pane.sink, "utf8").split("is waiting on").length - 1, 1);
+  });
+
   it("a background-held request gets one notice after five minutes and another only when its blockers change", needsTmux, async () => {
     const pane = sinkPane();
     const lead = seedLead(pane);
@@ -113,6 +147,9 @@ describe("lead auto-handoff delivery", () => {
     drive();
     assert.equal(notices().length, 1);
     await hook("stop", payload("lead-claude-stop.json", { background_tasks: [{ type: "shell", status: "running", description: "different work" }] }));
+    drive();
+    assert.equal(notices().length, 1, "a changed blocker starts a new five-minute hold");
+    db.prepare("UPDATE kv SET value = json_set(value, '$.held_since', datetime('now', '-6 minutes')) WHERE project_id = ? AND key = ?").run(project, key);
     drive();
     assert.equal(notices().length, 2);
     assert.match(notices()[1].body, /different work/);
