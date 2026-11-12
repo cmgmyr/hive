@@ -75,7 +75,7 @@ function runningLeadById(id: number): RunningLead | undefined {
 }
 
 export async function cmdLeadHandoff(argv: string[]): Promise<number> {
-  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"], "[--request <id>], --pad <id>, --revision <n>")) return 1;
+  if (rejectUnknownFlag(argv, "lead-handoff", ["request", "pad", "revision"], "--request <id>, --pad <id>, --revision <n>")) return 1;
   const refuse = (why: string): number => {
     console.error(`hive lead-handoff: ${why}. This session stays as it is.`);
     return 1;
