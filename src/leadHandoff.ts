@@ -90,8 +90,12 @@ export function handoffEligibility(
   };
 }
 
-// Respawn safety, not idleness: any live background task of any type (live subagents included), a
-// Stop without background evidence, or a prompt newer than the last Stop vetoes. No expiry.
+function artifactWatchUrl(task: { type?: unknown; status?: unknown; description?: unknown } | null): string | null {
+  if (task?.type !== "monitor" || task.status !== "running" || typeof task.description !== "string") return null;
+  return /^live updates for artifact (https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+) \(auto-armed on publish\)$/.exec(task.description)?.[1] ?? null;
+}
+
+// Artifact live-update watches are restored by the successor; all other live work vetoes respawn.
 export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | null): string | null {
   if (snapshot === null || snapshot.snapshot_session_id !== snapshot.session_id || snapshot.session_id === "") {
     return "no background evidence for the current session";
@@ -99,9 +103,9 @@ export function backgroundVeto(snapshot: (LeadTurnState & LeadSafetySnapshot) | 
   if (snapshot.stop_prompt_seq === null) return "no completed turn yet in this session";
   if (snapshot.stop_prompt_seq !== snapshot.prompt_seq) return "a turn started after the last completed one";
   if (snapshot.stop_background === null) return "the last completed turn reported no background-task evidence";
-  let live: { type: string }[];
+  let live: { type: string; status?: string; description?: string }[];
   try {
-    live = JSON.parse(snapshot.stop_background) as { type: string }[];
+    live = (JSON.parse(snapshot.stop_background) as typeof live).filter((task) => artifactWatchUrl(task) === null);
   } catch {
     return "the background-task evidence is unreadable";
   }
@@ -251,6 +255,7 @@ export function requestBody(row: Pick<HandoffRow, "id" | "pass" | "reason">, tur
     ...HANDOFF_HEADINGS.map((h) => `   ${h}`),
     "   Under SESSION WORK TO RESTORE list every /loop, cron, ScheduleWakeup, monitor or in-session task list " +
       "and how to re-arm it; none of them survive the new session. Re-arm what you can as hive wakes now.",
+    "   List each watched artifact by its URL and tell the successor how to re-watch it.",
     "3. Read the pad back and note its id and revision.",
     `4. Tell the human in plain words: "I will hand off after ${policy.graceSeconds} quiet seconds. Human input postpones it."`,
     `5. Run: hive lead-handoff --request ${row.id} --pad <pad id> --revision <revision>`,
@@ -462,7 +467,14 @@ export function missingHeadings(content: string): string[] {
   return missing;
 }
 
-export function successorPrompt(row: Pick<HandoffRow, "id" | "predecessor_session_id" | "predecessor_turns" | "reason" | "pass">): string {
+export function successorPrompt(row: Pick<HandoffRow, "id" | "lead_agent_id" | "predecessor_session_id" | "predecessor_turns" | "reason" | "pass">): string {
+  const snapshot = readLeadSafetySnapshot(row.lead_agent_id);
+  const artifacts = snapshot?.snapshot_session_id === row.predecessor_session_id && snapshot.session_id === row.predecessor_session_id
+    ? [...new Set((JSON.parse(snapshot.stop_background ?? "[]") as Parameters<typeof artifactWatchUrl>[0][]).flatMap((task) => {
+      const url = artifactWatchUrl(task);
+      return url === null ? [] : [url];
+    }))]
+    : [];
   return [
     `You are taking over as this project's lead from session ${row.predecessor_session_id} (hive handoff #${row.id}).`,
     `Read the "${HANDOFF_PAD_NAME}" handoff hive injected at session start (if none arrived, pad_read it by name), ` +
@@ -472,6 +484,7 @@ export function successorPrompt(row: Pick<HandoffRow, "id" | "predecessor_sessio
       'Carried over: <a> in flight, <b> queued, <c> questions for you."',
     "counting the IN FLIGHT, QUEUED NEXT and OPEN QUESTIONS FOR THE HUMAN entries, then quote OPEN QUESTIONS FOR THE HUMAN verbatim.",
     "Re-arm everything under SESSION WORK TO RESTORE, check VERIFY ON ARRIVAL, then continue with QUEUED NEXT.",
+    ...(artifacts.length === 0 ? [] : ["Re-watch each artifact whose live-update monitor the predecessor left running:", ...artifacts.map((url) => `- ${url}`)]),
   ].join("\n");
 }
 

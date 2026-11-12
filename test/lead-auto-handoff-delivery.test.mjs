@@ -92,7 +92,7 @@ beforeEach(() =>
 );
 
 describe("lead auto-handoff delivery", () => {
-  it("a pending request with only monitors is scheduled once quiet without permitting respawn", async () => {
+  it("a pending request with only monitors is scheduled once quiet", async () => {
     const lead = seedLead();
     turns(5);
     await prompt();
@@ -107,7 +107,7 @@ describe("lead auto-handoff delivery", () => {
     assert.equal(requested.state, "requested");
     assert.equal(requested.request_wake_id, pending.request_wake_id);
     assert.notEqual(wake(requested.request_wake_id).due_at, null);
-    assert.match(handoff.backgroundVeto(db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id)), /monitor/);
+    assert.equal(handoff.backgroundVeto(db.prepare("SELECT * FROM lead_turn_state WHERE agent_id = ?").get(lead.id)), null);
     drive();
     assert.equal(db.prepare("SELECT COUNT(*) n FROM wakes").get().n, 1);
   });
