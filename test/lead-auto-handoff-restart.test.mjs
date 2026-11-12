@@ -148,7 +148,7 @@ describe("lead auto-handoff restart", () => {
   });
 
   for (const budget of [null, { warn: 3, stop: 10, auto_handoff: false }]) {
-    it(`a manual lead-handoff creates a request and reaches respawn with ${budget === null ? "no budget" : "auto handoff off"}`, needsTmux, async () => {
+    it(budget === null ? "a manual lead-handoff creates a request and reaches respawn" : "a manual lead-handoff reaches respawn with auto handoff off", needsTmux, async () => {
       const ctx = await readyLead({ manual: true });
       writeFileSync(join(projectDir, "hive.yml"), `dashboard: false\n${budget === null ? "" : `lead_turn_budget: ${JSON.stringify(budget)}\n`}`);
       const result = await command(ctx, { manual: true });
@@ -164,7 +164,7 @@ describe("lead auto-handoff restart", () => {
     });
   }
 
-  it("a manual lead-handoff while one is active names its id and state without changing it", needsTmux, async () => {
+  it("a manual lead-handoff while one is active is refused", needsTmux, async () => {
     const ctx = await readyLead();
     for (const state of ["pending", "wind_down", "requested", "grace", "postponed", "respawning", "started", "ambiguous"]) {
       db.prepare("UPDATE lead_handoffs SET state = ? WHERE id = ?").run(state, ctx.requestId);
