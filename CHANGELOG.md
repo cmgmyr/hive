@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.13.0 - 2026-11-12
+
+- A lead can start its own handoff. Run `hive lead-handoff --pad <id> --revision <n>` without `--request` after writing the `hive-lead-handoff` pad, and hive restarts the lead's pane with a fresh session that receives the pad. It works without a turn budget and with `auto_handoff: false`. An existing active handoff is refused. Claude Code leads only; a Codex lead is refused before any request is recorded. This release adds a database migration that allows the new manual handoff reason.
+- Automatic lead handoff no longer stalls when the lead has an artifact live-update monitor running. The successor session is told which artifact watches to restore. Other live background tasks still block the restart.
+- When a handoff waits on live background tasks for five minutes, hive tells the lead which tasks are blocking it, and lets it choose to stop them or keep waiting. The notice repeats only when the set of blocking tasks changes. This notice is on by default.
+- `hive doctor` explains how to install tmux or Claude Code when either is missing.
+- New quick start guide (`docs/quickstart.md`) takes you from install to a lead with one worker. The README and install guide now state that tmux is required for the lead and every worker.
+- After upgrading, restart every hive session and the lead.
+
 ## 1.12.1 - 2026-11-03
 
 - Workers spawned by an MCP server launched with `npx` no longer inherit npm exec's PATH prefix. Before, a worker's PATH started with the `_npx` bin dir, a `node_modules/.bin` for every directory from the lead's working directory up to `/`, and npm's `node-gyp-bin`, so tools such as `biome` resolved from the main checkout instead of the worker's worktree. Hive now drops that prefix when it creates a pane, and the pane's shell still adds its own startup entries. Servers not launched through npm exec are unchanged. PATH entries that a version manager adds before npm runs, such as asdf's Node install directory, are kept.
