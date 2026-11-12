@@ -41,7 +41,7 @@ hive
 
 `hive init` registers the project and writes a starter `hive.yml` (all options commented out). It asks which profile to use; pick `orchestration` if you want a lead that delegates to workers. It also seeds a `board` pad, plus a `runbook` pad when you choose no profile. Commit `hive.yml`. Add `.hive/` to your `.gitignore`.
 
-`hive` (short for `hive lead`) opens a tmux session named `hive-main` and a `lead` window running Claude in your project. Your terminal attaches to it; under iTerm the default is its native tmux integration. For attach modes and the one-time iTerm settings, see [tmux settings](tmux.md) and [One-time iTerm settings](install.md#one-time-iterm-settings).
+`hive` (short for `hive lead`) opens a tmux window named after your project, running Claude in your project. Your terminal attaches to it; under iTerm the default is its native tmux integration. For attach modes and the one-time iTerm settings, see [tmux settings](tmux.md) and [One-time iTerm settings](install.md#one-time-iterm-settings).
 
 Type this to the lead:
 
@@ -63,7 +63,7 @@ The lead calls `agent_spawn`. A new pane appears beside the lead, and with the d
 
 When the worker finishes, hive wakes the lead with a note, so the lead does not poll. The lead reads the result and tells you what it found.
 
-To watch or take over from another terminal, run `tmux attach -t hive-main` (or `hive attach`). In tmux, `Ctrl-b z` zooms the current pane to full screen; press it again to restore the layout.
+To watch or take over from another terminal, attach with `hive attach` (or `tmux attach`). In tmux, `Ctrl-b z` zooms the current pane to full screen; press it again to restore the layout.
 
 ## The config you will actually touch
 
@@ -80,7 +80,7 @@ Settings live in `hive.yml`. A machine-wide `~/.hive/hive.yml` holds defaults, a
 | `lead_sidebar` | `true` | Crew pane in a Claude lead. See [Crew sidebar](crew.md). |
 | `quiet_messaging` | `true` | Wakes and worker messages reach a Claude lead as one row instead of typed text. |
 | `lead_turn_budget` | off | `{warn: 300, stop: 600}` makes the lead hand off to a fresh session at a turn count. `auto_handoff: false` turns the restart off. |
-| `context_checkpoint_percent` | off | An integer 1-100: workers checkpoint when their context passes it. |
+| `context_checkpoint_percent` | off | An integer 1-100: workers get a context notice when their context fill passes it. |
 | `first_message` | none | Text sent as the lead's first turn. hive ships none. |
 | `vars` | empty | Values substituted into profile text, such as test commands. |
 
@@ -88,14 +88,14 @@ Defaults come from `BUILT_IN_PROJECT_YML` in `src/projectYml.ts` and [configurat
 
 ## Profiles
 
-A profile is the standing process your lead and workers follow. hive ships three: `orchestration` (a lead that delegates to workers), `simple` (one session working solo, with hive as memory) and `queen` (for the multi-project lead started by `hive queen`). Choose one in `hive init`, or set `profile:` in `hive.yml`. `hive profile list` shows what exists, `hive profile fork orchestration` copies it into `~/.hive/profiles` to edit, and the `hive:profile` skill interviews you and writes a new one. See [Profiles](profiles.md).
+A profile is the standing process your lead and workers follow. hive ships three: `orchestration` (a lead that delegates to workers), `simple` (one session working solo, with hive as memory) and `queen` (for the multi-project lead started by `hive queen`). Choose one in `hive init`, or set `profile:` in `hive.yml`. `hive profile list` shows what exists, `hive profile fork orchestration` copies it into `~/.hive/profiles` to edit, and the `hive:profile` skill (needs the plugin symlink from Install) interviews you and writes a new one. See [Profiles](profiles.md).
 
 ## Everyday commands
 
 | Command | What it does |
 |---|---|
 | `hive` | Open (or return to) this project's lead. |
-| `hive status` | Live view of the project's agents and state. |
+| `hive status` | Agents, commands, todos and wake-ups across every registered project. |
 | `hive doctor` | Check the environment and sweep stale state. |
 | `hive todos`, `hive pads` | List the project's todos and pads from the shell. |
 | `hive queen` | One lead across every registered project. See [The queen](queen.md). |
