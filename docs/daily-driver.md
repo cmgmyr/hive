@@ -107,7 +107,7 @@ Workers report their state (`working`, `idle`, `waiting`) the moment it changes,
 
 - `wake_when_idle(scope: "project")` is a **standing watch** over the crew you spawn: it tells you about each worker as it finishes, covers workers spawned after you set it, and keeps watching until you cancel it or it expires. Set it once per session. It reports the workers *you* spawned, not every agent in the project, so a throwaway probe one of your workers spawned for itself stays out of your pane.
 - `wake_when_idle(agents: [...])` is a one-shot version over a named list; it stops watching the others once it fires.
-- `wake_set` gives a plain delayed or repeating wake-up, for anything that isn't "tell me when a worker goes idle."
+- `wake_set` gives a delayed, fixed-interval, or daily local-time wake-up, for anything that isn't "tell me when a worker goes idle." Use `at="19:00", repeat="daily"` for a DST-correct schedule in the creating server's captured local zone; a later OS/time-zone change needs cancel and re-set. A nonexistent local time skips that date, and an ambiguous time uses its first occurrence only.
 
 A fired wake-up reaches your lead as a fresh turn, prefixed `[hive wake #N]`. By default a Claude lead started by `hive` sees it as one dim `Message from @hive` row, and hive types it once if the row is not confirmed. A worker, a Codex lead, a lead started without hive's generated hooks, or a lead in a project with `quiet_messaging: false` gets it typed into the terminal. To receive one, a lead has to run inside tmux; leads started with `hive` always do.
 

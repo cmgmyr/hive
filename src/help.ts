@@ -250,8 +250,12 @@ its turn), waiting (needs permission or input). Non-claude commands show
 
   wakes: `WAKE-UPS — scheduled nudges instead of polling
 
-  wake_set(delay_seconds, body, deliver_to?, repeat_every_seconds?) —
-    one-shot or repeating wake-up
+  wake_set(delay_seconds?, body, deliver_to?, repeat_every_seconds?, at?, repeat?) —
+    one-shot, fixed-interval or daily local-time wake-up. Supply exactly one
+    of delay_seconds or at="HH:MM". Clock schedules capture the creating
+    server's local IANA zone; a later OS/time-zone change needs cancel and
+    re-set. A nonexistent local minute skips that date; an ambiguous minute
+    uses its first occurrence only. Use repeat="daily" with at.
   wake_when_idle(agents | scope | lead_project_id, body, mode?,
     max_wait_seconds?, deliver_to?) — fire when workers go idle. Pass
     exactly one of:
@@ -274,12 +278,13 @@ its turn), waiting (needs permission or input). Non-claude commands show
         reason instead.
   wake_get(wake_id) — read one wake-up by id, with its untruncated body
     (wake_list truncates at 120 chars)
-  wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?) — edit
+  wake_update(wake_id, delay_seconds?, body?, repeat_every_seconds?, at?, repeat?) — edit
     a pending wake-up you own in place, without minting a new id.
     delay_seconds is relative to now; repeat_every_seconds changes only the
     interval used for firings after this one. Only body can be edited on an
     idle wake (from wake_when_idle); delay_seconds/repeat_every_seconds
-    apply to a delay wake (from wake_set) only.
+    apply to an interval wake, and at/repeat apply to a clock wake only.
+    Changing at recomputes due_at; changing repeat alone leaves due_at alone.
   wake_cancel(wake_id) — cancel a pending wake-up you own, or any pending
     wake-up in this project when you are a running lead
   wake_list() — pending wake-ups and recently delivered one-shot wakes

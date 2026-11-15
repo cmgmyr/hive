@@ -216,10 +216,12 @@ The shipped `queen` profile is a skeleton on purpose. Its posture tells the quee
 hive profile fork queen runbook.md
 ```
 
-That copies the file to `<data dir>/profiles/queen/` and it stays yours; the files you never forked keep tracking hive's defaults. Replace each `<...>` slot: what you bring to the queen, when it should start a lead, and what it should do on a schedule. A schedule is built from `wake_set` on the queen's own pane, so a morning check-in looks like a wake you set once from the runbook:
+That copies the file to `<data dir>/profiles/queen/` and it stays yours; the files you never forked keep tracking hive's defaults. Replace each `<...>` slot: what you bring to the queen, when it should start a lead, and what it should do on a schedule. A schedule is built from `wake_set` on the queen's own pane, so a daily check-in looks like a wake you set once from the runbook:
+
+Daily clock wakes capture the creating server's local IANA zone. A later OS/time-zone change needs cancel and re-set; a nonexistent local time skips that date, and an ambiguous time uses its first occurrence only.
 
 ```text
-wake_set(delay_seconds=..., repeat_every_seconds=86400, body="Read hive portfolio and write the brief")
+wake_set(at="19:00", repeat="daily", body="Read hive portfolio and write the brief")
 ```
 
 That line is an example of what you can build, not something hive sets up for you. hive ships no schedule, no brief-writing routine, and no priority pad.

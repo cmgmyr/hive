@@ -3068,7 +3068,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Schedule a wake-up: after delay_seconds the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use instead of polling. Write the body self-contained: ids, context, next action - it may arrive in a session that has none of this conversation. Delivering to your OWN lead pane, where the context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
+    "description": "Schedule a wake-up: after delay_seconds, or at a local HH:MM time, the body is typed into the target session's terminal as a fresh user turn (prefixed [hive wake #N]). Defaults to delivering to THIS session. Use repeat='daily' with at for a DST-correct daily local-time schedule. The creating server's current IANA zone is captured; a later OS/time-zone change needs cancel and re-set. A nonexistent local minute skips that date, and an ambiguous minute uses its first occurrence only. Use instead of polling. Write the body self-contained: ids, context, next action - it may arrive in a session that has none of this conversation. Delivering to your OWN lead pane, where the context is already there, prefer the action, the ids, and a pointer to where the detail lives.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -3076,6 +3076,10 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "at": {
+          "description": "Local wall-clock time in HH:MM format.",
+          "type": "string"
+        },
         "body": {
           "type": "string"
         },
@@ -3103,6 +3107,13 @@
           "maximum": 9007199254740991,
           "type": "integer"
         },
+        "repeat": {
+          "description": "Repeat a clock-time wake daily.",
+          "enum": [
+            "daily"
+          ],
+          "type": "string"
+        },
         "repeat_every_seconds": {
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
@@ -3110,7 +3121,6 @@
         }
       },
       "required": [
-        "delay_seconds",
         "body"
       ],
       "type": "object"
@@ -3153,7 +3163,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of delay_seconds, body, repeat_every_seconds. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds only apply to a delay wake (from wake_set) - an idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds instead, so only body can be edited on one.",
+    "description": "Edit a pending wake-up you own, in place, without minting a new id. Provide any subset of at, repeat, delay_seconds, body, repeat_every_seconds. A clock wake keeps its captured zone; changing at recomputes due_at, while changing repeat alone does not move it. delay_seconds is RELATIVE TO NOW, exactly as in wake_set: it moves the next fire time to now + delay_seconds. repeat_every_seconds only changes the interval used for firings AFTER this one; on its own it does not move the next fire time. Only a still-pending wake can be edited; use wake_get to read the result back. delay_seconds and repeat_every_seconds apply to interval wakes; at and repeat apply to clock wakes. An idle wake (from wake_when_idle) fires on watched-agent state and max_wait_seconds, so only body can be edited on one.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -3161,6 +3171,10 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "at": {
+          "description": "New local wall-clock time in HH:MM format for a clock wake.",
+          "type": "string"
+        },
         "body": {
           "type": "string"
         },
@@ -3174,6 +3188,13 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "repeat": {
+          "description": "Enable a daily repeat on a clock wake.",
+          "enum": [
+            "daily"
+          ],
+          "type": "string"
         },
         "repeat_every_seconds": {
           "exclusiveMinimum": 0,
