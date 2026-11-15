@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, unlinkSync, statSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdirSync, readdirSync, readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, unlinkSync, statSync, createWriteStream } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import Database from "better-sqlite3";
-import { McpClient, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
+import { CLI, McpClient, baseEnv, isolateTmux, runCli, scratchDirs } from "./helpers.mjs";
 
 const { cleanup: cleanupTmux } = isolateTmux("the CLI tests");
 after(() => cleanupTmux());
@@ -402,6 +404,46 @@ describe("hive CLI pads", () => {
     assert.equal(readFileSync(file, "utf8"), content);
     const updated = await runCli(["pad", "board"], cliOpts);
     assert.match(updated.stdout, /USER FILE EDIT/);
+  });
+
+  it("pad --save prints a current revision after an interleaved write", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    let child;
+    let writer;
+    let fifo;
+    try {
+      const pad = await mcp.call("pad_read", { name: "board" });
+      fifo = join(dirs.tmp, "blocked save.pipe");
+      execFileSync("mkfifo", [fifo]);
+      child = spawn(process.execPath, [CLI, "pad", "board", "--save", fifo, "--revision", String(pad.revision)], {
+        cwd: dirs.projectDir,
+        env: { ...baseEnv(), HIVE_DATA_DIR: dirs.dataDir, HIVE_AUTO_ATTACH: "0", HIVE_EDITOR: "true", TMPDIR: dirs.tmp },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      const closed = once(child, "close");
+      writer = createWriteStream(fifo);
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("CLI did not open the save FIFO")), 3000);
+        writer.once("open", () => { clearTimeout(timer); resolve(); });
+        writer.once("error", (error) => { clearTimeout(timer); reject(error); });
+      });
+      await mcp.call("pad_append", { pad_id: pad.pad_id, content: "concurrent writer", expected_revision: pad.revision });
+      writer.end(`${pad.content}\nCLI edit\n`);
+      const [code] = await closed;
+      assert.equal(code, 1, stderr);
+      assert.match(stdout, /Revision mismatch/);
+      assert.ok(stdout.includes(`Then merge into the file and save with: hive pad "board" --save '${fifo}' --revision ${pad.revision + 1}`), stdout);
+      unlinkSync(fifo);
+    } finally {
+      writer?.destroy();
+      if (child && child.exitCode === null) child.kill("SIGTERM");
+      await mcp.close();
+    }
   });
 
   it("pad refuses --export combined with --edit or --save", async () => {

@@ -4681,7 +4681,8 @@ function cmdPad(argv: string[]): void {
       console.log(errorMessage(e));
       console.log(`Your edits are untouched in ${file}.`);
       console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
-      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${file}`);
+      const currentRevision = getActivePadByName(project.id, name)?.revision ?? pad.revision;
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${currentRevision}`);
       process.exit(1);
     }
     return;
