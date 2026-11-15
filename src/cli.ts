@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { checkAbi, describeAbi, describeInterpreter, nodeRangeForNodeApi, requiredNodeApi } from "./abi.js";
@@ -4613,6 +4613,11 @@ function cmdPad(argv: string[]): void {
     }
     return file;
   };
+  const isOwnExport = (file: string): boolean => {
+    const filename = basename(file);
+    const prefix = padExportPrefix(project.id, name);
+    return dirname(resolve(file)) === resolve(tmpdir()) && filename.startsWith(prefix) && /^\d+\.md$/.test(filename.slice(prefix.length));
+  };
 
   if (parsed.flags.has("--edit") || parsed.flags.has("--export")) {
     const file = writeExport();
@@ -4656,14 +4661,22 @@ function cmdPad(argv: string[]): void {
       process.exit(1);
     }
     if (content === pad.content) {
-      unlinkSync(file);
-      console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);
+      if (isOwnExport(file)) {
+        unlinkSync(file);
+        console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);
+      } else {
+        console.log(`No changes; "${name}" left at rev ${pad.revision} (kept ${file}).`);
+      }
       return;
     }
     try {
       const newRevision = overwritePadContent(project.id, pad.id, content, expected);
-      unlinkSync(file);
-      console.log(`Saved "${name}": rev ${expected} -> ${newRevision}. Removed ${file}.`);
+      if (isOwnExport(file)) {
+        unlinkSync(file);
+        console.log(`Saved "${name}": rev ${expected} -> ${newRevision}. Removed ${file}.`);
+      } else {
+        console.log(`Saved "${name}": rev ${expected} -> ${newRevision} (kept ${file}).`);
+      }
     } catch (e) {
       console.log(errorMessage(e));
       console.log(`Your edits are untouched in ${file}.`);

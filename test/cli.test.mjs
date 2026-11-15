@@ -377,6 +377,33 @@ describe("hive CLI pads", () => {
     unlinkSync(file);
   });
 
+  it("pad --save keeps a user file it did not export", async () => {
+    const mcp = new McpClient({ cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    await mcp.start();
+    let pad;
+    try {
+      pad = await mcp.call("pad_read", { name: "board" });
+    } finally {
+      await mcp.close();
+    }
+
+    const file = join(dirs.tmp, "plain.md");
+    const content = `${pad.content}\nUSER FILE EDIT\n`;
+    writeFileSync(file, content);
+    const save = await runCli(["pad", "board", "--save", file, "--revision", String(pad.revision)], cliOpts);
+    assert.equal(save.code, 0, save.stdout);
+    assert.match(save.stdout, /\(kept /);
+    assert.equal(readFileSync(file, "utf8"), content);
+
+    const noChanges = await runCli(["pad", "board", "--save", file, "--revision", String(pad.revision + 1)], cliOpts);
+    assert.equal(noChanges.code, 0, noChanges.stdout);
+    assert.match(noChanges.stdout, /No changes/);
+    assert.match(noChanges.stdout, /\(kept /);
+    assert.equal(readFileSync(file, "utf8"), content);
+    const updated = await runCli(["pad", "board"], cliOpts);
+    assert.match(updated.stdout, /USER FILE EDIT/);
+  });
+
   it("pad refuses --export combined with --edit or --save", async () => {
     for (const mode of ["--edit", "--save"]) {
       const result = await runCli(["pad", "board", "--export", mode], cliOpts);
