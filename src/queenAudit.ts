@@ -63,7 +63,7 @@ export const QUEEN_AUDIT_OPERATIONS: Readonly<Record<string, QueenAuditOperation
   wake_update: {
     mode: "database",
     resource: (r) => r.updated === true ? resource("wake", r.wake_id) : null,
-    summary: (a) => `changed ${["body", "delay_seconds", "repeat_every_seconds"].filter((key) => a[key] !== undefined).join(", ")}${a.body === undefined ? "" : `: ${a.body}`}`,
+    summary: (a) => `changed ${["body", "delay_seconds", "repeat_every_seconds", "at", "repeat"].filter((key) => a[key] !== undefined).join(", ")}${a.body === undefined ? "" : `: ${a.body}`}`,
   },
   wake_cancel: {
     mode: "database",

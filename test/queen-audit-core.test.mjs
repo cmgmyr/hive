@@ -94,6 +94,18 @@ it("all noop predicates exclude audit entries", () => {
   ]) assert.equal(QUEEN_AUDIT_OPERATIONS[operation].resource(receipt), null);
 });
 
+it("queen audit names at and repeat on a wake_update", () => {
+  process.env.HIVE_AGENT_ID = actor;
+  const before = rows().length;
+  const receipt = commitQueenStateWrite("wake_update", alpha, { wake_id: 42, at: "20:00", repeat: "daily" }, () => ({
+    wake_id: 42,
+    updated: true,
+  }));
+  assert.deepEqual(receipt, { wake_id: 42, updated: true });
+  assert.equal(rows().length, before + 1);
+  assert.equal(rows().at(-1).summary, "changed at, repeat");
+});
+
 it("interleaved async callers keep explicit target, operation and summary separate", async () => {
   const before = rows().length;
   let release;
