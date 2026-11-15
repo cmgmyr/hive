@@ -22,6 +22,9 @@ function fixture(overrides = {}) {
     cancelled_at: null,
     fired_at: null,
     repeat_every_ms: null,
+    clock_at: null,
+    clock_zone: null,
+    clock_repeat: null,
     held_at: null,
     kind: "delay",
     due_at: "2000-01-01 00:00:00",
@@ -58,6 +61,7 @@ describe("wake lifecycle vocabulary", () => {
       { name: "future delay", row: fixture({ due_at: "2999-01-01 00:00:00" }), active: 1, pending: 1, fired: 0, held: 0, candidate: 0 },
       { name: "unfired idle watch", row: fixture({ kind: "idle", due_at: null }), active: 1, pending: 1, fired: 0, held: 0, candidate: 1 },
       { name: "fired one-shot never pasted", row: fixture({ fired_at: "2026-01-01" }), active: 0, pending: 0, fired: 1, held: 0, candidate: 0 },
+      { name: "fired daily clock stays active, not a fired one-shot", row: fixture({ fired_at: "2026-01-01", clock_at: "19:00", clock_zone: "America/New_York", clock_repeat: "daily" }), active: 1, pending: 0, fired: 0, held: 0, candidate: 1 },
       { name: "pasted unconfirmed", row: fixture({ fired_at: "2026-01-01", typed_at: "2026-01-01" }), active: 0, pending: 0, fired: 1, held: 0, candidate: 0 },
       { name: "posted one-shot socket", row: fixture({ fired_at: "2026-01-01", socket_attempt_at: "2026-01-01", delivery_method: "socket" }), active: 0, pending: 0, fired: 1, held: 0, candidate: 0 },
       { name: "active standing watch", row: fixture({ kind: "idle", due_at: null, max_wait_at: "2999-01-01 00:00:00" }), active: 1, pending: 1, fired: 0, held: 0, candidate: 1 },
@@ -83,6 +87,13 @@ describe("wake lifecycle vocabulary", () => {
     }
 
     assert.equal(wakeSql.sentWakeAtSql("w."), "COALESCE(w.socket_attempt_at, w.typed_at)");
+    assert.equal(evaluate(wakeSql.repeatingWakeWhere("w."), fixture()), 0);
+    assert.equal(evaluate(wakeSql.repeatingWakeWhere("w."), fixture({ repeat_every_ms: 60_000 })), 1);
+    assert.equal(evaluate(wakeSql.repeatingWakeWhere("w."), fixture({ clock_repeat: "daily" })), 1);
+    assert.equal(evaluate(wakeSql.repeatingWakeWhere("w."), fixture({ clock_repeat: "weekly" })), 0);
+    assert.equal(wakeSql.isRepeatingWake(fixture()), false);
+    assert.equal(wakeSql.isRepeatingWake(fixture({ repeat_every_ms: 60_000 })), true);
+    assert.equal(wakeSql.isRepeatingWake(fixture({ clock_repeat: "daily" })), true);
     assert.equal(evaluate(wakeSql.watchWatchingWhere("w."), fixture({ kind: "idle", max_wait_at: null })), 1);
     assert.equal(evaluate(wakeSql.watchWatchingWhere("w."), fixture({ kind: "idle", fired_at: "2026-01-01" })), 0);
   });
@@ -115,6 +126,16 @@ describe("wake lifecycle vocabulary", () => {
     assert.equal(evaluate(wakeSql.currentAttempt("w."), staleSocket), 0);
     assert.equal(evaluate(wakeSql.repeatingSocketAwaitingWhere("w."), currentSocket), 1);
     assert.equal(evaluate(wakeSql.repeatingSocketAwaitingWhere("w."), staleSocket), 0);
+    const dailySocket = fixture({
+      fired_at: recentSocketAttempt,
+      clock_at: "19:00",
+      clock_zone: "America/New_York",
+      clock_repeat: "daily",
+      delivery_method: wakeSql.DELIVERY_METHOD.socketRepeating,
+      socket_attempt_at: recentSocketAttempt,
+    });
+    assert.equal(evaluate(wakeSql.repeatingSocketAwaitingWhere("w."), dailySocket), 1);
+    assert.equal(evaluate(wakeSql.repeatingFiringPendingWhere("w."), dailySocket), 1);
     assert.equal(evaluate(wakeSql.repeatingFallbackClaimedWhere("w."), claimedFallback), 1);
     assert.equal(evaluate(wakeSql.repeatingFallbackClaimedWhere("w."), droppedFallback), 0);
     assert.equal(evaluate(wakeSql.repeatingFiringPendingWhere("w."), currentSocket), 1);
@@ -122,6 +143,10 @@ describe("wake lifecycle vocabulary", () => {
       ...currentSocket, socket_attempt_at: "2000-01-01 00:00:00",
     }), 0);
     assert.equal(evaluate(wakeSql.repeatingSocketFiringWhere("w."), claimedFallback), 1);
+    assert.equal(evaluate(wakeSql.repeatingSocketFiringWhere("w."), {
+      ...dailySocket,
+      delivery_method: wakeSql.DELIVERY_METHOD.ptyAfterSocketTimeout,
+    }), 1);
     assert.equal(evaluate(wakeSql.spentUntypedNotice("w"), fixture({
       fired_at: "2000-01-01 00:00:00",
     })), 1);
@@ -132,6 +157,8 @@ describe("wake lifecycle vocabulary", () => {
     const held = fixture({ fired_at: "2026-10-19 11:00:00", repeat_every_ms: 60_000, due_at: "2026-10-19 12:00:00", fire_count: 4 });
     assert.equal(evaluate(wakeSql.holdableWakeWhere("w."), held, [held.due_at, 4, 4]), 1);
     assert.equal(evaluate(wakeSql.holdableWakeWhere("w."), held, [held.due_at, 3, 3]), null);
+    const heldDaily = fixture({ fired_at: "2026-10-19 11:00:00", clock_at: "19:00", clock_zone: "America/New_York", clock_repeat: "daily", due_at: "2026-10-19 12:00:00", fire_count: 4 });
+    assert.equal(evaluate(wakeSql.holdableWakeWhere("w."), heldDaily, [heldDaily.due_at, 4, 4]), 1);
     assert.equal(evaluate(wakeSql.handoffSocketInFlightWhere("w."), fixture({
       fired_at: recentSocketAttempt, delivery_method: "socket-legacy",
       socket_attempt_at: recentSocketAttempt,
@@ -243,7 +270,7 @@ describe("wake lifecycle vocabulary", () => {
     const record = (name, path) => declarations.set(name, [...(declarations.get(name) ?? []), path]);
     const helpers = [
       "activeWakeWhere", "pendingOneShotWhere", "firedOneShotWhere", "heldWakeWhere", "sentWakeAtSql",
-      "schedulerCandidateWhere", "socketAwaitingWhere", "currentAttempt", "repeatingSocketAwaitingWhere",
+      "schedulerCandidateWhere", "repeatingWakeWhere", "isRepeatingWake", "socketAwaitingWhere", "currentAttempt", "repeatingSocketAwaitingWhere",
       "repeatingFallbackClaimedWhere", "repeatingFiringPendingWhere", "repeatingSocketFiringWhere",
       "spentUntypedNotice", "watchWatchingWhere", "handoffSocketInFlightWhere", "holdableWakeWhere", "wakeConfirmation",
     ];

@@ -6,7 +6,7 @@ export const DELIVERY_METHOD = {
 } as const;
 
 export function activeWakeWhere(prefix = ""): string {
-  return `${prefix}cancelled_at IS NULL AND (${prefix}fired_at IS NULL OR ${prefix}repeat_every_ms IS NOT NULL)`;
+  return `${prefix}cancelled_at IS NULL AND (${prefix}fired_at IS NULL OR ${repeatingWakeWhere(prefix)})`;
 }
 
 export const ACTIVE_TIMER_WHERE = activeWakeWhere();
@@ -18,7 +18,7 @@ export function pendingOneShotWhere(prefix = ""): string {
 }
 
 export function firedOneShotWhere(prefix = ""): string {
-  return `${prefix}cancelled_at IS NULL AND ${prefix}fired_at IS NOT NULL AND ${prefix}repeat_every_ms IS NULL`;
+  return `${prefix}cancelled_at IS NULL AND ${prefix}fired_at IS NOT NULL AND NOT ${repeatingWakeWhere(prefix)}`;
 }
 
 export function heldWakeWhere(prefix = ""): string {
@@ -32,7 +32,7 @@ export function sentWakeAtSql(prefix = ""): string {
 export function schedulerCandidateWhere(prefix = ""): string {
   return `${prefix}cancelled_at IS NULL AND (
          (${prefix}kind = 'delay' AND ${prefix}due_at <= datetime('now')
-           AND (${prefix}fired_at IS NULL OR ${prefix}repeat_every_ms IS NOT NULL))
+           AND (${prefix}fired_at IS NULL OR ${repeatingWakeWhere(prefix)}))
          OR (${prefix}kind != 'delay' AND ${prefix}fired_at IS NULL)
        )`;
 }
@@ -45,12 +45,12 @@ export const currentAttempt = (prefix = ""): string =>
    AND ${prefix}fired_at IS NOT NULL AND ${prefix}socket_attempt_at >= ${prefix}fired_at`;
 
 export const repeatingSocketAwaitingWhere = (prefix = ""): string =>
-  `${prefix}delivery_method = '${DELIVERY_METHOD.socketRepeating}' AND ${currentAttempt(prefix)}`;
+  `${repeatingWakeWhere(prefix)} AND ${prefix}delivery_method = '${DELIVERY_METHOD.socketRepeating}' AND ${currentAttempt(prefix)}`;
 
 export const FIRING_DROPPED_NOTE = "dropped";
 
 export const repeatingFallbackClaimedWhere = (prefix = ""): string =>
-  `${prefix}repeat_every_ms IS NOT NULL AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}
+  `${repeatingWakeWhere(prefix)} AND ${prefix}delivery_method = '${DELIVERY_METHOD.ptyAfterSocketTimeout}' AND ${currentAttempt(prefix)}
    AND ${prefix}socket_delivery_note IS NOT '${FIRING_DROPPED_NOTE}'`;
 
 export const repeatingFiringPendingWhere = (prefix = ""): string =>
@@ -58,7 +58,7 @@ export const repeatingFiringPendingWhere = (prefix = ""): string =>
   AND ${prefix}socket_attempt_at >= datetime('now', '${LOG_RETENTION}')`;
 
 export const repeatingSocketFiringWhere = (prefix = ""): string =>
-  `${prefix}repeat_every_ms IS NOT NULL AND COALESCE(${prefix}delivery_method, '') IN ('${DELIVERY_METHOD.socketRepeating}', '${DELIVERY_METHOD.ptyAfterSocketTimeout}')`;
+  `${repeatingWakeWhere(prefix)} AND COALESCE(${prefix}delivery_method, '') IN ('${DELIVERY_METHOD.socketRepeating}', '${DELIVERY_METHOD.ptyAfterSocketTimeout}')`;
 
 export function spentUntypedNotice(alias: string): string {
   return `${alias}.fired_at IS NOT NULL AND COALESCE(${alias}.typed_at, ${alias}.socket_attempt_at) IS NULL ` +
@@ -78,7 +78,7 @@ export function handoffSocketInFlightWhere(prefix = ""): string {
 
 export function holdableWakeWhere(prefix = ""): string {
   return `${prefix}cancelled_at IS NULL
-       AND (${prefix}fired_at IS NULL OR (${prefix}repeat_every_ms IS NOT NULL AND ${prefix}due_at = ? AND (? IS NULL OR ${prefix}fire_count = ?))
+       AND (${prefix}fired_at IS NULL OR (${repeatingWakeWhere(prefix)} AND ${prefix}due_at = ? AND (? IS NULL OR ${prefix}fire_count = ?))
          OR (${socketAwaitingWhere(prefix)}))`;
 }
 
@@ -196,3 +196,13 @@ export const HELD_REASON_HANDOFF =
   "the lead row once the successor completes its first turn, or when the handoff fails or releases its hold";
 
 export const HELD_REASON_USAGE_LIMIT = "the target harness is stopped by a usage limit; held until ";
+
+export function repeatingWakeWhere(prefix = ""): string {
+  return `(${prefix}repeat_every_ms IS NOT NULL OR COALESCE(${prefix}clock_repeat = 'daily', 0))`;
+}
+
+export function isRepeatingWake(row: { repeat_every_ms: number | null; clock_repeat?: string | null }): boolean {
+  return row.repeat_every_ms != null || row.clock_repeat === "daily";
+}
+
+export const HELD_REASON_INVALID_CLOCK = "invalid clock schedule";

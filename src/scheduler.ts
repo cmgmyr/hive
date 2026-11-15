@@ -7,6 +7,7 @@ import {
   HELD_REASON_CONVERSATION,
   HELD_REASON_COPY_MODE,
   HELD_REASON_HANDOFF,
+  HELD_REASON_INVALID_CLOCK,
   HELD_REASON_LEAD_BOOT_INPUT_BOX,
   HELD_REASON_LEAD_PANE_DEAD,
   HELD_REASON_LEAD_ROW_CLOSED,
@@ -27,6 +28,7 @@ import {
   activeWakeWhere,
   holdableWakeWhere,
   identityThenDead,
+  isRepeatingWake,
   isLeadRowClosedHold,
   isUnclassifiablePaneHold,
   isUnsubmittedInputHold,
@@ -34,6 +36,7 @@ import {
   repeatingFiringPendingWhere,
   repeatingSocketAwaitingWhere,
   repeatingSocketFiringWhere,
+  repeatingWakeWhere,
   schedulerCandidateWhere,
   sentWakeAtSql,
   socketAwaitingWhere,
@@ -71,6 +74,7 @@ import { decodeKvValue } from "./kvValue.js";
 import { continueLimitedCodexWorkers, observeUsageLimit, usageLimitGate } from "./usageLimit.js";
 import { maybeBackupHourly } from "./backup.js";
 import { renderDashboardForWrite } from "./dashboard.js";
+import { InvalidClockRuleError, nextClockDue, validateClockRule } from "./wakeClock.js";
 import { snapshotProcesses } from "./processes.js";
 import { loadProjectYml } from "./projectYml.js";
 import { getProjectByPath, listProjects, queenHomeDir } from "./context.js";
@@ -168,6 +172,9 @@ export interface TimerRow {
   due_at: string | null;
   max_wait_at: string | null;
   repeat_every_ms: number | null;
+  clock_at: string | null;
+  clock_zone: string | null;
+  clock_repeat: string | null;
   created_at: string;
   fired_at: string | null;
   cancelled_at: string | null;
@@ -206,8 +213,8 @@ export interface TimerRow {
 
 export const WATCH_SCOPE_PROJECT = "project";
 const DELIVERED_BY = `pid ${process.pid}, ${versionInfo().line}`;
-const deliveredByForFiring = (timer: Pick<TimerRow, "repeat_every_ms" | "fire_count">): string =>
-  timer.repeat_every_ms == null ? DELIVERED_BY : `${DELIVERED_BY}, firing #${timer.fire_count}`;
+const deliveredByForFiring = (timer: Pick<TimerRow, "repeat_every_ms" | "clock_repeat" | "fire_count">): string =>
+  isRepeatingWake(timer) ? `${DELIVERED_BY}, firing #${timer.fire_count}` : DELIVERED_BY;
 
 const isStandingWatch = (timer: TimerRow): boolean => timer.watch_scope === WATCH_SCOPE_PROJECT;
 
@@ -1265,6 +1272,7 @@ const claimModalHoldWithNotice = db.transaction(
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
           WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+            AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_MODAL_CHOICE,
@@ -1272,6 +1280,9 @@ const claimModalHoldWithNotice = db.transaction(
         timer.due_at,
         timer.body,
         timer.repeat_every_ms,
+        timer.clock_at,
+        timer.clock_zone,
+        timer.clock_repeat,
         HELD_REASON_MODAL_CHOICE,
       ).changes === 1;
     if (!claimed) return false;
@@ -1314,6 +1325,7 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
            first_held_at = COALESCE(CASE WHEN held_at IS NULL THEN NULL ELSE first_held_at END, datetime('now'))
           WHERE id = ? AND (${activeWakeWhere()})
             AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+            AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
             AND held_reason IS NOT ?`,
       ).run(
         HELD_REASON_UNSUBMITTED_INPUT,
@@ -1321,6 +1333,9 @@ const claimUnsubmittedInputHoldWithNotice = db.transaction(
         timer.due_at,
         timer.body,
         timer.repeat_every_ms,
+        timer.clock_at,
+        timer.clock_zone,
+        timer.clock_repeat,
         HELD_REASON_UNSUBMITTED_INPUT,
       ).changes === 1;
     if (!claimed) return false;
@@ -2126,7 +2141,7 @@ function noticeDisposition(timer: TimerRow): NoticeDisposition {
   try {
     const check = stmt(
       `SELECT (p.cancelled_at IS NULL) AS live,
-              (p.fired_at IS NOT NULL AND p.repeat_every_ms IS NULL) AS parent_finished,
+              (p.fired_at IS NOT NULL AND NOT ${repeatingWakeWhere("p.")}) AS parent_finished,
               (? >= datetime('now', ?)) AS fresh,
               EXISTS (SELECT 1 FROM wake_idle_notices n WHERE n.notice_wake_id = ?) AS finish_shaped
          FROM wakes p WHERE p.id = ?`,
@@ -2404,10 +2419,43 @@ async function fireDelay(
     );
     return;
   }
-  if (timer.repeat_every_ms != null && repeatingFiringPending(timer.id)) return;
+  if (isRepeatingWake(timer) && repeatingFiringPending(timer.id)) return;
   const releaseReason = releaseExpiredPaneCaptureHold(timer);
   const deliveryTimer = releaseReason === null ? timer : { ...timer, held_reason: releaseReason };
   await withPaneClaim(deliveryTimer, () => fireDelayClaimed(deliveryTimer, snapshot, choices));
+}
+
+function holdInvalidClock(timer: TimerRow): void {
+  bestEffortRun(
+    `UPDATE wakes SET held_at = datetime('now'), held_reason = ?,
+       first_held_at = COALESCE(first_held_at, datetime('now'))
+     WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+       AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND fire_count = ? AND cancelled_at IS NULL`,
+    HELD_REASON_INVALID_CLOCK,
+    timer.id,
+    timer.due_at,
+    timer.body,
+    timer.repeat_every_ms,
+    timer.clock_at,
+    timer.clock_zone,
+    timer.clock_repeat,
+    timer.fire_count,
+  );
+}
+
+function clockRuleValid(timer: TimerRow): boolean {
+  if (timer.clock_at === null && timer.clock_zone === null && timer.clock_repeat === null) return true;
+  try {
+    if (timer.clock_at === null || timer.clock_zone === null) throw new InvalidClockRuleError("invalid clock schedule");
+    if (timer.clock_repeat !== null && timer.clock_repeat !== "daily") {
+      throw new InvalidClockRuleError("invalid clock schedule");
+    }
+    validateClockRule(timer.clock_at, timer.clock_zone);
+    return true;
+  } catch {
+    holdInvalidClock(timer);
+    return false;
+  }
 }
 
 function paneCaptureReleaseReason(firing: number): string {
@@ -2457,23 +2505,47 @@ async function fireDelayClaimed(
 ): Promise<boolean> {
   const decision = deliverable(timer, snapshot, choices);
   if (!decision.ok) return false;
+  if (!clockRuleValid(timer)) return false;
   let firing = timer;
-  if (timer.repeat_every_ms != null) {
-    const seconds = Math.max(1, Math.round(timer.repeat_every_ms / 1000));
+  if (isRepeatingWake(timer)) {
+    let nextDue: string | null = null;
+    if (timer.clock_repeat === "daily") {
+      try {
+        nextDue = nextClockDue(timer.clock_at ?? "", timer.clock_zone ?? "", Date.now());
+      } catch {
+        holdInvalidClock(timer);
+        return false;
+      }
+    }
+    const seconds = timer.repeat_every_ms == null ? null : Math.max(1, Math.round(timer.repeat_every_ms / 1000));
+    const dueUpdate = nextDue === null
+      ? "due_at = datetime('now', printf('+%d seconds', ?))"
+      : "due_at = ?";
     const claimed = stmt(
-      `UPDATE wakes SET due_at = datetime('now', printf('+%d seconds', ?)),
+      `UPDATE wakes SET ${dueUpdate},
          fired_at = datetime('now'), fire_count = fire_count + 1,
          typed_at = NULL, confirmed_at = NULL, held_at = NULL, held_reason = NULL, typed_busy = NULL,
          typed_seen = NULL, first_held_at = NULL,
          socket_attempt_at = NULL, socket_delivery_note = NULL, delivery_method = NULL, delivered_by = NULL
-       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ? AND cancelled_at IS NULL
+       WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+         AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND cancelled_at IS NULL
          AND fire_count = ? AND NOT COALESCE((${REPEATING_FIRING_PENDING}), 0)
          AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
            (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
              ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
            AND u.released_at IS NULL AND u.expires_at > datetime('now'))
        RETURNING fire_count, fired_at`,
-    ).get(seconds, timer.id, timer.due_at, timer.body, timer.repeat_every_ms, timer.fire_count) as
+    ).get(
+      nextDue ?? seconds,
+      timer.id,
+      timer.due_at,
+      timer.body,
+      timer.repeat_every_ms,
+      timer.clock_at,
+      timer.clock_zone,
+      timer.clock_repeat,
+      timer.fire_count,
+    ) as
       | { fire_count: number; fired_at: string }
       | undefined;
     if (claimed === undefined) return false;
@@ -2491,13 +2563,22 @@ function claimOneShot(timer: TimerRow): { fire_count: number; fired_at: string }
   const claimed = stmt(
     `UPDATE wakes SET fired_at = datetime('now'), fire_count = fire_count + 1
        WHERE id = ? AND due_at IS ? AND body IS ? AND repeat_every_ms IS ?
+         AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ?
          AND ${pendingOneShotWhere()}
          AND NOT EXISTS (SELECT 1 FROM agent_usage_limits u WHERE u.agent_id =
            (SELECT a.id FROM agents a WHERE a.actor_id = wakes.deliver_actor
              ORDER BY (a.status = 'running') DESC, a.id DESC LIMIT 1)
            AND u.released_at IS NULL AND u.expires_at > datetime('now'))
        RETURNING fire_count, fired_at`,
-  ).get(timer.id, timer.due_at, timer.body, timer.repeat_every_ms) as { fire_count: number; fired_at: string } | undefined;
+  ).get(
+    timer.id,
+    timer.due_at,
+    timer.body,
+    timer.repeat_every_ms,
+    timer.clock_at,
+    timer.clock_zone,
+    timer.clock_repeat,
+  ) as { fire_count: number; fired_at: string } | undefined;
   return claimed ?? null;
 }
 
@@ -2828,7 +2909,7 @@ function recordLostAfterClaim(timer: TimerRow, pasted: boolean, why: string, fir
   bestEffortRun(
     `UPDATE wakes SET held_reason = ?,
        typed_at = CASE WHEN ? = 1 THEN strftime('%Y-%m-%d %H:%M:%f', 'now') ELSE typed_at END,
-       cancelled_at = CASE WHEN repeat_every_ms IS NULL THEN datetime('now') ELSE cancelled_at END
+       cancelled_at = CASE WHEN NOT ${repeatingWakeWhere()} THEN datetime('now') ELSE cancelled_at END
      WHERE id = ? AND (? IS NULL OR fire_count = ?)`,
     HELD_REASON_OWNERSHIP_LOST_AFTER_CLAIM + why + (pasted ? " The body was pasted; no Enter was sent." : ""),
     pasted ? 1 : 0,
@@ -2890,7 +2971,7 @@ function socketStillRegistered(timer: TimerRow, owner: DeliveryOwner): boolean {
       WHERE id = ? AND status = 'running' AND kind = 'lead'`,
   ).get(owner.rowId) as { socket: string; pid: string; pane_pid: string } | undefined;
   const wake =
-    timer.repeat_every_ms == null
+    !isRepeatingWake(timer)
       ? stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL").get(timer.id)
       : stmt("SELECT 1 AS live FROM wakes WHERE id = ? AND cancelled_at IS NULL AND fire_count = ?").get(timer.id, timer.fire_count);
   return (
@@ -2972,7 +3053,7 @@ async function deliver(
   let firing = fallback && timer.delivery_method === DELIVERY_METHOD.socketRepeating ? timer.fire_count : null;
 
   if (!fallback && socketRoute(timer, owner)) {
-    const repeating = timer.repeat_every_ms != null;
+    const repeating = isRepeatingWake(timer);
     const head = repeating ? firingMarker(timer) : `[hive wake #${timer.id}`;
     const text = `${head}${note ? `, ${note}` : ""}] ${body + staleness + tail}\n\n${SOCKET_WAKE_FOOTER}`;
     if (!text.includes(CROSS_SESSION_CLOSE)) {

@@ -97,6 +97,12 @@ test("wake_update keeps clock identity and zone while timing and repeat fields c
   assert.equal(got.at, "21:00");
   assert.equal(got.repeat, "daily");
   assert.equal(got.time_zone, TIME_ZONE);
+  const listedAfterFire = await mcp.call("wake_list");
+  const listedDaily = listedAfterFire.wakes.find((wake) => wake.wake_id === created.wake_id);
+  assert.equal(listedDaily.at, "21:00");
+  assert.equal(listedDaily.repeat, "daily");
+  assert.equal(listedDaily.time_zone, TIME_ZONE);
+  assert.equal(listedDaily.repeating, true);
 });
 
 test("wake_update rejects empty, mixed-mode and timing edits on legacy or idle wakes", async () => {

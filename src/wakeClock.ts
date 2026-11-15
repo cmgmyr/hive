@@ -12,12 +12,10 @@ function partsAt(formatter: Intl.DateTimeFormat, instant: number): Record<string
   return Object.fromEntries(formatter.formatToParts(new Date(instant)).map(({ type, value }) => [type, value]));
 }
 
-export function nextClockDue(at: string, zone: string, afterMs: number): string {
-  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(at) || !zone || !Number.isFinite(afterMs)) invalidRule();
-
-  let formatter: Intl.DateTimeFormat;
+function clockFormatter(at: string, zone: string): Intl.DateTimeFormat {
+  if (!/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(at) || !zone) invalidRule();
   try {
-    formatter = new Intl.DateTimeFormat("en-US-u-ca-iso8601-nu-latn", {
+    const formatter = new Intl.DateTimeFormat("en-US-u-ca-iso8601-nu-latn", {
       timeZone: zone,
       year: "numeric",
       month: "2-digit",
@@ -26,6 +24,21 @@ export function nextClockDue(at: string, zone: string, afterMs: number): string 
       minute: "2-digit",
       hourCycle: "h23",
     });
+    formatter.format(new Date(0));
+    return formatter;
+  } catch {
+    return invalidRule();
+  }
+}
+
+export function validateClockRule(at: string, zone: string): void {
+  clockFormatter(at, zone);
+}
+
+export function nextClockDue(at: string, zone: string, afterMs: number): string {
+  if (!Number.isFinite(afterMs)) invalidRule();
+  const formatter = clockFormatter(at, zone);
+  try {
     formatter.format(new Date(afterMs));
   } catch {
     return invalidRule();

@@ -23,7 +23,7 @@ import {
 import {
   ACTIVE_TIMER_WHERE,
   LOG_RETENTION,
-  firedOneShotWhere,
+  firedOneShotWhere, isRepeatingWake,
   pendingOneShotWhere,
   type ConfirmationStatus,
   wakeConfirmation,
@@ -128,7 +128,7 @@ function clockScheduleFields(timer: WakeRow): Record<string, unknown> {
 function deliveredByNote(t: TimerRow): string | null {
   if (t.delivery_method === null) return null;
   if (t.delivered_by === null) return "delivered by a hive build older than this field";
-  if (t.repeat_every_ms === null) return null;
+  if (!isRepeatingWake(t)) return null;
   const firing = t.delivered_by.match(/, firing #(\d+)$/);
   return firing !== null && Number(firing[1]) !== t.fire_count
     ? `firing #${t.fire_count} was claimed by a hive build older than this field; ` +
@@ -700,7 +700,7 @@ export function registerWakes(server: McpServer): void {
           due_at: t.due_at,
           max_wait_at: t.max_wait_at,
           repeat_every_seconds: t.repeat_every_ms != null ? t.repeat_every_ms / 1000 : null,
-          repeating: t.repeat_every_ms != null || t.clock_repeat != null,
+          repeating: isRepeatingWake(t),
           fire_count: t.fire_count,
           cancelled_at: t.cancelled_at,
 
@@ -762,7 +762,7 @@ export function registerWakes(server: McpServer): void {
               .prepare(
                 `SELECT * FROM wakes
                  WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
-                   AND cancelled_at IS NULL AND (${ACTIVE_TIMER_WHERE} OR clock_repeat = 'daily')`,
+                   AND ${ACTIVE_TIMER_WHERE}`,
               )
               .get(args.wake_id, projectId, currentActor()) as (TimerRow & ClockTimerFields) | undefined;
             if (timer === undefined) return { wake_id: args.wake_id, updated: false, due_at: null };
@@ -826,7 +826,7 @@ export function registerWakes(server: McpServer): void {
                  WHERE id = ? AND project_id = ? AND owner = ? AND parent_wake_id IS NULL
                    AND clock_at IS ? AND clock_zone IS ? AND clock_repeat IS ? AND due_at IS ?
                    AND repeat_every_ms IS ? AND fired_at IS ? AND cancelled_at IS ?
-                   AND cancelled_at IS NULL AND (${ACTIVE_TIMER_WHERE} OR clock_repeat = 'daily')
+                   AND ${ACTIVE_TIMER_WHERE}
                  RETURNING due_at`,
               )
               .get(...params) as { due_at: string } | undefined;
@@ -924,7 +924,7 @@ export function registerWakes(server: McpServer): void {
             ...clockScheduleFields(t),
             due_at: t.due_at,
             max_wait_at: t.max_wait_at,
-            repeating: t.repeat_every_ms != null || t.clock_repeat != null,
+            repeating: isRepeatingWake(t),
             fire_count: t.fire_count,
             ...deliveryState(t, hasChannel),
           })),

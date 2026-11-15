@@ -102,14 +102,15 @@ function lead(projectId, { socket = "", registeredPid, kind = "lead", command } 
   return { actorId, rowId, pane, pid, sink };
 }
 
-function dueWake(projectId, target, body, { repeatMs = null } = {}) {
+function dueWake(projectId, target, body, { repeatMs = null, clockAt = null, clockZone = null, clockRepeat = null } = {}) {
   return db
     .prepare(
-      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at, repeat_every_ms)
-       VALUES (?, ?, ?, 'delay', '[]', ?, ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), ?)
+      `INSERT INTO wakes (project_id, owner, body, kind, watch, deliver_actor, deliver_pane, due_at, created_at,
+                          repeat_every_ms, clock_at, clock_zone, clock_repeat)
+       VALUES (?, ?, ?, 'delay', '[]', ?, ?, datetime('now', '-1 seconds'), datetime('now', '-60 seconds'), ?, ?, ?, ?)
        RETURNING id`,
     )
-    .get(projectId, target.actorId, body, target.actorId, target.pane, repeatMs).id;
+    .get(projectId, target.actorId, body, target.actorId, target.pane, repeatMs, clockAt, clockZone, clockRepeat).id;
 }
 
 const wake = (id) => db.prepare("SELECT * FROM wakes WHERE id = ?").get(id);
@@ -518,10 +519,10 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
       WHERE wakes.delivery_method = 'socket' AND wakes.confirmed_at IS NULL AND wakes.typed_at IS NULL AND wakes.cancelled_at IS NULL
         AND wakes.socket_attempt_at >= datetime('now', ?)`;
 
-  async function firstFiring({ repeatMs = HOUR, body = BODY, sock = listener() } = {}) {
+  async function firstFiring({ repeatMs = HOUR, body = BODY, sock = listener(), clockAt = null, clockZone = null, clockRepeat = null } = {}) {
     const pid = project(true);
     const target = lead(pid, { socket: sock.path });
-    const id = dueWake(pid, target, body, { repeatMs });
+    const id = dueWake(pid, target, body, { repeatMs, clockAt, clockZone, clockRepeat });
     await tick();
     assert.ok(await until(() => sock.received.length === 1, 3000), "firing 1 was posted");
     return { pid, target, id, sock };
@@ -577,6 +578,34 @@ describe("a repeating wake to an opted-in Claude lead goes by socket on every fi
     }
     await sleep(300);
     assert.equal(sinkText(target), "");
+  });
+
+  it("interval and daily firings defer while unsettled, keep firing identity, and stop after cancellation", needsTmux, async () => {
+    for (const schedule of [
+      { name: "interval", repeatMs: HOUR },
+      { name: "daily", repeatMs: null, clockAt: "19:00", clockZone: "America/New_York", clockRepeat: "daily" },
+    ]) {
+      const { target, id, sock } = await firstFiring(schedule);
+      assert.equal(wake(id).fire_count, 1, `${schedule.name} firing one should be claimed`);
+      makeDue(id);
+      await tick();
+      await sleep(250);
+      assert.equal(sock.received.length, 1, `${schedule.name} must not claim a new firing before the current one settles`);
+      assert.equal(wake(id).fire_count, 1);
+
+      await promptHook(target, content(sock.received[0]));
+      await tick();
+      assert.ok(await until(() => sock.received.length === 2, 3000), `${schedule.name} should claim one next firing after confirmation`);
+      assert.ok(content(sock.received[1]).includes(`[hive wake #${id} firing #2]`));
+      assert.equal(wake(id).fire_count, 2);
+
+      db.prepare("UPDATE wakes SET cancelled_at = datetime('now') WHERE id = ?").run(id);
+      makeDue(id);
+      await tick();
+      await sleep(250);
+      assert.equal(sock.received.length, 2, `${schedule.name} cancellation must prevent a later firing`);
+      assert.equal(wake(id).fire_count, 2);
+    }
   });
 
   it("wake_get names an older claim after the literal pre-field repeat claim", needsTmux, async () => {

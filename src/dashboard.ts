@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { listQuestions, pendingQuestionCount } from "./questions.js";
-import { ACTIVE_TIMER_WHERE } from "./wakeSql.js";
+import { ACTIVE_TIMER_WHERE, isRepeatingWake } from "./wakeSql.js";
 import { db } from "./db.js";
 import { ACTIVE_TODO_SQL, NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_SQL } from "./todoScope.js";
 import { getProject } from "./context.js";
@@ -633,13 +633,14 @@ interface WakeRow {
   max_wait_at: string | null;
   fire_count: number;
   repeat_every_ms: number | null;
+  clock_repeat: string | null;
   held_at: string | null;
 }
 
 function renderWakesSection(index: SectionMeta[], projectId: number): string {
   const all = db
     .prepare(
-      `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, held_at
+      `SELECT id, kind, body, owner, deliver_actor, due_at, max_wait_at, fire_count, repeat_every_ms, clock_repeat, held_at
        FROM wakes WHERE project_id = ? AND ${ACTIVE_TIMER_WHERE}
        ORDER BY COALESCE(due_at, max_wait_at, created_at)`,
     )
@@ -650,7 +651,7 @@ function renderWakesSection(index: SectionMeta[], projectId: number): string {
       const truncated = truncateWithEllipsis(w.body, 160);
       const when =
         w.kind === "delay"
-          ? `fires ${timeEl(w.due_at)}${w.repeat_every_ms ? ` <span class="muted">(repeats)</span>` : ""}`
+          ? `fires ${timeEl(w.due_at)}${isRepeatingWake(w) ? ` <span class="muted">(repeats)</span>` : ""}`
           : `fires when watched agents go idle, by ${timeEl(w.max_wait_at)} at the latest`;
 
       const status = statusBadge(w.held_at ? "warn" : "live", w.held_at ? "held" : "pending");
