@@ -8,8 +8,8 @@ npm test         # run the suite against dist/ (build first)
 
 Run `npm run check:mermaid` to render every Mermaid diagram in `README.md` and `docs/`.
 
-The project `hive.yml` is gitignored, so a project's lead command, profile or
-vars do not ship to anyone else. Copy `hive.example.yml` to `hive.yml` and edit
+In this repository the root `hive.yml` is gitignored, so the maintainer's lead
+command, profile and vars do not ship to anyone else. Copy `hive.example.yml` to `hive.yml` and edit
 it; hive works without one, and every key in it is optional. Machine-wide
 defaults live separately in `$HIVE_DATA_DIR/hive.yml`; see
 [global defaults](configuration.md#global-defaults).
