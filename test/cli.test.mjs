@@ -352,7 +352,12 @@ describe("hive CLI pads", () => {
     assert.match(save.stdout, /Current revision is 3/);
     assert.ok(save.stdout.includes(`hive pad "board" --save '${file}' --revision 3`));
     assert.equal(readFileSync(file, "utf8"), "BOARD\nunsaved edit\n");
-    unlinkSync(file);
+
+    const retry = await runCli(["pad", "board", "--save", file, "--revision", "3"], cliOpts);
+    assert.equal(retry.code, 0, retry.stdout);
+    assert.match(retry.stdout, /rev 3 -> 4/);
+    const pad = await runCli(["pad", "board"], cliOpts);
+    assert.match(pad.stdout, /unsaved edit/);
   });
 
   it("pad --save rejects a non-integer --revision before reading the file", async () => {
