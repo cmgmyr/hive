@@ -221,7 +221,7 @@ describe("a v27 store, whose tables still carry the inherited names, opened by t
     for (const before of fixture.wakes) {
       const after = upgraded.wakes.find((r) => r.id === before.id);
       const { parent_timer_id: parent, ...rest } = before;
-      assert.deepEqual(after, { ...rest, parent_wake_id: parent, delivery_method: null, socket_attempt_at: null, socket_delivery_note: null, delivered_by: null });
+      assert.deepEqual(after, { ...rest, parent_wake_id: parent, delivery_method: null, socket_attempt_at: null, socket_delivery_note: null, delivered_by: null, clock_at: null, clock_zone: null, clock_repeat: null });
     }
   });
 
