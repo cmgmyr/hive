@@ -183,7 +183,7 @@ The `post_tool_use` branch (`src/hook.ts:311-336`) runs before the ordinary stat
 
 ### Lead auto-handoff
 
-With a `lead_turn_budget` set and `auto_handoff` left at its default of true, a Claude lead past its turn budget is replaced by a fresh session in the same pane and on the same lead row, so its wakes, workers and standing watches carry over. The lead's own MCP server decides when (`driveLeadHandoff`, `src/leadHandoff.ts:507`), one request per (lead, pane pid, session) epoch. Each pass loosens what counts as a quiet moment (`passPolicy`, `src/leadHandoffState.ts:38`).
+With a `lead_turn_budget` set and `auto_handoff` left at its default of true, a Claude lead past its turn budget is replaced by a fresh session in the same pane and on the same lead row, so its wakes, workers and standing watches carry over. The lead's own MCP server decides when (`driveLeadHandoff`, `src/leadHandoff.ts:507`), one request per (lead, pane pid, session) epoch. Each pass loosens what counts as a quiet moment (`passPolicy`, `src/leadHandoffState.ts:38`). A lead can also start the handoff itself with `hive lead-handoff` and no `--request`: that inserts a `requested` row with reason `manual`, needs no budget, and works with `auto_handoff: false` (`armManualHandoff`, `src/leadHandoff.ts:218`).
 
 ```mermaid
 stateDiagram-v2

@@ -91,7 +91,7 @@ Settings live in `hive.yml`. A machine-wide `~/.hive/hive.yml` holds defaults, a
 | `dashboard` | `false` | Write a read-only HTML dashboard to `.hive/dashboard.html`. See [Dashboard](dashboard.md). |
 | `lead_sidebar` | `true` | Crew pane in a Claude lead. See [Crew sidebar](crew.md). |
 | `quiet_messaging` | `true` | Wakes and worker messages reach a Claude lead as one row instead of typed text. |
-| `lead_turn_budget` | off | `{warn: 300, stop: 600}` makes the lead hand off to a fresh session at a turn count. `auto_handoff: false` turns the restart off. |
+| `lead_turn_budget` | off | `{warn: 300, stop: 600}` makes the lead hand off to a fresh session at a turn count. `auto_handoff: false` turns the automatic restart off; `hive lead-handoff` still works. |
 | `context_checkpoint_percent` | off | An integer 1-100: workers get a context notice when their context fill passes it. |
 | `first_message` | none | Text sent as the lead's first turn. hive ships none. |
 | `vars` | empty | Values substituted into profile text, such as test commands. |
