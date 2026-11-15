@@ -337,8 +337,8 @@ Usage:
                              one line by default
   hive pads                  list the current project's pads
   hive pad <name>            print a pad's content
-  hive pad <name> --edit     export to a temp file and open your markdown editor
-  hive pad <name> --save     write the edited export back (revision-guarded)
+  hive pad <name> --edit | --export  export, opening an editor only with --edit
+  hive pad <name> --save [--revision <n>]  write back with a revision guard
   hive todos [--all] [--status <s>] [--tag <t>]
                              list this project's todos; open work by default
   hive todo <id>             print one todo in full, comments included
@@ -4559,8 +4559,28 @@ function cmdPads(): void {
 }
 
 function cmdPad(argv: string[]): void {
-  const parsed = parseArgs(argv, { flags: ["--edit", "--save"] });
-  rejectUnknownFlags("pad", parsed, "--edit and --save");
+  const parsed = parseArgs(argv, { flags: ["--edit", "--export", "--save"], valued: ["--revision"] });
+  rejectUnknownFlags("pad", parsed, "--edit, --export, --save and --revision <n>");
+  requireFlagValues("pad", parsed);
+
+  const modes = ["--edit", "--export", "--save"].filter((flag) => parsed.flags.has(flag));
+  if (modes.length > 1) {
+    console.log("Choose only one of --edit, --export or --save.");
+    process.exit(1);
+  }
+  const revisionArg = parsed.values.get("--revision");
+  let requestedRevision: number | undefined;
+  if (revisionArg !== undefined) {
+    if (!/^\d+$/.test(revisionArg) || !Number.isSafeInteger(Number(revisionArg)) || Number(revisionArg) < 1) {
+      console.log("--revision must be a positive integer.");
+      process.exit(1);
+    }
+    requestedRevision = Number(revisionArg);
+  }
+  if (requestedRevision !== undefined && !parsed.flags.has("--save")) {
+    console.log("--revision can only be used with --save.");
+    process.exit(1);
+  }
 
   const name = parsed.positional[0];
   if (!name) {
@@ -4574,7 +4594,7 @@ function cmdPad(argv: string[]): void {
     process.exit(1);
   }
 
-  if (parsed.flags.has("--edit")) {
+  if (parsed.flags.has("--edit") || parsed.flags.has("--export")) {
     const existing = findPadExports(project.id, name);
     if (existing.length > 0) {
       console.log(`An unsaved export already exists:\n  ${existing.join("\n  ")}`);
@@ -4593,12 +4613,14 @@ function cmdPad(argv: string[]): void {
       throw e;
     }
 
-    const editor = process.env.HIVE_EDITOR || "open";
-    const [cmd, ...cmdArgs] = editor.split(/\s+/);
-    spawn(cmd, [...cmdArgs, file], { detached: true, stdio: "ignore" }).unref();
     console.log(file);
-    console.log(`Opened "${name}" (rev ${pad.revision}) with ${cmd}. After saving your edits, write back with:`);
-    console.log(`  hive pad "${name}" --save`);
+    if (parsed.flags.has("--edit")) {
+      const editor = process.env.HIVE_EDITOR || "open";
+      const [cmd, ...cmdArgs] = editor.split(/\s+/);
+      spawn(cmd, [...cmdArgs, file], { detached: true, stdio: "ignore" }).unref();
+      console.log(`Opened "${name}" (rev ${pad.revision}) with ${cmd}. After saving your edits, write back with:`);
+      console.log(`  hive pad "${name}" --save`);
+    }
     return;
   }
 
@@ -4618,7 +4640,18 @@ function cmdPad(argv: string[]): void {
     }
     const content = readFileSync(file, "utf8");
     const marker = /\.r(\d+)\.md$/.exec(file);
-    const expected = marker ? Number(marker[1]) : pad.revision;
+    const expected = requestedRevision ?? (marker ? Number(marker[1]) : undefined);
+    if (expected === undefined) {
+      console.log(`This file has no revision marker. Current revision is ${pad.revision}; save with: hive pad "${name}" --save ${file} --revision ${pad.revision}`);
+      process.exit(1);
+    }
+    if (expected !== pad.revision) {
+      console.log(`Revision mismatch: expected ${expected}, current revision is ${pad.revision}.`);
+      console.log(`Your edits are untouched in ${file}.`);
+      console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${file} --revision ${pad.revision}`);
+      process.exit(1);
+    }
     if (content === pad.content) {
       unlinkSync(file);
       console.log(`No changes; "${name}" left at rev ${pad.revision}. Removed ${file}.`);

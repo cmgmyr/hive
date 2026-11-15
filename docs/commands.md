@@ -26,7 +26,7 @@ Commands that parse arguments reject unknown flags. To pass positional text that
 | `hive upgrade --run` | Run a checkout’s pull/install/build/setup recipe, stopping at the first failure |
 | `hive setup` | Pin the `hive` command to the interpreter that built it |
 | `hive doctor` | Check the environment and sweep stale state. It also lists MCP servers using this data dir that started before the store's newest migration, with the pid, start time and parent, and tells you to restart that session. It warns when the tmux server environment carries `NO_COLOR`, which makes `agent_send` refuse and wakes hold (see [tmux settings](tmux.md#what-hive-needs)). It stops nothing |
-| `hive pads` / `hive pad <name>` | List pads, or print (and edit) one from the shell |
+| `hive pads` / `hive pad <name>` | List or print a pad; `--export` writes a revision-stamped file, `--edit` opens it, and `--save [file] [--revision <n>]` saves with a revision guard |
 | `hive todos` / `hive todo <id>` | List todos, or print one in full |
 | `hive questions [--json]` | List pending questions followed by defaulted questions, with their defaults and choices; JSON returns the same records |
 | `hive answer <id> <answer> [--notes <text>]` | Record one answer and notes; use `--` before an answer that starts with a dash; report the wake id when queued or the reason delivery was skipped. When the asker has no running row, the wake goes to the project's running lead if it is a different actor |
