@@ -4645,14 +4645,14 @@ function cmdPad(argv: string[]): void {
     const marker = /\.r(\d+)\.md$/.exec(file);
     const expected = requestedRevision ?? (marker ? Number(marker[1]) : undefined);
     if (expected === undefined) {
-      console.log(`This file has no revision marker. Current revision is ${pad.revision}; save with: hive pad "${name}" --save ${file} --revision ${pad.revision}`);
+      console.log(`This file has no revision marker. Current revision is ${pad.revision}; save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${pad.revision}`);
       process.exit(1);
     }
     if (expected !== pad.revision) {
       console.log(`Revision mismatch: expected ${expected}, current revision is ${pad.revision}.`);
       console.log(`Your edits are untouched in ${file}.`);
       console.log(`Someone changed the pad since the export. Compare with: hive pad "${name}"`);
-      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${file} --revision ${pad.revision}`);
+      console.log(`Then merge into the file and save with: hive pad "${name}" --save ${shellQuote(file)} --revision ${pad.revision}`);
       process.exit(1);
     }
     if (content === pad.content) {

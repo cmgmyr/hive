@@ -309,6 +309,9 @@ describe("hive CLI pads", () => {
     assert.match(file, new RegExp(`/hive-pad-\\d+-board\\.r\\d+\\.md$`));
     assert.equal(readFileSync(file, "utf8").includes("BOARD"), true);
     assert.equal(statSync(file).mode & 0o777, 0o600);
+    for (let attempt = 0; attempt < 25 && !existsSync(sentinel); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     assert.equal(existsSync(sentinel), false, "export must not start HIVE_EDITOR");
     unlinkSync(file);
     unlinkSync(editor);
@@ -341,13 +344,13 @@ describe("hive CLI pads", () => {
   });
 
   it("pad --save refuses an unmarked file without --revision", async () => {
-    const file = join(dirs.tmp, "unmarked-board.md");
+    const file = join(dirs.tmp, "unmarked board.md");
     writeFileSync(file, "BOARD\nunsaved edit\n");
     const save = await runCli(["pad", "board", "--save", file], cliOpts);
     assert.equal(save.code, 1);
     assert.match(save.stdout, /no revision marker/);
     assert.match(save.stdout, /Current revision is 3/);
-    assert.match(save.stdout, /--revision 3/);
+    assert.ok(save.stdout.includes(`hive pad "board" --save '${file}' --revision 3`));
     assert.equal(readFileSync(file, "utf8"), "BOARD\nunsaved edit\n");
     unlinkSync(file);
   });
