@@ -4594,7 +4594,7 @@ function cmdPad(argv: string[]): void {
     process.exit(1);
   }
 
-  if (parsed.flags.has("--edit") || parsed.flags.has("--export")) {
+  const writeExport = (): string => {
     const existing = findPadExports(project.id, name);
     if (existing.length > 0) {
       console.log(`An unsaved export already exists:\n  ${existing.join("\n  ")}`);
@@ -4603,7 +4603,6 @@ function cmdPad(argv: string[]): void {
     }
     const file = join(tmpdir(), `${padExportPrefix(project.id, name)}${pad.revision}.md`);
     try {
-
       writeFileSync(file, pad.content, { flag: "wx", mode: 0o600 });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "EEXIST") {
@@ -4612,7 +4611,11 @@ function cmdPad(argv: string[]): void {
       }
       throw e;
     }
+    return file;
+  };
 
+  if (parsed.flags.has("--edit") || parsed.flags.has("--export")) {
+    const file = writeExport();
     console.log(file);
     if (parsed.flags.has("--edit")) {
       const editor = process.env.HIVE_EDITOR || "open";
