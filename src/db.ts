@@ -778,6 +778,11 @@ BEGIN
   SELECT RAISE(IGNORE);
 END;
 `,
+  `
+ALTER TABLE wakes ADD COLUMN clock_at TEXT;
+ALTER TABLE wakes ADD COLUMN clock_zone TEXT;
+ALTER TABLE wakes ADD COLUMN clock_repeat TEXT;
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

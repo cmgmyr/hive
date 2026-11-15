@@ -32,6 +32,18 @@ const messageId = db
      VALUES (?, 'actor:v30', 'shipped', ?, 'a pointer row written before delivery metadata') RETURNING id`,
   )
   .get(projectId, agentId).id;
+const insertWake = db.prepare(
+  `INSERT INTO wakes (project_id, owner, body, kind, deliver_actor, deliver_pane, due_at, fired_at, repeat_every_ms, fire_count)
+   VALUES (?, 'actor:v30', ?, 'delay', 'actor:v30', '%1', ?, ?, ?, ?) RETURNING id`,
+);
+const legacyWakeIds = [
+  insertWake.get(projectId, "pending one-shot", "2026-11-16 19:00:00", null, null, 0).id,
+  insertWake.get(projectId, "fired one-shot", "2026-11-14 19:00:00", "2026-11-14 19:00:01", null, 1).id,
+  insertWake.get(projectId, "fired interval", "2026-11-14 19:00:00", "2026-11-14 19:00:01", 86_400_000, 1).id,
+];
+const beforeWakes = db
+  .prepare(`SELECT * FROM wakes WHERE id IN (${legacyWakeIds.map(() => "?").join(",")}) ORDER BY id`)
+  .all(...legacyWakeIds);
 const before = {
   message: db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(messageId),
   versions: db.prepare("SELECT MAX(version) AS v FROM migrations").get().v,
@@ -129,6 +141,27 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
   it("adds the socket delivery columns to wakes, null on rows written before them", () => {
     const columns = db.prepare("SELECT name FROM pragma_table_info('wakes')").all().map((c) => c.name);
     for (const name of ["delivery_method", "socket_attempt_at", "socket_delivery_note", "delivered_by"]) assert.ok(columns.includes(name), name);
+  });
+
+  it("migration 50 preserves v30 pending and fired wake rows with null clock fields", () => {
+    const afterWakes = db
+      .prepare(`SELECT * FROM wakes WHERE id IN (${legacyWakeIds.map(() => "?").join(",")}) ORDER BY id`)
+      .all(...legacyWakeIds);
+    assert.deepEqual(
+      afterWakes.map((row) => Object.fromEntries(Object.keys(beforeWakes[0]).map((key) => [key, row[key]]))),
+      beforeWakes,
+    );
+    assert.deepEqual(afterWakes.map(({ clock_at, clock_zone, clock_repeat }) => [clock_at, clock_zone, clock_repeat]), [
+      [null, null, null],
+      [null, null, null],
+      [null, null, null],
+    ]);
+    migrate();
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM migrations").get().n, MIGRATIONS.length);
+    assert.deepEqual(
+      db.prepare(`SELECT * FROM wakes WHERE id IN (${legacyWakeIds.map(() => "?").join(",")}) ORDER BY id`).all(...legacyWakeIds),
+      afterWakes,
+    );
   });
 
   it("migration 48 adds lineage columns without changing pre-existing agent data", () => {
