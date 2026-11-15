@@ -102,11 +102,11 @@ describe("issue #27: the scheduler records what it did, not just that it claimed
     assert.ok(row.due_at, "the repeat schedule must still have advanced, unrelated to typed_at");
   });
 
-  it("ACTIVE_TIMER_WHERE is unchanged - a wider clause would fire wakes this lane must not touch", () => {
+  it("ACTIVE_TIMER_WHERE pins the exact shared clause for interval and daily wakes", () => {
     assert.equal(
       ACTIVE_TIMER_WHERE,
-      "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)",
-      "this lane is reporting-only; widening this clause changes what fires, not just what is reported",
+      "cancelled_at IS NULL AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL OR COALESCE(clock_repeat = 'daily', 0)))",
+      "active wake readers must include the shared interval-or-daily predicate",
     );
   });
 });

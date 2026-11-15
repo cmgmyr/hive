@@ -388,7 +388,7 @@ describe("portfolio idle-watch wakes", () => {
   it("active-wake readers import the one leaf predicate", () => {
     const files = ["scheduler", "crew", "cli", "kickoff", "tools/wakes", "portfolio", "dashboard"];
     const sources = Object.fromEntries(files.map((file) => [file, readFileSync(`${REPO}/src/${file}.ts`, "utf8")]));
-    const clause = "cancelled_at IS NULL AND (fired_at IS NULL OR repeat_every_ms IS NOT NULL)";
+    const clause = "cancelled_at IS NULL AND (fired_at IS NULL OR (repeat_every_ms IS NOT NULL OR COALESCE(clock_repeat = 'daily', 0)))";
     assert.match(readFileSync(`${REPO}/src/wakeSql.ts`, "utf8"), /export const ACTIVE_TIMER_WHERE = activeWakeWhere\(\)/u);
     assert.equal(Object.values(sources).filter((source) => source.includes(clause)).length, 0);
     for (const file of files) {
