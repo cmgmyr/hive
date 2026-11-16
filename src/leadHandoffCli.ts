@@ -9,7 +9,7 @@ import { ensureLeadHooksFile } from "./hooks.js";
 import { appendClaudeLeadArgs, crewPluginDir, isTrusted, leadIdentityEnv, renderLeadPosture } from "./leadLaunch.js";
 import { leadSidebarEnabled, loadProjectYml, quietMessagingEnabled } from "./projectYml.js";
 import { buildEnvFlags } from "./spawn.js";
-import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxTimeoutError } from "./tmux.js";
+import { panePidForRecord, rowOwnership, shellQuote, tmux, TmuxError, TmuxTimeoutError } from "./tmux.js";
 import {
   automationBlocker,
   armManualHandoff,
@@ -221,7 +221,7 @@ async function successorLaunch(row: HandoffRow, lead: RunningLead, attempt: numb
 const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // `hive lead-handoff-grace`: the one detached owner of an attempt. It never outlives a changed
-// attempt or token, and after it claims the respawn it never repeats the kill.
+// attempt or token. Only an answered fork ENXIO can repeat the respawn.
 export async function runHandoffGrace(argv: string[]): Promise<number> {
   if (rejectUnknownFlag(argv, "lead-handoff-grace", ["request", "attempt", "token"], "--request <id>, --attempt <n>, --token <token>")) return 1;
   try {
@@ -294,14 +294,25 @@ async function graceLoop(argv: string[]): Promise<number> {
       return 0;
     }
     if (!casHandoff(row.id, ["grace"], { state: "respawning", owner_pid: process.pid, respawn_claimed_at: nowSql() }, { attempt, owner_token: token })) return 0;
-    try {
-      tmux("respawn-pane", "-k", "-t", row.pane_target, "-c", lead!.path, ...launch.env, launch.launch);
-    } catch (e) {
-      const detail = e instanceof Error ? e.message : String(e);
-      if (e instanceof TmuxTimeoutError) {
-        casHandoff(row.id, ["respawning"], { state: "ambiguous", failure: `respawn-pane timed out; the pane's owner is unknown: ${detail}` }, { attempt, owner_token: token });
-      } else {
-        failHandoff(row.id, `respawn-pane refused: ${detail}`, ["respawning"], { attempt, owner_token: token });
+    for (let respawnAttempt = 1; respawnAttempt <= 3; respawnAttempt++) {
+      if (respawnAttempt > 1) {
+        await sleepMs(200);
+        const current = readHandoff(row.id);
+        if (current?.state !== "respawning" || current.attempt !== attempt || current.owner_token !== token) return 0;
+      }
+      try {
+        tmux("respawn-pane", "-k", "-t", row.pane_target, "-c", lead!.path, ...launch.env, launch.launch);
+        return 0;
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        if (e instanceof TmuxTimeoutError) {
+          casHandoff(row.id, ["respawning"], { state: "ambiguous", failure: `respawn-pane timed out; the pane's owner is unknown: ${detail}` }, { attempt, owner_token: token });
+        } else {
+          const enxio = e instanceof TmuxError && e.stderr === "respawn pane failed: fork failed: Device not configured";
+          if (enxio && respawnAttempt < 3) continue;
+          failHandoff(row.id, `respawn-pane refused: ${detail}${enxio ? ` (after ${respawnAttempt} attempts)` : ""}`, ["respawning"], { attempt, owner_token: token });
+        }
+        return 0;
       }
     }
     return 0;

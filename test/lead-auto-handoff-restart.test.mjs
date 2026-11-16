@@ -34,7 +34,7 @@ writeFileSync(
     `  exec cat >> '${delayed.received}'`,
     "fi",
     `echo "$$ $*" >> '${launched}'`,
-    "exec sleep 600",
+    "exec cat",
     "",
   ].join("\n"),
 );
@@ -59,6 +59,40 @@ const fixture = (name) => JSON.parse(readFileSync(join(REPO, "test", "fixtures",
 const SESSION = fixture("lead-claude-prompt.json").session_id;
 const TRANSCRIPT = join(tmp, "lead.jsonl");
 const ownSocket = tmuxSocketPath(process.env.TMUX, process.env.TMUX_TMPDIR);
+const realTmux = hasTmux ? execFileSync("which", ["tmux"], { encoding: "utf8" }).trim() : "tmux";
+const respawnFault = join(tmp, "respawn-fault");
+const respawnCalls = join(tmp, "respawn-calls");
+writeFileSync(join(fakeBin, "tmux"), [
+  "#!/bin/bash",
+  `if [ "$1" = respawn-pane ] && [ -f '${respawnFault}' ]; then`,
+  `  printf 'attempt\\n' >> '${respawnCalls}'`,
+  `  count=$(wc -l < '${respawnCalls}')`,
+  `  mode=$(cat '${respawnFault}')`,
+  '  if [ "$mode" = timeout ]; then',
+  '    echo "respawn pane failed: fork failed: Device not configured" >&2',
+  '    exec sleep 1',
+  '  fi',
+  '  if [ "$mode" = other ]; then',
+  '    echo "respawn pane failed: permission denied" >&2',
+  '    exit 1',
+  '  fi',
+  '  if [ "$mode" = always ] || [ "$count" -eq 1 ]; then',
+  '    while [ "$1" != -t ]; do shift; done',
+  `    '${realTmux}' -S '${ownSocket}' set-option -p -t "$2" remain-on-exit on || exit 1`,
+  `    '${realTmux}' -S '${ownSocket}' respawn-pane -k -t "$2" 'exit 0' || exit 1`,
+  `    for i in {1..100}; do`,
+  `      [ "$('${realTmux}' -S '${ownSocket}' display-message -p -t "$2" '#{pane_dead}')" = 1 ] && break`,
+  '      sleep 0.01',
+  '    done',
+  `    [ "$('${realTmux}' -S '${ownSocket}' display-message -p -t "$2" '#{pane_dead}')" = 1 ] || exit 1`,
+  '    echo "respawn pane failed: fork failed: Device not configured" >&2',
+  '    exit 1',
+  '  fi',
+  'fi',
+  `exec '${realTmux}' -S '${ownSocket}' "$@"`,
+  "",
+].join("\n"));
+chmodSync(join(fakeBin, "tmux"), 0o755);
 const needsTmux = { skip: hasTmux ? false : "tmux is not installed" };
 const sessions = [];
 after(() => cleanup(...sessions));
@@ -86,7 +120,7 @@ let paneCount = 0;
 function leadPane() {
   const session = `lar-${process.pid}-${paneCount++}`;
   const flag = join(tmp, `${session}.flag`);
-  const script = `cat '${join(PANES, "ready-idle.txt")}'; while [ ! -f '${flag}' ]; do sleep 0.05; done; clear; cat '${join(PANES, "real-input.txt")}'; exec sleep 600`;
+  const script = `cat '${join(PANES, "ready-idle.txt")}'; while [ ! -f '${flag}' ]; do sleep 0.05; done; clear; cat '${join(PANES, "real-input.txt")}'; exec cat`;
   execFileSync("tmux", ["new-session", "-d", "-s", session, "-x", "200", "-y", "50", script], { stdio: "ignore" });
   sessions.push(session);
   const pane = execFileSync("tmux", ["list-panes", "-t", `=${session}`, "-F", "#{pane_id}"], { encoding: "utf8" }).trim();
@@ -129,6 +163,10 @@ const row = (id) => handoff.readHandoff(id);
 const endGrace = (id) => db.prepare("UPDATE lead_handoffs SET grace_started_at = datetime('now', '-10 minutes') WHERE id = ?").run(id);
 
 beforeEach(() => rmSync(delayed.flag, { force: true }));
+beforeEach(() => {
+  rmSync(respawnFault, { force: true });
+  rmSync(respawnCalls, { force: true });
+});
 beforeEach(() => writeFileSync(join(projectDir, "hive.yml"), "dashboard: false\nlead_turn_budget: {warn: 3, stop: 10}\n"));
 beforeEach(() => db.exec("DELETE FROM lead_handoffs; DELETE FROM wakes; DELETE FROM pads; DELETE FROM lead_turn_state; DELETE FROM agent_state_log; DELETE FROM agents;"));
 
@@ -483,7 +521,7 @@ describe("lead auto-handoff restart", () => {
     const inPane = async (ctx) => {
       const rc = join(tmp, `rc-${ctx.requestId}`);
       const cmd = [process.execPath, join(DIST, "cli.js"), ...start(ctx)].map((a) => `'${a}'`).join(" ");
-      execFileSync("tmux", ["respawn-pane", "-k", "-t", ctx.pane.pane, "-e", `HIVE_DATA_DIR=${dataDir}`, `${cmd}; echo $? > '${rc}'; exec sleep 600`]);
+      execFileSync("tmux", ["respawn-pane", "-k", "-t", ctx.pane.pane, "-e", `HIVE_DATA_DIR=${dataDir}`, `${cmd}; echo $? > '${rc}'; exec cat`]);
       await until(
         () => existsSync(rc) && readFileSync(rc, "utf8").trim() !== "",
         8000,
@@ -535,8 +573,39 @@ describe("lead auto-handoff restart", () => {
     assert.equal(handoff.readHandoffGate(ctx.lead.id).holdAutomation, true, "the delivery fence stays up");
   });
 
-  for (const manual of [false, true]) it(`${manual ? "a manual" : "a delayed"} successor receives the held roster and one-shot only after its first Stop`, needsTmux, async () => {
+  for (const mode of ["other", "always", "timeout"]) it(`a handoff respawn ${mode === "other" ? "fails at once on a non-ENXIO error" : mode === "always" ? "gives up after 3 ENXIO attempts" : "never retries a timeout even with ENXIO stderr"}`, needsTmux, async () => {
+    const ctx = await readyLead();
+    writeFileSync(respawnFault, mode);
+    const result = await command(ctx, {}, mode === "timeout" ? { HIVE_TMUX_TIMEOUT_MS: "100" } : {});
+    assert.equal(result.code, 0, result.stderr);
+    endGrace(ctx.requestId);
+    assert.ok(await until(() => ["failed", "ambiguous"].includes(row(ctx.requestId).state), 8000), JSON.stringify(row(ctx.requestId)));
+    const done = row(ctx.requestId);
+    assert.equal(done.state, mode === "timeout" ? "ambiguous" : "failed");
+    assert.equal(readFileSync(respawnCalls, "utf8").trim().split("\n").length, mode === "always" ? 3 : 1);
+    assert.match(done.failure, mode === "timeout" ? /respawn-pane timed out/ : mode === "always" ? /respawn-pane refused:.*Device not configured \(after 3 attempts\)/ : /respawn-pane refused:.*permission denied/);
+    if (mode !== "timeout") assert.equal(done.owner_token, null);
+  });
+
+  it("a handoff respawn stops retrying after its ownership token changes", needsTmux, async () => {
+    const ctx = await readyLead();
+    writeFileSync(respawnFault, "once");
+    assert.equal((await command(ctx)).code, 0);
+    const owner = row(ctx.requestId).owner_pid;
+    endGrace(ctx.requestId);
+    assert.ok(await until(() => existsSync(respawnCalls), 8000, 5));
+    assert.equal(row(ctx.requestId).state, "respawning");
+    db.prepare("UPDATE lead_handoffs SET owner_token = 'replacement' WHERE id = ?").run(ctx.requestId);
+    assert.ok(await until(() => !alive(owner), 5000));
+    assert.equal(readFileSync(respawnCalls, "utf8").trim().split("\n").length, 1);
+    assert.equal(row(ctx.requestId).owner_token, "replacement");
+    assert.equal(row(ctx.requestId).state, "respawning");
+  });
+
+  for (const scenario of ["delayed", "manual", "enxio"]) it(scenario === "enxio" ? "a handoff respawn retries once on ENXIO and completes" : `${scenario === "manual" ? "a manual" : "a delayed"} successor receives the held roster and one-shot only after its first Stop`, needsTmux, async () => {
+    const manual = scenario !== "delayed";
     const ctx = await readyLead({ manual });
+    if (scenario === "enxio") writeFileSync(respawnFault, "once");
     const SUCCESSOR = "delayed-successor-session";
     writeFileSync(delayed.stop, payload("lead-claude-stop.json", { session_id: SUCCESSOR }));
     writeFileSync(delayed.flag, "");
@@ -579,6 +648,7 @@ describe("lead auto-handoff restart", () => {
     }
     const done = row(ctx.requestId);
     assert.equal(done.state, "completed", JSON.stringify(done));
+    if (scenario === "enxio") assert.equal(readFileSync(respawnCalls, "utf8").trim().split("\n").length, 2);
     assert.deepEqual(typedBeforeCompleted, [], "nothing is typed while the handoff is short of completed");
 
     const exec = Number(readFileSync(delayed.exec, "utf8").trim());
