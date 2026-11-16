@@ -266,8 +266,8 @@ function processAlive(pid: number): boolean {
   }
 }
 
-// After the destructive claim nothing is retried: a successor the row no longer names fails the row,
-// and a respawn that never settled releases its holds after the cap.
+// The scheduler never replays a claimed respawn. It fails a moved successor and releases the
+// holds of a respawn that never settled after the cap.
 function settleAfterRespawn(row: HandoffRow, lead: { pane_pid: string }): void {
   if (row.state === "started" && row.successor_pane_pid !== null && lead.pane_pid !== row.successor_pane_pid) {
     casHandoff(row.id, ["started"], { state: "failed", failure: "the lead pane no longer runs the successor this handoff started" });
