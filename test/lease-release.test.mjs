@@ -68,8 +68,8 @@ function seedLease(project, key, owner) {
     .run(project, key, owner);
 }
 
-describe("worker lease release", { skip: hasTmux ? false : "tmux is not installed" }, () => {
-  it("agent_close releases sorted worker leases and preserves other scopes and wake-pane leases", async () => {
+describe("worker lease release", () => {
+  it("agent_close releases sorted worker leases and preserves other scopes and wake-pane leases", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     await mcp.call("agent_spawn", { name: "lease-close", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "lease-close");
     const worker = await workerClient(live.actor_id, live.name);
@@ -106,7 +106,7 @@ describe("worker lease release", { skip: hasTmux ? false : "tmux is not installe
     }
   });
 
-  it("agent_close omits released_leases when the worker owns no leases", async () => {
+  it("agent_close omits released_leases when the worker owns no leases", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     await mcp.call("agent_spawn", { name: "lease-empty", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "lease-empty");
 
@@ -115,7 +115,7 @@ describe("worker lease release", { skip: hasTmux ? false : "tmux is not installe
     assert.equal(Object.hasOwn(receipt, "released_leases"), false);
   });
 
-  it("agent_park releases leases and a resumed worker can acquire the same key again", async () => {
+  it("agent_park releases leases and a resumed worker can acquire the same key again", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     await mcp.call("agent_spawn", { name: "lease-park", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "lease-park");
     const worker = await workerClient(live.actor_id, live.name);
@@ -137,7 +137,7 @@ describe("worker lease release", { skip: hasTmux ? false : "tmux is not installe
     }
   });
 
-  it("the janitor releases leases when it marks a dead worker lost", async () => {
+  it("the janitor releases leases when it marks a dead worker lost", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     const id = seedRow("lease-dead", "agent", "agent:lease-dead", "%98765");
     seedLease(projectId, "dead:db", "agent:lease-dead");
 
@@ -149,7 +149,7 @@ describe("worker lease release", { skip: hasTmux ? false : "tmux is not installe
     assert.equal((await mcp.call("lease_acquire", { key: "dead:db", ttl_seconds: 1800 })).acquired, true);
   });
 
-  it("closing lead and command rows preserves their leases", () => {
+  it("closing lead and command rows preserves their leases", { skip: hasTmux ? false : "tmux is not installed" }, () => {
     const leadId = seedRow("lease-lead", "lead", "lead:lease-lead", "%98766");
     const commandId = seedRow("lease-command", "command", "agent:lease-command", "%98767");
     seedLease(projectId, "lead-key", "lead:lease-lead");
