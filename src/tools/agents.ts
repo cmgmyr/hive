@@ -48,6 +48,7 @@ import {
   agentIdentityEnv,
   branchAt,
   closeAgentRow,
+  closeAgentRowWithLeases,
   currentOwnership,
   discardOrphanedPane,
   isReservedAgentName,
@@ -57,7 +58,7 @@ import {
   LEAD_KIND,
   PaneOwnershipLost,
   paneIdentity,
-  parkAgentRow,
+  parkAgentRowWithLeases,
   reapCodexHomeForClosedAgent,
   requireStillOwned,
   releaseParkRow,
@@ -188,6 +189,7 @@ function buildParkReceipt(
   parkedAt: string,
   branch: string,
   note?: string,
+  releasedLeases: string[] = [],
 ) {
   const todoIds = laneTodoIds(project.id, agent.actor_id);
   return {
@@ -200,6 +202,7 @@ function buildParkReceipt(
     session_id: agent.session_id,
     todo_ids: todoIds,
     board_line: parkedBoardLine({ parkedAt, name: agent.name, agentId: agent.id, branch, cwd: agent.cwd, todoIds }),
+    ...(releasedLeases.length > 0 ? { released_leases: releasedLeases } : {}),
     ...(note ? { note } : {}),
   };
 }
@@ -255,7 +258,8 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
     throw new Error(`Agent ${agent.id} changed before row-only retirement. Nothing was changed.`);
   }
-  if (!closeAgentRow(agent.id, paneIdentity(agent))) {
+  const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent));
+  if (!closed.closed) {
     const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
     if (after.status !== "running") {
       return {
@@ -271,6 +275,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   }
   return {
     ...receipt,
+    ...(closed.released_leases.length > 0 ? { released_leases: closed.released_leases } : {}),
     note:
       `Row retired with no kill, stop or typing; its pane ownership read ${ownership}.` +
       (ownership === "unknown" ? " Anything still running in that pane was left alone." : ""),
@@ -1207,7 +1212,7 @@ export function registerAgents(server: McpServer): void {
     "agent_park",
     {
       description:
-        "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+        "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, release any leases the worker holds, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -1230,6 +1235,7 @@ export function registerAgents(server: McpServer): void {
         session_id: z.string(),
         todo_ids: z.array(idParam),
         board_line: z.string(),
+        released_leases: z.array(z.string()).optional(),
         note: z.string().optional(),
       },
     },
@@ -1290,7 +1296,8 @@ export function registerAgents(server: McpServer): void {
         }
         if (live) killAgentPane(agent.tmux_target);
 
-        const parkedAt = parkAgentRow(agent.id, paneIdentity(agent), branch);
+        const parked = parkAgentRowWithLeases(agent.id, paneIdentity(agent), branch);
+        const parkedAt = parked.parked_at;
         if (parkedAt === undefined) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
@@ -1333,6 +1340,7 @@ export function registerAgents(server: McpServer): void {
             ? undefined
             : `Parked with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so its own process was already gone and ` +
                 "that pane was left alone.",
+          parked.released_leases,
         );
       }),
   );
@@ -2013,7 +2021,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A worker's leases are released when it is closed. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -2039,6 +2047,7 @@ export function registerAgents(server: McpServer): void {
         row_only: z.boolean().optional(),
         park_released: z.boolean().optional(),
         parked: z.boolean().optional(),
+        released_leases: z.array(z.string()).optional(),
         note: z.string().optional(),
       },
     },
@@ -2147,7 +2156,8 @@ export function registerAgents(server: McpServer): void {
         }
         if (live) killAgentPane(agent.tmux_target);
 
-        if (!closeAgentRow(agent.id, paneIdentity(agent))) {
+        const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent));
+        if (!closed.closed) {
 
           const after = getAgentRow(project.id, agent.id, "Call agent_list(include_closed: true).");
           const report = classifyLostCas(after);
@@ -2195,6 +2205,7 @@ export function registerAgents(server: McpServer): void {
           agent_id: agent.id,
           name: agent.name,
           closed: true,
+          ...(closed.released_leases.length > 0 ? { released_leases: closed.released_leases } : {}),
           ...(agent.status === "running" && !live
             ? {
                 note: `Closed with no kill: its pane ownership read ${ownership === "live" ? "changed" : ownership}, so that pane was left alone.`,

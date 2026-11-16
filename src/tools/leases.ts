@@ -10,7 +10,7 @@ export function registerLeases(server: McpServer): void {
     "lease_acquire",
     {
       description:
-        "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+        "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. A worker's leases are released when it is closed, parked or found dead. Leases expire on their own.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,

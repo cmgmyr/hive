@@ -4,6 +4,7 @@ import { getProject } from "./context.js";
 import { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
+import { releaseWorkerLeases } from "./leaseStore.js";
 import { loadProjectYml } from "./projectYml.js";
 import { WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import {
@@ -580,13 +581,27 @@ export function branchAt(cwd: string): string {
 }
 
 export function parkAgentRow(agentId: number, expected: RowPaneIdentity, branch: string): string | undefined {
-  const park =
-    "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
-    "parked_branch = ?, recovery_state = 'excluded' WHERE id = ? AND status = 'running' AND tmux_target = ?";
-  const row = db
-    .prepare(`${park} AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at`)
-    .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
-  return (row as { parked_at: string } | undefined)?.parked_at;
+  return parkAgentRowWithLeases(agentId, expected, branch).parked_at;
+}
+
+export function parkAgentRowWithLeases(
+  agentId: number,
+  expected: RowPaneIdentity,
+  branch: string,
+): { parked_at?: string; released_leases: string[] } {
+  return db.transaction(() => {
+    const row = db
+      .prepare(
+        "UPDATE agents SET status = 'closed', closed_at = datetime('now'), parked_at = datetime('now'), " +
+          "parked_branch = ?, recovery_state = 'excluded' WHERE id = ? AND status = 'running' AND tmux_target = ? " +
+          "AND tmux_socket = ? AND pane_pid = ? RETURNING parked_at",
+      )
+      .get(branch, agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid) as
+      | { parked_at: string }
+      | undefined;
+    if (!row) return { released_leases: [] };
+    return { parked_at: row.parked_at, released_leases: releaseWorkerLeases(agentId) };
+  })();
 }
 
 export const paneIdentity = (row: RowPaneIdentity): RowPaneIdentity => ({
@@ -678,16 +693,28 @@ export function reapCodexHomeForClosedAgent(agentId: number, codexHome: string):
 }
 
 export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): boolean {
-  const info =
-    expected === undefined
-      ? db
-          .prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'")
-          .run(agentId)
-      : db
-          .prepare(
-            "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
-              "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
-          )
-          .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
-  return info.changes > 0;
+  return closeAgentRowWithLeases(agentId, expected).closed;
+}
+
+export function closeAgentRowWithLeases(
+  agentId: number,
+  expected?: RowPaneIdentity,
+): { closed: boolean; released_leases: string[] } {
+  return db.transaction(() => {
+    const info =
+      expected === undefined
+        ? db
+            .prepare(
+              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running'",
+            )
+            .run(agentId)
+        : db
+            .prepare(
+              "UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ? AND status = 'running' " +
+                "AND tmux_target = ? AND tmux_socket = ? AND pane_pid = ?",
+            )
+            .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
+    if (info.changes === 0) return { closed: false, released_leases: [] };
+    return { closed: true, released_leases: releaseWorkerLeases(agentId) };
+  })();
 }

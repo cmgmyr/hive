@@ -116,7 +116,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A worker's leases are released when it is closed. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -176,6 +176,12 @@
         },
         "parked": {
           "type": "boolean"
+        },
+        "released_leases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "row_only": {
           "type": "boolean"
@@ -453,7 +459,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
+    "description": "Park a claude or codex worker for the night: kill its pane, mark the row PARKED rather than plain closed, release any leases the worker holds, record the branch, and hand back a board line plus the one call that brings it back. Use this instead of agent_close when the lane is paused, not finished - `closed` alone cannot tell a next-morning lead which is which. Resume it with agent_resume.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -515,6 +521,12 @@
         },
         "parked_branch": {
           "type": "string"
+        },
+        "released_leases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "session_id": {
           "type": "string"
@@ -1175,7 +1187,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. Leases expire on their own.",
+    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. A worker's leases are released when it is closed, parked or found dead. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
     },

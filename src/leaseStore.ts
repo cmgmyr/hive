@@ -49,6 +49,20 @@ export function releaseOwnedLease(projectId: number, key: string, actor: string)
     .run(projectId, key, actor).changes > 0;
 }
 
+export function releaseWorkerLeases(agentId: number): string[] {
+  const agent = db
+    .prepare("SELECT project_id, actor_id FROM agents WHERE id = ? AND kind = 'agent' AND actor_id != ''")
+    .get(agentId) as { project_id: number; actor_id: string } | undefined;
+  if (!agent) return [];
+
+  const rows = db
+    .prepare(
+      "DELETE FROM leases WHERE project_id = ? AND owner = ? AND lock_key NOT LIKE 'wake-pane:%' RETURNING lock_key",
+    )
+    .all(agent.project_id, agent.actor_id) as Array<{ lock_key: string }>;
+  return rows.map((row) => row.lock_key).sort();
+}
+
 export function paneLeaseKey(socket: string, pane: string): string {
   return `wake-pane:${socket}:${pane}`;
 }
