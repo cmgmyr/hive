@@ -31,6 +31,11 @@ const npmExecPath = [...npmPrefix, basePath].join(":");
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 const needsTmux = hasTmux ? {} : { skip: "tmux is not installed" };
 
+function pathProbeCommand(output) {
+  const temporary = `${output}.tmp`;
+  return `/usr/bin/printenv PATH > ${quote(temporary)} && /bin/mv ${quote(temporary)} ${quote(output)}`;
+}
+
 function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
   return new McpClient({
     cwd: dirs.projectDir,
@@ -60,7 +65,7 @@ async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh") {
 }
 
 async function spawnPathProbe(mcp, name, output, placement = "window") {
-  const command = `/usr/bin/printenv PATH > ${quote(output)}; sleep 600`;
+  const command = `${pathProbeCommand(output)}; sleep 600`;
   await mcp.call("agent_spawn", {
     name,
     command: "/bin/sh",
@@ -73,7 +78,7 @@ async function spawnPathProbe(mcp, name, output, placement = "window") {
 
 function installFakeClaude(output) {
   const fakeClaude = join(fakeBin, "claude");
-  writeFileSync(fakeClaude, `#!/bin/sh\n/usr/bin/printenv PATH > ${quote(output)}\nsleep 600\n`);
+  writeFileSync(fakeClaude, `#!/bin/sh\n${pathProbeCommand(output)}\nsleep 600\n`);
   chmodSync(fakeClaude, 0o755);
 }
 
