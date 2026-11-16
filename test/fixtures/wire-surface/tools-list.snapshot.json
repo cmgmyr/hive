@@ -116,7 +116,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A worker's leases are released when it is closed. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+    "description": "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A process-stopping close releases the worker's leases; row_only=true leaves its leases in place because it does not stop the pane. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1187,7 +1187,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. A worker's leases are released when it is closed, parked or found dead. Leases expire on their own.",
+    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; row_only retirement leaves them in place because it does not stop the pane. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
     },

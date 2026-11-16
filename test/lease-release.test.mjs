@@ -18,7 +18,7 @@ const { db } = await import("../dist/db.js");
 await assertScratchStore();
 const { janitor } = await import("../dist/scheduler.js");
 const { closeAgentRowWithLeases } = await import("../dist/spawn.js");
-const { sessionName } = await import("../dist/tmux.js");
+const { sessionName, targetLive } = await import("../dist/tmux.js");
 
 let mcp;
 let projectId;
@@ -113,6 +113,31 @@ describe("worker lease release", () => {
     const receipt = await mcp.call("agent_close", { name: live.name });
 
     assert.equal(Object.hasOwn(receipt, "released_leases"), false);
+  });
+
+  it("agent_close row_only keeps worker leases when its pane is unverified", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    await mcp.call("agent_spawn", { name: "lease-row-only", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "lease-row-only");
+    const worker = await workerClient(live.actor_id, live.name);
+    try {
+      assert.equal((await worker.call("lease_acquire", { key: "row-only:db", ttl_seconds: 1800 })).acquired, true);
+      db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(live.agent_id);
+
+      const receipt = await mcp.call("agent_close", { name: live.name, row_only: true });
+
+      assert.equal(receipt.closed, true);
+      assert.equal(Object.hasOwn(receipt, "released_leases"), false);
+      assert.equal(targetLive(live.tmux_target), true, "row_only must leave the unverifiable pane alone");
+      assert.equal(
+        db.prepare("SELECT owner FROM leases WHERE project_id = ? AND lock_key = ?").get(projectId, "row-only:db").owner,
+        live.actor_id,
+      );
+      const secondActor = await mcp.call("lease_acquire", { key: "row-only:db", ttl_seconds: 1800 });
+      assert.equal(secondActor.acquired, false, "an unverified live worker's lease must still block a second actor");
+      assert.equal(secondActor.held_by, live.actor_id);
+    } finally {
+      await worker.close();
+    }
   });
 
   it("agent_park releases leases and a resumed worker can acquire the same key again", { skip: hasTmux ? false : "tmux is not installed" }, async () => {

@@ -258,7 +258,7 @@ function closeRowOnly(agent: AgentRow, confirmSelf: boolean) {
   if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
     throw new Error(`Agent ${agent.id} changed before row-only retirement. Nothing was changed.`);
   }
-  const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent));
+  const closed = closeAgentRowWithLeases(agent.id, paneIdentity(agent), { releaseLeases: false });
   if (!closed.closed) {
     const after = getAgentRow(agent.project_id, agent.id, "Call agent_list(include_closed: true).");
     if (after.status !== "running") {
@@ -2021,7 +2021,7 @@ export function registerAgents(server: McpServer): void {
     "agent_close",
     {
       description:
-        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A worker's leases are released when it is closed. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
+        "Kill an agent's tmux window and mark it closed, addressed by name (or agent_id). A process-stopping close releases the worker's leases; row_only=true leaves its leases in place because it does not stop the pane. Capture handoffs (todo comments, pads) BEFORE closing; terminal output is not retained. Closing yourself requires confirm_self=true. Refuses a lead target whose pane is live; retires one whose pane is confirmed dead. A worker may never close a lead, live or dead. row_only=true retires a stale row with no kill, stop or typing: for a human or peer lead only, and refused for any row that provably owns a live pane or when tmux could not be probed.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,

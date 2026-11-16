@@ -699,6 +699,7 @@ export function closeAgentRow(agentId: number, expected?: RowPaneIdentity): bool
 export function closeAgentRowWithLeases(
   agentId: number,
   expected?: RowPaneIdentity,
+  options: { releaseLeases?: boolean } = {},
 ): { closed: boolean; released_leases: string[] } {
   return db.transaction(() => {
     const info =
@@ -715,6 +716,9 @@ export function closeAgentRowWithLeases(
             )
             .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
     if (info.changes === 0) return { closed: false, released_leases: [] };
-    return { closed: true, released_leases: releaseWorkerLeases(agentId) };
+    return {
+      closed: true,
+      released_leases: options.releaseLeases === false ? [] : releaseWorkerLeases(agentId),
+    };
   })();
 }
