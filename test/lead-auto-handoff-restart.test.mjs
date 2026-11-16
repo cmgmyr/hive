@@ -70,7 +70,7 @@ writeFileSync(join(fakeBin, "tmux"), [
   `  mode=$(cat '${respawnFault}')`,
   '  if [ "$mode" = timeout ]; then',
   '    echo "respawn pane failed: fork failed: Device not configured" >&2',
-  '    exec sleep 1',
+  '    exec sleep 2',
   '  fi',
   '  if [ "$mode" = other ]; then',
   '    echo "respawn pane failed: permission denied" >&2',
@@ -576,7 +576,7 @@ describe("lead auto-handoff restart", () => {
   for (const mode of ["other", "always", "timeout"]) it(`a handoff respawn ${mode === "other" ? "fails at once on a non-ENXIO error" : mode === "always" ? "gives up after 3 ENXIO attempts" : "never retries a timeout even with ENXIO stderr"}`, needsTmux, async () => {
     const ctx = await readyLead();
     writeFileSync(respawnFault, mode);
-    const result = await command(ctx, {}, mode === "timeout" ? { HIVE_TMUX_TIMEOUT_MS: "100" } : {});
+    const result = await command(ctx, {}, mode === "timeout" ? { HIVE_TMUX_TIMEOUT_MS: "1000" } : {});
     assert.equal(result.code, 0, result.stderr);
     endGrace(ctx.requestId);
     assert.ok(await until(() => ["failed", "ambiguous"].includes(row(ctx.requestId).state), 8000), JSON.stringify(row(ctx.requestId)));
