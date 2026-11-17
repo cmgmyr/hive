@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
   assertScratchStore,
@@ -52,6 +54,60 @@ const rowOf = (id) =>
   db.prepare("SELECT status, closed_at, parked_at, parked_branch FROM agents WHERE id = ?").get(id);
 
 describe("agent_park", { skip: hasTmux ? false : "tmux is not installed" }, () => {
+  it("parks a live worker with its branch when another process sweeps between kill-pane and the park write", async () => {
+    await mcp.call("agent_spawn", { name: "park-sweep-race", command: fakeClaude() });
+    const live = await liveAgentRow(mcp, "park-sweep-race");
+    db.prepare("UPDATE agents SET created_at = datetime('now', '-60 seconds') WHERE id = ?").run(live.agent_id);
+
+    const realTmux = execFileSync("which", ["tmux"], { encoding: "utf8" }).trim();
+    const fakeBin = join(dirs.tmp, "park-sweep-bin");
+    const sweepResult = join(dirs.tmp, "park-sweep-result.json");
+    mkdirSync(fakeBin);
+    writeFileSync(
+      join(fakeBin, "tmux"),
+      `#!/usr/bin/env node
+const { execFileSync } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+execFileSync(${JSON.stringify(realTmux)}, args, { stdio: "inherit" });
+if (args.includes("kill-pane")) {
+  (async () => {
+    const { db } = await import(${JSON.stringify(new URL("../dist/db.js", import.meta.url).href)});
+    if (!db.name.startsWith(process.env.HIVE_DATA_DIR + "/")) throw new Error("scratch store required");
+    const { janitor } = await import(${JSON.stringify(new URL("../dist/scheduler.js", import.meta.url).href)});
+    const before = db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(${live.agent_id});
+    const sweep = janitor();
+    const after = db.prepare("SELECT status, recovery_state, parked_at, parked_branch FROM agents WHERE id = ?").get(${live.agent_id});
+    writeFileSync(${JSON.stringify(sweepResult)}, JSON.stringify({ before, sweep, after }));
+  })().catch(error => { console.error(error); process.exitCode = 1; });
+}
+`,
+      { mode: 0o755 },
+    );
+    const racer = new McpClient({
+      cwd: dirs.projectDir,
+      dataDir: dirs.dataDir,
+      env: { PATH: `${fakeBin}:${process.env.PATH}` },
+    });
+    await racer.start();
+    try {
+      const outcome = await racer.call("agent_park", { agent_id: live.agent_id }).then(
+        receipt => ({ receipt }),
+        error => ({ error }),
+      );
+      const evidence = JSON.parse(readFileSync(sweepResult, "utf8"));
+      assert.deepEqual(evidence.before, { status: "running", recovery_state: "excluded" });
+      assert.equal(evidence.sweep.probed, true);
+      assert.equal(targetLive(live.tmux_target), false);
+      assert.equal(outcome.error, undefined, `park must finish after the sweep: ${JSON.stringify(evidence)}`);
+      assert.equal(outcome.receipt.parked, true);
+      assert.ok(rowOf(live.agent_id).parked_at);
+      assert.equal(rowOf(live.agent_id).parked_branch, "park-branch");
+    } finally {
+      await racer.close();
+    }
+  });
+
   it("parks a running claude worker: the row is closed AND stamped, and the branch is recorded", async () => {
     await mcp.call("agent_spawn", { name: "park-one", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "park-one");
