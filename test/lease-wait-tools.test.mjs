@@ -80,7 +80,26 @@ describe("lease wait tools", { skip: hasTmux ? false : "tmux is not installed" }
     const result = await clients[2].call("lease_release", { key: "db:dev" });
     assert.deepEqual(result, { project_id: projectId, key: "db:dev", released: false, left_queue: true });
     assert.equal(db.prepare("SELECT actor_id FROM lease_waiters WHERE project_id = ? AND lock_key = ? ORDER BY id").all(projectId, "db:dev")[0].actor_id, actors[2]);
+    assert.equal((await clients[3].call("lease_acquire", { key: "db:dev", ttl_seconds: 79, wait: true })).position, 1);
     assert.deepEqual(await clients[2].call("lease_release", { key: "db:dev" }), { project_id: projectId, key: "db:dev", released: false });
+  });
+
+  it("omitting wait and wait false preserve every legacy lease receipt", async () => {
+    const inserted = await clients[2].call("lease_acquire", { key: "legacy:insert", ttl_seconds: 45 });
+    assert.deepEqual(Object.keys(inserted), ["project_id", "key", "acquired", "expires_at"]);
+    assert.equal(inserted.expires_at, db.prepare("SELECT expires_at FROM leases WHERE project_id = ? AND lock_key = 'legacy:insert'").get(projectId).expires_at);
+
+    const extended = await clients[2].call("lease_acquire", { key: "legacy:insert", ttl_seconds: 60, wait: false });
+    assert.deepEqual(extended, { project_id: projectId, key: "legacy:insert", acquired: true, extended: true });
+    assert.deepEqual(Object.keys(extended), ["project_id", "key", "acquired", "extended"]);
+
+    const denied = await clients[3].call("lease_acquire", { key: "legacy:insert", ttl_seconds: 60 });
+    assert.deepEqual(Object.keys(denied), ["project_id", "key", "acquired", "held_by", "expires_at"]);
+    assert.equal(denied.acquired, false);
+    assert.equal(denied.held_by, actors[1]);
+
+    assert.deepEqual(await clients[3].call("lease_release", { key: "legacy:missing" }), { project_id: projectId, key: "legacy:missing", released: false });
+    assert.deepEqual(await clients[2].call("lease_release", { key: "legacy:insert" }), { project_id: projectId, key: "legacy:insert", released: true });
   });
 
   it("invalid wait arguments and internal pane keys fail without writes", async () => {

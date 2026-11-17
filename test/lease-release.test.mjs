@@ -121,12 +121,15 @@ describe("worker lease release", () => {
     const worker = await workerClient(live.actor_id, live.name);
     try {
       assert.equal((await worker.call("lease_acquire", { key: "row-only:db", ttl_seconds: 1800 })).acquired, true);
+      assert.equal((await mcp.call("lease_acquire", { key: "row-only:held", ttl_seconds: 1800 })).acquired, true);
+      assert.equal((await worker.call("lease_acquire", { key: "row-only:held", ttl_seconds: 300, wait: true })).queued, true);
       db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(live.agent_id);
 
       const receipt = await mcp.call("agent_close", { name: live.name, row_only: true });
 
       assert.equal(receipt.closed, true);
       assert.equal(Object.hasOwn(receipt, "released_leases"), false);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'row-only:held'").get(projectId).n, 0);
       assert.equal(targetLive(live.tmux_target), true, "row_only must leave the unverifiable pane alone");
       assert.equal(
         db.prepare("SELECT owner FROM leases WHERE project_id = ? AND lock_key = ?").get(projectId, "row-only:db").owner,
@@ -146,8 +149,11 @@ describe("worker lease release", () => {
     const worker = await workerClient(live.actor_id, live.name);
     try {
       assert.equal((await worker.call("lease_acquire", { key: "park:db", ttl_seconds: 1800 })).acquired, true);
+      assert.equal((await mcp.call("lease_acquire", { key: "park:held", ttl_seconds: 1800 })).acquired, true);
+      assert.equal((await worker.call("lease_acquire", { key: "park:held", ttl_seconds: 300, wait: true })).queued, true);
       const receipt = await mcp.call("agent_park", { name: live.name });
       assert.deepEqual(receipt.released_leases, ["park:db"]);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'park:held'").get(projectId).n, 0);
     } finally {
       await worker.close();
     }
@@ -162,15 +168,19 @@ describe("worker lease release", () => {
     }
   });
 
-  it("the janitor releases leases when it marks a dead worker lost", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+  it("the janitor releases leases and silently cancels waits when it marks a dead worker lost", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     const id = seedRow("lease-dead", "agent", "agent:lease-dead", "%98765");
     seedLease(projectId, "dead:db", "agent:lease-dead");
+    db.prepare("INSERT INTO lease_waiters (project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at) VALUES (?, 'dead:other', 'agent:lease-dead', ?, 30, datetime('now', '+3600 seconds'))")
+      .run(projectId, id);
 
     const result = janitor(EMPTY);
 
     assert.equal(result.closed_agents, 1);
     assert.equal(db.prepare("SELECT status, recovery_state FROM agents WHERE id = ?").get(id).recovery_state, "pending");
     assert.equal(db.prepare("SELECT 1 FROM leases WHERE project_id = ? AND lock_key = ?").get(projectId, "dead:db"), undefined);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE agent_id = ?").get(id).n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND deliver_actor = 'agent:lease-dead'").get(projectId).n, 0);
     assert.equal((await mcp.call("lease_acquire", { key: "dead:db", ttl_seconds: 1800 })).acquired, true);
   });
 

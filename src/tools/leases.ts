@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { currentActor, effectiveProjectId } from "../context.js";
 import { db } from "../db.js";
-import { acquireLease, releaseLease } from "../leaseStore.js";
+import { acquireLease, isPaneLeaseKey, releaseLease } from "../leaseStore.js";
 import { run } from "../result.js";
 import { idParam, projectIdParam } from "./params.js";
 import { resolveWakeDelivery } from "../wakeTarget.js";
@@ -44,7 +44,7 @@ export function registerLeases(server: McpServer): void {
         if (args.max_wait_seconds !== undefined && args.wait !== true) {
           throw new Error("max_wait_seconds requires wait:true");
         }
-        if (args.wait === true && args.key.startsWith("wake-pane:")) {
+        if (args.wait === true && isPaneLeaseKey(args.key)) {
           throw new Error("wait:true is not supported for internal wake-pane leases");
         }
         let wait;

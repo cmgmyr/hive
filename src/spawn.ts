@@ -4,7 +4,7 @@ import { getProject } from "./context.js";
 import { LEAD_ACTOR_PREFIX, LEAD_KIND, LEAD_NAME, isLeadActorId, isReservedAgentName, mintLeadActorId } from "./agentKinds.js";
 import { gitOut } from "./git.js";
 import { dataDir, db } from "./db.js";
-import { releaseWorkerLeases } from "./leaseStore.js";
+import { cancelWorkerLeaseWaits, releaseWorkerLeases } from "./leaseStore.js";
 import { loadProjectYml } from "./projectYml.js";
 import { WORKER_RECOVERY_RETENTION_SECONDS } from "./workerRecovery.js";
 import {
@@ -716,6 +716,7 @@ export function closeAgentRowWithLeases(
             )
             .run(agentId, expected.tmux_target, expected.tmux_socket, expected.pane_pid);
     if (info.changes === 0) return { closed: false, released_leases: [] };
+    if (options.releaseLeases === false) cancelWorkerLeaseWaits(agentId);
     return {
       closed: true,
       released_leases: options.releaseLeases === false ? [] : releaseWorkerLeases(agentId),

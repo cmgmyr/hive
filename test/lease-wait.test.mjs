@@ -83,6 +83,40 @@ describe("lease waiter transactions", () => {
     assert.match(wakes(p, "agent:wait-timeout")[0].body, /Gave up waiting for lease/);
   });
 
+  it("deadline expiry wins over a simultaneous release", () => {
+    const p = project("lease-wait-deadline-release");
+    const b = waiter(p, "agent:deadline-b", "%deadline-b");
+    const c = waiter(p, "agent:deadline-c", "%deadline-c");
+    db.prepare("INSERT INTO actors (id, name) VALUES ('agent:deadline-holder', 'holder')").run();
+    acquireLease(p, "deadline", "agent:deadline-holder", 120);
+    queue(p, "deadline", "agent:deadline-b", b, 30);
+    queue(p, "deadline", "agent:deadline-c", c, 60);
+    db.prepare("UPDATE lease_waiters SET max_wait_at = datetime('now', '-1 second') WHERE project_id = ? AND actor_id = 'agent:deadline-b'").run(p);
+
+    releaseLease(p, "deadline", "agent:deadline-holder");
+    assert.equal(readLease(p, "deadline").owner, "agent:deadline-c");
+    assert.equal(wakes(p, "agent:deadline-b").length, 1);
+    assert.match(wakes(p, "agent:deadline-b")[0].body, /Gave up waiting/);
+    assert.equal(wakes(p, "agent:deadline-c").length, 1);
+  });
+
+  it("cancelled and retired waiters never receive timeout wakes", () => {
+    const p = project("lease-wait-cancel-timeout");
+    const b = waiter(p, "agent:cancel-timeout-b", "%cancel-timeout-b");
+    const c = waiter(p, "agent:cancel-timeout-c", "%cancel-timeout-c");
+    db.prepare("INSERT INTO actors (id, name) VALUES ('agent:cancel-timeout-holder', 'holder')").run();
+    acquireLease(p, "cancel", "agent:cancel-timeout-holder", 120);
+    queue(p, "cancel", "agent:cancel-timeout-b", b, 30);
+    queue(p, "cancel", "agent:cancel-timeout-c", c, 30);
+    releaseLease(p, "cancel", "agent:cancel-timeout-b");
+    db.prepare("UPDATE agents SET parked_at = datetime('now') WHERE id = ?").run(c);
+    db.prepare("UPDATE lease_waiters SET max_wait_at = datetime('now', '-1 second') WHERE project_id = ?").run(p);
+    maintainLeaseWaiters();
+    assert.equal(wakes(p, "agent:cancel-timeout-b").length, 0);
+    assert.equal(wakes(p, "agent:cancel-timeout-c").length, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ?").get(p).n, 0);
+  });
+
   it("wait queues remain independent across projects actors and empty keys", () => {
     const p1 = project("lease-wait-scope-one");
     const p2 = project("lease-wait-scope-two");

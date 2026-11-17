@@ -258,6 +258,10 @@ export function paneLeaseKey(socket: string, pane: string): string {
   return `wake-pane:${socket}:${pane}`;
 }
 
+export function isPaneLeaseKey(key: string): boolean {
+  return key.startsWith("wake-pane:");
+}
+
 export const PANE_LEASE_TTL_SECONDS = 6;
 export const PANE_LEASE_SETTLE_MS = 500;
 

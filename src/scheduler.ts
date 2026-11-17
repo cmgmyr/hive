@@ -100,7 +100,7 @@ import {
   STALL_BOUND_SECONDS,
 } from "./backgroundTasks.js";
 import { MESSAGE_MAX_ROWS, MESSAGE_RETENTION } from "./leadMessage.js";
-import { PANE_LEASE_SETTLE_MS, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
+import { PANE_LEASE_SETTLE_MS, maintainLeaseWaiters, releasePaneLease, tryAcquirePaneLease } from "./leaseStore.js";
 import {
   CROSS_SESSION_CLOSE,
   quietMessagingHooksLaunched,
@@ -895,6 +895,7 @@ export async function tick(snapshot?: AliveSnapshot | null): Promise<void> {
     if (snapshot === undefined) snapshot = liveTargets();
     const tickSnapshot = snapshot;
     isolated("janitor", () => janitor(tickSnapshot));
+    isolated("lease waiters", maintainLeaseWaiters);
     if (tickSnapshot) isolated("running-build check", () => reportRunningBuildChange(tickSnapshot));
     isolated("lead handoff", driveOwnLeadHandoff);
 

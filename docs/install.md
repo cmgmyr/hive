@@ -65,7 +65,7 @@ A codex worker supports most of the same lifecycle and reporting features, with 
 - `agent_fork` can copy a running or parked Codex session into a new worker. It creates a separate home and copies only the source's completed rollout prefix into it; it never shares the writable home. A closed Codex worker cannot be forked after `agent_close` reaps its home. Keep the source parked if you may want to fork it later (`seedCodexFork`, `src/codexHome.ts:95`; `agent_fork`, `src/tools/agents.ts:916`).
 - You can park and resume a codex worker when it has a recorded session id and its working directory and Codex home remain available (`supportsResume`, `src/harnesses.ts:177`; `agent_park`, `src/tools/agents.ts:1212`; `agent_resume`, `src/tools/agents.ts:1173`). After a confirmed unexpected pane loss, `hive crew-restore [--dry-run] [--json]` can resume pending workers on their existing rows. A crashed Codex home is retained for seven days from the detected loss, then the janitor reaps it; a deliberate `agent_close` still releases it immediately, and park keeps it (`reapCodexHomeForClosedAgent`, `src/spawn.ts:666`; `reapCodexHome`, `src/codexHome.ts:231`; `resumeWorker`, `src/agentResume.ts:166`). Restart all hive servers after upgrading to get this retention.
 - When a Codex worker hits its usage limit, hive waits for the locally recorded reset. After the reset, it types one `continue` only if the worker has received an assignment and its owned pane still shows the limit (`continueLimitedCodexWorkers`, `src/usageLimit.ts:338`). Codex limit fields are version-sensitive local protocol data. No usage endpoint is queried, and no live limit has been used to confirm the snapshot values.
-- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2963`; `noteStalledCrew`, `src/scheduler.ts:2093`; `transcriptStaleness`, `src/scheduler.ts:2004`).
+- `hive doctor` and standing-watch stall notices can report a codex worker stalled when its recorded rollout file is available and stale. They skip it when no readable transcript signal exists (`reportStalledWorkers`, `src/cli.ts:2963`; `noteStalledCrew`, `src/scheduler.ts:2094`; `transcriptStaleness`, `src/scheduler.ts:2005`).
 - Context percentages can be read from Codex rollout token-count events when that data is present; unavailable or unreadable rollout data produces no percentage (`readContextFill`, `src/transcript.ts:112-137`; `contextFillField`, `src/tools/agents.ts:524-527`).
 - Hive does not inject `.claude/rules/*.md` into Codex workers. Hive passes the worker brief and selected local instruction files to Codex; include a rule in the brief when the worker needs it (`ensureCodexHome`, `src/codexHome.ts:419`).
 
@@ -171,6 +171,8 @@ hive doctor --strict
 ```
 
 An already-current install exits successfully without installing or re-pinning. If npm cannot report a version, upgrade exits with an unknown result and installs nothing. `HIVE_NO_UPDATE_CHECK=1` also prevents the registry query and upgrade. The npm on your PATH must own the running package's global root. If a version manager switched that root, put the npm for this install first on PATH before retrying. Copied installs and npx caches are refused.
+
+Restart every hive MCP server after upgrading before using `lease_acquire` with `wait: true`. Older servers do not read the waiter queue, so mixed builds cannot preserve FIFO ordering.
 
 ### From source
 
