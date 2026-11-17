@@ -164,7 +164,7 @@ describe("worker lease release", () => {
     assert.equal(Object.hasOwn(receipt, "released_leases"), false);
   });
 
-  it("agent_close row_only keeps worker leases when its pane is unverified", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+  it("failed retirement CAS preserves waits and row only cancels waits without releasing held leases", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     await mcp.call("agent_spawn", { name: "lease-row-only", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "lease-row-only");
     const worker = await workerClient(live.actor_id, live.name);
@@ -172,6 +172,13 @@ describe("worker lease release", () => {
       assert.equal((await worker.call("lease_acquire", { key: "row-only:db", ttl_seconds: 1800 })).acquired, true);
       assert.equal((await mcp.call("lease_acquire", { key: "row-only:held", ttl_seconds: 1800 })).acquired, true);
       assert.equal((await worker.call("lease_acquire", { key: "row-only:held", ttl_seconds: 300, wait: true })).queued, true);
+      assert.deepEqual(closeAgentRowWithLeases(live.agent_id, {
+        tmux_target: `${live.tmux_target}-wrong`,
+        tmux_socket: live.tmux_socket,
+        pane_pid: live.pane_pid,
+      }), { closed: false, released_leases: [] });
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'row-only:held'").get(projectId).n, 1);
+      assert.equal(db.prepare("SELECT owner FROM leases WHERE project_id = ? AND lock_key = 'row-only:db'").get(projectId).owner, live.actor_id);
       db.prepare("UPDATE agents SET pane_pid = '' WHERE id = ?").run(live.agent_id);
 
       const receipt = await mcp.call("agent_close", { name: live.name, row_only: true });
