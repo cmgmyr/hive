@@ -350,7 +350,10 @@ Usage:
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive project rm <id|path> [--yes]
                              remove another project and everything it owns,
-                             after a snapshot; never the one you are in\n  hive project mv <new-path> [--project-id <id>] [--dry-run | --apply]
+                             after a snapshot; never the one you are in
+  hive project mv <new-path> [--project-id <id>] [--dry-run | --apply]
+                             move this project's checkout and repoint hive,
+                             Claude and Codex records; previews unless --apply
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
