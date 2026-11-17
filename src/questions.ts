@@ -70,6 +70,9 @@ function fitHeader(header: string): { header: string; truncated: boolean } {
   const chars = [...header];
   if (chars.length <= HEADER_MAX_CHARS) return { header, truncated: false };
   const prefix = chars.slice(0, HEADER_MAX_CHARS);
+  if (/\s/u.test(chars[HEADER_MAX_CHARS])) {
+    return { header: prefix.join("").trimEnd(), truncated: true };
+  }
   let boundary = -1;
   for (let i = prefix.length - 1; i >= 0; i--) {
     if (/\s/u.test(prefix[i])) {

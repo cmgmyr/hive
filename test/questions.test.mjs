@@ -130,6 +130,12 @@ describe("question tools, over real MCP", () => {
     assert.equal([...multibyte.header_truncated].length, 9);
   });
 
+  it("an over-long header whose 13th character is a space keeps the full 12-character prefix", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText({ header: "Release gate fix" }));
+    assert.equal(made.header_truncated, "Release gate");
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, "Release gate");
+  });
+
   it("question_ask hard-cuts a header whose first word is over 12", { skip }, async () => {
     const made = await asker.call("question_ask", freeText({ header: "abcdefghijklmnop rest" }));
     assert.equal(made.header_truncated, "abcdefghijkl");
