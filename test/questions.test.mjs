@@ -149,6 +149,28 @@ describe("question tools, over real MCP", () => {
     assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, "Scheduling");
   });
 
+  it("an option without recommended is stored as recommended false", { skip }, async () => {
+    const options = [
+      { label: "Opt0", description: "description 0", recommended: true },
+      { label: "Opt1", description: "description 1" },
+    ];
+    const made = await asker.call("question_ask", choice({ options }));
+    assert.deepEqual((await asker.call("question_get", { question_id: made.question_id })).options, [
+      { ...options[0] },
+      { ...options[1], recommended: false },
+    ]);
+
+    const edited = await asker.call("question_update", {
+      question_id: made.question_id,
+      options: [options[0], { label: "Opt1", description: "description 1" }],
+    });
+    assert.equal(edited.question_id, made.question_id);
+    assert.deepEqual((await asker.call("question_get", { question_id: made.question_id })).options, [
+      { ...options[0] },
+      { ...options[1], recommended: false },
+    ]);
+  });
+
   it("question records survive a server restart", { skip }, async () => {
     const made = await asker.call("question_ask", choice({ ref: { kind: "todo", number: 9001 } }));
     assert.equal(made.created, true);
@@ -223,7 +245,7 @@ describe("question tools, over real MCP", () => {
     const bad = {
       "one option": choice({ options: opts(1) }),
       "five options": choice({ options: opts(5) }),
-      "no option recommended": choice({ options: opts(3).map((o) => ({ ...o, recommended: false })) }),
+      "omitting recommended on every option": choice({ options: opts(3).map(({ recommended, ...o }) => o) }),
       "two recommended": choice({ options: opts(3).map((o, i) => ({ ...o, recommended: i < 2 })) }),
       "blank header": choice({ header: "   " }),
       "free text without a header": (({ header, ...rest }) => rest)(freeText()),

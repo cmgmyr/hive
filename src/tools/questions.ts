@@ -15,8 +15,11 @@ import { idParam } from "./params.js";
 const optionParam = z.strictObject({
   label: z.string().describe("Short choice label; distinct within the question."),
   description: z.string().describe("What choosing this means."),
-  recommended: z.boolean().describe("Exactly one option is recommended; it is the default."),
+  recommended: z.boolean().optional().describe("Whether this option is recommended; omitted options default to false."),
 });
+
+const normalizeOptions = (options: { label: string; description: string; recommended?: boolean }[]) =>
+  options.map((option) => ({ ...option, recommended: option.recommended ?? false }));
 
 const refParam = z.strictObject({
   kind: z.enum(["todo", "pr"]),
@@ -58,7 +61,9 @@ export function registerQuestions(server: McpServer): void {
           question: args.question,
           header: args.header,
           default_answer: args.default_answer,
-          ...(args.options !== undefined ? { options: args.options } : {}),
+          ...(args.options !== undefined
+            ? { options: normalizeOptions(args.options) }
+            : {}),
           ...(args.ref !== undefined ? { ref: args.ref } : {}),
         } as QuestionInput;
         return askQuestion(projectId, currentActor(), input);
@@ -104,8 +109,12 @@ export function registerQuestions(server: McpServer): void {
     },
     (args) =>
       run(() => {
-        const { question_id, ...patch } = args;
-        return updateQuestion(effectiveProjectId(), currentActor(), question_id, patch);
+        const { question_id, options, ...patch } = args;
+        const normalizedPatch = {
+          ...patch,
+          ...(options !== undefined ? { options: normalizeOptions(options) } : {}),
+        };
+        return updateQuestion(effectiveProjectId(), currentActor(), question_id, normalizedPatch);
       }),
   );
 

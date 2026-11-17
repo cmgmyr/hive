@@ -2125,14 +2125,13 @@
                 "type": "string"
               },
               "recommended": {
-                "description": "Exactly one option is recommended; it is the default.",
+                "description": "Whether this option is recommended; omitted options default to false.",
                 "type": "boolean"
               }
             },
             "required": [
               "label",
-              "description",
-              "recommended"
+              "description"
             ],
             "type": "object"
           },
@@ -2288,14 +2287,13 @@
                 "type": "string"
               },
               "recommended": {
-                "description": "Exactly one option is recommended; it is the default.",
+                "description": "Whether this option is recommended; omitted options default to false.",
                 "type": "boolean"
               }
             },
             "required": [
               "label",
-              "description",
-              "recommended"
+              "description"
             ],
             "type": "object"
           },
