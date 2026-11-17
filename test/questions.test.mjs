@@ -135,6 +135,13 @@ describe("question tools, over real MCP", () => {
     assert.equal(made.header_truncated, "abcdefghijkl");
   });
 
+  it("question_ask counts header limits in code points", { skip }, async () => {
+    const header = `${"😀".repeat(12)} extra`;
+    const made = await asker.call("question_ask", freeText({ header }));
+    assert.equal(made.header_truncated, "😀".repeat(12));
+    assert.equal([...made.header_truncated].length, 12);
+  });
+
   it("a 12-character header is stored as given with no header_truncated", { skip }, async () => {
     const header = "123456789012";
     const made = await asker.call("question_ask", freeText({ header }));
@@ -190,6 +197,15 @@ describe("question tools, over real MCP", () => {
     const wakesAfterFirst = wakeCount();
     const repeat = await other.call("question_answer", { question_id: made.question_id, answer: "Keep it" });
     assert.deepEqual(repeat, { question_id: made.question_id, wake_id: null, already_answered: true });
+    assert.equal(wakeCount(), wakesAfterFirst);
+    const sameNotes = await other.call("question_answer", {
+      question_id: made.question_id,
+      answer: "Keep it",
+      notes: "decision recorded",
+    });
+    assert.deepEqual(sameNotes, { question_id: made.question_id, wake_id: null, already_answered: true });
+    const blankNotes = await other.call("question_answer", { question_id: made.question_id, answer: "Keep it", notes: "  \t " });
+    assert.deepEqual(blankNotes, { question_id: made.question_id, wake_id: null, already_answered: true });
     assert.equal(wakeCount(), wakesAfterFirst);
   });
 
