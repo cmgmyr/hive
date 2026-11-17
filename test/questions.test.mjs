@@ -171,6 +171,18 @@ describe("question tools, over real MCP", () => {
     ]);
   });
 
+  it("omitting recommended on every option is still refused", { skip }, async () => {
+    const options = opts(2).map(({ recommended, ...option }) => option);
+    assert.match(await refusal(asker, "question_ask", choice({ options })), /exactly one option must be recommended, got 0/);
+  });
+
+  it("two recommended options are still refused", { skip }, async () => {
+    assert.match(
+      await refusal(asker, "question_ask", choice({ options: opts(2).map((option) => ({ ...option, recommended: true })) })),
+      /exactly one option must be recommended, got 2/,
+    );
+  });
+
   it("a repeat answer matching the stored one succeeds with already_answered and queues no wake", { skip }, async () => {
     const made = await asker.call("question_ask", freeText());
     const first = await human.call("question_answer", { question_id: made.question_id, answer: "  Keep it  ", notes: "decision recorded" });
@@ -179,12 +191,24 @@ describe("question tools, over real MCP", () => {
     const repeat = await other.call("question_answer", { question_id: made.question_id, answer: "Keep it" });
     assert.deepEqual(repeat, { question_id: made.question_id, wake_id: null, already_answered: true });
     assert.equal(wakeCount(), wakesAfterFirst);
-    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Different" }), /already answered/);
-    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Keep it", notes: "new notes" }), /answer matches but the notes differ/);
+  });
 
-    const withdrawn = await asker.call("question_ask", freeText());
-    await asker.call("question_update", { question_id: withdrawn.question_id, state: "withdrawn" });
-    assert.match(await refusal(other, "question_answer", { question_id: withdrawn.question_id, answer: "Keep it" }), /QUESTION_STATE_CONFLICT/);
+  it("a different repeat answer still conflicts", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    await human.call("question_answer", { question_id: made.question_id, answer: "Keep it" });
+    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Different" }), /QUESTION_STATE_CONFLICT/);
+  });
+
+  it("a matching answer with new notes conflicts and names the notes", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    await human.call("question_answer", { question_id: made.question_id, answer: "Keep it" });
+    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Keep it", notes: "new notes" }), /answer matches but the notes differ/);
+  });
+
+  it("answering a withdrawn question still conflicts", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    await asker.call("question_update", { question_id: made.question_id, state: "withdrawn" });
+    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Keep it" }), /QUESTION_STATE_CONFLICT/);
   });
 
   it("two identical question_answer calls race to one write and one wake", { skip }, async () => {
