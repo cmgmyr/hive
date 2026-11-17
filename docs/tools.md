@@ -66,10 +66,10 @@ Where a tool names a running agent by `name`, a string that matches no agent nam
 | **leases** | | |
 | `lease_acquire` | Claims a named piece of shared state with a TTL; re-taking your own lease extends it. With `wait: true`, a caller with a safe running session can join the FIFO queue for a held key and receive one wake after a grant. The requested TTL starts at grant time; `max_wait_seconds` defaults to 3600. The grant wake reports a deadline that may pass before delivery, so call `lease_acquire` again before then to extend it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; `row_only` retirement keeps them because it does not stop the pane | Before changing state another session can also change; expired leases free themselves |
 | `lease_release` | Releases a lease you own, or cancels your queued wait for the key | When done early; otherwise TTL handles it |
-
-All servers that use lease waiting need the same hive build for FIFO fairness. Restart sessions after upgrading before using `wait: true`.
 | **actors** | | |
 | `actor_prune` | Deletes every actor that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray or one-off actors; unlike every other tool here, the scan is store-wide, not scoped to the current project, since actors carry no `project_id` |
+
+All servers that use lease waiting need the same hive build for FIFO fairness. Restart sessions after upgrading before using `wait: true`.
 
 If the project defines `completion_gate` in its `hive.yml`, both tools run that trusted command before an unfinished todo becomes completed. A nonzero exit, timeout, signal, spawn error, invalid gate field, or stale todo/config returns an error and leaves the completion write unapplied. Reopening and other updates skip the gate. See [the project configuration](projects.md#todo-completion-gate).
 
