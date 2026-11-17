@@ -783,6 +783,22 @@ ALTER TABLE wakes ADD COLUMN clock_at TEXT;
 ALTER TABLE wakes ADD COLUMN clock_zone TEXT;
 ALTER TABLE wakes ADD COLUMN clock_repeat TEXT;
 `,
+  `
+CREATE TABLE lease_waiters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  lock_key TEXT NOT NULL,
+  actor_id TEXT NOT NULL REFERENCES actors(id),
+  agent_id INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  ttl_seconds INTEGER NOT NULL CHECK(ttl_seconds > 0),
+  queued_at TEXT NOT NULL DEFAULT (datetime('now')),
+  max_wait_at TEXT NOT NULL,
+  UNIQUE(project_id, lock_key, actor_id)
+);
+CREATE INDEX idx_lease_waiters_key ON lease_waiters(project_id, lock_key, id);
+CREATE INDEX idx_lease_waiters_deadline ON lease_waiters(max_wait_at);
+CREATE INDEX idx_lease_waiters_agent ON lease_waiters(agent_id);
+`,
 ];
 
 export function storeSchemaAhead(database: Database.Database): { store: number; build: number } | null {

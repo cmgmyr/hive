@@ -19,6 +19,7 @@ db.exec(readFileSync(V30_STORE, "utf8"));
 const projectId = db
   .prepare("INSERT INTO projects (name, path) VALUES (?, ?) RETURNING id")
   .get("v30-fixture", "/tmp/v30-fixture").id;
+db.prepare("INSERT OR IGNORE INTO actors (id, name, kind) VALUES ('actor:v30', 'shipped', 'agent')").run();
 const agentId = db
   .prepare(
     `INSERT INTO agents (project_id, actor_id, name, tmux_target, command, cwd, kind, status)
@@ -44,6 +45,9 @@ const legacyWakeIds = [
 const beforeWakes = db
   .prepare(`SELECT * FROM wakes WHERE id IN (${legacyWakeIds.map(() => "?").join(",")}) ORDER BY id`)
   .all(...legacyWakeIds);
+db.prepare("INSERT INTO leases (project_id, lock_key, owner, expires_at) VALUES (?, 'legacy-migration-lease', 'actor:v30', '2099-01-01 00:00:00')")
+  .run(projectId);
+const beforeLease = db.prepare("SELECT * FROM leases WHERE project_id = ? AND lock_key = 'legacy-migration-lease'").get(projectId);
 const before = {
   message: db.prepare("SELECT * FROM agent_messages WHERE id = ?").get(messageId),
   versions: db.prepare("SELECT MAX(version) AS v FROM migrations").get().v,
@@ -95,6 +99,18 @@ describe("a store at the v30 head shipped before todo 920, opened by this build"
     migrate();
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM migrations").get().n, MIGRATIONS.length);
     assert.deepEqual(db.prepare("SELECT * FROM queen_audit").all(), []);
+  });
+
+  it("migration 51 adds an empty unique FIFO queue and preserves legacy leases and wakes", () => {
+    assert.deepEqual(db.prepare("SELECT * FROM lease_waiters").all(), []);
+    const columns = db.prepare("SELECT name FROM pragma_table_info('lease_waiters') ORDER BY cid").all().map((c) => c.name);
+    assert.deepEqual(columns, ["id", "project_id", "lock_key", "actor_id", "agent_id", "ttl_seconds", "queued_at", "max_wait_at"]);
+    assert.deepEqual(db.prepare("SELECT * FROM leases WHERE project_id = ? AND lock_key = 'legacy-migration-lease'").get(projectId), beforeLease);
+    const afterWakes = db.prepare(`SELECT * FROM wakes WHERE id IN (${legacyWakeIds.map(() => "?").join(",")}) ORDER BY id`).all(...legacyWakeIds);
+    assert.deepEqual(afterWakes.map((row) => Object.fromEntries(Object.keys(beforeWakes[0]).map((key) => [key, row[key]]))), beforeWakes);
+    const insertWaiter = db.prepare("INSERT INTO lease_waiters (project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at) VALUES (?, 'dup', 'actor:v30', ?, 10, datetime('now', '+1 hour'))");
+    insertWaiter.run(projectId, agentId);
+    assert.throws(() => insertWaiter.run(projectId, agentId), /UNIQUE constraint failed/);
   });
 
   it("adds an empty questions table whose pending refs are unique and whose other states are not", () => {
