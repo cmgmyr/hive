@@ -64,8 +64,10 @@ Where a tool names a running agent by `name`, a string that matches no agent nam
 | `kv_list` | Lists values, optional key prefix. The prefix matches literally, so `%` and `_` are ordinary characters | |
 | `kv_delete` | Removes a key | |
 | **leases** | | |
-| `lease_acquire` | Claims a named piece of shared state with a TTL; re-taking your own lease extends it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; `row_only` retirement keeps them because it does not stop the pane | Before changing state another session can also change; expired leases free themselves |
-| `lease_release` | Releases a lease you own | When done early; otherwise TTL handles it |
+| `lease_acquire` | Claims a named piece of shared state with a TTL; re-taking your own lease extends it. With `wait: true`, a caller with a safe running session can join the FIFO queue for a held key and receive one wake after a grant. The requested TTL starts at grant time; `max_wait_seconds` defaults to 3600. The grant wake reports a deadline that may pass before delivery, so call `lease_acquire` again before then to extend it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; `row_only` retirement keeps them because it does not stop the pane | Before changing state another session can also change; expired leases free themselves |
+| `lease_release` | Releases a lease you own, or cancels your queued wait for the key | When done early; otherwise TTL handles it |
+
+All servers that use lease waiting need the same hive build for FIFO fairness. Restart sessions after upgrading before using `wait: true`.
 | **actors** | | |
 | `actor_prune` | Deletes every actor that owns no rows anywhere in the store, after checking each individually; never your own | Sweeping stray or one-off actors; unlike every other tool here, the scan is store-wide, not scoped to the current project, since actors carry no `project_id` |
 

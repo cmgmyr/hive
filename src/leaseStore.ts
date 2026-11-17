@@ -110,17 +110,20 @@ export function acquireLease(
 ): LeaseAcquireResult {
   const acquire = db.transaction((): LeaseAcquireResult => {
     if (!wait) {
-      const queued = db.prepare("SELECT 1 FROM lease_waiters WHERE project_id = ? AND lock_key = ? LIMIT 1")
-        .get(projectId, key);
-      const expired = db.prepare("SELECT 1 FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')")
-        .get(projectId, key);
-      if (queued && expired) drainLeaseWaiters(projectId, key);
-      else purgeExpiredLeases(projectId, key);
+      const queuedKeys = db.prepare(
+        "SELECT DISTINCT lock_key FROM lease_waiters WHERE project_id = ? ORDER BY lock_key",
+      ).all(projectId) as Array<{ lock_key: string }>;
+      for (const row of queuedKeys) {
+        const expired = db.prepare("SELECT 1 FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')")
+          .get(projectId, row.lock_key);
+        if (expired) drainLeaseWaiters(projectId, row.lock_key);
+      }
+      purgeExpiredLeases(projectId);
       const inserted = insertLease(projectId, key, actor, ttlSeconds);
       if (inserted) return { project_id: projectId, key, acquired: true, expires_at: inserted.expires_at };
       const current = readLease(projectId, key)!;
       if (current.owner === actor && extendOwnedLease(projectId, key, actor, ttlSeconds)) {
-        return { project_id: projectId, key, acquired: true, extended: true, expires_at: readLease(projectId, key)!.expires_at };
+        return { project_id: projectId, key, acquired: true, extended: true };
       }
       return { project_id: projectId, key, acquired: false, held_by: current.owner, expires_at: current.expires_at };
     }

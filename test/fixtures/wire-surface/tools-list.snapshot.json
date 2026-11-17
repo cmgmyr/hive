@@ -1187,7 +1187,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; row_only retirement leaves them in place because it does not stop the pane. Leases expire on their own.",
+    "description": "Try to take a named lease on state another session could also change, such as a shared checkout, a dev database or a port (non-blocking). Re-taking your own lease extends it. With wait:true, queue FIFO on a held lease and receive one wake when granted; the requested TTL starts at grant time, and max_wait_seconds defaults to 3600. The caller must have a safe running session that can receive wakes. lease_release cancels your queued wait. The grant wake reports a deadline that may pass before delivery; call lease_acquire again before then to extend it. A worker's leases are released when hive stops its pane, parks it or confirms it dead; row_only retirement leaves them in place because it does not stop the pane. Leases expire on their own.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1199,6 +1199,11 @@
           "description": "Stable and specific, like \"db:dev\".",
           "type": "string"
         },
+        "max_wait_seconds": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
         "project_id": {
           "description": "Different project override. Use ONLY when the user explicitly asks for another project by name; otherwise stay in the current scope, even when results are empty.",
           "exclusiveMinimum": 0,
@@ -1209,6 +1214,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "wait": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -1239,10 +1247,19 @@
         "key": {
           "type": "string"
         },
+        "position": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
         "project_id": {
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "queued": {
+          "const": true,
+          "type": "boolean"
         }
       },
       "required": [
@@ -1260,7 +1277,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Release a lease you own.",
+    "description": "Release a lease you own, or cancel your queued wait for the key.",
     "execution": {
       "taskSupport": "forbidden"
     },
@@ -1292,6 +1309,10 @@
         },
         "key": {
           "type": "string"
+        },
+        "left_queue": {
+          "const": true,
+          "type": "boolean"
         },
         "project_id": {
           "exclusiveMinimum": 0,
