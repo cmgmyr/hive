@@ -350,7 +350,7 @@ Usage:
   hive restore <name> [--yes] [--force]  overwrite the live store from a snapshot
   hive project rm <id|path> [--yes]
                              remove another project and everything it owns,
-                             after a snapshot; never the one you are in
+                             after a snapshot; never the one you are in\n  hive project mv <new-path> [--project-id <id>] [--dry-run | --apply]
   hive runbook               this project's standing process, vars resolved
   hive posture               the posture text this project's lead starts with
   hive kickoff [--explain]   SessionStart hook output; silent unless this is a lead checkout
@@ -4833,7 +4833,7 @@ try {
       await cmdRestore(rest);
       break;
     case "project":
-      await cmdProject(rest);
+      await (rest[0] === "mv" ? import("./projectMove.js").then((move) => move.cmdProjectMove(rest.slice(1))) : cmdProject(rest));
       break;
     case "runbook": {
       const parsed = parseArgs(rest, {});

@@ -49,6 +49,8 @@ Hive workers can still use subagents. See [Why not subagents?](docs/concepts.md#
 
 If you keep more than one project registered, `hive queen` starts a single lead that reads all of them. `hive portfolio` sorts them into waiting on you, stuck, moving and quiet, and `hive next` attaches you to the lead that needs you most. The queen writes into another project only through that project's lead, and hive records each write. [The queen guide](docs/queen.md) covers setup and limits.
 
+Move a registered checkout with `hive project mv <new-path>`. It previews by default; pass `--apply` to move the checkout or repair records after a hand move. Claude and Codex must be closed while applying. Codex sessions saved under the old path remain available with `codex resume --all`.
+
 ## Status
 
 hive is a personal daily-driver tool, released low-key. It is single-user by design and dogfooded daily by its author on macOS. The test suite also runs on Linux in CI, but nobody drives hive there yet. Issues are welcome; for bigger changes, open a discussion first. See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
