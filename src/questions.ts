@@ -335,6 +335,27 @@ type WakePlan =
   | { delivery: { actor: string; pane: string }; reroutedFrom?: string }
   | { skipped: string };
 
+type AnswerReceipt = {
+  question_id: number;
+  wake_id: number | null;
+  wake_skipped?: string;
+  wake_rerouted_to?: string;
+  already_answered?: boolean;
+};
+
+function repeatedAnswer(row: Row, answer: string, notes: string | null): AnswerReceipt {
+  if (row.state !== "answered") {
+    throw new Error(`${QUESTION_STATE_CONFLICT}: question ${row.id} is already ${row.state}.`);
+  }
+  if (row.answer?.trim() !== answer.trim()) {
+    throw new Error(`${QUESTION_STATE_CONFLICT}: question ${row.id} is already answered.`);
+  }
+  if (notes !== null && notes !== row.notes) {
+    throw new Error(`${QUESTION_STATE_CONFLICT}: the answer matches but the notes differ.`);
+  }
+  return { question_id: row.id, wake_id: null, already_answered: true };
+}
+
 function planAnswerWake(projectId: number, row: Row, actor: string): WakePlan {
   if (actor === row.asker) return { skipped: "answered by the asker" };
   const agentId = runningAgentOf(projectId, row.asker);
@@ -363,10 +384,10 @@ const commitAnswer = db.transaction(
     answer: string,
     notes: string | null,
     plan: WakePlan,
-  ): { question_id: number; wake_id: number | null; wake_skipped?: string; wake_rerouted_to?: string } => {
+  ): AnswerReceipt => {
     const row = fetchRow(projectId, id);
     if (row.state !== "pending" && row.state !== "defaulted") {
-      throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is already ${row.state}.`);
+      return repeatedAnswer(row, answer, notes);
     }
     db.prepare(
       `UPDATE questions SET state = 'answered', answer = ?, notes = ?, answered_by = ?, updated_by = ?,
@@ -399,14 +420,14 @@ export function answerQuestion(
   id: number,
   answer: string,
   notes?: string,
-): { question_id: number; wake_id: number | null; wake_skipped?: string; wake_rerouted_to?: string } {
+): AnswerReceipt {
   if (blank(answer)) throw new Error("answer cannot be blank.");
   const storedNotes = notes === undefined || notes.trim() === "" ? null : notes;
   assertSafeWakeBody(answer);
   if (storedNotes !== null) assertSafeWakeBody(storedNotes);
   const row = fetchRow(projectId, id);
   if (row.state !== "pending" && row.state !== "defaulted") {
-    throw new Error(`${QUESTION_STATE_CONFLICT}: question ${id} is already ${row.state}.`);
+    return repeatedAnswer(row, answer, storedNotes);
   }
   const plan = planAnswerWake(projectId, row, actor);
   return commitAnswer.immediate(projectId, actor, id, answer, storedNotes, plan);

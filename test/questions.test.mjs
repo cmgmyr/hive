@@ -171,6 +171,35 @@ describe("question tools, over real MCP", () => {
     ]);
   });
 
+  it("a repeat answer matching the stored one succeeds with already_answered and queues no wake", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    const first = await human.call("question_answer", { question_id: made.question_id, answer: "  Keep it  ", notes: "decision recorded" });
+    assert.equal(typeof first.wake_id, "number");
+    const wakesAfterFirst = wakeCount();
+    const repeat = await other.call("question_answer", { question_id: made.question_id, answer: "Keep it" });
+    assert.deepEqual(repeat, { question_id: made.question_id, wake_id: null, already_answered: true });
+    assert.equal(wakeCount(), wakesAfterFirst);
+    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Different" }), /already answered/);
+    assert.match(await refusal(other, "question_answer", { question_id: made.question_id, answer: "Keep it", notes: "new notes" }), /answer matches but the notes differ/);
+
+    const withdrawn = await asker.call("question_ask", freeText());
+    await asker.call("question_update", { question_id: withdrawn.question_id, state: "withdrawn" });
+    assert.match(await refusal(other, "question_answer", { question_id: withdrawn.question_id, answer: "Keep it" }), /QUESTION_STATE_CONFLICT/);
+  });
+
+  it("two identical question_answer calls race to one write and one wake", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    const before = wakeCount();
+    const results = await Promise.all([
+      human.call("question_answer", { question_id: made.question_id, answer: "Ship it" }),
+      other.call("question_answer", { question_id: made.question_id, answer: "Ship it" }),
+    ]);
+    assert.equal(results.filter((result) => result.already_answered === true).length, 1);
+    assert.equal(results.filter((result) => typeof result.wake_id === "number").length, 1);
+    assert.equal(wakeCount(), before + 1);
+    assert.equal(db.prepare("SELECT answer FROM questions WHERE id = ?").get(made.question_id).answer, "Ship it");
+  });
+
   it("question records survive a server restart", { skip }, async () => {
     const made = await asker.call("question_ask", choice({ ref: { kind: "todo", number: 9001 } }));
     assert.equal(made.created, true);

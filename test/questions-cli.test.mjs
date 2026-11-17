@@ -148,6 +148,16 @@ describe("hive questions", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE body LIKE ?").get(`Question #${questionId} answered.%`).n, 0);
   });
 
+  it("hive answer twice with the same answer exits 0", async () => {
+    const questionId = insertQuestion({ kind: "free_text", options: null, default_answer: "the current route" });
+    const before = db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n;
+    const first = await runCli(["answer", String(questionId), "Keep North"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    const repeat = await runCli(["answer", String(questionId), "Keep North"], { cwd: dirs.projectDir, dataDir: dirs.dataDir });
+    assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
+    assert.equal(repeat.code, 0, `${repeat.stdout}\n${repeat.stderr}`);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes").get().n, before);
+  });
+
   it("answer CLI stores text and notes and queues the asker wake", { skip: tmuxSkip }, async () => {
     const asker = "agent:questions-cli-reachable";
     makeAskingAgent(asker);
