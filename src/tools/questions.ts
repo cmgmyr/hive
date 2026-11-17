@@ -33,12 +33,12 @@ export function registerQuestions(server: McpServer): void {
     "question_ask",
     {
       description:
-        "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header of 12 characters or fewer; kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
+        "Record an open question for the human, keyed to this project and to you as the asker. kind=choice takes 2-4 options (each label, description, recommended; exactly one recommended) and a header; longer headers are cut at a word boundary and reported in the receipt. kind=free_text takes just the question and header. Every question carries default_answer: for a choice it is the recommended option's label. Pass ref (a todo id or PR number) to dedupe: asking again with a ref that already has a PENDING question in this project updates that row instead of adding one. The receipt lists other pending questions in this project that look similar (same normalized text, or at least half their longer words shared), so you can question_update one instead. The record is only stored: put the question to the human yourself, in your own turn. You must be a session an answer can be woken back to. When the question is answered, an ordinary wake carrying the answer is queued to you; read the record with question_get.",
       annotations: writes,
       inputSchema: {
         kind: z.enum(["choice", "free_text"]),
         question: z.string(),
-        header: z.string().describe("12 characters or fewer."),
+        header: z.string().describe("Header label; longer values are cut at a word boundary."),
         options: z.array(optionParam).optional().describe("Required for choice, forbidden for free_text."),
         default_answer: z.string().describe("What you do if unanswered. For a choice, the recommended label."),
         ref: refParam.optional(),
@@ -47,6 +47,7 @@ export function registerQuestions(server: McpServer): void {
         question_id: idParam,
         created: z.boolean(),
         similar_question_ids: z.array(idParam),
+        header_truncated: z.string().optional(),
       },
     },
     (args) =>
@@ -94,12 +95,12 @@ export function registerQuestions(server: McpServer): void {
       inputSchema: {
         question_id: idParam,
         question: z.string().optional(),
-        header: z.string().optional(),
+        header: z.string().describe("Header label; longer values are cut at a word boundary.").optional(),
         options: z.array(optionParam).optional(),
         default_answer: z.string().optional(),
         state: z.enum(["defaulted", "withdrawn"]).optional(),
       },
-      outputSchema: { question_id: idParam, state: stateParam },
+      outputSchema: { question_id: idParam, state: stateParam, header_truncated: z.string().optional() },
     },
     (args) =>
       run(() => {

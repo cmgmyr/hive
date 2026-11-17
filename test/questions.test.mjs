@@ -120,6 +120,35 @@ after(async () => {
 });
 
 describe("question tools, over real MCP", () => {
+  it("question_ask cuts an over-long header at a word boundary and reports it", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText({ header: "Scheduling dep" }));
+    assert.equal(made.header_truncated, "Scheduling");
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, "Scheduling");
+
+    const multibyte = await asker.call("question_ask", freeText({ header: "中中中中中中中中😀 extra" }));
+    assert.equal(multibyte.header_truncated, "中中中中中中中中😀");
+    assert.equal([...multibyte.header_truncated].length, 9);
+  });
+
+  it("question_ask hard-cuts a header whose first word is over 12", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText({ header: "abcdefghijklmnop rest" }));
+    assert.equal(made.header_truncated, "abcdefghijkl");
+  });
+
+  it("a 12-character header is stored as given with no header_truncated", { skip }, async () => {
+    const header = "123456789012";
+    const made = await asker.call("question_ask", freeText({ header }));
+    assert.equal(Object.hasOwn(made, "header_truncated"), false);
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, header);
+  });
+
+  it("question_update cuts an over-long header and reports it", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText());
+    const updated = await asker.call("question_update", { question_id: made.question_id, header: "Scheduling dep" });
+    assert.equal(updated.header_truncated, "Scheduling");
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, "Scheduling");
+  });
+
   it("question records survive a server restart", { skip }, async () => {
     const made = await asker.call("question_ask", choice({ ref: { kind: "todo", number: 9001 } }));
     assert.equal(made.created, true);
@@ -196,9 +225,7 @@ describe("question tools, over real MCP", () => {
       "five options": choice({ options: opts(5) }),
       "no option recommended": choice({ options: opts(3).map((o) => ({ ...o, recommended: false })) }),
       "two recommended": choice({ options: opts(3).map((o, i) => ({ ...o, recommended: i < 2 })) }),
-      "header of 13 characters": choice({ header: "Cache storage" }),
       "blank header": choice({ header: "   " }),
-      "free text header of 13": freeText({ header: "Release names" }),
       "free text without a header": (({ header, ...rest }) => rest)(freeText()),
       "default is not the recommended label": choice({ default_answer: "Opt1" }),
       "duplicate labels": choice({ options: opts(3).map((o) => ({ ...o, label: "Same" })), default_answer: "Same" }),
@@ -273,7 +300,8 @@ describe("question tools, over real MCP", () => {
   it("update merges and revalidates the whole payload", { skip }, async () => {
     const id = (await asker.call("question_ask", choice({ question: "Merge validation probe wording" }))).question_id;
     await refusal(asker, "question_update", { question_id: id, default_answer: "Opt1" });
-    await refusal(asker, "question_update", { question_id: id, header: "thirteen char" });
+    const cut = await asker.call("question_update", { question_id: id, header: "thirteen char" });
+    assert.equal(cut.header_truncated, "thirteen");
     await refusal(asker, "question_update", { question_id: id, options: opts(1) });
     await asker.call("question_update", { question_id: id, header: "New header" });
     await asker.call("question_update", { question_id: id, options: opts(3, 2), default_answer: "Opt2" });
