@@ -53,18 +53,40 @@ describe("lease waiter transactions", () => {
     assert.equal(db.prepare("SELECT actor_id FROM lease_waiters WHERE project_id = ? AND lock_key = ? ORDER BY id").all(p, "db:dev")[0].actor_id, "agent:wait-c");
   });
 
+  it("nonowners and repeated releases cannot grant or notify twice", () => {
+    const p = project("lease-wait-nonowner-release");
+    const b = waiter(p, "agent:nonowner-b", "%nonowner-b");
+    db.prepare("INSERT INTO actors (id, name) VALUES ('agent:nonowner-holder', 'holder')").run();
+    acquireLease(p, "nonowner", "agent:nonowner-holder", 120);
+    queue(p, "nonowner", "agent:nonowner-b", b, 40);
+
+    assert.deepEqual(releaseLease(p, "nonowner", "agent:nonowner-other"), { released: false });
+    assert.equal(readLease(p, "nonowner").owner, "agent:nonowner-holder");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'nonowner'").get(p).n, 1);
+    assert.equal(wakes(p, "agent:nonowner-b").length, 0);
+
+    assert.deepEqual(releaseLease(p, "nonowner", "agent:nonowner-holder"), { released: true });
+    assert.deepEqual(releaseLease(p, "nonowner", "agent:nonowner-holder"), { released: false });
+    assert.equal(readLease(p, "nonowner").owner, "agent:nonowner-b");
+    assert.equal(wakes(p, "agent:nonowner-b").length, 1);
+  });
+
   it("maintenance preserves unexpired holders and skips expired and closed waiters", () => {
     const p = project("lease-wait-maintenance");
     const closed = waiter(p, "agent:wait-closed", "%closed");
     const live = waiter(p, "agent:wait-live", "%live");
+    const expired = waiter(p, "agent:wait-expired", "%expired");
     db.prepare("INSERT INTO actors (id, name) VALUES ('agent:wait-held', 'held')").run();
     acquireLease(p, "held", "agent:wait-held", 90);
     queue(p, "held", "agent:wait-live", live, 44);
+    queue(p, "held", "agent:wait-expired", expired, 33);
+    db.prepare("UPDATE lease_waiters SET max_wait_at = datetime('now', '-1 second') WHERE project_id = ? AND actor_id = 'agent:wait-expired'").run(p);
     db.prepare("UPDATE agents SET status = 'closed', closed_at = datetime('now') WHERE id = ?").run(closed);
     db.prepare("INSERT INTO lease_waiters (project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at) VALUES (?, 'held', 'agent:wait-closed', ?, 50, datetime('now', '+20 seconds'))").run(p, closed);
     maintainLeaseWaiters();
     assert.equal(readLease(p, "held").owner, "agent:wait-held");
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'held'").get(p).n, 1);
+    assert.equal(wakes(p, "agent:wait-expired").length, 1, "the timed-out waiter is removed and never receives the lease");
     assert.equal(wakes(p, "agent:wait-closed").length, 0);
   });
 

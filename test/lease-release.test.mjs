@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import {
   assertScratchStore,
@@ -18,6 +19,7 @@ const { db } = await import("../dist/db.js");
 await assertScratchStore();
 const { janitor } = await import("../dist/scheduler.js");
 const { closeAgentRowWithLeases } = await import("../dist/spawn.js");
+const { markWorkerLost } = await import("../dist/workerRecovery.js");
 const { sessionName, targetLive } = await import("../dist/tmux.js");
 
 let mcp;
@@ -69,6 +71,53 @@ function seedLease(project, key, owner) {
 }
 
 describe("worker lease release", () => {
+  it("close park and confirmed loss cancel waits and transfer held keys once", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
+    for (const transition of ["close", "park", "lost"]) {
+      const ownerName = `lease-transition-${transition}`;
+      const nextName = `lease-transition-next-${transition}`;
+      await mcp.call("agent_spawn", { name: ownerName, command: fakeClaude() });
+      await mcp.call("agent_spawn", { name: nextName, command: fakeClaude() });
+      const ownerRow = await liveAgentRow(mcp, ownerName);
+      const nextRow = await liveAgentRow(mcp, nextName);
+      const owner = await workerClient(ownerRow.actor_id, ownerName);
+      const next = await workerClient(nextRow.actor_id, nextName);
+      const heldKey = `lease-transition:${transition}:held`;
+      const waitingKey = `lease-transition:${transition}:waiting`;
+      try {
+        assert.equal((await owner.call("lease_acquire", { key: heldKey, ttl_seconds: 180 })).acquired, true);
+        assert.equal((await next.call("lease_acquire", { key: heldKey, ttl_seconds: 90, wait: true })).queued, true);
+        assert.equal((await mcp.call("lease_acquire", { key: waitingKey, ttl_seconds: 180 })).acquired, true);
+        assert.equal((await owner.call("lease_acquire", { key: waitingKey, ttl_seconds: 90, wait: true })).queued, true);
+
+        if (transition === "close") {
+          const receipt = await mcp.call("agent_close", { agent_id: ownerRow.agent_id });
+          assert.equal(receipt.closed, true);
+          assert.ok(receipt.released_leases.includes(heldKey));
+        } else if (transition === "park") {
+          const receipt = await mcp.call("agent_park", { agent_id: ownerRow.agent_id });
+          assert.ok(receipt.released_leases.includes(heldKey));
+        }
+        else {
+          execFileSync("tmux", ["kill-pane", "-t", ownerRow.tmux_target]);
+          const identity = db.prepare("SELECT tmux_target, tmux_socket, pane_pid FROM agents WHERE id = ?").get(ownerRow.agent_id);
+          assert.equal(markWorkerLost(ownerRow.agent_id, identity), true);
+        }
+
+        assert.equal(
+          db.prepare("SELECT owner FROM leases WHERE project_id = ? AND lock_key = ?").get(projectId, heldKey).owner,
+          nextRow.actor_id,
+          `${transition}: ${JSON.stringify(db.prepare("SELECT * FROM lease_waiters WHERE project_id = ? AND lock_key = ?").all(projectId, heldKey))}`,
+        );
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE agent_id = ?").get(ownerRow.agent_id).n, 0);
+        assert.equal(db.prepare("SELECT COUNT(*) AS n FROM wakes WHERE project_id = ? AND deliver_actor = ? AND body LIKE ?").get(projectId, nextRow.actor_id, `%${heldKey}%`).n, 1);
+      } finally {
+        await owner.close();
+        await next.close();
+        await mcp.call("agent_close", { agent_id: nextRow.agent_id }).catch(() => {});
+      }
+    }
+  });
+
   it("agent_close releases sorted worker leases and preserves other scopes and wake-pane leases", { skip: hasTmux ? false : "tmux is not installed" }, async () => {
     await mcp.call("agent_spawn", { name: "lease-close", command: fakeClaude() });
     const live = await liveAgentRow(mcp, "lease-close");

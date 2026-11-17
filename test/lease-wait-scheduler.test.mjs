@@ -75,7 +75,7 @@ async function runTickProcesses(count = 2) {
 }
 
 describe("lease wait scheduler", { skip: hasTmux ? false : "tmux is not installed" }, () => {
-  it("the A/B/C exercise grants B on release then C after B expires", NEEDS_TMUX, async () => {
+  it("expiry alone grants C with one wake after B's grant expires", NEEDS_TMUX, async () => {
     const b = await ensureWorker("expiry-b");
     const c = await ensureWorker("expiry-c");
     writeFileSync(b.sink, "");
