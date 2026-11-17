@@ -56,7 +56,7 @@ function fileWaitWake(projectId: number, actor: string, pane: string, body: stri
   ).run(projectId, actor, body, actor, pane);
 }
 
-function drainLeaseWaiters(projectId: number, key: string): void {
+function drainLeaseWaiters(projectId: number, key: string, transactionNow: string): Set<string> {
   db.prepare(
     `DELETE FROM lease_waiters WHERE project_id = ? AND lock_key = ?
        AND NOT EXISTS (SELECT 1 FROM agents a WHERE a.id = lease_waiters.agent_id
@@ -67,22 +67,24 @@ function drainLeaseWaiters(projectId: number, key: string): void {
   const timedOut = db.prepare(
     `DELETE FROM lease_waiters WHERE id IN (
        SELECT id FROM lease_waiters WHERE project_id = ? AND lock_key = ?
-         AND max_wait_at <= datetime('now') ORDER BY id
+         AND max_wait_at <= ? ORDER BY id
      ) RETURNING id, project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at`,
-  ).all(projectId, key) as WaiterRow[];
+  ).all(projectId, key, transactionNow) as WaiterRow[];
+  const timedOutActors = new Set<string>();
   for (const waiter of timedOut) {
     const row = liveDelivery(waiter.agent_id, projectId, waiter.actor_id);
     if (row) fileWaitWake(projectId, waiter.actor_id, row.tmux_target, `Gave up waiting for lease ${JSON.stringify(key)}.`);
+    timedOutActors.add(waiter.actor_id);
   }
 
   db.prepare("DELETE FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')").run(projectId, key);
-  if (readLease(projectId, key)) return;
+  if (readLease(projectId, key)) return timedOutActors;
 
   for (;;) {
     const waiter = db.prepare(
       "SELECT id, project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at FROM lease_waiters WHERE project_id = ? AND lock_key = ? ORDER BY id LIMIT 1",
     ).get(projectId, key) as WaiterRow | undefined;
-    if (!waiter) return;
+    if (!waiter) return timedOutActors;
     const row = liveDelivery(waiter.agent_id, projectId, waiter.actor_id);
     if (!row) {
       db.prepare("DELETE FROM lease_waiters WHERE id = ?").run(waiter.id);
@@ -93,11 +95,11 @@ function drainLeaseWaiters(projectId: number, key: string): void {
        VALUES (?, ?, ?, datetime('now', printf('+%d seconds', ?)))
        ON CONFLICT(project_id, lock_key) DO NOTHING RETURNING expires_at`,
     ).get(projectId, key, waiter.actor_id, waiter.ttl_seconds) as { expires_at: string } | undefined;
-    if (!grant) return;
+    if (!grant) return timedOutActors;
     db.prepare("DELETE FROM lease_waiters WHERE id = ?").run(waiter.id);
     fileWaitWake(projectId, waiter.actor_id, row.tmux_target,
       `Lease ${JSON.stringify(key)} was granted to you until ${grant.expires_at}.\nCheck this deadline before using it.\nCall lease_acquire again before then to extend it.`);
-    return;
+    return timedOutActors;
   }
 }
 
@@ -109,6 +111,7 @@ export function acquireLease(
   wait?: LeaseWaitInput,
 ): LeaseAcquireResult {
   const acquire = db.transaction((): LeaseAcquireResult => {
+    const transactionNow = (db.prepare("SELECT datetime('now') AS now").get() as { now: string }).now;
     if (!wait) {
       const queuedKeys = db.prepare(
         "SELECT DISTINCT lock_key FROM lease_waiters WHERE project_id = ? ORDER BY lock_key",
@@ -116,7 +119,7 @@ export function acquireLease(
       for (const row of queuedKeys) {
         const expired = db.prepare("SELECT 1 FROM leases WHERE project_id = ? AND lock_key = ? AND expires_at < datetime('now')")
           .get(projectId, row.lock_key);
-        if (expired) drainLeaseWaiters(projectId, row.lock_key);
+        if (expired) drainLeaseWaiters(projectId, row.lock_key, transactionNow);
       }
       purgeExpiredLeases(projectId);
       const inserted = insertLease(projectId, key, actor, ttlSeconds);
@@ -130,8 +133,11 @@ export function acquireLease(
 
     const delivery = liveDeliveryByActor(projectId, wait.delivery.actor, wait.delivery.pane);
     if (!delivery) throw new Error("You must be a session an answer can be woken back to");
-    drainLeaseWaiters(projectId, key);
+    const timedOutActors = drainLeaseWaiters(projectId, key, transactionNow);
     const current = readLease(projectId, key);
+    if (timedOutActors.has(actor)) {
+      return { project_id: projectId, key, acquired: false, held_by: current?.owner, expires_at: current?.expires_at };
+    }
     if (!current || current.owner === actor) {
       if (current && extendOwnedLease(projectId, key, actor, ttlSeconds)) {
         return { project_id: projectId, key, acquired: true, extended: true, expires_at: readLease(projectId, key)!.expires_at };
@@ -145,15 +151,15 @@ export function acquireLease(
     if (!own) {
       db.prepare(
         `INSERT INTO lease_waiters (project_id, lock_key, actor_id, agent_id, ttl_seconds, max_wait_at)
-         VALUES (?, ?, ?, ?, ?, datetime('now', printf('+%d seconds', ?)))`,
-      ).run(projectId, key, actor, delivery.id, ttlSeconds, wait.max_wait_seconds);
+         VALUES (?, ?, ?, ?, ?, datetime(?, printf('+%d seconds', ?)))`,
+      ).run(projectId, key, actor, delivery.id, ttlSeconds, transactionNow, wait.max_wait_seconds);
     }
     const waiter = db.prepare(
       "SELECT id FROM lease_waiters WHERE project_id = ? AND lock_key = ? AND actor_id = ?",
     ).get(projectId, key, actor) as { id: number };
     const position = db.prepare(
-      "SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = ? AND id <= ? AND max_wait_at > datetime('now')",
-    ).get(projectId, key, waiter.id) as { n: number };
+      "SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = ? AND id <= ? AND max_wait_at > ?",
+    ).get(projectId, key, waiter.id, transactionNow) as { n: number };
     const holder = readLease(projectId, key);
     return { project_id: projectId, key, acquired: false, queued: true, position: position.n, held_by: holder?.owner, expires_at: holder?.expires_at };
   });
@@ -169,8 +175,9 @@ function liveDeliveryByActor(projectId: number, actor: string, pane: string): (D
 
 export function releaseLease(projectId: number, key: string, actor: string): { released: boolean; left_queue?: true } {
   const release = db.transaction(() => {
+    const transactionNow = (db.prepare("SELECT datetime('now') AS now").get() as { now: string }).now;
     if (releaseOwnedLease(projectId, key, actor)) {
-      drainLeaseWaiters(projectId, key);
+      drainLeaseWaiters(projectId, key, transactionNow);
       return { released: true };
     }
     const removed = db.prepare("DELETE FROM lease_waiters WHERE project_id = ? AND lock_key = ? AND actor_id = ?")
@@ -182,11 +189,12 @@ export function releaseLease(projectId: number, key: string, actor: string): { r
 
 export function maintainLeaseWaiters(projectId?: number): void {
   const maintenance = db.transaction(() => {
+    const transactionNow = (db.prepare("SELECT datetime('now') AS now").get() as { now: string }).now;
     const keys = db.prepare(
       `SELECT DISTINCT project_id, lock_key FROM lease_waiters
        WHERE (? IS NULL OR project_id = ?) ORDER BY project_id, lock_key`,
     ).all(projectId ?? null, projectId ?? null) as Array<{ project_id: number; lock_key: string }>;
-    for (const row of keys) drainLeaseWaiters(row.project_id, row.lock_key);
+    for (const row of keys) drainLeaseWaiters(row.project_id, row.lock_key, transactionNow);
   });
   maintenance.immediate();
 }
@@ -237,6 +245,7 @@ export function releaseOwnedLease(projectId: number, key: string, actor: string)
 }
 
 export function releaseWorkerLeases(agentId: number): string[] {
+  const transactionNow = (db.prepare("SELECT datetime('now') AS now").get() as { now: string }).now;
   const agent = db
     .prepare("SELECT project_id, actor_id FROM agents WHERE id = ? AND kind = 'agent' AND actor_id != ''")
     .get(agentId) as { project_id: number; actor_id: string } | undefined;
@@ -250,7 +259,7 @@ export function releaseWorkerLeases(agentId: number): string[] {
     )
     .all(agent.project_id, agent.actor_id) as Array<{ lock_key: string }>;
   const keys = rows.map((row) => row.lock_key).sort();
-  for (const key of keys) drainLeaseWaiters(agent.project_id, key);
+  for (const key of keys) drainLeaseWaiters(agent.project_id, key, transactionNow);
   return keys;
 }
 

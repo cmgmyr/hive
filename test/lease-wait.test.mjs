@@ -105,6 +105,28 @@ describe("lease waiter transactions", () => {
     assert.match(wakes(p, "agent:wait-timeout")[0].body, /Gave up waiting for lease/);
   });
 
+  it("uses one transaction timestamp across a one-second wait deadline", () => {
+    const p = project("lease-wait-one-clock");
+    const agentId = waiter(p, "agent:one-clock", "%one-clock");
+    db.prepare("INSERT INTO actors (id, name) VALUES ('agent:one-clock-holder', 'holder')").run();
+    acquireLease(p, "one-clock", "agent:one-clock-holder", 120);
+    db.function("lease_wait_sleep_ms", (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+    db.exec("CREATE TRIGGER delay_lease_wait_insert AFTER INSERT ON lease_waiters BEGIN SELECT lease_wait_sleep_ms(1050); END");
+    try {
+      const queued = queue(p, "one-clock", "agent:one-clock", agentId, 10, 1);
+      assert.equal(queued.queued, true);
+      assert.equal(queued.position, 1);
+      const expired = queue(p, "one-clock", "agent:one-clock", agentId, 10, 1);
+      assert.equal(expired.queued, undefined);
+      assert.equal(expired.position, undefined);
+      assert.equal(db.prepare("SELECT COUNT(*) AS n FROM lease_waiters WHERE project_id = ? AND lock_key = 'one-clock'").get(p).n, 0);
+      assert.equal(wakes(p, "agent:one-clock").length, 1);
+      assert.match(wakes(p, "agent:one-clock")[0].body, /Gave up waiting/);
+    } finally {
+      db.exec("DROP TRIGGER delay_lease_wait_insert");
+    }
+  });
+
   it("deadline expiry wins over a simultaneous release", () => {
     const p = project("lease-wait-deadline-release");
     const b = waiter(p, "agent:deadline-b", "%deadline-b");
