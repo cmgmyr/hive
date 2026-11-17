@@ -184,8 +184,12 @@ export function killAgentPane(target: string): void {
   const pane = isPaneTarget(target);
 
   const window = pane ? paneWindow(target) : null;
-  tmux(pane ? "kill-pane" : "kill-window", "-t", target);
+  killAgentPaneWithoutRelayout(target);
   relayoutAfterPaneLeft(window);
+}
+
+export function killAgentPaneWithoutRelayout(target: string): void {
+  tmux(isPaneTarget(target) ? "kill-pane" : "kill-window", "-t", target);
 }
 
 export function discardOrphanedPane(target: string): void {

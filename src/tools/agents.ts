@@ -54,6 +54,7 @@ import {
   isReservedAgentName,
   isRunningLeadActor,
   killAgentPane,
+  killAgentPaneWithoutRelayout,
   launchAgent,
   LEAD_KIND,
   PaneOwnershipLost,
@@ -62,6 +63,7 @@ import {
   reapCodexHomeForClosedAgent,
   requireStillOwned,
   releaseParkRow,
+  relayoutAfterPaneLeft,
   renameAgent,
   storedLaunchOptions,
 } from "../spawn.js";
@@ -85,6 +87,7 @@ import {
   ownershipLiveness,
   paneCurrentCommand,
   paneInCopyMode,
+  paneWindow,
   pollPaneReadiness,
   rowLive,
   rowOwnership,
@@ -1294,9 +1297,16 @@ export function registerAgents(server: McpServer): void {
         if (agent.kind === "agent" && !markWorkerRetirementIntent(agent.id, paneIdentity(agent))) {
           throw new Error(`Agent ${agent.id} changed before its park intent was recorded. Nothing was changed.`);
         }
-        if (live) killAgentPane(agent.tmux_target);
-
-        const parked = parkAgentRowWithLeases(agent.id, paneIdentity(agent), branch);
+        const window = live ? paneWindow(agent.tmux_target) : null;
+        if (db.inTransaction) {
+          throw new Error("agent_park must hold the outermost transaction; a nested SAVEPOINT loses write-lock exclusion.");
+        }
+        const parked = db.transaction(() => {
+          if (live) live = stillOwnsPane(agent, "agent_park");
+          if (live) killAgentPaneWithoutRelayout(agent.tmux_target);
+          return parkAgentRowWithLeases(agent.id, paneIdentity(agent), branch);
+        }).immediate();
+        if (live) relayoutAfterPaneLeft(window);
         const parkedAt = parked.parked_at;
         if (parkedAt === undefined) {
 
