@@ -10,6 +10,7 @@ import { currentActor, effectiveProjectId, resolveProject } from "../context.js"
 import { matchesAnyTag, parseTags, run } from "../result.js";
 import { findUnsafeControlChar } from "../tmux.js";
 import { SLUG_MAX_LEN, fallbackSlug } from "../slug.js";
+import { cutAtWordBoundary } from "../wordBoundary.js";
 import { idParam, limitParam, offsetParam, projectIdParam } from "./params.js";
 import { NOT_COMPLETED_TODO_SQL, OPEN_BLOCKERS_FROM_WHERE, OPEN_BLOCKERS_SQL } from "../todoScope.js";
 import { loadProjectYml } from "../projectYml.js";
@@ -25,13 +26,12 @@ const priorityParam = z.enum(["high", "medium", "low"]);
 const slugParam = z
   .string()
   .trim()
-  .max(SLUG_MAX_LEN)
   .refine((s) => findUnsafeControlChar(s, new Set()) === null, {
 
     message: "slug cannot contain control characters, including tabs or newlines",
   })
   .describe(
-    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max). When set, it renders beside the id: bracketed in \`hive todos\`, \`hive todo <id>\`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in \`hive todos\`/\`hive todo <id>\`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to unset.`,
+    `Short label, ~3-5 words (${SLUG_MAX_LEN} chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in \`hive todos\`, \`hive todo <id>\`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in \`hive todos\`/\`hive todo <id>\`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass "" to clear a previously-set slug back to unset.`,
   )
   .optional();
 
@@ -250,7 +250,7 @@ export function registerTodos(server: McpServer): void {
         blocked_by: z.array(idParam).optional(),
         project_id: projectIdParam,
       },
-      outputSchema: { project_id: idParam, todo_id: idParam },
+      outputSchema: { project_id: idParam, todo_id: idParam, slug_truncated: z.string().optional() },
     },
     (args) =>
       run(() => {
@@ -267,13 +267,14 @@ export function registerTodos(server: McpServer): void {
               args.body ?? "",
               args.priority ?? "medium",
               JSON.stringify(args.tags ?? []),
-              args.slug ?? "",
+              args.slug === undefined ? "" : cutAtWordBoundary(args.slug, SLUG_MAX_LEN),
             );
           const todoId = Number(info.lastInsertRowid);
           for (const blockerId of args.blocked_by ?? []) {
             addBlocker.immediate(projectId, todoId, blockerId);
           }
-          return { project_id: projectId, todo_id: todoId };
+          const slug = args.slug === undefined ? undefined : cutAtWordBoundary(args.slug, SLUG_MAX_LEN);
+          return { project_id: projectId, todo_id: todoId, ...(slug !== undefined && slug !== args.slug ? { slug_truncated: slug } : {}) };
         });
       }),
   );
@@ -365,29 +366,35 @@ export function registerTodos(server: McpServer): void {
         slug: slugParam,
         project_id: projectIdParam,
       },
-      outputSchema: { project_id: idParam, todo_id: idParam },
+      outputSchema: { project_id: idParam, todo_id: idParam, slug_truncated: z.string().optional() },
     },
     (args) =>
       run(async () => {
         const projectId = effectiveProjectId(args.project_id);
+        const storedSlug = args.slug === undefined ? undefined : cutAtWordBoundary(args.slug, SLUG_MAX_LEN);
         const patch = {
           title: args.title,
           body: args.body,
           priority: args.priority,
           status: args.status,
           tags: args.tags,
-          slug: args.slug,
+          slug: storedSlug,
         };
+        const receipt = (result: { todo_id: number }) => ({
+          project_id: projectId,
+          ...result,
+          ...(storedSlug !== undefined && storedSlug !== args.slug ? { slug_truncated: storedSlug } : {}),
+        });
         if (args.status !== "completed") {
           const result = updateTodo.immediate(projectId, args.todo_id, patch);
-          return { project_id: projectId, ...result };
+          return receipt(result);
         }
         const snapshot = getTodo(projectId, args.todo_id);
         if (snapshot.status === "completed") {
           const loaded = loadProjectYml(resolveProject(projectId).path);
           const expected = loaded.completionGateError || loaded.config?.completion_gate ? snapshot : undefined;
           const result = updateTodo.immediate(projectId, args.todo_id, patch, expected);
-          return { project_id: projectId, ...result };
+          return receipt(result);
         }
         const result = await throughCompletionGate(
           projectId,
@@ -395,7 +402,7 @@ export function registerTodos(server: McpServer): void {
           args.title ?? snapshot.title,
           (expected) => updateTodo.immediate(projectId, args.todo_id, patch, expected),
         );
-        return { project_id: projectId, ...result };
+        return receipt(result);
       }),
   );
 

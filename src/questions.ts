@@ -1,6 +1,7 @@
 import { db } from "./db.js";
 import { HUMAN_ACTOR_PREFIX } from "./context.js";
 import { assertSafeWakeBody, resolveWakeDelivery } from "./wakeTarget.js";
+import { cutAtWordBoundary } from "./wordBoundary.js";
 
 type QuestionRef = { kind: "todo" | "pr"; number: number };
 type QuestionOption = { label: string; description: string; recommended: boolean };
@@ -69,19 +70,7 @@ const blank = (s: unknown): boolean => typeof s !== "string" || s.trim() === "";
 function fitHeader(header: string): { header: string; truncated: boolean } {
   const chars = [...header];
   if (chars.length <= HEADER_MAX_CHARS) return { header, truncated: false };
-  const prefix = chars.slice(0, HEADER_MAX_CHARS);
-  if (/\s/u.test(chars[HEADER_MAX_CHARS])) {
-    return { header: prefix.join("").trimEnd(), truncated: true };
-  }
-  let boundary = -1;
-  for (let i = prefix.length - 1; i >= 0; i--) {
-    if (/\s/u.test(prefix[i])) {
-      boundary = i;
-      break;
-    }
-  }
-  const cut = (boundary > 0 ? prefix.slice(0, boundary) : prefix).join("").trimEnd();
-  return { header: cut, truncated: true };
+  return { header: cutAtWordBoundary(header, HEADER_MAX_CHARS), truncated: true };
 }
 
 function validateRef(ref: QuestionRef | undefined): void {

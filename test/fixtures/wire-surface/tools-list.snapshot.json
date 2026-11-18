@@ -2672,8 +2672,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
-          "maxLength": 40,
+          "description": "Short label, ~3-5 words (40 chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "type": "string"
         },
         "tags": {
@@ -2702,6 +2701,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug_truncated": {
+          "type": "string"
         },
         "todo_id": {
           "exclusiveMinimum": 0,
@@ -2925,8 +2927,7 @@
           "type": "integer"
         },
         "slug": {
-          "description": "Short label, ~3-5 words (40 chars max). When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
-          "maxLength": 40,
+          "description": "Short label, ~3-5 words (40 chars max). Longer values are cut at a word boundary and reported as slug_truncated. When set, it renders beside the id: bracketed in `hive todos`, `hive todo <id>`, and the session-start digest, and as the row's whole label in the dashboard. Left unset, those surfaces fall back to the title - shown in full in `hive todos`/`hive todo <id>`/the digest, truncated to this same length in the dashboard. Free text, not a pad-style slug. Pass \"\" to clear a previously-set slug back to unset.",
           "type": "string"
         },
         "status": {
@@ -2969,6 +2970,9 @@
           "exclusiveMinimum": 0,
           "maximum": 9007199254740991,
           "type": "integer"
+        },
+        "slug_truncated": {
+          "type": "string"
         },
         "todo_id": {
           "exclusiveMinimum": 0,
