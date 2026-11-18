@@ -2100,7 +2100,7 @@
       "additionalProperties": false,
       "properties": {
         "default_answer": {
-          "description": "What you do if unanswered. For a choice, the recommended label.",
+          "description": "What you do if unanswered. For a choice, defaults to the recommended label; required for free_text.",
           "type": "string"
         },
         "header": {
@@ -2170,8 +2170,7 @@
       "required": [
         "kind",
         "question",
-        "header",
-        "default_answer"
+        "header"
       ],
       "type": "object"
     },

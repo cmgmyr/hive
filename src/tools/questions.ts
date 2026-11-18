@@ -43,7 +43,7 @@ export function registerQuestions(server: McpServer): void {
         question: z.string(),
         header: z.string().describe("12 characters or fewer; longer values are cut at a word boundary and reported as header_truncated."),
         options: z.array(optionParam).optional().describe("Required for choice, forbidden for free_text."),
-        default_answer: z.string().describe("What you do if unanswered. For a choice, the recommended label."),
+        default_answer: z.string().optional().describe("What you do if unanswered. For a choice, defaults to the recommended label; required for free_text."),
         ref: refParam.optional(),
       },
       outputSchema: {
@@ -56,14 +56,13 @@ export function registerQuestions(server: McpServer): void {
     (args) =>
       run(() => {
         const projectId = effectiveProjectId();
+        const options = args.options !== undefined ? normalizeOptions(args.options) : undefined;
         const input = {
           kind: args.kind,
           question: args.question,
           header: args.header,
-          default_answer: args.default_answer,
-          ...(args.options !== undefined
-            ? { options: normalizeOptions(args.options) }
-            : {}),
+          default_answer: args.default_answer ?? (args.kind === "choice" ? options?.find((option) => option.recommended)?.label ?? "" : ""),
+          ...(options !== undefined ? { options } : {}),
           ...(args.ref !== undefined ? { ref: args.ref } : {}),
         } as QuestionInput;
         return askQuestion(projectId, currentActor(), input);

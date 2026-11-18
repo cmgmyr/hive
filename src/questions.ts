@@ -13,7 +13,7 @@ export type QuestionInput =
       question: string;
       header: string;
       options: QuestionOption[];
-      default_answer: string;
+      default_answer?: string;
       ref?: QuestionRef;
     }
   | { kind: "free_text"; question: string; header: string; default_answer: string; ref?: QuestionRef };
@@ -44,6 +44,10 @@ type QuestionPatch = {
   default_answer?: string;
   state?: "defaulted" | "withdrawn";
 };
+
+type ValidQuestionInput =
+  | { kind: "choice"; question: string; header: string; options: QuestionOption[]; default_answer: string; ref?: QuestionRef }
+  | { kind: "free_text"; question: string; header: string; default_answer: string; ref?: QuestionRef };
 
 const QUESTION_STATE_CONFLICT = "QUESTION_STATE_CONFLICT";
 const HEADER_MAX_CHARS = 12;
@@ -79,7 +83,7 @@ function validateRef(ref: QuestionRef | undefined): void {
   if (!Number.isSafeInteger(ref.number) || ref.number <= 0) throw new Error("ref.number must be a positive safe integer.");
 }
 
-function validateInput(input: QuestionInput): void {
+function validateInput(input: ValidQuestionInput): void {
   if (input.kind !== "choice" && input.kind !== "free_text") {
     throw new Error(`kind must be "choice" or "free_text", got ${JSON.stringify((input as { kind: unknown }).kind)}.`);
   }
@@ -88,10 +92,10 @@ function validateInput(input: QuestionInput): void {
   if ([...input.header].length > HEADER_MAX_CHARS) {
     throw new Error(`header is ${[...input.header].length} characters; the limit is ${HEADER_MAX_CHARS}.`);
   }
-  if (blank(input.default_answer)) throw new Error("default_answer cannot be blank: every question carries its default.");
   validateRef(input.ref);
   const wakeBound = [input.question, input.header, input.default_answer];
   if (input.kind === "free_text") {
+    if (blank(input.default_answer)) throw new Error("a free_text question needs default_answer.");
     if ((input as { options?: unknown }).options !== undefined) throw new Error("a free_text question takes no options.");
   } else {
     const options = input.options;
@@ -111,7 +115,7 @@ function validateInput(input: QuestionInput): void {
       throw new Error(`exactly one option must be recommended, got ${recommended.length}.`);
     }
     if (input.default_answer !== recommended[0].label) {
-      throw new Error(`default_answer must be the recommended option's label ("${recommended[0].label}").`);
+      throw new Error(`default_answer must be the recommended option's label ("${recommended[0].label}"), or omit default_answer to use it.`);
     }
   }
   for (const text of wakeBound) assertSafeWakeBody(text);
@@ -205,9 +209,12 @@ export function askQuestion(
   input: QuestionInput,
 ): { question_id: number; created: boolean; similar_question_ids: number[]; header_truncated?: string } {
   const fitted = fitHeader(input.header);
-  input = { ...input, header: fitted.header };
-  validateInput(input);
-  const refTaken = input.ref !== undefined && pendingIdForRef(projectId, input.ref) !== undefined;
+  let validInput: ValidQuestionInput = { ...input, header: fitted.header } as ValidQuestionInput;
+  if (validInput.kind === "choice" && validInput.default_answer === undefined) {
+    validInput = { ...validInput, default_answer: validInput.options.find((option) => option.recommended)?.label ?? "" };
+  }
+  validateInput(validInput);
+  const refTaken = validInput.ref !== undefined && pendingIdForRef(projectId, validInput.ref) !== undefined;
   let askerChecked = false;
   if (!refTaken) {
     resolveWakeDelivery(projectId);
@@ -218,11 +225,11 @@ export function askQuestion(
       );
     }
   }
-  const { id, created } = upsertQuestion.immediate(projectId, actor, input, askerChecked);
+  const { id, created } = upsertQuestion.immediate(projectId, actor, validInput, askerChecked);
   return {
     question_id: id,
     created,
-    similar_question_ids: similarPendingIds(projectId, id, input.question),
+    similar_question_ids: similarPendingIds(projectId, id, validInput.question),
     ...(fitted.truncated ? { header_truncated: fitted.header } : {}),
   };
 }
@@ -271,14 +278,16 @@ const patchQuestion = db.transaction(
         throw new Error(`Only the asking session (${current.asker}) or the human can mark question ${id} ${patch.state}.`);
       }
     }
-    let merged: QuestionInput | null = null;
+    let merged: ValidQuestionInput | null = null;
     const fitted = patch.header === undefined ? null : fitHeader(patch.header);
     if (editsText) {
       if (current.kind === "free_text" && patch.options !== undefined) throw new Error("a free_text question takes no options.");
       const base = {
         question: patch.question ?? current.question,
         header: fitted?.header ?? current.header,
-        default_answer: patch.default_answer ?? current.default_answer,
+        default_answer: patch.default_answer ?? (patch.options !== undefined
+          ? (patch.options.find((option) => option.recommended)?.label ?? "")
+          : current.default_answer),
         ...(current.ref ? { ref: current.ref } : {}),
       };
       merged =
