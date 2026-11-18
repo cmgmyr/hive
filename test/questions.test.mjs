@@ -154,6 +154,12 @@ describe("question tools, over real MCP", () => {
     assert.equal(made.header_truncated, "abcdefghijkl");
   });
 
+  it("a header with a leading space and a long first word hard-cuts instead of emptying", { skip }, async () => {
+    const made = await asker.call("question_ask", freeText({ header: " Supercalifragilistic" }));
+    assert.equal(made.header_truncated, " Supercalifr");
+    assert.equal((await asker.call("question_get", { question_id: made.question_id })).header, " Supercalifr");
+  });
+
   it("question_ask counts header limits in code points", { skip }, async () => {
     const header = `${"😀".repeat(12)} extra`;
     const made = await asker.call("question_ask", freeText({ header }));
