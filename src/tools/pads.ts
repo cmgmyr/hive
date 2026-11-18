@@ -180,7 +180,14 @@ export function registerPads(server: McpServer): void {
         const parts = pad.content.split(args.old_text);
         const occurrences = parts.length - 1;
         if (occurrences === 0) {
-          throw new Error(`old_text not found in pad ${pad.id}. Re-read with pad_read.`);
+          const loose = findWhitespaceMatch(pad.content, args.old_text);
+          if (loose !== null) {
+            const line = pad.content.slice(0, loose).split("\n").length;
+            throw new Error(
+              `old_text not found in pad ${pad.id} (revision ${pad.revision}). Re-read with pad_read. It matches once if whitespace is ignored, starting at line ${line}; copy that text exactly.`,
+            );
+          }
+          throw new Error(`old_text not found in pad ${pad.id} (revision ${pad.revision}). Re-read with pad_read.`);
         }
         if (occurrences > 1) {
           throw new Error(
@@ -337,4 +344,27 @@ export function registerPads(server: McpServer): void {
         };
       }),
   );
+}
+
+function findWhitespaceMatch(content: string, oldText: string): number | null {
+  let normalized = "";
+  const originalOffsets: number[] = [];
+  for (let i = 0; i < content.length;) {
+    if (/\s/u.test(content[i])) {
+      const start = i;
+      while (i < content.length && /\s/u.test(content[i])) i++;
+      normalized += " ";
+      originalOffsets.push(start);
+    } else {
+      normalized += content[i];
+      originalOffsets.push(i++);
+    }
+  }
+
+  const needle = oldText.replace(/\s+/gu, " ");
+  let match = normalized.indexOf(needle);
+  if (match < 0) return null;
+  const originalStart = originalOffsets[match];
+  match = normalized.indexOf(needle, match + 1);
+  return match < 0 ? originalStart : null;
 }
