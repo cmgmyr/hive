@@ -93,7 +93,7 @@ export function findAgent(projectId: number, ref: { agent_id?: number; name?: st
 
       if (closed.parked_at) {
         throw new Error(
-          `Agent ${closed.id} ("${closed.name}") is PARKED, not finished - it was paused on ` +
+          `Agent ${closed.id} ("${closed.name}") is PARKED, not finished - a parked agent is found by agent_id, not by name. It was paused on ` +
             `${closed.parked_at} and its session is waiting. Bring it back with agent_resume(agent_id: ` +
             `${closed.id}), or abandon the park with agent_close(agent_id: ${closed.id}).`,
         );

@@ -299,8 +299,15 @@ execFileSync(${JSON.stringify(realTmux)}, args, { stdio: "inherit" });
     const live = await liveAgentRow(mcp, "park-namehint");
     await mcp.call("agent_park", { name: "park-namehint" });
 
+    await assert.rejects(mcp.call("agent_close", { name: "park-namehint" }), (e) => {
+      assert.match(e.message, /a parked agent is found by agent_id, not by name/);
+      assert.match(e.message, new RegExp(`agent_close\\(agent_id: ${live.agent_id}\\)`));
+      return true;
+    });
+
     await assert.rejects(mcp.call("agent_status", { name: "park-namehint" }), (e) => {
       assert.match(e.message, /is PARKED/);
+      assert.match(e.message, /a parked agent is found by agent_id, not by name/);
       assert.match(e.message, new RegExp(`agent_resume\\(agent_id: ${live.agent_id}\\)`));
       assert.ok(!/Spawn a new worker/.test(e.message), "must not advise replacing a lane that is waiting");
       return true;
