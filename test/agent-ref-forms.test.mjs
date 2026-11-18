@@ -108,4 +108,44 @@ describe("recipient references through the MCP tools", { skip: hasTmux ? false :
       await mcp.call("agent_close", { agent_id: partialTarget }).catch(() => {});
     }
   });
+
+  it("an unknown agent name lists up to ten running agents in this project", async () => {
+    const added = [];
+    for (let i = 0; i < 12; i++) {
+      added.push(db.prepare(
+        "INSERT INTO agents (project_id, name, command, cwd, kind, status) VALUES (?, ?, 'sleep', '/', 'agent', 'running') RETURNING id",
+      ).get(projectId, `hint-agent-${i}`).id);
+    }
+    try {
+      let message;
+      await assert.rejects(mcp.call("agent_send", { name: "queen", text: "unknown recipient probe" }), (error) => {
+        message = error.message;
+        return true;
+      });
+      const running = db.prepare("SELECT id, name FROM agents WHERE project_id = ? AND status = 'running' ORDER BY id").all(projectId);
+      const expected = running.slice(0, 10);
+      for (const row of expected) assert.ok(message.includes(`${row.name} (agent_id ${row.id})`));
+      assert.equal((message.match(/agent_id \d+/g) ?? []).length, 10);
+      assert.match(message, new RegExp(`and ${running.length - 10} more`));
+      assert.match(message, /Call agent_list\./);
+      assert.match(message, /No running agent matching "queen"/);
+      assert.ok(!message.includes("foreign"), "the candidate list must stay within the resolved project");
+    } finally {
+      for (const id of added) db.prepare("UPDATE agents SET status = 'closed' WHERE id = ?").run(id);
+    }
+  });
+
+  it("an unknown agent name says when this project has no running agents", async () => {
+    const states = db.prepare("SELECT id, status FROM agents WHERE project_id = ? AND status = 'running'").all(projectId);
+    try {
+      db.prepare("UPDATE agents SET status = 'closed' WHERE project_id = ?").run(projectId);
+      await assert.rejects(mcp.call("agent_status", { name: "no-running-agent" }), (error) => {
+        assert.match(error.message, /No agents are running in this project\./);
+        assert.match(error.message, /Call agent_list\./);
+        return true;
+      });
+    } finally {
+      for (const row of states) db.prepare("UPDATE agents SET status = ? WHERE id = ?").run(row.status, row.id);
+    }
+  });
 });
