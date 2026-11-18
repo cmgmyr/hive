@@ -153,18 +153,25 @@ describe("lead auto-handoff state", () => {
     const url = "https://claude.ai/artifact/example-artifact";
     const artifact = { type: "monitor", status: "running", description: `live updates for artifact ${url} (auto-armed on publish)` };
     assert.equal(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([artifact]) }), null);
+    const watchRequested = { ...artifact, description: `live updates for artifact ${url} (watch requested)` };
+    assert.equal(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([watchRequested]) }), null);
+    const nestedReason = { ...artifact, description: `live updates for artifact ${url} (watch requested by (explicit) choice)` };
+    assert.equal(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([nestedReason]) }), null);
     const rejected = [
       { ...artifact, type: "shell" }, { ...artifact, type: "subagent" }, { ...artifact, type: "telepathy" },
       { ...artifact, status: "unknown" }, { ...artifact, description: "watch build output" },
       { ...artifact, description: artifact.description.replace("claude.ai/", "claude.ai.example/") },
       { ...artifact, description: artifact.description.replace(" (auto-armed on publish)", "") },
+      { ...artifact, description: `live updates for artifact https://claude.ai/artifact/invalid_url (watch requested)` },
       { ...artifact, description: artifact.description + " and run a command" },
     ];
     for (const task of rejected) {
       assert.notEqual(handoff.backgroundVeto({ ...snapshot, stop_background: JSON.stringify([...tasks, task]) }), null, JSON.stringify(task));
     }
     const row = { id: 1, lead_agent_id: lead.id, predecessor_session_id: SESSION, predecessor_turns: 5, reason: "warn", pass: 1 };
+    db.prepare("UPDATE lead_turn_state SET stop_background = ? WHERE agent_id = ?").run(JSON.stringify([...tasks, watchRequested]), lead.id);
     const kickoff = handoff.successorPrompt(row);
+    assert.ok(kickoff.includes(url), "the successor restores watches armed by an explicit watch");
     for (const task of tasks) assert.ok(kickoff.includes(task.description.match(/https:\/\/\S+/)[0]));
     assert.match(kickoff, /re-watch each artifact/i);
     assert.match(handoff.requestBody(row, 5), /list each watched artifact.*URL/i);

@@ -99,7 +99,7 @@ export function handoffEligibility(
 
 function artifactWatchUrl(task: { type?: unknown; status?: unknown; description?: unknown } | null): string | null {
   if (task?.type !== "monitor" || task.status !== "running" || typeof task.description !== "string") return null;
-  return /^live updates for artifact (https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+) \(auto-armed on publish\)$/.exec(task.description)?.[1] ?? null;
+  return /^live updates for artifact (https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9-]+) \((.+)\)$/.exec(task.description)?.[1] ?? null;
 }
 
 // Artifact live-update watches are restored by the successor; all other live work vetoes respawn.
