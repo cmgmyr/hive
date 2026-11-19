@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 import { dirname, join } from "node:path";
@@ -15,8 +15,10 @@ const { db } = await import("../dist/db.js");
 
 const userBin = join(dirs.tmp, "existing", "node_modules", ".bin");
 const fakeBin = join(dirs.tmp, "fake-bin");
+const probeNode = join(dirs.tmp, "node");
 mkdirSync(userBin, { recursive: true });
 mkdirSync(fakeBin, { recursive: true });
+symlinkSync(process.execPath, probeNode);
 const nodeBin = dirname(process.execPath);
 const tmuxBin = hasTmux ? dirname(execFileSync("which", ["tmux"], { encoding: "utf8" }).trim()) : "/usr/bin";
 const basePath = [userBin, fakeBin, nodeBin, tmuxBin, "/usr/bin", "/bin"].join(":");
@@ -78,11 +80,16 @@ async function spawnPathProbe(mcp, name, output, placement = "window") {
 }
 
 async function spawnEnvProbe(mcp, name, output, placement = "window") {
-  const command = `/usr/bin/env > ${quote(output)}; sleep 600`;
+  const script = join(dirs.tmp, `${name}.mjs`);
+  writeFileSync(script, [
+    'import { writeFileSync } from "node:fs";',
+    'writeFileSync(process.argv[2], Object.entries(process.env).map(([key, value]) => key + "=" + value).join("\\n"));',
+    "setTimeout(() => {}, 600000);",
+  ].join("\n"));
   await mcp.call("agent_spawn", {
     name,
-    command: "/bin/sh",
-    extra_args: ["-c", command],
+    command: probeNode,
+    extra_args: [script, output],
     placement,
   });
   await until(() => existsSync(output), 5000, 25, `the ${name} pane writes its environment`);
@@ -128,6 +135,7 @@ describe("worker pane PATH from npm exec", () => {
       for (const [name, placement] of [["npm-env-first", "window"], ["npm-env-split", "split"], ["npm-env-window", "window"]]) {
         const lines = await spawnEnvProbe(mcp, name, join(dirs.tmp, `${name}.env`), placement);
         assert.deepEqual(lines.filter((line) => /^(npm_|npm_command=|npm_lifecycle_|npm_package_|INIT_CWD=|NODE=)/i.test(line)), []);
+        assert.equal(lines.includes(`_=${npmEnv._}`), false);
       }
     }, "/bin/sh", npmEnv);
   });
