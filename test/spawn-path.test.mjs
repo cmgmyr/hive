@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { after, describe, it } from "node:test";
 import { dirname, join } from "node:path";
 
-import { clearHiveEnv, isolateTmux, McpClient, scratchDirs, tmux, until } from "./helpers.mjs";
+import {
+  clearHiveEnv, isolateTmux, McpClient, recordScratchTmuxSocket, scratchDirs, tmux, tmuxSocketUnder, until,
+} from "./helpers.mjs";
 
 const { hasTmux, cleanup } = isolateTmux("the worker PATH tests");
 const dirs = scratchDirs();
+const npmTmuxTmp = mkdtempSync(join(tmpdir(), "hive-npm-tmux-"));
+const npmTmuxSocket = tmuxSocketUnder(npmTmuxTmp);
+recordScratchTmuxSocket(npmTmuxSocket);
 clearHiveEnv();
 process.env.HIVE_DATA_DIR = dirs.dataDir;
 const { paneEnvPath, sessionName } = await import("../dist/tmux.js");
@@ -64,6 +70,9 @@ async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh", extraE
   } finally {
     await mcp.close();
     cleanup(sessionName());
+    try {
+      execFileSync("tmux", ["-S", npmTmuxSocket, "kill-server"], { stdio: "ignore" });
+    } catch {}
   }
 }
 
@@ -137,7 +146,7 @@ describe("worker pane PATH from npm exec", () => {
         assert.deepEqual(lines.filter((line) => /^(npm_|npm_command=|npm_lifecycle_|npm_package_|INIT_CWD=|NODE=)/i.test(line)), []);
         assert.equal(lines.includes(`_=${npmEnv._}`), false);
       }
-    }, "/bin/sh", npmEnv);
+    }, "/bin/sh", { ...npmEnv, TMUX_TMPDIR: npmTmuxTmp });
   });
 
   it("preserves user npm variables when the server is not running under npm exec", needsTmux, async () => {
@@ -146,7 +155,7 @@ describe("worker pane PATH from npm exec", () => {
       const lines = await spawnEnvProbe(mcp, "npm-env-user", join(dirs.tmp, "npm-env-user.env"));
       assert.ok(lines.includes("npm_config_force=false"));
       assert.ok(lines.includes("npm_config_min_release_age=7"));
-    }, "/bin/sh", userNpmEnv);
+    }, "/bin/sh", { ...userNpmEnv, TMUX_TMPDIR: npmTmuxTmp });
   });
 
   it("cuts the npm exec PATH prefix from a split worker using the server's explicit environment", needsTmux, async () => {
