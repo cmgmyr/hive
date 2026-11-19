@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { it } from "node:test";
@@ -93,7 +93,7 @@ it("CLI rejects unknown flags, missing values, positions, invalid limits and unk
     assert.ok(result.stderr.length > 0);
   }
 });
-it("CLI renders event fields, filtered target and empty state and captures the five requested terminal states", async () => {
+it("CLI renders event fields, filtered target and empty state and captures the five requested terminal states under scratch storage", async () => {
   const populated = await run(queen, ["--limit", "2"], { HIVE_AGENT_ID: q });
   assert.equal(populated.code, 0);
   assert.match(populated.stdout, /UTC.*lead:/);
@@ -105,7 +105,8 @@ it("CLI renders event fields, filtered target and empty state and captures the f
   assert.equal(emptyResult.stdout, "No queen audit entries recorded.\n");
   const refused = await run(alpha, ["--project-id", String(beta.id)]);
   const json = await run(queen, ["--json", "--limit", "2"], { HIVE_AGENT_ID: q });
-  const captureDir = join(new URL("../node_modules/.cache/queen-audit", import.meta.url).pathname, "captures");
+  const captureDir = join(dirs.tmp, "queen-audit", "captures");
   mkdirSync(captureDir, { recursive: true });
   for (const [name, text] of [["global", populated.stdout], ["filtered", filtered.stdout], ["empty", emptyResult.stdout], ["refusal", refused.stderr], ["json", json.stdout]]) writeFileSync(join(captureDir, `${name}.txt`), text);
+  assert.deepEqual(readdirSync(captureDir).sort(), ["empty.txt", "filtered.txt", "global.txt", "json.txt", "refusal.txt"]);
 });
