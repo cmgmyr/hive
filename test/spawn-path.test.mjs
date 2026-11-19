@@ -121,11 +121,13 @@ describe("worker pane PATH from npm exec", () => {
       npm_execpath: "/tmp/npm/bin/npm-cli.js",
       npm_node_execpath: "/tmp/node",
       _: "/tmp/.npm/_npx/hash/node_modules/.bin/hive-mcp",
+      INIT_CWD: dirs.projectDir,
+      NODE: "/tmp/node/bin/node",
     };
     await withMcp(npmExecPath, "exec", async (mcp) => {
       for (const [name, placement] of [["npm-env-first", "window"], ["npm-env-split", "split"], ["npm-env-window", "window"]]) {
         const lines = await spawnEnvProbe(mcp, name, join(dirs.tmp, `${name}.env`), placement);
-        assert.deepEqual(lines.filter((line) => /^(npm_|npm_command=|npm_lifecycle_|npm_package_)/i.test(line)), []);
+        assert.deepEqual(lines.filter((line) => /^(npm_|npm_command=|npm_lifecycle_|npm_package_|INIT_CWD=|NODE=)/i.test(line)), []);
       }
     }, "/bin/sh", npmEnv);
   });

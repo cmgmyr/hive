@@ -1739,7 +1739,7 @@ export function tmuxWithClientPath(path: string | null, ...args: string[]): stri
   if (path !== null) env.PATH = path;
   if (process.env.npm_command === "exec") {
     for (const key of Object.keys(env)) {
-      if (/^npm_/i.test(key) || key === "_") delete env[key];
+      if (/^npm_/i.test(key) || key === "_" || key === "INIT_CWD" || key === "NODE") delete env[key];
     }
   }
   refuseIfSharedSocketFromScratchStore();
