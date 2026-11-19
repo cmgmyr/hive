@@ -36,7 +36,7 @@ function pathProbeCommand(output) {
   return `/usr/bin/printenv PATH > ${quote(temporary)} && /bin/mv ${quote(temporary)} ${quote(output)}`;
 }
 
-function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
+function startMcp(serverPath, npmCommand, shell = "/bin/sh", extraEnv = {}) {
   return new McpClient({
     cwd: dirs.projectDir,
     dataDir: dirs.dataDir,
@@ -45,6 +45,7 @@ function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
       HOME: dirs.tmp,
       npm_command: npmCommand,
       npm_lifecycle_event: "test",
+      ...extraEnv,
       HIVE_SPAWN_READY_MS: "1",
       TERM: "xterm-256color",
       SHELL: shell,
@@ -52,9 +53,9 @@ function startMcp(serverPath, npmCommand, shell = "/bin/sh") {
   });
 }
 
-async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh") {
+async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh", extraEnv = {}) {
   cleanup(sessionName());
-  const mcp = startMcp(serverPath, npmCommand, shell);
+  const mcp = startMcp(serverPath, npmCommand, shell, extraEnv);
   try {
     await mcp.start();
     return await action(mcp);
@@ -74,6 +75,18 @@ async function spawnPathProbe(mcp, name, output, placement = "window") {
   });
   await until(() => existsSync(output), 5000, 25, `the ${name} pane writes its PATH`);
   return readFileSync(output, "utf8").trim();
+}
+
+async function spawnEnvProbe(mcp, name, output, placement = "window") {
+  const command = `/usr/bin/env > ${quote(output)}; sleep 600`;
+  await mcp.call("agent_spawn", {
+    name,
+    command: "/bin/sh",
+    extra_args: ["-c", command],
+    placement,
+  });
+  await until(() => existsSync(output), 5000, 25, `the ${name} pane writes its environment`);
+  return readFileSync(output, "utf8").trim().split("\n");
 }
 
 function installFakeClaude(output) {
@@ -98,6 +111,34 @@ after(() => {
 });
 
 describe("worker pane PATH from npm exec", () => {
+  it("removes npm exec variables from new, split, and window panes", needsTmux, async () => {
+    const npmEnv = {
+      npm_config_force: "true",
+      npm_config_min_release_age: "0",
+      npm_config_yes: "true",
+      npm_config_package: "node@24.22.1",
+      npm_package_name: "fixture",
+      npm_execpath: "/tmp/npm/bin/npm-cli.js",
+      npm_node_execpath: "/tmp/node",
+      _: "/tmp/.npm/_npx/hash/node_modules/.bin/hive-mcp",
+    };
+    await withMcp(npmExecPath, "exec", async (mcp) => {
+      for (const [name, placement] of [["npm-env-first", "window"], ["npm-env-split", "split"], ["npm-env-window", "window"]]) {
+        const lines = await spawnEnvProbe(mcp, name, join(dirs.tmp, `${name}.env`), placement);
+        assert.deepEqual(lines.filter((line) => /^(npm_|npm_command=|npm_lifecycle_|npm_package_)/i.test(line)), []);
+      }
+    }, "/bin/sh", npmEnv);
+  });
+
+  it("preserves user npm variables when the server is not running under npm exec", needsTmux, async () => {
+    const userNpmEnv = { npm_config_force: "false", npm_config_min_release_age: "7" };
+    await withMcp(basePath, "run-script", async (mcp) => {
+      const lines = await spawnEnvProbe(mcp, "npm-env-user", join(dirs.tmp, "npm-env-user.env"));
+      assert.ok(lines.includes("npm_config_force=false"));
+      assert.ok(lines.includes("npm_config_min_release_age=7"));
+    }, "/bin/sh", userNpmEnv);
+  });
+
   it("cuts the npm exec PATH prefix from a split worker using the server's explicit environment", needsTmux, async () => {
     assert.notEqual(npmExecPath, process.env.PATH, "the PATH fixture must differ from the test runner's PATH");
     await withMcp(npmExecPath, "exec", async (mcp) => {

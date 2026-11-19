@@ -118,16 +118,17 @@ function refuseIfSharedSocketFromScratchStore(): void {
 
 export function tmux(...args: string[]): string {
   refuseIfSharedSocketFromScratchStore();
-  return tmuxWithin(tmuxTimeoutMs(), ...args);
+  return tmuxWithin(tmuxTimeoutMs(), args);
 }
 
-function tmuxWithin(timeoutMs: number, ...args: string[]): string {
+function tmuxWithin(timeoutMs: number, args: string[], env?: NodeJS.ProcessEnv): string {
   try {
     return execFileSync("tmux", args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: TMUX_MAX_BUFFER,
       timeout: timeoutMs,
+      ...(env ? { env } : {}),
 
       killSignal: "SIGKILL",
     }).replace(/\n$/, "");
@@ -409,7 +410,7 @@ export function orphanScratchServers(options: { minAgeMs?: number; budgetMs?: nu
 
       tmuxWithin(
         Math.min(ORPHAN_PROBE_TIMEOUT_MS, tmuxTimeoutMs()),
-        "-S", candidate.socket, "list-sessions", "-F", "#{session_name}",
+        ["-S", candidate.socket, "list-sessions", "-F", "#{session_name}"],
       );
       state = "live";
     } catch (e) {
@@ -1732,16 +1733,17 @@ export async function sendText(
 }
 
 export function tmuxWithClientPath(path: string | null, ...args: string[]): string {
-  if (path === null) return tmux(...args);
+  if (path === null && process.env.npm_command !== "exec") return tmux(...args);
 
-  const previousPath = process.env.PATH;
-  process.env.PATH = path;
-  try {
-    return tmux(...args);
-  } finally {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (path !== null) env.PATH = path;
+  if (process.env.npm_command === "exec") {
+    for (const key of Object.keys(env)) {
+      if (/^npm_/i.test(key) || key === "_") delete env[key];
+    }
   }
+  refuseIfSharedSocketFromScratchStore();
+  return tmuxWithin(tmuxTimeoutMs(), args, env);
 }
 
 export function paneEnvPath(): string | null {
