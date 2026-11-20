@@ -144,7 +144,7 @@ For example, `["npx", "-y", "--package=node@24.22.1", "--package=@cmgmyr/hive@1.
 
 The `hive-mcp` bin starts with `#!/usr/bin/env node`, so the server runs on the first `node` on PATH, not on the Node that ran `npx`. A bare `npx -y --package=@cmgmyr/hive@<hive-version> hive-mcp` therefore fails in any folder whose version manager pins a Node below the range. The extra `node` package fixes that: `npx` puts its `node` binary first on the PATH of the child process, so the server runs on that Node whatever the folder pins.
 
-Under `npx`, npm exec prepends its own directories to `PATH` for the server process. Worker panes the server spawns start without that prefix, so a worker's shell sees the `PATH` your terminal gave tmux plus whatever its own startup files add (`paneEnvPath`, `src/tmux.ts`). Nothing changes for a server launched any other way.
+Under `npx`, npm exec prepends its own directories to `PATH` for the server process. Worker panes the server spawns start without that prefix, so a worker's shell sees the `PATH` your terminal gave tmux plus whatever its own startup files add (`paneEnvPath`, `src/tmux.ts`). npm exec also exports its settings to the server as `npm_*` variables, plus `INIT_CWD` and `NODE`. When the server is the process that starts the tmux server, hive leaves those out of the environment it hands tmux, so a worker's own `npm` and `npx` read your config instead of the server's (`tmuxWithClientPath`, `src/tmux.ts`). Nothing changes for a server launched any other way.
 
 An absolute path to `npx`, such as `/opt/homebrew/bin/npx`, does not help. The shebang still picks `node` from PATH, and the path differs between Apple Silicon and Intel Homebrew and does not exist without Homebrew Node.
 
@@ -152,6 +152,7 @@ Limits to know about:
 
 - `npx` must be on the PATH your client passes to the server. If a folder pins a Node that is not installed, an asdf or mise shim fails before `npx` runs.
 - With npm `ignore-scripts=true`, the `node` package installs no binary. The server then falls back to the PATH `node` and the failure above returns. The `node` package is an extra package that downloads Node through an install script.
+- npm 11 refuses to run `npx` in a folder whose `package.json` names another package manager under `devEngines.packageManager`, for example pnpm. It fails with `EBADDEVENGINES` before hive starts. Add `npm_config_force=true` to the server's environment, for example `claude mcp add --env npm_config_force=true ...`; npm then prints a warning and continues. An environment variable leaves the command and its arguments unchanged, so an allowlist that matches only those still accepts the entry. Adding `--prefix=/` to the arguments also works, but it changes the entry and stops npx from reading that folder's `.npmrc`.
 - The first launch downloads Node and hive into the npx cache. Later launches reuse the cache, and the addon is a Node-API build, so a cache entry installed under one Node runs under another Node in range.
 
 To bump, change both strings together, because both pins are exact.
