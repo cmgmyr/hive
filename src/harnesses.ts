@@ -64,6 +64,8 @@ export interface HarnessCapabilities {
   // every other branch here.
   readonly needsHome: boolean;
 
+  readonly workerPaneEnv: Readonly<Record<string, string>>;
+
   // The CLI's own [PROMPT] positional, auto-submitted as the first user turn. null for claude on
   // purpose: its SessionStart hook already synthesizes one, so this would fire a second time.
   readonly initialPromptArgs: ((message: string) => string[]) | null;
@@ -148,6 +150,8 @@ const claudeHarness: HarnessCapabilities = {
 
   needsHome: false,
 
+  workerPaneEnv: { CLAUDE_CODE_AUTO_CONNECT_IDE: "false" },
+
   // "--" so a message that starts with a dash is never read as a flag.
   initialPromptArgs: (message) => ["--", message],
 
@@ -187,6 +191,8 @@ export const codexHarness: HarnessCapabilities = {
 
   needsHome: true,
 
+  workerPaneEnv: {},
+
   // Auto-submits with no Enter; verified live on v0.149.0.
   initialPromptArgs: (message) => ["--", message],
 
@@ -220,6 +226,8 @@ const unknownHarness: HarnessCapabilities = {
   paneClassifier: null,
 
   needsHome: false,
+
+  workerPaneEnv: {},
 
   initialPromptArgs: null,
 

@@ -186,7 +186,7 @@ export async function resumeWorker(
   const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
   const launchOptions = storedLaunchOptions(agent.extra_args);
   let commandString: string;
-  let resumeEnv: Record<string, string> = contextCheckpointEnv(projectConfig);
+  let resumeEnv: Record<string, string> = { ...contextCheckpointEnv(projectConfig), ...resumeHarness.workerPaneEnv };
 
   if (resumeHarness.name === "codex") {
     commandString = workerCommandString({
@@ -243,4 +243,3 @@ export async function resumeWorker(
     ...(landedInProjectId != null ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` } : {}),
   };
 }
-

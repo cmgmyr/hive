@@ -80,6 +80,9 @@ describe("registering a hypothetical second harness", () => {
     assert.equal(harnessFor("widget").name, "widget");
     assert.equal(harnessFor("/opt/bin/widget --flag").name, "widget");
     assert.equal(harnessFor("claude").name, "claude");
+    assert.deepEqual(harnessFor("claude").workerPaneEnv, { CLAUDE_CODE_AUTO_CONNECT_IDE: "false" });
+    assert.deepEqual(harnessFor("codex").workerPaneEnv, {});
+    assert.deepEqual(harnessFor("sleep 600").workerPaneEnv, {});
     assert.equal(harnessFor("sleep 600").name, "unknown");
   });
 
