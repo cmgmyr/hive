@@ -69,10 +69,16 @@ async function withMcp(serverPath, npmCommand, action, shell = "/bin/sh", extraE
     return await action(mcp);
   } finally {
     await mcp.close();
-    cleanup(sessionName());
+    const previousTmuxTmpDir = process.env.TMUX_TMPDIR;
+    if (extraEnv.TMUX_TMPDIR) process.env.TMUX_TMPDIR = extraEnv.TMUX_TMPDIR;
     try {
-      execFileSync("tmux", ["-S", npmTmuxSocket, "kill-server"], { stdio: "ignore" });
-    } catch {}
+      cleanup(sessionName());
+    } finally {
+      if (extraEnv.TMUX_TMPDIR) {
+        if (previousTmuxTmpDir === undefined) delete process.env.TMUX_TMPDIR;
+        else process.env.TMUX_TMPDIR = previousTmuxTmpDir;
+      }
+    }
   }
 }
 
