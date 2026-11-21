@@ -11,7 +11,7 @@ import {
 } from "./codexHome.js";
 import { agentIdentityEnv, branchAt, LEAD_KIND, resumeAgent, storedLaunchOptions } from "./spawn.js";
 import { ensureWorkerHooksFile } from "./hooks.js";
-import { harnessFor, resolvedCommandPrefix } from "./harnesses.js";
+import { harnessFor, resolvedCommandPrefix, type HarnessCapabilities } from "./harnesses.js";
 import { loadProjectYml } from "./projectYml.js";
 import { limitedHarness, observeProjectUsageLimits } from "./usageLimit.js";
 import { DEFAULT_LAYOUT } from "./tmux.js";
@@ -186,7 +186,7 @@ export async function resumeWorker(
   const layout = projectConfig?.layout ?? DEFAULT_LAYOUT;
   const launchOptions = storedLaunchOptions(agent.extra_args);
   let commandString: string;
-  let resumeEnv: Record<string, string> = { ...contextCheckpointEnv(projectConfig), ...resumeHarness.workerPaneEnv };
+  let resumeEnv = workerPaneEnvironment(projectConfig, resumeHarness);
 
   if (resumeHarness.name === "codex") {
     commandString = workerCommandString({
@@ -200,7 +200,7 @@ export async function resumeWorker(
         agent.session_id,
       ],
     });
-    resumeEnv = { ...resumeEnv, CODEX_HOME: codexHomeDir(agent.codex_home!) };
+    resumeEnv = workerPaneEnvironment(projectConfig, resumeHarness, codexHomeDir(agent.codex_home!));
     ensureCodexHooksFile(agent.codex_home!, { includePostToolUse: projectConfig?.context_checkpoint_percent != null });
     refreshCodexMcpEnv(agent.codex_home!, agentIdentityEnv(agent.actor_id, agent.name, project.path));
   } else {
@@ -241,5 +241,17 @@ export async function resumeWorker(
     ...(agent.parked_at ? { was_parked_at: agent.parked_at } : {}),
     ...(branchDrift ? { branch_drift: branchDrift } : {}),
     ...(landedInProjectId != null ? { landed_in_project: getProject(landedInProjectId)?.name ?? `project ${landedInProjectId}` } : {}),
+  };
+}
+
+export function workerPaneEnvironment(
+  projectConfig: { context_checkpoint_percent?: number | null } | null,
+  harness: HarnessCapabilities,
+  codexHome?: string | null,
+): Record<string, string> {
+  return {
+    ...contextCheckpointEnv(projectConfig),
+    ...(codexHome == null ? {} : { CODEX_HOME: codexHome }),
+    ...harness.workerPaneEnv,
   };
 }

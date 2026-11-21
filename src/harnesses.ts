@@ -64,6 +64,7 @@ export interface HarnessCapabilities {
   // every other branch here.
   readonly needsHome: boolean;
 
+  // Env every pane of this harness gets at spawn, fork, and resume; claude keeps an inherited editor connection off.
   readonly workerPaneEnv: Readonly<Record<string, string>>;
 
   // The CLI's own [PROMPT] positional, auto-submitted as the first user turn. null for claude on

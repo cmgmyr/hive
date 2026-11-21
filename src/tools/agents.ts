@@ -69,7 +69,7 @@ import {
 } from "../spawn.js";
 import { COMMAND_KIND, runningCommandRow, stopLine, stopProcess, STOP_REASONS } from "../processes.js";
 import { markWorkerRetirementIntent } from "../workerRecovery.js";
-import { contextCheckpointEnv, refuseLimitedHarness, resumeWorker } from "../agentResume.js";
+import { workerPaneEnvironment, refuseLimitedHarness, resumeWorker } from "../agentResume.js";
 import { readContextTokens, readContextFill, resolveTranscriptDir, type ContextFill } from "../transcript.js";
 import { leadSessionEnded } from "../leadState.js";
 import {
@@ -790,7 +790,7 @@ export function registerAgents(server: McpServer): void {
             kind: "agent",
             commandString: buildCommand,
             cwd,
-            env: { ...contextCheckpointEnv(projectConfig), ...(codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {}), ...harness.workerPaneEnv },
+            env: workerPaneEnvironment(projectConfig, harness, codexHomeKey ? codexHomeDir(codexHomeKey) : null),
             placement,
             layout,
             parentActor: parent,
@@ -1067,7 +1067,7 @@ export function registerAgents(server: McpServer): void {
             kind: "agent",
             commandString: buildCommand,
             cwd,
-            env: { ...contextCheckpointEnv(projectConfig), ...(codexHomeKey ? { CODEX_HOME: codexHomeDir(codexHomeKey) } : {}), ...harness.workerPaneEnv },
+            env: workerPaneEnvironment(projectConfig, harness, codexHomeKey ? codexHomeDir(codexHomeKey) : null),
             placement,
             layout,
             parentActor: currentActor(),
