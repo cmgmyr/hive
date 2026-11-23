@@ -222,7 +222,7 @@ hive project mv ~/Code/new-name             # preview only
 hive project mv ~/Code/new-name --apply     # make the change
 ```
 
-Without `--apply` (or with `--dry-run`, which means the same) it prints the plan and changes nothing. Close Claude Code and Codex before you apply; hive does not detect or stop them. It does refuse to apply while any hive agent in the project is running, so close those first, and a worker session cannot run it at all.
+Without `--apply` (or with `--dry-run`, which means the same) it prints the plan and changes nothing. Close Claude Code and Codex before you apply; hive does not detect or stop them. It refuses while any hive agent in the project is running, the lead included, and that check runs before the preview too, so close every agent first even to see the plan. A worker session cannot run it at all.
 
 Two starting points work. If the checkout is still at its registered path, hive renames it to the new path. If you already moved it by hand, the old path is gone and the new one exists, and hive only repairs the records. A rename across filesystems is not attempted: move the directory yourself, then run the command again.
 
