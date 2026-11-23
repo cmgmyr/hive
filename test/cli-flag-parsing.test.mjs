@@ -16,7 +16,7 @@ describe("hive CLI shared flag parser", () => {
   it("hive setup rejects a mistyped flag naming it and setup's real flags", async () => {
     const { code, stdout, stderr } = await runCli(["setup", "--forc"], opts());
     assert.equal(code, 1);
-    assert.match(stderr, /unknown argument "--forc"\. Flags are --dir, --attach, --auto-attach, --force\./);
+    assert.match(stderr, /unknown argument "--forc"\. Flags are --dir, --attach, --auto-attach, --harness, --force\./);
     assert.equal(stdout, "", "a refused run must not print a report a script could read as a result");
   });
 
