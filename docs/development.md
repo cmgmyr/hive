@@ -6,6 +6,8 @@ npm run watch    # compile on change
 npm test         # run the suite against dist/ (build first)
 ```
 
+In a checkout without installed dependencies, `npm test` stops at once and names the missing packages; run `npm install` there first. A fresh git worktree has no `node_modules`, so this applies to each one.
+
 Run `npm run check:mermaid` to render every Mermaid diagram in `README.md` and `docs/`.
 
 In this repository the root `hive.yml` is gitignored, so the maintainer's lead

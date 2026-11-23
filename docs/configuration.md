@@ -87,6 +87,7 @@ See [project configuration](projects.md#project-commands-hiveyml), [profiles](pr
 | `HIVE_PROJECT_PATH` | Set automatically by `agent_spawn`; guards a worker's project pin |
 | `HIVE_CONTEXT_CHECKPOINT_PERCENT` | Hive sets this on worker processes from `hive.yml`'s `context_checkpoint_percent`. You do not set it by hand. |
 | `HIVE_LEAD` | Set automatically by `hive lead`, so its session-start hook still fires |
+| `CLAUDE_CODE_AUTO_CONNECT_IDE` | Claude Code's own variable. Hive sets it to `false` in every Claude worker's pane at spawn, fork and resume, overriding any value the tmux server inherited, so a worker started from an editor's terminal does not connect to the editor and show its active file as a chip in the prompt box (which makes `agent_send` refuse to type). The lead's launch is unchanged, and Codex workers get nothing |
 | `HIVE_ALLOW_DEFAULT_STORE` | Set to `1` to let a non-hive process open the real store |
 | `HIVE_AUTO_ATTACH`, `HIVE_ATTACH_MODE` | Testing overrides; use `hive setup --auto-attach` / `--attach` instead |
 | `HIVE_TMUX_TIMEOUT_MS` | Raise (never lower) the bound on a tmux call before hive treats it as unknown. `hive doctor` reports it when set, since a knob that shortens a safety bound must not sit in an environment silently |
