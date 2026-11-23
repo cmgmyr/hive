@@ -29,6 +29,66 @@ const CASES = [
     expect: { state: "ghost", text: "write the failing test case for me" },
   },
   {
+    file: "ide-chip-empty-faint.txt",
+    name: "ide-chip-empty-faint",
+    marker: "Try \"fix typecheck errors\"",
+    expect: { state: "ghost", text: 'Try "fix typecheck errors"' },
+  },
+  {
+    file: "ide-chip-empty-inverse.txt",
+    name: "ide-chip-empty-inverse",
+    marker: "Try \"how does <filepath> work?\"",
+    expect: { state: "pending", text: 'Try "how does <filepath> work?"' },
+  },
+  {
+    file: "ide-chip-typed-faint.txt",
+    name: "ide-chip-typed-faint",
+    marker: "hello",
+    expect: { state: "pending", text: "hello" },
+  },
+  {
+    file: "ide-chip-typed-inverse.txt",
+    name: "ide-chip-typed-inverse",
+    marker: "hello",
+    expect: { state: "pending", text: "hello" },
+  },
+  {
+    file: "ide-chip-selection-empty.txt",
+    name: "ide-chip-selection-empty",
+    marker: "Try \"fix typecheck errors\"",
+    expect: { state: "ghost", text: 'Try "fix typecheck errors"' },
+  },
+  {
+    file: "ide-chip-selection-typed.txt",
+    name: "ide-chip-selection-typed",
+    marker: "explain this",
+    expect: { state: "pending", text: "explain this" },
+  },
+  {
+    file: "ide-chip-long-name.txt",
+    name: "ide-chip-long-name",
+    marker: "Try \"how does <filepath> work?\"",
+    expect: { state: "pending", text: 'Try "how does <filepath> work?"' },
+  },
+  {
+    file: "ide-chip-bracket-in-name.txt",
+    name: "ide-chip-bracket-in-name",
+    marker: "Try \"how does <filepath> work?\"",
+    expect: { state: "pending", text: 'Try "how does <filepath> work?"' },
+  },
+  {
+    file: "ide-chip-no-chip-inverse.txt",
+    name: "ide-chip-no-chip-inverse",
+    marker: "Try \"how does <filepath> work?\"",
+    expect: { state: "pending", text: 'Try "how does <filepath> work?"' },
+  },
+  {
+    file: "ide-chip-lookalike-pending.txt",
+    name: "ide-chip-lookalike-pending",
+    marker: "[notes] REAL UNSUBMITTED INPUT",
+    expect: { state: "pending", text: "[notes] REAL UNSUBMITTED INPUT" },
+  },
+  {
     file: "queued-hint.txt",
     name: "hint",
     marker: "Press up to edit queued",
@@ -156,7 +216,7 @@ const CASES = [
 ];
 
 describe(
-  "inputBoxState against real claude 2.1.220 screens",
+  "inputBoxState against captured claude screens",
   { skip: hasTmux ? false : "tmux is not installed" },
   () => {
     const session = `hive-inputbox-${process.pid}`;
@@ -196,6 +256,7 @@ describe(
     it("holdsHumanInput fires on the drifted screen only when the box really holds typed text", async () => {
       const ghost = `${session}:slot-taken`;
       const pending = `${session}:slot-taken-pending`;
+      const chipPending = `${session}:ide-chip-typed-faint`;
       await until(() =>
         execFileSync("tmux", ["capture-pane", "-p", "-t", pending])
           .toString()
@@ -203,6 +264,7 @@ describe(
       );
 
       assert.equal(holdsHumanInput(inputBoxState(pending)), true, "a wake must be held against real typed text");
+      assert.equal(holdsHumanInput(inputBoxState(chipPending)), true, "a chip must not hide real typed text from a wake");
       assert.equal(holdsHumanInput(inputBoxState(ghost)), false, "claude's own hint must not hold every wake forever");
     });
   },

@@ -113,7 +113,7 @@ more than a same-width rename.
 
 ## IDE chip fixtures (todo 2764)
 
-Each `ide-chip-*.txt` file below is a real 120x40 `tmux capture-pane -p -e` screen from Claude Code 2.1.330 in a private scratch tmux server, with TERM=tmux-256color. The fake IDE used a scratch Claude config lockfile and a local WebSocket MCP handshake, then sent `selection_changed`; it was not VS Code. The capture paths name the fake scratch cwd, so `/private/tmp/x.pQ3a/work` was replaced with the same-width `/private/tmp/x.XXXX/work`; every row keeps its captured width.
+The nine real `ide-chip-*.txt` fixtures below are 120x40 `tmux capture-pane -p -e` screens from Claude Code 2.1.330 in a private scratch tmux server, with TERM=tmux-256color. The fake IDE used a scratch Claude config lockfile and a local WebSocket MCP handshake, then sent `selection_changed`; it was not VS Code. The capture paths name the fake scratch cwd, so `/private/tmp/x.pQ3a/work` was replaced with the same-width `/private/tmp/x.XXXX/work`; every row keeps its captured width.
 
 - `ide-chip-empty-faint.txt` is `tc-01-chip-infile-empty.txt`, with `[⧉ In Untitled-1] ` followed by the faint `Try` placeholder.
 - `ide-chip-empty-inverse.txt` is `01-chip-infile-empty.txt`, with the inverse-cursor `Try` placeholder after the chip.
@@ -124,6 +124,7 @@ Each `ide-chip-*.txt` file below is a real 120x40 `tmux capture-pane -p -e` scre
 - `ide-chip-long-name.txt` is `09-chip-long-name-truncated.txt`, with the middle-truncated file chip and inverse-cursor placeholder.
 - `ide-chip-bracket-in-name.txt` is `10-chip-bracket-in-name.txt`, with `]` rewritten to `)` inside the filename chip and inverse-cursor placeholder.
 - `ide-chip-no-chip-inverse.txt` is `00-nochip-empty.txt`, the no-chip inverse-cursor placeholder control from the same session.
+- `ide-chip-lookalike-pending.txt` is SYNTHETIC: it keeps the captured input-box borders and SGR prompt prefix, but uses `[notes] REAL UNSUBMITTED INPUT` as ordinary prompt text to pin that a bracket alone is not an IDE chip.
 
 The fake IDE's handshake and the exact captured SGR sequences are recorded in todo 2764, comment 20076. This corpus does not cover diff-source chips, light or ansi themes, an attached tmux client, or VS Code's `TERM_PROGRAM=vscode` process-ancestor check.
 
