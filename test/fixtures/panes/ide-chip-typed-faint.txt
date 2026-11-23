@@ -1,0 +1,40 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.330[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · Claude Ultra[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/private/tmp/x.XXXX/work[39m
+
+  Fable 5.2 is here for your longest and toughest coding tasks. It draws down usage faster than Opus 5.5. Switch with
+  [38;5;153m/model[39m.
+  [38;5;246m1 more notice hidden[39m [38;5;246m(ctrl+o to expand)[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                  [38;5;246mtmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and reattach for focus tracking[39m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ [38;5;74m[⧉ In Untitled-1][39m hello
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle)[39m
