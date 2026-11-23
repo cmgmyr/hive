@@ -26,6 +26,7 @@ mcp.timeoutMs = 40_000;
 after(async () => { await mcp.close(); cleanup(sessionName()); });
 
 const gateTrustName = "hive:todo-completion-gate";
+const trustPromptWaitMs = 10_000;
 function setGate(argv) {
   writeFileSync(join(dirs.projectDir, "hive.yml"), `completion_gate: ${JSON.stringify(argv)}\n`);
   db.prepare("DELETE FROM command_trust WHERE project_id = ? AND name = ?").run(gateProject.id, gateTrustName);
@@ -69,12 +70,13 @@ function project(name) {
 async function runLeadInPty(row, fakeBin, answer) {
   const cli = new URL("../dist/cli.js", import.meta.url).pathname;
   const ptyDriver = [
-    "import errno, os, pty, select, sys",
+    "import errno, os, pty, select, signal, sys, time",
     "pid, fd = pty.fork()",
     "if pid == 0:",
     "    os.execve(sys.argv[1], [sys.argv[1], sys.argv[2], 'lead'], os.environ)",
     "buf = b''",
     "sent = False",
+    "deadline = time.monotonic() + int(sys.argv[4]) / 1000",
     "while True:",
     "    ready, _, _ = select.select([fd], [], [], 0.1)",
     "    if ready:",
@@ -89,12 +91,18 @@ async function runLeadInPty(row, fakeBin, answer) {
     "            sent = True",
     "    done, status = os.waitpid(pid, os.WNOHANG)",
     "    if done: break",
+    "    if not sent and time.monotonic() >= deadline:",
+    "        os.kill(pid, signal.SIGKILL)",
+    "        _, status = os.waitpid(pid, 0)",
+    "        sys.stdout.buffer.write(buf)",
+    "        sys.stderr.write('timed out waiting for trust prompt after '+sys.argv[4]+'ms\\n')",
+    "        sys.exit(124)",
     "if os.waitpid(pid, os.WNOHANG)[0] == 0:",
     "    _, status = os.waitpid(pid, 0)",
     "sys.stdout.buffer.write(buf)",
     "sys.exit(os.waitstatus_to_exitcode(status))",
   ].join("\n");
-  const child = spawn("python3", ["-c", ptyDriver, process.execPath, cli, answer], {
+  const child = spawn("python3", ["-c", ptyDriver, process.execPath, cli, answer, String(trustPromptWaitMs)], {
     cwd: row.path,
     env: {
       ...process.env,
@@ -387,7 +395,7 @@ it("hive lead interactively approves the gate descriptor without running it", as
   writeFileSync(claude, "#!/bin/sh\nexec sleep 2\n");
   chmodSync(claude, 0o755);
   const { code, output } = await runLeadInPty(row, fakeBin, "y");
-  assert.equal(code, 0, output);
+  assert.equal(code, 0, `hive lead PTY exited with ${code}; screen tail:\n${output.slice(-2000)}`);
   assert.equal(todoCompletionGateTrusted(row.id, [process.execPath, gatePath]), true, output);
   assert.equal(existsSync(marker), false, "approval records trust without executing the gate");
 });
@@ -404,7 +412,7 @@ it("a declined interactive gate review records no trust", async () => {
   writeFileSync(claude, "#!/bin/sh\nexec sleep 2\n");
   chmodSync(claude, 0o755);
   const { code, output } = await runLeadInPty(row, fakeBin, "n");
-  assert.equal(code, 0, output);
+  assert.equal(code, 0, `hive lead PTY exited with ${code}; screen tail:\n${output.slice(-2000)}`);
   assert.match(output, /Skipped "hive:todo-completion-gate"/);
   assert.equal(todoCompletionGateTrusted(row.id, argv), false);
 });
