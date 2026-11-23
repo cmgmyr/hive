@@ -165,7 +165,7 @@ strands what survives, unsubmitted, with every receipt reporting success.
 
 Only `pending` (real, human-typed text) holds. `ghost` must not, or every idle pane holds every wake forever. `unknown` must not either: a hold that silently starts firing on every unrecognised screen is worse than a detector that silently stops.
 
-**A leading Claude IDE chip `[⧉ ...]` is prompt chrome; identify it by the anchored glyph, never by a generic bracket or placeholder-content guess. Classify the SGR state after it, and leave every non-match unchanged.**
+**A leading Claude IDE chip `[⧉ ...]` is prompt chrome only when its leading SGR run has a non-default foreground color and is not faint. Identify it by the anchored glyph and that styled run, never by a generic bracket or placeholder-content guess. Classify the SGR state after it, and leave every non-match unchanged.**
 
 **`agent_send`'s text path and `agent_rename` REFUSE on the same condition.**
 

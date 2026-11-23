@@ -1136,12 +1136,37 @@ function findInputBox(rows: string[]): InputBoxAnchor | null {
 
 const inputBoxOnScreen = (screen: string): boolean => findInputBox(screen.split("\n"))?.prompt != null;
 
+function leadingRunHasForegroundColor(s: string): boolean {
+  const leadingRun = /^(?:\x1b\[[0-9;]*m)*/.exec(s)?.[0] ?? "";
+  let foregroundColor = false;
+  for (const seq of leadingRun.match(SGR_ESCAPE) ?? []) {
+    const params = seq.slice(2, -1).split(";").filter((p) => p !== "");
+    if (params.length === 0) {
+      foregroundColor = false;
+      continue;
+    }
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      if (p === "0" || p === "39") foregroundColor = false;
+      else if (p === "38" && params[i + 1] === "5" && params[i + 2] !== undefined) {
+        foregroundColor = true;
+        i += 2;
+      } else if (p === "38" && params[i + 1] === "2" && params[i + 4] !== undefined) {
+        foregroundColor = true;
+        i += 4;
+      } else if (/^(?:3[0-7]|9[0-7])$/.test(p)) foregroundColor = true;
+    }
+  }
+  return foregroundColor && !leadingRunIsFaint(leadingRun);
+}
+
 function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: number): InputBoxState {
   const promptRow = rows[promptRowIndex];
   const afterPrompt = promptRow.slice(promptRow.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
   const visiblePrefix = /^\[⧉ [^\]]*\] ?/u.exec(stripControlBytes(stripSgr(afterPrompt)))?.[0];
+  const hasStyledChip = visiblePrefix !== undefined && leadingRunHasForegroundColor(afterPrompt);
   let after = afterPrompt;
-  if (visiblePrefix) {
+  if (hasStyledChip) {
     let index = 0;
     let visibleLength = 0;
     while (index < afterPrompt.length && visibleLength < visiblePrefix.length) {

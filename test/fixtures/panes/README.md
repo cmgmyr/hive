@@ -125,6 +125,7 @@ The nine real `ide-chip-*.txt` fixtures below are 120x40 `tmux capture-pane -p -
 - `ide-chip-bracket-in-name.txt` is `10-chip-bracket-in-name.txt`, with `]` rewritten to `)` inside the filename chip and inverse-cursor placeholder.
 - `ide-chip-no-chip-inverse.txt` is `00-nochip-empty.txt`, the no-chip inverse-cursor placeholder control from the same session.
 - `ide-chip-lookalike-pending.txt` is SYNTHETIC: it keeps the captured input-box borders and SGR prompt prefix, but uses `[notes] REAL UNSUBMITTED INPUT` as ordinary prompt text to pin that a bracket alone is not an IDE chip.
+- `ide-chip-literal-typed-pending.txt` is SYNTHETIC: it reuses the captured top and bottom borders from `ide-chip-typed-faint.txt`, then replaces its colored pill with a default-foreground prompt containing the literal human text `[⧉ In Untitled-1]`. The prompt uses `ESC[39m` before `❯` and has no foreground-color SGR after the prompt glyph, so replaying it checks that text alone cannot trigger the pill strip.
 
 The fake IDE's handshake and the exact captured SGR sequences are recorded in todo 2764, comment 20076. This corpus does not cover diff-source chips, light or ansi themes, an attached tmux client, or VS Code's `TERM_PROGRAM=vscode` process-ancestor check.
 

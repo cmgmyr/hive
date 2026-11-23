@@ -89,6 +89,12 @@ const CASES = [
     expect: { state: "pending", text: "[notes] REAL UNSUBMITTED INPUT" },
   },
   {
+    file: "ide-chip-literal-typed-pending.txt",
+    name: "ide-chip-literal-typed-pending",
+    marker: "[⧉ In Untitled-1]",
+    expect: { state: "pending", text: "[⧉ In Untitled-1]" },
+  },
+  {
     file: "queued-hint.txt",
     name: "hint",
     marker: "Press up to edit queued",
