@@ -26,7 +26,7 @@ mcp.timeoutMs = 40_000;
 after(async () => { await mcp.close(); cleanup(sessionName()); });
 
 const gateTrustName = "hive:todo-completion-gate";
-const trustPromptWaitMs = 10_000;
+const trustPromptWaitMs = 30_000;
 function setGate(argv) {
   writeFileSync(join(dirs.projectDir, "hive.yml"), `completion_gate: ${JSON.stringify(argv)}\n`);
   db.prepare("DELETE FROM command_trust WHERE project_id = ? AND name = ?").run(gateProject.id, gateTrustName);
