@@ -1138,7 +1138,30 @@ const inputBoxOnScreen = (screen: string): boolean => findInputBox(screen.split(
 
 function classifyInputBox(rows: string[], promptRowIndex: number, boxBottom: number): InputBoxState {
   const promptRow = rows[promptRowIndex];
-  const after = promptRow.slice(promptRow.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
+  const afterPrompt = promptRow.slice(promptRow.indexOf(PROMPT_GLYPH_NBSP) + PROMPT_GLYPH_NBSP.length);
+  const visiblePrefix = /^\[⧉ [^\]]*\] ?/u.exec(stripControlBytes(stripSgr(afterPrompt)))?.[0];
+  let after = afterPrompt;
+  if (visiblePrefix) {
+    let index = 0;
+    let visibleLength = 0;
+    while (index < afterPrompt.length && visibleLength < visiblePrefix.length) {
+      const sgr = /^\x1b\[[0-9;]*m/.exec(afterPrompt.slice(index))?.[0];
+      if (sgr) {
+        index += sgr.length;
+        continue;
+      }
+      const code = afterPrompt.charCodeAt(index);
+      if (code <= 0x09 || (code >= 0x0b && code <= 0x1f) || code === 0x7f) {
+        index += 1;
+        continue;
+      }
+      const codePoint = afterPrompt.codePointAt(index) ?? code;
+      const width = codePoint > 0xffff ? 2 : 1;
+      index += width;
+      visibleLength += width;
+    }
+    after = afterPrompt.slice(index);
+  }
   const dim = leadingRunIsFaint(after);
   const firstLine = stripControlBytes(stripSgr(after)).trim();
 
