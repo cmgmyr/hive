@@ -113,7 +113,7 @@ more than a same-width rename.
 
 ## IDE chip fixtures (todo 2764)
 
-The nine real `ide-chip-*.txt` fixtures below are 120x40 `tmux capture-pane -p -e` screens from Claude Code 2.1.330 in a private scratch tmux server, with TERM=tmux-256color. The fake IDE used a scratch Claude config lockfile and a local WebSocket MCP handshake, then sent `selection_changed`; it was not VS Code. The capture paths name the fake scratch cwd, so `/private/tmp/x.pQ3a/work` was replaced with the same-width `/private/tmp/x.XXXX/work`; every row keeps its captured width.
+The nine real `ide-chip-*.txt` fixtures below are 120x40 `tmux capture-pane -p -e` screens from Claude Code 2.1.330 in a private scratch tmux server, with TERM=tmux-256color. The fake IDE used a scratch Claude config lockfile and a local WebSocket MCP handshake, then sent `selection_changed`; it was not VS Code. The capture paths name the fake scratch cwd, so `/private/tmp/x.pQ3a/work` was replaced with the same-width `/private/tmp/x.XXXX/work`. The captured model/plan banner is padded neutral text (`Model · Plan`), and the promo shown in four captures is a neutral help tip. These equal-byte scrubs preserve every row width and all SGR sequences.
 
 - `ide-chip-empty-faint.txt` is `tc-01-chip-infile-empty.txt`, with `[⧉ In Untitled-1] ` followed by the faint `Try` placeholder.
 - `ide-chip-empty-inverse.txt` is `01-chip-infile-empty.txt`, with the inverse-cursor `Try` placeholder after the chip.

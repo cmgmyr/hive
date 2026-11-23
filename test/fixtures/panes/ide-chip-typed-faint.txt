@@ -1,9 +1,9 @@
 
 [38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;246mv2.1.330[39m
-[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mOpus 5.5 · Claude Ultra[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mModel · Plan           [39m
 [38;5;174m ▝▝   ▝▝ [39m  [38;5;246m/private/tmp/x.XXXX/work[39m
 
-  Fable 5.2 is here for your longest and toughest coding tasks. It draws down usage faster than Opus 5.5. Switch with
+  Tip: use the help panel for common commands and keyboard shortcuts. Browse topics for more examples and usage help.
   [38;5;153m/model[39m.
   [38;5;246m1 more notice hidden[39m [38;5;246m(ctrl+o to expand)[39m
 
