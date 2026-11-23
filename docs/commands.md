@@ -32,6 +32,7 @@ Commands that parse arguments reject unknown flags. To pass positional text that
 | `hive answer <id> <answer> [--notes <text>]` | Record one answer and notes; use `--` before an answer that starts with a dash; report the wake id when queued or the reason delivery was skipped. When the asker has no running row, the wake goes to the project's running lead if it is a different actor |
 | `hive backups` / `hive restore <name>` | List store snapshots, or restore one |
 | `hive project rm <id\|path> [--yes]` | Remove another registered project and everything it owns, after a snapshot. Takes an id or an exact registered path, never the project you are in. See [removing a project](projects.md#removing-a-project) |
+| `hive project mv <new-path> [--project-id <id>] [--dry-run \| --apply]` | Move this project's checkout and repoint hive, Claude Code, Codex and Git worktree records. Previews by default; `--apply` makes the change. A human command: a worker session refuses it. See [moving a project](projects.md#moving-a-project). |
 | `hive runbook` | Print this project's standing process |
 | `hive posture` | Print the posture your lead is running with |
 | `hive profile list` | Show the profiles hive can see |

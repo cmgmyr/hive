@@ -213,6 +213,25 @@ A path matches only after symlinks are resolved, so a symlink to a registered pa
 
 Undo it with `hive restore <name>`, where the name is the last part of the snapshot path the command printed. A restore replaces the whole store, so every other project's writes since that snapshot are lost too, and it refuses while any agent is running, so it needs `--force` from a live session. Restore only when the removal itself was the mistake. A removal leaves these behind: the project's checkout and everything in it (`hive.yml`, `.hive`, worktrees), `postures/project-<id>.md`, `briefs/agent-<id>.md` and `worker-<id>-hooks.json` for its agents, any `codex-homes` and `codex-rollouts` directories its agents used, and the actors that worked in it. `actor_prune` clears the ones that own nothing else, but an actor with `agent_state_log` rows stays, because that log is append-only, so every lead and worker that ever ran remains. Delete the files by hand if you want them gone.
 
+## Moving a project
+
+`hive project mv` moves a registered project's checkout and repoints everything that recorded the old path. Run it from the checkout, or pass `--project-id <id>` after you moved the directory by hand, since the checkout is then no longer at its registered path.
+
+```bash
+hive project mv ~/Code/new-name             # preview only
+hive project mv ~/Code/new-name --apply     # make the change
+```
+
+Without `--apply` (or with `--dry-run`, which means the same) it prints the plan and changes nothing. Close Claude Code and Codex before you apply; hive does not detect or stop them. It does refuse to apply while any hive agent in the project is running, so close those first, and a worker session cannot run it at all.
+
+Two starting points work. If the checkout is still at its registered path, hive renames it to the new path. If you already moved it by hand, the old path is gone and the new one exists, and hive only repairs the records. A rename across filesystems is not attempted: move the directory yourself, then run the command again.
+
+Apply updates, in this order: the checkout directory, Git worktree pointers for linked worktrees (through `git worktree repair`; a linked worktree stored outside the checkout stays where it is), Claude Code's project storage directory, only the matching project keys in `.claude.json` and in Codex's `config.toml` files (the global one and each worker's own home), and the project's stored path, worker working directories and transcript paths in the hive store. Each config file and Git pointer it changes gets a private `.hive-mv-<id>.bak` copy first, and the command prints each backup path.
+
+It refuses, and changes nothing, when the old and new paths overlap each other or another registered project, when both or neither exist, when hive's own checkout would move, or when the hive command, an MCP registration or a hook still points under the old path. A failure after the rename prints a recovery command; run it after fixing the cause. Running it again picks up the steps that did not finish.
+
+Codex sessions saved under the old path are not rewritten. Find them with `codex resume --all`.
+
 ## Pads and todos from the shell
 
 Pads are reachable from the shell too, without spending a Claude turn: `hive pads` lists them, `hive pad <name>` prints one, and `hive pad <name> --export` writes a revision-stamped markdown file in the system temp dir and prints its path without opening an editor. `--edit` writes the same export and opens your system's default markdown editor (override with `HIVE_EDITOR=zed` or similar). Edit and save with `hive pad <name> --save`; the revision marker guards the save. If a session changed the pad while you edited, the save fails with merge instructions and leaves your edits in the file. For a file without a revision marker, pass `--revision <n>` with the revision you edited. Hive removes its own temp export after a successful save; a file you pass explicitly stays in place, even when it needs no changes. macOS purges abandoned temp files automatically.
